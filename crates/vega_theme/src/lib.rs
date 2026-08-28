@@ -4,7 +4,7 @@
 //! All hex color literals in the workspace are confined to this crate;
 //! components must reference these tokens instead of hardcoding colors.
 
-use gpui::Rgba;
+use gpui::{App, FontWeight, Global, Rgba, WindowAppearance};
 
 /// Converts an RGBA hex literal (`0xRRGGBBAA`) to [`Rgba`].
 ///
@@ -92,6 +92,121 @@ pub const DARK: ThemeColors = ThemeColors {
     code_bg: rgba(0x282C34FF),
 };
 
+/// Which palette the theme currently applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Appearance {
+    /// Light palette ([`LIGHT`]).
+    Light,
+    /// Dark palette ([`DARK`]).
+    Dark,
+}
+
+impl Appearance {
+    /// Returns the opposite appearance.
+    pub fn toggle(self) -> Self {
+        match self {
+            Appearance::Light => Appearance::Dark,
+            Appearance::Dark => Appearance::Light,
+        }
+    }
+}
+
+/// The active UI theme: an [`Appearance`] plus the matching [`ThemeColors`].
+///
+/// Registered as a GPUI global at startup ([`Theme::system`]); components read
+/// it through [`theme`].
+#[derive(Debug, Clone, Copy)]
+pub struct Theme {
+    /// Color tokens for the active appearance.
+    pub colors: ThemeColors,
+    /// Which palette is currently active.
+    pub appearance: Appearance,
+}
+
+impl Global for Theme {}
+
+impl Theme {
+    /// Theme with the light palette (UI spec §2, "Light" column).
+    pub fn light() -> Self {
+        Theme {
+            colors: LIGHT,
+            appearance: Appearance::Light,
+        }
+    }
+
+    /// Theme with the dark palette (UI spec §2, "Dark" column).
+    pub fn dark() -> Self {
+        Theme {
+            colors: DARK,
+            appearance: Appearance::Dark,
+        }
+    }
+
+    /// Theme matching the OS appearance at call time.
+    ///
+    /// Reads the real macOS appearance via `App::window_appearance` (gpui
+    /// exposes it on this rev); `VibrantLight`/`VibrantDark` map onto
+    /// light/dark respectively.
+    pub fn system(cx: &App) -> Self {
+        match cx.window_appearance() {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Self::light(),
+        }
+    }
+
+    /// Flips between light and dark in place, swapping the palette to match.
+    pub fn toggle(&mut self) {
+        self.appearance = self.appearance.toggle();
+        self.colors = match self.appearance {
+            Appearance::Light => LIGHT,
+            Appearance::Dark => DARK,
+        };
+    }
+}
+
+/// Convenience accessor for the theme global ("components take the theme via
+/// `cx.theme()`" in the task card); requires [`Theme`] to have been registered
+/// with `App::set_global` at startup.
+pub fn theme(cx: &App) -> &Theme {
+    cx.global::<Theme>()
+}
+
+/// Typography constants ([vega-ui-spec.md §3](../../docs/vega-ui-spec.md)).
+///
+/// Font sizes are logical pixels, meant to be fed to `gpui::px`. Line-height
+/// values marked as ratios are unitless multipliers; `SIDEBAR_LINE_HEIGHT` is
+/// an absolute pixel row height, matching the spec verbatim.
+pub struct Typography;
+
+impl Typography {
+    /// Body text: 13px (§3 "正文字体 …13px/1.55 行高").
+    pub const BODY: f32 = 13.0;
+    /// Body line height: 1.55× font size (ratio, §3).
+    pub const BODY_LINE_HEIGHT: f32 = 1.55;
+    /// Conversation message body: 14px (§3 "会话消息正文 14px/1.6").
+    pub const MESSAGE: f32 = 14.0;
+    /// Message line height: 1.6× font size (ratio, §3).
+    pub const MESSAGE_LINE_HEIGHT: f32 = 1.6;
+    /// Code font size: 12.5px, monospace (§3 "代码字体 SF Mono / JetBrains Mono，12.5px").
+    pub const CODE: f32 = 12.5;
+    /// Sidebar entry font size: 13px (§3 "侧边栏条目 13px，行高 32px").
+    pub const SIDEBAR: f32 = 13.0;
+    /// Sidebar entry row height: 32px absolute (§3).
+    pub const SIDEBAR_LINE_HEIGHT: f32 = 32.0;
+    /// Page heading size: 16px (§3 "页面 16px 600").
+    pub const HEADING_PAGE: f32 = 16.0;
+    /// Page heading weight: 600 (§3).
+    pub const HEADING_PAGE_WEIGHT: FontWeight = FontWeight::SEMIBOLD;
+    /// Block heading size: 14px (§3 "区块 14px 600").
+    pub const HEADING_BLOCK: f32 = 14.0;
+    /// Block heading weight: 600 (§3).
+    pub const HEADING_BLOCK_WEIGHT: FontWeight = FontWeight::SEMIBOLD;
+    /// Card heading size: 13px (§3 "卡片 13px 500").
+    pub const HEADING_CARD: f32 = 13.0;
+    /// Card heading weight: 500 (§3).
+    pub const HEADING_CARD_WEIGHT: FontWeight = FontWeight::MEDIUM;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +225,49 @@ mod tests {
         assert_eq!(u32::from(LIGHT.bg_base), 0xFFFFFFFF);
         assert_eq!(u32::from(LIGHT.success), 0x1A7F37FF);
         assert_eq!(u32::from(LIGHT.danger), 0xCF222EFF);
+    }
+
+    #[test]
+    fn light_and_dark_palettes_differ_on_key_tokens() {
+        assert_ne!(u32::from(LIGHT.bg_base), u32::from(DARK.bg_base));
+        assert_ne!(u32::from(LIGHT.text_primary), u32::from(DARK.text_primary));
+    }
+
+    #[test]
+    fn appearance_toggle_round_trips() {
+        assert_eq!(Appearance::Light.toggle(), Appearance::Dark);
+        assert_eq!(Appearance::Dark.toggle(), Appearance::Light);
+        assert_eq!(Appearance::Light.toggle().toggle(), Appearance::Light);
+    }
+
+    #[test]
+    fn theme_toggle_swaps_palette_in_place() {
+        let mut theme = Theme::light();
+        theme.toggle();
+        assert_eq!(theme.appearance, Appearance::Dark);
+        assert_eq!(u32::from(theme.colors.bg_base), u32::from(DARK.bg_base));
+        assert_eq!(
+            u32::from(theme.colors.text_primary),
+            u32::from(DARK.text_primary)
+        );
+
+        theme.toggle();
+        assert_eq!(theme.appearance, Appearance::Light);
+        assert_eq!(u32::from(theme.colors.bg_base), u32::from(LIGHT.bg_base));
+        assert_eq!(
+            u32::from(theme.colors.text_primary),
+            u32::from(LIGHT.text_primary)
+        );
+    }
+
+    #[test]
+    fn theme_constructors_match_palettes() {
+        let light = Theme::light();
+        assert_eq!(light.appearance, Appearance::Light);
+        assert_eq!(u32::from(light.colors.bg_base), u32::from(LIGHT.bg_base));
+
+        let dark = Theme::dark();
+        assert_eq!(dark.appearance, Appearance::Dark);
+        assert_eq!(u32::from(dark.colors.bg_base), u32::from(DARK.bg_base));
     }
 }
