@@ -1,0 +1,39 @@
+#!/bin/sh
+# Vega pre-push hook — full quality gate (exec-guide §7).
+# Install (once per clone): git config core.hooksPath .githooks
+# Git passes the pushed ref list on stdin; it is deliberately not read.
+
+# Homebrew's cargo shadows the rustup proxy in the default PATH; prepend the
+# rustup bin dir so the toolchain pinned by rust-toolchain.toml is used.
+PATH="$HOME/.cargo/bin:$PATH"
+export PATH
+
+echo "[pre-push] cargo clippy --all-targets -- -D warnings"
+if ! cargo clippy --all-targets -- -D warnings; then
+    echo ""
+    echo "[pre-push] FAILED: clippy reported warnings."
+    echo "Fix the warnings above, commit, then push again."
+    echo "Emergency bypass (use sparingly): git push --no-verify"
+    exit 1
+fi
+
+echo "[pre-push] cargo test --workspace"
+if ! cargo test --workspace; then
+    echo ""
+    echo "[pre-push] FAILED: tests failed."
+    echo "Fix the failing tests above, commit, then push again."
+    echo "Emergency bypass (use sparingly): git push --no-verify"
+    exit 1
+fi
+
+echo "[pre-push] cargo build --workspace"
+if ! cargo build --workspace; then
+    echo ""
+    echo "[pre-push] FAILED: build failed."
+    echo "Fix the build errors above, commit, then push again."
+    echo "Emergency bypass (use sparingly): git push --no-verify"
+    exit 1
+fi
+
+echo "[pre-push] OK: all gates passed"
+exit 0

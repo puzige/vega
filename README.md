@@ -43,6 +43,40 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 本项目采用 **SDD（Spec-Driven Development）**：spec 先行，代码不允许先于 spec。
 参与开发前必读 [`AGENTS.md`](AGENTS.md) 和 [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md)。
 
+### 前置要求（macOS）
+
+- **完整 Xcode**：GPUI 编译 Metal 着色器需要 `metal` 工具，仅 Command Line Tools 不够。安装 Xcode 后切换开发目录：
+
+  ```sh
+  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+  # 若安装的是 Xcode-beta，则对应 /Applications/Xcode-beta.app/Contents/Developer
+  ```
+
+- **Rust（rustup）**：通过 [rustup](https://rustup.rs/) 安装；进入仓库后会自动按 [`rust-toolchain.toml`](rust-toolchain.toml) 下载并使用 1.98.0 工具链。
+
+### 安装本地质量门禁（每次新 clone 后执行一次）
+
+```sh
+git config core.hooksPath .githooks
+```
+
+commit / push 时自动执行验收底线（见 [exec-guide §7](docs/vega-exec-guide.md)）：
+
+| Hook | 检查 |
+|---|---|
+| `pre-commit` | `cargo fmt --all -- --check`（秒级快检查） |
+| `pre-push` | `cargo clippy --all-targets -- -D warnings` → `cargo test --workspace` → `cargo build --workspace` |
+
+**必须手动安装**：git 无法自动强制仓库内的 hooks。未执行上面这条命令时，commit / push 不会做任何检查，也没有任何提示——目前靠本地纪律 + 架构师验收兜底（云端 CI 延后引入，见 [phase1-plan §3.5](docs/vega-phase1-plan.md)）。
+
+### 构建与运行
+
+```sh
+cargo run -p vega
+```
+
+首次构建会通过 git 依赖拉取 Zed monorepo（约 1–3 GB 进入 `~/.cargo/git` 缓存）并编译 GPUI 依赖链，耗时 10 分钟量级，属正常现象；之后为增量构建。
+
 ## License
 
 TBD（私有开发中）
