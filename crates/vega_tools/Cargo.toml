@@ -1,0 +1,4 @@
+[package]
+name = "vega_tools"
+version.workspace = true
+edition.workspace = true

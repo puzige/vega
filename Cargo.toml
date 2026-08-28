@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/vega",
+    "crates/vega_ui",
+    "crates/vega_conversation",
+    "crates/vega_runtime",
+    "crates/vega_tools",
+    "crates/vega_markdown",
+    "crates/vega_store",
+    "crates/vega_token",
+    "crates/vega_theme",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+# 基础依赖（exec-guide §5 白名单）：版本精确锁定（=x.y.z），crate 内以 `workspace = true` 引用
+tokio = "=1.53.1"
+serde = "=1.0.229"
+serde_json = "=1.0.151"
+thiserror = "=2.0.20"
+tracing = "=0.1.44"
+tracing-subscriber = "=0.3.23"
+# 仅供 xtask 使用
+anyhow = "=1.0.104"

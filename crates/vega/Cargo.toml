@@ -1,0 +1,4 @@
+[package]
+name = "vega"
+version.workspace = true
+edition.workspace = true

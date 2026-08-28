@@ -1,0 +1,4 @@
+[package]
+name = "vega_conversation"
+version.workspace = true
+edition.workspace = true
