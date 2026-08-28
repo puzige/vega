@@ -2,3 +2,10 @@
 name = "xtask"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+# exec-guide §5 whitelist: anyhow is xtask-only; serde/serde_json serialize
+# the bench report JSON.
+anyhow = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

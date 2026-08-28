@@ -1,3 +1,5 @@
 target/
 .DS_Store
 *.log
+# xtask bench results are generated artifacts, not source (T04 / E4)
+bench/results/
