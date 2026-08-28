@@ -34,7 +34,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 ## 关键决策（详见 PRD）
 
-- **GUI**：GPUI（crates.io 锁定版起步 → vendor fork 演化）· **平台**：macOS First（Metal）
+- **GUI**：GPUI（Zed 官方仓库 git rev 锁定起步 → vendor fork 演化）· **平台**：macOS First（Metal）
 - **形态**：Agent 工作台，**不是 IDE**——代码只做 viewer + diff 审阅，编辑交接外部 IDE
 - **执行模型**：自研 Runtime 优先 + ACP 编排并存 · **Remote/SSH**：Phase 4 再说
 

@@ -1,19 +1,21 @@
 # ✦ Vega (北极星) — Native AI Agent Desktop PRD
 
-**✦ Vega PRD v0.3.1** · 7 项关键决策已锁定 · 2026-08-28
+**✦ Vega PRD v0.3.2** · 7 项关键决策已锁定 · 2026-08-29
 *Rust + GPU 原生 Agent 工作台 · 性能碾压 Electron，成本与质量透明可控*
 
 > Notion 源页面：https://app.notion.com/p/3caae0ca542b8056b086ee2e990d9b8a
 > 本文件为本地同步副本，以 Notion 为准。
 > v0.3 变更：定位从「AI Coding IDE」修正为「Agent 工作台（Agent Window）」，对标 WorkBuddy / Codex Desktop / Antigravity / ZCode。
 > v0.3.1 变更：基于五家竞品功能拆解（[vega-feature-teardown.md](vega-feature-teardown.md)）——Composer 补 Ask/Plan/Execute 三模式；A5 补 Checkpoint 回退；A7 补闲时任务；新增项目记忆；A10 差异化基准上调为「必须超越 ZCode 用量统计页」。
+> v0.3.2 变更（2026-08-29，人类批准）：D1 依赖来源修订——crates.io 发布线自 2025-10 停滞且无 `gpui_platform`，GPUI 起步来源改为 Zed 官方仓库 git rev 锁定；D1 实质（官方源、锁定可复现、单一来源、Metal）不变。
 
 ---
 
 ## 0. 已锁定决策 · Locked Decisions
 
 > 🔒 **D1 · GUI 框架 → GPUI**
-> 起步用官方 crates.io 发布版（`gpui` + `gpui_platform`，锁定版本 + 提交 Cargo.lock），获得 Metal 原生渲染能力。首次需要修改框架内部时再 vendor fork，逐步演化为 Vega 自有 UI 层。全依赖图禁止混用不同 GPUI 发行版。
+> 起步用 Zed 官方仓库 git 依赖（`gpui` + `gpui_platform`，rev 锁定 + 提交 Cargo.lock），获得 Metal 原生渲染能力。首次需要修改框架内部时再 vendor fork，逐步演化为 Vega 自有 UI 层。全依赖图禁止混用不同 GPUI 发行版。
+> （2026-08-29 修订：crates.io 发布线自 2025-10 停滞且无平台层拆分，`gpui_platform` 仅存在于官方 git 仓库；来源由 crates.io 改为 git rev 锁定，锁定可复现/单一来源等实质不变，人类批准。）
 
 > 🔒 **D2 · 平台策略 → macOS First**
 > Phase 1-3 仅支持 macOS，充分利用 Metal 后端成熟度和 Apple Silicon 性能优势。Windows/Linux 在 Phase 3+ 通过 wgpu 跨平台层适配。
@@ -333,4 +335,4 @@ macOS 优先，深度适配 Apple Silicon + Metal + ProMotion 120Hz。
 
 ---
 
-*✦ Vega PRD v0.3.1 · Agent Window · GPUI · macOS First · Runtime+ACP 双模 · Harness + Token 透明 · 2026-08-28*
+*✦ Vega PRD v0.3.2 · Agent Window · GPUI · macOS First · Runtime+ACP 双模 · Harness + Token 透明 · 2026-08-29*

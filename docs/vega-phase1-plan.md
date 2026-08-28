@@ -11,7 +11,8 @@
 ## 0. 关键工程决策
 
 ### E1 · GPUI 引入方式（沿用已确认方案）
-crates.io 锁定版（`gpui` + `gpui_platform`，`font-kit` feature）+ 提交 `Cargo.lock`。首次需改框架内部时再 vendor fork。验证：`cargo tree | grep gpui` 全图单一来源。
+Zed 官方仓库 git 依赖 rev 锁定（`gpui` + `gpui_platform`，`font-kit` feature）+ 提交 `Cargo.lock`。首次需改框架内部时再 vendor fork。验证：`cargo tree | grep gpui` 全图单一来源。
+> 2026-08-29 修订（人类批准）：原案为「crates.io 锁定版」——经查 crates.io 发布线自 2025-10 停滞（最新 0.2.2，2025-10-22）且为旧单 crate 形态（无平台层拆分），`gpui_platform` 仅存在于官方 git 仓库。改用 git rev 锁定，当前 rev = `9e9b13c5b6e3d2f1c3819eb8e96b6f8ab5e97aab`（2026-08-28 mainline），升级节奏月度一次、全依赖图同步换 rev，禁止混用来源。不开 `runtime_shaders`（有完整 Xcode 做编译期着色器编译）。
 
 ### E2 · 仓库形态
 独立 cargo workspace `vega`（不放 loom）。建议 `github.com/peanut996/vega`（private 起步）。

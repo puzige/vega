@@ -1,6 +1,6 @@
 # ✦ Vega — 执行层开发总纲（Executor's Constitution）
 
-**版本** v0.2 · 2026-08-29 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
+**版本** v0.3 · 2026-08-29 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
 **关联**：[vega-tech-spec-p1.md](vega-tech-spec-p1.md)（实现规格）· [vega-tech-risks.md](vega-tech-risks.md)（难点方案）· [vega-features.md](vega-features.md)（功能点 ID）· [vega-ui-spec.md](vega-ui-spec.md)（UI 准线）
 
 > 本文件是执行模型的**最高行为准则**。每个任务 prompt 都必须附本文件路径。任何与本文件冲突的"看起来更合理"的做法都是错的。
@@ -72,7 +72,7 @@
 
 ```
 基础: tokio, serde, serde_json, thiserror, tracing, tracing-subscriber, anyhow(仅 xtask)
-UI: gpui, gpui_platform (=锁定版本, font-kit)
+UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, gpui_platform features=[font-kit]; 禁第三方发行版、禁混用来源、不开 runtime_shaders)
 数据: rusqlite (bundled, WAL), ulid
 网络: reqwest (rustls), eventsource-stream, tokio-util, futures
 工具: ignore, regex, similar(diff), tree-sitter, pulldown-cmark, mdstream(待 spike 确认)
@@ -101,4 +101,4 @@ UI: gpui, gpui_platform (=锁定版本, font-kit)
 
 ---
 
-*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）。*
+*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）。*

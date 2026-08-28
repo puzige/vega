@@ -1,8 +1,9 @@
 # ✦ Vega — S1 任务卡（Sprint 1 · 脚手架 & 外壳骨架 · W1-2）
 
-**版本** v0.2 · 2026-08-29 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.3 · 2026-08-29 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 **S1 目标**（phase1-plan）：workspace 可编译运行、本地门禁绿、bench 骨架可报数、schema/keychain 落地、主题 token 就位。
 > v0.2 变更（2026-08-29，人类决策）：T03 由 GitHub Actions 云端 CI 改为**本地 Git Hooks 质量门禁**（防 macOS runner 费用；产品稳定后再评估上云）；DoD 对应调整。
+> v0.3 变更（2026-08-29，人类批准）：T02 GPUI 依赖来源改为 **zed 官方仓库 git rev 锁定**（`gpui_platform` 无 crates.io 发布版，详见 phase1-plan E1 修订）。
 
 ---
 
@@ -45,17 +46,18 @@ unwrap/expect 禁止出现在非测试代码；验收命令全绿才算完成。
 
 ## T02 · GPUI 空窗口（A1-01）
 
-- **前置**：T01 · **参考**：tech-spec §1；gpui crates.io README（Application/open_window 用法）；ui-spec §1
+- **前置**：T01 · **参考**：tech-spec §1；zed 仓库该 rev 下 `crates/gpui/examples/` 与 `crates/gpui_platform/src/`（入口/open_window/WindowOptions 实际用法）；ui-spec §1
 - **目标**：Metal 渲染的原生窗口，标题 "Vega"，最小尺寸 960×600，深色背景填充（token 值）
 - **产出**：
-  - `crates/vega/Cargo.toml` 增加 `gpui` + `gpui_platform = { features = ["font-kit"] }`（**版本锁定**，Cargo.lock 提交）
-  - `main.rs`：`gpui_platform::application().run(...)` 打开主窗口，渲染一个居中文本 "✦ Vega"
+  - workspace `[workspace.dependencies]` 增加 `gpui` + `gpui_platform`：git 依赖 `https://github.com/zed-industries/zed`，**rev 锁定**（见 phase1-plan E1 修订），`gpui_platform` 带 `features = ["font-kit"]`（不开 runtime_shaders）；`crates/vega` 引 gpui + gpui_platform、`crates/vega_theme` 引 gpui（均 `workspace = true`）；Cargo.lock 提交
+  - `main.rs`：gpui 应用入口（以该 rev 实际 API 为准——先读该 rev 的示例代码再写）打开主窗口，渲染一个居中文本 "✦ Vega"
   - `crates/vega_theme/src/lib.rs`：定义 ui-spec §2 全部色彩 token 的结构体（Light/Dark 双套常量），本卡先用 `bg-base` 填窗口
 - **验收**：
   - `cargo run -p vega` 窗口打开、可关闭、Cmd+Q 退出
-  - `cargo tree | grep gpui` 仅显示单一 gpui 来源（无第二个发行版）
+  - `cargo tree | grep gpui` 仅显示单一 gpui 来源（同一 git rev，无第二个发行版）
   - `rg "#[0-9a-fA-F]{6}" crates/ --glob '!vega_theme'` 零命中（色值只许在 theme crate）
-- **禁区**：不引入任何第三方 gpui 发行版（gpui-box/gpui-standalone 等）；不写布局组件
+- **禁区**：不引入任何第三方 gpui 发行版（gpui-box/gpui-standalone/unofficial 等）；不写布局组件
+> v0.3 修订（2026-08-29，人类批准）：`gpui_platform` 无 crates.io 发布版，依赖来源改为 zed 官方仓库 git rev 锁定（见 phase1-plan E1 修订）。
 
 ## T03 · 本地质量门禁（Git Hooks）
 
@@ -65,7 +67,7 @@ unwrap/expect 禁止出现在非测试代码；验收命令全绿才算完成。
   - `.githooks/pre-commit`：`cargo fmt --all -- --check`（秒级快检查）
   - `.githooks/pre-push`：`cargo clippy --all-targets -- -D warnings` → `cargo test --workspace` → `cargo build --workspace`（push 前全量门禁）
   - 安装机制：README「开发」节写明一次性执行 `git config core.hooksPath .githooks`；未安装时无提示风险写明（本地纪律 + 架构师验收兜底）
-  - README 更新：hooks 安装步骤 + Xcode CLT / Rust 前置说明（支撑 DoD「新机器 5 分钟跑通」）
+  - README 更新：hooks 安装步骤 + 前置环境说明（完整 Xcode——Metal 着色器编译所需、Rust 工具链、gpui git 依赖首次拉取耗时提示；支撑 DoD「新机器 5 分钟跑通」）
 - **验收**：
   - 安装 hooks 后，故意引入未格式化代码 → `git commit` 被拒绝；修复后可提交
   - 故意引入 clippy warning → `git push` 被拒绝；修复后可推送
