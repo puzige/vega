@@ -1,0 +1,3 @@
+# `cargo xtask <subcommand>` runs the xtask workspace member (T04 / E4).
+[alias]
+xtask = "run -p xtask --"
