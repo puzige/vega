@@ -33,6 +33,12 @@
 //! lands, a `From<rusqlite::Error>` bridge into `VegaError::Store` will be
 //! added at the `vega_conversation` layer.
 
+//! Module layout: `config` owns `$HOME/.vega/config.toml`, `keystore` owns
+//! Keychain-backed credentials.
+
+pub mod config;
+pub mod keystore;
+
 use std::path::Path;
 
 use rusqlite::Connection;

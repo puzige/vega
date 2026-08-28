@@ -27,6 +27,10 @@ tracing = "=0.1.44"
 tracing-subscriber = "=0.3.23"
 # 数据依赖（exec-guide §5 白名单）：rusqlite 在 vega_store 内启用 `features = ["bundled"]`
 rusqlite = "=0.40.2"
+# 配置解析（exec-guide §5 白名单，2026-08-29 人类批准）
+toml = "=1.1.4"
+# 安全依赖（exec-guide §5 白名单）：default feature "v1" 在 macOS 即 Keychain
+keyring = "=4.1.6"
 # workspace 内部 crate
 vega_theme = { path = "crates/vega_theme" }
 # 仅供 xtask 使用

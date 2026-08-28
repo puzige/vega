@@ -71,7 +71,7 @@
 ## 5. 依赖白名单（S1-S8，新增需批准）
 
 ```
-基础: tokio, serde, serde_json, thiserror, tracing, tracing-subscriber, anyhow(仅 xtask)
+基础: tokio, serde, serde_json, thiserror, tracing, tracing-subscriber, toml(=1.1.4), anyhow(仅 xtask)
 UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, gpui_platform features=[font-kit]; 禁第三方发行版、禁混用来源、不开 runtime_shaders)
 数据: rusqlite (bundled, WAL), ulid
 网络: reqwest (rustls), eventsource-stream, tokio-util, futures
@@ -101,4 +101,4 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ---
 
-*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）。*
+*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）；v0.4 (2026-08-29) 基础白名单新增 toml（config.toml 解析，人类批准）。*
