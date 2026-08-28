@@ -8,3 +8,4 @@ gpui.workspace = true
 gpui_platform.workspace = true
 tracing.workspace = true
 vega_theme.workspace = true
+vega_ui.workspace = true

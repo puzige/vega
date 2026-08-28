@@ -32,7 +32,9 @@ toml = "=1.1.4"
 # 安全依赖（exec-guide §5 白名单）：default feature "v1" 在 macOS 即 Keychain
 keyring = "=4.1.6"
 # workspace 内部 crate
+vega_store = { path = "crates/vega_store" }
 vega_theme = { path = "crates/vega_theme" }
+vega_ui = { path = "crates/vega_ui" }
 # 仅供 xtask 使用
 anyhow = "=1.0.104"
 # 仅供测试使用（dev-dependency）
