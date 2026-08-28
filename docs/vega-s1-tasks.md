@@ -1,7 +1,8 @@
 # ✦ Vega — S1 任务卡（Sprint 1 · 脚手架 & 外壳骨架 · W1-2）
 
-**版本** v0.1 · 2026-08-29 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
-**S1 目标**（phase1-plan）：workspace 可编译运行、CI 绿、bench 骨架可报数、schema/keychain 落地、主题 token 就位。
+**版本** v0.2 · 2026-08-29 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**S1 目标**（phase1-plan）：workspace 可编译运行、本地门禁绿、bench 骨架可报数、schema/keychain 落地、主题 token 就位。
+> v0.2 变更（2026-08-29，人类决策）：T03 由 GitHub Actions 云端 CI 改为**本地 Git Hooks 质量门禁**（防 macOS runner 费用；产品稳定后再评估上云）；DoD 对应调整。
 
 ---
 
@@ -56,15 +57,20 @@ unwrap/expect 禁止出现在非测试代码；验收命令全绿才算完成。
   - `rg "#[0-9a-fA-F]{6}" crates/ --glob '!vega_theme'` 零命中（色值只许在 theme crate）
 - **禁区**：不引入任何第三方 gpui 发行版（gpui-box/gpui-standalone 等）；不写布局组件
 
-## T03 · CI 管线
+## T03 · 本地质量门禁（Git Hooks）
 
-- **前置**：T01 · **参考**：tech-spec §3.5（phase1-plan CI 节）
-- **产出**：`.github/workflows/ci.yml`
-  - runner `macos-14`；触发：push + PR
-  - jobs：`fmt`（cargo fmt --check）→ `clippy`（-D warnings）→ `test`（cargo test --workspace）→ `build`（release）
-  - `Swatinem/rust-cache@v2` 缓存；Xcode CLT 检查步骤
-- **验收**：在 GitHub 上（或 `act` 本地）workflow 全绿；README 加 CI badge
-- **禁区**：不加 CD/发布/notarize（Phase 5）
+- **前置**：T01 · **参考**：phase1-plan §3.5（修订注）；exec-guide §7（验收协议）
+- **目标**：无云端依赖的本地质量门禁——git hooks 在 commit/push 时强制执行验收底线四条（2026-08-29 决策：暂不上 GitHub Actions，防 macOS runner 费用；产品稳定后再按 phase1-plan §3.5 原案上云）
+- **产出**：
+  - `.githooks/pre-commit`：`cargo fmt --all -- --check`（秒级快检查）
+  - `.githooks/pre-push`：`cargo clippy --all-targets -- -D warnings` → `cargo test --workspace` → `cargo build --workspace`（push 前全量门禁）
+  - 安装机制：README「开发」节写明一次性执行 `git config core.hooksPath .githooks`；未安装时无提示风险写明（本地纪律 + 架构师验收兜底）
+  - README 更新：hooks 安装步骤 + Xcode CLT / Rust 前置说明（支撑 DoD「新机器 5 分钟跑通」）
+- **验收**：
+  - 安装 hooks 后，故意引入未格式化代码 → `git commit` 被拒绝；修复后可提交
+  - 故意引入 clippy warning → `git push` 被拒绝；修复后可推送
+  - `git config core.hooksPath .githooks` 后 hooks 生效（可用临时提交验证后还原）
+- **禁区**：不创建 `.github/workflows/`；不做云端 CD/notarize（Phase 5 前重新评估）
 
 ## T04 · xtask bench 骨架（E4）
 
@@ -132,7 +138,7 @@ unwrap/expect 禁止出现在非测试代码；验收命令全绿才算完成。
 
 ## S1 完成定义（DoD，Sprint 验收）
 
-- [ ] T01-T08 全绿；CI 在 master 上绿
+- [ ] T01-T08 全绿；本地 hooks 门禁在 master 上可用（云端 CI 延后，见 T03 v0.2 变更）
 - [ ] `cargo xtask bench` 出数（占位指标允许 not implemented）
 - [ ] 新机器 clone → `cargo run -p vega` 5 分钟内跑起来（README 写清 Xcode CLT 前置）
 - [ ] exec-guide §3 红线全过（架构师走查）

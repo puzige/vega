@@ -22,8 +22,9 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 [vega-features.md](docs/vega-features.md)）
 - 小步提交，一个任务卡 ≤3 个 commit
 - PR 必须附：验收命令原始输出 + 与 spec 的偏离说明（必须为无）
+- 合并方式：squash merge，合并后删除功能分支（2026-08-29 决策）
 
-## 验收底线（CI 强制）
+## 验收底线（本地 hooks 强制；云端 CI 延后）
 
 ```
 cargo fmt --all -- --check
@@ -31,6 +32,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+门禁由本地 git hooks 执行（`.githooks/`，见 [vega-s1-tasks.md](docs/vega-s1-tasks.md) T03；一次性安装 `git config core.hooksPath .githooks`）。
 外加 exec-guide §3 红线检查（`cargo tree` 依赖方向、色值硬编码 grep 等）。
 
 ## 架构红线（速记，详见 exec-guide）

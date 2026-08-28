@@ -1,6 +1,6 @@
 # ✦ Vega — 执行层开发总纲（Executor's Constitution）
 
-**版本** v0.1 · 2026-08-29 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
+**版本** v0.2 · 2026-08-29 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
 **关联**：[vega-tech-spec-p1.md](vega-tech-spec-p1.md)（实现规格）· [vega-tech-risks.md](vega-tech-risks.md)（难点方案）· [vega-features.md](vega-features.md)（功能点 ID）· [vega-ui-spec.md](vega-ui-spec.md)（UI 准线）
 
 > 本文件是执行模型的**最高行为准则**。每个任务 prompt 都必须附本文件路径。任何与本文件冲突的"看起来更合理"的做法都是错的。
@@ -94,10 +94,11 @@ UI: gpui, gpui_platform (=锁定版本, font-kit)
 ## 7. 验收协议（每个任务卡通用）
 
 - **底线**：`cargo fmt --check` + `cargo clippy -D warnings` + `cargo test --workspace` 全绿
+- **门禁执行**（2026-08-29 决策）：底线四条由本地 git hooks 强制（pre-commit=fmt；pre-push=clippy/test/build，见 s1-tasks T03）；云端 CI 待产品稳定后再引入。hooks 是纪律辅助，架构师验收永远是最终门禁
 - **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
 - **报告**：贴验收命令原始输出，不许概述"通过了"
 
 ---
 
-*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版。*
+*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）。*

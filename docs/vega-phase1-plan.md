@@ -104,6 +104,7 @@ loop {
 
 ### 3.5 CI
 `macos-14` runner；fmt → clippy(-D warnings) → test（含 headless runtime 测试）→ release build → bench 回归（告警不 block）。`Swatinem/rust-cache`。
+> 2026-08-29 修订：S1 起先落地**本地 git hooks 门禁**（pre-commit/pre-push，见 vega-s1-tasks T03 v0.2），云端 CI 延后至产品稳定——防 macOS runner 费用。届时按本节原案上云。
 
 ---
 
