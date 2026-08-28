@@ -2,3 +2,9 @@
 name = "vega"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+tracing.workspace = true
+vega_theme.workspace = true
