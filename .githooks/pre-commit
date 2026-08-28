@@ -1,0 +1,20 @@
+#!/bin/sh
+# Vega pre-commit hook — fast format gate (exec-guide §7).
+# Install (once per clone): git config core.hooksPath .githooks
+
+# Homebrew's cargo shadows the rustup proxy in the default PATH; prepend the
+# rustup bin dir so the toolchain pinned by rust-toolchain.toml is used.
+PATH="$HOME/.cargo/bin:$PATH"
+export PATH
+
+echo "[pre-commit] cargo fmt --all -- --check"
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "[pre-commit] FAILED: working tree is not rustfmt-clean."
+    echo "Fix: run 'cargo fmt --all', re-stage, then commit again."
+    echo "Emergency bypass (use sparingly): git commit --no-verify"
+    exit 1
+fi
+
+echo "[pre-commit] OK"
+exit 0
