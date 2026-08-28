@@ -5727,16 +5727,13 @@ version = "0.1.0"
 name = "vega_store"
 version = "0.1.0"
 dependencies = [
-<<<<<<< HEAD
- "rusqlite",
- "tempfile",
-=======
  "keyring",
  "keyring-core",
+ "rusqlite",
  "serde",
+ "tempfile",
  "thiserror 2.0.20",
  "toml 1.1.4+spec-1.1.0",
->>>>>>> 243357b (feat(A1-10): add toml/keyring workspace deps and whitelist toml)
 ]
 
 [[package]]
