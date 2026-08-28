@@ -5709,6 +5709,7 @@ dependencies = [
  "gpui_platform",
  "tracing",
  "vega_theme",
+ "vega_ui",
 ]
 
 [[package]]
@@ -5754,6 +5755,11 @@ version = "0.1.0"
 [[package]]
 name = "vega_ui"
 version = "0.1.0"
+dependencies = [
+ "gpui",
+ "vega_store",
+ "vega_theme",
+]
 
 [[package]]
 name = "version_check"

@@ -2,3 +2,8 @@
 name = "vega_ui"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+gpui.workspace = true
+vega_store.workspace = true
+vega_theme.workspace = true
