@@ -104,6 +104,7 @@ CREATE TABLE permissions (        -- 「总是允许」的规则记忆
 ```
 
 迁移机制：`vega_store::migrate()` 启动时跑，`PRAGMA user_version` 记录版本，递增 SQL 文件 `migrations/0001_init.sql…`。
+> 数据库文件路径（2026-08-29 S2-T10 补定义）：`$HOME/.vega/vega.db`（沿用 §6 的 `~/.vega/` 目录约定）。
 
 ## 3. 核心类型（vega_conversation::types，S1 定稿）
 
