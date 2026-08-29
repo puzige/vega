@@ -34,10 +34,12 @@
 //! added at the `vega_conversation` layer.
 
 //! Module layout: `config` owns `$HOME/.vega/config.toml`, `keystore` owns
-//! Keychain-backed credentials.
+//! Keychain-backed credentials; `projects` / `git_detect` are T10 additions.
 
 pub mod config;
+pub mod git_detect;
 pub mod keystore;
+pub mod projects;
 
 use std::path::Path;
 

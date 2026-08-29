@@ -27,6 +27,8 @@ tracing = "=0.1.44"
 tracing-subscriber = "=0.3.23"
 # 数据依赖（exec-guide §5 白名单）：rusqlite 在 vega_store 内启用 `features = ["bundled"]`
 rusqlite = "=0.40.2"
+# 项目 id（tech-spec §2 projects.id = ulid）
+ulid = "=3.0.0"
 # 配置解析（exec-guide §5 白名单，2026-08-29 人类批准）
 toml = "=1.1.4"
 # 安全依赖（exec-guide §5 白名单）：default feature "v1" 在 macOS 即 Keychain

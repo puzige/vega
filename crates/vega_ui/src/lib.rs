@@ -1,6 +1,7 @@
-//! GPUI views: sidebar shell (T09), settings skeleton (A1-10), and shared
-//! input components.
+//! GPUI views: sidebar shell (T09), projects (A1-03, temporary mount),
+//! settings skeleton (A1-10), and shared input components.
 
+pub mod projects;
 pub mod settings;
 pub mod sidebar;
 pub mod text_input;
