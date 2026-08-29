@@ -5,6 +5,8 @@ pub mod projects;
 pub mod settings;
 pub mod sidebar;
 pub mod text_input;
+// T11（A1-02）：临时会话视图，T12 集成时归位侧边栏。
+pub mod threads;
 
 use gpui::{App, KeyBinding};
 

@@ -5813,6 +5813,7 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "tracing",
+ "vega_conversation",
  "vega_store",
  "vega_theme",
 ]

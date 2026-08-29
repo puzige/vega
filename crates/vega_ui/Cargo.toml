@@ -7,4 +7,5 @@ edition.workspace = true
 gpui.workspace = true
 tracing.workspace = true
 vega_store.workspace = true
+vega_conversation.workspace = true
 vega_theme.workspace = true
