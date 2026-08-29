@@ -29,10 +29,10 @@ use gpui::prelude::*;
 use gpui::{
     App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, div, point, px, uniform_list,
 };
-use vega_markdown::MarkdownStream;
+use vega_markdown::{MarkdownStream, split_deltas};
 use vega_theme::Theme;
 
-use super::{INJECT_TICK, StreamCounters, StreamModel, build_rows, sample_document, split_deltas};
+use super::{INJECT_TICK, StreamCounters, StreamModel, build_rows, sample_document};
 
 /// Probe phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,35 +1,52 @@
-//! Virtualized conversation stream (S3-T17): renders a
-//! [`vega_markdown::MarkdownStream`] as a `uniform_list` of uniform-height
-//! rows with anchored tail-following and a temporary demo injector.
+//! Virtualized conversation stream (S3-T18): message-block UI over a
+//! [`vega_markdown::MarkdownStream`] — a `uniform_list` of uniform-height
+//! rows with anchored tail-following, a Composer (multi-line input + send)
+//! for local user echoes, and the S3 demo injection driven by the public
+//! mock replayer ([`vega_markdown::MockReplay`]).
 //!
 //! Layering (tech-spec §5.1/§5.3 — the self-built parts of this card):
 //!
 //! ```text
-//! MarkdownStream.append(delta) ─▶ snapshot()
+//! MockReplay (mock 回放器，vega_markdown) ─▶ MarkdownStream.append(delta)
 //!     ├─ committed blocks (BlockId stable, frozen) ─▶ StreamModel diff by
 //!     │                                              (block_id, version):
 //!     │                                              only new/invalidated
 //!     │                                              blocks materialize
 //!     │                                              into StreamLines
-//!     └─ pending tail block                        ─▶ light re-flatten
-//!        uniform_list(range) ─▶ per-frame rows built by cloning StreamLines
-//!                               (frozen rows never re-materialize — P3)
+//!     │                                              (committed code blocks
+//!     │                                              highlight via T16)
+//!     └─ pending tail block                        ─▶ light re-flatten,
+//!                                                    plain monospace
+//! uniform_list(range) ─▶ per-frame rows built by cloning StreamLines
+//!                        (frozen rows never re-materialize — P3)
 //! ```
 //!
-//! - **差量渲染**: [`StreamModel::sync`] materializes a committed block exactly
-//!   once per `(block_id, version)`; frozen blocks keep their [`StreamLine`]s
-//!   for the lifetime of the stream, so streaming appends only touch the tail
-//!   (spike counter method: frozen re-materializations stay 0).
+//! - **消息块结构 (T18)**: the stream is a list of [`StreamEntry`]s — user
+//!   messages (bg_elevated rounded card + 「你」 label, 独立渲染路径挂
+//!   StreamSnapshot 外侧，架构师裁决) alternating with assistant turns (no
+//!   card, direct markdown flow). One `MarkdownStream` per assistant turn.
+//! - **差量渲染**: each assistant turn's [`StreamModel::sync`] materializes a
+//!   committed block exactly once per `(block_id, version)`; frozen blocks
+//!   keep their [`StreamLine`]s for the lifetime of the stream, so streaming
+//!   appends only touch the tail (spike counter method: frozen
+//!   re-materializations stay 0).
+//! - **高亮整合 (T18)**: committed code blocks map [`HighlightSpan`] kinds
+//!   onto the existing ui-spec §2 tokens (no new color values; the mapping
+//!   table is [`code_token_style`]); pending/unclosed fences and unsupported
+//!   languages degrade to plain monospace (tech-spec §5.1).
 //! - **锚定跟随 (P4)**: pure state machine [`anchor::step`] — pinned at the
 //!   bottom it follows new content; scrolling up more than one viewport
 //!   detaches; returning to the bottom re-engages.
+//! - **Composer (T18 最小版)**: fixed 3-row multi-line [`TextInput`] + send
+//!   button; Cmd+Enter and the button share one submit handler; empty input
+//!   disables send. A send appends a user entry (local echo, no LLM).
+//! - **动效禁令 (tech-spec §5.4)**: streaming nodes get NO entrance
+//!   animation — none is introduced anywhere in this pipeline.
 //! - Rows are single logical lines at a fixed height (the `uniform_list`
 //!   contract); long lines truncate. Block types map per ui-spec §3 tokens.
-//! - **演示注入**: the header button feeds the built-in ~200-block sample
-//!   document into the stream at ~500 δ/s (S3 临时，T18 换 mock 回放器).
 //!
 //! The stream is memory-only (S3 has no message persistence): opening a
-//! thread constructs an empty [`MarkdownStream`].
+//! thread constructs empty entries; restarting clears the conversation.
 
 pub mod bench;
 
@@ -40,17 +57,20 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, FontWeight, MouseButton, MouseUpEvent, Render, Window, div, px,
-    uniform_list,
+    AnyElement, App, Context, Entity, FontWeight, MouseButton, MouseUpEvent, Render, Rgba, Window,
+    actions, div, px, uniform_list,
 };
 use vega_conversation::types::Thread;
 use vega_markdown::{
-    BlockView, Inline, ListBlock, MarkdownStream, RenderNode, StreamSnapshot, TableAlignment,
-    TableBlock,
+    BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
+    RenderNode, StreamSnapshot, TableAlignment, TableBlock,
 };
 use vega_theme::{ThemeColors, Typography, theme};
 
 use crate::sidebar::CONTENT_MIN_PADDING;
+use crate::text_input::TextInput;
+
+actions!(vega_conversation_stream, [SendMessage]);
 
 /// Uniform row height (logical px). A `uniform_list` requires one fixed item
 /// height for every row; 24px comfortably fits the 14px/1.6 message body line
@@ -65,6 +85,10 @@ pub(crate) const ANCHOR_EPSILON_PX: f32 = 1.0;
 /// `INJECT_RATE × elapsed` (≈500 δ/s 任务卡口径，自校正抵消主线程抖动).
 const INJECT_TICK: Duration = Duration::from_millis(16);
 const INJECT_RATE: usize = 500;
+
+/// Composer visible rows (T18 最小版固定 3 行；ui-spec §4.4 的 1~8 行自适应
+/// 高度后置，任务卡允许).
+const COMPOSER_ROWS: usize = 3;
 
 /// Monospace family for code rows (ui-spec §3 代码等宽档位；本机 macOS 以
 /// Menlo 承担，spike 探针同款).
@@ -161,6 +185,15 @@ pub(crate) mod anchor {
 
 // ─── render instructions: RenderNode → StreamLine mapping (§5.3) ─────────────
 
+/// Whether a block's code fences may be highlighted (S3-T18 高亮整合策略):
+/// committed blocks go through the T16 tree-sitter query; the pending tail
+/// (unclosed fence) degrades to plain monospace (tech-spec §5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockOrigin {
+    Committed,
+    Pending,
+}
+
 /// Inline span style (the markdown inline subset this card maps).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpanStyle {
@@ -172,6 +205,56 @@ pub(crate) enum SpanStyle {
     Code,
     /// Link label: underlined, secondary color.
     Link,
+    /// Code token from the T16 highlighter (monospace row; the token →
+    /// theme mapping is [`code_token_style`]).
+    Token(HighlightKind),
+}
+
+/// One resolved code-token style: token color + weight + italic.
+struct TokenStyle {
+    color: Rgba,
+    weight: FontWeight,
+    italic: bool,
+}
+
+/// S3-T18 高亮整合的**唯一映射表**：HighlightKind → 既有 ui-spec §2 色值
+/// token（无新色值）：Keyword/Type → text_primary 加粗，String → success，
+/// Comment → text_tertiary 斜体，Number → warning，其余 → text_primary。
+fn code_token_style(kind: HighlightKind, colors: &ThemeColors) -> TokenStyle {
+    match kind {
+        HighlightKind::Keyword | HighlightKind::Type => TokenStyle {
+            color: colors.text_primary,
+            weight: FontWeight::BOLD,
+            italic: false,
+        },
+        HighlightKind::String => TokenStyle {
+            color: colors.success,
+            weight: FontWeight::NORMAL,
+            italic: false,
+        },
+        HighlightKind::Comment => TokenStyle {
+            color: colors.text_tertiary,
+            weight: FontWeight::NORMAL,
+            italic: true,
+        },
+        HighlightKind::Number => TokenStyle {
+            color: colors.warning,
+            weight: FontWeight::NORMAL,
+            italic: false,
+        },
+        HighlightKind::Function
+        | HighlightKind::Operator
+        | HighlightKind::Punctuation
+        | HighlightKind::Variable
+        | HighlightKind::Property
+        | HighlightKind::Constant
+        | HighlightKind::Escape
+        | HighlightKind::Attribute => TokenStyle {
+            color: colors.text_primary,
+            weight: FontWeight::NORMAL,
+            italic: false,
+        },
+    }
 }
 
 /// One styled text run inside a row.
@@ -198,6 +281,16 @@ pub(crate) enum LineKind {
     Quote,
     /// Thematic break (`---`).
     Rule,
+    /// User message label row (「你」标记，卡片上方).
+    UserLabel,
+    /// User message content line inside the bg_elevated card; the flags mark
+    /// the first/last line for top/bottom rounding and border edges.
+    UserLine {
+        first: bool,
+        last: bool,
+    },
+    /// Blank spacer row between message blocks.
+    Spacer,
 }
 
 /// One uniform-height display line. Produced once per `(block_id, version)`
@@ -298,15 +391,26 @@ fn coalesce(spans: Vec<StreamSpan>) -> Vec<StreamSpan> {
 
 /// Flattens one materialized block (committed or pending) into
 /// [`StreamLine`]s — the RenderNode → row mapping (§5.3, 纯函数可测).
-pub(crate) fn flatten_nodes(block_id: u64, nodes: &[RenderNode]) -> Vec<StreamLine> {
+/// `origin` decides whether committed code fences may be highlighted.
+pub(crate) fn flatten_nodes(
+    block_id: u64,
+    nodes: &[RenderNode],
+    origin: BlockOrigin,
+) -> Vec<StreamLine> {
     let mut lines = Vec::new();
     for node in nodes {
-        flatten_node(block_id, node, 0, &mut lines);
+        flatten_node(block_id, node, 0, origin, &mut lines);
     }
     lines
 }
 
-fn flatten_node(block_id: u64, node: &RenderNode, depth: usize, out: &mut Vec<StreamLine>) {
+fn flatten_node(
+    block_id: u64,
+    node: &RenderNode,
+    depth: usize,
+    origin: BlockOrigin,
+    out: &mut Vec<StreamLine>,
+) {
     match node {
         RenderNode::Paragraph { spans } => {
             let mut inline = Vec::new();
@@ -330,28 +434,42 @@ fn flatten_node(block_id: u64, node: &RenderNode, depth: usize, out: &mut Vec<St
             line.spans = coalesce(inline);
             out.push(line);
         }
-        RenderNode::CodeBlock { code, .. } => {
-            // 本卡纯文本等宽渲染（T16 高亮由 T18 整合）：逐物理行一行，
-            // 保留代码缩进；仅吞掉尾换行产生的末尾空行。
-            let mut code_lines: Vec<&str> = code.split('\n').collect();
-            if code_lines.last().is_some_and(|last| last.is_empty()) {
-                code_lines.pop();
-            }
-            for code_line in code_lines {
+        RenderNode::CodeBlock { language, code } => {
+            // T18 高亮整合：committed 块按语言走 T16 tree-sitter 高亮；
+            // pending（未闭合 fence）/未支持语言降级纯文本等宽（§5.1）。
+            let highlighted = match origin {
+                BlockOrigin::Committed => language
+                    .as_deref()
+                    .and_then(|language| vega_markdown::highlight(code, language)),
+                BlockOrigin::Pending => None,
+            };
+            // 逐物理行一行，保留代码缩进；仅吞掉尾换行产生的末尾空行。
+            let raw: Vec<&str> = code.split('\n').collect();
+            let mut offset = 0usize;
+            let total = raw.len();
+            for (index, code_line) in raw.iter().enumerate() {
+                if index + 1 == total && code_line.is_empty() {
+                    break;
+                }
+                let line_start = offset;
+                let line_end = offset + code_line.len();
                 let mut line = StreamLine::new(block_id, LineKind::Code);
                 line.depth = depth;
-                line.spans.push(StreamSpan {
-                    text: code_line.to_string(),
-                    style: SpanStyle::Plain,
-                });
+                line.spans = coalesce(code_line_spans(
+                    code,
+                    line_start,
+                    line_end,
+                    highlighted.as_deref(),
+                ));
                 out.push(line);
+                offset = line_end + 1; // skip the '\n'
             }
         }
-        RenderNode::List(list) => flatten_list(block_id, list, depth, out),
+        RenderNode::List(list) => flatten_list(block_id, list, depth, origin, out),
         RenderNode::BlockQuote { children } => {
             let start = out.len();
             for child in children {
-                flatten_node(block_id, child, depth, out);
+                flatten_node(block_id, child, depth, origin, out);
             }
             for line in &mut out[start..] {
                 line.kind = LineKind::Quote;
@@ -362,7 +480,57 @@ fn flatten_node(block_id: u64, node: &RenderNode, depth: usize, out: &mut Vec<St
     }
 }
 
-fn flatten_list(block_id: u64, list: &ListBlock, depth: usize, out: &mut Vec<StreamLine>) {
+/// Slices the block-level highlight spans onto one code line `[start, end)`:
+/// covered runs become [`SpanStyle::Token`], gaps stay plain (高亮映射的行
+/// 切片；spans 有序且不重叠，切片保持顺序).
+fn code_line_spans(
+    code: &str,
+    start: usize,
+    end: usize,
+    highlighted: Option<&[HighlightSpan]>,
+) -> Vec<StreamSpan> {
+    let Some(highlighted) = highlighted else {
+        return vec![StreamSpan {
+            text: code[start..end].to_string(),
+            style: SpanStyle::Plain,
+        }];
+    };
+    let mut spans = Vec::new();
+    let mut cursor = start;
+    for span in highlighted {
+        let span_start = span.start_byte.max(start);
+        let span_end = span.end_byte.min(end);
+        if span_start >= span_end {
+            continue;
+        }
+        if span_start > cursor {
+            spans.push(StreamSpan {
+                text: code[cursor..span_start].to_string(),
+                style: SpanStyle::Plain,
+            });
+        }
+        spans.push(StreamSpan {
+            text: code[span_start..span_end].to_string(),
+            style: SpanStyle::Token(span.kind),
+        });
+        cursor = span_end;
+    }
+    if cursor < end {
+        spans.push(StreamSpan {
+            text: code[cursor..end].to_string(),
+            style: SpanStyle::Plain,
+        });
+    }
+    spans
+}
+
+fn flatten_list(
+    block_id: u64,
+    list: &ListBlock,
+    depth: usize,
+    origin: BlockOrigin,
+    out: &mut Vec<StreamLine>,
+) {
     for (index, item) in list.items.iter().enumerate() {
         let marker = if list.ordered {
             format!("{}.", list.start + index as u64)
@@ -373,8 +541,8 @@ fn flatten_list(block_id: u64, list: &ListBlock, depth: usize, out: &mut Vec<Str
         for child in &item.children {
             match child {
                 // 嵌套列表携带 depth+1（§5.3 嵌套列表分支）。
-                RenderNode::List(nested) => flatten_list(block_id, nested, depth + 1, out),
-                other => flatten_node(block_id, other, depth, out),
+                RenderNode::List(nested) => flatten_list(block_id, nested, depth + 1, origin, out),
+                other => flatten_node(block_id, other, depth, origin, out),
             }
         }
         if let Some(first) = out.get_mut(start) {
@@ -538,6 +706,13 @@ impl StreamModel {
         self.committed_lines.len() + self.pending_lines.len()
     }
 
+    /// Renders the rows in `range` (per-frame: clone cached lines only, P3).
+    pub(crate) fn rows_in(&self, range: Range<usize>, colors: &ThemeColors) -> Vec<AnyElement> {
+        range
+            .filter_map(|index| self.row(index).map(|line| render_row(line, colors)))
+            .collect()
+    }
+
     /// Row accessor for `uniform_list`'s range callback.
     pub(crate) fn row(&self, index: usize) -> Option<&StreamLine> {
         let committed = self.committed_lines.len();
@@ -620,7 +795,7 @@ impl StreamModel {
         if pending_key != self.pending_key {
             self.pending_lines = snapshot
                 .pending
-                .map(|pending| flatten_nodes(pending.block_id, pending.nodes))
+                .map(|pending| flatten_nodes(pending.block_id, pending.nodes, BlockOrigin::Pending))
                 .unwrap_or_default();
             if snapshot.pending.is_some() {
                 counters
@@ -648,7 +823,7 @@ impl StreamModel {
                 counters
                     .frozen_rematerializations
                     .fetch_add(1, Ordering::Relaxed);
-                let lines = flatten_nodes(block.block_id, block.nodes);
+                let lines = flatten_nodes(block.block_id, block.nodes, BlockOrigin::Committed);
                 self.cache.insert(
                     block.block_id,
                     CachedBlock {
@@ -662,7 +837,7 @@ impl StreamModel {
                 counters
                     .committed_materializations
                     .fetch_add(1, Ordering::Relaxed);
-                let lines = flatten_nodes(block.block_id, block.nodes);
+                let lines = flatten_nodes(block.block_id, block.nodes, BlockOrigin::Committed);
                 self.cache.insert(
                     block.block_id,
                     CachedBlock {
@@ -676,10 +851,108 @@ impl StreamModel {
     }
 }
 
+// ─── message entries (T18 消息块结构) ────────────────────────────────────────
+
+/// One conversation entry: a local user echo or one assistant markdown turn.
+///
+/// 架构师裁决（T18 裁决①）：user 消息块用「独立渲染路径挂 StreamSnapshot
+/// 外侧」实现 —— 不进入 MarkdownStream，T15 管线零侵入；每段 assistant 流
+/// 拥有独立的 final 终结语义（回放结束 `finish()`，tech-spec §5.4）。
+pub(crate) enum StreamEntry {
+    /// Local user echo (Composer send): static rows, materialized once.
+    User { lines: Vec<StreamLine> },
+    /// One assistant turn: a whole [`MarkdownStream`] plus its diff model.
+    Assistant {
+        stream: Box<MarkdownStream>,
+        model: StreamModel,
+    },
+}
+
+impl StreamEntry {
+    fn row_count(&self) -> usize {
+        match self {
+            StreamEntry::User { lines } => lines.len(),
+            StreamEntry::Assistant { model, .. } => model.row_count(),
+        }
+    }
+}
+
+/// Synthetic block id base for user echo rows (StreamLine diagnostics only;
+/// real mdstream BlockIds start at 1, so the top of the range never collides).
+const USER_BLOCK_BASE: u64 = u64::MAX - (1 << 32);
+
+/// Materializes a user echo block (T18 消息块结构): 「你」 label row, one card
+/// line per source line (first/last flagged for rounding/border edges), and a
+/// trailing spacer row separating it from the next message.
+fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
+    let mut lines = vec![StreamLine::new(block_id, LineKind::UserLabel)];
+    let trimmed = text.trim_end_matches('\n');
+    let raw: Vec<&str> = trimmed.split('\n').collect();
+    let count = raw.len();
+    for (index, part) in raw.iter().enumerate() {
+        let mut line = StreamLine::new(
+            block_id,
+            LineKind::UserLine {
+                first: index == 0,
+                last: index + 1 == count,
+            },
+        );
+        line.spans = coalesce(vec![StreamSpan {
+            text: (*part).to_string(),
+            style: SpanStyle::Plain,
+        }]);
+        lines.push(line);
+    }
+    lines.push(StreamLine::new(block_id, LineKind::Spacer));
+    lines
+}
+
+/// Renders one visible range across all entries (the `uniform_list` range
+/// callback; per-frame: clone-only, P3).
+pub(crate) fn build_entry_rows(
+    entries: &[StreamEntry],
+    range: Range<usize>,
+    counters: &StreamCounters,
+    cx: &App,
+) -> Vec<AnyElement> {
+    let row_t0 = Instant::now();
+    let colors = theme(cx).colors;
+    let mut rows: Vec<AnyElement> = Vec::new();
+    let mut offset = 0usize;
+    for entry in entries {
+        let count = entry.row_count();
+        let start = range.start.saturating_sub(offset);
+        let end = range.end.saturating_sub(offset).min(count);
+        if start < end {
+            match entry {
+                StreamEntry::User { lines } => {
+                    rows.extend(
+                        lines[start..end]
+                            .iter()
+                            .map(|line| render_row(line, &colors)),
+                    );
+                }
+                StreamEntry::Assistant { model, .. } => {
+                    rows.extend(model.rows_in(start..end, &colors));
+                }
+            }
+        }
+        offset += count;
+        if offset >= range.end {
+            break;
+        }
+    }
+    if let Ok(mut samples) = counters.row_build_ns.lock() {
+        samples.push(row_t0.elapsed().as_nanos());
+    }
+    rows
+}
+
 // ─── per-frame row rendering ─────────────────────────────────────────────────
 
 /// Builds the visible rows for one `uniform_list` range by cloning cached
 /// [`StreamLine`]s (no materialization here — that is the P3 contract).
+/// Single-model form used by the render_frame bench probe.
 pub(crate) fn build_rows(
     model: &StreamModel,
     range: Range<usize>,
@@ -688,9 +961,7 @@ pub(crate) fn build_rows(
 ) -> Vec<AnyElement> {
     let row_t0 = Instant::now();
     let colors = theme(cx).colors;
-    let rows: Vec<AnyElement> = range
-        .filter_map(|index| model.row(index).map(|line| render_row(line, &colors)))
-        .collect();
+    let rows = model.rows_in(range, &colors);
     if let Ok(mut samples) = counters.row_build_ns.lock() {
         samples.push(row_t0.elapsed().as_nanos());
     }
@@ -706,17 +977,43 @@ pub(crate) fn render_row(line: &StreamLine, colors: &ThemeColors) -> AnyElement 
         .flex_row()
         .items_center()
         .overflow_hidden()
-        .flex_shrink_0();
+        .flex_shrink_0()
+        // 内容列留白（ui-spec §1 左右留白 ≥24px；T18 消息块成型）。
+        .px(px(CONTENT_MIN_PADDING))
+        // 会话消息正文 14px（ui-spec §3；标题/代码分支按档位覆盖）。
+        .text_size(px(Typography::MESSAGE));
     match line.kind {
+        LineKind::Spacer => return row.into_any_element(),
+        LineKind::UserLabel => {
+            return row
+                .text_size(px(Typography::SIDEBAR))
+                .text_color(colors.text_secondary)
+                // 与卡片文字左缘对齐（卡片内缩 px_2）。
+                .child(div().px_2().child("你"))
+                .into_any_element();
+        }
+        LineKind::UserLine { first, last } => {
+            // user 消息卡片（风格裁决：bg_elevated 圆角卡片 + 「你」标记、
+            // 左对齐、1px border_subtle；非右对齐气泡）。
+            row = row
+                .bg(colors.bg_elevated)
+                .border_color(colors.border_subtle);
+            row = row.border_l_1().border_r_1();
+            if first {
+                row = row.border_t_1().rounded_tl_lg().rounded_tr_lg();
+            }
+            if last {
+                row = row.border_b_1().rounded_bl_lg().rounded_br_lg();
+            }
+        }
         LineKind::Code => {
             row = row
                 .bg(colors.code_bg)
-                .px_2()
                 .font_family(MONOFONT.to_string())
                 .text_size(px(Typography::CODE));
         }
         LineKind::Quote => {
-            row = row.pl_2().text_color(colors.text_secondary).child(
+            row = row.text_color(colors.text_secondary).child(
                 // 引用左竖条（token 色，无字形风险）。
                 div()
                     .w(px(2.))
@@ -728,7 +1025,6 @@ pub(crate) fn render_row(line: &StreamLine, colors: &ThemeColors) -> AnyElement 
         }
         LineKind::Rule => {
             return row
-                .px_2()
                 .child(div().flex_1().h(px(1.)).bg(colors.border_subtle))
                 .into_any_element();
         }
@@ -741,7 +1037,7 @@ pub(crate) fn render_row(line: &StreamLine, colors: &ThemeColors) -> AnyElement 
         }
         LineKind::ListItem => {
             let indent = "  ".repeat(line.depth);
-            row = row.pl_2().child(
+            row = row.child(
                 div()
                     .flex_shrink_0()
                     .text_color(colors.text_secondary)
@@ -763,8 +1059,18 @@ pub(crate) fn render_row(line: &StreamLine, colors: &ThemeColors) -> AnyElement 
         }
         LineKind::Paragraph | LineKind::TableRow => {}
     }
-    for span in &line.spans {
-        row = row.child(render_span(span, colors));
+    // 代码块/user 卡片的文字需要 bg 内再缩进：包进内层容器（gpui 的 px
+    // 后写覆盖前写而非叠加，不能直接在行上再 px_2）。
+    if matches!(line.kind, LineKind::Code | LineKind::UserLine { .. }) {
+        let mut inner = div().w_full().flex().flex_row().items_center().px_2();
+        for span in &line.spans {
+            inner = inner.child(render_span(span, colors));
+        }
+        row = row.child(inner);
+    } else {
+        for span in &line.spans {
+            row = row.child(render_span(span, colors));
+        }
     }
     row.into_any_element()
 }
@@ -793,11 +1099,21 @@ fn render_span(span: &StreamSpan, colors: &ThemeColors) -> AnyElement {
             .px_1()
             .rounded_sm(),
         SpanStyle::Link => text.underline().text_color(colors.text_secondary),
+        // 高亮 token：等宽字体/字号由 Code 行容器继承，只覆写映射表给出的
+        // 颜色/字重/斜体。
+        SpanStyle::Token(kind) => {
+            let token = code_token_style(kind, colors);
+            let mut styled = text.text_color(token.color).font_weight(token.weight);
+            if token.italic {
+                styled = styled.italic();
+            }
+            styled
+        }
     };
     text.into_any_element()
 }
 
-// ─── sample document + delta splitter (演示注入载荷) ─────────────────────────
+// ─── sample document (演示注入载荷) ──────────────────────────────────────────
 
 /// Builds the built-in demo document (`blocks` blocks: headings / inline
 /// styles / tables / lists / code / quotes — 任务卡要求的样本集).
@@ -833,69 +1149,76 @@ pub(crate) fn sample_document(blocks: usize) -> String {
     doc
 }
 
-/// Splits a document into 3..8-char deltas without splitting UTF-8 codepoints
-/// (spike/T15 方法；演示注入与 bench 注入共用).
-pub(crate) fn split_deltas(doc: &str, seed: u64) -> Vec<String> {
-    let mut deltas = Vec::new();
-    let mut chunk = String::new();
-    let mut state = seed;
-    for ch in doc.chars() {
-        chunk.push(ch);
-        state = state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        if chunk.chars().count() >= 3 + (state >> 33) as usize % 6 {
-            deltas.push(std::mem::take(&mut chunk));
-        }
-    }
-    if !chunk.is_empty() {
-        deltas.push(chunk);
-    }
-    deltas
-}
+// (split_deltas moved to vega_markdown::replay — T18 公共回放器基建)
 
 // ─── the conversation stream view ────────────────────────────────────────────
 
 /// The opened-thread content view: thread header (title + anchor status +
-/// demo-inject button) above the virtualized conversation stream. One entity
-/// per open thread; rebuilt by the window root when another thread opens.
+/// demo-inject button), the virtualized message stream, and the fixed-bottom
+/// Composer. One entity per open thread; rebuilt by the window root when
+/// another thread opens.
 pub struct ConversationStream {
     thread: Thread,
-    stream: MarkdownStream,
-    model: StreamModel,
+    /// 消息块列表（T18）：user 回显与 assistant 流交替，顺序即会话顺序。
+    entries: Vec<StreamEntry>,
     counters: Arc<StreamCounters>,
     scroll: gpui::UniformListScrollHandle,
     anchor: anchor::AnchorState,
     /// Active demo injection (`None` = idle/finished).
     injecting: Option<InjectionState>,
+    /// Composer 输入状态（独立 `TextInput` Entity，固定 3 行多行）。
+    input: Entity<TextInput>,
+    /// Synthetic block-id counter for user echo rows (diagnostics only).
+    user_block_seq: u64,
+    /// Rows changed outside the assistant sync path (user send) — feeds the
+    /// anchor's `content_grew` on the next frame.
+    rows_dirty: bool,
 }
 
 struct InjectionState {
-    deltas: Vec<String>,
-    cursor: usize,
-    /// When injection began (rate baseline; the 16ms tick only paces polling —
-    /// the injected count follows 速率 × 已流时间 to absorb main-thread jitter).
-    started: Instant,
+    /// Which assistant entry the replayer feeds.
+    entry_index: usize,
+    /// The public mock replayer (vega_markdown::replay，T18 公共化).
+    replay: MockReplay,
 }
 
 impl ConversationStream {
     /// Builds the view for `thread` with an empty in-memory stream (S3 无消息
-    /// 持久化：会话内容由流式注入产生，不落库).
-    pub fn new(thread: Thread, _cx: &mut Context<Self>) -> Self {
+    /// 持久化：会话内容由流式注入与 Composer 回显产生，不落库；重启后清空
+    /// 是预期行为).
+    pub fn new(thread: Thread, cx: &mut Context<Self>) -> Self {
+        let input = cx.new(|cx| {
+            TextInput::new_multiline(
+                cx,
+                "输入消息…（Enter 换行 · Cmd+Enter 发送）",
+                COMPOSER_ROWS,
+            )
+        });
+        // 空输入禁用发送：输入内容变化即重渲染 Composer。
+        cx.observe(&input, |_, _, cx| cx.notify()).detach();
         Self {
             thread,
-            stream: MarkdownStream::new(),
-            model: StreamModel::default(),
+            entries: Vec::new(),
             counters: Arc::new(StreamCounters::default()),
             scroll: gpui::UniformListScrollHandle::new(),
             anchor: anchor::INITIAL,
             injecting: None,
+            input,
+            user_block_seq: USER_BLOCK_BASE,
+            rows_dirty: false,
         }
     }
 
-    /// Starts the temporary demo injection (标题头旁按钮；S3 临时，T18 换
-    /// mock 回放器): feeds the ~200-block sample at ~500 δ/s, then finishes
-    /// the stream (tech-spec §5.4 终结语义).
+    /// Total row count across all entries.
+    fn total_rows(&self) -> usize {
+        self.entries.iter().map(StreamEntry::row_count).sum()
+    }
+
+    /// Starts the demo injection (标题头旁按钮)：drives the built-in
+    /// ~200-block sample through the public mock replayer
+    /// ([`vega_markdown::MockReplay`], 位于 vega_markdown) at ~500 δ/s into a
+    /// fresh assistant entry, then finishes that stream (tech-spec §5.4 final
+    /// 终结语义：作废 pending 补全残留).
     pub fn start_demo_injection(
         &mut self,
         _: &MouseUpEvent,
@@ -905,11 +1228,14 @@ impl ConversationStream {
         if self.injecting.is_some() {
             return;
         }
-        let deltas = split_deltas(&sample_document(200), 0x5EED);
+        let entry_index = self.entries.len();
+        self.entries.push(StreamEntry::Assistant {
+            stream: Box::new(MarkdownStream::new()),
+            model: StreamModel::default(),
+        });
         self.injecting = Some(InjectionState {
-            deltas,
-            cursor: 0,
-            started: Instant::now(),
+            entry_index,
+            replay: MockReplay::new(&sample_document(200), INJECT_RATE, 0x5EED),
         });
         cx.spawn(async move |this, cx| {
             loop {
@@ -919,22 +1245,28 @@ impl ConversationStream {
                         let Some(injection) = this.injecting.as_mut() else {
                             return false;
                         };
-                        // 目标注入数 = ~500 δ/s × 已流时间（自校正）。
-                        let target = (injection.started.elapsed().as_secs_f64()
-                            * INJECT_RATE as f64) as usize;
-                        let end = target.min(injection.deltas.len());
-                        if injection.cursor < end {
-                            for delta in &injection.deltas[injection.cursor..end] {
-                                this.stream.append(delta);
+                        // 回放器按「速率 × 已流时间」自校正出批（16ms tick
+                        // 只负责轮询，主线程抖动不累积漂移）。
+                        let batch = injection.replay.take_due();
+                        let entry = this.entries.get_mut(injection.entry_index);
+                        if let Some(StreamEntry::Assistant { stream, .. }) = entry {
+                            for delta in &batch {
+                                stream.append(delta);
                             }
-                            injection.cursor = end;
-                            cx.notify();
                         }
-                        if end >= injection.deltas.len() {
+                        if injection.replay.is_finished() {
+                            // 回放结束 → final 终结语义（tech-spec §5.4）。
+                            if let Some(StreamEntry::Assistant { stream, .. }) =
+                                this.entries.get_mut(injection.entry_index)
+                            {
+                                stream.finish();
+                            }
                             this.injecting = None;
-                            this.stream.finish();
                             cx.notify();
                             return false;
+                        }
+                        if !batch.is_empty() {
+                            cx.notify();
                         }
                         true
                     })
@@ -945,6 +1277,40 @@ impl ConversationStream {
             }
         })
         .detach();
+    }
+
+    /// Submits the composer draft as a local user echo (本地回显，不接 LLM).
+    /// Shared by the [发送] button and the Cmd+Enter binding (T18 卡).
+    fn submit_message(&mut self, cx: &mut Context<Self>) {
+        let text = self.input.update(cx, |input, cx| {
+            let text = input.text().to_string();
+            if text.is_empty() {
+                None
+            } else {
+                input.clear(cx);
+                Some(text)
+            }
+        });
+        let Some(text) = text else {
+            return;
+        };
+        let block_id = self.user_block_seq;
+        self.user_block_seq += 1;
+        self.entries.push(StreamEntry::User {
+            lines: user_message_lines(block_id, &text),
+        });
+        self.rows_dirty = true;
+        cx.notify();
+    }
+
+    /// Cmd+Enter in the Composer context ([`SendMessage`] binding).
+    fn on_send_action(&mut self, _: &SendMessage, _: &mut Window, cx: &mut Context<Self>) {
+        self.submit_message(cx);
+    }
+
+    /// [发送] button click — same submit path as Cmd+Enter.
+    fn on_send_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.submit_message(cx);
     }
 
     /// Scroll geometry snapshot: (distance to bottom, viewport height) in px.
@@ -969,7 +1335,7 @@ impl ConversationStream {
         let (injected, total) = self
             .injecting
             .as_ref()
-            .map(|injection| (injection.cursor, injection.deltas.len()))
+            .map(|injection| (injection.replay.injected(), injection.replay.total()))
             .unwrap_or((0, 0));
         div()
             .px(px(CONTENT_MIN_PADDING))
@@ -1006,10 +1372,10 @@ impl ConversationStream {
                     .flex_shrink_0()
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_tertiary)
-                    .child("S3 临时"),
+                    .child("S3 演示"),
             )
             .child(
-                // 演示注入按钮（S3 临时，T18 换 mock 回放器）。
+                // 演示注入按钮（驱动 vega_markdown::MockReplay 公共回放器）。
                 div()
                     .flex_shrink_0()
                     .px_2()
@@ -1031,6 +1397,64 @@ impl ConversationStream {
             )
             .into_any_element()
     }
+
+    /// Renders the Composer (T18 最小版，ui-spec §4.4 最小集 + §1 Composer 行
+    /// 规格)：底部固定、圆角 12px（rounded_xl）、1px border_subtle、
+    /// bg_elevated；固定 3 行多行输入 + [发送] 按钮（空输入禁用）。
+    /// @引用/命令/模型选择器为 Composer 完全体范围，后置。
+    fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        let can_send = !self.input.read(cx).text().is_empty();
+        div()
+            .px(px(CONTENT_MIN_PADDING))
+            .pt(px(8.))
+            .pb(px(12.))
+            .border_t_1()
+            .border_color(colors.border_subtle)
+            .child(
+                div()
+                    .w_full()
+                    // Cmd+Enter 的按键上下文（绑定见 vega_ui::init）。
+                    .key_context("Composer")
+                    .on_action(cx.listener(Self::on_send_action))
+                    .flex()
+                    .flex_row()
+                    .items_end()
+                    .gap_2()
+                    .bg(colors.bg_elevated)
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .rounded_xl()
+                    .p_2()
+                    .overflow_hidden()
+                    .child(self.input.clone())
+                    .child(
+                        // [发送]：与 Cmd+Enter 共用 submit_message（T18 卡）。
+                        div()
+                            .flex_shrink_0()
+                            .px_3()
+                            .py_1()
+                            .rounded_md()
+                            .text_size(px(Typography::SIDEBAR))
+                            .when(can_send, |button| {
+                                button
+                                    // accent 主按钮（黑底白字/反色，ui-spec §2）。
+                                    .bg(colors.accent)
+                                    .text_color(colors.bg_base)
+                                    .cursor_pointer()
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::on_send_clicked),
+                                    )
+                            })
+                            .when(!can_send, |button| {
+                                button.bg(colors.bg_hover).text_color(colors.text_tertiary)
+                            })
+                            .child("发送"),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 impl Render for ConversationStream {
@@ -1039,11 +1463,16 @@ impl Render for ConversationStream {
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
 
-        // 1) 差量同步：只有新/失效块被物化（P3）。
-        let content_grew = {
-            let snapshot = self.stream.snapshot();
-            self.model.sync(&snapshot, &self.counters)
-        };
+        // 1) 差量同步：每个 assistant 段只有新/失效块被物化（P3）；user 回显
+        //    的行数变化经 rows_dirty 参与锚定判定。
+        let mut content_grew = self.rows_dirty;
+        self.rows_dirty = false;
+        for entry in &mut self.entries {
+            if let StreamEntry::Assistant { stream, model } = entry {
+                let snapshot = stream.snapshot();
+                content_grew |= model.sync(&snapshot, &self.counters);
+            }
+        }
 
         // 2) 锚定跟随（P4）：贴底自动跟随，上翻 >1 屏停止，回底恢复。
         let (distance, viewport) = self.scroll_geometry();
@@ -1053,9 +1482,9 @@ impl Render for ConversationStream {
             self.scroll.scroll_to_bottom();
         }
 
-        let rows = self.model.row_count();
+        let rows = self.total_rows();
         let body: AnyElement = if rows == 0 {
-            // §4.6 空态：内存态会话从演示注入开始。
+            // §4.6 空态：内存态会话从演示注入或 Composer 开始。
             div()
                 .size_full()
                 .flex()
@@ -1063,7 +1492,7 @@ impl Render for ConversationStream {
                 .justify_center()
                 .text_color(colors.text_tertiary)
                 .text_size(px(Typography::BODY))
-                .child("会话内容为空：点右上「演示注入」以 ~500 δ/s 流式生成（S3 内存态）")
+                .child("会话内容为空：点右上「演示注入」以 ~500 δ/s 流式生成，或在下方输入后发送（S3 内存态）")
                 .into_any_element()
         } else {
             div()
@@ -1079,7 +1508,7 @@ impl Render for ConversationStream {
                                   range: Range<usize>,
                                   _window,
                                   cx| {
-                                build_rows(&this.model, range, &this.counters, cx)
+                                build_entry_rows(&this.entries, range, &this.counters, cx)
                             },
                         ),
                     )
@@ -1098,6 +1527,8 @@ impl Render for ConversationStream {
             .flex_col()
             .bg(colors.bg_base)
             .text_color(colors.text_primary)
+            // tech-spec §5.4 动效禁令：流式期间节点无任何入场 opacity/动画
+            // （本管线自 T17 起即不引入入场动画，T18 维持）。
             .child(self.render_header(cx))
             .child(
                 div()
@@ -1107,6 +1538,7 @@ impl Render for ConversationStream {
                     .overflow_hidden()
                     .child(body),
             )
+            .child(self.render_composer(cx))
             .into_any_element();
         counters.record_render(render_t0);
         element
@@ -1116,6 +1548,7 @@ impl Render for ConversationStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vega_markdown::split_deltas;
     use vega_markdown::{ListItem, TableCell};
 
     // ---------- 锚定状态机（P4） ----------
@@ -1245,7 +1678,7 @@ mod tests {
                 },
             ]],
         });
-        let lines = flatten_nodes(7, &[node]);
+        let lines = flatten_nodes(7, &[node], BlockOrigin::Committed);
         // 表头一行 + 表体一行；两列 → cell+分隔+cell = 3 span。
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].kind, LineKind::TableHeader);
@@ -1289,7 +1722,7 @@ mod tests {
                 },
             ],
         });
-        let lines = flatten_nodes(9, &[node]);
+        let lines = flatten_nodes(9, &[node], BlockOrigin::Committed);
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].kind, LineKind::ListItem);
         assert_eq!(lines[0].marker, "•");
@@ -1306,11 +1739,134 @@ mod tests {
             language: Some("rust".into()),
             code: "fn a() {\n    let x = 1;\n}\n".into(),
         };
-        let lines = flatten_nodes(11, &[node]);
+        let lines = flatten_nodes(11, &[node], BlockOrigin::Committed);
         // 尾换行不产生空行。
         assert_eq!(lines.len(), 3);
         assert!(lines.iter().all(|line| line.kind == LineKind::Code));
         assert_eq!(spans_text(&lines[1]), "    let x = 1;");
+    }
+
+    // ---------- T18 高亮整合（committed 高亮 / pending 降级） ----------
+
+    fn find_span<'a>(lines: &'a [StreamLine], text: &str) -> &'a StreamSpan {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.text == text)
+            .unwrap_or_else(|| panic!("span {text:?} not found"))
+    }
+
+    #[test]
+    fn committed_code_block_carries_highlight_token_kinds() {
+        let node = RenderNode::CodeBlock {
+            language: Some("rust".into()),
+            code: "fn main() {\n    let n = 42;\n}\n".into(),
+        };
+        let lines = flatten_nodes(21, &[node], BlockOrigin::Committed);
+        // 关键字 → Token(Keyword)；函数名 → Token(Function)（映射表「其余」
+        // 档）；rust grammar 把整数字面量捕获为 constant.builtin →
+        // Token(Constant)；行内未被捕获的文字补 Plain。
+        assert_eq!(
+            find_span(&lines, "fn").style,
+            SpanStyle::Token(HighlightKind::Keyword)
+        );
+        assert_eq!(
+            find_span(&lines, "main").style,
+            SpanStyle::Token(HighlightKind::Function)
+        );
+        assert_eq!(
+            find_span(&lines, "let").style,
+            SpanStyle::Token(HighlightKind::Keyword)
+        );
+        assert_eq!(
+            find_span(&lines, "42").style,
+            SpanStyle::Token(HighlightKind::Constant)
+        );
+        assert_eq!(find_span(&lines, "    ").style, SpanStyle::Plain);
+    }
+
+    #[test]
+    fn pending_tail_and_unsupported_language_stay_plain_monospace() {
+        let node = RenderNode::CodeBlock {
+            language: Some("rust".into()),
+            code: "fn a() {}\n".into(),
+        };
+        // 未闭合 fence（pending 尾块）降级纯文本（tech-spec §5.1）。
+        let lines = flatten_nodes(23, &[node], BlockOrigin::Pending);
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.spans.iter().all(|span| span.style == SpanStyle::Plain))
+        );
+        // 未支持语言同样降级。
+        let unknown = RenderNode::CodeBlock {
+            language: Some("cobol".into()),
+            code: "MOVE 1 TO X.\n".into(),
+        };
+        let lines = flatten_nodes(24, &[unknown], BlockOrigin::Committed);
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.spans.iter().all(|span| span.style == SpanStyle::Plain))
+        );
+    }
+
+    #[test]
+    fn code_line_spans_fill_gaps_and_clip_at_line_edges() {
+        // CJK 与多行切割：高亮 span 按字节切片，缺口补 Plain，逐行覆盖完整。
+        let code = "let s = \"中文\";\nlet t = 1;\n";
+        let node = RenderNode::CodeBlock {
+            language: Some("rust".into()),
+            code: code.to_string(),
+        };
+        let lines = flatten_nodes(25, &[node], BlockOrigin::Committed);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(spans_text(&lines[0]), "let s = \"中文\";");
+        assert_eq!(spans_text(&lines[1]), "let t = 1;");
+        // 字符串（含 CJK 字面量）应整体有 String 捕获（转义无关），按行切片
+        // 后行内仍存在 String span。
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|span| span.style == SpanStyle::Token(HighlightKind::String))
+        );
+    }
+
+    // ---------- T18 消息块（user 回显行模型） ----------
+
+    #[test]
+    fn user_message_lines_materialize_label_card_and_spacer() {
+        let lines = user_message_lines(USER_BLOCK_BASE, "第一行\n\n第三行");
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0].kind, LineKind::UserLabel);
+        assert_eq!(
+            lines[1].kind,
+            LineKind::UserLine {
+                first: true,
+                last: false
+            }
+        );
+        // 中间空行也是卡片行（连续背景）。
+        assert_eq!(
+            lines[2].kind,
+            LineKind::UserLine {
+                first: false,
+                last: false
+            }
+        );
+        assert_eq!(
+            lines[3].kind,
+            LineKind::UserLine {
+                first: false,
+                last: true
+            }
+        );
+        assert_eq!(lines[4].kind, LineKind::Spacer);
+        assert_eq!(spans_text(&lines[1]), "第一行");
+        assert_eq!(spans_text(&lines[2]), "");
+        // 尾换行不产生尾部空卡片行。
+        assert_eq!(user_message_lines(1, "hi\n").len(), 3);
     }
 
     #[test]
@@ -1329,7 +1885,7 @@ mod tests {
                 },
             ],
         };
-        let lines = flatten_nodes(13, &[node]);
+        let lines = flatten_nodes(13, &[node], BlockOrigin::Committed);
         assert_eq!(lines.len(), 1);
         let styles: Vec<SpanStyle> = lines[0].spans.iter().map(|span| span.style).collect();
         assert_eq!(
@@ -1353,7 +1909,7 @@ mod tests {
                 spans: vec![Inline::Text("quoted".into())],
             }],
         };
-        let lines = flatten_nodes(15, &[node]);
+        let lines = flatten_nodes(15, &[node], BlockOrigin::Committed);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].kind, LineKind::Quote);
     }
