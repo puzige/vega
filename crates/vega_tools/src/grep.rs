@@ -146,6 +146,22 @@ mod tests {
     }
 
     #[test]
+    fn subtree_search_honors_gitignore_from_project_root() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src/ignored")).unwrap();
+        fs::write(dir.path().join("src/visible.txt"), "needle\n").unwrap();
+        fs::write(dir.path().join("src/ignored/secret.txt"), "needle\n").unwrap();
+        fs::write(dir.path().join(".gitignore"), "src/ignored/\n").unwrap();
+
+        let out = Tools::new(dir.path())
+            .unwrap()
+            .grep("needle", Some("src"))
+            .unwrap();
+
+        assert_eq!(out.text, "src/visible.txt:1:needle");
+    }
+
+    #[test]
     fn rejects_invalid_regex_and_all_path_escape_shapes() {
         let dir = tempdir().unwrap();
         let outside = tempdir().unwrap();
