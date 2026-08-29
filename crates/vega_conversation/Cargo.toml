@@ -8,10 +8,11 @@ vega_store = { workspace = true }
 vega_runtime = { workspace = true }
 vega_tools = { workspace = true }
 tokio-util = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 thiserror = { workspace = true }
 # threads 表主键 ulid 在本 crate 内生成（T11 裁决：create_thread 内部生成）
 ulid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }

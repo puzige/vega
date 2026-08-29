@@ -6,12 +6,13 @@
 //! types (runtime events, chat messages, tool calls) belong to S3/S4 and
 //! must not appear here yet.
 
+use std::sync::Arc;
+
 /// Error surfaced by the vega_conversation orchestration layer.
 ///
-/// Storage failures arrive as pre-formatted strings because this crate
-/// intentionally does not depend on `rusqlite` directly (the SQL lives in
-/// `vega_store`; tech-spec §1 dependency direction). Send + Sync by
-/// construction (owned data only).
+/// Thread-management storage failures remain display strings, while the live
+/// agent pipeline preserves the shared [`vega_runtime::VegaError`] kind and
+/// fields for UI decisions. Send + Sync by construction (owned data only).
 #[derive(Debug, thiserror::Error)]
 pub enum ConversationError {
     /// A store/IO failure, reported with the underlying error message.
@@ -26,9 +27,10 @@ pub enum ConversationError {
     /// A row carries a value outside the DDL vocabulary (e.g. `mode`).
     #[error("corrupt thread row: {0}")]
     CorruptRow(String),
-    /// Headless runtime/provider failure.
+    /// Headless runtime/provider/persistence failure with its structured kind
+    /// and fields preserved for callers.
     #[error("runtime error: {0}")]
-    Runtime(String),
+    Runtime(Arc<vega_runtime::VegaError>),
 }
 
 /// Message identifier used by conversation events.
@@ -137,49 +139,83 @@ pub enum ConversationStopReason {
 }
 
 /// Runtime-to-UI/store unique event stream (tech-spec §3).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ConversationEvent {
     /// A streaming assistant row was created.
-    MessageStarted { message_id: MessageId, seq: u64 },
+    MessageStarted {
+        /// Assistant message id.
+        message_id: MessageId,
+        /// Monotonic thread-local sequence.
+        seq: u64,
+    },
     /// Visible assistant delta.
     TextDelta {
+        /// Assistant message id.
         message_id: MessageId,
+        /// Incremental visible text.
         delta: String,
     },
     /// Reasoning delta.
     ThinkingDelta {
+        /// Assistant message id.
         message_id: MessageId,
+        /// Incremental reasoning text.
         delta: String,
     },
     /// Tool proposal awaiting the placeholder permission hook.
-    ToolCallProposed { call: ToolCall },
+    ToolCallProposed {
+        /// Complete proposal.
+        call: ToolCall,
+    },
     /// Tool approval.
-    ToolCallApproved { call_id: CallId, approval: Approval },
+    ToolCallApproved {
+        /// Provider call id.
+        call_id: CallId,
+        /// Permission decision.
+        approval: Approval,
+    },
     /// Tool output chunk.
     ToolCallOutput {
+        /// Provider call id.
         call_id: CallId,
+        /// Truncated display output.
         chunk: ToolOutputChunk,
     },
     /// Terminal tool result.
-    ToolCallFinished { call_id: CallId, result: ToolResult },
+    ToolCallFinished {
+        /// Provider call id.
+        call_id: CallId,
+        /// Terminal result.
+        result: ToolResult,
+    },
     /// Provider usage and integer cost.
     UsageUpdated {
+        /// Assistant message id.
         message_id: MessageId,
+        /// Provider token counts.
         usage: TokenUsage,
+        /// Integer cost (zero in S4).
         cost: Microcents,
     },
     /// Assistant message converged.
     MessageFinished {
+        /// Assistant message id.
         message_id: MessageId,
+        /// Convergence reason.
         stop_reason: ConversationStopReason,
     },
     /// Runtime/provider error.
     Error {
+        /// Assistant message id, when a message had started.
         message_id: Option<MessageId>,
-        error: String,
+        /// Safe display error.
+        error: Arc<vega_runtime::VegaError>,
     },
     /// Cancellation was observed.
-    Interrupted { message_id: MessageId },
+    Interrupted {
+        /// Interrupted assistant message id.
+        message_id: MessageId,
+    },
 }
 
 /// Converts one headless runtime event into the shared conversation event.
@@ -224,6 +260,7 @@ pub fn from_runtime_event(
                     RuntimeToolStatus::Rejected => ToolCallStatus::Rejected,
                     RuntimeToolStatus::Success => ToolCallStatus::Success,
                     RuntimeToolStatus::Failed => ToolCallStatus::Failed,
+                    RuntimeToolStatus::Cancelled => ToolCallStatus::Cancelled,
                 },
                 output: result.output.clone(),
                 reused: result.reused,
@@ -405,6 +442,8 @@ impl ThreadUpdate {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         ConversationEvent, Microcents, ThreadMode, ThreadStatus, TokenUsage, from_runtime_event,
     };
@@ -477,6 +516,50 @@ mod tests {
                 cost: Microcents(0),
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn converts_errors_without_losing_structured_fields() {
+        let provider =
+            vega_runtime::RuntimeEvent::Error(Arc::new(vega_runtime::VegaError::Provider {
+                status: Some(429),
+                message: "rate limited".into(),
+                retryable: true,
+            }));
+        assert!(matches!(
+            from_runtime_event("message-1", &provider),
+            Some(ConversationEvent::Error { error, .. })
+                if matches!(
+                    error.as_ref(),
+                    vega_runtime::VegaError::Provider {
+                        status: Some(429),
+                        message,
+                        retryable: true,
+                    } if message == "rate limited"
+                )
+        ));
+
+        let tool = vega_runtime::RuntimeEvent::Error(Arc::new(vega_runtime::VegaError::Tool {
+            tool: "read".into(),
+            message: "collision".into(),
+        }));
+        assert!(matches!(
+            from_runtime_event("message-1", &tool),
+            Some(ConversationEvent::Error { error, .. })
+                if matches!(
+                    error.as_ref(),
+                    vega_runtime::VegaError::Tool { tool, message }
+                        if tool == "read" && message == "collision"
+                )
+        ));
+
+        let cancelled =
+            vega_runtime::RuntimeEvent::Error(Arc::new(vega_runtime::VegaError::Cancelled));
+        assert!(matches!(
+            from_runtime_event("message-1", &cancelled),
+            Some(ConversationEvent::Error { error, .. })
+                if matches!(error.as_ref(), vega_runtime::VegaError::Cancelled)
         ));
     }
 }

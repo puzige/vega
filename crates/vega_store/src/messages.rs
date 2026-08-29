@@ -64,6 +64,34 @@ pub fn finish(
     )
 }
 
+/// Replaces the accumulated content of an assistant message only while it is
+/// still streaming. The affected-row count lets orchestration detect a lost
+/// or already-terminal row before forwarding the corresponding delta.
+pub fn update_streaming_content(
+    conn: &Connection,
+    id: &str,
+    content: &str,
+) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        "UPDATE messages SET content = ?1 WHERE id = ?2 AND status = 'streaming'",
+        params![content, id],
+    )
+}
+
+/// Atomically writes final content and transitions a streaming assistant row
+/// exactly once. Late commands cannot overwrite an existing terminal state.
+pub fn finish_streaming(
+    conn: &Connection,
+    id: &str,
+    content: &str,
+    status: &str,
+) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        "UPDATE messages SET content = ?1, status = ?2 WHERE id = ?3 AND status = 'streaming'",
+        params![content, status, id],
+    )
+}
+
 /// Loads the newest `limit` completed/history messages in chronological order.
 pub fn recent(
     conn: &Connection,

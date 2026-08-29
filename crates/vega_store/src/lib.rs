@@ -43,12 +43,13 @@ pub mod keystore;
 pub mod messages;
 pub mod paths;
 pub mod projects;
+pub mod recovery;
 // T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
 pub mod threads;
 pub mod token_usage;
 pub mod tool_calls;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
@@ -61,6 +62,7 @@ const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
 /// Single-connection SQLite store for the six-table Vega schema.
 pub struct Store {
     conn: Connection,
+    database_path: Option<PathBuf>,
 }
 
 impl Store {
@@ -68,11 +70,20 @@ impl Store {
     /// the standard Vega pragmas: `journal_mode=WAL`, `synchronous=NORMAL`,
     /// `foreign_keys=ON`.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, rusqlite::Error> {
+        let path = path.as_ref();
+        let database_path = if path == Path::new(":memory:") || path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(path.to_path_buf())
+        };
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            database_path,
+        })
     }
 
     /// Brings the schema up to date by applying pending migrations in order.
@@ -108,6 +119,12 @@ impl Store {
     /// the executor and break cancellation.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Returns the file backing this store, or `None` for SQLite in-memory or
+    /// temporary databases that cannot be reopened by a dedicated DB actor.
+    pub fn database_path(&self) -> Option<&Path> {
+        self.database_path.as_deref()
     }
 }
 
@@ -158,6 +175,17 @@ mod tests {
                 "tool_calls",
             ]
         );
+    }
+
+    #[test]
+    fn database_path_distinguishes_file_backing_from_memory() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("vega.db");
+        let file_store = Store::open(&path).unwrap();
+        assert_eq!(file_store.database_path(), Some(path.as_path()));
+
+        let memory_store = Store::open(":memory:").unwrap();
+        assert_eq!(memory_store.database_path(), None);
     }
 
     #[test]

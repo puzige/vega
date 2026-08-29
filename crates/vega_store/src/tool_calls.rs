@@ -4,6 +4,32 @@ use std::collections::HashMap;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+/// Terminal persisted call used to validate call-id retry identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalToolCall {
+    /// Original tool name.
+    pub tool: String,
+    /// Original JSON input.
+    pub input_json: String,
+    /// Persisted output.
+    pub output: String,
+    /// Persisted terminal DDL status.
+    pub status: String,
+}
+
+/// Identity and ownership fields for an existing provider call id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallIdentity {
+    /// Owning thread id.
+    pub thread_id: String,
+    /// Assistant message id that first proposed the call.
+    pub message_id: String,
+    /// Original tool name.
+    pub tool: String,
+    /// Original raw JSON input.
+    pub input_json: String,
+}
+
 /// Insertable tool-call fields.
 pub struct NewToolCall<'a> {
     /// Provider call id.
@@ -53,6 +79,26 @@ pub fn exists(conn: &Connection, id: &str) -> Result<bool, rusqlite::Error> {
     Ok(found.is_some())
 }
 
+/// Loads ownership and immutable tool/input identity for one call id.
+pub fn find_identity(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<ToolCallIdentity>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT thread_id, message_id, tool, input_json FROM tool_calls WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(ToolCallIdentity {
+                thread_id: row.get(0)?,
+                message_id: row.get(1)?,
+                tool: row.get(2)?,
+                input_json: row.get(3)?,
+            })
+        },
+    )
+    .optional()
+}
+
 /// Updates the lifecycle status, optional approval, and optional output.
 pub fn update(
     conn: &Connection,
@@ -70,15 +116,27 @@ pub fn update(
     )
 }
 
-/// Loads successful results for restart/retry call-id deduplication.
-pub fn successful_results(
+/// Loads every terminal result that has auditable output for restart/retry
+/// call-id deduplication.
+pub fn terminal_results(
     conn: &Connection,
     thread_id: &str,
-) -> Result<HashMap<String, String>, rusqlite::Error> {
+) -> Result<HashMap<String, TerminalToolCall>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, COALESCE(output_text, '') FROM tool_calls \
-         WHERE thread_id = ?1 AND status = 'success'",
+        "SELECT id, tool, input_json, output_text, status FROM tool_calls \
+         WHERE thread_id = ?1 AND status IN ('success', 'failed', 'rejected', 'cancelled') \
+         AND output_text IS NOT NULL",
     )?;
-    let rows = stmt.query_map([thread_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    let rows = stmt.query_map([thread_id], |row| {
+        Ok((
+            row.get(0)?,
+            TerminalToolCall {
+                tool: row.get(1)?,
+                input_json: row.get(2)?,
+                output: row.get(3)?,
+                status: row.get(4)?,
+            },
+        ))
+    })?;
     rows.collect()
 }

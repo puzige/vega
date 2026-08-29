@@ -529,7 +529,7 @@ fn usage_event(usage: &serde_json::Value) -> ProviderEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{ChatMessage, ChatRole, ToolDefinition};
+    use crate::provider::{ChatMessage, ChatRole, ChatToolCall, ToolDefinition};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -539,6 +539,50 @@ mod tests {
 
     const KEY: &str = "vrg-test-key-123";
     const MODEL: &str = "test-model";
+
+    #[test]
+    fn follow_up_messages_serialize_exact_tool_call_wire_shape() {
+        let request = ChatRequest {
+            model: MODEL.into(),
+            messages: vec![
+                ChatMessage::assistant_with_tools(
+                    "checking",
+                    vec![ChatToolCall {
+                        id: "call-7".into(),
+                        name: "read".into(),
+                        input_json: r#"{"path":"src/lib.rs"}"#.into(),
+                    }],
+                ),
+                ChatMessage::tool_result("call-7", "1 | fn main() {}"),
+            ],
+            ..Default::default()
+        };
+
+        let wire = build_request_body(&request);
+        assert_eq!(
+            wire["messages"][0],
+            serde_json::json!({
+                "role": "assistant",
+                "content": "checking",
+                "tool_calls": [{
+                    "id": "call-7",
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": "{\"path\":\"src/lib.rs\"}"
+                    }
+                }]
+            })
+        );
+        assert_eq!(
+            wire["messages"][1],
+            serde_json::json!({
+                "role": "tool",
+                "content": "1 | fn main() {}",
+                "tool_call_id": "call-7"
+            })
+        );
+    }
 
     // ---------- 纯单元：SseAssembler ----------
 
