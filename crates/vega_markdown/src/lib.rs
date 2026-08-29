@@ -20,6 +20,11 @@
 //! with every block's `BlockId` and parse version, so the UI layer diffs
 //! frames by `(block_id, version)` and never re-renders frozen blocks.
 //!
+//! Code-block syntax highlighting (S3-T16) is exposed as an independent
+//! query function, [`highlight`], over tree-sitter: callers (S3-T17/T18)
+//! apply it to committed `RenderNode::CodeBlock` content, while the pending
+//! tail block degrades to plain monospace text (tech-spec §5.1).
+//!
 //! The crate is UI-free (no gpui, headless like `vega_runtime`): outputs are
 //! plain render instructions for the S3-T17/T18 layers to map onto GPUI
 //! elements. Delta coalescing / throttling is the caller's job (tech-spec
@@ -48,8 +53,10 @@
 //! ));
 //! ```
 
+mod highlight;
 mod nodes;
 mod stream;
 
+pub use highlight::{HighlightKind, HighlightSpan, highlight};
 pub use nodes::{Inline, ListBlock, ListItem, RenderNode, TableAlignment, TableBlock, TableCell};
 pub use stream::{BlockView, MarkdownStream, PendingView, StreamSnapshot};
