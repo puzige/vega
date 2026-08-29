@@ -73,49 +73,6 @@ pub struct NewThread<'a> {
     pub updated_at: i64,
 }
 
-/// Whether a `projects` row with this id exists.
-///
-/// Serves as the create-thread guard in `vega_conversation` so a missing
-/// project surfaces as a typed error instead of a bare foreign-key failure;
-/// T10 owns the full projects module.
-pub fn project_exists(conn: &Connection, project_id: &str) -> Result<bool, rusqlite::Error> {
-    let found: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM projects WHERE id = ?1",
-            [project_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(found.is_some())
-}
-
-/// The most recently opened project, if any.
-///
-/// The T11 stopgap "current project" for thread creation (ui-spec §4.1
-/// resolves it from the sidebar once T10/T12 land).
-pub fn latest_project(conn: &Connection) -> Result<Option<ProjectRef>, rusqlite::Error> {
-    conn.query_row(
-        "SELECT id, name FROM projects ORDER BY last_opened_at DESC, created_at ASC LIMIT 1",
-        [],
-        |row| {
-            Ok(ProjectRef {
-                id: row.get(0)?,
-                name: row.get(1)?,
-            })
-        },
-    )
-    .optional()
-}
-
-/// Minimal `(id, name)` projection of a `projects` row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectRef {
-    /// Project id (`projects.id`).
-    pub id: String,
-    /// Display name.
-    pub name: String,
-}
-
 /// Inserts a new thread row.
 pub fn create(conn: &Connection, thread: NewThread) -> Result<(), rusqlite::Error> {
     conn.execute(
@@ -139,14 +96,16 @@ pub fn create(conn: &Connection, thread: NewThread) -> Result<(), rusqlite::Erro
     Ok(())
 }
 
-/// Lists the threads of one project, most recently updated first (the
-/// `idx_threads_project` DDL index ordering: `project_id, updated_at DESC`).
+/// Lists the threads of one project: the pinned group first, then most
+/// recently updated (ui-spec §4.1: 置顶组优先；`idx_threads_project`
+/// DDL index ordering covers the `updated_at DESC` part).
 pub fn list_by_project(
     conn: &Connection,
     project_id: &str,
 ) -> Result<Vec<ThreadRow>, rusqlite::Error> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM threads WHERE project_id = ?1 ORDER BY updated_at DESC"
+        "SELECT {COLUMNS} FROM threads WHERE project_id = ?1 \
+         ORDER BY pinned DESC, updated_at DESC"
     ))?;
     let rows = stmt.query_map([project_id], thread_from_row)?;
     rows.collect()
@@ -253,7 +212,7 @@ fn thread_from_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadRow> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ThreadRow, project_exists};
+    use super::ThreadRow;
     use crate::Store;
     use rusqlite::{Connection, params};
     use tempfile::tempdir;
@@ -313,14 +272,6 @@ mod tests {
             ],
         )
         .unwrap();
-    }
-
-    #[test]
-    fn project_exists_matches_inserted_rows_only() {
-        let (store, _dir) = open_store();
-        insert_project(store.conn(), "p1", "alpha", 10);
-        assert!(project_exists(store.conn(), "p1").unwrap());
-        assert!(!project_exists(store.conn(), "missing").unwrap());
     }
 
     #[test]
@@ -393,6 +344,28 @@ mod tests {
             .map(|r| r.id.clone())
             .collect();
         assert_eq!(ids, vec!["t-new", "t-mid", "t-old"]);
+    }
+
+    #[test]
+    fn list_by_project_orders_pinned_group_first() {
+        let (store, _dir) = open_store();
+        insert_project(store.conn(), "p1", "alpha", 10);
+        // 置顶组（组内 updated_at 倒序）：t-p1(300) > t-p2(200)。
+        let mut pinned_new = sample_row("t-p1", "p1", 300);
+        pinned_new.pinned = true;
+        let mut pinned_old = sample_row("t-p2", "p1", 200);
+        pinned_old.pinned = true;
+        insert_row(store.conn(), &pinned_new);
+        insert_row(store.conn(), &pinned_old);
+        // 未置顶但 updated_at 更晚的线程仍排在置顶组之后。
+        insert_row(store.conn(), &sample_row("t-plain", "p1", 400));
+
+        let ids: Vec<String> = super::list_by_project(store.conn(), "p1")
+            .unwrap()
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["t-p1", "t-p2", "t-plain"]);
     }
 
     #[test]
@@ -485,16 +458,5 @@ mod tests {
             )
             .unwrap();
         assert_eq!(last_opened_at, 10);
-    }
-
-    #[test]
-    fn latest_project_prefers_the_most_recently_opened() {
-        let (store, _dir) = open_store();
-        assert!(super::latest_project(store.conn()).unwrap().is_none());
-        insert_project(store.conn(), "p1", "alpha", 100);
-        insert_project(store.conn(), "p2", "beta", 200);
-        let latest = super::latest_project(store.conn()).unwrap().unwrap();
-        assert_eq!(latest.id, "p2");
-        assert_eq!(latest.name, "beta");
     }
 }

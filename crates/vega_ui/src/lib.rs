@@ -1,12 +1,13 @@
-//! GPUI views: sidebar shell (T09), projects (A1-03, temporary mount),
-//! settings skeleton (A1-10), and shared input components.
+//! GPUI views: sidebar with the projects/sessions blocks (T09 shell +
+//! T12 content), settings skeleton (A1-10), and shared input components.
+//!
+//! The T10/T11 temporary full-page projects/threads views were retired in
+//! T12; their data functions live on in `vega_store` / `vega_conversation`
+//! and the sidebar blocks render the lists now.
 
-pub mod projects;
 pub mod settings;
 pub mod sidebar;
 pub mod text_input;
-// T11（A1-02）：临时会话视图，T12 集成时归位侧边栏。
-pub mod threads;
 
 use gpui::{App, KeyBinding};
 

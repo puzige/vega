@@ -11,7 +11,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// One registered project row (`projects` table, tech-spec §2).
 #[derive(Debug, Clone, PartialEq)]
@@ -133,6 +133,50 @@ pub fn touch_last_opened(conn: &Connection, id: &str) -> Result<(), ProjectsErro
     Ok(())
 }
 
+/// Whether a `projects` row with this id exists.
+///
+/// Create-thread guard for `vega_conversation` so a missing project surfaces
+/// as a typed error instead of a bare foreign-key failure. T11 temporarily
+/// parked these two project-domain helpers next to the thread SQL; T12 moved
+/// them back into the projects module (architect ruling).
+pub fn project_exists(conn: &Connection, project_id: &str) -> Result<bool, rusqlite::Error> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(found.is_some())
+}
+
+/// The most recently opened project, if any.
+///
+/// Backs the sidebar's initial selected project (latest_project semantics);
+/// the UI caches the selection and rewrites it on row click.
+pub fn latest_project(conn: &Connection) -> Result<Option<ProjectRef>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT id, name FROM projects ORDER BY last_opened_at DESC, created_at ASC LIMIT 1",
+        [],
+        |row| {
+            Ok(ProjectRef {
+                id: row.get(0)?,
+                name: row.get(1)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// Minimal `(id, name)` projection of a `projects` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRef {
+    /// Project id (`projects.id`).
+    pub id: String,
+    /// Display name.
+    pub name: String,
+}
+
 /// Current time as unix milliseconds.
 fn now_ms() -> i64 {
     // 时钟早于 epoch 属于系统级异常，取 0 保底即可（不允许 panic）。
@@ -155,6 +199,7 @@ fn is_unique_violation(error: &rusqlite::Error) -> bool {
 mod tests {
     use super::{ProjectSort, ProjectsError, create, list, remove, touch_last_opened};
     use crate::Store;
+    use rusqlite::{Connection, params};
     use tempfile::tempdir;
 
     /// Creates a migrated store backed by a fresh temporary directory.
@@ -163,6 +208,17 @@ mod tests {
         let store = Store::open(dir.path().join("vega.db")).unwrap();
         store.migrate().unwrap();
         (store, dir)
+    }
+
+    /// 测试所需 project 行用裸 SQL 插入（补齐 DDL 必填字段），
+    /// 不依赖本模块被测函数。
+    fn insert_project(conn: &Connection, id: &str, name: &str, opened_at: i64) {
+        conn.execute(
+            "INSERT INTO projects (id, path, name, git_default_branch, created_at, last_opened_at) \
+             VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
+            params![id, format!("/tmp/{id}"), name, opened_at, opened_at],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -262,5 +318,24 @@ mod tests {
 
         // 重复删除同一 id：无行受影响，返回 false。
         assert!(!remove(store.conn(), &gone.id).unwrap());
+    }
+
+    #[test]
+    fn project_exists_matches_inserted_rows_only() {
+        let (store, _dir) = open_temp_store();
+        insert_project(store.conn(), "p1", "alpha", 10);
+        assert!(super::project_exists(store.conn(), "p1").unwrap());
+        assert!(!super::project_exists(store.conn(), "missing").unwrap());
+    }
+
+    #[test]
+    fn latest_project_prefers_the_most_recently_opened() {
+        let (store, _dir) = open_temp_store();
+        assert!(super::latest_project(store.conn()).unwrap().is_none());
+        insert_project(store.conn(), "p1", "alpha", 100);
+        insert_project(store.conn(), "p2", "beta", 200);
+        let latest = super::latest_project(store.conn()).unwrap().unwrap();
+        assert_eq!(latest.id, "p2");
+        assert_eq!(latest.name, "beta");
     }
 }
