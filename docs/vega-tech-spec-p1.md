@@ -1,6 +1,6 @@
 # ✦ Vega — Phase 1 技术实现规格（SDD · Spec-Driven Development）
 
-**版本** v0.1 · 2026-08-28 · 关联：[vega-phase1-plan.md](vega-phase1-plan.md) · [vega-features.md](vega-features.md) · [vega-ui-spec.md](vega-ui-spec.md)
+**版本** v0.2 · 2026-08-29 · 关联：[vega-phase1-plan.md](vega-phase1-plan.md) · [vega-features.md](vega-features.md) · [vega-ui-spec.md](vega-ui-spec.md)
 
 > **SDD 工作约定**：每个 Sprint 开工前，对应模块的 spec（本文件对应章节）必须先定稿；实现以 spec 为准；实现完成后对照 spec 验收。spec 变更走文档修改 + 变更记录，不允许代码先行 spec 后补。
 > 本文件覆盖 Phase 1（S1-S8）。所有 Rust 签名为**设计目标**，实现时可微调参数名，但 trait 边界、状态机、DDL 不得偏离。
@@ -210,29 +210,49 @@ tool_call 到达
 
 ## 5. 流式 Markdown 管线（A2-02 · S3 spike 验证目标）
 
-### 5.0 生态结论（2026-08-28 调研，详见 vega-tech-risks.md §1）
+### 5.0 生态结论（2026-08-29 T14 spike 尽调更新，取代 2026-08-28 调研；详见 vega-tech-risks.md §1）
 
-- **首选中间件：`mdstream` v0.2.0**（Rust 流式 markdown 中间件，committed+pending 模型、稳定 BlockId 缓存键、remend 式尾部语法补全、render-agnostic、官方明确支持 gpui、有 tokio coalesce glue）。与本节原设计架构一致，先评估后决定引入还是自研。
-- **解析器**：committed block 用 `pulldown-cmark`（pull parser、offset 映射、CommonMark 全合规）。
+- **选定路线：引入 `mdstream` 0.3.0（精确锁定 `=0.3.0`）+ `pulldown-cmark` 0.13 做已提交块解析。** spike 实测确认 committed+pending 模型满足全部验收（见 §5.2 数据），方案 B（全量重渲染）CPU 超预算 2.4 倍起，不采用。
+- **License**：`MIT OR Apache-2.0` 双许可（crates.io + 仓库 LICENSE-MIT/LICENSE-APACHE 均核验），**可引入私有商业项目**。
+- **0.2.0 → 0.3.0（2026-07-07）变化**：唯一 breaking 是 `mdstream::pending` / `mdstream::syntax` 模块路径内部化（改为从 crate root 导入 `TerminatorOptions` / `terminate_markdown`）；新增 `MdStreamBuilder`；修复表格分隔符跨 chunk 边界 bug、tag 分析误判；移除可避免 panic 路径。核心 API（`MdStream`/`append`/`append_ref`/`Update`/`BlockId`）不变。我们只用 crate root 导出，不受影响。
+- **committed+pending 模型与 BlockId 稳定性（源码确认）**：`BlockId(u64)` 单调递增（`next_block_id` 计数器，起始 1），committed 块一旦产出永不变更（README："safe for UI to cache by BlockId"）；`Update { committed, pending, reset, invalidated }`；`invalidated: Vec<BlockId>` 用于后置引用定义等文档级语义波及，消费方按需重解析对应块。spike 实测 48k delta 流：committed 内容零变更、缓存零重复解析。
+- **GFM 覆盖**：committed 块由我们用 pulldown-cmark 解析，GFM 扩展（tables/tasklists/strikethrough）按需全开（adapter 暴露 `PulldownOptions`）；pending 尾部 terminator 覆盖未闭合 code fence/emphasis 四变体/strikethrough/inline code/katex/link-image/setext 保护；0.3.0 已修表格分隔符流式 bug。tasklist 无专门 terminator（未闭合 `- [ ]` 降级为普通行文本渲染，提交后完整解析）——可接受。
+- **reset 语义（源码确认）**：`Update.reset=true` 仅在 scope 驱动转换时出现（如进入 footnote 单块模式），语义 = 消费方丢弃全部缓存按本条重建；另有 `MdStream::reset()` 手动重置。频率极低（spike 48k delta 样本中 0 次），走"清空缓存重建"路径即可，无需优化。
+- **gpui 支持成熟度（修正原结论）**：0.3.0 README 仅将 gpui/Zed 列为 render-agnostic 的**目标集成场景**（"helps downstream UIs (egui, gpui/Zed, TUI)"），**不存在 gpui 适配器**，"官方明确支持 gpui"的原表述不成立；上游 0.4 README 更是明确声明不发布任何渲染器。对本项目无实质影响（RenderNode→GPUI 映射本就自研，见 §5.3），但依赖预期需修正。
+- **版本锁定与 vendoring 预案**：crates.io 0.3.0 = tag v0.3.0，锁定 `mdstream = "=0.3.0"`（`mdstream-tokio = "0.3.0"` 的 coalesce 胶水按需引入，MSRV 1.88 与工具链兼容）。⚠️ 上游 main 已是破坏性 0.4 API（`MdStream`→`StreamEngine`，**committed/pending+BlockId 模型整体移除**，fallible append + `mdstream_protocol::Reducer` ChangeSet）——0.3.0 是目标模型的最后一版，上游不会再修 0.3.0 bug。预案：出问题即 fork/vendor 进 `crates/`（双许可、约 4.5k 行、无深度依赖树，fork 成本低）。
+- **维护活跃度（风险知悉）**：单维护者（Latias94），10 stars / 3 forks / 0 open issues，232 commits，最后 release 2026-07-07、最后 commit 2026-07-30；下载量 87k 中 86.7k 集中在 0.2.0（0.3.0 仅 266，来源存疑），社区规模极小。结论：当作"买断一段源码"使用，靠锁定版本 + fork 预案对冲，不指望上游维护。
+- **解析器**：committed block 用 `pulldown-cmark` 0.13（pull parser、offset 映射、GFM 扩展全开）。
 - **对标参考**：Web 生态 vue-stream-markdown / Vercel streamdown 的核心手法 = markmend/remend「未闭合语法补全」+ 全量 reparse + AST 级 diff（JS 可行因 mdast 快+DOM diff 便宜；Rust 要走真增量避免 O(n²)）。
+- **⚠️ 白名单增补待人类批准**：`mdstream =0.3.0`（及可选 `mdstream-tokio 0.3.0`）不在现行依赖白名单内，需人类批准后 T15 才可落 workspace 依赖。
 
-### 5.1 管线设计（mdstream 引入场景）
+### 5.1 管线设计（路线 A：mdstream 0.3.0，spike 实测定稿）
 
 ```
-TextDelta ─▶ mdstream::MdStream.append()
-   ├─ Committed blocks（BlockId 稳定、永不变）─▶ pulldown-cmark 完整解析
-   │     ─▶ RenderNode 树 ─▶ **冻结缓存（按 BlockId）** ─▶ tree-sitter 高亮代码块
-   └─ PendingBlock（仅一个）─▶ mdstream display view（terminator 补全后）
-         ─▶ 轻量渲染；未闭合 ``` fence 内纯文本等宽（不高亮）
+TextDelta ─▶ mdstream-tokio coalesce（CoalesceLocal 攒批，8ms/4KB 先到先 flush）
+   ─▶ mdstream::MdStream.append_ref()（UI/解析线程持有 stream，零拷贝 borrowed update）
+   ├─ Committed blocks（BlockId 稳定、永不变）─▶ pulldown-cmark 完整解析（仅首次，按 BlockId 冻结缓存）
+   │     ─▶ RenderNode 树 ─▶ tree-sitter 高亮代码块（T16：闭合块才高亮）
+   └─ PendingBlock（仅一个）─▶ display view（terminator 补全后）─▶ 轻量解析
+         ─▶ 未闭合 ``` fence 内纯文本等宽（不高亮）
 block 提交事件 ─▶ 该 block 冻结 + 局部替换（禁全局重排）
-Update{reset:true}（罕见，如 footnote 模式）─▶ 清空缓存重建
+Update.reset=true（罕见，spike 48k delta 样本 0 次）─▶ 清空缓存重建
+Update.invalidated（后置引用定义）─▶ 按 BlockId 重解析指定块
 ```
+
+**spike 实测（2026-08-29，10k 行合成文档 277KB，48k 个 3-8 字节 delta）**：
+- 增量管线合计 **1.23 µs/delta**（append 0.87 + committed/pending 解析 0.36）→ 1k delta/s 下 **1.23 ms CPU/s（0.12% 单核）**；committed 块 2,667 个全部只解析一次（0 次重复解析），committed 内容 0 次变更。
+- 对照降级方案 B（每 delta 全量 reparse + 块级 diff）：10k 文档稳态 **712 µs/delta → 712 ms CPU/s（71% 单核）**，超 30% 预算 2.4 倍，且总量随文档线性增长（O(n²) 总量，全程估算为路线 A 的 290 倍）——**CPU 预算项上方案 B 直接出局**，仅保留为 mdstream 彻底不可用时的应急降级（届时必须再做分帧摊销设计）。
 
 ### 5.2 spike 验收（3 天时间框，不变）
 
 ① 10k 行虚拟化滚动 ≥120fps；② 1k delta/s 注入下 CPU <30%；③ 冻结区零重排（帧对比）。
 任一不达标 → 降级方案 B：「按 block 分段全量重渲染」（pulldown-cmark 全量解析但按 block diff 更新视图）。
 spike 第 1 天专门验证 mdstream：许可证、GFM 表格/tasklist 覆盖、reset 语义、版本锁定或 vendoring 预案（0.2.0 尚年轻）。
+
+**spike 实测（2026-08-29，Apple Silicon Mac，外接 4K@60Hz 显示器）**：
+- ① gpui `uniform_list` + 10k 行（混合 markdown 样本含 CJK）程序化滚动：fps 稳定 60（**被 60Hz 显示器 vsync 封顶**）；每帧 build 耗时 p50 7-12µs / p99 ≤22µs，对比 120fps 的 8.33ms 帧预算有 ~400 倍余量 → **判定 120fps 达标可行性成立**，字面 120fps 数字需在 ProMotion 目标硬件上复测（T17 验收时执行）。
+- ② 1k delta/s（实际 960-976/s）注入 12s：进程 CPU 均值 16.5%、峰值 23.1%（`ps -o %cpu` 采样）→ **达标**。
+- ③ 冻结区零重排：渲染计数器分区对照——流式注入期间冻结块重建计数 = 0（**CLEAN**）；对照组（每批 delta 全量重渲染 10k 块）冻结重建 10,512,288 次、CPU 29.7%，证明计数器方法有效区分两种路线。
 
 ### 5.3 无论中间件如何、必须自研的部分
 
@@ -291,3 +311,4 @@ UI 呈现：Provider 错误 → 会话内内联条+[重试]；Store 错误 → �
 
 ## 变更记录
 - v0.1 (2026-08-28) 初版定稿。
+- v0.2 (2026-08-29) T14 spike 结论回写：§5.0 尽调更新（mdstream 0.3.0 锁定、license/gpui 结论修正、0.4 移除 committed/pending 模型的 vendoring 预案、白名单增补待人类批准）；§5.1 路线 A 定稿附实测数据（1.23µs/δ vs 方案 B 712µs/δ）；§5.2 三项验收实测（60Hz 显示器下 120fps 余量成立、CPU 16.5%、冻结区 CLEAN）。
