@@ -31,6 +31,13 @@ rusqlite = "=0.40.2"
 ulid = "=3.0.0"
 # 配置解析（exec-guide §5 白名单，2026-08-29 人类批准）
 toml = "=1.1.4"
+# 网络依赖（exec-guide §5 白名单，2026-08-29 S4-T19 首次激活，版本 cargo info 查最新稳定）：
+# reqwest 锁 0.12 线——任务卡指定 features=["rustls-tls","json"] 的 feature 名仅存在于 0.12
+# （0.13 已改名 rustls 且默认 TLS 语义变化）；"stream" 为 Response::bytes_stream 所必需
+reqwest = { version = "=0.12.24", default-features = false, features = ["rustls-tls", "json", "stream"] }
+eventsource-stream = "=0.2.3"
+tokio-util = "=0.7.19"
+futures = "=0.3.34"
 # 安全依赖（exec-guide §5 白名单）：default feature "v1" 在 macOS 即 Keychain
 keyring = "=4.1.6"
 # 工具依赖（exec-guide §5 白名单，2026-08-29 T14 spike 确认引入并锁定 0.3.0，
