@@ -1,6 +1,6 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.1 · 2026-08-28 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.3 · 2026-08-30 · 关联：[vega-features.md](vega-features.md)
 
 > **设计基线决策**：UI 风格对齐 **Codex Desktop / ZCode 默认风格**——极简、留白充足、浅灰层次、无重边框、内容居中。不发明新设计语言，把精力放在渲染性能和工具卡片信息密度上。
 > 本文件是验收准线：每条都可检查、可测量。S 级 Sprint 验收时逐条过。
@@ -79,12 +79,16 @@
 ```
 - 状态色：执行中=旋转指示器+`text-secondary`，成功=`success` 图标，失败=`danger` 图标+退出码
 - 写操作卡片头部显示 `路径 +12/-3`，点击展开内嵌 diff
+- write/edit 卡只消费 tech-spec §2 的 strict 安全成功/失败投影：成功显示规范项目相对路径、bytes_written 与 edit replacements 摘要，不显示 checkpoint ref；失败只显示稳定、脱敏 code/message。missing/extra/wrong-type、非法 u64/replacements/ref 必须 fail closed 为损坏结果，禁止从 raw provider input、绝对 checkpoint path 或 preimage 补数据
+- invalid write/edit 显示 rejected 工具卡与 stable validation code，不生成权限卡，不显示/保留 raw path、body 或 JSON
 - 卡片间距 8px，圆角 8px，边框 1px `border-subtle`，无阴影
 
 ### 4.3 权限确认卡片
 - `warning` 左侧 3px 竖条；操作描述 + 命令全文（等宽）
 - 按钮三枚：[允许一次]（主按钮） [总是允许] [拒绝]；拒绝可附言输入
-- 键盘可操作：Enter=允许一次，Cmd+Enter=总是，Esc=拒绝
+- 普通卡键盘：初始焦点 [允许一次]；Enter=允许一次，Cmd+Enter=总是允许，Esc=拒绝
+- 危险命令卡 override（2026-08-30 人类裁决）：初始焦点必须是 [拒绝]；Tab/Shift+Tab 在三按钮间双向循环；Space 激活当前焦点按钮（包括 [允许一次]）。bare Enter 无论当前焦点在哪都必须拒绝，Cmd+Enter=总是允许当前次并保存 exact rule，Esc=拒绝。危险 always 不跳过下次危险确认，卡片须明确提示
+- key binding 仅在当前权限卡 scoped context 生效；重复按键只提交一次。卡片消失、线程切换、窗口关闭或 10 分钟超时均视为拒绝，绝不隐式批准
 
 ### 4.4 Composer
 - 多行自适应（1~8 行，超出内滚）；placeholder `text-tertiary`
@@ -124,3 +128,11 @@
 - [ ] 960×600 最小窗口无布局破裂
 - [ ] P1-P8 性能准线达标
 - [ ] 与 Codex/ZCode 并排截图对比：信息密度与视觉风格不违和（走查项）
+
+---
+
+## 变更记录
+
+- v0.1 (2026-08-28) 初版定稿。
+- v0.2 (2026-08-30) S5 安全裁决回写：§4.2 补 invalid write/edit 的脱敏 rejected card；§4.3 区分普通/危险权限卡默认焦点与 Enter 语义，危险卡补 Tab/Shift+Tab 焦点循环、Space 激活焦点，并固定 bare Enter 在任意焦点均拒绝；两类卡保留 Cmd+Enter/Esc 及重复提交、超时与视图销毁的 fail-closed 行为。
+- v0.3 (2026-08-30) 人类批准 S5 wire schema 回写：§4.2 固定 write/edit 工具卡只消费 strict 安全成功/失败投影，隐藏 checkpoint ref，并对损坏 shape fail closed。
