@@ -2,3 +2,12 @@
 name = "vega_conversation"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+vega_store = { workspace = true }
+thiserror = { workspace = true }
+# threads 表主键 ulid 在本 crate 内生成（T11 裁决：create_thread 内部生成）
+ulid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

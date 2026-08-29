@@ -13,6 +13,7 @@ use vega_ui::sidebar::{
     AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, Sidebar, SidebarCollapsed,
     ToggleSidebar, load_collapsed, toggle_persisted,
 };
+use vega_ui::threads::{CloseThreads, NewThread, OpenThreads, ThreadsOpen, ThreadsView};
 
 actions!(vega, [Quit, ToggleTheme]);
 
@@ -26,8 +27,8 @@ const EMPTY_STATE_TEMPLATES: [&str; 3] = ["快捷模板 1", "快捷模板 2", "�
 
 /// Root view of the main window: the A1 layout shell — a sidebar (260px,
 /// collapsible) next to a content column (max 820px, centered) that hosts
-/// either the empty state, the projects view (temporary T10 entry), or the
-/// settings view (Cmd+, / Esc).
+/// either the empty state, the projects view (temporary T10 entry), the
+/// temporary threads view (T11 entry), or the settings view (Cmd+, / Esc).
 struct VegaWindow {
     /// Sidebar shell; its placeholder blocks are filled by T10 (projects)
     /// and T12 (sessions).
@@ -39,6 +40,9 @@ struct VegaWindow {
     /// Cached projects view entity (T10 temporary mount; T12 moves projects
     /// into the sidebar and this page is retired).
     projects_view: Option<Entity<ProjectsView>>,
+    /// Cached temporary threads view (T11 stopgap until T12 integrates the
+    /// sidebar); rebuilt on each open so the list reloads from the store.
+    threads_view: Option<Entity<ThreadsView>>,
 }
 
 impl VegaWindow {
@@ -47,6 +51,7 @@ impl VegaWindow {
             sidebar: cx.new(|_| Sidebar),
             settings_view: None,
             projects_view: None,
+            threads_view: None,
         }
     }
 
@@ -56,6 +61,17 @@ impl VegaWindow {
     /// render sees the current size and no polling is involved.
     fn auto_collapsed(&self, window: &Window) -> bool {
         window.viewport_size().width < px(AUTO_COLLAPSE_WIDTH)
+    }
+
+    /// Cmd+N entry point: opens the temporary threads view and creates a
+    /// thread in the current project (the thread opens after creation).
+    fn open_new_thread(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.global_mut::<ThreadsOpen>().0 = true;
+        let view = self
+            .threads_view
+            .get_or_insert_with(|| cx.new(ThreadsView::new));
+        view.update(cx, ThreadsView::create_thread);
+        cx.refresh_windows();
     }
 }
 
@@ -83,10 +99,17 @@ impl Render for VegaWindow {
                 .projects_view
                 .get_or_insert_with(|| cx.new(ProjectsView::new));
             projects.clone().into_any_element()
+        } else if cx.global::<ThreadsOpen>().0 {
+            // T11 临时会话视图：由「会话(临时)」入口 / Cmd+N 打开，T12 归位。
+            let view = self
+                .threads_view
+                .get_or_insert_with(|| cx.new(ThreadsView::new));
+            view.clone().into_any_element()
         } else {
             // 视图均已关闭：丢弃缓存，下次打开时重新构造并载入最新数据。
             self.settings_view = None;
             self.projects_view = None;
+            self.threads_view = None;
             render_empty_state(colors).into_any_element()
         };
 
@@ -113,8 +136,8 @@ impl Render for VegaWindow {
 
 /// The content-area empty state (ui-spec §4.6): centered guidance with inert
 /// quick-template placeholder buttons, inside the 820px content column —
-/// no large logo illustration. Carries the temporary T10 entry button
-/// ("项目管理（临时）"); T12 moves project access into the sidebar.
+/// no large logo illustration. Carries the temporary T10/T11 entry buttons
+/// ("项目管理（临时）" / "会话(临时)"); T12 moves both into the sidebar.
 fn render_empty_state(colors: ThemeColors) -> AnyElement {
     div()
         .size_full()
@@ -180,6 +203,27 @@ fn render_empty_state(colors: ThemeColors) -> AnyElement {
                             },
                         )
                         .child("项目管理（临时）"),
+                )
+                // T11 临时入口：进入临时会话视图（T12 归位侧边栏后移除）。
+                .child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(colors.border_subtle)
+                        .bg(colors.bg_elevated)
+                        .text_size(px(Typography::SIDEBAR))
+                        .text_color(colors.text_secondary)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(colors.bg_hover).text_color(colors.text_primary))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                                window.dispatch_action(Box::new(OpenThreads), cx);
+                            },
+                        )
+                        .child("会话(临时)"),
                 ),
         )
         .into_any_element()
@@ -202,12 +246,22 @@ fn main() {
         // Projects view starts closed (T10 temporary mount).
         cx.set_global(ProjectsOpen(false));
 
+        // Temporary threads view starts closed; toggled by 会话(临时) / Cmd+N.
+        cx.set_global(ThreadsOpen(false));
+
         // Key bindings for the vega_ui text input components.
         vega_ui::init(cx);
 
         // Open + migrate the project store ($HOME/.vega/vega.db) and install
         // it as a global for the projects view (T10).
         vega_ui::projects::init(cx);
+
+        // T11: open the persistent store for the temporary threads UI; on
+        // failure the app still boots and the view degrades to an inline
+        // error (ui-spec §4.6: no modals).
+        if let Err(error) = vega_ui::threads::init(cx) {
+            tracing::error!(%error, "failed to open the vega store");
+        }
 
         let bounds = Bounds::centered(None, size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT)), cx);
         let min_size = size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT));
@@ -225,12 +279,15 @@ fn main() {
             |_, cx| cx.new(VegaWindow::new),
         );
 
-        if let Err(error) = window {
-            // Degrade path: without the main window there is nothing to run.
-            tracing::error!(%error, "failed to open the main window");
-            cx.quit();
-            return;
-        }
+        let window = match window {
+            Ok(window) => window,
+            Err(error) => {
+                // Degrade path: without the main window there is nothing to run.
+                tracing::error!(%error, "failed to open the main window");
+                cx.quit();
+                return;
+            }
+        };
 
         cx.activate(true);
         cx.bind_keys([
@@ -242,6 +299,8 @@ fn main() {
             KeyBinding::new("escape", CloseSettings, None),
             // Sidebar collapse toggle (T09).
             KeyBinding::new("cmd-b", ToggleSidebar, None),
+            // Thread creation (T11): button and Cmd+N share one entry point.
+            KeyBinding::new("cmd-n", NewThread, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &ToggleTheme, cx| {
@@ -264,6 +323,20 @@ fn main() {
         cx.on_action(|_: &CloseProjects, cx| {
             cx.set_global(ProjectsOpen(false));
             cx.refresh_windows();
+        });
+        // Temporary threads view switching (T11).
+        cx.on_action(|_: &OpenThreads, cx| {
+            cx.set_global(ThreadsOpen(true));
+            cx.refresh_windows();
+        });
+        cx.on_action(|_: &CloseThreads, cx| {
+            cx.set_global(ThreadsOpen(false));
+            cx.refresh_windows();
+        });
+        cx.on_action(move |_: &NewThread, cx| {
+            if let Err(error) = window.update(cx, VegaWindow::open_new_thread) {
+                tracing::error!(%error, "failed to handle Cmd+N in the main window");
+            }
         });
         cx.on_action(|_: &ToggleSidebar, cx| toggle_persisted(cx));
         // Quit once the last window is closed so the process does not linger.
