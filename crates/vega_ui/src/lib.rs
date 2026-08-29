@@ -14,10 +14,11 @@ pub mod text_input;
 use gpui::{App, KeyBinding};
 
 /// Registers the key bindings required by the vega_ui input components
-/// (editing keys for [`text_input::TextInput`]) plus the T13 inline-rename
+/// (editing keys for [`text_input::TextInput`]), the T13 inline-rename
 /// submit key (scoped to the `ThreadRename` key context so it cannot clash
-/// with other views). Call once at app startup; the settings actions are
-/// bound by the `vega` binary itself.
+/// with other views), and the T18 Composer keys (Enter = newline,
+/// Cmd+Enter = send, scoped to `Composer`). Call once at app startup; the
+/// settings actions are bound by the `vega` binary itself.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("backspace", text_input::Backspace, None),
@@ -36,5 +37,14 @@ pub fn init(cx: &mut App) {
         // T13 行内重命名：Enter 提交（作用域 ThreadRename；Esc 取消通过
         // 重命名编辑器拦截全局 CloseSettings 动作实现，见 sidebar.rs）。
         KeyBinding::new("enter", sidebar::ConfirmRename, Some("ThreadRename")),
+        // T18 Composer：Enter=换行、Cmd+Enter=发送（架构师裁定，ui-spec
+        // §4.4 未定项）。作用域 Composer——仅在 Composer 输入聚焦时生效，
+        // 不影响设置表单与行内重命名。
+        KeyBinding::new("enter", text_input::InsertNewline, Some("Composer")),
+        KeyBinding::new(
+            "cmd-enter",
+            conversation_stream::SendMessage,
+            Some("Composer"),
+        ),
     ]);
 }
