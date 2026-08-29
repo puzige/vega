@@ -42,6 +42,7 @@ vega_store = { path = "crates/vega_store" }
 vega_conversation = { path = "crates/vega_conversation" }
 vega_theme = { path = "crates/vega_theme" }
 vega_ui = { path = "crates/vega_ui" }
+vega_markdown = { path = "crates/vega_markdown" }
 # 仅供 xtask 使用
 anyhow = "=1.0.104"
 # 仅供测试使用（dev-dependency）

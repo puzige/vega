@@ -1,10 +1,12 @@
 //! GPUI views: sidebar with the projects/sessions blocks (T09 shell +
-//! T12 content), settings skeleton (A1-10), and shared input components.
+//! T12 content), settings skeleton (A1-10), shared input components, and the
+//! S3-T17 virtualized conversation stream.
 //!
 //! The T10/T11 temporary full-page projects/threads views were retired in
 //! T12; their data functions live on in `vega_store` / `vega_conversation`
 //! and the sidebar blocks render the lists now.
 
+pub mod conversation_stream;
 pub mod settings;
 pub mod sidebar;
 pub mod text_input;

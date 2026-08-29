@@ -29,8 +29,8 @@
 //!   from `vega_conversation`'s latest-project semantics and rewritten on
 //!   row click. `None` → the session block shows guidance copy.
 //! - The opened thread is cached in the [`OpenedThread`] global; the window
-//!   root renders it inline ([`render_opened_thread_pane`]) until S3
-//!   replaces that with the real session view.
+//!   root renders it as a [`crate::conversation_stream::ConversationStream`]
+//!   view since S3-T17.
 //!
 //! The viewport auto-collapse rule (ui-spec §1) is applied by the window
 //! root at render time.
@@ -82,9 +82,10 @@ pub struct SelectedProject(pub Option<String>);
 
 impl Global for SelectedProject {}
 
-/// The thread currently open in the content column. Written by
-/// [`ThreadsBlock`] on row click and by [`Sidebar::create_thread`]; the
-/// window root renders it inline (S3 replaces this with a real view).
+/// The opened-thread content column is rendered by the window root since
+/// S3-T17: an inline [`crate::conversation_stream::ConversationStream`] view
+/// (thread header + virtualized stream) replaces the former
+/// `render_opened_thread_pane` placeholder, which was deleted with this card.
 pub struct OpenedThread(pub Option<Thread>);
 
 impl Global for OpenedThread {}
@@ -1438,41 +1439,6 @@ impl Render for ThreadsBlock {
             })
             .into_any_element()
     }
-}
-
-/// The opened-thread content column (T11 logic, retained): the thread title
-/// header above the 「会话内容 S3 接入」 placeholder. Rendered inline by the
-/// window root; S3 replaces this with the real session view.
-pub fn render_opened_thread_pane(thread: &Thread, colors: ThemeColors) -> AnyElement {
-    div()
-        .flex_1()
-        .flex()
-        .flex_col()
-        .bg(colors.bg_base)
-        .text_color(colors.text_primary)
-        .child(
-            // 当前 thread 标题头。
-            div()
-                .px(px(CONTENT_MIN_PADDING))
-                .py(px(16.))
-                .border_b_1()
-                .border_color(colors.border_subtle)
-                .text_size(px(Typography::HEADING_PAGE))
-                .font_weight(Typography::HEADING_PAGE_WEIGHT)
-                .child(thread_title(thread)),
-        )
-        .child(
-            // 空态占位：会话内容由 S3 接入。
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(colors.text_tertiary)
-                .text_size(px(Typography::BODY))
-                .child("会话内容将在 S3 接入后显示"),
-        )
-        .into_any_element()
 }
 
 /// A single hover action button on a session row (compact text label, token
