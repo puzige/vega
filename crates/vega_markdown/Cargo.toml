@@ -2,3 +2,10 @@
 name = "vega_markdown"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+# mdstream 0.3.0（tech-spec §5.0 路线 A）：committed/pending 增量分块；
+# `pulldown` feature 启用官方 PulldownAdapter（引用定义 prelude 注入 + invalidated 重解析）
+mdstream = { workspace = true, features = ["pulldown"] }
+pulldown-cmark = { workspace = true }
+thiserror = { workspace = true }
