@@ -1,6 +1,6 @@
 # ✦ Vega — 执行层开发总纲（Executor's Constitution）
 
-**版本** v0.3 · 2026-08-29 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
+**版本** v0.5 · 2026-08-29 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
 **关联**：[vega-tech-spec-p1.md](vega-tech-spec-p1.md)（实现规格）· [vega-tech-risks.md](vega-tech-risks.md)（难点方案）· [vega-features.md](vega-features.md)（功能点 ID）· [vega-ui-spec.md](vega-ui-spec.md)（UI 准线）
 
 > 本文件是执行模型的**最高行为准则**。每个任务 prompt 都必须附本文件路径。任何与本文件冲突的"看起来更合理"的做法都是错的。
