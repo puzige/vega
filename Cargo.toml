@@ -61,6 +61,8 @@ tree-sitter-python = "=0.25.0"
 # workspace 内部 crate
 vega_store = { path = "crates/vega_store" }
 vega_conversation = { path = "crates/vega_conversation" }
+vega_runtime = { path = "crates/vega_runtime" }
+vega_tools = { path = "crates/vega_tools" }
 vega_theme = { path = "crates/vega_theme" }
 vega_ui = { path = "crates/vega_ui" }
 vega_markdown = { path = "crates/vega_markdown" }

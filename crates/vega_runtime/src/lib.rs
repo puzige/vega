@@ -55,17 +55,22 @@
 //! ));
 //! ```
 
+mod agent;
 mod error;
 mod mock;
 mod openai;
 mod provider;
 mod retry;
 
+pub use agent::{
+    AgentOutcome, AgentRequest, RuntimeEvent, RuntimeFinishReason, RuntimeTokenUsage,
+    RuntimeToolCall, RuntimeToolResult, RuntimeToolStatus, TOOL_CALL_LIMIT, run_agent,
+};
 pub use error::VegaError;
 pub use mock::{MockProvider, ScriptStep};
 pub use openai::OpenAiProvider;
 pub use provider::{
-    ChatMessage, ChatRequest, ChatRole, EventStream, Provider, ProviderEvent, StopReason,
-    ToolDefinition,
+    ChatMessage, ChatRequest, ChatRole, ChatToolCall, EventStream, Provider, ProviderEvent,
+    StopReason, ToolDefinition,
 };
 pub use retry::RetryPolicy;

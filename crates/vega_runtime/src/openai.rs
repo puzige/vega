@@ -200,13 +200,41 @@ impl Provider for OpenAiProvider {
 /// Serializes a [`ChatRequest`] into the OpenAI chat-completion body:
 /// `stream: true` + `stream_options.include_usage` always on.
 fn build_request_body(req: &ChatRequest) -> serde_json::Value {
+    let messages = req
+        .messages
+        .iter()
+        .map(|message| {
+            let mut wire = serde_json::json!({
+                "role": message.role.as_str(),
+                "content": message.content,
+            });
+            if let Some(call_id) = &message.tool_call_id {
+                wire["tool_call_id"] = serde_json::Value::String(call_id.clone());
+            }
+            if !message.tool_calls.is_empty() {
+                wire["tool_calls"] = serde_json::Value::Array(
+                    message
+                        .tool_calls
+                        .iter()
+                        .map(|call| {
+                            serde_json::json!({
+                                "id": call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.name,
+                                    "arguments": call.input_json,
+                                }
+                            })
+                        })
+                        .collect(),
+                );
+            }
+            wire
+        })
+        .collect::<Vec<_>>();
     let mut body = serde_json::json!({
         "model": req.model,
-        "messages": req
-            .messages
-            .iter()
-            .map(|m| serde_json::json!({ "role": m.role.as_str(), "content": m.content }))
-            .collect::<Vec<_>>(),
+        "messages": messages,
         "stream": true,
         "stream_options": { "include_usage": true },
     });
