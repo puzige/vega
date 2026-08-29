@@ -40,6 +40,8 @@ pub mod config;
 pub mod git_detect;
 pub mod keystore;
 pub mod projects;
+// T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
+pub mod threads;
 
 use std::path::Path;
 
