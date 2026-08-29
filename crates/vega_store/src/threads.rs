@@ -99,16 +99,90 @@ pub fn create(conn: &Connection, thread: NewThread) -> Result<(), rusqlite::Erro
 /// Lists the threads of one project: the pinned group first, then most
 /// recently updated (ui-spec §4.1: 置顶组优先；`idx_threads_project`
 /// DDL index ordering covers the `updated_at DESC` part).
+///
+/// T13 (A1-05) adds the lifecycle filter: `Some("active")`/`Some("archived")`
+/// restricts the list to that status; `None` keeps every row. The sidebar
+/// main list reads active threads only and the 「已归档」 collapsed section
+/// reads archived ones.
 pub fn list_by_project(
     conn: &Connection,
     project_id: &str,
+    status: Option<&str>,
 ) -> Result<Vec<ThreadRow>, rusqlite::Error> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM threads WHERE project_id = ?1 \
-         ORDER BY pinned DESC, updated_at DESC"
-    ))?;
-    let rows = stmt.query_map([project_id], thread_from_row)?;
-    rows.collect()
+    let rows = match status {
+        Some(status) => {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {COLUMNS} FROM threads WHERE project_id = ?1 AND status = ?2 \
+                 ORDER BY pinned DESC, updated_at DESC"
+            ))?;
+            stmt.query_map(params![project_id, status], thread_from_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        None => {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {COLUMNS} FROM threads WHERE project_id = ?1 \
+                 ORDER BY pinned DESC, updated_at DESC"
+            ))?;
+            stmt.query_map([project_id], thread_from_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    };
+    Ok(rows)
+}
+
+/// Renames one thread and bumps `updated_at` to `now` (A1-05: 按 DDL 语义
+/// 重命名即会话活动，时间戳同步推进，使列表按最近更新排序).
+///
+/// Returns the number of rows updated; 0 means the thread does not exist.
+pub fn rename(
+    conn: &Connection,
+    id: &str,
+    title: &str,
+    now: i64,
+) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        "UPDATE threads SET title = ?1, updated_at = ?2 WHERE id = ?3",
+        params![title, now, id],
+    )
+}
+
+/// Sets the lifecycle status (`active` ↔ `archived`); `updated_at` is left
+/// untouched so archiving does not reorder the list (A1-05).
+///
+/// Returns the number of rows updated; 0 means the thread does not exist.
+pub fn set_status(conn: &Connection, id: &str, status: &str) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        "UPDATE threads SET status = ?1 WHERE id = ?2",
+        params![status, id],
+    )
+}
+
+/// Sets the pinned flag (0 ↔ 1); `updated_at` is left untouched (A1-05).
+///
+/// Returns the number of rows updated; 0 means the thread does not exist.
+pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        "UPDATE threads SET pinned = ?1 WHERE id = ?2",
+        params![pinned, id],
+    )
+}
+
+/// Deletes one thread and — in the same transaction — all of its `messages`
+/// and `tool_calls` rows (A1-05: the DDL declares no `ON DELETE CASCADE`, so
+/// the deletion must sweep child tables itself to prevent orphan rows).
+///
+/// `token_usage` rows are intentionally **kept**: they carry the cost audit
+/// trail (成本审计) and must survive thread deletion.
+///
+/// Returns the number of threads deleted; 0 means the thread did not exist
+/// (the transaction still commits, having touched nothing).
+pub fn delete_thread(conn: &Connection, id: &str) -> Result<usize, rusqlite::Error> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM messages WHERE thread_id = ?1", [id])?;
+    tx.execute("DELETE FROM tool_calls WHERE thread_id = ?1", [id])?;
+    let deleted = tx.execute("DELETE FROM threads WHERE id = ?1", [id])?;
+    tx.commit()?;
+    Ok(deleted)
 }
 
 /// Loads one thread row; `Ok(None)` when the id does not exist.
@@ -338,7 +412,7 @@ mod tests {
         insert_project(store.conn(), "p2", "beta", 20);
         insert_row(store.conn(), &sample_row("t-other", "p2", 999));
 
-        let ids: Vec<String> = super::list_by_project(store.conn(), "p1")
+        let ids: Vec<String> = super::list_by_project(store.conn(), "p1", None)
             .unwrap()
             .iter()
             .map(|r| r.id.clone())
@@ -360,12 +434,157 @@ mod tests {
         // 未置顶但 updated_at 更晚的线程仍排在置顶组之后。
         insert_row(store.conn(), &sample_row("t-plain", "p1", 400));
 
-        let ids: Vec<String> = super::list_by_project(store.conn(), "p1")
+        let ids: Vec<String> = super::list_by_project(store.conn(), "p1", None)
             .unwrap()
             .iter()
             .map(|r| r.id.clone())
             .collect();
         assert_eq!(ids, vec!["t-p1", "t-p2", "t-plain"]);
+    }
+
+    #[test]
+    fn list_by_project_filters_by_status() {
+        let (store, _dir) = open_store();
+        insert_project(store.conn(), "p1", "alpha", 10);
+        insert_row(store.conn(), &sample_row("t-a1", "p1", 300));
+        insert_row(store.conn(), &sample_row("t-a2", "p1", 100));
+        let mut archived = sample_row("t-h1", "p1", 200);
+        archived.status = "archived".to_string();
+        let mut archived_pinned = sample_row("t-h2", "p1", 50);
+        archived_pinned.status = "archived".to_string();
+        archived_pinned.pinned = true;
+        insert_row(store.conn(), &archived);
+        insert_row(store.conn(), &archived_pinned);
+        // 其他项目的线程不得混入任何过滤结果。
+        insert_project(store.conn(), "p2", "beta", 20);
+        insert_row(store.conn(), &sample_row("t-other", "p2", 999));
+
+        let active: Vec<String> = super::list_by_project(store.conn(), "p1", Some("active"))
+            .unwrap()
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        assert_eq!(active, vec!["t-a1", "t-a2"]);
+        // 归档组同样置顶优先、updated_at 倒序。
+        let archived_ids: Vec<String> =
+            super::list_by_project(store.conn(), "p1", Some("archived"))
+                .unwrap()
+                .iter()
+                .map(|r| r.id.clone())
+                .collect();
+        assert_eq!(archived_ids, vec!["t-h2", "t-h1"]);
+        // None 不过滤。
+        let all = super::list_by_project(store.conn(), "p1", None).unwrap();
+        assert_eq!(all.len(), 4);
+    }
+
+    #[test]
+    fn rename_updates_title_and_bumps_updated_at() {
+        let (store, _dir) = open_store();
+        insert_project(store.conn(), "p1", "alpha", 10);
+        insert_row(store.conn(), &sample_row("t1", "p1", 100));
+
+        assert_eq!(super::rename(store.conn(), "t1", "新标题", 900).unwrap(), 1);
+        let row = super::find(store.conn(), "t1").unwrap().unwrap();
+        assert_eq!(row.title, "新标题");
+        assert_eq!(row.updated_at, 900);
+        // 其余列不受影响。
+        assert_eq!(row.status, "active");
+        assert!(!row.pinned);
+    }
+
+    #[test]
+    fn rename_missing_thread_updates_nothing() {
+        let (store, _dir) = open_store();
+        assert_eq!(super::rename(store.conn(), "missing", "x", 900).unwrap(), 0);
+    }
+
+    #[test]
+    fn set_status_and_set_pinned_keep_updated_at() {
+        let (store, _dir) = open_store();
+        insert_project(store.conn(), "p1", "alpha", 10);
+        insert_row(store.conn(), &sample_row("t1", "p1", 100));
+
+        assert_eq!(
+            super::set_status(store.conn(), "t1", "archived").unwrap(),
+            1
+        );
+        assert_eq!(super::set_pinned(store.conn(), "t1", true).unwrap(), 1);
+        let row = super::find(store.conn(), "t1").unwrap().unwrap();
+        assert_eq!(row.status, "archived");
+        assert!(row.pinned);
+        // 状态/置顶切换不是会话活动：updated_at 保持原值。
+        assert_eq!(row.updated_at, 100);
+    }
+
+    #[test]
+    fn set_status_and_set_pinned_missing_thread_update_nothing() {
+        let (store, _dir) = open_store();
+        assert_eq!(
+            super::set_status(store.conn(), "missing", "archived").unwrap(),
+            0
+        );
+        assert_eq!(super::set_pinned(store.conn(), "missing", true).unwrap(), 0);
+    }
+
+    /// 裸 SQL 灌入 message / tool_call / token_usage 行（补齐 DDL 必填字段），
+    /// 用于 delete_thread 的事务原子性验证（架构师裁决③）。
+    fn insert_thread_children(conn: &Connection, thread_id: &str) {
+        conn.execute(
+            "INSERT INTO messages (id, thread_id, seq, role, content, created_at) \
+             VALUES (?1, ?2, 1, 'user', 'hello', 1)",
+            params![format!("m-{thread_id}"), thread_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, status, created_at) \
+             VALUES (?1, ?2, ?3, 1, 'bash', '{}', 'success', 2)",
+            params![format!("tc-{thread_id}"), thread_id, format!("m-{thread_id}")],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO token_usage (thread_id, message_id, model, input_tokens, output_tokens, cost_microcents, created_at) \
+             VALUES (?1, ?2, 'test-model', 10, 20, 3, 3)",
+            params![thread_id, format!("m-{thread_id}")],
+        )
+        .unwrap();
+    }
+
+    fn count(conn: &Connection, table: &str, thread_id: &str) -> i64 {
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = ?1"),
+            [thread_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn delete_thread_removes_messages_and_tool_calls_in_one_transaction() {
+        let (store, _dir) = open_store();
+        insert_project(store.conn(), "p1", "alpha", 10);
+        insert_row(store.conn(), &sample_row("t1", "p1", 100));
+        insert_row(store.conn(), &sample_row("t2", "p1", 200));
+        insert_thread_children(store.conn(), "t1");
+        insert_thread_children(store.conn(), "t2");
+
+        assert_eq!(super::delete_thread(store.conn(), "t1").unwrap(), 1);
+        // thread 行与其 messages / tool_calls 一并消失（无孤儿行）。
+        assert_eq!(super::find(store.conn(), "t1").unwrap(), None);
+        assert_eq!(count(store.conn(), "messages", "t1"), 0);
+        assert_eq!(count(store.conn(), "tool_calls", "t1"), 0);
+        // token_usage 保留作成本审计（卡面要求）。
+        assert_eq!(count(store.conn(), "token_usage", "t1"), 1);
+        // 其他线程不受影响。
+        assert!(super::find(store.conn(), "t2").unwrap().is_some());
+        assert_eq!(count(store.conn(), "messages", "t2"), 1);
+        assert_eq!(count(store.conn(), "tool_calls", "t2"), 1);
+    }
+
+    #[test]
+    fn delete_thread_missing_thread_deletes_nothing() {
+        let (store, _dir) = open_store();
+        assert_eq!(super::delete_thread(store.conn(), "missing").unwrap(), 0);
     }
 
     #[test]

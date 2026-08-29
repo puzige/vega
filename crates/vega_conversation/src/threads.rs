@@ -115,10 +115,80 @@ pub fn create_thread(
     Ok(thread)
 }
 
-/// Lists a project's threads, most recently updated first.
-pub fn list_threads(store: &Store, project_id: &str) -> Result<Vec<Thread>, ConversationError> {
-    let rows = store::list_by_project(store.conn(), project_id).map_err(store_error)?;
+/// Lists a project's threads, most recently updated first, pinned group
+/// first. T13 (A1-05) adds the lifecycle filter: `Some(status)` restricts
+/// the list (the sidebar main list reads `Active`, the 「已归档」 section
+/// reads `Archived`); `None` keeps both.
+pub fn list_threads(
+    store: &Store,
+    project_id: &str,
+    status: Option<ThreadStatus>,
+) -> Result<Vec<Thread>, ConversationError> {
+    let rows = store::list_by_project(store.conn(), project_id, status.map(ThreadStatus::as_str))
+        .map_err(store_error)?;
     rows.iter().map(thread_from_row).collect()
+}
+
+/// Loads one thread by id; reports [`ConversationError::NotFound`] when the
+/// row is missing.
+fn get_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
+    let row = store::find(store.conn(), thread_id)
+        .map_err(store_error)?
+        .ok_or_else(|| ConversationError::NotFound(thread_id.to_string()))?;
+    thread_from_row(&row)
+}
+
+/// Renames a thread (A1-05) and bumps `updated_at` (rename is thread
+/// activity per the DDL semantics), returning the refreshed thread.
+pub fn rename_thread(
+    store: &Store,
+    thread_id: &str,
+    title: &str,
+) -> Result<Thread, ConversationError> {
+    let updated = store::rename(store.conn(), thread_id, title, now_ms()).map_err(store_error)?;
+    if updated == 0 {
+        return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    get_thread(store, thread_id)
+}
+
+/// Switches a thread's lifecycle status (`active` ↔ `archived`, A1-05).
+/// `updated_at` is not bumped, so archiving does not reorder the list.
+pub fn set_thread_status(
+    store: &Store,
+    thread_id: &str,
+    status: ThreadStatus,
+) -> Result<(), ConversationError> {
+    let updated =
+        store::set_status(store.conn(), thread_id, status.as_str()).map_err(store_error)?;
+    if updated == 0 {
+        return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    Ok(())
+}
+
+/// Sets a thread's pinned flag (置顶切换, A1-05). `updated_at` is not bumped.
+pub fn set_thread_pinned(
+    store: &Store,
+    thread_id: &str,
+    pinned: bool,
+) -> Result<(), ConversationError> {
+    let updated = store::set_pinned(store.conn(), thread_id, pinned).map_err(store_error)?;
+    if updated == 0 {
+        return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    Ok(())
+}
+
+/// Deletes a thread (A1-05). The store layer removes the thread together
+/// with its `messages`/`tool_calls` rows in one transaction (no orphan rows;
+/// `token_usage` is kept for cost auditing).
+pub fn delete_thread(store: &Store, thread_id: &str) -> Result<(), ConversationError> {
+    let deleted = store::delete_thread(store.conn(), thread_id).map_err(store_error)?;
+    if deleted == 0 {
+        return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    Ok(())
 }
 
 /// Applies a partial update (title/status/pinned/unread) to one thread.
@@ -183,7 +253,8 @@ fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, ConversationError> 
 #[cfg(test)]
 mod tests {
     use super::{
-        create_thread, current_project, list_threads, new_thread_id, open_thread, update_thread,
+        create_thread, current_project, delete_thread, list_threads, new_thread_id, open_thread,
+        rename_thread, set_thread_pinned, set_thread_status, update_thread,
     };
     use crate::types::{ConversationError, ThreadMode, ThreadStatus, ThreadUpdate};
     use vega_store::Store;
@@ -298,9 +369,35 @@ mod tests {
             .execute("UPDATE threads SET updated_at = 200 WHERE rowid = 3", [])
             .unwrap();
 
-        let threads = list_threads(&store, "p1").unwrap();
+        let threads = list_threads(&store, "p1", None).unwrap();
         let updated: Vec<i64> = threads.iter().map(|thread| thread.updated_at).collect();
         assert_eq!(updated, vec![300, 200, 100]);
+    }
+
+    #[test]
+    fn list_threads_filters_by_status() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let first = create_thread(&store, "p1", "", "confirm").unwrap();
+        let second = create_thread(&store, "p1", "", "confirm").unwrap();
+        set_thread_status(&store, &second.id, ThreadStatus::Archived).unwrap();
+
+        let active = list_threads(&store, "p1", Some(ThreadStatus::Active)).unwrap();
+        assert_eq!(
+            active.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            vec![first.id.as_str()]
+        );
+        assert!(active.iter().all(|t| t.status == ThreadStatus::Active));
+
+        let archived = list_threads(&store, "p1", Some(ThreadStatus::Archived)).unwrap();
+        assert_eq!(
+            archived.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+            vec![second.id.as_str()]
+        );
+        assert!(archived.iter().all(|t| t.status == ThreadStatus::Archived));
+
+        // None 不过滤：主列表与归档区条数之和。
+        assert_eq!(list_threads(&store, "p1", None).unwrap().len(), 2);
     }
 
     #[test]
@@ -312,7 +409,7 @@ mod tests {
             .conn()
             .execute("UPDATE threads SET mode = 'yolo'", [])
             .unwrap();
-        let error = list_threads(&store, "p1").unwrap_err();
+        let error = list_threads(&store, "p1", None).unwrap_err();
         assert!(matches!(error, ConversationError::CorruptRow(_)));
     }
 
@@ -393,6 +490,160 @@ mod tests {
             },
         )
         .unwrap_err();
+        assert!(matches!(error, ConversationError::NotFound(id) if id == "missing"));
+    }
+
+    #[test]
+    fn rename_thread_updates_title_and_bumps_updated_at() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let thread = create_thread(&store, "p1", "", "confirm").unwrap();
+        // 把 updated_at 拨回过去，验证重命名确实推进时间戳（DDL 语义）。
+        store
+            .conn()
+            .execute("UPDATE threads SET updated_at = 1000", [])
+            .unwrap();
+
+        let renamed = rename_thread(&store, &thread.id, "重命名").unwrap();
+        assert_eq!(renamed.title, "重命名");
+        assert!(renamed.updated_at > 1000);
+        // 落库值一致。
+        assert_eq!(open_thread(&store, &thread.id).unwrap().title, "重命名");
+    }
+
+    #[test]
+    fn rename_thread_missing_reports_not_found() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let error = rename_thread(&store, "missing", "x").unwrap_err();
+        assert!(matches!(error, ConversationError::NotFound(id) if id == "missing"));
+    }
+
+    #[test]
+    fn set_thread_status_toggles_between_active_and_archived() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let thread = create_thread(&store, "p1", "", "confirm").unwrap();
+        store
+            .conn()
+            .execute("UPDATE threads SET updated_at = 1000", [])
+            .unwrap();
+
+        set_thread_status(&store, &thread.id, ThreadStatus::Archived).unwrap();
+        // 读取走裸 SQL，避免 open_thread 的触碰副作用干扰断言。
+        let (status, updated_at): (String, i64) = store
+            .conn()
+            .query_row(
+                "SELECT status, updated_at FROM threads WHERE id = ?1",
+                [&thread.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "archived");
+        // 归档不是会话活动：updated_at 不推进。
+        assert_eq!(updated_at, 1000);
+
+        set_thread_status(&store, &thread.id, ThreadStatus::Active).unwrap();
+        let status: String = store
+            .conn()
+            .query_row(
+                "SELECT status FROM threads WHERE id = ?1",
+                [&thread.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
+    }
+
+    #[test]
+    fn set_thread_status_missing_reports_not_found() {
+        let (store, _dir) = open_store();
+        let error = set_thread_status(&store, "missing", ThreadStatus::Archived).unwrap_err();
+        assert!(matches!(error, ConversationError::NotFound(id) if id == "missing"));
+    }
+
+    #[test]
+    fn set_thread_pinned_toggles_the_flag() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let thread = create_thread(&store, "p1", "", "confirm").unwrap();
+
+        set_thread_pinned(&store, &thread.id, true).unwrap();
+        assert!(open_thread(&store, &thread.id).unwrap().pinned);
+        set_thread_pinned(&store, &thread.id, false).unwrap();
+        assert!(!open_thread(&store, &thread.id).unwrap().pinned);
+    }
+
+    #[test]
+    fn set_thread_pinned_missing_reports_not_found() {
+        let (store, _dir) = open_store();
+        let error = set_thread_pinned(&store, "missing", true).unwrap_err();
+        assert!(matches!(error, ConversationError::NotFound(id) if id == "missing"));
+    }
+
+    #[test]
+    fn delete_thread_removes_the_thread_but_keeps_token_usage() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let thread = create_thread(&store, "p1", "", "confirm").unwrap();
+        // 裸 SQL 灌入 message / tool_call / token_usage 行（架构师裁决③：
+        // 验证删除的事务原子性——messages/tool_calls 无孤儿行）。
+        store
+            .conn()
+            .execute(
+                "INSERT INTO messages (id, thread_id, seq, role, content, created_at) \
+                 VALUES ('m1', ?1, 1, 'user', 'hello', 1)",
+                [&thread.id],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, status, created_at) \
+                 VALUES ('tc1', ?1, 'm1', 1, 'bash', '{}', 'success', 2)",
+                [&thread.id],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO token_usage (thread_id, message_id, model, input_tokens, output_tokens, cost_microcents, created_at) \
+                 VALUES (?1, 'm1', 'test-model', 10, 20, 3, 3)",
+                [&thread.id],
+            )
+            .unwrap();
+
+        delete_thread(&store, &thread.id).unwrap();
+        let count = |table: &str| -> i64 {
+            store
+                .conn()
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = ?1"),
+                    [&thread.id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        // thread 行已删除（读取走裸 SQL，避免 open_thread 的触碰副作用）。
+        let remaining: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = ?1",
+                [&thread.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+        assert_eq!(count("messages"), 0);
+        assert_eq!(count("tool_calls"), 0);
+        // token_usage 保留作成本审计（卡面要求）。
+        assert_eq!(count("token_usage"), 1);
+    }
+
+    #[test]
+    fn delete_thread_missing_reports_not_found() {
+        let (store, _dir) = open_store();
+        let error = delete_thread(&store, "missing").unwrap_err();
         assert!(matches!(error, ConversationError::NotFound(id) if id == "missing"));
     }
 

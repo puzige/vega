@@ -9,8 +9,9 @@ use gpui_platform::application;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
 use vega_ui::settings::{CloseSettings, OpenSettings, SettingsOpen, SettingsView};
 use vega_ui::sidebar::{
-    AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, NewThread, OpenedThread, Sidebar,
-    SidebarCollapsed, ToggleSidebar, load_collapsed, render_opened_thread_pane, toggle_persisted,
+    AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, NewThread, OpenedThread,
+    PendingDeleteConfirm, Sidebar, SidebarCollapsed, ToggleSidebar, load_collapsed,
+    render_delete_confirm_overlay, render_opened_thread_pane, toggle_persisted,
 };
 
 actions!(vega, [Quit, ToggleTheme]);
@@ -67,6 +68,9 @@ impl Render for VegaWindow {
         // Effective visibility: the user preference (Cmd+B, persisted) AND the
         // viewport auto-collapse rule (ui-spec §1).
         let sidebar_visible = !cx.global::<SidebarCollapsed>().0 && !self.auto_collapsed(window);
+        // T13 delete confirmation overlay: rendered above everything (window
+        // root, absolute) while a delete is pending (裁决②).
+        let pending_delete = cx.global::<PendingDeleteConfirm>().0.clone();
 
         // Settings opens inside the content area (T09 layout change of the
         // T08 view switching): the sidebar stays visible unless collapsed.
@@ -90,6 +94,7 @@ impl Render for VegaWindow {
             .size_full()
             .flex()
             .flex_row()
+            .relative()
             .bg(colors.bg_base)
             .text_color(colors.text_primary)
             .when(sidebar_visible, |row| row.child(self.sidebar.clone()))
@@ -102,6 +107,12 @@ impl Render for VegaWindow {
                     .h_full()
                     .overflow_hidden()
                     .child(content),
+            )
+            // T13 删除确认弹层：最后绘制以覆盖全窗口；遮罩点击 / Esc 取消。
+            .children(
+                pending_delete.map(|thread| {
+                    render_delete_confirm_overlay(&thread, self.sidebar.clone(), colors)
+                }),
             )
     }
 }
@@ -232,7 +243,16 @@ fn main() {
             cx.refresh_windows();
         });
         cx.on_action(|_: &CloseSettings, cx| {
-            cx.set_global(SettingsOpen(false));
+            // T13 裁决②：删除确认弹层存在时优先消费 Esc（弹层关闭后设置
+            // 视图保持不变），行内重命名的 Esc 由其编辑器在更内层拦截。
+            let overlay_open = cx
+                .try_global::<PendingDeleteConfirm>()
+                .is_some_and(|pending| pending.0.is_some());
+            if overlay_open {
+                cx.set_global(PendingDeleteConfirm(None));
+            } else {
+                cx.set_global(SettingsOpen(false));
+            }
             cx.refresh_windows();
         });
         cx.on_action(move |_: &NewThread, cx| {
