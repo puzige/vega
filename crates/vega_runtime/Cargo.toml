@@ -2,3 +2,20 @@
 name = "vega_runtime"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+# 网络组（exec-guide §5 白名单，S4-T19 首次激活）：OpenAI 兼容 SSE 流式 provider
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util"] }
+# macros：tokio::select!（cancel 竞争与退避睡眠）；rt：#[tokio::test] 的运行时
+tokio-util = { workspace = true }   # CancellationToken（tech-spec §4.1 cancel 参数）
+futures = { workspace = true }      # BoxFuture/Stream 组合子（手工装箱 trait，零 async-trait）
+reqwest = { workspace = true }      # rustls + json + stream（bytes_stream 供 SSE 解析）
+eventsource-stream = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# VegaError::Store（tech-spec §7 全枚举落 vega_runtime，T19 卡"按需引入"；bundled 仅 vega_store 启用）
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+# 多线程测试运行时（#[tokio::test]；macros/rt 已在主依赖启用）
+tokio = { workspace = true, features = ["rt-multi-thread"] }
