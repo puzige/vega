@@ -18,7 +18,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 ## 状态
 
-📋 **S1（脚手架 Sprint）已完成并验收（PR #1-#8），S2 任务卡已拆（T09-T13）待开工**。全部设计文档在 [`docs/`](docs/)：
+📋 **S1（脚手架）、S2（侧边栏 & 项目模型）、S3（流式会话渲染）已完成并验收（PR #1-#18）**。全部设计文档在 [`docs/`](docs/)：
 
 | 文档 | 内容 |
 |---|---|
@@ -31,7 +31,8 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-exec-guide.md](docs/vega-exec-guide.md) | 执行宪法（红线/白名单/验收协议） |
 | [vega-phase1-plan.md](docs/vega-phase1-plan.md) | Phase 1 八 Sprint 计划 |
 | [vega-s1-tasks.md](docs/vega-s1-tasks.md) | S1 任务卡 T01-T08（已完成） |
-| [vega-s2-tasks.md](docs/vega-s2-tasks.md) | S2 任务卡 T09-T13（侧边栏 & 项目模型） |
+| [vega-s2-tasks.md](docs/vega-s2-tasks.md) | S2 任务卡 T09-T13（已完成） |
+| [vega-s3-tasks.md](docs/vega-s3-tasks.md) | S3 任务卡 T14-T18（流式会话渲染，已完成） |
 
 ## 关键决策（详见 PRD）
 
