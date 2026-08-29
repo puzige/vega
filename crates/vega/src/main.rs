@@ -2,11 +2,12 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Bounds, Entity, KeyBinding, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, actions, div, px, size,
+    AnyElement, App, Bounds, Entity, KeyBinding, MouseButton, MouseUpEvent, TitlebarOptions,
+    Window, WindowBounds, WindowOptions, actions, div, px, size,
 };
 use gpui_platform::application;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
+use vega_ui::projects::{CloseProjects, OpenProjects, ProjectsOpen, ProjectsView};
 use vega_ui::settings::{CloseSettings, OpenSettings, SettingsOpen, SettingsView};
 use vega_ui::sidebar::{
     AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, Sidebar, SidebarCollapsed,
@@ -25,7 +26,8 @@ const EMPTY_STATE_TEMPLATES: [&str; 3] = ["快捷模板 1", "快捷模板 2", "�
 
 /// Root view of the main window: the A1 layout shell — a sidebar (260px,
 /// collapsible) next to a content column (max 820px, centered) that hosts
-/// either the empty state or the settings view (Cmd+, / Esc).
+/// either the empty state, the projects view (temporary T10 entry), or the
+/// settings view (Cmd+, / Esc).
 struct VegaWindow {
     /// Sidebar shell; its placeholder blocks are filled by T10 (projects)
     /// and T12 (sessions).
@@ -34,6 +36,9 @@ struct VegaWindow {
     /// (e.g. the theme toggle) never rebuild the form mid-typing; dropped when
     /// settings closes so the next open reloads the config from disk.
     settings_view: Option<Entity<SettingsView>>,
+    /// Cached projects view entity (T10 temporary mount; T12 moves projects
+    /// into the sidebar and this page is retired).
+    projects_view: Option<Entity<ProjectsView>>,
 }
 
 impl VegaWindow {
@@ -41,6 +46,7 @@ impl VegaWindow {
         Self {
             sidebar: cx.new(|_| Sidebar),
             settings_view: None,
+            projects_view: None,
         }
     }
 
@@ -63,15 +69,24 @@ impl Render for VegaWindow {
 
         // Settings opens inside the content area (T09 layout change of the
         // T08 view switching): the sidebar stays visible unless collapsed.
+        // T10's projects view uses the same mechanism (temporary entry under
+        // the empty state) until T12 moves it into the sidebar.
         let content: AnyElement = if cx.global::<SettingsOpen>().0 {
             // 设置视图：缓存 Entity，避免主题刷新等重渲染时重建导致表单输入丢失。
             let settings = self
                 .settings_view
                 .get_or_insert_with(|| cx.new(SettingsView::new));
             settings.clone().into_any_element()
+        } else if cx.global::<ProjectsOpen>().0 {
+            // 项目视图：同样缓存 Entity，保持列表/排序状态不被重渲染重建。
+            let projects = self
+                .projects_view
+                .get_or_insert_with(|| cx.new(ProjectsView::new));
+            projects.clone().into_any_element()
         } else {
-            // 设置已关闭：丢弃缓存，下次打开时重新构造并从 config.toml 载入最新配置。
+            // 视图均已关闭：丢弃缓存，下次打开时重新构造并载入最新数据。
             self.settings_view = None;
+            self.projects_view = None;
             render_empty_state(colors).into_any_element()
         };
 
@@ -98,7 +113,8 @@ impl Render for VegaWindow {
 
 /// The content-area empty state (ui-spec §4.6): centered guidance with inert
 /// quick-template placeholder buttons, inside the 820px content column —
-/// no large logo illustration.
+/// no large logo illustration. Carries the temporary T10 entry button
+/// ("项目管理（临时）"); T12 moves project access into the sidebar.
 fn render_empty_state(colors: ThemeColors) -> AnyElement {
     div()
         .size_full()
@@ -143,6 +159,27 @@ fn render_empty_state(colors: ThemeColors) -> AnyElement {
                                 .text_color(colors.text_secondary)
                                 .child(label)
                         })),
+                )
+                // T10 临时入口：进入项目注册视图（T12 归位侧边栏后移除）。
+                .child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(colors.border_subtle)
+                        .bg(colors.bg_elevated)
+                        .text_size(px(Typography::SIDEBAR))
+                        .text_color(colors.text_secondary)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(colors.bg_hover).text_color(colors.text_primary))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
+                                window.dispatch_action(Box::new(OpenProjects), cx);
+                            },
+                        )
+                        .child("项目管理（临时）"),
                 ),
         )
         .into_any_element()
@@ -162,8 +199,15 @@ fn main() {
         // Settings view starts closed; the window render reads this global.
         cx.set_global(SettingsOpen(false));
 
+        // Projects view starts closed (T10 temporary mount).
+        cx.set_global(ProjectsOpen(false));
+
         // Key bindings for the vega_ui text input components.
         vega_ui::init(cx);
+
+        // Open + migrate the project store ($HOME/.vega/vega.db) and install
+        // it as a global for the projects view (T10).
+        vega_ui::projects::init(cx);
 
         let bounds = Bounds::centered(None, size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT)), cx);
         let min_size = size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT));
@@ -211,6 +255,14 @@ fn main() {
         });
         cx.on_action(|_: &CloseSettings, cx| {
             cx.set_global(SettingsOpen(false));
+            cx.refresh_windows();
+        });
+        cx.on_action(|_: &OpenProjects, cx| {
+            cx.set_global(ProjectsOpen(true));
+            cx.refresh_windows();
+        });
+        cx.on_action(|_: &CloseProjects, cx| {
+            cx.set_global(ProjectsOpen(false));
             cx.refresh_windows();
         });
         cx.on_action(|_: &ToggleSidebar, cx| toggle_persisted(cx));
