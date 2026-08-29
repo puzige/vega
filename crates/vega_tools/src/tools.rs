@@ -25,11 +25,58 @@ impl Tools {
             }
             _ => ToolError::Io(e),
         })?;
+        if !canonical.is_dir() {
+            return Err(ToolError::InvalidInput(
+                "project root must be a directory".to_string(),
+            ));
+        }
         Ok(Self { root: canonical })
     }
 
     /// The canonical project root all tool paths resolve against.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+}
+
+/// Shared deterministic directory walker. Standard filters remain enabled,
+/// so `.gitignore`/`.ignore`/git excludes and hidden-file rules are honored.
+/// `require_git(false)` makes project-local `.gitignore` work in tempdirs and
+/// non-git projects too (tech-spec §4.4).
+pub(crate) fn walker(start: &Path) -> ignore::Walk {
+    let mut builder = ignore::WalkBuilder::new(start);
+    builder
+        .require_git(false)
+        .follow_links(false)
+        .sort_by_file_name(|left, right| left.cmp(right));
+    builder.build()
+}
+
+/// Render a walker path relative to the canonical project root.
+pub(crate) fn relative_display(root: &Path, path: &Path) -> Result<String, ToolError> {
+    path.strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().into_owned())
+        .map_err(|_| ToolError::PathEscape(path.to_string_lossy().into_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use crate::{ToolError, Tools};
+
+    #[test]
+    fn project_root_must_be_an_existing_directory() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        fs::write(&file, "content").unwrap();
+
+        assert!(matches!(Tools::new(&file), Err(ToolError::InvalidInput(_))));
+        assert!(matches!(
+            Tools::new(dir.path().join("missing")),
+            Err(ToolError::NotFound(_))
+        ));
     }
 }

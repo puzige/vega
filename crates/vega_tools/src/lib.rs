@@ -37,6 +37,8 @@
 
 mod error;
 mod fence;
+mod glob;
+mod grep;
 mod output;
 mod read;
 mod tools;

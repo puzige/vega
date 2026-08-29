@@ -34,3 +34,19 @@ impl ToolOutput {
         }
     }
 }
+
+/// Render a result list while keeping at most [`MAX_RESULTS`] entries.
+///
+/// Callers collect at most `MAX_RESULTS + 1`, so the extra entry is only a
+/// truncation sentinel and never reaches the output.
+pub(crate) fn capped_results(mut entries: Vec<String>) -> ToolOutput {
+    let truncated = entries.len() > MAX_RESULTS;
+    entries.truncate(MAX_RESULTS);
+    if truncated {
+        entries.push(RESULT_TRUNCATION_MARKER.to_string());
+    }
+    ToolOutput {
+        text: entries.join("\n"),
+        truncated,
+    }
+}

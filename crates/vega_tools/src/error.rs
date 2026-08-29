@@ -33,4 +33,8 @@ pub enum ToolError {
     /// Underlying filesystem error.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// Directory traversal failed before a file could be inspected.
+    #[error("filesystem traversal failed: {0}")]
+    Traversal(String),
 }
