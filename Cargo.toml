@@ -33,6 +33,10 @@ ulid = "=3.0.0"
 toml = "=1.1.4"
 # 安全依赖（exec-guide §5 白名单）：default feature "v1" 在 macOS 即 Keychain
 keyring = "=4.1.6"
+# 工具依赖（exec-guide §5 白名单，2026-08-29 T14 spike 确认引入并锁定 0.3.0，
+# tech-spec §5.0 路线 A：上游 0.4 已移除 committed/pending+BlockId 模型，禁止随上游升级）
+mdstream = "=0.3.0"
+pulldown-cmark = "=0.13.4"
 # workspace 内部 crate
 vega_store = { path = "crates/vega_store" }
 vega_conversation = { path = "crates/vega_conversation" }
