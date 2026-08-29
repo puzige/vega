@@ -3,3 +3,5 @@ target/
 *.log
 # xtask bench results are generated artifacts, not source (T04 / E4)
 bench/results/
+# agent working data (sync reports etc.)
+.workbuddy/
