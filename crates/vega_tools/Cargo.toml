@@ -2,3 +2,12 @@
 name = "vega_tools"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+# 只读工具 read/glob/grep（S4-T21；exec-guide §5 工具白名单）
+ignore = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
