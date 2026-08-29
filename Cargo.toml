@@ -44,6 +44,8 @@ keyring = "=4.1.6"
 # tech-spec §5.0 路线 A：上游 0.4 已移除 committed/pending+BlockId 模型，禁止随上游升级）
 mdstream = "=0.3.0"
 pulldown-cmark = "=0.13.4"
+ignore = "=0.4.33"
+regex = "=1.13.1"
 # 代码块高亮（exec-guide §5 白名单，2026-08-29 T16 预授权；S3-T16）。
 # 架构师裁决（2026-08-29）：四语言 = rust / typescript / javascript / python，
 # markdown grammar 砍掉——tree-sitter-markdown 0.7.1 硬依赖 tree-sitter ^0.19，
