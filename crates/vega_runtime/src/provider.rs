@@ -54,6 +54,10 @@ pub struct ChatMessage {
     pub role: ChatRole,
     /// Plain-text content (markdown lives here verbatim).
     pub content: String,
+    /// Provider tool-call id for a `tool` result message.
+    pub tool_call_id: Option<String>,
+    /// Calls requested by an assistant message before tool results follow.
+    pub tool_calls: Vec<ChatToolCall>,
 }
 
 impl ChatMessage {
@@ -62,8 +66,42 @@ impl ChatMessage {
         Self {
             role,
             content: content.into(),
+            tool_call_id: None,
+            tool_calls: Vec::new(),
         }
     }
+
+    /// Builds the assistant turn that requested `tool_calls`.
+    pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ChatToolCall>) -> Self {
+        Self {
+            role: ChatRole::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls,
+        }
+    }
+
+    /// Builds a tool-result message associated with `call_id`.
+    pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: ChatRole::Tool,
+            content: content.into(),
+            tool_call_id: Some(call_id.into()),
+            tool_calls: Vec::new(),
+        }
+    }
+}
+
+/// One complete assistant function call serialized back to the provider on
+/// the observe round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatToolCall {
+    /// Provider-side call id.
+    pub id: String,
+    /// Function/tool name.
+    pub name: String,
+    /// Complete raw JSON arguments.
+    pub input_json: String,
 }
 
 /// A callable tool advertised to the model (OpenAI function-calling shape).

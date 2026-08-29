@@ -3,8 +3,8 @@
 //!
 //! The crate is UI-free (no gpui, headless red line): it only knows how to
 //! talk to LLM providers and how to replay scripted event streams. The
-//! agentic loop, tool execution, and permission gating arrive with S4-T20 /
-//! S4-T21 on top of the [`Provider`] boundary defined here.
+//! agentic loop executes the fenced S4 read-only tools on top of the
+//! [`Provider`] boundary defined here.
 //!
 //! - [`provider`]: [`ChatRequest`] / [`ProviderEvent`] / the [`Provider`]
 //!   trait — trait methods hand-box their future into a `BoxFuture` (the
@@ -17,6 +17,8 @@
 //!   cancellation. The API key only ever enters the Authorization header.
 //! - [`mock`]: scripted replay provider ([`MockProvider`]) — the shared
 //!   test infrastructure for the S4-S8 agentic-loop tests (tech-spec §8).
+//! - [`agent`]: system-plus-history context assembly, serialized tool loop,
+//!   cancellation, call-id deduplication, limits, and runtime-local events.
 //! - [`retry`]: the [`RetryPolicy`] schedule (1s / 2s / 4s, 3 retries).
 //! - [`error`]: the unified [`VegaError`] (tech-spec §7, `Send + Sync`).
 //!
@@ -43,9 +45,12 @@
 //!     messages: vec![ChatMessage::new(ChatRole::User, "hi")],
 //!     ..Default::default()
 //! };
-//! let stream = futures::executor::block_on(provider.chat_stream(req, CancellationToken::new()))
-//!     .unwrap();
-//! let events: Vec<_> = futures::executor::block_on(stream.collect());
+//! let stream = futures::executor::block_on(provider.chat_stream(req, CancellationToken::new()));
+//! assert!(stream.is_ok());
+//! let events: Vec<_> = match stream {
+//!     Ok(stream) => futures::executor::block_on(stream.collect()),
+//!     Err(_) => Vec::new(),
+//! };
 //! assert!(
 //!     matches!(&events[0], Ok(ProviderEvent::TextDelta(text)) if text == "Hel")
 //! );
@@ -55,17 +60,23 @@
 //! ));
 //! ```
 
+mod agent;
 mod error;
 mod mock;
 mod openai;
 mod provider;
 mod retry;
 
+pub use agent::{
+    AgentOutcome, AgentRequest, CompletedToolCall, RuntimeEvent, RuntimeFinishReason,
+    RuntimeTokenUsage, RuntimeToolCall, RuntimeToolResult, RuntimeToolStatus, TOOL_CALL_LIMIT,
+    run_agent, run_agent_with_sink,
+};
 pub use error::VegaError;
 pub use mock::{MockProvider, ScriptStep};
 pub use openai::OpenAiProvider;
 pub use provider::{
-    ChatMessage, ChatRequest, ChatRole, EventStream, Provider, ProviderEvent, StopReason,
-    ToolDefinition,
+    ChatMessage, ChatRequest, ChatRole, ChatToolCall, EventStream, Provider, ProviderEvent,
+    StopReason, ToolDefinition,
 };
 pub use retry::RetryPolicy;

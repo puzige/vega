@@ -6,7 +6,9 @@
 //! [`CancellationToken`] like a real provider would (fail fast when already
 //! cancelled, stop mid-stream without further events otherwise).
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
@@ -36,6 +38,8 @@ pub enum ScriptStep {
     },
     /// Terminal cancellation (mirrors `VegaError::Cancelled`).
     Cancelled,
+    /// Cancel-aware pause before the next step (test-only replay timing).
+    Delay(Duration),
 }
 
 impl ScriptStep {
@@ -48,6 +52,11 @@ impl ScriptStep {
     pub fn text(delta: impl Into<String>) -> Self {
         Self::Events(vec![ProviderEvent::TextDelta(delta.into())])
     }
+
+    /// Convenience constructor for a cancel-aware replay delay.
+    pub fn delay(duration: Duration) -> Self {
+        Self::Delay(duration)
+    }
 }
 
 /// A [`Provider`] that replays a scripted sequence of [`ScriptStep`]s.
@@ -56,29 +65,62 @@ impl ScriptStep {
 /// instance drives any number of loop iterations in tests.
 #[derive(Debug, Clone)]
 pub struct MockProvider {
-    script: Arc<Vec<ScriptStep>>,
+    scripts: Arc<Vec<Vec<ScriptStep>>>,
+    repeat_first: bool,
+    call_index: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<ChatRequest>>>,
 }
 
 impl MockProvider {
     /// Builds a mock provider from a script; steps replay in order.
     pub fn new(script: Vec<ScriptStep>) -> Self {
         Self {
-            script: Arc::new(script),
+            scripts: Arc::new(vec![script]),
+            repeat_first: true,
+            call_index: Arc::new(AtomicUsize::new(0)),
+            requests: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Builds a mock whose successive calls replay successive scripts.
+    /// Calls after the final script replay an empty stream.
+    pub fn new_rounds(scripts: Vec<Vec<ScriptStep>>) -> Self {
+        Self {
+            scripts: Arc::new(scripts),
+            repeat_first: false,
+            call_index: Arc::new(AtomicUsize::new(0)),
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Returns all chat requests observed so far, in call order.
+    pub fn requests(&self) -> Vec<ChatRequest> {
+        self.requests
+            .lock()
+            .map_or_else(|_| Vec::new(), |requests| requests.clone())
     }
 }
 
 impl Provider for MockProvider {
     fn chat_stream(
         &self,
-        _req: ChatRequest,
+        req: ChatRequest,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
         // 已取消的 token：不开流，直接快速失败（与真实 provider 语义一致）
         if cancel.is_cancelled() {
             return Box::pin(async { Err(VegaError::Cancelled) });
         }
-        let script = Arc::clone(&self.script);
+        if let Ok(mut requests) = self.requests.lock() {
+            requests.push(req);
+        }
+        let index = self.call_index.fetch_add(1, Ordering::SeqCst);
+        let script = if self.repeat_first {
+            self.scripts.first().cloned().unwrap_or_default()
+        } else {
+            self.scripts.get(index).cloned().unwrap_or_default()
+        };
+        let script = Arc::new(script);
         Box::pin(async move {
             // unfold 状态：当前步 / 步内事件下标 / 脚本 / 取消令牌
             let stream = futures::stream::unfold(
@@ -120,6 +162,18 @@ impl Provider for MockProvider {
                                 let item = Err(VegaError::Cancelled);
                                 step = script.len(); // 终态
                                 return Some((item, (step, event, script, cancel)));
+                            }
+                            Some(ScriptStep::Delay(duration)) => {
+                                let completed = tokio::select! {
+                                    biased;
+                                    _ = cancel.cancelled() => false,
+                                    _ = tokio::time::sleep(*duration) => true,
+                                };
+                                if !completed {
+                                    return None;
+                                }
+                                step += 1;
+                                event = 0;
                             }
                         }
                     }

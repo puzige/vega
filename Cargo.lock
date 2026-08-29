@@ -6309,8 +6309,12 @@ version = "0.1.0"
 dependencies = [
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
  "ulid",
+ "vega_runtime",
  "vega_store",
+ "vega_tools",
 ]
 
 [[package]]
@@ -6336,9 +6340,11 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+ "vega_tools",
 ]
 
 [[package]]

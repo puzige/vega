@@ -200,13 +200,41 @@ impl Provider for OpenAiProvider {
 /// Serializes a [`ChatRequest`] into the OpenAI chat-completion body:
 /// `stream: true` + `stream_options.include_usage` always on.
 fn build_request_body(req: &ChatRequest) -> serde_json::Value {
+    let messages = req
+        .messages
+        .iter()
+        .map(|message| {
+            let mut wire = serde_json::json!({
+                "role": message.role.as_str(),
+                "content": message.content,
+            });
+            if let Some(call_id) = &message.tool_call_id {
+                wire["tool_call_id"] = serde_json::Value::String(call_id.clone());
+            }
+            if !message.tool_calls.is_empty() {
+                wire["tool_calls"] = serde_json::Value::Array(
+                    message
+                        .tool_calls
+                        .iter()
+                        .map(|call| {
+                            serde_json::json!({
+                                "id": call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.name,
+                                    "arguments": call.input_json,
+                                }
+                            })
+                        })
+                        .collect(),
+                );
+            }
+            wire
+        })
+        .collect::<Vec<_>>();
     let mut body = serde_json::json!({
         "model": req.model,
-        "messages": req
-            .messages
-            .iter()
-            .map(|m| serde_json::json!({ "role": m.role.as_str(), "content": m.content }))
-            .collect::<Vec<_>>(),
+        "messages": messages,
         "stream": true,
         "stream_options": { "include_usage": true },
     });
@@ -501,7 +529,7 @@ fn usage_event(usage: &serde_json::Value) -> ProviderEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{ChatMessage, ChatRole, ToolDefinition};
+    use crate::provider::{ChatMessage, ChatRole, ChatToolCall, ToolDefinition};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -511,6 +539,50 @@ mod tests {
 
     const KEY: &str = "vrg-test-key-123";
     const MODEL: &str = "test-model";
+
+    #[test]
+    fn follow_up_messages_serialize_exact_tool_call_wire_shape() {
+        let request = ChatRequest {
+            model: MODEL.into(),
+            messages: vec![
+                ChatMessage::assistant_with_tools(
+                    "checking",
+                    vec![ChatToolCall {
+                        id: "call-7".into(),
+                        name: "read".into(),
+                        input_json: r#"{"path":"src/lib.rs"}"#.into(),
+                    }],
+                ),
+                ChatMessage::tool_result("call-7", "1 | fn main() {}"),
+            ],
+            ..Default::default()
+        };
+
+        let wire = build_request_body(&request);
+        assert_eq!(
+            wire["messages"][0],
+            serde_json::json!({
+                "role": "assistant",
+                "content": "checking",
+                "tool_calls": [{
+                    "id": "call-7",
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": "{\"path\":\"src/lib.rs\"}"
+                    }
+                }]
+            })
+        );
+        assert_eq!(
+            wire["messages"][1],
+            serde_json::json!({
+                "role": "tool",
+                "content": "1 | fn main() {}",
+                "tool_call_id": "call-7"
+            })
+        );
+    }
 
     // ---------- 纯单元：SseAssembler ----------
 
