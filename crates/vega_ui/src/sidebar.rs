@@ -1,5 +1,6 @@
-//! Sidebar (T09 shell + T12 content): the fixed 260px left column of the
-//! main window layout ([vega-ui-spec.md §1](../../docs/vega-ui-spec.md)).
+//! Sidebar (T09 shell + T12 content + T13 session management): the fixed
+//! 260px left column of the main window layout
+//! ([vega-ui-spec.md §1](../../docs/vega-ui-spec.md)).
 //!
 //! Structure per the T12 architect ruling: the top [新建任务] button, then two
 //! independent block components — [`ProjectsBlock`] (project list: select /
@@ -8,12 +9,21 @@
 //! — orchestrated by [`Sidebar`], which owns the cross-block wiring. The
 //! automation entry stays grayed out until Phase 3 (A1-13).
 //!
+//! T13 (A1-05) adds the session management operations to [`ThreadsBlock`]:
+//! per-row hover action groups (置顶 / 归档或恢复 / 删除), double-click inline
+//! renaming (reusing [`crate::text_input::TextInput`]; Enter submits, Esc
+//! cancels, an empty title cancels), the 「已归档 (N)」 collapsed section at
+//! the bottom of the block, and the delete confirmation overlay
+//! ([`render_delete_confirm_overlay`], driven by the [`PendingDeleteConfirm`]
+//! global and rendered by the window root).
+//!
 //! State model:
 //!
 //! - Cmd+B ([`toggle_persisted`]) flips the [`SidebarCollapsed`] global and
 //!   persists it as `ui.sidebar_collapsed` (T09 mechanism, serde default).
 //! - Block collapse states persist the same way (`ui.projects_collapsed` /
 //!   `ui.sessions_collapsed`, serde defaults keep older configs loadable).
+//!   The archive-section expansion is in-memory only (T13 卡允许不做记忆).
 //! - The selected project is cached in the [`SelectedProject`] global so
 //!   per-frame renders never query the store; it is seeded once at startup
 //!   from `vega_conversation`'s latest-project semantics and rewritten on
@@ -29,18 +39,21 @@ use std::path::Path;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, Global, MouseButton, MouseUpEvent,
-    PathPromptOptions, Window, actions, div, px,
+    AnyElement, App, Context, ElementId, Entity, EventEmitter, Focusable, Global, MouseButton,
+    MouseDownEvent, MouseUpEvent, PathPromptOptions, Window, actions, div, px,
 };
 use vega_conversation::threads as conversation;
-use vega_conversation::types::Thread;
+use vega_conversation::types::{Thread, ThreadStatus};
 use vega_store::Store;
 use vega_store::config;
 use vega_store::git_detect;
 use vega_store::projects::{self, Project, ProjectSort};
 use vega_theme::{ThemeColors, Typography, theme};
 
-actions!(vega_sidebar, [ToggleSidebar, NewThread]);
+use crate::settings::CloseSettings;
+use crate::text_input::TextInput;
+
+actions!(vega_sidebar, [ToggleSidebar, NewThread, ConfirmRename]);
 
 /// Sidebar width in logical pixels (ui-spec §1).
 pub const SIDEBAR_WIDTH: f32 = 260.0;
@@ -75,6 +88,15 @@ impl Global for SelectedProject {}
 pub struct OpenedThread(pub Option<Thread>);
 
 impl Global for OpenedThread {}
+
+/// The thread awaiting deletion in the T13 confirmation overlay (裁决②：a
+/// global carries the pending delete; `None` = nothing pending). The overlay
+/// is rendered by the window root; clicking the scrim outside the card or
+/// pressing Esc (routed through the existing global `CloseSettings` handler,
+/// which consumes the overlay first) cancels it.
+pub struct PendingDeleteConfirm(pub Option<Thread>);
+
+impl Global for PendingDeleteConfirm {}
 
 /// Whether the 「项目」 block is collapsed (persisted as
 /// `ui.projects_collapsed`, T12 ruling: config 载体).
@@ -144,6 +166,7 @@ pub fn init(cx: &mut App) {
     cx.set_global(ProjectsCollapsed(projects_collapsed));
     cx.set_global(SessionsCollapsed(sessions_collapsed));
     cx.set_global(OpenedThread(None));
+    cx.set_global(PendingDeleteConfirm(None));
 }
 
 /// Opens and migrates `vega.db` under the platform data root (tech-spec §6).
@@ -233,7 +256,8 @@ fn with_store<R>(
 /// the automation placeholder. Block components own their data + row
 /// interactions; this struct only wires cross-block reactions (project
 /// selection resyncs the session list, opening a thread refreshes the
-/// project order) — the extension point for T13 inline row actions.
+/// project order) plus the T13 delete-confirmation execution
+/// ([`Self::confirm_pending_delete`], invoked by the window-root overlay).
 pub struct Sidebar {
     projects_block: Entity<ProjectsBlock>,
     sessions_block: Entity<ThreadsBlock>,
@@ -291,6 +315,38 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         self.projects_block.update(cx, ProjectsBlock::reload);
+        cx.refresh_windows();
+    }
+
+    /// [删除] confirmed in the T13 overlay: deletes the thread (the store
+    /// layer removes its messages/tool_calls in the same transaction), falls
+    /// back to the §4.6 empty state when the deleted thread was open, and
+    /// reloads the session block. Failures surface as its inline error bar.
+    pub fn confirm_pending_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(thread) = cx.global::<PendingDeleteConfirm>().0.clone() else {
+            return;
+        };
+        cx.set_global(PendingDeleteConfirm(None));
+        let result = with_store(cx, |store| {
+            conversation::delete_thread(store, &thread.id).map_err(|error| error.to_string())
+        });
+        match result {
+            Ok(()) => {
+                // 删除的是打开中的会话：内容区回落 §4.6 空态。
+                if cx
+                    .global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .is_some_and(|opened| opened.id == thread.id)
+                {
+                    cx.set_global(OpenedThread(None));
+                }
+                self.sessions_block.update(cx, ThreadsBlock::reload);
+            }
+            Err(message) => self.sessions_block.update(cx, |block, _| {
+                block.error = Some(format!("会话删除失败：{message}"));
+            }),
+        }
         cx.refresh_windows();
     }
 
@@ -795,16 +851,40 @@ impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
 /// then `updated_at` desc (store ordering, ui-spec §4.1 置顶组优先). Rows =
 /// truncated title + relative time ("2h" style); the selected row gets
 /// `bg_active` + a 2px accent bar on the left; unread rows render medium
-/// weight + a dot (the field stays 0 until S3 produces unread state). No
-/// project selected → guidance copy. Collapse state persists in config
-/// (`ui.sessions_collapsed`).
+/// weight + a dot (the field stays 0 until S3 produces unread state).
+///
+/// T13 (A1-05) session management: the main list reads `status = active`
+/// only; archived threads hide here and surface in the 「已归档 (N)」
+/// collapsed section at the bottom of the block (展开可查看，行上有「恢复」).
+/// Hovering a row reveals its action group (裁决①：置顶 / 归档或恢复 / 删除,
+/// ≤3 small buttons); double-clicking a row enters inline renaming via the
+/// shared [`TextInput`] (Enter submits, Esc cancels, empty title = cancel —
+/// the keyboard path itself is manual-acceptance, see [`resolve_rename`]).
+/// No project selected → guidance copy. Collapse state persists in config
+/// (`ui.sessions_collapsed`); the archive expansion is in-memory only.
 pub struct ThreadsBlock {
-    /// Cached rows for the project in [`Self::loaded_project`].
+    /// Cached active rows for the project in [`Self::loaded_project`].
     threads: Vec<Thread>,
+    /// Cached archived rows (shown in the 「已归档」 collapsed section).
+    archived: Vec<Thread>,
     /// Project id the cache was loaded for (`None` → guidance copy).
     loaded_project: Option<String>,
+    /// Thread id currently under the mouse; drives the hover action group.
+    hovered: Option<String>,
+    /// Whether the 「已归档 (N)」 section is expanded (in-memory, T13 卡允许
+    /// 不做折叠记忆).
+    archive_expanded: bool,
+    /// Active inline rename session (`None` = not renaming).
+    editing: Option<RenameSession>,
     /// Inline error message (ui-spec §4.6).
     error: Option<String>,
+}
+
+/// An inline rename in progress: the thread being renamed plus the shared
+/// [`TextInput`] entity pre-filled with its current title.
+struct RenameSession {
+    thread_id: String,
+    input: Entity<TextInput>,
 }
 
 impl ThreadsBlock {
@@ -812,30 +892,53 @@ impl ThreadsBlock {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             threads: Vec::new(),
+            archived: Vec::new(),
             loaded_project: None,
+            hovered: None,
+            archive_expanded: false,
+            editing: None,
             error: None,
         };
         view.reload(cx);
         view
     }
 
-    /// Re-reads the selected project's thread list (pinned first, then
-    /// updated_at desc — store ordering).
+    /// Re-reads the selected project's thread lists: active rows for the
+    /// main list, archived rows for the 「已归档」 section (both pinned
+    /// first, then updated_at desc — store ordering).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let selected = cx.global::<SelectedProject>().0.clone();
         self.loaded_project = selected.clone();
         let result = match selected {
-            None => Ok(Vec::new()),
+            None => Ok((Vec::new(), Vec::new())),
             Some(project_id) => with_store(cx, |store| {
-                conversation::list_threads(store, &project_id).map_err(|error| error.to_string())
+                let active =
+                    conversation::list_threads(store, &project_id, Some(ThreadStatus::Active))
+                        .map_err(|error| error.to_string())?;
+                let archived =
+                    conversation::list_threads(store, &project_id, Some(ThreadStatus::Archived))
+                        .map_err(|error| error.to_string())?;
+                Ok((active, archived))
             }),
         };
         match result {
-            Ok(threads) => {
+            Ok((threads, archived)) => {
                 self.threads = threads;
+                self.archived = archived;
                 self.error = None;
             }
             Err(message) => self.error = Some(message),
+        }
+        // 编辑中的线程被删除后不再渲染其编辑器（输入实体随之释放）。
+        if let Some(session) = &self.editing {
+            let exists = self
+                .threads
+                .iter()
+                .chain(self.archived.iter())
+                .any(|thread| thread.id == session.thread_id);
+            if !exists {
+                self.editing = None;
+            }
         }
         cx.notify();
     }
@@ -858,6 +961,140 @@ impl ThreadsBlock {
                 self.error = Some(message);
                 cx.notify();
             }
+        }
+    }
+
+    /// Runs one thread mutation, reloads the cached rows, and surfaces a
+    /// failure as the block's inline error bar (ui-spec §4.6).
+    fn mutate_thread(
+        &mut self,
+        operation: impl FnOnce(&Store) -> Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        let result = with_store(cx, operation);
+        self.reload(cx);
+        if let Err(message) = result {
+            self.error = Some(message);
+        }
+        cx.notify();
+    }
+
+    /// Hover pin toggle (裁决①：hover 操作组里的置顶切换，再点取消).
+    fn toggle_pin(&mut self, thread_id: &str, pinned: bool, cx: &mut Context<Self>) {
+        self.mutate_thread(
+            |store| {
+                conversation::set_thread_pinned(store, thread_id, !pinned)
+                    .map_err(|error| error.to_string())
+            },
+            cx,
+        );
+    }
+
+    /// 归档 (active → archived) or 恢复 (archived → active).
+    fn set_thread_status(&mut self, thread_id: &str, status: ThreadStatus, cx: &mut Context<Self>) {
+        self.mutate_thread(
+            |store| {
+                conversation::set_thread_status(store, thread_id, status)
+                    .map_err(|error| error.to_string())
+            },
+            cx,
+        );
+    }
+
+    /// 「删除」 hover entry: parks the thread in [`PendingDeleteConfirm`];
+    /// the window root renders the confirmation overlay (ui-spec §4.6: no
+    /// system modal). Any inline rename is folded first so the overlay's Esc
+    /// semantics stay unambiguous.
+    fn request_delete(&mut self, thread: &Thread, cx: &mut Context<Self>) {
+        self.editing = None;
+        cx.set_global(PendingDeleteConfirm(Some(thread.clone())));
+        cx.refresh_windows();
+    }
+
+    /// Double-click = rename: builds the inline editor pre-filled with the
+    /// current title and moves focus into it. (合成键盘事件送不进 GPUI：键入
+    /// 与 Enter/Esc 提交路径为人工验收；提交/取消的纯逻辑见 [`resolve_rename`]。)
+    fn start_rename(&mut self, thread: &Thread, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .editing
+            .as_ref()
+            .is_some_and(|session| session.thread_id == thread.id)
+        {
+            return;
+        }
+        let input = cx.new(|cx| TextInput::new(cx, "会话标题", false));
+        input.update(cx, |input, cx| input.set_text(&thread.title, cx));
+        self.editing = Some(RenameSession {
+            thread_id: thread.id.clone(),
+            input: input.clone(),
+        });
+        let focus_handle = input.read(cx).focus_handle(cx);
+        window.focus(&focus_handle, cx);
+        cx.notify();
+    }
+
+    /// Enter on the rename editor: an empty title cancels (不写库); otherwise
+    /// the trimmed title is persisted and the opened thread's cached copy is
+    /// resynced so the content header shows the new title.
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.editing.take() else {
+            return;
+        };
+        let raw = session.input.read(cx).text().to_string();
+        match resolve_rename(&raw) {
+            RenameResolution::Cancel => {
+                // 空标题提交视为取消：直接退出编辑态，不写库。
+                cx.notify();
+            }
+            RenameResolution::Commit(title) => {
+                let result = with_store(cx, |store| {
+                    conversation::rename_thread(store, &session.thread_id, &title)
+                        .map_err(|error| error.to_string())
+                });
+                // reload 先行：失败信息在其后写入，避免被 reload 清空。
+                self.reload(cx);
+                match result {
+                    Ok(renamed) => {
+                        let mut opened = cx.global::<OpenedThread>().0.clone();
+                        if let Some(opened) =
+                            opened.as_mut().filter(|opened| opened.id == renamed.id)
+                        {
+                            *opened = renamed;
+                        }
+                        cx.set_global(OpenedThread(opened));
+                    }
+                    Err(message) => self.error = Some(message),
+                }
+                cx.refresh_windows();
+            }
+        }
+    }
+
+    /// Esc on the rename editor (intercepted from the global `CloseSettings`
+    /// action while the editor is mounted): exits editing without writing.
+    fn cancel_rename(&mut self, cx: &mut Context<Self>) {
+        if self.editing.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Hover bookkeeping for one row; only real changes notify.
+    fn set_hovered(&mut self, thread_id: &str, hovered: bool, cx: &mut Context<Self>) {
+        let changed = if hovered {
+            if self.hovered.as_deref() != Some(thread_id) {
+                self.hovered = Some(thread_id.to_string());
+                true
+            } else {
+                false
+            }
+        } else if self.hovered.as_deref() == Some(thread_id) {
+            self.hovered = None;
+            true
+        } else {
+            false
+        };
+        if changed {
+            cx.notify();
         }
     }
 
@@ -897,8 +1134,9 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    /// The session rows, or the guidance copy when no project is selected /
-    /// no thread exists yet.
+    /// The session rows (active only), or the guidance copy when no project
+    /// is selected / no thread exists. The 「已归档 (N)」 collapsed section
+    /// trails the active rows.
     fn render_body(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
         let opened_id = cx
             .global::<OpenedThread>()
@@ -919,48 +1157,115 @@ impl ThreadsBlock {
         if self.loaded_project.is_none() {
             return guidance("暂无项目：先在「项目」区选择").into_any_element();
         }
-        if self.threads.is_empty() {
+        if self.threads.is_empty() && self.archived.is_empty() {
             return guidance("暂无会话：点顶部「新建任务」开始").into_any_element();
         }
-        div()
-            .flex()
-            .flex_col()
-            .children(
+        let mut body = div().flex().flex_col();
+        if self.threads.is_empty() {
+            // 仅剩归档线程：主列表给一行引导，归档折叠区照常可见可展开。
+            body = body.child(guidance("暂无活跃会话"));
+        } else {
+            body = body.children(
                 self.threads
                     .iter()
-                    .map(|thread| self.render_row(thread, &opened_id, cx)),
+                    .map(|thread| self.render_row(thread, &opened_id, false, cx)),
+            );
+        }
+        body.children(
+            archive_section_visible(self.archived.len())
+                .then(|| self.render_archive_header(cx, colors)),
+        )
+        .when(
+            self.archive_expanded && archive_section_visible(self.archived.len()),
+            |column| {
+                column.children(
+                    self.archived
+                        .iter()
+                        .map(|thread| self.render_row(thread, &opened_id, true, cx)),
+                )
+            },
+        )
+        .into_any_element()
+    }
+
+    /// 「已归档 (N)」折叠区入口：chevron 显示展开态，点击切换（本卡不持久化
+    /// 该折叠状态）。
+    fn render_archive_header(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
+        div()
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(move |s| s.bg(colors.bg_hover))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.archive_expanded = !this.archive_expanded;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_secondary)
+                    .child(format!("已归档 ({})", self.archived.len())),
+            )
+            .child(
+                div()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_tertiary)
+                    .child(if self.archive_expanded { "▾" } else { "▸" }),
             )
             .into_any_element()
     }
 
-    /// One session row per ui-spec §4.1: [2px accent bar][title…] [dot]
-    /// [relative time]. The selected row gets `bg_active`; unread rows get
-    /// medium (500) weight + a dot.
+    /// One session row per ui-spec §4.1: [2px accent bar][pin mark][title…]
+    /// [dot] [relative time | hover action group]. The selected row gets
+    /// `bg_active`; hovering a non-editing row swaps the time label for its
+    /// action group (裁决①：置顶 / 归档或恢复 / 删除；行内编辑行除外)。
+    ///
+    /// The clickable body and the right side are sibling nodes — clicks on
+    /// the action buttons must not re-trigger open (T10 经验：兄弟节点避免
+    /// 嵌套命中).
     fn render_row(
         &self,
         thread: &Thread,
         opened_id: &Option<String>,
+        archived: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let selected = opened_id.as_deref() == Some(thread.id.as_str());
+        let hovered = self.hovered.as_deref() == Some(thread.id.as_str());
+        let editing_session = self
+            .editing
+            .as_ref()
+            .filter(|session| session.thread_id == thread.id);
+        let editing_this_row = editing_session.is_some();
+        let actions_visible = row_shows_actions(hovered, editing_this_row);
         let thread_id = thread.id.clone();
-        div()
+        let row_thread = thread.clone();
+        let mut row = div()
+            .id(ElementId::Name(format!("thread-row-{thread_id}").into()))
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .flex()
             .items_center()
             .rounded_md()
             .overflow_hidden()
             .text_size(px(Typography::SIDEBAR))
-            .cursor_pointer()
-            .when(selected, move |row| row.bg(colors.bg_active))
-            .when(!selected, move |row| {
-                row.hover(move |s| s.bg(colors.bg_hover))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                this.set_hovered(&thread_id, *hovered, cx);
+            }))
+            .when(selected || (hovered && !editing_this_row), move |row| {
+                row.bg(if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_hover
+                })
             })
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| this.open_thread(&thread_id, cx)),
-            )
             // 左侧 2px 强调条（选中态着 accent 色，未选中占位保持对齐）。
             .child(
                 div()
@@ -968,31 +1273,148 @@ impl ThreadsBlock {
                     .h_full()
                     .flex_shrink_0()
                     .when(selected, move |bar| bar.bg(colors.accent)),
-            )
-            .child(
-                div().flex().items_center().flex_1().min_w_0().px_2().child(
+            );
+        if let Some(session) = editing_session {
+            row = row.child(self.render_rename_editor(session, cx));
+        } else {
+            row = row
+                // 可点击主体与右侧操作是兄弟节点：双击进入行内编辑，单击
+                // 打开会话（双击序列的第一次单击仍会先打开，属预期）。
+                .child(
                     div()
-                        .truncate()
-                        .text_color(colors.text_primary)
-                        .when(thread.unread, |title| {
-                            title.font_weight(Typography::HEADING_CARD_WEIGHT)
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .pl_2()
+                        .cursor_pointer()
+                        .when(!selected, move |main| {
+                            main.hover(move |s| s.bg(colors.bg_hover))
                         })
-                        .child(thread_title(thread)),
-                ),
-            )
-            // 未读圆点（数据恒 0 至 S3；显示逻辑本卡落地）。
-            .children(
-                thread
-                    .unread
-                    .then(|| div().size(px(6.)).rounded_full().bg(colors.accent)),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .px_2()
-                    .text_color(colors.text_secondary)
-                    .child(relative_time(thread.updated_at)),
-            )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                                if event.click_count >= 2 {
+                                    this.start_rename(&row_thread, window, cx);
+                                } else {
+                                    this.open_thread(&row_thread.id, cx);
+                                }
+                            }),
+                        )
+                        .children(thread.pinned.then(|| {
+                            // 置顶小标记：token 色着色（裁决③）。
+                            div().flex_shrink_0().text_color(colors.accent).child("▲")
+                        }))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_color(colors.text_primary)
+                                .when(thread.unread, |title| {
+                                    title.font_weight(Typography::HEADING_CARD_WEIGHT)
+                                })
+                                .child(thread_title(thread)),
+                        ),
+                )
+                // 未读圆点（数据恒 0 至 S3；显示逻辑本卡落地）。
+                .children(
+                    thread
+                        .unread
+                        .then(|| div().size(px(6.)).rounded_full().bg(colors.accent)),
+                );
+            if actions_visible {
+                row = row.child(self.render_row_actions(thread, archived, cx));
+            } else {
+                row = row.child(
+                    div()
+                        .flex_shrink_0()
+                        .px_2()
+                        .text_color(colors.text_secondary)
+                        .child(relative_time(thread.updated_at)),
+                );
+            }
+        }
+        row.into_any_element()
+    }
+
+    /// The hover action group (裁决①：每组最多 3 个小按钮). Active rows get
+    /// [置顶/取消置顶][归档][删除]; archived rows get [恢复][删除].
+    fn render_row_actions(
+        &self,
+        thread: &Thread,
+        archived: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let thread_id = thread.id.clone();
+        let mut group = div().flex().items_center().gap_0p5().flex_shrink_0().pr_1();
+        if archived {
+            group = group.child(row_action_button(
+                "恢复",
+                colors.text_secondary,
+                colors.bg_active,
+                move |this, _: &MouseUpEvent, _, cx| {
+                    this.set_thread_status(&thread_id, ThreadStatus::Active, cx);
+                },
+                cx,
+            ));
+        } else {
+            let (pin_label, now_pinned) = if thread.pinned {
+                ("取消置顶", true)
+            } else {
+                ("置顶", false)
+            };
+            group = group.child(row_action_button(
+                pin_label,
+                colors.text_secondary,
+                colors.bg_active,
+                move |this, _: &MouseUpEvent, _, cx| {
+                    this.toggle_pin(&thread_id, now_pinned, cx);
+                },
+                cx,
+            ));
+            let thread_id = thread.id.clone();
+            group = group.child(row_action_button(
+                "归档",
+                colors.text_secondary,
+                colors.bg_active,
+                move |this, _: &MouseUpEvent, _, cx| {
+                    this.set_thread_status(&thread_id, ThreadStatus::Archived, cx);
+                },
+                cx,
+            ));
+        }
+        let thread_for_delete = thread.clone();
+        group
+            .child(row_action_button(
+                "删除",
+                colors.danger,
+                colors.bg_active,
+                move |this, _: &MouseUpEvent, _, cx| {
+                    let thread = thread_for_delete.clone();
+                    this.request_delete(&thread, cx);
+                },
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// The inline rename editor mounted in place of the row body: the shared
+    /// [`TextInput`] under a `ThreadRename` key context. Enter dispatches
+    /// [`ConfirmRename`] (bound to this context in `vega_ui::init`); Esc is
+    /// intercepted from the global [`CloseSettings`] action, which the
+    /// editor consumes so settings never closes mid-rename.
+    fn render_rename_editor(&self, session: &RenameSession, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex_1()
+            .min_w_0()
+            .pr_1()
+            .key_context("ThreadRename")
+            .track_focus(&session.input.read(cx).focus_handle(cx))
+            .on_action(cx.listener(|this, _: &ConfirmRename, _, cx| this.commit_rename(cx)))
+            .on_action(cx.listener(|this, _: &CloseSettings, _, cx| this.cancel_rename(cx)))
+            .child(session.input.clone())
             .into_any_element()
     }
 }
@@ -1053,6 +1475,133 @@ pub fn render_opened_thread_pane(thread: &Thread, colors: ThemeColors) -> AnyEle
         .into_any_element()
 }
 
+/// A single hover action button on a session row (compact text label, token
+/// colors only). The listener runs on the block entity, so button clicks do
+/// not bubble into the row's clickable body (sibling nodes, T10 经验).
+fn row_action_button(
+    label: &'static str,
+    text_color: gpui::Rgba,
+    hover_bg: gpui::Rgba,
+    listener: impl Fn(&mut ThreadsBlock, &MouseUpEvent, &mut Window, &mut Context<ThreadsBlock>)
+    + 'static,
+    cx: &mut Context<ThreadsBlock>,
+) -> AnyElement {
+    div()
+        .px_1()
+        .rounded_md()
+        .text_size(px(Typography::SIDEBAR))
+        .text_color(text_color)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover_bg))
+        .on_mouse_up(MouseButton::Left, cx.listener(listener))
+        .child(label)
+        .into_any_element()
+}
+
+/// The full-window delete confirmation overlay (T13): a token-derived
+/// semi-transparent scrim over everything with a centered small card in the
+/// ui-spec §4.3 权限卡 style — no shadow, `border_subtle` border, buttons
+/// [删除] (danger) + [取消]. Clicking the scrim (any mouse down outside the
+/// card) or pressing Esc cancels — Esc routes through the global
+/// `CloseSettings` handler, which consumes the overlay first (裁决②). No
+/// system modal is used (ui-spec §4.6). Rendered by the window root while
+/// [`PendingDeleteConfirm`] is `Some`.
+pub fn render_delete_confirm_overlay(
+    thread: &Thread,
+    sidebar: Entity<Sidebar>,
+    colors: ThemeColors,
+) -> AnyElement {
+    let cancel = |_event: &MouseDownEvent, _window: &mut Window, cx: &mut App| {
+        cx.set_global(PendingDeleteConfirm(None));
+        cx.refresh_windows();
+    };
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(colors.text_primary.opacity(0.4))
+        .child(
+            div()
+                .w(px(320.))
+                .flex()
+                .flex_col()
+                .gap_3()
+                .rounded_lg()
+                .border_1()
+                .border_color(colors.border_subtle)
+                .bg(colors.bg_elevated)
+                .px_4()
+                .py_4()
+                .on_mouse_down_out(cancel)
+                .child(
+                    div()
+                        .text_size(px(Typography::HEADING_CARD))
+                        .font_weight(Typography::HEADING_CARD_WEIGHT)
+                        .text_color(colors.text_primary)
+                        .child("删除会话"),
+                )
+                .child(
+                    div()
+                        .text_size(px(Typography::SIDEBAR))
+                        .text_color(colors.text_secondary)
+                        .child(format!(
+                            "确定删除「{}」？将同时删除该会话的全部消息与工具调用记录，且无法恢复。",
+                            thread_title(thread)
+                        )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            // [取消]
+                            div()
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(colors.border_subtle)
+                                .text_size(px(Typography::SIDEBAR))
+                                .text_color(colors.text_secondary)
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(colors.bg_hover))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    |_: &MouseUpEvent, _window, cx: &mut App| {
+                                        cx.set_global(PendingDeleteConfirm(None));
+                                        cx.refresh_windows();
+                                    },
+                                )
+                                .child("取消"),
+                        )
+                        .child(
+                            // [删除]：danger 主操作；确认后由编排器执行删除。
+                            div()
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .bg(colors.danger)
+                                .text_size(px(Typography::SIDEBAR))
+                                .text_color(colors.bg_base)
+                                .cursor_pointer()
+                                .hover(move |s| s.bg(colors.danger.opacity(0.85)))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    move |_: &MouseUpEvent, _window, cx: &mut App| {
+                                        sidebar.update(cx, Sidebar::confirm_pending_delete);
+                                    },
+                                )
+                                .child("删除"),
+                        ),
+                ),
+        )
+        .into_any_element()
+}
+
 /// Clears the cached opened thread when it belongs to a project other than
 /// `project_id` (used on project selection/removal).
 fn clear_opened_thread_of_other_project(project_id: &str, cx: &mut App) {
@@ -1088,6 +1637,39 @@ fn thread_title(thread: &Thread) -> String {
     } else {
         thread.title.clone()
     }
+}
+
+/// Outcome of a rename submission (pure decision — the Enter/Esc key path
+/// itself is manual-acceptance because synthetic keyboard events cannot
+/// reach GPUI in this environment; this decision must stay unit-tested).
+enum RenameResolution {
+    /// 空标题（含纯空白）提交视为取消：退出编辑态，不写库。
+    Cancel,
+    /// 提交去首尾空白后的新标题。
+    Commit(String),
+}
+
+/// Classifies a rename submission: blank input cancels, anything else
+/// commits trimmed.
+fn resolve_rename(raw: &str) -> RenameResolution {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        RenameResolution::Cancel
+    } else {
+        RenameResolution::Commit(trimmed.to_string())
+    }
+}
+
+/// Whether a session row currently shows its hover action group (裁决①)：
+/// the group appears only while the row is hovered and never while that row
+/// is in inline-rename editing (避免编辑态与行操作叠加).
+fn row_shows_actions(row_hovered: bool, row_editing: bool) -> bool {
+    row_hovered && !row_editing
+}
+
+/// 「已归档 (N)」折叠区只在确有归档线程时出现；归档计数即折叠区标题里的 N.
+fn archive_section_visible(archived_count: usize) -> bool {
+    archived_count > 0
 }
 
 /// Relative time for a session row (ui-spec §4.1, "2h" style).
@@ -1141,7 +1723,10 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{civil_from_days, relative_time_from, thread_title};
+    use super::{
+        RenameResolution, archive_section_visible, civil_from_days, relative_time_from,
+        resolve_rename, row_shows_actions, thread_title,
+    };
     use vega_conversation::types::Thread;
 
     fn thread_with_title(title: &str) -> Thread {
@@ -1164,6 +1749,42 @@ mod tests {
     fn empty_title_falls_back_to_unnamed() {
         assert_eq!(thread_title(&thread_with_title("")), "未命名任务");
         assert_eq!(thread_title(&thread_with_title("我的任务")), "我的任务");
+    }
+
+    #[test]
+    fn rename_submission_blank_is_cancel() {
+        // 空标题提交视为取消（T13 卡面要求；Enter/Esc 键盘路径本身人工验收）。
+        assert!(matches!(resolve_rename(""), RenameResolution::Cancel));
+        assert!(matches!(resolve_rename("   "), RenameResolution::Cancel));
+        assert!(matches!(resolve_rename("\t\n"), RenameResolution::Cancel));
+    }
+
+    #[test]
+    fn rename_submission_trims_and_commits_non_blank() {
+        match resolve_rename("新标题") {
+            RenameResolution::Commit(title) => assert_eq!(title, "新标题"),
+            RenameResolution::Cancel => panic!("expected commit"),
+        }
+        match resolve_rename("  两端空白  ") {
+            RenameResolution::Commit(title) => assert_eq!(title, "两端空白"),
+            RenameResolution::Cancel => panic!("expected commit"),
+        }
+    }
+
+    #[test]
+    fn hover_action_group_visibility() {
+        // hover 才显示；行内编辑中的行永远不显示（裁决①）。
+        assert!(row_shows_actions(true, false));
+        assert!(!row_shows_actions(false, false));
+        assert!(!row_shows_actions(true, true));
+        assert!(!row_shows_actions(false, true));
+    }
+
+    #[test]
+    fn archive_section_requires_archived_threads() {
+        assert!(!archive_section_visible(0));
+        assert!(archive_section_visible(1));
+        assert!(archive_section_visible(3));
     }
 
     #[test]

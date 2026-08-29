@@ -12,8 +12,10 @@ pub mod text_input;
 use gpui::{App, KeyBinding};
 
 /// Registers the key bindings required by the vega_ui input components
-/// (editing keys for [`text_input::TextInput`]). Call once at app startup;
-/// the settings actions are bound by the `vega` binary itself.
+/// (editing keys for [`text_input::TextInput`]) plus the T13 inline-rename
+/// submit key (scoped to the `ThreadRename` key context so it cannot clash
+/// with other views). Call once at app startup; the settings actions are
+/// bound by the `vega` binary itself.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("backspace", text_input::Backspace, None),
@@ -29,5 +31,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-v", text_input::Paste, None),
         KeyBinding::new("cmd-c", text_input::Copy, None),
         KeyBinding::new("cmd-x", text_input::Cut, None),
+        // T13 行内重命名：Enter 提交（作用域 ThreadRename；Esc 取消通过
+        // 重命名编辑器拦截全局 CloseSettings 动作实现，见 sidebar.rs）。
+        KeyBinding::new("enter", sidebar::ConfirmRename, Some("ThreadRename")),
     ]);
 }
