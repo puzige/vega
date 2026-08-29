@@ -1,4 +1,4 @@
-//! Minimal single-line text input for GPUI.
+//! Minimal text input for GPUI (single-line and fixed-row multi-line).
 //!
 //! Implemented following the official paradigm in the gpui source tree at the
 //! pinned rev (`crates/gpui/examples/input.rs`): a [`TextInput`] entity holds
@@ -13,6 +13,12 @@
 //! - optional password-style masking: the field displays one `•` per content
 //!   character and never paints the real value; cut/copy are refused on
 //!   masked fields so credentials cannot leave the app through the clipboard.
+//!
+//! S3-T18 Composer extension: `new_multiline` builds a fixed-`rows` input
+//! (Enter inserts `\n` via the [`InsertNewline`] action — 架构师裁定
+//! Enter=换行、Cmd+Enter=发送; paste preserves line breaks). Multi-line
+//! display paints one shaped line per `\n` segment stacked top-down; the
+//! 1~8 行自适应高度 is deferred per task card (fixed rows, overflow clipped).
 
 use std::ops::Range;
 
@@ -41,14 +47,24 @@ actions!(
         ShowCharacterPalette,
         Paste,
         Cut,
-        Copy
+        Copy,
+        InsertNewline
     ]
 );
 
 /// Character displayed for every content character in masked (key) fields.
 const MASK_CHAR: char = '•';
 
-/// A single-line text input.
+/// One laid-out display line: its start offset in the content, the segment
+/// length (excluding the separating `\n`), and the shaped line. Single-line
+/// inputs keep exactly one entry (start 0).
+struct LineLayout {
+    start: usize,
+    len: usize,
+    line: ShapedLine,
+}
+
+/// A text input (single-line, or fixed-row multi-line for the Composer).
 ///
 /// Editing state (content, selection, marked/IME range) lives on the entity;
 /// the platform talks to it through [`EntityInputHandler`]. When `masked` is
@@ -59,29 +75,55 @@ pub struct TextInput {
     content: SharedString,
     placeholder: SharedString,
     masked: bool,
+    /// Multi-line mode (S3-T18 Composer): Enter inserts `\n`, paste keeps
+    /// line breaks, and the element paints `rows` stacked lines.
+    multiline: bool,
+    /// Visible row count (1 for single-line inputs; the Composer uses a
+    /// fixed 3 — 自适应 1~8 行后置 per task card).
+    rows: usize,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
-    last_layout: Option<ShapedLine>,
+    /// Layout cache from the last paint (one entry per display line).
+    last_lines: Vec<LineLayout>,
+    /// Line height used at the last paint (for y → line mapping).
+    last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
 }
 
 impl TextInput {
-    /// Creates an empty input with a placeholder; `masked` renders bullets.
+    /// Creates an empty single-line input with a placeholder; `masked`
+    /// renders bullets.
     pub fn new(cx: &mut Context<Self>, placeholder: impl Into<SharedString>, masked: bool) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
             content: "".into(),
             placeholder: placeholder.into(),
             masked,
+            multiline: false,
+            rows: 1,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
-            last_layout: None,
+            last_lines: Vec::new(),
+            last_line_height: px(0.),
             last_bounds: None,
             is_selecting: false,
         }
+    }
+
+    /// Creates an empty fixed-`rows` multi-line input (S3-T18 Composer):
+    /// Enter inserts a newline, paste preserves line breaks.
+    pub fn new_multiline(
+        cx: &mut Context<Self>,
+        placeholder: impl Into<SharedString>,
+        rows: usize,
+    ) -> Self {
+        let mut input = Self::new(cx, placeholder, false);
+        input.multiline = true;
+        input.rows = rows.max(1);
+        input
     }
 
     /// The current content. Masked fields expose it only here (callers must
@@ -217,9 +259,10 @@ impl TextInput {
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        window.focus(&self.focus_handle, cx);
         self.is_selecting = true;
         if event.modifiers.shift {
             self.select_to(self.index_for_mouse_position(event.position), cx);
@@ -249,8 +292,26 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            // Multi-line keeps line breaks (normalized to \n); single-line
+            // inputs flatten them.
+            let text = if self.multiline {
+                text.replace("\r\n", "\n")
+            } else {
+                text.replace('\n', " ")
+            };
+            self.replace_text_in_range(None, &text, window, cx);
         }
+    }
+
+    /// Enter in a multi-line input inserts a newline (Composer 裁定：
+    /// Enter=换行；发送走 Cmd+Enter / 发送按钮). Single-line inputs have no
+    /// newline concept — ring the bell.
+    fn insert_newline(&mut self, _: &InsertNewline, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.multiline {
+            window.play_system_bell();
+            return;
+        }
+        self.replace_text_in_range(None, "\n", window, cx);
     }
 
     fn copy(&mut self, _: &Copy, window: &mut Window, cx: &mut Context<Self>) {
@@ -297,19 +358,47 @@ impl TextInput {
         if self.content.is_empty() {
             return 0;
         }
-        let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
-        else {
+        let Some(bounds) = self.last_bounds.as_ref() else {
             return 0;
         };
+        if self.last_lines.is_empty() || self.last_line_height <= px(0.) {
+            return 0;
+        }
         if position.y < bounds.top() {
             return 0;
         }
         if position.y > bounds.bottom() {
             return self.content.len();
         }
+        let rel_y = position.y - bounds.top();
+        if rel_y >= self.last_line_height * self.last_lines.len() as f32 {
+            // Below the last laid-out line (clipped overflow area): end of
+            // the line's text.
+            if let Some(last) = self.last_lines.last() {
+                return last.start + last.len;
+            }
+            return 0;
+        }
+        let Some(layout) = self.layout_for_y(rel_y, self.last_line_height) else {
+            return 0;
+        };
         // The layout is over the painted text, so map back through the mask.
-        let display_offset = line.closest_index_for_x(position.x - bounds.left());
-        self.content_offset_for_display_offset(display_offset)
+        let display_offset = layout.line.closest_index_for_x(position.x - bounds.left());
+        let local = self.content_offset_for_display_offset(display_offset);
+        let offset = layout.start + local;
+        if self.masked {
+            offset.min(self.content.len())
+        } else {
+            offset.min(layout.start + layout.len)
+        }
+    }
+
+    /// The display line containing `y` (relative to the element top), clamped
+    /// into the laid-out range.
+    fn layout_for_y(&self, y: Pixels, line_height: Pixels) -> Option<&LineLayout> {
+        let row = (f32::from(y) / f32::from(line_height)).floor().max(0.0) as usize;
+        self.last_lines
+            .get(row.min(self.last_lines.len().saturating_sub(1)))
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -516,18 +605,30 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
+        // The line containing the range start (masked single-line inputs have
+        // exactly one line starting at 0).
+        let row = self
+            .last_lines
+            .iter()
+            .rposition(|layout| range.start >= layout.start)?;
+        let layout = &self.last_lines[row];
+        let line_top = bounds.top() + self.last_line_height * row as f32;
+        // The layout is over the painted text: map through the mask first,
+        // then back out of the line-local offset (multiline is unmasked, so
+        // the mapping is the identity there).
+        let local_start = (range.start - layout.start).min(layout.len);
+        let local_end = (range.end - layout.start).min(layout.len).max(local_start);
+        let display_start = self.display_offset_for_content_offset(layout.start + local_start);
+        let display_end = self.display_offset_for_content_offset(layout.start + local_end);
         Some(Bounds::from_corners(
             point(
-                bounds.left()
-                    + last_layout.x_for_index(self.display_offset_for_content_offset(range.start)),
-                bounds.top(),
+                bounds.left() + layout.line.x_for_index(display_start - layout.start),
+                line_top,
             ),
             point(
-                bounds.left()
-                    + last_layout.x_for_index(self.display_offset_for_content_offset(range.end)),
-                bounds.bottom(),
+                bounds.left() + layout.line.x_for_index(display_end - layout.start),
+                line_top + self.last_line_height,
             ),
         ))
     }
@@ -539,10 +640,14 @@ impl EntityInputHandler for TextInput {
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         let line_point = self.last_bounds?.localize(&point)?;
-        let last_layout = self.last_layout.as_ref()?;
+        let layout = self.layout_for_y(line_point.y, self.last_line_height)?;
         // The layout is over the painted text: map through the mask first.
-        let display_index = last_layout.index_for_x(point.x - line_point.x)?;
-        Some(self.offset_to_utf16(self.content_offset_for_display_offset(display_index)))
+        let display_index = layout.line.index_for_x(line_point.x)?;
+        Some(
+            self.offset_to_utf16(
+                layout.start + self.content_offset_for_display_offset(display_index),
+            ),
+        )
     }
 }
 
@@ -553,9 +658,10 @@ struct TextElement {
 }
 
 struct PrepaintState {
-    line: Option<ShapedLine>,
+    lines: Vec<LineLayout>,
+    line_height: Pixels,
     cursor: Option<PaintQuad>,
-    selection: Option<PaintQuad>,
+    selections: Vec<PaintQuad>,
 }
 
 impl IntoElement for TextElement {
@@ -587,7 +693,10 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
+        // One text line per row: single-line inputs are one row tall; the
+        // multi-line Composer input is a fixed row count (task card, T18).
+        let rows = self.input.read(cx).rows as f32;
+        style.size.height = (window.line_height() * rows).into();
         (window.request_layout(style, [], cx), ())
     }
 
@@ -623,80 +732,155 @@ impl Element for TextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = if let Some(marked_range) = input.marked_range.as_ref() {
-            let marked_start = input.display_offset_for_content_offset(marked_range.start);
-            let marked_end = input.display_offset_for_content_offset(marked_range.end);
-            vec![
-                TextRun {
-                    len: marked_start,
-                    ..run.clone()
-                },
-                TextRun {
-                    len: marked_end - marked_start,
-                    underline: Some(UnderlineStyle {
-                        color: Some(run.color),
-                        thickness: px(1.0),
-                        wavy: false,
-                    }),
-                    ..run.clone()
-                },
-                TextRun {
-                    len: display_text.len() - marked_end,
-                    ..run
-                },
-            ]
-            .into_iter()
-            .filter(|run| run.len > 0)
-            .collect()
-        } else {
-            vec![run]
-        };
-
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let line = window
-            .text_system()
-            .shape_line(display_text, font_size, &runs, None);
+        let line_height = window.line_height();
 
-        let cursor_pos = line.x_for_index(input.display_offset_for_content_offset(cursor));
-        let (selection, cursor) = if selected_range.is_empty() {
-            (
-                None,
-                Some(fill(
-                    Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
-                        size(px(2.), bounds.bottom() - bounds.top()),
-                    ),
-                    theme(cx).colors.accent,
-                )),
-            )
+        // Per-line layout. Single-line keeps the historical mask-aware path;
+        // multi-line (unmasked by construction — masked fields are single
+        // -line only) lays out each `\n` segment independently.
+        let mut lines: Vec<LineLayout> = Vec::new();
+        if input.multiline {
+            let mut start = 0;
+            for segment in display_text.split('\n') {
+                let len = segment.len();
+                let runs: Vec<TextRun> = match input.marked_range.as_ref() {
+                    // Runs must cover exactly this segment (not the whole
+                    // display text — shape_line slices the segment by lens).
+                    None => vec![TextRun { len, ..run.clone() }],
+                    Some(marked) => [
+                        TextRun {
+                            len: marked.start.saturating_sub(start).min(len),
+                            ..run.clone()
+                        },
+                        TextRun {
+                            len: marked.end.saturating_sub(start).min(len)
+                                - marked.start.saturating_sub(start).min(len),
+                            underline: Some(UnderlineStyle {
+                                color: Some(run.color),
+                                thickness: px(1.0),
+                                wavy: false,
+                            }),
+                            ..run.clone()
+                        },
+                        TextRun {
+                            len: len - marked.end.saturating_sub(start).min(len),
+                            ..run.clone()
+                        },
+                    ]
+                    .into_iter()
+                    .filter(|run| run.len > 0)
+                    .collect(),
+                };
+                // Empty segments (blank lines) shape with a zero-length run.
+                let runs = if runs.is_empty() {
+                    vec![TextRun {
+                        len: 0,
+                        ..run.clone()
+                    }]
+                } else {
+                    runs
+                };
+                let shaped = window.text_system().shape_line(
+                    SharedString::from(segment),
+                    font_size,
+                    &runs,
+                    None,
+                );
+                lines.push(LineLayout {
+                    start,
+                    len,
+                    line: shaped,
+                });
+                start += len + 1;
+            }
         } else {
-            (
-                Some(fill(
-                    Bounds::from_corners(
-                        point(
-                            bounds.left()
-                                + line.x_for_index(
-                                    input.display_offset_for_content_offset(selected_range.start),
-                                ),
-                            bounds.top(),
+            let runs = if let Some(marked_range) = input.marked_range.as_ref() {
+                let marked_start = input.display_offset_for_content_offset(marked_range.start);
+                let marked_end = input.display_offset_for_content_offset(marked_range.end);
+                vec![
+                    TextRun {
+                        len: marked_start,
+                        ..run.clone()
+                    },
+                    TextRun {
+                        len: marked_end - marked_start,
+                        underline: Some(UnderlineStyle {
+                            color: Some(run.color),
+                            thickness: px(1.0),
+                            wavy: false,
+                        }),
+                        ..run.clone()
+                    },
+                    TextRun {
+                        len: display_text.len() - marked_end,
+                        ..run
+                    },
+                ]
+                .into_iter()
+                .filter(|run| run.len > 0)
+                .collect()
+            } else {
+                vec![run]
+            };
+            let shaped =
+                window
+                    .text_system()
+                    .shape_line(display_text.clone(), font_size, &runs, None);
+            lines.push(LineLayout {
+                start: 0,
+                len: display_text.len(),
+                line: shaped,
+            });
+        }
+
+        // Selection: one quad per intersected line (multi-line selections
+        // cover whole lines between the ends).
+        let mut selections: Vec<PaintQuad> = Vec::new();
+        for (row, layout) in lines.iter().enumerate() {
+            let start = selected_range.start.max(layout.start);
+            let end = selected_range.end.min(layout.start + layout.len);
+            if start >= end {
+                continue;
+            }
+            let x0 = layout.line.x_for_index(start - layout.start);
+            let x1 = layout.line.x_for_index(end - layout.start);
+            selections.push(fill(
+                Bounds::new(
+                    point(bounds.left() + x0, bounds.top() + line_height * row as f32),
+                    size(x1 - x0, line_height),
+                ),
+                theme(cx).colors.bg_active,
+            ));
+        }
+
+        // Cursor on the line containing the offset (identity mapping for
+        // unmasked text; masked single-line maps through the mask).
+        let cursor = if selected_range.is_empty() {
+            lines
+                .iter()
+                .rposition(|layout| cursor >= layout.start)
+                .map(|row| {
+                    let layout = &lines[row];
+                    let display_cursor = input.display_offset_for_content_offset(cursor);
+                    let display_start = input.display_offset_for_content_offset(layout.start);
+                    let x = layout.line.x_for_index(display_cursor - display_start);
+                    fill(
+                        Bounds::new(
+                            point(bounds.left() + x, bounds.top() + line_height * row as f32),
+                            size(px(2.), line_height),
                         ),
-                        point(
-                            bounds.left()
-                                + line.x_for_index(
-                                    input.display_offset_for_content_offset(selected_range.end),
-                                ),
-                            bounds.bottom(),
-                        ),
-                    ),
-                    theme(cx).colors.bg_active,
-                )),
-                None,
-            )
+                        theme(cx).colors.accent,
+                    )
+                })
+        } else {
+            None
         };
+
         PrepaintState {
-            line: Some(line),
+            lines,
+            line_height,
             cursor,
-            selection,
+            selections,
         }
     }
 
@@ -716,24 +900,23 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = prepaint.selection.take() {
+        for selection in prepaint.selections.drain(..) {
             window.paint_quad(selection);
         }
-        // `prepaint` always produces a line; bail out defensively otherwise.
-        let Some(line) = prepaint.line.take() else {
-            return;
-        };
-        // Nothing sensible can be done about a paint failure mid-frame, and
-        // this crate may not depend on a logger (T08 dependency ruling), so
-        // the result is intentionally discarded.
-        let _ = line.paint(
-            bounds.origin,
-            window.line_height(),
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
+        let line_height = prepaint.line_height;
+        for (row, layout) in prepaint.lines.iter().enumerate() {
+            // Nothing sensible can be done about a paint failure mid-frame,
+            // and this crate may not depend on a logger (T08 dependency
+            // ruling), so the result is intentionally discarded.
+            let _ = layout.line.paint(
+                point(bounds.origin.x, bounds.origin.y + line_height * row as f32),
+                line_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
 
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
@@ -742,7 +925,8 @@ impl Element for TextElement {
         }
 
         self.input.update(cx, |input, _cx| {
-            input.last_layout = Some(line);
+            input.last_lines = std::mem::take(&mut prepaint.lines);
+            input.last_line_height = line_height;
             input.last_bounds = Some(bounds);
         });
     }
@@ -751,7 +935,9 @@ impl Element for TextElement {
 impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
-        div()
+        // The multi-line Composer input renders bare: the composer card
+        // around it supplies bg/border/rounding for the whole row.
+        let mut container = div()
             .flex_1()
             .key_context("TextInput")
             .track_focus(&self.focus_handle)
@@ -769,17 +955,26 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::insert_newline))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .bg(colors.bg_elevated)
-            .border_1()
-            .border_color(colors.border_subtle)
-            .rounded_lg()
-            .px_2()
-            .py_1()
-            // Typography per UI spec §3: body text 13px / 1.55 line height.
+            .on_mouse_move(cx.listener(Self::on_mouse_move));
+        if !self.multiline {
+            container = container
+                .bg(colors.bg_elevated)
+                .border_1()
+                .border_color(colors.border_subtle)
+                .rounded_lg()
+                .px_2()
+                .py_1();
+        } else {
+            // Fixed-row viewport: content beyond `rows` lines is clipped
+            // (自适应滚动后置，任务卡注明).
+            container = container.overflow_hidden();
+        }
+        // Typography per UI spec §3: body text 13px / 1.55 line height.
+        container
             .text_size(px(Typography::BODY))
             .line_height(relative(Typography::BODY_LINE_HEIGHT))
             .text_color(colors.text_primary)
