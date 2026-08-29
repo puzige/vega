@@ -33,21 +33,33 @@ fn bench() -> Result<()> {
     let workspace = workspace_root()?;
     let binary = ensure_vega_binary(&workspace)?;
 
-    println!("vega bench — placeholder measurement pipeline (E4)");
-    println!("real instrumentation lands with S3 (first frame / gpui::test frame timing)\n");
+    println!("vega bench — S3-T17 measurement pipeline");
+    println!(
+        "cold_start is still spawn-to-exit (first-frame instrumentation is a separate card); \
+         render_frame runs the --vega-bench-render probe\n"
+    );
 
     let cold_start = measure_cold_start(&binary)?;
     let memory_idle = measure_memory_idle(&binary)?;
-    let render_frame = serde_json::json!({ "status": "not_implemented" });
+    println!("building release vega for the render_frame probe (first run takes a while) ...");
+    let release_binary = ensure_vega_binary_with_profile(&workspace, true)?;
+    println!(
+        "measuring render_frame via the --vega-bench-render probe (~25s, a window will open) ..."
+    );
+    let render_frame = measure_render_frame(&release_binary)?;
 
-    print_table(&cold_start, &memory_idle);
+    print_table(&cold_start, &memory_idle, &render_frame);
 
     let report = BenchReport {
         timestamp: unix_ms()?,
         meta: BenchMeta {
-            stage: "placeholder",
-            note: "cold_start measures spawn-to-exit until first-frame instrumentation (S3); \
-                   render_frame waits for #[gpui::test] frame timing (S3)",
+            stage: "s3-t17",
+            note: "render_frame measured by `vega --vega-bench-render` (probe-binary mode): \
+                   #[gpui::test] was evaluated first but this gpui rev runs tests on \
+                   NoopTextSystem with no real frame cadence, so the probe reuses the T14 \
+                   spike method (render counter + 1s sampling + frame-build percentiles on a \
+                   real window). fps is vsync-capped by the 60Hz display; judge P1 by the \
+                   frame-build margin per tech-spec §5.2",
         },
         cold_start,
         memory_idle,
@@ -123,6 +135,90 @@ fn percentile(sorted: &[u64], pct: u64) -> u64 {
     sorted[rank - 1]
 }
 
+// ─── render_frame probe (S3-T17) ─────────────────────────────────────────────
+
+/// Upper bound for one probe run (~25s expected: 8s scroll + 12s stream +
+/// startup + report write).
+const RENDER_FRAME_TIMEOUT: Duration = Duration::from_secs(120);
+/// CPU sampling interval during the probe (spike run.sh 方法).
+const CPU_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Runs `vega --vega-bench-render <tmp.json>` to completion and returns the
+/// probe's measured JSON (the `render_frame` report value), enriched with the
+/// externally sampled CPU usage (spike run.sh 方法：ps -o %cpu).
+fn measure_render_frame(binary: &Path) -> Result<serde_json::Value> {
+    let report_path = std::env::temp_dir().join(format!("vega-render-frame-{}.json", unix_ms()?));
+    let mut child = spawn_with_idle_assertion(binary, &report_path)
+        .context("failed to spawn the --vega-bench-render probe")?;
+
+    let start = Instant::now();
+    let mut cpu_samples: Vec<f64> = Vec::new();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if let Some(pct) = cpu_percent(child.id()) {
+            cpu_samples.push(pct);
+        }
+        if start.elapsed() > RENDER_FRAME_TIMEOUT {
+            child.kill().ok();
+            bail!(
+                "the --vega-bench-render probe exceeded {}s; killed",
+                RENDER_FRAME_TIMEOUT.as_secs()
+            );
+        }
+        thread::sleep(CPU_SAMPLE_INTERVAL);
+    };
+    if !status.success() {
+        bail!("the --vega-bench-render probe exited with {status}");
+    }
+
+    let raw = std::fs::read_to_string(&report_path)
+        .with_context(|| format!("failed to read {}", report_path.display()))?;
+    let mut value: serde_json::Value =
+        serde_json::from_str(&raw).context("the probe report is not valid JSON")?;
+    if !cpu_samples.is_empty() {
+        let average = cpu_samples.iter().sum::<f64>() / cpu_samples.len() as f64;
+        let max = cpu_samples.iter().cloned().fold(0.0_f64, f64::max);
+        value["cpu_avg_pct"] = serde_json::json!((average * 10.0).round() / 10.0);
+        value["cpu_max_pct"] = serde_json::json!((max * 10.0).round() / 10.0);
+        value["cpu_samples"] = serde_json::json!(cpu_samples.len());
+    }
+    Ok(value)
+}
+
+/// Spawns the probe binary, wrapped in `caffeinate -i` on macOS so App Nap
+/// cannot throttle the measurement window (spike run.sh 同款前提).
+fn spawn_with_idle_assertion(binary: &Path, report_path: &Path) -> Result<std::process::Child> {
+    let caffeinate = Path::new("/usr/bin/caffeinate");
+    let mut command = if caffeinate.exists() {
+        let mut command = Command::new(caffeinate);
+        command.arg("-i").arg(binary);
+        command
+    } else {
+        Command::new(binary)
+    };
+    command
+        .arg("--vega-bench-render")
+        .arg(report_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    Ok(command.spawn()?)
+}
+
+/// One process-CPU sample in percent via `ps -o %cpu=` (None = unavailable).
+fn cpu_percent(pid: u32) -> Option<f64> {
+    let output = Command::new("ps")
+        .arg("-o")
+        .arg("%cpu=")
+        .arg("-p")
+        .arg(pid.to_string())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.trim().parse::<f64>().ok()
+}
+
 // ─── vega process helpers ────────────────────────────────────────────────────
 
 fn workspace_root() -> Result<PathBuf> {
@@ -133,15 +229,25 @@ fn workspace_root() -> Result<PathBuf> {
 }
 
 fn ensure_vega_binary(workspace: &Path) -> Result<PathBuf> {
-    let binary = workspace.join("target/debug/vega");
+    ensure_vega_binary_with_profile(workspace, false)
+}
+
+/// Locates (building when missing) the vega binary. `release = true` builds
+/// `--release` — the render_frame probe measures on an optimized binary so the
+/// numbers are comparable with the T14 spike (which ran a release probe).
+fn ensure_vega_binary_with_profile(workspace: &Path, release: bool) -> Result<PathBuf> {
+    let profile_dir = if release { "release" } else { "debug" };
+    let binary = workspace.join(format!("target/{profile_dir}/vega"));
     if !binary.exists() {
-        println!("building vega (target/debug/vega not found) ...");
-        let status = cargo_command()
-            .arg("build")
-            .arg("-p")
-            .arg("vega")
-            .status()?;
-        if !status.success() {
+        println!(
+            "building vega (target/{profile_dir}/vega not found) ... (release builds take a while)"
+        );
+        let mut command = cargo_command();
+        command.arg("build").arg("-p").arg("vega");
+        if release {
+            command.arg("--release");
+        }
+        if !command.status()?.success() {
             bail!("cargo build -p vega failed");
         }
     }
@@ -243,7 +349,7 @@ struct MemoryIdle {
     rss_mb: f64,
 }
 
-fn print_table(cold_start: &ColdStart, memory_idle: &MemoryIdle) {
+fn print_table(cold_start: &ColdStart, memory_idle: &MemoryIdle, render_frame: &serde_json::Value) {
     println!("{:<14} {:<26} note", "metric", "value");
     println!(
         "{:<14} {:<26} spawn-to-exit placeholder",
@@ -256,9 +362,43 @@ fn print_table(cold_start: &ColdStart, memory_idle: &MemoryIdle) {
         format!("{:.1} MB", memory_idle.rss_mb),
         memory_idle.sample_after_secs
     );
+    let fps = render_frame
+        .get("scroll")
+        .and_then(|scroll| scroll.get("fps_median"))
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let stream_fps = render_frame
+        .get("stream")
+        .and_then(|stream| stream.get("fps_median"))
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let build_p50 = render_frame
+        .get("stream")
+        .and_then(|stream| stream.get("frame_build_p50_us"))
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let build_p99 = render_frame
+        .get("stream")
+        .and_then(|stream| stream.get("frame_build_p99_us"))
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let frozen_remat = render_frame
+        .get("frozen_rematerializations")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(u64::MAX);
+    let mode = render_frame
+        .get("mode")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
     println!(
-        "{:<14} {:<26} S3: #[gpui::test] frame timing",
-        "render_frame", "not implemented"
+        "{:<14} {:<26} mode={mode} (scroll fps; 60Hz vsync cap)",
+        "render_frame",
+        format!("fps={fps}")
+    );
+    println!(
+        "{:<14} {:<26} stream ~500δ/s: frozen_remat={frozen_remat} (P3, 0 required)",
+        "stream_phase",
+        format!("fps={stream_fps} build p50={build_p50:.0}µs p99={build_p99:.0}µs")
     );
 }
 
