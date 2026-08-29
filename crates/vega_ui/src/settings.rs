@@ -4,9 +4,9 @@
 //! The view is opened with Cmd+, ([`OpenSettings`]) and closed with Esc or
 //! the back button ([`CloseSettings`]); whether it replaces the session
 //! placeholder is tracked by the [`SettingsOpen`] global, following the
-//! global pattern proven in T07. It loads the config from
-//! `$HOME/.vega/config.toml` when constructed and saves it back on every
-//! mutation, so configuration survives a restart.
+//! global pattern proven in T07. It loads the config from the config root
+//! (`vega_store::paths`, tech-spec §6) when constructed and saves it back on
+//! every mutation, so configuration survives a restart.
 //!
 //! Credentials never appear in the UI: the key form field is masked while
 //! typing and every stored provider shows the constant "•••••••已存储"

@@ -1,4 +1,6 @@
-//! Application configuration stored at `$HOME/.vega/config.toml`.
+//! Application configuration stored at
+//! `${XDG_CONFIG_HOME:-$HOME/.config}/vega/config.toml`
+//! ([`crate::paths`], tech-spec §6).
 //!
 //! The config file never contains credential values: each provider carries
 //! a `key_ref`, which is the reference name of the credential kept in the
@@ -84,7 +86,7 @@ impl Default for UiPrefs {
     }
 }
 
-/// Top-level configuration at `$HOME/.vega/config.toml`.
+/// Top-level configuration at the config root (tech-spec §6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     /// Configured providers.
@@ -117,14 +119,15 @@ const FILE_HEADER: &str = "\
 #   sidebar_collapsed - whether the sidebar starts collapsed (default: false)
 ";
 
-/// Path of the config file: `$HOME/.vega/config.toml` (macOS-first; `HOME`
-/// must be set).
+/// Path of the config file: `${XDG_CONFIG_HOME:-$HOME/.config}/vega/config.toml`
+/// (resolved by [`crate::paths`]; `HOME` must be set).
 fn config_path() -> Result<PathBuf, ConfigError> {
-    let home = std::env::var("HOME").map_err(io::Error::other)?;
-    Ok(PathBuf::from(home).join(".vega").join("config.toml"))
+    let dir = crate::paths::config_dir()
+        .ok_or_else(|| io::Error::other("HOME environment variable is not set"))?;
+    Ok(dir.join("config.toml"))
 }
 
-/// Load the config from `$HOME/.vega/config.toml`.
+/// Load the config from the config root (tech-spec §6).
 ///
 /// If the file does not exist, a default template (with explanatory
 /// comments) is written first and the default config is returned.
@@ -147,7 +150,7 @@ fn load_from(path: &Path) -> Result<AppConfig, ConfigError> {
 }
 
 impl AppConfig {
-    /// Save the config to `$HOME/.vega/config.toml` (atomic write).
+    /// Save the config to the config root (atomic write).
     pub fn save(&self) -> Result<(), ConfigError> {
         self.save_to(&config_path()?)
     }

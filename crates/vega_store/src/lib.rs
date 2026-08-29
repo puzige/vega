@@ -33,12 +33,14 @@
 //! lands, a `From<rusqlite::Error>` bridge into `VegaError::Store` will be
 //! added at the `vega_conversation` layer.
 
-//! Module layout: `config` owns `$HOME/.vega/config.toml`, `keystore` owns
+//! Module layout: `paths` owns the config/data roots (tech-spec §6), `config`
+//! owns `config.toml` under the config root, `keystore` owns
 //! Keychain-backed credentials; `projects` / `git_detect` are T10 additions.
 
 pub mod config;
 pub mod git_detect;
 pub mod keystore;
+pub mod paths;
 pub mod projects;
 // T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
 pub mod threads;

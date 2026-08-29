@@ -39,13 +39,16 @@ pub struct ThreadsStore(Mutex<Store>);
 
 impl Global for ThreadsStore {}
 
-/// Opens `$HOME/.vega/vega.db`, applies migrations, and registers
-/// [`ThreadsStore`].
+/// Opens `vega.db` under the platform data root (tech-spec §6), applies
+/// migrations, and registers [`ThreadsStore`].
 ///
 /// Returns the failure message for the caller to log; the app still boots
 /// and the threads view degrades to an inline error (ui-spec §4.6).
 pub fn init(cx: &mut App) -> Result<(), String> {
-    let path = db_path()?;
+    let dir = vega_store::paths::data_dir().ok_or_else(|| "未设置 HOME 环境变量".to_string())?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("创建 {} 失败：{error}", dir.display()))?;
+    let path = dir.join("vega.db");
     let store = Store::open(&path)
         .map_err(|error| format!("打开数据库失败（{}）：{error}", path.display()))?;
     store
@@ -53,15 +56,6 @@ pub fn init(cx: &mut App) -> Result<(), String> {
         .map_err(|error| format!("数据库迁移失败：{error}"))?;
     cx.set_global(ThreadsStore(Mutex::new(store)));
     Ok(())
-}
-
-/// Path of the Vega database: `$HOME/.vega/vega.db` (next to config.toml).
-fn db_path() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "未设置 HOME 环境变量".to_string())?;
-    let dir = std::path::Path::new(&home).join(".vega");
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("创建 {} 失败：{error}", dir.display()))?;
-    Ok(dir.join("vega.db"))
 }
 
 /// Runs `f` with the store; lock/global failures become inline error text.

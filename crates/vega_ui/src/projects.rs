@@ -14,7 +14,7 @@
 //! a restart. Errors render as an inline danger bar (ui-spec §4.6: no error
 //! modals).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gpui::prelude::*;
 use gpui::{
@@ -54,26 +54,25 @@ pub struct ProjectsView {
     error: Option<String>,
 }
 
-/// Opens the app store at `$HOME/.vega/vega.db` (creating the directory and
-/// applying pending migrations) and installs it as the [`ProjectsStore`]
-/// global. Call once at app startup.
+/// Opens the app store at the platform data root
+/// (`vega_store::paths::data_dir()`/`vega.db`, tech-spec §6; creating the
+/// directory and applying pending migrations) and installs it as the
+/// [`ProjectsStore`] global. Call once at app startup.
 pub fn init(cx: &mut App) {
     let store = open_default_store();
     cx.set_global(ProjectsStore(store));
 }
 
-/// Opens and migrates `$HOME/.vega/vega.db`.
-///
-/// The path mirrors the config convention (`$HOME/.vega/`); failures come
-/// back as ready-to-render messages.
+/// Opens and migrates `vega.db` under the platform data root
+/// (tech-spec §6). Failures come back as ready-to-render messages.
 fn open_default_store() -> Result<Store, String> {
-    let home =
-        std::env::var("HOME").map_err(|_| "未能确定用户主目录（HOME 未设置）".to_string())?;
-    let dir = PathBuf::from(home).join(".vega");
+    let dir = vega_store::paths::data_dir()
+        .ok_or_else(|| "未能确定用户主目录（HOME 未设置）".to_string())?;
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("创建 {} 失败：{error}", dir.display()))?;
-    let store = Store::open(dir.join("vega.db"))
-        .map_err(|error| format!("打开 {} 失败：{error}", dir.join("vega.db").display()))?;
+    let path = dir.join("vega.db");
+    let store =
+        Store::open(&path).map_err(|error| format!("打开 {} 失败：{error}", path.display()))?;
     store
         .migrate()
         .map_err(|error| format!("数据库迁移失败：{error}"))?;

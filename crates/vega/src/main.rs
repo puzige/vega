@@ -252,8 +252,8 @@ fn main() {
         // Key bindings for the vega_ui text input components.
         vega_ui::init(cx);
 
-        // Open + migrate the project store ($HOME/.vega/vega.db) and install
-        // it as a global for the projects view (T10).
+        // Open + migrate the project store (platform data root, tech-spec §6)
+        // and install it as a global for the projects view (T10).
         vega_ui::projects::init(cx);
 
         // T11: open the persistent store for the temporary threads UI; on
