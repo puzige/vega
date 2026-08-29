@@ -69,12 +69,17 @@ impl Default for Defaults {
 pub struct UiPrefs {
     /// UI theme. Defaults to `"dark"`.
     pub theme: String,
+    /// Whether the sidebar is collapsed (Cmd+B). Defaults to `false`; the
+    /// serde default keeps configs written before this field loadable.
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
         Self {
             theme: "dark".to_string(),
+            sidebar_collapsed: false,
         }
     }
 }
@@ -108,7 +113,8 @@ const FILE_HEADER: &str = "\
 #   permission_mode - \"readonly\" | \"confirm\" | \"auto\" (default: \"confirm\")
 #
 # [ui]
-#   theme - UI theme (default: \"dark\")
+#   theme             - UI theme (default: \"dark\")
+#   sidebar_collapsed - whether the sidebar starts collapsed (default: false)
 ";
 
 /// Path of the config file: `$HOME/.vega/config.toml` (macOS-first; `HOME`
@@ -198,6 +204,7 @@ mod tests {
             },
             ui: UiPrefs {
                 theme: "dark".to_string(),
+                sidebar_collapsed: false,
             },
         }
     }
@@ -210,6 +217,44 @@ mod tests {
         config.save_to(&path).unwrap();
         let loaded = load_from(&path).unwrap();
         assert_eq!(config, loaded);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sidebar_collapsed_round_trips_and_defaults_false() {
+        let dir = temp_dir("sidebar-collapsed");
+        let path = dir.join("config.toml");
+        // Round-trip preserves a non-default sidebar_collapsed value.
+        let mut config = sample_config();
+        config.ui.sidebar_collapsed = true;
+        config.save_to(&path).unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert!(loaded.ui.sidebar_collapsed);
+        // Backward compatibility: a config written before the field existed
+        // loads with the serde default (`false`) and keeps the theme. The
+        // legacy file carries every pre-T09 field (T06 template shape).
+        let legacy_path = dir.join("legacy.toml");
+        fs::write(
+            &legacy_path,
+            concat!(
+                "[[providers]]\n",
+                "name = \"deepseek\"\n",
+                "base_url = \"https://api.deepseek.com\"\n",
+                "models = [\"deepseek-chat\"]\n",
+                "key_ref = \"deepseek\"\n",
+                "\n",
+                "[defaults]\n",
+                "model = \"deepseek-chat\"\n",
+                "permission_mode = \"confirm\"\n",
+                "\n",
+                "[ui]\n",
+                "theme = \"dark\"\n",
+            ),
+        )
+        .unwrap();
+        let legacy = load_from(&legacy_path).unwrap();
+        assert!(!legacy.ui.sidebar_collapsed);
+        assert_eq!(legacy.ui.theme, "dark");
         fs::remove_dir_all(&dir).unwrap();
     }
 

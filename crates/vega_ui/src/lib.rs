@@ -1,6 +1,8 @@
-//! GPUI views: settings skeleton (A1-10) and shared input components.
+//! GPUI views: sidebar shell (T09), settings skeleton (A1-10), and shared
+//! input components.
 
 pub mod settings;
+pub mod sidebar;
 pub mod text_input;
 
 use gpui::{App, KeyBinding};

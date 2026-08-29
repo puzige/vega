@@ -5757,6 +5757,7 @@ name = "vega_ui"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "tracing",
  "vega_store",
  "vega_theme",
 ]

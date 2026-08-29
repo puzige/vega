@@ -5,5 +5,6 @@ edition.workspace = true
 
 [dependencies]
 gpui.workspace = true
+tracing.workspace = true
 vega_store.workspace = true
 vega_theme.workspace = true
