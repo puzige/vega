@@ -154,7 +154,19 @@ pub async fn run_agent(
     let mut messages = Vec::with_capacity(request.history.len() + 1);
     messages.push(ChatMessage::new(ChatRole::System, request.system_prompt));
     messages.extend(request.history);
-    let mut completed = request.completed_tool_results;
+    let mut completed: HashMap<String, RuntimeToolResult> = request
+        .completed_tool_results
+        .into_iter()
+        .map(|(call_id, output)| {
+            let result = RuntimeToolResult {
+                call_id: call_id.clone(),
+                output,
+                status: RuntimeToolStatus::Success,
+                reused: true,
+            };
+            (call_id, result)
+        })
+        .collect();
     let mut events = Vec::new();
     let mut final_text = String::new();
     let mut tool_call_count = 0usize;
@@ -277,19 +289,14 @@ pub async fn run_agent(
 
         for call in calls {
             events.push(RuntimeEvent::ToolCallProposed(call.clone()));
-            if let Some(prior) = completed.get(&call.id).cloned() {
-                let result = RuntimeToolResult {
-                    call_id: call.id.clone(),
-                    output: prior.clone(),
-                    status: RuntimeToolStatus::Success,
-                    reused: true,
-                };
+            if let Some(mut result) = completed.get(&call.id).cloned() {
+                result.reused = true;
                 events.push(RuntimeEvent::ToolCallOutput {
                     call_id: call.id.clone(),
-                    chunk: prior.clone(),
+                    chunk: result.output.clone(),
                 });
-                events.push(RuntimeEvent::ToolCallFinished(result));
-                messages.push(ChatMessage::tool_result(call.id, prior));
+                events.push(RuntimeEvent::ToolCallFinished(result.clone()));
+                messages.push(ChatMessage::tool_result(call.id, result.output));
                 continue;
             }
             if tool_call_count >= TOOL_CALL_LIMIT {
@@ -322,7 +329,7 @@ pub async fn run_agent(
                 RuntimeToolResult {
                     call_id: call.id.clone(),
                     output: format!(
-                        "denied: tool '{}' is unavailable until the S5 permission gate",
+                        "Tool error: denied: tool '{}' is unavailable until the S5 permission gate",
                         call.name
                     ),
                     status: RuntimeToolStatus::Rejected,
@@ -335,7 +342,7 @@ pub async fn run_agent(
             });
             events.push(RuntimeEvent::ToolCallFinished(result.clone()));
             messages.push(ChatMessage::tool_result(&call.id, &result.output));
-            completed.insert(call.id, result.output);
+            completed.insert(call.id, result);
 
             if cancel.is_cancelled() {
                 events.push(RuntimeEvent::Interrupted);

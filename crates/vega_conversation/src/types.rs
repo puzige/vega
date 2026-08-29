@@ -26,6 +26,238 @@ pub enum ConversationError {
     /// A row carries a value outside the DDL vocabulary (e.g. `mode`).
     #[error("corrupt thread row: {0}")]
     CorruptRow(String),
+    /// Headless runtime/provider failure.
+    #[error("runtime error: {0}")]
+    Runtime(String),
+}
+
+/// Message identifier used by conversation events.
+pub type MessageId = String;
+
+/// Provider tool-call identifier used by conversation events and storage.
+pub type CallId = String;
+
+/// Permission mode selected by a thread (tech-spec §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionMode {
+    /// Reject write-class tools.
+    ReadOnly,
+    /// Ask before mutations.
+    Confirm,
+    /// Auto-approve except hard-blocked dangerous commands.
+    Auto,
+}
+
+/// `RunMode` name used by the tech spec; the persisted implementation was
+/// introduced as [`ThreadMode`] in S2.
+pub type RunMode = ThreadMode;
+
+/// Integer millionths of one US dollar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Microcents(pub i64);
+
+/// Provider token counts attached to one API call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenUsage {
+    /// Prompt tokens.
+    pub input: u64,
+    /// Completion tokens.
+    pub output: u64,
+    /// Cache-read tokens.
+    pub cache_read: u64,
+    /// Cache-write tokens.
+    pub cache_write: u64,
+}
+
+/// Complete tool proposal emitted to UI/store consumers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    /// Provider call id.
+    pub id: CallId,
+    /// Tool name.
+    pub tool: String,
+    /// Complete raw JSON input.
+    pub input_json: String,
+}
+
+/// Permission decision recorded for a tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approval {
+    /// Approved for this call only.
+    Once,
+    /// Persisted project-level rule (S5).
+    Always,
+    /// Denied.
+    Deny,
+}
+
+/// Persisted tool-call lifecycle (tech-spec §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolCallStatus {
+    /// Waiting for a permission decision.
+    PendingApproval,
+    /// Approved.
+    Approved,
+    /// Rejected.
+    Rejected,
+    /// Running.
+    Running,
+    /// Completed successfully.
+    Success,
+    /// Completed with a tool error.
+    Failed,
+    /// Cancelled while running.
+    Cancelled,
+}
+
+/// A display chunk from a tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutputChunk(pub String);
+
+/// Terminal tool result delivered to the conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolResult {
+    /// Terminal lifecycle status.
+    pub status: ToolCallStatus,
+    /// Truncated display output.
+    pub output: String,
+    /// True when a persisted result was reused by call id.
+    pub reused: bool,
+}
+
+/// Why a conversation message finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationStopReason {
+    /// Provider natural end.
+    End,
+    /// Provider generation limit.
+    Length,
+    /// Runtime tool-call safety limit.
+    ToolLimit,
+}
+
+/// Runtime-to-UI/store unique event stream (tech-spec §3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversationEvent {
+    /// A streaming assistant row was created.
+    MessageStarted { message_id: MessageId, seq: u64 },
+    /// Visible assistant delta.
+    TextDelta {
+        message_id: MessageId,
+        delta: String,
+    },
+    /// Reasoning delta.
+    ThinkingDelta {
+        message_id: MessageId,
+        delta: String,
+    },
+    /// Tool proposal awaiting the placeholder permission hook.
+    ToolCallProposed { call: ToolCall },
+    /// Tool approval.
+    ToolCallApproved { call_id: CallId, approval: Approval },
+    /// Tool output chunk.
+    ToolCallOutput {
+        call_id: CallId,
+        chunk: ToolOutputChunk,
+    },
+    /// Terminal tool result.
+    ToolCallFinished { call_id: CallId, result: ToolResult },
+    /// Provider usage and integer cost.
+    UsageUpdated {
+        message_id: MessageId,
+        usage: TokenUsage,
+        cost: Microcents,
+    },
+    /// Assistant message converged.
+    MessageFinished {
+        message_id: MessageId,
+        stop_reason: ConversationStopReason,
+    },
+    /// Runtime/provider error.
+    Error {
+        message_id: Option<MessageId>,
+        error: String,
+    },
+    /// Cancellation was observed.
+    Interrupted { message_id: MessageId },
+}
+
+/// Converts one headless runtime event into the shared conversation event.
+/// Runtime-only `ToolCallRunning` is persisted but has no UI event in §3.
+pub fn from_runtime_event(
+    message_id: &str,
+    event: &vega_runtime::RuntimeEvent,
+) -> Option<ConversationEvent> {
+    use vega_runtime::{RuntimeEvent, RuntimeFinishReason, RuntimeToolStatus};
+
+    match event {
+        RuntimeEvent::TextDelta(delta) => Some(ConversationEvent::TextDelta {
+            message_id: message_id.to_string(),
+            delta: delta.clone(),
+        }),
+        RuntimeEvent::ThinkingDelta(delta) => Some(ConversationEvent::ThinkingDelta {
+            message_id: message_id.to_string(),
+            delta: delta.clone(),
+        }),
+        RuntimeEvent::ToolCallProposed(call) => Some(ConversationEvent::ToolCallProposed {
+            call: ToolCall {
+                id: call.id.clone(),
+                tool: call.name.clone(),
+                input_json: call.input_json.clone(),
+            },
+        }),
+        RuntimeEvent::ToolCallApproved { call_id } => Some(ConversationEvent::ToolCallApproved {
+            call_id: call_id.clone(),
+            approval: Approval::Once,
+        }),
+        RuntimeEvent::ToolCallRunning { .. } => None,
+        RuntimeEvent::ToolCallOutput { call_id, chunk } => {
+            Some(ConversationEvent::ToolCallOutput {
+                call_id: call_id.clone(),
+                chunk: ToolOutputChunk(chunk.clone()),
+            })
+        }
+        RuntimeEvent::ToolCallFinished(result) => Some(ConversationEvent::ToolCallFinished {
+            call_id: result.call_id.clone(),
+            result: ToolResult {
+                status: match result.status {
+                    RuntimeToolStatus::Rejected => ToolCallStatus::Rejected,
+                    RuntimeToolStatus::Success => ToolCallStatus::Success,
+                    RuntimeToolStatus::Failed => ToolCallStatus::Failed,
+                },
+                output: result.output.clone(),
+                reused: result.reused,
+            },
+        }),
+        RuntimeEvent::UsageUpdated {
+            usage,
+            cost_microcents,
+        } => Some(ConversationEvent::UsageUpdated {
+            message_id: message_id.to_string(),
+            usage: TokenUsage {
+                input: usage.input,
+                output: usage.output,
+                cache_read: usage.cache_read,
+                cache_write: usage.cache_write,
+            },
+            cost: Microcents(*cost_microcents),
+        }),
+        RuntimeEvent::Finished(reason) => Some(ConversationEvent::MessageFinished {
+            message_id: message_id.to_string(),
+            stop_reason: match reason {
+                RuntimeFinishReason::End => ConversationStopReason::End,
+                RuntimeFinishReason::Length => ConversationStopReason::Length,
+                RuntimeFinishReason::ToolLimit => ConversationStopReason::ToolLimit,
+            },
+        }),
+        RuntimeEvent::Interrupted => Some(ConversationEvent::Interrupted {
+            message_id: message_id.to_string(),
+        }),
+        RuntimeEvent::Error(error) => Some(ConversationEvent::Error {
+            message_id: Some(message_id.to_string()),
+            error: error.clone(),
+        }),
+    }
 }
 
 /// Run mode of a thread (tech-spec §3 `RunMode`, A2-09): ask | plan | execute.
@@ -173,7 +405,9 @@ impl ThreadUpdate {
 
 #[cfg(test)]
 mod tests {
-    use super::{ThreadMode, ThreadStatus};
+    use super::{
+        ConversationEvent, Microcents, ThreadMode, ThreadStatus, TokenUsage, from_runtime_event,
+    };
 
     #[test]
     fn thread_mode_round_trips_the_ddl_vocabulary() {
@@ -204,5 +438,45 @@ mod tests {
             assert_eq!(status.as_str(), value);
         }
         assert_eq!(ThreadStatus::parse("done"), None);
+    }
+
+    #[test]
+    fn converts_text_thinking_and_usage_runtime_events() {
+        let message_id = "message-1";
+        assert!(matches!(
+            from_runtime_event(message_id, &vega_runtime::RuntimeEvent::TextDelta("hello".into())),
+            Some(ConversationEvent::TextDelta { message_id, delta })
+                if message_id == "message-1" && delta == "hello"
+        ));
+        assert!(matches!(
+            from_runtime_event(message_id, &vega_runtime::RuntimeEvent::ThinkingDelta("why".into())),
+            Some(ConversationEvent::ThinkingDelta { message_id, delta })
+                if message_id == "message-1" && delta == "why"
+        ));
+        let usage = vega_runtime::RuntimeTokenUsage {
+            input: 10,
+            output: 4,
+            cache_read: 3,
+            cache_write: 2,
+        };
+        assert!(matches!(
+            from_runtime_event(
+                message_id,
+                &vega_runtime::RuntimeEvent::UsageUpdated {
+                    usage,
+                    cost_microcents: 0
+                }
+            ),
+            Some(ConversationEvent::UsageUpdated {
+                usage: TokenUsage {
+                    input: 10,
+                    output: 4,
+                    cache_read: 3,
+                    cache_write: 2
+                },
+                cost: Microcents(0),
+                ..
+            })
+        ));
     }
 }

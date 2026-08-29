@@ -4,5 +4,6 @@
 //! orchestration layer. The streaming state machine and context assembly
 //! land in S3/S4.
 
+pub mod agent;
 pub mod threads;
 pub mod types;
