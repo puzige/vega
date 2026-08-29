@@ -1,4 +1,6 @@
-//! Application configuration stored at `$HOME/.vega/config.toml`.
+//! Application configuration stored at
+//! `${XDG_CONFIG_HOME:-$HOME/.config}/vega/config.toml`
+//! ([`crate::paths`], tech-spec §6).
 //!
 //! The config file never contains credential values: each provider carries
 //! a `key_ref`, which is the reference name of the credential kept in the
@@ -73,6 +75,14 @@ pub struct UiPrefs {
     /// serde default keeps configs written before this field loadable.
     #[serde(default)]
     pub sidebar_collapsed: bool,
+    /// Whether the sidebar 「项目」 block is collapsed (T12). Defaults to
+    /// `false`; serde default keeps older configs loadable.
+    #[serde(default)]
+    pub projects_collapsed: bool,
+    /// Whether the sidebar 「会话」 block is collapsed (T12). Defaults to
+    /// `false`; serde default keeps older configs loadable.
+    #[serde(default)]
+    pub sessions_collapsed: bool,
 }
 
 impl Default for UiPrefs {
@@ -80,11 +90,13 @@ impl Default for UiPrefs {
         Self {
             theme: "dark".to_string(),
             sidebar_collapsed: false,
+            projects_collapsed: false,
+            sessions_collapsed: false,
         }
     }
 }
 
-/// Top-level configuration at `$HOME/.vega/config.toml`.
+/// Top-level configuration at the config root (tech-spec §6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AppConfig {
     /// Configured providers.
@@ -113,18 +125,23 @@ const FILE_HEADER: &str = "\
 #   permission_mode - \"readonly\" | \"confirm\" | \"auto\" (default: \"confirm\")
 #
 # [ui]
-#   theme             - UI theme (default: \"dark\")
-#   sidebar_collapsed - whether the sidebar starts collapsed (default: false)
+#   theme              - UI theme (default: \"dark\")
+#   sidebar_collapsed  - whether the sidebar starts collapsed (default: false)
+#   projects_collapsed - whether the sidebar 「项目」 block starts collapsed
+#                        (default: false)
+#   sessions_collapsed - whether the sidebar 「会话」 block starts collapsed
+#                        (default: false)
 ";
 
-/// Path of the config file: `$HOME/.vega/config.toml` (macOS-first; `HOME`
-/// must be set).
+/// Path of the config file: `${XDG_CONFIG_HOME:-$HOME/.config}/vega/config.toml`
+/// (resolved by [`crate::paths`]; `HOME` must be set).
 fn config_path() -> Result<PathBuf, ConfigError> {
-    let home = std::env::var("HOME").map_err(io::Error::other)?;
-    Ok(PathBuf::from(home).join(".vega").join("config.toml"))
+    let dir = crate::paths::config_dir()
+        .ok_or_else(|| io::Error::other("HOME environment variable is not set"))?;
+    Ok(dir.join("config.toml"))
 }
 
-/// Load the config from `$HOME/.vega/config.toml`.
+/// Load the config from the config root (tech-spec §6).
 ///
 /// If the file does not exist, a default template (with explanatory
 /// comments) is written first and the default config is returned.
@@ -147,7 +164,7 @@ fn load_from(path: &Path) -> Result<AppConfig, ConfigError> {
 }
 
 impl AppConfig {
-    /// Save the config to `$HOME/.vega/config.toml` (atomic write).
+    /// Save the config to the config root (atomic write).
     pub fn save(&self) -> Result<(), ConfigError> {
         self.save_to(&config_path()?)
     }
@@ -205,6 +222,8 @@ mod tests {
             ui: UiPrefs {
                 theme: "dark".to_string(),
                 sidebar_collapsed: false,
+                projects_collapsed: false,
+                sessions_collapsed: false,
             },
         }
     }
@@ -254,6 +273,49 @@ mod tests {
         .unwrap();
         let legacy = load_from(&legacy_path).unwrap();
         assert!(!legacy.ui.sidebar_collapsed);
+        assert_eq!(legacy.ui.theme, "dark");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn block_collapse_fields_round_trip_and_default_false() {
+        let dir = temp_dir("block-collapsed");
+        let path = dir.join("config.toml");
+        // Round-trip preserves non-default block collapse values (T12).
+        let mut config = sample_config();
+        config.ui.projects_collapsed = true;
+        config.ui.sessions_collapsed = true;
+        config.save_to(&path).unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert!(loaded.ui.projects_collapsed);
+        assert!(loaded.ui.sessions_collapsed);
+        // Backward compatibility: a config written before the fields existed
+        // loads with the serde default (`false` for both).
+        let legacy_path = dir.join("legacy.toml");
+        fs::write(
+            &legacy_path,
+            concat!(
+                "[[providers]]\n",
+                "name = \"deepseek\"\n",
+                "base_url = \"https://api.deepseek.com\"\n",
+                "models = [\"deepseek-chat\"]\n",
+                "key_ref = \"deepseek\"\n",
+                "\n",
+                "[defaults]\n",
+                "model = \"deepseek-chat\"\n",
+                "permission_mode = \"confirm\"\n",
+                "\n",
+                "[ui]\n",
+                "theme = \"dark\"\n",
+                "sidebar_collapsed = true\n",
+            ),
+        )
+        .unwrap();
+        let legacy = load_from(&legacy_path).unwrap();
+        assert!(!legacy.ui.projects_collapsed);
+        assert!(!legacy.ui.sessions_collapsed);
+        // 既有字段不受影响。
+        assert!(legacy.ui.sidebar_collapsed);
         assert_eq!(legacy.ui.theme, "dark");
         fs::remove_dir_all(&dir).unwrap();
     }

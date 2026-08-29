@@ -9,6 +9,7 @@
 //! open. Storage failures surface as [`ConversationError`] values.
 
 use vega_store::Store;
+use vega_store::projects as store_projects;
 use vega_store::threads as store;
 
 use crate::types::{
@@ -40,10 +41,11 @@ fn store_error<E: std::fmt::Display>(error: E) -> ConversationError {
     ConversationError::Store(error.to_string())
 }
 
-/// The project new threads attach to while T10's project picker is not
-/// wired in: the most recently opened project, if any.
+/// The project new threads attach to by default: the most recently opened
+/// project, if any (T12: the sidebar seeds its selected-project cache from
+/// this and rewrites it on row click).
 pub fn current_project(store: &Store) -> Result<Option<CurrentProject>, ConversationError> {
-    let row = store::latest_project(store.conn()).map_err(store_error)?;
+    let row = store_projects::latest_project(store.conn()).map_err(store_error)?;
     Ok(row.map(|row| CurrentProject {
         id: row.id,
         name: row.name,
@@ -69,7 +71,7 @@ pub fn create_thread(
     permission_mode: &str,
 ) -> Result<Thread, ConversationError> {
     // 显式守卫：无项目时给出类型化错误，而不是裸外键失败。
-    let exists = store::project_exists(store.conn(), project_id).map_err(store_error)?;
+    let exists = store_projects::project_exists(store.conn(), project_id).map_err(store_error)?;
     if !exists {
         return Err(ConversationError::NoProject);
     }

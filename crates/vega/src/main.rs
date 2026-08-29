@@ -2,18 +2,16 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Bounds, Entity, KeyBinding, MouseButton, MouseUpEvent, TitlebarOptions,
-    Window, WindowBounds, WindowOptions, actions, div, px, size,
+    AnyElement, App, Bounds, Entity, KeyBinding, TitlebarOptions, Window, WindowBounds,
+    WindowOptions, actions, div, px, size,
 };
 use gpui_platform::application;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
-use vega_ui::projects::{CloseProjects, OpenProjects, ProjectsOpen, ProjectsView};
 use vega_ui::settings::{CloseSettings, OpenSettings, SettingsOpen, SettingsView};
 use vega_ui::sidebar::{
-    AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, Sidebar, SidebarCollapsed,
-    ToggleSidebar, load_collapsed, toggle_persisted,
+    AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, NewThread, OpenedThread, Sidebar,
+    SidebarCollapsed, ToggleSidebar, load_collapsed, render_opened_thread_pane, toggle_persisted,
 };
-use vega_ui::threads::{CloseThreads, NewThread, OpenThreads, ThreadsOpen, ThreadsView};
 
 actions!(vega, [Quit, ToggleTheme]);
 
@@ -27,31 +25,23 @@ const EMPTY_STATE_TEMPLATES: [&str; 3] = ["快捷模板 1", "快捷模板 2", "�
 
 /// Root view of the main window: the A1 layout shell — a sidebar (260px,
 /// collapsible) next to a content column (max 820px, centered) that hosts
-/// either the empty state, the projects view (temporary T10 entry), the
-/// temporary threads view (T11 entry), or the settings view (Cmd+, / Esc).
+/// either the settings view (Cmd+, / Esc), the opened session (thread title
+/// header + S3 placeholder, T12 architect ruling: rendered inline, no Entity
+/// caching), or the ui-spec §4.6 empty state.
 struct VegaWindow {
-    /// Sidebar shell; its placeholder blocks are filled by T10 (projects)
-    /// and T12 (sessions).
+    /// Sidebar with the [新建任务] button, projects block, and sessions block.
     sidebar: Entity<Sidebar>,
     /// Cached settings view entity. Kept while settings is open so re-renders
     /// (e.g. the theme toggle) never rebuild the form mid-typing; dropped when
     /// settings closes so the next open reloads the config from disk.
     settings_view: Option<Entity<SettingsView>>,
-    /// Cached projects view entity (T10 temporary mount; T12 moves projects
-    /// into the sidebar and this page is retired).
-    projects_view: Option<Entity<ProjectsView>>,
-    /// Cached temporary threads view (T11 stopgap until T12 integrates the
-    /// sidebar); rebuilt on each open so the list reloads from the store.
-    threads_view: Option<Entity<ThreadsView>>,
 }
 
 impl VegaWindow {
     fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            sidebar: cx.new(|_| Sidebar),
+            sidebar: cx.new(Sidebar::new),
             settings_view: None,
-            projects_view: None,
-            threads_view: None,
         }
     }
 
@@ -63,15 +53,10 @@ impl VegaWindow {
         window.viewport_size().width < px(AUTO_COLLAPSE_WIDTH)
     }
 
-    /// Cmd+N entry point: opens the temporary threads view and creates a
-    /// thread in the current project (the thread opens after creation).
+    /// Cmd+N entry point: creates a thread in the selected project and opens
+    /// it (the sidebar [新建任务] button shares this handler).
     fn open_new_thread(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.global_mut::<ThreadsOpen>().0 = true;
-        let view = self
-            .threads_view
-            .get_or_insert_with(|| cx.new(ThreadsView::new));
-        view.update(cx, ThreadsView::create_thread);
-        cx.refresh_windows();
+        self.sidebar.update(cx, Sidebar::create_thread);
     }
 }
 
@@ -85,32 +70,20 @@ impl Render for VegaWindow {
 
         // Settings opens inside the content area (T09 layout change of the
         // T08 view switching): the sidebar stays visible unless collapsed.
-        // T10's projects view uses the same mechanism (temporary entry under
-        // the empty state) until T12 moves it into the sidebar.
+        // 路由收敛（T12）：内容区 = 设置 or 当前会话 or §4.6 空态。
         let content: AnyElement = if cx.global::<SettingsOpen>().0 {
             // 设置视图：缓存 Entity，避免主题刷新等重渲染时重建导致表单输入丢失。
             let settings = self
                 .settings_view
                 .get_or_insert_with(|| cx.new(SettingsView::new));
             settings.clone().into_any_element()
-        } else if cx.global::<ProjectsOpen>().0 {
-            // 项目视图：同样缓存 Entity，保持列表/排序状态不被重渲染重建。
-            let projects = self
-                .projects_view
-                .get_or_insert_with(|| cx.new(ProjectsView::new));
-            projects.clone().into_any_element()
-        } else if cx.global::<ThreadsOpen>().0 {
-            // T11 临时会话视图：由「会话(临时)」入口 / Cmd+N 打开，T12 归位。
-            let view = self
-                .threads_view
-                .get_or_insert_with(|| cx.new(ThreadsView::new));
-            view.clone().into_any_element()
         } else {
-            // 视图均已关闭：丢弃缓存，下次打开时重新构造并载入最新数据。
+            // 设置已关闭：丢弃缓存，下次打开时重新构造并载入最新配置。
             self.settings_view = None;
-            self.projects_view = None;
-            self.threads_view = None;
-            render_empty_state(colors).into_any_element()
+            match cx.global::<OpenedThread>().0.clone() {
+                Some(thread) => render_opened_thread_pane(&thread, colors),
+                None => render_empty_state(colors),
+            }
         };
 
         div()
@@ -130,14 +103,13 @@ impl Render for VegaWindow {
                     .overflow_hidden()
                     .child(content),
             )
-            .into_any_element()
     }
 }
 
 /// The content-area empty state (ui-spec §4.6): centered guidance with inert
 /// quick-template placeholder buttons, inside the 820px content column —
-/// no large logo illustration. Carries the temporary T10/T11 entry buttons
-/// ("项目管理（临时）" / "会话(临时)"); T12 moves both into the sidebar.
+/// no large logo illustration. The temporary T10/T11 entry buttons were
+/// retired in T12 (projects/sessions now live in the sidebar).
 fn render_empty_state(colors: ThemeColors) -> AnyElement {
     div()
         .size_full()
@@ -182,48 +154,6 @@ fn render_empty_state(colors: ThemeColors) -> AnyElement {
                                 .text_color(colors.text_secondary)
                                 .child(label)
                         })),
-                )
-                // T10 临时入口：进入项目注册视图（T12 归位侧边栏后移除）。
-                .child(
-                    div()
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .bg(colors.bg_elevated)
-                        .text_size(px(Typography::SIDEBAR))
-                        .text_color(colors.text_secondary)
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(colors.bg_hover).text_color(colors.text_primary))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
-                                window.dispatch_action(Box::new(OpenProjects), cx);
-                            },
-                        )
-                        .child("项目管理（临时）"),
-                )
-                // T11 临时入口：进入临时会话视图（T12 归位侧边栏后移除）。
-                .child(
-                    div()
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .bg(colors.bg_elevated)
-                        .text_size(px(Typography::SIDEBAR))
-                        .text_color(colors.text_secondary)
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(colors.bg_hover).text_color(colors.text_primary))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            |_: &MouseUpEvent, window: &mut Window, cx: &mut App| {
-                                window.dispatch_action(Box::new(OpenThreads), cx);
-                            },
-                        )
-                        .child("会话(临时)"),
                 ),
         )
         .into_any_element()
@@ -243,25 +173,14 @@ fn main() {
         // Settings view starts closed; the window render reads this global.
         cx.set_global(SettingsOpen(false));
 
-        // Projects view starts closed (T10 temporary mount).
-        cx.set_global(ProjectsOpen(false));
-
-        // Temporary threads view starts closed; toggled by 会话(临时) / Cmd+N.
-        cx.set_global(ThreadsOpen(false));
-
         // Key bindings for the vega_ui text input components.
         vega_ui::init(cx);
 
-        // Open + migrate the project store ($HOME/.vega/vega.db) and install
-        // it as a global for the projects view (T10).
-        vega_ui::projects::init(cx);
-
-        // T11: open the persistent store for the temporary threads UI; on
-        // failure the app still boots and the view degrades to an inline
-        // error (ui-spec §4.6: no modals).
-        if let Err(error) = vega_ui::threads::init(cx) {
-            tracing::error!(%error, "failed to open the vega store");
-        }
+        // T12: open + migrate the store at the platform data root (tech-spec
+        // §6) and seed the sidebar globals (selected project, block collapse
+        // states, opened thread). On failure the app still boots and the
+        // sidebar blocks degrade to inline error bars (ui-spec §4.6).
+        vega_ui::sidebar::init(cx);
 
         let bounds = Bounds::centered(None, size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT)), cx);
         let min_size = size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT));
@@ -299,7 +218,7 @@ fn main() {
             KeyBinding::new("escape", CloseSettings, None),
             // Sidebar collapse toggle (T09).
             KeyBinding::new("cmd-b", ToggleSidebar, None),
-            // Thread creation (T11): button and Cmd+N share one entry point.
+            // Thread creation (T11→T12): button and Cmd+N share one handler.
             KeyBinding::new("cmd-n", NewThread, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
@@ -314,23 +233,6 @@ fn main() {
         });
         cx.on_action(|_: &CloseSettings, cx| {
             cx.set_global(SettingsOpen(false));
-            cx.refresh_windows();
-        });
-        cx.on_action(|_: &OpenProjects, cx| {
-            cx.set_global(ProjectsOpen(true));
-            cx.refresh_windows();
-        });
-        cx.on_action(|_: &CloseProjects, cx| {
-            cx.set_global(ProjectsOpen(false));
-            cx.refresh_windows();
-        });
-        // Temporary threads view switching (T11).
-        cx.on_action(|_: &OpenThreads, cx| {
-            cx.set_global(ThreadsOpen(true));
-            cx.refresh_windows();
-        });
-        cx.on_action(|_: &CloseThreads, cx| {
-            cx.set_global(ThreadsOpen(false));
             cx.refresh_windows();
         });
         cx.on_action(move |_: &NewThread, cx| {
