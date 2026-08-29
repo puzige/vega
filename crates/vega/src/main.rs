@@ -1,4 +1,7 @@
 //! Vega application entry point: boots the GPUI app and opens the main window.
+//! The hidden `--vega-bench-render <out.json>` flag instead runs the S3-T17
+//! render_frame self-measurement probe (see
+//! [`vega_ui::conversation_stream::bench`]).
 
 use gpui::prelude::*;
 use gpui::{
@@ -7,11 +10,12 @@ use gpui::{
 };
 use gpui_platform::application;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
+use vega_ui::conversation_stream::{ConversationStream, bench as render_frame_bench};
 use vega_ui::settings::{CloseSettings, OpenSettings, SettingsOpen, SettingsView};
 use vega_ui::sidebar::{
     AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, NewThread, OpenedThread,
     PendingDeleteConfirm, Sidebar, SidebarCollapsed, ToggleSidebar, load_collapsed,
-    render_delete_confirm_overlay, render_opened_thread_pane, toggle_persisted,
+    render_delete_confirm_overlay, toggle_persisted,
 };
 
 actions!(vega, [Quit, ToggleTheme]);
@@ -26,9 +30,8 @@ const EMPTY_STATE_TEMPLATES: [&str; 3] = ["快捷模板 1", "快捷模板 2", "�
 
 /// Root view of the main window: the A1 layout shell — a sidebar (260px,
 /// collapsible) next to a content column (max 820px, centered) that hosts
-/// either the settings view (Cmd+, / Esc), the opened session (thread title
-/// header + S3 placeholder, T12 architect ruling: rendered inline, no Entity
-/// caching), or the ui-spec §4.6 empty state.
+/// either the settings view (Cmd+, / Esc), the opened session
+/// ([`ConversationStream`], S3-T17), or the ui-spec §4.6 empty state.
 struct VegaWindow {
     /// Sidebar with the [新建任务] button, projects block, and sessions block.
     sidebar: Entity<Sidebar>,
@@ -36,6 +39,10 @@ struct VegaWindow {
     /// (e.g. the theme toggle) never rebuild the form mid-typing; dropped when
     /// settings closes so the next open reloads the config from disk.
     settings_view: Option<Entity<SettingsView>>,
+    /// Cached conversation stream for the open thread (id, view). S3-T17:
+    /// built lazily on first render of an opened thread; rebuilt when another
+    /// thread is opened. The stream itself is memory-only (no persistence).
+    stream_view: Option<(String, Entity<ConversationStream>)>,
 }
 
 impl VegaWindow {
@@ -43,6 +50,7 @@ impl VegaWindow {
         Self {
             sidebar: cx.new(Sidebar::new),
             settings_view: None,
+            stream_view: None,
         }
     }
 
@@ -74,7 +82,7 @@ impl Render for VegaWindow {
 
         // Settings opens inside the content area (T09 layout change of the
         // T08 view switching): the sidebar stays visible unless collapsed.
-        // 路由收敛（T12）：内容区 = 设置 or 当前会话 or §4.6 空态。
+        // 路由收敛（T12 + T17）：内容区 = 设置 or 会话流 or §4.6 空态。
         let content: AnyElement = if cx.global::<SettingsOpen>().0 {
             // 设置视图：缓存 Entity，避免主题刷新等重渲染时重建导致表单输入丢失。
             let settings = self
@@ -85,8 +93,27 @@ impl Render for VegaWindow {
             // 设置已关闭：丢弃缓存，下次打开时重新构造并载入最新配置。
             self.settings_view = None;
             match cx.global::<OpenedThread>().0.clone() {
-                Some(thread) => render_opened_thread_pane(&thread, colors),
-                None => render_empty_state(colors),
+                Some(thread) => {
+                    // S3-T17：会话流视图（每线程一个实体，切换会话时重建；
+                    // MarkdownStream 内存态构造，不落库）。
+                    let cached = match &self.stream_view {
+                        Some((thread_id, view)) if *thread_id == thread.id => Some(view.clone()),
+                        _ => None,
+                    };
+                    let stream = match cached {
+                        Some(view) => view,
+                        None => {
+                            let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+                            self.stream_view = Some((thread.id.clone(), view.clone()));
+                            view
+                        }
+                    };
+                    stream.into_any_element()
+                }
+                None => {
+                    self.stream_view = None;
+                    render_empty_state(colors)
+                }
             }
         };
 
@@ -171,6 +198,13 @@ fn render_empty_state(colors: ThemeColors) -> AnyElement {
 }
 
 fn main() {
+    // S3-T17 隐藏自测量模式：`vega --vega-bench-render <out.json>` 跑完写
+    // JSON 后退出（xtask bench render_frame 的数据来源），不进入正常应用。
+    if let Some(output) = render_frame_bench::output_path_from_args() {
+        application().run(|cx: &mut App| render_frame_bench::start(output, cx));
+        return;
+    }
+
     application().run(|cx: &mut App| {
         // Seed the global theme from the macOS appearance; components read it
         // via `vega_theme::theme(cx)`.

@@ -5860,8 +5860,10 @@ name = "vega_ui"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "serde_json",
  "tracing",
  "vega_conversation",
+ "vega_markdown",
  "vega_store",
  "vega_theme",
 ]

@@ -9,3 +9,8 @@ tracing.workspace = true
 vega_store.workspace = true
 vega_conversation.workspace = true
 vega_theme.workspace = true
+# T17 会话流：消费 vega_markdown 的 RenderNode 流水线（tech-spec §1 依赖图：
+# vega_ui ─▶ vega_markdown）；serde_json 供 bench 自测量模式输出 JSON 报告
+# （exec-guide §5 白名单内依赖）。
+vega_markdown.workspace = true
+serde_json.workspace = true
