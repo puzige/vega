@@ -9,3 +9,10 @@ edition.workspace = true
 mdstream = { workspace = true, features = ["pulldown"] }
 pulldown-cmark = { workspace = true }
 thiserror = { workspace = true }
+# 代码块高亮（S3-T16，四语言 rust/ts/js/python 预授权；tsx 由 tree-sitter-typescript
+# 同 crate 提供；tree-sitter-language 为 grammar 侧传递依赖）
+tree-sitter = { workspace = true }
+tree-sitter-rust = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-python = { workspace = true }

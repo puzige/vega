@@ -37,6 +37,18 @@ keyring = "=4.1.6"
 # tech-spec §5.0 路线 A：上游 0.4 已移除 committed/pending+BlockId 模型，禁止随上游升级）
 mdstream = "=0.3.0"
 pulldown-cmark = "=0.13.4"
+# 代码块高亮（exec-guide §5 白名单，2026-08-29 T16 预授权；S3-T16）。
+# 架构师裁决（2026-08-29）：四语言 = rust / typescript / javascript / python，
+# markdown grammar 砍掉——tree-sitter-markdown 0.7.1 硬依赖 tree-sitter ^0.19，
+# 共存会引入第二个 tree-sitter C 运行时导致 SIGSEGV；未来如需走 fork/vendor 路线另议。
+# 兼容组合实测：core 0.26.13 接受 ABI 13..=15（LANGUAGE_VERSION=15，MIN=13），
+# 四 grammar ABI 依次为 rust 14 / typescript 14 / javascript 15 / python 15，全部落窗。
+# tsx 语言由 tree-sitter-typescript 同 crate 提供（零额外依赖）
+tree-sitter = "=0.26.13"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-python = "=0.25.0"
 # workspace 内部 crate
 vega_store = { path = "crates/vega_store" }
 vega_conversation = { path = "crates/vega_conversation" }
