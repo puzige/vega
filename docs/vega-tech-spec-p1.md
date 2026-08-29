@@ -104,7 +104,7 @@ CREATE TABLE permissions (        -- 「总是允许」的规则记忆
 ```
 
 迁移机制：`vega_store::migrate()` 启动时跑，`PRAGMA user_version` 记录版本，递增 SQL 文件 `migrations/0001_init.sql…`。
-> 数据库文件路径（2026-08-29 S2-T10 补定义）：`$HOME/.vega/vega.db`（沿用 §6 的 `~/.vega/` 目录约定）。
+> 数据库文件路径（2026-08-29 S2-T10 补定义；同日人类决策修订为 XDG 布局）：`${XDG_DATA_HOME:-~/.local/share}/vega/vega.db`（见 §6 文件布局）。
 
 ## 3. 核心类型（vega_conversation::types，S1 定稿）
 
@@ -244,9 +244,11 @@ RenderNode → GPUI element 映射、冻结缓存失效策略、虚拟化滚动 
 
 ## 6. 配置与密钥（A1-10/A11-05）
 
-- `~/.vega/config.toml`：providers（name/base_url/model 列表/定价）、defaults（model/permission_mode）、ui（theme）。
+> **文件布局（2026-08-29 人类决策）**：遵循 XDG Base Directory，全平台一致（含 macOS；Phase 4 Linux 零返工）。配置根 = `${XDG_CONFIG_HOME:-~/.config}/vega/`，数据根 = `${XDG_DATA_HOME:-~/.local/share}/vega/`。实现为 vega_store 内零依赖环境变量解析（不引 dirs/xdg crate）。不做旧 `~/.vega/` 自动迁移（预发布无真实用户）。
+
+- 配置：`${XDG_CONFIG_HOME:-~/.config}/vega/config.toml`：providers（name/base_url/model 列表/定价）、defaults（model/permission_mode）、ui（theme）。
+- 数据：`${XDG_DATA_HOME:-~/.local/share}/vega/`：`vega.db`（SQLite）、`pricing.json`（S7 定价表：内置 deepseek/gpt/claude 主流价格，用户可加自定义模型）。
 - API key **只存 Keychain**（`security` CLI 或 keyring crate，service=`ai.vega.{provider}`），config 只存引用名。
-- 定价表 `~/.vega/pricing.json`：内置 deepseek/gpt/claude 主流价格，用户可加自定义模型（覆盖 CPA/B.AI 渠道）。
 
 ## 7. 错误模型（统一 VegaError）
 

@@ -1,6 +1,7 @@
 # ✦ Vega — S2 任务卡（Sprint 2 · 侧边栏 & 项目模型 · W3-4）
 
-**版本** v0.1 · 2026-08-29 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.2 · 2026-08-29 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+> v0.2 变更（2026-08-29，人类决策）：T12 增补 **XDG 路径重构**（tech-spec §6 文件布局修订：配置 `~/.config/vega/`、数据 `~/.local/share/vega/`），随 T12 实施。
 **S2 目标**（phase1-plan §2）：侧边栏（新建任务/项目/会话历史）；项目注册（选文件夹→识别 git repo→分支感知）；多项目多线程数据流。
 **Sprint DoD**：建 2 个项目 × 各 3 个 thread，重启后状态完整恢复（含侧边栏折叠/pin/归档可见性）。
 
@@ -62,6 +63,7 @@ T09 侧边栏骨架与视图路由
   - 条目规格照 ui-spec §4.1：单行 = 标题（省略号截断）+ 右侧相对时间（"2h" 样式）；选中态 `bg_active` + 左侧 2px 强调条；未读 = 500 字重 + 圆点（`unread` 字段本卡恒 0，置位逻辑 S3 流式到达时做）
   - 点击条目切换当前 thread（内容区标题头随之切换）
   - 自动化入口灰显占位（A1-13，Phase 3 前灰显——顺手行）
+  - **XDG 路径重构（v0.2 增补）**：vega_store 新增零依赖 `paths` 模块（`${XDG_CONFIG_HOME:-~/.config}/vega`、`${XDG_DATA_HOME:-~/.local/share}/vega` 环境变量解析）；config.toml 与 vega.db 迁至新路径（tech-spec §2/§6 已修订）；不做 `~/.vega` 自动迁移；受影响测试改为显式路径注入（config 已有 load_from/save_to 模式）
 - **验收**：2 项目 × 各 3 thread 的层次/排序/选中态正确；折叠状态重启保持；相对时间显示正确（可用改库时间戳方式验证）
 - **禁区**：不做全局搜索（A1-06 后置）；不做未读产生逻辑（S3）
 
