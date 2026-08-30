@@ -69,6 +69,7 @@ use vega_markdown::{
 };
 use vega_theme::{ThemeColors, Typography, theme};
 
+use crate::artifact_card::ArtifactCard;
 use crate::permission_card::{PermissionCard, PermissionCardResolved};
 use crate::plan_card::{PlanCard, PlanReviewRequested};
 use crate::settings::SettingsOpen;
@@ -911,6 +912,8 @@ pub(crate) enum StreamEntry {
     },
     /// One audited tool card. Expansion adds fixed-height virtual rows.
     Tool { card: Entity<ToolCard> },
+    /// One route-owned artifact, placed immediately after its exact tool.
+    Artifact { card: Entity<ArtifactCard> },
     /// Sole active permission request/response handoff card.
     Permission { card: Entity<PermissionCard> },
     /// One durable Plan review card.
@@ -923,6 +926,7 @@ impl StreamEntry {
             StreamEntry::User { lines } => lines.len(),
             StreamEntry::Assistant { model, .. } => model.row_count(),
             StreamEntry::Tool { card } => card.read(cx).row_count(),
+            StreamEntry::Artifact { card } => card.read(cx).row_count(),
             StreamEntry::Permission { card } => card.read(cx).row_count(),
             StreamEntry::Plan { card } => card.read(cx).row_count(),
         }
@@ -991,6 +995,12 @@ pub(crate) fn build_entry_rows(
                 StreamEntry::Tool { card } => {
                     rows.extend(
                         (start..end).map(|row| ToolCard::render_row(card.clone(), row, cx)),
+                    );
+                }
+                StreamEntry::Artifact { card } => {
+                    rows.extend(
+                        (start..end)
+                            .map(|row| ArtifactCard::render_row(card.clone(), row, window, cx)),
                     );
                 }
                 StreamEntry::Permission { card } => {
@@ -1244,6 +1254,8 @@ pub struct ConversationStream {
     rows_dirty: bool,
     /// Opaque provider call ids are retained only as non-rendered map keys.
     tool_cards: HashMap<String, Entity<ToolCard>>,
+    /// Exact call id to its sole inline artifact card.
+    artifact_cards: HashMap<String, Entity<ArtifactCard>>,
     /// Concrete runtime permission hook shared by the owning conversation.
     permission_queue: PermissionQueue,
     /// The sole visible prompt; the opaque call id is only a map association.
@@ -1334,6 +1346,7 @@ impl ConversationStream {
             user_block_seq: USER_BLOCK_BASE,
             rows_dirty: false,
             tool_cards: HashMap::new(),
+            artifact_cards: HashMap::new(),
             permission_queue,
             active_permission: None,
             plan_cards: HashMap::new(),
@@ -1671,6 +1684,77 @@ impl ConversationStream {
         self.tool_cards.insert(call_id, card);
         self.rows_dirty = true;
         cx.notify();
+    }
+
+    /// Inserts one artifact immediately after the exact tool entry. Identical
+    /// duplicates reconcile in place; conflicting ids fail the existing card
+    /// closed and never insert an unrelated entry.
+    pub fn apply_artifact_card(
+        &mut self,
+        call_id: &str,
+        card: Entity<ArtifactCard>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if let Some(existing) = self.artifact_cards.get(call_id) {
+            let incoming = card.read(cx).projection().clone();
+            if existing.read(cx).id() == incoming.id {
+                existing.update(cx, |card, cx| {
+                    let _ = card.apply_metadata(incoming, cx);
+                });
+                return true;
+            }
+            existing.update(cx, ArtifactCard::fail_corrupt);
+            return false;
+        }
+        let Some(tool) = self.tool_cards.get(call_id) else {
+            return false;
+        };
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| matches!(entry, StreamEntry::Tool { card } if card == tool))
+        else {
+            return false;
+        };
+        if matches!(
+            self.entries.get(index + 1),
+            Some(StreamEntry::Artifact { .. })
+        ) {
+            return false;
+        }
+        cx.observe(&card, |this, _, cx| {
+            this.rows_dirty = true;
+            cx.notify();
+        })
+        .detach();
+        self.entries
+            .insert(index + 1, StreamEntry::Artifact { card: card.clone() });
+        self.artifact_cards.insert(call_id.to_owned(), card);
+        self.rows_dirty = true;
+        cx.notify();
+        true
+    }
+
+    /// Content-free structural check used by the application integration
+    /// harness to prove exact Tool -> Artifact adjacency.
+    #[doc(hidden)]
+    pub fn artifact_card_is_adjacent(&self, call_id: &str) -> bool {
+        let Some(tool) = self.tool_cards.get(call_id) else {
+            return false;
+        };
+        let Some(artifact) = self.artifact_cards.get(call_id) else {
+            return false;
+        };
+        self.entries.windows(2).any(|entries| {
+            matches!(&entries[0], StreamEntry::Tool { card } if card == tool)
+                && matches!(&entries[1], StreamEntry::Artifact { card } if card == artifact)
+        })
+    }
+
+    /// Content-free virtual-row count for integration tests of dynamic cards.
+    #[doc(hidden)]
+    pub fn virtual_row_count(&self, cx: &App) -> usize {
+        self.total_rows(cx)
     }
 
     /// Starts the demo injection (标题头旁按钮)：drives the built-in

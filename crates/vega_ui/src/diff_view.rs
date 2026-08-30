@@ -1101,7 +1101,9 @@ fn error_label(code: GitWorkspaceErrorCode) -> &'static str {
         GitWorkspaceErrorCode::SpawnFailed
         | GitWorkspaceErrorCode::GitFailed
         | GitWorkspaceErrorCode::MalformedOutput
-        | GitWorkspaceErrorCode::ProcessControlFailed => "Git diff could not be loaded safely.",
+        | GitWorkspaceErrorCode::ProcessControlFailed
+        | GitWorkspaceErrorCode::ArtifactConflict
+        | GitWorkspaceErrorCode::ArtifactLimit => "Git diff could not be loaded safely.",
     }
 }
 

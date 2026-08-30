@@ -300,7 +300,7 @@ impl Sidebar {
                 if cx.global::<SelectedProject>().0.as_deref() == Some(project_id.as_str()) {
                     cx.set_global(SelectedProject(None));
                 }
-                clear_opened_thread_of_other_project(project_id, cx);
+                clear_opened_thread_of_project(project_id, cx);
                 self.sessions_block.update(cx, ThreadsBlock::reload);
             }
         }
@@ -1581,6 +1581,18 @@ fn clear_opened_thread_of_other_project(project_id: &str, cx: &mut App) {
     }
 }
 
+/// Clears the cached opened thread when its owning project was removed.
+fn clear_opened_thread_of_project(project_id: &str, cx: &mut App) {
+    let removed = cx
+        .global::<OpenedThread>()
+        .0
+        .as_ref()
+        .is_some_and(|thread| thread.project_id == project_id);
+    if removed {
+        cx.set_global(OpenedThread(None));
+    }
+}
+
 /// Inline danger bar (ui-spec §4.6: errors are inline, never modals).
 fn error_bar(message: String, colors: &ThemeColors) -> AnyElement {
     div()
@@ -1690,8 +1702,9 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        RenameResolution, archive_section_visible, civil_from_days, relative_time_from,
-        resolve_rename, row_shows_actions, thread_title,
+        OpenedThread, RenameResolution, archive_section_visible, civil_from_days,
+        clear_opened_thread_of_project, relative_time_from, resolve_rename, row_shows_actions,
+        thread_title,
     };
     use vega_conversation::types::Thread;
 
@@ -1715,6 +1728,15 @@ mod tests {
     fn empty_title_falls_back_to_unnamed() {
         assert_eq!(thread_title(&thread_with_title("")), "未命名任务");
         assert_eq!(thread_title(&thread_with_title("我的任务")), "我的任务");
+    }
+
+    #[gpui::test]
+    async fn removing_opened_project_clears_opened_thread(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(OpenedThread(Some(thread_with_title("active"))));
+            clear_opened_thread_of_project("p1", cx);
+            assert!(cx.global::<OpenedThread>().0.is_none());
+        });
     }
 
     #[test]

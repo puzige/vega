@@ -103,6 +103,87 @@ struct PrivateFile {
     worktree_identity: Option<FileIdentity>,
 }
 
+/// Crate-private capability for one file in the current workspace snapshot.
+/// Raw paths never cross the `vega_conversation` boundary.
+#[derive(Clone)]
+pub(crate) struct ArtifactWorkspaceFile {
+    pub(crate) id: WorkspaceFileId,
+    pub(crate) path: OsString,
+    snapshot_identity: Arc<SnapshotIdentity>,
+    worktree_identity: Option<FileIdentity>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ArtifactPathMatch {
+    pub(crate) file: ArtifactWorkspaceFile,
+    pub(crate) previous_path_match: bool,
+}
+
+impl ArtifactWorkspaceFile {
+    pub(crate) fn is_regular_current(&self) -> bool {
+        self.worktree_identity
+            .is_some_and(|identity| identity.kind == 0)
+    }
+}
+
+/// Private, generation-bound provenance evidence.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ArtifactEvidence {
+    pub(crate) dev: u64,
+    pub(crate) ino: u64,
+    pub(crate) size: u64,
+    pub(crate) mtime_ns: i128,
+    pub(crate) digest: Vec<u8>,
+}
+
+pub(crate) struct ArtifactOpenGuard {
+    root: PathBuf,
+    parent: PathBuf,
+    target: PathBuf,
+    root_fd: File,
+    parent_fd: File,
+    target_fd: File,
+    root_identity: FileIdentity,
+    parent_identity: FileIdentity,
+    target_identity: FileIdentity,
+}
+
+impl ArtifactOpenGuard {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn target(&self) -> &Path {
+        &self.target
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), GitWorkspaceError> {
+        for (path, fd, expected) in [
+            (&self.root, &self.root_fd, self.root_identity),
+            (&self.parent, &self.parent_fd, self.parent_identity),
+            (&self.target, &self.target_fd, self.target_identity),
+        ] {
+            let canonical = fs::canonicalize(path)
+                .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+            let path_metadata = fs::symlink_metadata(path)
+                .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+            let fd_metadata = fd
+                .metadata()
+                .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+            if canonical != *path
+                || file_identity(&path_metadata) != expected
+                || file_identity(&fd_metadata) != expected
+            {
+                return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+            }
+        }
+        if !self.target.starts_with(&self.root) || !self.parent.starts_with(&self.root) {
+            return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct FileIdentity {
     dev: u64,
@@ -327,9 +408,157 @@ impl GitWorkspaceService {
         Ok(result)
     }
 
+    pub(crate) fn artifact_file_for_path(&self, path: &OsStr) -> Option<ArtifactWorkspaceFile> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let file = unique_file(
+            state
+                .files
+                .iter()
+                .filter(|file| file.path.as_bytes() == path.as_bytes()),
+        )?;
+        Some(artifact_workspace_file(file))
+    }
+
+    pub(crate) fn artifact_path_matches(&self, path: &OsStr) -> Vec<ArtifactPathMatch> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state
+            .files
+            .iter()
+            .filter_map(|file| {
+                let exact = file.path.as_bytes() == path.as_bytes();
+                let previous = file
+                    .previous_path
+                    .as_ref()
+                    .is_some_and(|previous| previous.as_bytes() == path.as_bytes());
+                (exact || previous).then(|| ArtifactPathMatch {
+                    file: artifact_workspace_file(file),
+                    previous_path_match: previous,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn artifact_file_by_id(
+        &self,
+        file_id: WorkspaceFileId,
+    ) -> Result<ArtifactWorkspaceFile, GitWorkspaceError> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if state.generation != file_id.generation {
+            return Err(error(GitWorkspaceErrorCode::StaleGeneration));
+        }
+        let slot =
+            usize::try_from(file_id.slot).map_err(|_| error(GitWorkspaceErrorCode::UnknownFile))?;
+        let file = state
+            .files
+            .get(slot)
+            .filter(|file| file.id == file_id)
+            .ok_or_else(|| error(GitWorkspaceErrorCode::UnknownFile))?;
+        Ok(artifact_workspace_file(file))
+    }
+
+    pub(crate) async fn artifact_evidence(
+        &self,
+        file: ArtifactWorkspaceFile,
+        cancel: CancellationToken,
+    ) -> Result<ArtifactEvidence, GitWorkspaceError> {
+        let file_id = file.id;
+        let runner = self.artifact_runner();
+        let result =
+            tokio::task::spawn_blocking(move || build_artifact_evidence(&runner, &file, &cancel))
+                .await
+                .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))??;
+        self.ensure_artifact_current(file_id)?;
+        Ok(result)
+    }
+
+    pub(crate) async fn artifact_preview_bytes(
+        &self,
+        file: ArtifactWorkspaceFile,
+        limit: usize,
+        cancel: CancellationToken,
+    ) -> Result<Vec<u8>, GitWorkspaceError> {
+        let file_id = file.id;
+        let runner = self.artifact_runner();
+        let result =
+            tokio::task::spawn_blocking(move || read_artifact_file(&runner, &file, limit, &cancel))
+                .await
+                .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))??;
+        self.ensure_artifact_current(file_id)?;
+        Ok(result)
+    }
+
+    pub(crate) async fn artifact_open_with<T, F>(
+        &self,
+        file: ArtifactWorkspaceFile,
+        cancel: CancellationToken,
+        operation: F,
+    ) -> Result<T, GitWorkspaceError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&ArtifactOpenGuard, &CancellationToken) -> Result<T, GitWorkspaceError>
+            + Send
+            + 'static,
+    {
+        let file_id = file.id;
+        let runner = self.artifact_runner();
+        let result = tokio::task::spawn_blocking(move || {
+            let guard = build_artifact_open_guard(&runner, &file, &cancel)?;
+            guard.revalidate()?;
+            if cancel.is_cancelled() {
+                return Err(error(GitWorkspaceErrorCode::Cancelled));
+            }
+            let result = operation(&guard, &cancel);
+            let postflight = guard.revalidate();
+            match (result, postflight) {
+                (_, Err(failure)) => Err(failure),
+                (result, Ok(())) => result,
+            }
+        })
+        .await
+        .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))??;
+        self.ensure_artifact_current(file_id)?;
+        Ok(result)
+    }
+
+    fn ensure_artifact_current(&self, file_id: WorkspaceFileId) -> Result<(), GitWorkspaceError> {
+        self.artifact_file_by_id(file_id).map(|_| ())
+    }
+
+    fn artifact_runner(&self) -> Runner {
+        Runner::new(
+            self.root.clone(),
+            self.identity,
+            #[cfg(test)]
+            self.executable.clone(),
+        )
+    }
+
     #[cfg(test)]
     fn new_for_test(root: &Path, executable: PathBuf) -> Result<Self, GitWorkspaceError> {
         Self::new_inner(root, Some(executable))
+    }
+}
+
+fn unique_file<'a>(mut files: impl Iterator<Item = &'a PrivateFile>) -> Option<&'a PrivateFile> {
+    let candidate = files.next()?;
+    files.next().is_none().then_some(candidate)
+}
+
+fn artifact_workspace_file(file: &PrivateFile) -> ArtifactWorkspaceFile {
+    ArtifactWorkspaceFile {
+        id: file.id,
+        path: file.path.clone(),
+        snapshot_identity: file.snapshot_identity.clone(),
+        worktree_identity: file.worktree_identity,
     }
 }
 
@@ -810,7 +1039,7 @@ fn spawn_reader<R: Read + Send + 'static>(
     });
 }
 
-fn terminate_group(child: &mut Child, pgid: u32) -> Result<(), GitWorkspaceError> {
+pub(crate) fn terminate_group(child: &mut Child, pgid: u32) -> Result<(), GitWorkspaceError> {
     let mut control_failed = !signal_group_checked(pgid, "-TERM");
     thread::sleep(TERM_GRACE);
     if !signal_group_checked(pgid, "-KILL") {
@@ -2142,6 +2371,184 @@ fn hash_worktree_no_filters(
         return Err(error(GitWorkspaceErrorCode::MalformedOutput));
     }
     Ok(digest.to_vec())
+}
+
+const ARTIFACT_PROVENANCE_LIMIT: usize = 1024 * 1024;
+
+fn build_artifact_evidence(
+    runner: &Runner,
+    file: &ArtifactWorkspaceFile,
+    cancel: &CancellationToken,
+) -> Result<ArtifactEvidence, GitWorkspaceError> {
+    let _safe_prefix = read_artifact_file(runner, file, ARTIFACT_PROVENANCE_LIMIT, cancel)?;
+    let expected = file
+        .worktree_identity
+        .filter(|identity| identity.kind == 0)
+        .ok_or_else(|| error(GitWorkspaceErrorCode::MetadataOnly))?;
+    let digest = hash_worktree_no_filters(runner, &file.path, cancel)?;
+    verify_snapshot_identity(runner, &file.snapshot_identity, cancel)?;
+    if read_worktree_identity(&runner.root, file.path.as_bytes())? != Some(expected) {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    let mtime_ns = i128::from(expected.mtime)
+        .checked_mul(1_000_000_000)
+        .and_then(|seconds| seconds.checked_add(i128::from(expected.mtime_ns)))
+        .ok_or_else(|| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    Ok(ArtifactEvidence {
+        dev: expected.dev,
+        ino: expected.ino,
+        size: expected.size,
+        mtime_ns,
+        digest,
+    })
+}
+
+fn read_artifact_file(
+    runner: &Runner,
+    file: &ArtifactWorkspaceFile,
+    limit: usize,
+    cancel: &CancellationToken,
+) -> Result<Vec<u8>, GitWorkspaceError> {
+    let (target, mut opened, expected) = fence_artifact_file(runner, file, cancel)?;
+    if expected.size > limit as u64 {
+        return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(expected.size).unwrap_or(limit).min(limit));
+    let mut chunk = [0_u8; IO_CHUNK];
+    loop {
+        if cancel.is_cancelled() {
+            return Err(error(GitWorkspaceErrorCode::Cancelled));
+        }
+        let read = opened
+            .read(&mut chunk)
+            .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+        if read == 0 {
+            break;
+        }
+        if bytes
+            .len()
+            .checked_add(read)
+            .is_none_or(|length| length > limit)
+        {
+            return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    let opened_after = opened
+        .metadata()
+        .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    let path_after = fs::symlink_metadata(&target)
+        .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    if file_identity(&opened_after) != expected || file_identity(&path_after) != expected {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    verify_snapshot_identity(runner, &file.snapshot_identity, cancel)?;
+    Ok(bytes)
+}
+
+fn build_artifact_open_guard(
+    runner: &Runner,
+    file: &ArtifactWorkspaceFile,
+    cancel: &CancellationToken,
+) -> Result<ArtifactOpenGuard, GitWorkspaceError> {
+    let (target, opened, expected) = fence_artifact_file(runner, file, cancel)?;
+    let opened_after = opened
+        .metadata()
+        .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    let path_after = fs::symlink_metadata(&target)
+        .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    if file_identity(&opened_after) != expected || file_identity(&path_after) != expected {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    verify_snapshot_identity(runner, &file.snapshot_identity, cancel)?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| error(GitWorkspaceErrorCode::ChangedDuringRead))?
+        .to_path_buf();
+    let root_fd =
+        File::open(&runner.root).map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    let parent_fd =
+        File::open(&parent).map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    let root_identity = file_identity(
+        &root_fd
+            .metadata()
+            .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?,
+    );
+    let parent_identity = file_identity(
+        &parent_fd
+            .metadata()
+            .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?,
+    );
+    Ok(ArtifactOpenGuard {
+        root: runner.root.clone(),
+        parent,
+        target,
+        root_fd,
+        parent_fd,
+        target_fd: opened,
+        root_identity,
+        parent_identity,
+        target_identity: expected,
+    })
+}
+
+fn fence_artifact_file(
+    runner: &Runner,
+    file: &ArtifactWorkspaceFile,
+    cancel: &CancellationToken,
+) -> Result<(PathBuf, File, FileIdentity), GitWorkspaceError> {
+    runner.verify_root()?;
+    verify_snapshot_identity(runner, &file.snapshot_identity, cancel)?;
+    if file
+        .path
+        .as_bytes()
+        .split(|byte| *byte == b'/')
+        .any(|component| component == b".git")
+    {
+        return Err(error(GitWorkspaceErrorCode::MetadataOnly));
+    }
+    let lexical = runner.root.join(&file.path);
+    let target =
+        fs::canonicalize(&lexical).map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    if target != lexical || target == runner.root || !target.starts_with(&runner.root) {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    let git_dir_output = runner.run(
+        "rev-parse",
+        &[OsString::from("--absolute-git-dir")],
+        PATH_LIMIT,
+        cancel,
+    )?;
+    let git_dir_bytes = trim_one_newline(&git_dir_output.stdout);
+    let git_dir_path = PathBuf::from(OsString::from_vec(git_dir_bytes.to_vec()));
+    if !git_dir_path.is_absolute() {
+        return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+    }
+    let git_dir = fs::canonicalize(git_dir_path)
+        .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    if target == git_dir || target.starts_with(&git_dir) {
+        return Err(error(GitWorkspaceErrorCode::MetadataOnly));
+    }
+    let metadata = fs::symlink_metadata(&target)
+        .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+        return Err(error(GitWorkspaceErrorCode::MetadataOnly));
+    }
+    let expected = file
+        .worktree_identity
+        .ok_or_else(|| error(GitWorkspaceErrorCode::MetadataOnly))?;
+    if file_identity(&metadata) != expected {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    let opened =
+        File::open(&target).map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    let opened_metadata = opened
+        .metadata()
+        .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    if file_identity(&opened_metadata) != expected {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    Ok((target, opened, expected))
 }
 
 fn project_untracked(

@@ -6,6 +6,7 @@
 //! T12; their data functions live on in `vega_store` / `vega_conversation`
 //! and the sidebar blocks render the lists now.
 
+pub mod artifact_card;
 pub mod conversation_stream;
 pub mod diff_view;
 pub mod permission_card;
@@ -95,6 +96,17 @@ pub fn init(cx: &mut App) {
             conversation_stream::ActivateThreadSetting,
             Some("ThreadSettings"),
         ),
+        KeyBinding::new(
+            "enter",
+            artifact_card::ArtifactActivate,
+            Some("ArtifactCard"),
+        ),
+        KeyBinding::new(
+            "space",
+            artifact_card::ArtifactActivate,
+            Some("ArtifactCard"),
+        ),
+        KeyBinding::new("escape", artifact_card::ArtifactClear, Some("ArtifactCard")),
         KeyBinding::new(
             "cmd-shift-d",
             conversation_stream::OpenWorkspaceDiff,

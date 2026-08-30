@@ -5,9 +5,11 @@
 //! land in S3/S4.
 
 pub mod agent;
+mod artifact;
 mod git_workspace;
 pub mod plans;
 pub mod threads;
 pub mod types;
 
+pub use artifact::{ArtifactCaptureCandidate, ArtifactService};
 pub use git_workspace::GitWorkspaceService;
