@@ -1866,9 +1866,7 @@ fn build_projection(
                 cancel,
             )?;
             let output = runner.run("diff", &args, remaining_bytes, cancel)?;
-            remaining_bytes = remaining_bytes
-                .checked_sub(output.stdout.len())
-                .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+            consume_projection_bytes(&mut remaining_bytes, output.stdout.len())?;
             sections.push(parse_patch(layer, &output.stdout, &mut remaining_rows)?);
         }
     }
@@ -1887,6 +1885,13 @@ fn build_projection(
         return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
     }
     Ok(projection)
+}
+
+fn consume_projection_bytes(remaining: &mut usize, bytes: usize) -> Result<(), GitWorkspaceError> {
+    *remaining = remaining
+        .checked_sub(bytes)
+        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+    Ok(())
 }
 
 fn hash_worktree_no_filters(
@@ -1996,9 +2001,7 @@ fn project_untracked(
             text: line.to_owned(),
         });
     }
-    *remaining_bytes = remaining_bytes
-        .checked_sub(bytes.len())
-        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+    consume_projection_bytes(remaining_bytes, bytes.len())?;
     *remaining_rows = remaining_rows
         .checked_sub(rows.len())
         .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
@@ -2327,14 +2330,41 @@ mod tests {
     }
 
     fn git(root: &Path, args: &[&str]) {
-        let status = Command::new(GIT)
+        let status = git_command(root, args).status().unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    fn git_command(root: &Path, args: &[&str]) -> Command {
+        let mut command = Command::new(GIT);
+        command
             .current_dir(root)
             .args(args)
+            // Exercise the same repository-targeting variables inherited from
+            // Git hooks on every fixture command. The scrub below must win.
+            .env("GIT_DIR", root.join(".vega-poison-git-dir"))
+            .env("GIT_WORK_TREE", root.join(".vega-poison-work-tree"))
+            .env("GIT_INDEX_FILE", root.join(".vega-poison-index"));
+        scrub_git_environment(&mut command);
+        command
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {args:?}");
+            .env("GIT_CONFIG_SYSTEM", "/dev/null");
+        command
+    }
+
+    #[test]
+    fn git_workspace_fixture_git_scrubs_repository_targeting_environment() {
+        let repo = Repo::new();
+        repo.write("isolated.txt", b"isolated\n");
+        repo.commit_all();
+
+        assert!(repo.path().join(".git").is_dir());
+        for path in [
+            ".vega-poison-git-dir",
+            ".vega-poison-work-tree",
+            ".vega-poison-index",
+        ] {
+            assert!(!repo.path().join(path).exists(), "poison target {path}");
+        }
     }
 
     #[tokio::test]
@@ -2549,11 +2579,7 @@ mod tests {
         git(repo.path(), &["checkout", "-q", "main"]);
         repo.write("conflict.txt", b"main\n");
         repo.commit_all();
-        let merge = Command::new(GIT)
-            .current_dir(repo.path())
-            .args(["merge", "--no-edit", "side"])
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        let merge = git_command(repo.path(), &["merge", "--no-edit", "side"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -2898,6 +2924,58 @@ mod tests {
     }
 
     #[test]
+    fn git_workspace_combined_patch_byte_and_row_caps_are_inclusive() {
+        let mut bytes = PATCH_LIMIT;
+        consume_projection_bytes(&mut bytes, PATCH_LIMIT / 2).unwrap();
+        consume_projection_bytes(&mut bytes, PATCH_LIMIT - PATCH_LIMIT / 2).unwrap();
+        assert_eq!(bytes, 0);
+        assert_eq!(
+            consume_projection_bytes(&mut bytes, 1).unwrap_err().code(),
+            GitWorkspaceErrorCode::OutputTooLarge
+        );
+
+        let patch = |rows: usize| {
+            let mut body = format!("@@ -0,0 +1,{rows} @@\n");
+            for _ in 0..rows {
+                body.push_str("+x\n");
+            }
+            body
+        };
+        let mut rows = PATCH_ROW_LIMIT;
+        let staged = parse_patch(
+            DiffLayer::Staged,
+            patch(PATCH_ROW_LIMIT / 2).as_bytes(),
+            &mut rows,
+        )
+        .unwrap();
+        let unstaged = parse_patch(
+            DiffLayer::Unstaged,
+            patch(PATCH_ROW_LIMIT / 2).as_bytes(),
+            &mut rows,
+        )
+        .unwrap();
+        assert_eq!(rows, 0);
+        assert_eq!(staged.hunks[0].rows.len(), PATCH_ROW_LIMIT / 2);
+        assert_eq!(unstaged.hunks[0].rows.len(), PATCH_ROW_LIMIT / 2);
+        let mut rows = PATCH_ROW_LIMIT;
+        parse_patch(
+            DiffLayer::Staged,
+            patch(PATCH_ROW_LIMIT / 2).as_bytes(),
+            &mut rows,
+        )
+        .unwrap();
+        let row_error = match parse_patch(
+            DiffLayer::Unstaged,
+            patch(PATCH_ROW_LIMIT / 2 + 1).as_bytes(),
+            &mut rows,
+        ) {
+            Ok(_) => panic!("combined row cap +1 was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(row_error.code(), GitWorkspaceErrorCode::OutputTooLarge);
+    }
+
+    #[test]
     fn git_workspace_environment_scrub_is_exact() {
         let mut command = Command::new("/usr/bin/true");
         command
@@ -3024,6 +3102,195 @@ mod tests {
     }
 
     #[test]
+    fn git_workspace_stderr_cap_is_inclusive_and_plus_one_fails() {
+        let repo = Repo::new();
+        let script = repo.path().join("fixture-git");
+        let write_fixture = |size: usize| {
+            fs::write(
+                &script,
+                format!("#!/bin/sh\npython3 -c 'import sys; sys.stderr.write(\"e\" * {size})'\n"),
+            )
+            .unwrap();
+            let mut permissions = fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(&script, permissions).unwrap();
+        };
+        let service = GitWorkspaceService::new_for_test(repo.path(), script.clone()).unwrap();
+        let runner = Runner::new(service.root.clone(), service.identity, Some(script.clone()));
+        write_fixture(STDERR_LIMIT);
+        runner
+            .run(
+                "rev-parse",
+                &[OsString::from("--show-toplevel")],
+                1,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        write_fixture(STDERR_LIMIT + 1);
+        let stderr_error = match runner.run(
+            "rev-parse",
+            &[OsString::from("--show-toplevel")],
+            1,
+            &CancellationToken::new(),
+        ) {
+            Ok(_) => panic!("stderr cap +1 was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(stderr_error.code(), GitWorkspaceErrorCode::OutputTooLarge);
+    }
+
+    #[test]
+    fn git_workspace_read_timeout_is_typed_and_bounded() {
+        let repo = Repo::new();
+        let script = repo.path().join("fixture-git");
+        let pid_file = repo.path().join("timeout-descendant.pid");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nsleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let service = GitWorkspaceService::new_for_test(repo.path(), script.clone()).unwrap();
+        let runner = Runner::new(service.root.clone(), service.identity, Some(script));
+        let started = Instant::now();
+        let timeout_error = match runner.run(
+            "rev-parse",
+            &[OsString::from("--show-toplevel")],
+            1,
+            &CancellationToken::new(),
+        ) {
+            Ok(_) => panic!("read timeout was not enforced"),
+            Err(error) => error,
+        };
+        assert_eq!(timeout_error.code(), GitWorkspaceErrorCode::TimedOut);
+        assert!(started.elapsed() >= READ_TIMEOUT);
+        assert!(started.elapsed() < READ_TIMEOUT + Duration::from_secs(3));
+        let pid = fs::read_to_string(pid_file).unwrap();
+        assert!(
+            !Command::new(KILL)
+                .args(["-0", &pid])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "timeout descendant survived cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn git_workspace_latest_refresh_wins_without_stale_overwrite() {
+        let repo = Repo::new();
+        repo.write("latest.txt", b"latest\n");
+        let script = repo.path().join("fixture-git");
+        let gate = tempdir().unwrap();
+        let lock = gate.path().join("first.lock");
+        let ready = gate.path().join("first.ready");
+        let release = gate.path().join("first.release");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif mkdir '{}' 2>/dev/null; then : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; fi\nexec /usr/bin/git \"$@\"\n",
+                lock.display(),
+                ready.display(),
+                release.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let service = Arc::new(GitWorkspaceService::new_for_test(repo.path(), script).unwrap());
+        let first = tokio::spawn({
+            let service = service.clone();
+            async move { service.refresh(CancellationToken::new()).await }
+        });
+        for _ in 0..500 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ready.exists(), "first refresh did not enter fixture delay");
+        let latest = service.refresh(CancellationToken::new()).await.unwrap();
+        fs::write(&release, b"release\n").unwrap();
+        assert_eq!(
+            first.await.unwrap().unwrap_err().code(),
+            GitWorkspaceErrorCode::StaleGeneration
+        );
+        let file = latest
+            .files
+            .iter()
+            .find(|file| file.label == "latest.txt")
+            .unwrap();
+        assert_eq!(
+            service
+                .diff(file.id, CancellationToken::new())
+                .await
+                .unwrap()
+                .file_id(),
+            file.id
+        );
+    }
+
+    #[tokio::test]
+    async fn git_workspace_ctime_detects_equal_size_edit_with_restored_mtime() {
+        let repo = Repo::new();
+        repo.write("tracked.txt", b"base\n");
+        repo.commit_all();
+        repo.write("tracked.txt", b"left\n");
+        let reference = repo.path().join("mtime-reference");
+        let tracked = repo.path().join("tracked.txt");
+        assert!(
+            Command::new("/bin/cp")
+                .args([OsStr::new("-p"), tracked.as_os_str(), reference.as_os_str()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
+        let file = snapshot
+            .files
+            .iter()
+            .find(|file| file.label == "tracked.txt")
+            .unwrap();
+        let before = file_identity(&fs::metadata(&tracked).unwrap());
+        repo.write("tracked.txt", b"rght\n");
+        assert!(
+            Command::new("/usr/bin/touch")
+                .args([OsStr::new("-r"), reference.as_os_str(), tracked.as_os_str()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let after = file_identity(&fs::metadata(&tracked).unwrap());
+        assert_eq!(before.size, after.size);
+        assert_eq!(
+            (before.mtime, before.mtime_ns),
+            (after.mtime, after.mtime_ns)
+        );
+        assert_ne!(
+            (before.ctime, before.ctime_ns),
+            (after.ctime, after.ctime_ns)
+        );
+        assert_eq!(
+            service
+                .diff(file.id, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::ChangedDuringRead
+        );
+    }
+
+    #[test]
     fn git_workspace_metadata_remaining_cap_is_inclusive_and_plus_one_fails() {
         let repo = Repo::new();
         let script = repo.path().join("fixture-git");
@@ -3090,12 +3357,13 @@ mod tests {
             let cancel = cancel.clone();
             async move { service.refresh(cancel).await }
         });
-        for _ in 0..50 {
+        for _ in 0..500 {
             if pid_file.exists() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        assert!(pid_file.exists(), "fixture descendant was not started");
         cancel.cancel();
         assert_eq!(
             task.await.unwrap().unwrap_err().code(),
