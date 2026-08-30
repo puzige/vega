@@ -298,6 +298,23 @@ impl PermissionQueue {
         Self::default()
     }
 
+    /// Content-free controller guard for trusted workspace actions.
+    /// Lock poisoning fails closed because absence cannot be proven.
+    pub fn has_pending(&self) -> bool {
+        self.state.lock().map_or(true, |state| {
+            state
+                .active
+                .as_ref()
+                .is_some_and(|responder| !responder.is_resolved())
+                || state.queued.iter().any(|pending| {
+                    pending
+                        .responder
+                        .as_ref()
+                        .is_some_and(|responder| !responder.is_resolved())
+                })
+        })
+    }
+
     /// Installs the sole live UI wakeup seam. Registration happens before a
     /// runtime turn starts, eliminating the Proposed-before-enqueue lost wake.
     pub fn subscribe(&self) -> PermissionQueueListener {
@@ -2659,11 +2676,16 @@ mod tests {
             permission_request("write", "src/lib.rs"),
             CancellationToken::new(),
         );
+        assert!(
+            queue.has_pending(),
+            "controller guard sees queued authority"
+        );
         assert!(listener.changed().await);
         let pending = queue.take_pending().unwrap();
         let (_, mut lease) = pending.into_parts().unwrap();
         assert!(lease.respond(PermissionDecision::Once));
         assert_eq!(future.await.unwrap(), PermissionDecision::Once);
+        assert!(!queue.has_pending(), "terminal decision clears the guard");
         drop(listener);
     }
 

@@ -70,6 +70,7 @@ use vega_markdown::{
 use vega_theme::{ThemeColors, Typography, theme};
 
 use crate::artifact_card::ArtifactCard;
+use crate::branch_selector::BranchSelector;
 use crate::permission_card::{PermissionCard, PermissionCardResolved};
 use crate::plan_card::{PlanCard, PlanReviewRequested};
 use crate::settings::SettingsOpen;
@@ -1256,6 +1257,8 @@ pub struct ConversationStream {
     tool_cards: HashMap<String, Entity<ToolCard>>,
     /// Exact call id to its sole inline artifact card.
     artifact_cards: HashMap<String, Entity<ArtifactCard>>,
+    /// Route-owned safe branch selector; Git authority remains in the app controller.
+    branch_selector: Entity<BranchSelector>,
     /// Concrete runtime permission hook shared by the owning conversation.
     permission_queue: PermissionQueue,
     /// The sole visible prompt; the opaque call id is only a map association.
@@ -1273,6 +1276,7 @@ pub struct ConversationStream {
     history_cursor: Option<usize>,
     history_draft: Option<String>,
     approved_not_started: bool,
+    trusted_action_busy: bool,
     setting_focus: [FocusHandle; 6],
     controller_error: Option<String>,
     /// Cancels the watch listener and drops its fail-closed guard with the view.
@@ -1313,6 +1317,8 @@ impl ConversationStream {
                 COMPOSER_ROWS,
             )
         });
+        let branch_selector =
+            cx.new(|cx| BranchSelector::new(thread.id.clone(), thread.project_id.clone(), cx));
         // 空输入禁用发送：输入内容变化即重渲染 Composer。
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
         let mut listener = permission_queue.subscribe();
@@ -1347,6 +1353,7 @@ impl ConversationStream {
             rows_dirty: false,
             tool_cards: HashMap::new(),
             artifact_cards: HashMap::new(),
+            branch_selector,
             permission_queue,
             active_permission: None,
             plan_cards: HashMap::new(),
@@ -1357,6 +1364,7 @@ impl ConversationStream {
             history_cursor: None,
             history_draft: None,
             approved_not_started: false,
+            trusted_action_busy: false,
             setting_focus: [
                 cx.focus_handle().tab_index(10).tab_stop(true),
                 cx.focus_handle().tab_index(11).tab_stop(true),
@@ -1462,6 +1470,32 @@ impl ConversationStream {
     /// Hook passed to the conversation runner for this visible stream.
     pub fn permission_queue(&self) -> PermissionQueue {
         self.permission_queue.clone()
+    }
+
+    pub fn branch_selector(&self) -> Entity<BranchSelector> {
+        self.branch_selector.clone()
+    }
+
+    /// Content-free app-controller guards for trusted workspace actions.
+    pub fn has_active_agent(&self) -> bool {
+        self.active_agent_message.is_some()
+    }
+
+    pub fn has_pending_permission(&self) -> bool {
+        self.permission_queue.has_pending()
+    }
+
+    pub fn has_pending_plan_review(&self, cx: &App) -> bool {
+        self.plan_cards
+            .values()
+            .any(|card| card.read(cx).status() == vega_conversation::types::PlanStatus::Pending)
+    }
+
+    pub fn set_trusted_action_busy(&mut self, busy: bool, cx: &mut Context<Self>) {
+        self.trusted_action_busy = busy;
+        self.branch_selector
+            .update(cx, |selector, cx| selector.set_disabled(busy, cx));
+        cx.notify();
     }
 
     /// Fails the visible/pending prompt closed before Settings, thread switch,
@@ -1825,7 +1859,7 @@ impl ConversationStream {
     /// Requests a durable turn. Draft/history/user echo remain untouched until
     /// the controller observes durable `MessageStarted` for this exact run.
     fn submit_message(&mut self, cx: &mut Context<Self>) {
-        if self.composer_submit_pending || self.approved_not_started {
+        if self.composer_submit_pending || self.approved_not_started || self.trusted_action_busy {
             return;
         }
         let text = self.input.read(cx).text().to_string();
@@ -2120,7 +2154,8 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         let can_send = !self.input.read(cx).text().is_empty()
             && !self.composer_submit_pending
-            && !self.approved_not_started;
+            && !self.approved_not_started
+            && !self.trusted_action_busy;
         div()
             .px(px(CONTENT_MIN_PADDING))
             .pt(px(8.))
@@ -2149,7 +2184,8 @@ impl ConversationStream {
                             .flex_row()
                             .gap_2()
                             .child(self.render_mode_controls(cx))
-                            .child(self.render_permission_controls(cx)),
+                            .child(self.render_permission_controls(cx))
+                            .child(self.branch_selector.clone()),
                     )
                     .child(
                         div()

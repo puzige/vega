@@ -25,14 +25,19 @@ use crate::types::{
     WorkspaceHead, WorkspaceLineCount, WorkspaceSnapshot, WorkspaceStats,
 };
 
+mod branch;
+pub use branch::{BranchSwitchPermit, BranchWorkspaceService};
+
 const GIT: &str = "/usr/bin/git";
 const KILL: &str = "/bin/kill";
 const IO_CHUNK: usize = 16 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+const MUTATION_TIMEOUT: Duration = Duration::from_secs(120);
 const TERM_GRACE: Duration = Duration::from_millis(300);
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
 const STDOUT_LIMIT: usize = 8 * 1024 * 1024;
 const STDERR_LIMIT: usize = 64 * 1024;
+const MUTATION_STDOUT_LIMIT: usize = 1024 * 1024;
 const SNAPSHOT_LIMIT: usize = 8 * 1024 * 1024;
 const PATH_LIMIT: usize = 10_000;
 const PATCH_LIMIT: usize = 4 * 1024 * 1024;
@@ -745,7 +750,66 @@ impl Runner {
         let mut child = command
             .spawn()
             .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
-        collect_child(&mut child, input, stdout_limit, cancel)
+        collect_child(
+            &mut child,
+            input,
+            stdout_limit,
+            STDERR_LIMIT,
+            READ_TIMEOUT,
+            cancel,
+        )
+    }
+
+    fn run_trusted_switch(
+        &self,
+        branch: &OsStr,
+        cancel: &CancellationToken,
+    ) -> Result<Output, GitWorkspaceError> {
+        #[cfg(test)]
+        let executable = self.executable.as_deref().unwrap_or_else(|| Path::new(GIT));
+        #[cfg(not(test))]
+        let executable = Path::new(GIT);
+        self.run_trusted_switch_with_executable(branch, cancel, executable)
+    }
+
+    fn run_trusted_switch_with_executable(
+        &self,
+        branch: &OsStr,
+        cancel: &CancellationToken,
+        executable: &Path,
+    ) -> Result<Output, GitWorkspaceError> {
+        self.verify_root()?;
+        if cancel.is_cancelled() {
+            return Err(error(GitWorkspaceErrorCode::Cancelled));
+        }
+        let mut command = Command::new(executable);
+        command.current_dir(&self.root);
+        command
+            .args(PREFIX)
+            .args(["-c", "core.hooksPath=/dev/null", "switch"])
+            .args([
+                OsStr::new("--no-guess"),
+                OsStr::new("--no-overwrite-ignore"),
+                OsStr::new("--no-recurse-submodules"),
+            ])
+            .arg(branch);
+        scrub_git_environment(&mut command);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        let mut child = command
+            .spawn()
+            .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
+        collect_child(
+            &mut child,
+            None,
+            MUTATION_STDOUT_LIMIT,
+            STDERR_LIMIT,
+            MUTATION_TIMEOUT,
+            cancel,
+        )
     }
 
     fn verify_root(&self) -> Result<(), GitWorkspaceError> {
@@ -802,6 +866,8 @@ fn collect_child(
     child: &mut Child,
     input: Option<Arc<[u8]>>,
     stdout_limit: usize,
+    stderr_limit: usize,
+    timeout: Duration,
     cancel: &CancellationToken,
 ) -> Result<Output, GitWorkspaceError> {
     let pgid = child.id();
@@ -848,7 +914,7 @@ fn collect_child(
     spawn_reader(
         stderr,
         Stream::Stderr,
-        STDERR_LIMIT,
+        stderr_limit,
         overflowed.clone(),
         sender,
     );
@@ -869,7 +935,7 @@ fn collect_child(
             stop_code = Some(GitWorkspaceErrorCode::GitFailed);
             break;
         }
-        if started.elapsed() >= READ_TIMEOUT {
+        if started.elapsed() >= timeout {
             stop_code = Some(GitWorkspaceErrorCode::TimedOut);
             break;
         }

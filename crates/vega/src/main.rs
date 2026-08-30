@@ -15,15 +15,23 @@ use gpui::{
 };
 use gpui_platform::application;
 use vega_conversation::types::{
-    ArtifactCard as ArtifactProjection, ArtifactCardId, ArtifactPreviewProjection,
-    ConversationEvent, DiffTextProjection, GitWorkspaceErrorCode, OpenInOutcome, OpenInTarget,
-    Plan, PlanReviewOutcome, Thread, ToolCall, WorkspaceFileId, WorkspaceSnapshot,
+    ArtifactCard as ArtifactProjection, ArtifactCardId, ArtifactPreviewProjection, BranchId,
+    BranchSnapshot, BranchSwitchCompletion, BranchSwitchOutcome, ConversationEvent,
+    DiffTextProjection, GitWorkspaceErrorCode, OpenInOutcome, OpenInTarget, Plan,
+    PlanReviewOutcome, Thread, ToolCall, WorkspaceFileId, WorkspaceSnapshot,
 };
-use vega_conversation::{ArtifactCaptureCandidate, ArtifactService, GitWorkspaceService};
+use vega_conversation::{
+    ArtifactCaptureCandidate, ArtifactService, BranchSwitchPermit, BranchWorkspaceService,
+    GitWorkspaceService,
+};
 use vega_store::Store;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
 use vega_ui::artifact_card::{
     ArtifactCard, ArtifactCleared, ArtifactOpenRequested, ArtifactPreviewRequested,
+};
+use vega_ui::branch_selector::{
+    BranchListRequested, BranchOperationId, BranchSelector, BranchSelectorClosed,
+    BranchSwitchRequested,
 };
 use vega_ui::conversation_stream::{
     ComposerSubmitted, ConversationStream, OpenWorkspaceDiffRequested, ThreadSettingsRequested,
@@ -304,6 +312,7 @@ struct ArtifactOpenFence {
     card_id: ArtifactCardId,
     file_id: WorkspaceFileId,
     target: OpenInTarget,
+    lease: TrustedActionToken,
 }
 
 struct ActiveArtifactRoute {
@@ -736,6 +745,276 @@ fn run_diff_projection_worker(
     let _ = sender.send(result);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Commit is the frozen T34 seam sharing this coordinator.
+enum TrustedActionKind {
+    BranchSwitch,
+    ArtifactOpen,
+    Commit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TrustedActionToken {
+    generation: u64,
+    kind: TrustedActionKind,
+    owner_epoch: u64,
+    request_sequence: u64,
+}
+
+#[derive(Default)]
+struct TrustedActionCoordinator {
+    next_generation: u64,
+    active: Option<TrustedActionToken>,
+}
+
+impl TrustedActionCoordinator {
+    fn acquire(
+        &mut self,
+        kind: TrustedActionKind,
+        owner_epoch: u64,
+        request_sequence: u64,
+    ) -> Option<TrustedActionToken> {
+        if self.active.is_some() {
+            return None;
+        }
+        let generation = self.next_generation.checked_add(1)?;
+        self.next_generation = generation;
+        let token = TrustedActionToken {
+            generation,
+            kind,
+            owner_epoch,
+            request_sequence,
+        };
+        self.active = Some(token);
+        Some(token)
+    }
+
+    fn release(&mut self, token: TrustedActionToken) -> bool {
+        if self.active != Some(token) {
+            return false;
+        }
+        self.active = None;
+        true
+    }
+
+    fn is_busy(&self) -> bool {
+        self.active.is_some()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct BranchRouteIdentity {
+    epoch: u64,
+    thread_id: String,
+    project_id: String,
+    stream: Entity<ConversationStream>,
+    selector: Entity<BranchSelector>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct BranchListFence {
+    route: BranchRouteIdentity,
+    sequence: u64,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct BranchSwitchFence {
+    route: BranchRouteIdentity,
+    sequence: u64,
+    snapshot_generation: u64,
+    branch_id: BranchId,
+    operation_id: BranchOperationId,
+    lease: TrustedActionToken,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct BranchPrepareFence {
+    route: BranchRouteIdentity,
+    sequence: u64,
+    snapshot_generation: u64,
+    branch_id: BranchId,
+    operation_id: BranchOperationId,
+}
+
+struct ActiveBranchRoute {
+    identity: BranchRouteIdentity,
+    service: Arc<BranchWorkspaceService>,
+    cancel: tokio_util::sync::CancellationToken,
+    list_sequence: u64,
+    list_fence: Option<BranchListFence>,
+    list_cancel: Option<tokio_util::sync::CancellationToken>,
+    switch_sequence: u64,
+    prepare_fence: Option<BranchPrepareFence>,
+    switch_fence: Option<BranchSwitchFence>,
+    switch_cancel: Option<tokio_util::sync::CancellationToken>,
+}
+
+#[derive(Default)]
+struct BranchController {
+    next_epoch: u64,
+    active: Option<ActiveBranchRoute>,
+    terminal_fence: Option<BranchSwitchFence>,
+    cancelled_prepare: Option<BranchPrepareFence>,
+}
+
+impl BranchController {
+    fn begin(
+        &mut self,
+        thread: &Thread,
+        stream: Entity<ConversationStream>,
+        selector: Entity<BranchSelector>,
+        root: PathBuf,
+    ) -> Result<BranchRouteIdentity, GitWorkspaceErrorCode> {
+        self.close();
+        let epoch = self
+            .next_epoch
+            .checked_add(1)
+            .ok_or(GitWorkspaceErrorCode::OutputTooLarge)?;
+        let service =
+            Arc::new(BranchWorkspaceService::new(root).map_err(|failure| failure.code())?);
+        self.next_epoch = epoch;
+        let identity = BranchRouteIdentity {
+            epoch,
+            thread_id: thread.id.clone(),
+            project_id: thread.project_id.clone(),
+            stream,
+            selector,
+        };
+        self.active = Some(ActiveBranchRoute {
+            identity: identity.clone(),
+            service,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            list_sequence: 0,
+            list_fence: None,
+            list_cancel: None,
+            switch_sequence: 0,
+            prepare_fence: None,
+            switch_fence: None,
+            switch_cancel: None,
+        });
+        Ok(identity)
+    }
+
+    fn close(&mut self) -> Option<ActiveBranchRoute> {
+        let mut active = self.active.take();
+        if let Some(active) = &active {
+            active.cancel.cancel();
+            if let Some(cancel) = &active.list_cancel {
+                cancel.cancel();
+            }
+            if let Some(cancel) = &active.switch_cancel {
+                cancel.cancel();
+            }
+        }
+        if let Some(fence) = active
+            .as_mut()
+            .and_then(|active| active.switch_fence.take())
+            && self.terminal_fence.is_none()
+        {
+            self.terminal_fence = Some(fence);
+        }
+        if let Some(fence) = active
+            .as_mut()
+            .and_then(|active| active.prepare_fence.take())
+            && self.cancelled_prepare.is_none()
+        {
+            self.cancelled_prepare = Some(fence);
+        }
+        active
+    }
+
+    fn claim_prepare(&mut self, fence: &BranchPrepareFence) -> bool {
+        if let Some(active) = self.active.as_mut()
+            && active.prepare_fence.as_ref() == Some(fence)
+        {
+            active.prepare_fence = None;
+            return true;
+        }
+        if self.cancelled_prepare.as_ref() == Some(fence) {
+            self.cancelled_prepare = None;
+            return true;
+        }
+        false
+    }
+
+    fn claim_terminal(&mut self, fence: &BranchSwitchFence) -> bool {
+        if let Some(active) = self.active.as_mut()
+            && active.switch_fence.as_ref() == Some(fence)
+        {
+            active.switch_fence = None;
+            active.switch_cancel = None;
+            return true;
+        }
+        if self.terminal_fence.as_ref() == Some(fence) {
+            self.terminal_fence = None;
+            return true;
+        }
+        false
+    }
+}
+
+fn run_branch_list_worker(
+    service: Arc<BranchWorkspaceService>,
+    fence: BranchListFence,
+    cancel: tokio_util::sync::CancellationToken,
+    sender: mpsc::SyncSender<(
+        BranchListFence,
+        Result<BranchSnapshot, GitWorkspaceErrorCode>,
+    )>,
+) {
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
+        .and_then(|runtime| {
+            runtime
+                .block_on(service.refresh(cancel))
+                .map_err(|failure| failure.code())
+        });
+    let _ = sender.send((fence, result));
+}
+
+fn run_branch_prepare_worker(
+    service: Arc<BranchWorkspaceService>,
+    fence: BranchPrepareFence,
+    cancel: tokio_util::sync::CancellationToken,
+    sender: mpsc::SyncSender<(
+        BranchPrepareFence,
+        Result<BranchSwitchPermit, GitWorkspaceErrorCode>,
+    )>,
+) {
+    let result = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime
+            .block_on(service.prepare_switch(fence.branch_id, cancel))
+            .map_err(|failure| failure.code()),
+        Err(_) => Err(GitWorkspaceErrorCode::SpawnFailed),
+    };
+    let _ = sender.send((fence, result));
+}
+
+fn run_branch_switch_worker(
+    service: Arc<BranchWorkspaceService>,
+    permit: BranchSwitchPermit,
+    fence: BranchSwitchFence,
+    cancel: tokio_util::sync::CancellationToken,
+    sender: mpsc::SyncSender<(BranchSwitchFence, BranchSwitchCompletion)>,
+) {
+    let completion = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(service.execute_switch(permit, cancel)),
+        Err(_) => BranchSwitchCompletion {
+            outcome: BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::SpawnFailed),
+            snapshot: None,
+        },
+    };
+    let _ = sender.send((fence, completion));
+}
+
 /// Persists the first-wins review. Only the committed approval winner returns
 /// a durable instruction capability for the controller runner boundary.
 fn persist_review(
@@ -912,6 +1191,9 @@ struct VegaWindow {
     agent_controller: AppAgentController,
     diff_controller: DiffController,
     artifact_controller: ArtifactController,
+    branch_controller: BranchController,
+    trusted_actions: TrustedActionCoordinator,
+    commit_panel_open: bool,
 }
 
 impl VegaWindow {
@@ -919,15 +1201,18 @@ impl VegaWindow {
         cx.observe_global::<OpenedThread>(|this, cx| {
             this.close_diff_if_route_stale(cx);
             this.close_artifact_if_route_stale(cx);
+            this.close_branch_if_route_stale(cx);
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
             this.close_diff_if_route_stale(cx);
             this.close_artifact_if_route_stale(cx);
+            this.close_branch_if_route_stale(cx);
         })
         .detach();
         cx.observe_global::<vega_ui::sidebar::SelectedProject>(|this, cx| {
             this.close_artifact_if_route_stale(cx);
+            this.close_branch_if_route_stale(cx);
         })
         .detach();
         Self {
@@ -937,6 +1222,9 @@ impl VegaWindow {
             agent_controller: AppAgentController::default(),
             diff_controller: DiffController::default(),
             artifact_controller: ArtifactController::default(),
+            branch_controller: BranchController::default(),
+            trusted_actions: TrustedActionCoordinator::default(),
+            commit_panel_open: false,
         }
     }
 
@@ -986,6 +1274,571 @@ impl VegaWindow {
             .map_err(|_| GitWorkspaceErrorCode::InvalidRoot)?
             .ok_or(GitWorkspaceErrorCode::InvalidRoot)?;
         Ok(PathBuf::from(project.path))
+    }
+
+    fn branch_route_is_current(identity: &BranchRouteIdentity, cx: &App) -> bool {
+        !cx.global::<SettingsOpen>().0
+            && cx
+                .global::<vega_ui::sidebar::SelectedProject>()
+                .0
+                .as_deref()
+                == Some(identity.project_id.as_str())
+            && cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|thread| {
+                    thread.id == identity.thread_id && thread.project_id == identity.project_id
+                })
+    }
+
+    fn close_branch_route(&mut self, code: GitWorkspaceErrorCode, cx: &mut Context<Self>) {
+        let pending = self
+            .branch_controller
+            .active
+            .as_ref()
+            .and_then(|active| active.identity.selector.read(cx).pending_key());
+        if let Some(active) = self.branch_controller.close() {
+            active.identity.selector.update(cx, |selector, cx| {
+                if let Some((operation, generation, branch_id)) = pending {
+                    let _ = selector.clear_pending(operation, generation, branch_id, cx);
+                }
+                selector.close_route(code, cx);
+            });
+            cx.notify();
+        }
+    }
+
+    fn close_branch_if_route_stale(&mut self, cx: &mut Context<Self>) {
+        let stale = self
+            .branch_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| !Self::branch_route_is_current(&active.identity, cx));
+        if stale {
+            self.close_branch_route(GitWorkspaceErrorCode::StaleGeneration, cx);
+        }
+    }
+
+    fn ensure_branch_route(
+        &mut self,
+        thread: &Thread,
+        stream: Entity<ConversationStream>,
+        cx: &mut Context<Self>,
+    ) {
+        let selector = stream.read(cx).branch_selector();
+        let current = self
+            .branch_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| {
+                active.identity.thread_id == thread.id
+                    && active.identity.project_id == thread.project_id
+                    && active.identity.stream == stream
+                    && active.identity.selector == selector
+            });
+        if current {
+            return;
+        }
+        self.close_branch_route(GitWorkspaceErrorCode::StaleGeneration, cx);
+        let result = Self::artifact_project_root(thread, cx).and_then(|root| {
+            self.branch_controller
+                .begin(thread, stream, selector, root)
+                .map(|_| ())
+        });
+        if result.is_err() {
+            self.close_branch_route(GitWorkspaceErrorCode::InvalidRoot, cx);
+        }
+    }
+
+    fn request_branch_list(
+        &mut self,
+        selector: Entity<BranchSelector>,
+        request: &BranchListRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let (fence, service, cancel) = {
+            let Some(active) = self.branch_controller.active.as_mut() else {
+                selector.update(cx, |selector, cx| {
+                    selector.apply_error(GitWorkspaceErrorCode::StaleGeneration, cx)
+                });
+                return;
+            };
+            if !Self::branch_route_is_current(&active.identity, cx)
+                || active.identity.selector != selector
+                || active.identity.thread_id != request.thread_id
+                || active.identity.project_id != request.project_id
+                || active.prepare_fence.is_some()
+                || active.switch_fence.is_some()
+            {
+                return;
+            }
+            let Some(sequence) = active.list_sequence.checked_add(1) else {
+                self.close_branch_route(GitWorkspaceErrorCode::OutputTooLarge, cx);
+                return;
+            };
+            active.list_sequence = sequence;
+            if let Some(cancel) = active.list_cancel.take() {
+                cancel.cancel();
+            }
+            let fence = BranchListFence {
+                route: active.identity.clone(),
+                sequence,
+            };
+            let cancel = active.cancel.child_token();
+            active.list_fence = Some(fence.clone());
+            active.list_cancel = Some(cancel.clone());
+            (fence, active.service.clone(), cancel)
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker_fence = fence.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-branch-list".into())
+            .spawn(move || run_branch_list_worker(service, worker_fence, cancel, sender));
+        if worker.is_err() {
+            self.finish_branch_list(fence, Err(GitWorkspaceErrorCode::SpawnFailed), cx);
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let (fence, result) = match receiver.try_recv() {
+                    Ok(output) => output,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        (fence, Err(GitWorkspaceErrorCode::SpawnFailed))
+                    }
+                };
+                let _ = this.update(cx, |this, cx| this.finish_branch_list(fence, result, cx));
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn finish_branch_list(
+        &mut self,
+        fence: BranchListFence,
+        result: Result<BranchSnapshot, GitWorkspaceErrorCode>,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::branch_route_is_current(&fence.route, cx) {
+            return;
+        }
+        let selector = {
+            let Some(active) = self.branch_controller.active.as_mut() else {
+                return;
+            };
+            if active.list_fence.as_ref() != Some(&fence) {
+                return;
+            }
+            active.list_fence = None;
+            active.list_cancel = None;
+            active.identity.selector.clone()
+        };
+        match result {
+            Ok(snapshot) => {
+                selector.update(cx, |selector, cx| {
+                    let _ = selector.apply_snapshot(snapshot, cx);
+                });
+            }
+            Err(GitWorkspaceErrorCode::Cancelled | GitWorkspaceErrorCode::StaleGeneration) => {}
+            Err(code) => selector.update(cx, |selector, cx| selector.apply_error(code, cx)),
+        }
+    }
+
+    fn branch_guards_clear(&self, stream: &Entity<ConversationStream>, cx: &App) -> bool {
+        !self.trusted_actions.is_busy()
+            && !self.commit_panel_open
+            && self.agent_controller.active.is_none()
+            && !stream.read(cx).has_active_agent()
+            && !stream.read(cx).has_pending_permission()
+            && !stream.read(cx).has_pending_plan_review(cx)
+    }
+
+    fn request_branch_switch(
+        &mut self,
+        selector: Entity<BranchSelector>,
+        request: &BranchSwitchRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let identity = self
+            .branch_controller
+            .active
+            .as_ref()
+            .filter(|active| {
+                Self::branch_route_is_current(&active.identity, cx)
+                    && active.identity.selector == selector
+                    && active.identity.thread_id == request.thread_id
+                    && active.identity.project_id == request.project_id
+                    && active.prepare_fence.is_none()
+                    && active.switch_fence.is_none()
+                    && selector.read(cx).owns_pending(
+                        request.operation_id,
+                        request.snapshot_generation,
+                        request.branch_id,
+                    )
+                    && selector
+                        .read(cx)
+                        .contains_switchable(request.snapshot_generation, request.branch_id)
+            })
+            .map(|active| active.identity.clone());
+        let Some(identity) = identity else {
+            selector.update(cx, |selector, cx| {
+                let _ = selector.reject_switch(
+                    request.operation_id,
+                    request.snapshot_generation,
+                    request.branch_id,
+                    GitWorkspaceErrorCode::StaleGeneration,
+                    cx,
+                );
+            });
+            return;
+        };
+        if !self.branch_guards_clear(&identity.stream, cx) {
+            selector.update(cx, |selector, cx| {
+                let _ = selector.reject_switch(
+                    request.operation_id,
+                    request.snapshot_generation,
+                    request.branch_id,
+                    GitWorkspaceErrorCode::BranchOperationInProgress,
+                    cx,
+                );
+            });
+            return;
+        }
+        let Some(sequence) = self
+            .branch_controller
+            .active
+            .as_ref()
+            .and_then(|active| active.switch_sequence.checked_add(1))
+        else {
+            self.close_branch_route(GitWorkspaceErrorCode::OutputTooLarge, cx);
+            return;
+        };
+        let (fence, service, cancel) = {
+            let Some(active) = self.branch_controller.active.as_mut() else {
+                return;
+            };
+            active.switch_sequence = sequence;
+            let fence = BranchPrepareFence {
+                route: identity,
+                sequence,
+                snapshot_generation: request.snapshot_generation,
+                branch_id: request.branch_id,
+                operation_id: request.operation_id,
+            };
+            let cancel = active.cancel.child_token();
+            active.prepare_fence = Some(fence.clone());
+            active.switch_cancel = Some(cancel.clone());
+            (fence, active.service.clone(), cancel)
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker_fence = fence.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-branch-preflight".into())
+            .spawn(move || run_branch_prepare_worker(service, worker_fence, cancel, sender));
+        if worker.is_err() {
+            self.finish_branch_prepare(fence, Err(GitWorkspaceErrorCode::SpawnFailed), cx);
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let (fence, result) = match receiver.try_recv() {
+                    Ok(output) => output,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        (fence, Err(GitWorkspaceErrorCode::SpawnFailed))
+                    }
+                };
+                let _ = this.update(cx, |this, cx| this.finish_branch_prepare(fence, result, cx));
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn finish_branch_prepare(
+        &mut self,
+        fence: BranchPrepareFence,
+        result: Result<BranchSwitchPermit, GitWorkspaceErrorCode>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.branch_controller.claim_prepare(&fence) {
+            return;
+        }
+        let current = Self::branch_route_is_current(&fence.route, cx)
+            && fence.route.selector.read(cx).is_open()
+            && fence.route.selector.read(cx).is_pending()
+            && fence.route.selector.read(cx).owns_pending(
+                fence.operation_id,
+                fence.snapshot_generation,
+                fence.branch_id,
+            )
+            && fence
+                .route
+                .selector
+                .read(cx)
+                .contains_switchable(fence.snapshot_generation, fence.branch_id);
+        if !current {
+            if let Some(active) = self.branch_controller.active.as_mut()
+                && active.identity == fence.route
+            {
+                active.switch_cancel = None;
+            }
+            fence.route.selector.update(cx, |selector, cx| {
+                let _ = selector.clear_pending(
+                    fence.operation_id,
+                    fence.snapshot_generation,
+                    fence.branch_id,
+                    cx,
+                );
+            });
+            return;
+        }
+        let permit = match result {
+            Ok(permit) => permit,
+            Err(code) => {
+                if let Some(active) = self.branch_controller.active.as_mut()
+                    && active.identity == fence.route
+                {
+                    active.switch_cancel = None;
+                }
+                fence.route.selector.update(cx, |selector, cx| {
+                    let _ = selector.finish_switch(
+                        fence.operation_id,
+                        fence.snapshot_generation,
+                        fence.branch_id,
+                        None,
+                        Some(code),
+                        cx,
+                    );
+                });
+                return;
+            }
+        };
+        if !self.branch_guards_clear(&fence.route.stream, cx) {
+            if let Some(active) = self.branch_controller.active.as_mut()
+                && active.identity == fence.route
+            {
+                active.switch_cancel = None;
+            }
+            fence.route.selector.update(cx, |selector, cx| {
+                let _ = selector.reject_switch(
+                    fence.operation_id,
+                    fence.snapshot_generation,
+                    fence.branch_id,
+                    GitWorkspaceErrorCode::BranchOperationInProgress,
+                    cx,
+                );
+            });
+            return;
+        }
+        let Some(lease) = self.trusted_actions.acquire(
+            TrustedActionKind::BranchSwitch,
+            fence.route.epoch,
+            fence.sequence,
+        ) else {
+            if let Some(active) = self.branch_controller.active.as_mut()
+                && active.identity == fence.route
+            {
+                active.switch_cancel = None;
+            }
+            fence.route.selector.update(cx, |selector, cx| {
+                let _ = selector.reject_switch(
+                    fence.operation_id,
+                    fence.snapshot_generation,
+                    fence.branch_id,
+                    GitWorkspaceErrorCode::BranchOperationInProgress,
+                    cx,
+                );
+            });
+            return;
+        };
+        fence
+            .route
+            .stream
+            .update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
+        if let Some(active) = self.diff_controller.active.as_mut() {
+            if let Some(cancel) = active.projection_cancel.take() {
+                cancel.cancel();
+            }
+            active.pending_projection = None;
+        }
+        if let Some(active) = self.artifact_controller.active.as_mut() {
+            Self::cancel_artifact_interactions(active, cx);
+        }
+        let execute_fence = BranchSwitchFence {
+            route: fence.route,
+            sequence: fence.sequence,
+            snapshot_generation: fence.snapshot_generation,
+            branch_id: fence.branch_id,
+            operation_id: fence.operation_id,
+            lease,
+        };
+        let (service, cancel) = {
+            let Some(active) = self.branch_controller.active.as_mut() else {
+                let _ = self.trusted_actions.release(lease);
+                execute_fence
+                    .route
+                    .stream
+                    .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                return;
+            };
+            let cancel = active.cancel.child_token();
+            active.switch_fence = Some(execute_fence.clone());
+            active.switch_cancel = Some(cancel.clone());
+            (active.service.clone(), cancel)
+        };
+        self.launch_branch_execute(service, permit, execute_fence, cancel, cx);
+    }
+
+    fn launch_branch_execute(
+        &mut self,
+        service: Arc<BranchWorkspaceService>,
+        permit: BranchSwitchPermit,
+        fence: BranchSwitchFence,
+        cancel: tokio_util::sync::CancellationToken,
+        cx: &mut Context<Self>,
+    ) {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker_fence = fence.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-branch-switch".into())
+            .spawn(move || run_branch_switch_worker(service, permit, worker_fence, cancel, sender));
+        if worker.is_err() {
+            self.finish_branch_switch(
+                fence,
+                BranchSwitchCompletion {
+                    outcome: BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::SpawnFailed),
+                    snapshot: None,
+                },
+                cx,
+            );
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let (fence, completion) = match receiver.try_recv() {
+                    Ok(output) => output,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => (
+                        fence,
+                        BranchSwitchCompletion {
+                            outcome: BranchSwitchOutcome::Failed(
+                                GitWorkspaceErrorCode::SpawnFailed,
+                            ),
+                            snapshot: None,
+                        },
+                    ),
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.finish_branch_switch(fence, completion, cx)
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn branch_selector_closed(
+        &mut self,
+        selector: Entity<BranchSelector>,
+        request: &BranchSelectorClosed,
+        _cx: &mut Context<Self>,
+    ) {
+        let Some(active) = self.branch_controller.active.as_mut() else {
+            return;
+        };
+        if active.identity.selector != selector
+            || active.identity.thread_id != request.thread_id
+            || active.identity.project_id != request.project_id
+        {
+            return;
+        }
+        if let Some(cancel) = active.list_cancel.take() {
+            cancel.cancel();
+        }
+        active.list_fence = None;
+        if let Some(cancel) = &active.switch_cancel {
+            // The owner future stays alive and performs its authoritative cleanup.
+            cancel.cancel();
+        }
+    }
+
+    fn enqueue_artifact_workspace_reconcile(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        let Some(active) = self.artifact_controller.active.as_mut() else {
+            return;
+        };
+        if active.identity.project_id != project_id
+            || !Self::artifact_route_is_current(&active.identity, cx)
+        {
+            return;
+        }
+        Self::cancel_artifact_interactions(active, cx);
+        let Some(sequence) = active.terminal_sequence.checked_add(1) else {
+            self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+            return;
+        };
+        if active.terminal_queue.len() >= ARTIFACT_ROUTE_CAP {
+            self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+            return;
+        }
+        active.terminal_sequence = sequence;
+        active.terminal_queue.push_back(ArtifactTerminalJob {
+            sequence,
+            work: ArtifactTerminalWork::Refresh,
+        });
+        self.launch_next_artifact_terminal(cx);
+    }
+
+    fn workspace_action_finished(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        let diff_identity = self
+            .diff_controller
+            .active
+            .as_ref()
+            .filter(|active| active.identity.project_id == project_id)
+            .map(|active| active.identity.clone());
+        if let Some(identity) = diff_identity {
+            self.schedule_diff_refresh(&identity, cx);
+        }
+        self.enqueue_artifact_workspace_reconcile(project_id, cx);
+    }
+
+    fn finish_branch_switch(
+        &mut self,
+        fence: BranchSwitchFence,
+        completion: BranchSwitchCompletion,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.branch_controller.claim_terminal(&fence) {
+            return;
+        }
+        let error = match completion.outcome {
+            BranchSwitchOutcome::Switched => None,
+            BranchSwitchOutcome::Failed(code) => Some(code),
+        };
+        fence.route.selector.update(cx, |selector, cx| {
+            let _ = selector.finish_switch(
+                fence.operation_id,
+                fence.snapshot_generation,
+                fence.branch_id,
+                completion.snapshot,
+                error,
+                cx,
+            );
+        });
+        // A worker may have attempted mutation even after its route became stale.
+        // Queue all conservative workspace reconciliation before releasing authority.
+        self.workspace_action_finished(&fence.route.project_id, cx);
+        if self.trusted_actions.release(fence.lease) {
+            fence
+                .route
+                .stream
+                .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+        }
     }
 
     fn ensure_artifact_route(
@@ -1357,6 +2210,12 @@ impl VegaWindow {
             self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
             return;
         }
+        if self.trusted_actions.is_busy() {
+            card.update(cx, |card, cx| {
+                card.fail_request(GitWorkspaceErrorCode::BranchOperationInProgress, cx)
+            });
+            return;
+        }
         let (fence, service, cancel) = {
             let Some(active) = self.artifact_controller.active.as_mut() else {
                 card.update(cx, |card, cx| {
@@ -1486,8 +2345,92 @@ impl VegaWindow {
             self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
             return;
         }
+        let sequence_overflow = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| {
+                active.identity.thread_id == request.thread_id
+                    && active.identity.project_id == request.project_id
+                    && active.cards.get(&request.card_id) == Some(&card)
+                    && card.read(cx).projection().current_file_id == Some(request.file_id)
+                    && active.open_fence.is_none()
+                    && active.open_sequence == u64::MAX
+            });
+        if sequence_overflow {
+            card.update(cx, |card, cx| {
+                let _ = card.apply_open_error(
+                    request.card_id,
+                    request.target,
+                    GitWorkspaceErrorCode::ArtifactLimit,
+                    cx,
+                );
+            });
+            self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+            return;
+        }
+        let lease_input = self.artifact_controller.active.as_ref().and_then(|active| {
+            let current = active.identity.thread_id == request.thread_id
+                && active.identity.project_id == request.project_id
+                && active.cards.get(&request.card_id) == Some(&card)
+                && card.read(cx).projection().current_file_id == Some(request.file_id)
+                && active.open_fence.is_none();
+            current
+                .then(|| {
+                    active
+                        .open_sequence
+                        .checked_add(1)
+                        .map(|sequence| (active.identity.clone(), sequence))
+                })
+                .flatten()
+        });
+        let Some((open_identity, open_sequence)) = lease_input else {
+            let owned = self
+                .artifact_controller
+                .active
+                .as_ref()
+                .is_some_and(|active| {
+                    active.identity.thread_id == request.thread_id
+                        && active.identity.project_id == request.project_id
+                        && active.cards.get(&request.card_id) == Some(&card)
+                        && card.read(cx).projection().current_file_id == Some(request.file_id)
+                });
+            if owned {
+                card.update(cx, |card, cx| {
+                    card.fail_request(GitWorkspaceErrorCode::BranchOperationInProgress, cx)
+                });
+            } else {
+                card.update(cx, |card, cx| {
+                    card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
+                });
+            }
+            return;
+        };
+        if !self.branch_guards_clear(&open_identity.stream, cx) {
+            card.update(cx, |card, cx| {
+                card.fail_request(GitWorkspaceErrorCode::BranchOperationInProgress, cx)
+            });
+            return;
+        }
+        let Some(lease) = self.trusted_actions.acquire(
+            TrustedActionKind::ArtifactOpen,
+            open_identity.epoch,
+            open_sequence,
+        ) else {
+            card.update(cx, |card, cx| {
+                card.fail_request(GitWorkspaceErrorCode::BranchOperationInProgress, cx)
+            });
+            return;
+        };
+        open_identity
+            .stream
+            .update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
         let (fence, service, cancel) = {
             let Some(active) = self.artifact_controller.active.as_mut() else {
+                let _ = self.trusted_actions.release(lease);
+                open_identity
+                    .stream
+                    .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
                 card.update(cx, |card, cx| {
                     card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
                 });
@@ -1499,23 +2442,16 @@ impl VegaWindow {
                 && card.read(cx).projection().current_file_id == Some(request.file_id)
                 && active.open_fence.is_none();
             if !current {
+                let _ = self.trusted_actions.release(lease);
+                open_identity
+                    .stream
+                    .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
                 card.update(cx, |card, cx| {
                     card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
                 });
                 return;
             }
-            let Some(sequence) = active.open_sequence.checked_add(1) else {
-                card.update(cx, |card, cx| {
-                    let _ = card.apply_open_error(
-                        request.card_id,
-                        request.target,
-                        GitWorkspaceErrorCode::ArtifactLimit,
-                        cx,
-                    );
-                });
-                self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
-                return;
-            };
+            let sequence = open_sequence;
             active.open_sequence = sequence;
             if let Some(cancel) = active.open_cancel.take() {
                 cancel.cancel();
@@ -1526,6 +2462,7 @@ impl VegaWindow {
                 card_id: request.card_id,
                 file_id: request.file_id,
                 target: request.target,
+                lease,
             };
             let cancel = active.cancel.child_token();
             active.open_fence = Some(fence.clone());
@@ -1566,6 +2503,13 @@ impl VegaWindow {
         result: Result<OpenInOutcome, GitWorkspaceErrorCode>,
         cx: &mut Context<Self>,
     ) {
+        let released = self.trusted_actions.release(fence.lease);
+        if released {
+            fence
+                .route
+                .stream
+                .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+        }
         if !Self::artifact_route_is_current(&fence.route, cx) {
             return;
         }
@@ -2283,7 +3227,7 @@ impl VegaWindow {
             PendingAgentRun::UserMessage(_) => None,
             PendingAgentRun::ApprovedPlan(instruction_id) => Some(instruction_id.clone()),
         };
-        if self.agent_controller.active.is_some() {
+        if self.agent_controller.active.is_some() || self.trusted_actions.is_busy() {
             match run {
                 PendingAgentRun::UserMessage(_) => {
                     stream.update(cx, ConversationStream::reject_composer_submission);
@@ -2525,6 +3469,10 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
+        if self.trusted_actions.is_busy() {
+            stream.update(cx, ConversationStream::apply_controller_error);
+            return;
+        }
         if self.agent_controller.active.is_some() {
             if self.agent_controller.queue_review(&stream, request) {
                 if let Some(active) = self.agent_controller.active.as_ref() {
@@ -2576,6 +3524,7 @@ impl Drop for VegaWindow {
         }
         self.diff_controller.close();
         let _ = self.artifact_controller.close();
+        let _ = self.branch_controller.close();
     }
 }
 
@@ -2608,6 +3557,16 @@ impl Render for VegaWindow {
             })
         {
             self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
+        }
+        if self
+            .branch_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| {
+                settings_open || !Self::branch_route_is_current(&active.identity, cx)
+            })
+        {
+            self.close_branch_route(GitWorkspaceErrorCode::StaleGeneration, cx);
         }
         let content: AnyElement = if settings_open {
             self.cancel_active_agent(cx);
@@ -2688,6 +3647,19 @@ impl Render for VegaWindow {
                                 this.workspace_tool_terminal(stream.clone(), request, cx);
                             })
                             .detach();
+                            let branch_selector = view.read(cx).branch_selector();
+                            cx.subscribe(&branch_selector, |this, selector, request, cx| {
+                                this.request_branch_list(selector.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&branch_selector, |this, selector, request, cx| {
+                                this.request_branch_switch(selector.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&branch_selector, |this, selector, request, cx| {
+                                this.branch_selector_closed(selector.clone(), request, cx);
+                            })
+                            .detach();
                             let initial = match &cx.global::<VegaStore>().0 {
                                 Ok(store) => (|| {
                                     let plans =
@@ -2724,6 +3696,7 @@ impl Render for VegaWindow {
                         }
                     };
                     self.ensure_artifact_route(&thread, stream.clone(), cx);
+                    self.ensure_branch_route(&thread, stream.clone(), cx);
                     stream.into_any_element()
                 }
                 None => {
@@ -2936,6 +3909,984 @@ mod tests {
         PermissionMode, PlanReviewAction, PlanStatus, ThreadMode, ThreadStatus, ToolResult,
     };
     use vega_store::messages::{MessageRow, complete_plan, insert};
+
+    #[test]
+    fn branch_controller_shared_lease_is_first_wins_and_aba_safe() {
+        let mut actions = TrustedActionCoordinator::default();
+        let first = actions
+            .acquire(TrustedActionKind::BranchSwitch, 7, 1)
+            .expect("first owner");
+        assert!(
+            actions
+                .acquire(TrustedActionKind::ArtifactOpen, 8, 1)
+                .is_none(),
+            "a second trusted action cannot overlap"
+        );
+        let mut forged = first;
+        forged.generation += 1;
+        assert!(!actions.release(forged));
+        assert!(actions.is_busy());
+        assert!(actions.release(first));
+        let second = actions
+            .acquire(TrustedActionKind::Commit, 7, 2)
+            .expect("new generation");
+        assert_ne!(first, second);
+        assert!(!actions.release(first), "stale A cannot release B");
+        assert!(actions.is_busy());
+        assert!(actions.release(second));
+    }
+
+    #[gpui::test]
+    async fn branch_controller_route_and_active_guards_fail_closed(cx: &mut gpui::TestAppContext) {
+        let repo = artifact_controller_repo();
+        let store = Store::open(":memory:").expect("branch window memory store");
+        store.migrate().expect("branch window migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 branch root"),
+            "branch",
+            None,
+        )
+        .expect("branch project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("branch thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let root = cx.new(VegaWindow::new);
+        root.update(cx, |root, cx| {
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            root.ensure_branch_route(&thread, stream.clone(), cx);
+            let active = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("current branch route");
+            assert!(VegaWindow::branch_route_is_current(&active.identity, cx));
+            assert_eq!(active.identity.stream, stream);
+            assert_eq!(active.identity.selector, stream.read(cx).branch_selector());
+            assert!(root.branch_guards_clear(&stream, cx));
+
+            root.commit_panel_open = true;
+            assert!(!root.branch_guards_clear(&stream, cx));
+            root.commit_panel_open = false;
+
+            let lease = root
+                .trusted_actions
+                .acquire(TrustedActionKind::Commit, 99, 1)
+                .expect("future commit lease");
+            assert!(!root.branch_guards_clear(&stream, cx));
+            assert!(root.trusted_actions.release(lease));
+
+            let (generation, _) =
+                root.agent_controller
+                    .begin(thread.id.clone(), stream.clone(), None, None);
+            assert!(!root.branch_guards_clear(&stream, cx));
+            let _ = root
+                .agent_controller
+                .finish(generation, &thread.id, &stream)
+                .expect("finish guard run");
+
+            stream.update(cx, |stream, cx| {
+                stream.apply_plan(
+                    Plan {
+                        id: "pending-branch-plan".into(),
+                        thread_id: thread.id.clone(),
+                        content: "Inspect before switch".into(),
+                        status: PlanStatus::Pending,
+                        review_note: None,
+                        reviewed_at: None,
+                    },
+                    cx,
+                );
+            });
+            assert!(!root.branch_guards_clear(&stream, cx));
+
+            cx.set_global(SettingsOpen(true));
+            assert!(!VegaWindow::branch_route_is_current(
+                &root
+                    .branch_controller
+                    .active
+                    .as_ref()
+                    .expect("route before settings close")
+                    .identity,
+                cx,
+            ));
+        });
+    }
+
+    #[gpui::test]
+    async fn branch_controller_guard_change_after_preflight_starts_zero_execute(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = artifact_controller_repo();
+        run_fixture_git(repo.path(), &["branch", "other"]);
+        let store = Store::open(":memory:").expect("branch preflight store");
+        store.migrate().expect("branch preflight migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 branch root"),
+            "branch",
+            None,
+        )
+        .expect("branch project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("branch thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+        let root = cx.new(VegaWindow::new);
+        let (identity, service) = root.update(cx, |root, cx| {
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            root.ensure_branch_route(&thread, stream.clone(), cx);
+            let active = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("branch route");
+            (active.identity.clone(), active.service.clone())
+        });
+        let list_fence = BranchListFence {
+            route: identity.clone(),
+            sequence: 1,
+        };
+        let (list_sender, list_receiver) = mpsc::sync_channel(1);
+        run_branch_list_worker(
+            service.clone(),
+            list_fence,
+            tokio_util::sync::CancellationToken::new(),
+            list_sender,
+        );
+        let (_, snapshot) = list_receiver.recv().expect("branch snapshot output");
+        let snapshot = snapshot.expect("branch snapshot");
+        let target = snapshot
+            .branches
+            .iter()
+            .find(|branch| !branch.current)
+            .expect("switch target")
+            .id;
+        let operation = selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx));
+            assert!(selector.apply_snapshot(snapshot.clone(), cx));
+            selector
+                .begin_switch(snapshot.generation, target, cx)
+                .expect("switch operation")
+        });
+        let prepare_fence = BranchPrepareFence {
+            route: identity,
+            sequence: 1,
+            snapshot_generation: snapshot.generation,
+            branch_id: target,
+            operation_id: operation,
+        };
+        root.update(cx, |root, _| {
+            let active = root
+                .branch_controller
+                .active
+                .as_mut()
+                .expect("active preflight route");
+            active.switch_sequence = 1;
+            active.prepare_fence = Some(prepare_fence.clone());
+            active.switch_cancel = Some(tokio_util::sync::CancellationToken::new());
+        });
+        let (prepare_sender, prepare_receiver) = mpsc::sync_channel(1);
+        run_branch_prepare_worker(
+            service,
+            prepare_fence.clone(),
+            tokio_util::sync::CancellationToken::new(),
+            prepare_sender,
+        );
+        let (_, permit) = prepare_receiver.recv().expect("preflight output");
+        let permit = permit.expect("valid preflight permit");
+        root.update(cx, |root, cx| {
+            let competing = root
+                .trusted_actions
+                .acquire(TrustedActionKind::Commit, 42, 1)
+                .expect("guard changes after preflight");
+            root.finish_branch_prepare(prepare_fence, Ok(permit), cx);
+            assert!(
+                root.branch_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.switch_fence.is_none()),
+                "guard change starts zero execute"
+            );
+            assert_eq!(root.trusted_actions.active, Some(competing));
+            assert!(root.trusted_actions.release(competing));
+        });
+        let output = fixture_git_command(repo.path(), &["symbolic-ref", "--short", "HEAD"])
+            .output()
+            .expect("read current branch");
+        assert!(output.status.success());
+        assert_ne!(output.stdout, b"other\n", "preflight alone never mutates");
+        assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
+    }
+
+    #[gpui::test]
+    async fn branch_controller_close_during_preflight_clears_exact_pending_then_reopens(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = artifact_controller_repo();
+        run_fixture_git(repo.path(), &["branch", "preflight-close-target"]);
+        let store = Store::open(":memory:").expect("branch close preflight store");
+        store.migrate().expect("branch close preflight migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 branch root"),
+            "branch",
+            None,
+        )
+        .expect("branch project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("branch thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+        let root = cx.new(VegaWindow::new);
+        let (identity, service) = root.update(cx, |root, cx| {
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            root.ensure_branch_route(&thread, stream.clone(), cx);
+            let active = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("branch close preflight route");
+            (active.identity.clone(), active.service.clone())
+        });
+        let (list_sender, list_receiver) = mpsc::sync_channel(1);
+        run_branch_list_worker(
+            service.clone(),
+            BranchListFence {
+                route: identity.clone(),
+                sequence: 1,
+            },
+            tokio_util::sync::CancellationToken::new(),
+            list_sender,
+        );
+        let snapshot = list_receiver
+            .recv()
+            .expect("close preflight list output")
+            .1
+            .expect("close preflight snapshot");
+        let target = snapshot
+            .branches
+            .iter()
+            .find(|branch| !branch.current)
+            .expect("close preflight target")
+            .id;
+        let operation = selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx));
+            assert!(selector.apply_snapshot(snapshot.clone(), cx));
+            selector
+                .begin_switch(snapshot.generation, target, cx)
+                .expect("close preflight operation")
+        });
+        let fence = BranchPrepareFence {
+            route: identity,
+            sequence: 1,
+            snapshot_generation: snapshot.generation,
+            branch_id: target,
+            operation_id: operation,
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        root.update(cx, |root, _| {
+            let active = root
+                .branch_controller
+                .active
+                .as_mut()
+                .expect("active close preflight route");
+            active.switch_sequence = 1;
+            active.prepare_fence = Some(fence.clone());
+            active.switch_cancel = Some(cancel.clone());
+        });
+        selector.update(cx, |selector, cx| {
+            assert!(selector.request_close(cx));
+        });
+        root.update(cx, |root, cx| {
+            root.branch_selector_closed(
+                selector.clone(),
+                &BranchSelectorClosed {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                },
+                cx,
+            );
+        });
+        assert!(cancel.is_cancelled());
+        assert_eq!(
+            selector.read_with(cx, |selector, _| selector.pending_key()),
+            Some((operation, snapshot.generation, target))
+        );
+
+        cx.update(|cx| cx.set_global(SettingsOpen(true)));
+        cx.run_until_parked();
+        assert!(
+            !selector.read_with(cx, |selector, _| selector.is_pending()),
+            "route close synchronously clears only its exact operation"
+        );
+        cx.update(|cx| cx.set_global(SettingsOpen(false)));
+        let (fresh_identity, fresh_service) = root.update(cx, |root, cx| {
+            root.ensure_branch_route(&thread, stream.clone(), cx);
+            let active = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("restored preflight route");
+            (active.identity.clone(), active.service.clone())
+        });
+
+        let (prepare_sender, prepare_receiver) = mpsc::sync_channel(1);
+        run_branch_prepare_worker(service, fence.clone(), cancel, prepare_sender);
+        let (_, result) = prepare_receiver.recv().expect("close preflight terminal");
+        root.update(cx, |root, cx| root.finish_branch_prepare(fence, result, cx));
+        assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
+        let (fresh_sender, fresh_receiver) = mpsc::sync_channel(1);
+        run_branch_list_worker(
+            fresh_service,
+            BranchListFence {
+                route: fresh_identity,
+                sequence: 1,
+            },
+            tokio_util::sync::CancellationToken::new(),
+            fresh_sender,
+        );
+        let fresh_snapshot = fresh_receiver
+            .recv()
+            .expect("fresh preflight list")
+            .1
+            .expect("fresh preflight snapshot");
+        let fresh_target = fresh_snapshot
+            .branches
+            .iter()
+            .find(|branch| !branch.current)
+            .expect("fresh preflight target")
+            .id;
+        let fresh_operation = selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx), "fresh list request is reusable");
+            assert!(selector.apply_snapshot(fresh_snapshot.clone(), cx));
+            selector
+                .begin_switch(fresh_snapshot.generation, fresh_target, cx)
+                .expect("fresh preflight operation")
+        });
+        root.update(cx, |root, cx| {
+            root.request_branch_switch(
+                selector.clone(),
+                &BranchSwitchRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                    snapshot_generation: fresh_snapshot.generation,
+                    branch_id: fresh_target,
+                    operation_id: fresh_operation,
+                },
+                cx,
+            );
+            assert!(
+                root.branch_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.prepare_fence.is_some())
+            );
+            root.close_branch_route(GitWorkspaceErrorCode::Cancelled, cx);
+        });
+    }
+
+    #[gpui::test]
+    async fn branch_controller_close_cancels_owner_but_releases_only_after_cleanup(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = artifact_controller_repo();
+        run_fixture_git(repo.path(), &["branch", "cancel-target"]);
+        let store = Store::open(":memory:").expect("branch cancel store");
+        store.migrate().expect("branch cancel migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 branch root"),
+            "branch",
+            None,
+        )
+        .expect("branch project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("branch thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+        let root = cx.new(VegaWindow::new);
+        let (identity, service) = root.update(cx, |root, cx| {
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            root.ensure_branch_route(&thread, stream.clone(), cx);
+            let active = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("branch cancel route");
+            (active.identity.clone(), active.service.clone())
+        });
+        let list_fence = BranchListFence {
+            route: identity.clone(),
+            sequence: 1,
+        };
+        let (list_sender, list_receiver) = mpsc::sync_channel(1);
+        run_branch_list_worker(
+            service.clone(),
+            list_fence,
+            tokio_util::sync::CancellationToken::new(),
+            list_sender,
+        );
+        let snapshot = list_receiver
+            .recv()
+            .expect("list output")
+            .1
+            .expect("list snapshot");
+        let target = snapshot
+            .branches
+            .iter()
+            .find(|branch| !branch.current)
+            .expect("cancel target")
+            .id;
+        let operation = selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx));
+            assert!(selector.apply_snapshot(snapshot.clone(), cx));
+            selector
+                .begin_switch(snapshot.generation, target, cx)
+                .expect("cancel owner operation")
+        });
+        let prepare_fence = BranchPrepareFence {
+            route: identity.clone(),
+            sequence: 1,
+            snapshot_generation: snapshot.generation,
+            branch_id: target,
+            operation_id: operation,
+        };
+        let (prepare_sender, prepare_receiver) = mpsc::sync_channel(1);
+        run_branch_prepare_worker(
+            service.clone(),
+            prepare_fence,
+            tokio_util::sync::CancellationToken::new(),
+            prepare_sender,
+        );
+        let permit = prepare_receiver
+            .recv()
+            .expect("prepare output")
+            .1
+            .expect("prepare permit");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let fence = root.update(cx, |root, cx| {
+            let lease = root
+                .trusted_actions
+                .acquire(TrustedActionKind::BranchSwitch, identity.epoch, 1)
+                .expect("branch owner lease");
+            stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
+            let fence = BranchSwitchFence {
+                route: identity,
+                sequence: 1,
+                snapshot_generation: snapshot.generation,
+                branch_id: target,
+                operation_id: operation,
+                lease,
+            };
+            let active = root
+                .branch_controller
+                .active
+                .as_mut()
+                .expect("branch owner route");
+            active.switch_fence = Some(fence.clone());
+            active.switch_cancel = Some(cancel.clone());
+            fence
+        });
+        selector.update(cx, |selector, cx| {
+            assert!(selector.request_close(cx));
+        });
+        root.update(cx, |root, cx| {
+            root.branch_selector_closed(
+                selector.clone(),
+                &BranchSelectorClosed {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                },
+                cx,
+            );
+            assert!(cancel.is_cancelled());
+            assert!(root.trusted_actions.is_busy(), "close cannot release owner");
+        });
+        assert_eq!(
+            selector.read_with(cx, |selector, _| selector.pending_key()),
+            Some((operation, snapshot.generation, target))
+        );
+        cx.update(|cx| cx.set_global(SettingsOpen(true)));
+        cx.run_until_parked();
+        assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
+        root.update(cx, |root, _| {
+            assert!(
+                root.trusted_actions.is_busy(),
+                "settings cannot release owner"
+            );
+        });
+        cx.update(|cx| cx.set_global(SettingsOpen(false)));
+        let fresh_service = root.update(cx, |root, cx| {
+            root.ensure_branch_route(&thread, stream.clone(), cx);
+            root.branch_controller
+                .active
+                .as_ref()
+                .expect("restored owner route")
+                .service
+                .clone()
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        run_branch_switch_worker(service, permit, fence.clone(), cancel, sender);
+        let (_, completion) = receiver.recv().expect("cancelled owner completion");
+        assert!(matches!(
+            completion.outcome,
+            BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::Cancelled)
+        ));
+        assert!(
+            completion.snapshot.is_some(),
+            "owner cancellation still returns authoritative refresh"
+        );
+        assert!(completion.snapshot.is_some());
+        root.update(cx, |root, cx| {
+            root.finish_branch_switch(fence, completion, cx);
+            assert!(
+                !root.trusted_actions.is_busy(),
+                "cleanup completion releases exact owner"
+            );
+        });
+        assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
+        let (fresh_sender, fresh_receiver) = mpsc::sync_channel(1);
+        run_branch_list_worker(
+            fresh_service,
+            BranchListFence {
+                route: root.read_with(cx, |root, _| {
+                    root.branch_controller
+                        .active
+                        .as_ref()
+                        .expect("fresh owner identity")
+                        .identity
+                        .clone()
+                }),
+                sequence: 1,
+            },
+            tokio_util::sync::CancellationToken::new(),
+            fresh_sender,
+        );
+        let refreshed = fresh_receiver
+            .recv()
+            .expect("fresh owner list")
+            .1
+            .expect("fresh owner snapshot");
+        let fresh_generation = refreshed.generation;
+        let fresh_target = refreshed
+            .branches
+            .iter()
+            .find(|branch| !branch.current)
+            .expect("fresh target after owner cleanup")
+            .id;
+        selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx), "selector reopens after cleanup");
+            assert!(selector.apply_snapshot(refreshed, cx));
+            assert!(
+                selector
+                    .begin_switch(fresh_generation, fresh_target, cx)
+                    .is_some()
+            );
+        });
+        assert!(!stream.read_with(cx, |stream, _| stream.has_active_agent()));
+    }
+
+    #[gpui::test]
+    async fn branch_controller_owner_success_applies_authority_then_releases(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = artifact_controller_repo();
+        run_fixture_git(repo.path(), &["branch", "success-target"]);
+        let store = Store::open(":memory:").expect("branch success store");
+        store.migrate().expect("branch success migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 branch root"),
+            "branch",
+            None,
+        )
+        .expect("branch project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("branch thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+        let root = cx.new(VegaWindow::new);
+        let (identity, service) = root.update(cx, |root, cx| {
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            root.ensure_branch_route(&thread, stream.clone(), cx);
+            let active = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("branch success route");
+            (active.identity.clone(), active.service.clone())
+        });
+        let (list_sender, list_receiver) = mpsc::sync_channel(1);
+        run_branch_list_worker(
+            service.clone(),
+            BranchListFence {
+                route: identity.clone(),
+                sequence: 1,
+            },
+            tokio_util::sync::CancellationToken::new(),
+            list_sender,
+        );
+        let snapshot = list_receiver
+            .recv()
+            .expect("success list output")
+            .1
+            .expect("success list snapshot");
+        let target = snapshot
+            .branches
+            .iter()
+            .find(|branch| branch.label == "success-target")
+            .expect("success target")
+            .id;
+        let operation = selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx));
+            assert!(selector.apply_snapshot(snapshot.clone(), cx));
+            selector
+                .begin_switch(snapshot.generation, target, cx)
+                .expect("success owner operation")
+        });
+        let prepare_fence = BranchPrepareFence {
+            route: identity.clone(),
+            sequence: 1,
+            snapshot_generation: snapshot.generation,
+            branch_id: target,
+            operation_id: operation,
+        };
+        let (prepare_sender, prepare_receiver) = mpsc::sync_channel(1);
+        run_branch_prepare_worker(
+            service.clone(),
+            prepare_fence,
+            tokio_util::sync::CancellationToken::new(),
+            prepare_sender,
+        );
+        let permit = prepare_receiver
+            .recv()
+            .expect("success prepare output")
+            .1
+            .expect("success permit");
+        let fence = root.update(cx, |root, cx| {
+            let lease = root
+                .trusted_actions
+                .acquire(TrustedActionKind::BranchSwitch, identity.epoch, 1)
+                .expect("success owner lease");
+            stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
+            let fence = BranchSwitchFence {
+                route: identity,
+                sequence: 1,
+                snapshot_generation: snapshot.generation,
+                branch_id: target,
+                operation_id: operation,
+                lease,
+            };
+            let active = root
+                .branch_controller
+                .active
+                .as_mut()
+                .expect("success owner route");
+            active.switch_fence = Some(fence.clone());
+            fence
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        run_branch_switch_worker(
+            service,
+            permit,
+            fence.clone(),
+            tokio_util::sync::CancellationToken::new(),
+            sender,
+        );
+        let (_, completion) = receiver.recv().expect("success owner completion");
+        assert_eq!(completion.outcome, BranchSwitchOutcome::Switched);
+        assert!(completion.snapshot.is_some());
+        let authoritative = completion
+            .snapshot
+            .clone()
+            .expect("success authoritative snapshot");
+        let duplicate_fence = fence.clone();
+        let duplicate_completion = completion.clone();
+        root.update(cx, |root, cx| {
+            root.finish_branch_switch(fence, completion, cx);
+            assert!(!root.trusted_actions.is_busy());
+        });
+        assert!(!selector.read_with(cx, |selector, _| selector.is_open()));
+        let output = fixture_git_command(repo.path(), &["symbolic-ref", "--short", "HEAD"])
+            .output()
+            .expect("read switched branch");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"success-target\n");
+
+        let fresh_target = authoritative
+            .branches
+            .iter()
+            .find(|branch| !branch.current)
+            .expect("fresh switch target")
+            .id;
+        let fresh_operation = selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx));
+            assert!(selector.apply_snapshot(authoritative.clone(), cx));
+            selector
+                .begin_switch(authoritative.generation, fresh_target, cx)
+                .expect("fresh owner operation")
+        });
+        let preview_cancel = tokio_util::sync::CancellationToken::new();
+        let open_cancel = tokio_util::sync::CancellationToken::new();
+        let fresh_fence = root.update(cx, |root, cx| {
+            root.ensure_artifact_route(&thread, stream.clone(), cx);
+            let active_artifact = root
+                .artifact_controller
+                .active
+                .as_mut()
+                .expect("fresh artifact route");
+            active_artifact.preview_cancel = Some(preview_cancel.clone());
+            active_artifact.open_cancel = Some(open_cancel.clone());
+
+            let lease = root
+                .trusted_actions
+                .acquire(
+                    TrustedActionKind::BranchSwitch,
+                    duplicate_fence.route.epoch,
+                    2,
+                )
+                .expect("fresh branch owner lease");
+            let fresh = BranchSwitchFence {
+                route: duplicate_fence.route.clone(),
+                sequence: 2,
+                snapshot_generation: authoritative.generation,
+                branch_id: fresh_target,
+                operation_id: fresh_operation,
+                lease,
+            };
+            let active = root
+                .branch_controller
+                .active
+                .as_mut()
+                .expect("fresh branch route");
+            active.switch_fence = Some(fresh.clone());
+            active.switch_cancel = Some(tokio_util::sync::CancellationToken::new());
+
+            root.finish_branch_switch(duplicate_fence, duplicate_completion, cx);
+            assert!(
+                root.branch_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.switch_fence.as_ref() == Some(&fresh)),
+                "old duplicate cannot claim the fresh branch fence"
+            );
+            assert!(root.trusted_actions.is_busy());
+            assert!(!preview_cancel.is_cancelled());
+            assert!(!open_cancel.is_cancelled());
+            fresh
+        });
+        assert_eq!(
+            selector.read_with(cx, |selector, _| selector.pending_key()),
+            Some((fresh_operation, authoritative.generation, fresh_target,)),
+            "old terminal cannot clear the fresh operation token"
+        );
+        root.update(cx, |root, cx| {
+            root.finish_branch_switch(
+                fresh_fence,
+                BranchSwitchCompletion {
+                    outcome: BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::Cancelled),
+                    snapshot: Some(authoritative),
+                },
+                cx,
+            );
+            assert!(!root.trusted_actions.is_busy());
+        });
+    }
+
+    #[gpui::test]
+    async fn branch_selector_real_projection_keyboard_first_wins_and_visible_range(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = artifact_controller_repo();
+        run_fixture_git(repo.path(), &["branch", "aaa-selector"]);
+        run_fixture_git(repo.path(), &["branch", "zzz-selector"]);
+        let store = Store::open(":memory:").expect("branch selector interaction store");
+        store
+            .migrate()
+            .expect("branch selector interaction migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 branch selector root"),
+            "branch",
+            None,
+        )
+        .expect("branch selector project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("branch selector thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+        let root = cx.new(VegaWindow::new);
+        let (identity, service) = root.update(cx, |root, cx| {
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            root.ensure_branch_route(&thread, stream, cx);
+            let active = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("branch selector interaction route");
+            (active.identity.clone(), active.service.clone())
+        });
+        let (sender, receiver) = mpsc::sync_channel(1);
+        run_branch_list_worker(
+            service,
+            BranchListFence {
+                route: identity,
+                sequence: 1,
+            },
+            tokio_util::sync::CancellationToken::new(),
+            sender,
+        );
+        let snapshot = receiver
+            .recv()
+            .expect("branch selector interaction list")
+            .1
+            .expect("branch selector interaction snapshot");
+        let current = snapshot
+            .branches
+            .iter()
+            .find(|branch| branch.current)
+            .expect("current branch")
+            .id;
+        let switchable = snapshot
+            .branches
+            .iter()
+            .filter(|branch| !branch.current)
+            .map(|branch| branch.id)
+            .collect::<Vec<_>>();
+        assert_eq!(switchable.len(), 2);
+
+        let window_selector = selector.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, _| window_selector)
+                .expect("branch selector interaction window")
+        });
+        selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx));
+            assert!(selector.apply_snapshot(snapshot.clone(), cx));
+            assert!(
+                selector
+                    .begin_switch(snapshot.generation, current, cx)
+                    .is_none(),
+                "current branch is never activatable"
+            );
+        });
+        window
+            .update(cx, |selector, window, cx| {
+                let focus = selector.focus_handle(cx);
+                window.focus(&focus, cx);
+            })
+            .expect("focus branch selector");
+        cx.run_until_parked();
+        assert_eq!(
+            selector.read_with(cx, |selector, _| selector.focused_branch()),
+            Some(switchable[0])
+        );
+        cx.simulate_keystrokes(window.into(), "up");
+        assert_eq!(
+            selector.read_with(cx, |selector, _| selector.focused_branch()),
+            Some(switchable[0]),
+            "up does not wrap before first switchable row"
+        );
+        cx.simulate_keystrokes(window.into(), "down down");
+        assert_eq!(
+            selector.read_with(cx, |selector, _| selector.focused_branch()),
+            Some(switchable[1]),
+            "down skips current and does not wrap past the end"
+        );
+        cx.simulate_keystrokes(window.into(), "enter");
+        let pending = selector
+            .read_with(cx, |selector, _| selector.pending_key())
+            .expect("Enter activates focused branch");
+        cx.simulate_keystrokes(window.into(), "space");
+        assert_eq!(
+            selector.read_with(cx, |selector, _| selector.pending_key()),
+            Some(pending),
+            "Space cannot replace a pending first winner"
+        );
+        cx.simulate_keystrokes(window.into(), "escape");
+        assert!(!selector.read_with(cx, |selector, _| selector.is_open()));
+        assert_eq!(
+            selector.read_with(cx, |selector, _| selector.pending_key()),
+            Some(pending),
+            "Esc closes visibility without forging terminal cleanup"
+        );
+
+        selector.update(cx, |selector, cx| {
+            assert!(selector.clear_pending(pending.0, pending.1, pending.2, cx));
+            assert!(selector.request_open(cx));
+            let template = snapshot
+                .branches
+                .iter()
+                .find(|branch| !branch.current)
+                .expect("large-list template")
+                .clone();
+            let large = BranchSnapshot {
+                generation: snapshot.generation,
+                branches: vec![template.clone(); vega_ui::branch_selector::BRANCH_LIMIT],
+            };
+            assert!(selector.apply_snapshot(large, cx));
+            let visible = selector.visible_rows(4_321..4_329);
+            assert_eq!(visible.len(), 8);
+            assert_eq!(visible.first().map(|row| row.0), Some(4_321));
+            assert_eq!(visible.last().map(|row| row.0), Some(4_328));
+            assert_eq!(vega_ui::branch_selector::BRANCH_ROW_HEIGHT, 24.0);
+        });
+        cx.simulate_keystrokes(window.into(), "space");
+        let space_pending = selector
+            .read_with(cx, |selector, _| selector.pending_key())
+            .expect("Space activates focused branch");
+        selector.update(cx, |selector, cx| {
+            assert!(selector.clear_pending(space_pending.0, space_pending.1, space_pending.2, cx,));
+            let template = snapshot
+                .branches
+                .iter()
+                .find(|branch| !branch.current)
+                .expect("over-limit template")
+                .clone();
+            let too_large = BranchSnapshot {
+                generation: snapshot.generation,
+                branches: vec![template; vega_ui::branch_selector::BRANCH_LIMIT + 1],
+            };
+            assert!(!selector.apply_snapshot(too_large, cx));
+        });
+    }
 
     fn pending_plan() -> (Store, String) {
         let store = Store::open(":memory:").expect("memory store");
@@ -4081,6 +6032,11 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let repo = artifact_controller_repo();
+        let late_branch_repo = artifact_controller_repo();
+        run_fixture_git(
+            late_branch_repo.path(),
+            &["branch", "late-branch-callback-target"],
+        );
         fs::write(repo.path().join("artifact.txt"), "agent\n").expect("preview artifact body");
         let store = Store::open(":memory:").expect("artifact fence memory store");
         store.migrate().expect("artifact fence migrations");
@@ -4142,6 +6098,69 @@ mod tests {
         cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
         let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
         let root = cx.new(VegaWindow::new);
+        let branch_identity = root.update(cx, |root, cx| {
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            root.ensure_branch_route(&thread, stream.clone(), cx);
+            let active = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("artifact test branch route");
+            active.identity.clone()
+        });
+        let branch_service = Arc::new(
+            BranchWorkspaceService::new(late_branch_repo.path())
+                .expect("artifact test clean branch service"),
+        );
+        let (branch_sender, branch_receiver) = mpsc::sync_channel(1);
+        run_branch_list_worker(
+            branch_service,
+            BranchListFence {
+                route: branch_identity.clone(),
+                sequence: 1,
+            },
+            tokio_util::sync::CancellationToken::new(),
+            branch_sender,
+        );
+        let branch_snapshot = branch_receiver
+            .recv()
+            .expect("artifact test branch list")
+            .1
+            .expect("artifact test branch snapshot");
+        let late_branch_id = branch_snapshot
+            .branches
+            .iter()
+            .find(|branch| !branch.current)
+            .expect("artifact test branch target")
+            .id;
+        let late_operation = branch_identity.selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx));
+            assert!(selector.apply_snapshot(branch_snapshot.clone(), cx));
+            selector
+                .begin_switch(branch_snapshot.generation, late_branch_id, cx)
+                .expect("artifact test late operation")
+        });
+        let late_branch_fence = BranchSwitchFence {
+            route: branch_identity,
+            sequence: 1,
+            snapshot_generation: branch_snapshot.generation,
+            branch_id: late_branch_id,
+            operation_id: late_operation,
+            lease: TrustedActionToken {
+                generation: 1,
+                kind: TrustedActionKind::BranchSwitch,
+                owner_epoch: 1,
+                request_sequence: 1,
+            },
+        };
+        root.update(cx, |root, _| {
+            root.branch_controller
+                .active
+                .as_mut()
+                .expect("artifact test active branch route")
+                .switch_fence = Some(late_branch_fence.clone());
+            assert!(root.branch_controller.claim_terminal(&late_branch_fence));
+        });
         let card = cx.new(|cx| {
             ArtifactCard::new(
                 thread.id.clone(),
@@ -4215,6 +6234,21 @@ mod tests {
                 .expect("active artifact preview fence");
             active.preview_sequence = 2;
             active.preview_fence = Some(latest_preview.clone());
+            root.finish_branch_switch(
+                late_branch_fence.clone(),
+                BranchSwitchCompletion {
+                    outcome: BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::Cancelled),
+                    snapshot: None,
+                },
+                cx,
+            );
+            assert!(
+                root.artifact_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.preview_fence.as_ref() == Some(&latest_preview)),
+                "old duplicate branch terminal cannot clear fresh preview fence"
+            );
             root.finish_artifact_preview(older_preview, Ok(preview.clone()), cx);
             assert_eq!(card.read(cx).row_count(), 2, "stale preview is dropped");
             root.finish_artifact_preview(latest_preview, Ok(preview), cx);
@@ -4231,6 +6265,12 @@ mod tests {
             card_id: projection.id,
             file_id,
             target: OpenInTarget::VisualStudioCode,
+            lease: TrustedActionToken {
+                generation: 1,
+                kind: TrustedActionKind::ArtifactOpen,
+                owner_epoch: route.epoch,
+                request_sequence: 1,
+            },
         };
         let latest_open = ArtifactOpenFence {
             sequence: 2,
@@ -4247,6 +6287,21 @@ mod tests {
                 .expect("active artifact open fence");
             active.open_sequence = 2;
             active.open_fence = Some(latest_open.clone());
+            root.finish_branch_switch(
+                late_branch_fence,
+                BranchSwitchCompletion {
+                    outcome: BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::Cancelled),
+                    snapshot: None,
+                },
+                cx,
+            );
+            assert!(
+                root.artifact_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.open_fence.as_ref() == Some(&latest_open)),
+                "old duplicate branch terminal cannot clear fresh open fence"
+            );
             root.finish_artifact_open(
                 older_open,
                 Ok(OpenInOutcome {
@@ -4298,6 +6353,12 @@ mod tests {
                 card_id: projection.id,
                 file_id,
                 target: OpenInTarget::Terminal,
+                lease: TrustedActionToken {
+                    generation: 3,
+                    kind: TrustedActionKind::ArtifactOpen,
+                    owner_epoch: route.epoch,
+                    request_sequence: 3,
+                },
             });
             root.observe_artifact_event(
                 7,
