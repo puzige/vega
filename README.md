@@ -18,11 +18,11 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 ## 状态
 
-📋 **S1（脚手架）、S2（侧边栏 & 项目模型）、S3（流式会话渲染）、S4（Runtime 核心）已完成并验收（PR #1-#22）**。全部设计文档在 [`docs/`](docs/)：
+📋 **S1（脚手架）、S2（侧边栏 & 项目模型）、S3（流式会话渲染）、S4（Runtime 核心）、S5（写工具、权限门禁与三模式）已完成并验收（PR #1-#29 + S5 收尾 PR）**。S5 的真实 API/dogfood 与未达性能项边界见验收报告。全部设计文档在 [`docs/`](docs/)：
 
 | 文档 | 内容 |
 |---|---|
-| [vega-prd.md](docs/vega-prd.md) | PRD v0.3.1：7 项锁定决策、模块 A1-A12、5 Phase 路线图 |
+| [vega-prd.md](docs/vega-prd.md) | PRD v0.3.2：7 项锁定决策、模块 A1-A12、5 Phase 路线图 |
 | [vega-feature-teardown.md](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
 | [vega-features.md](docs/vega-features.md) | 96 个功能点全表（Phase 1 P0 ×38） |
 | [vega-ui-spec.md](docs/vega-ui-spec.md) | UI 规格与可测量验收准线 |
@@ -35,6 +35,8 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-s3-tasks.md](docs/vega-s3-tasks.md) | S3 任务卡 T14-T18（流式会话渲染，已完成） |
 | [vega-s4-tasks.md](docs/vega-s4-tasks.md) | S4 任务卡 T19-T22（Runtime 核心，已完成） |
 | [vega-s4-report.md](docs/vega-s4-report.md) | S4 验收报告（DoD、门禁、红线与偏离） |
+| [vega-s5-tasks.md](docs/vega-s5-tasks.md) | S5 任务卡 T23-T29（写工具、权限门禁与三模式，已完成） |
+| [vega-s5-report.md](docs/vega-s5-report.md) | S5 验收报告（mock E2E、DoD、UI/性能边界与偏离） |
 
 ## 关键决策（详见 PRD）
 
