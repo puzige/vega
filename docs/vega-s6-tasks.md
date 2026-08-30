@@ -1,6 +1,6 @@
 # ✦ Vega — S6 任务卡（Sprint 6 · Diff 审阅 & 产物 · W11-12）
 
-**版本** v0.3 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.4 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S6 目标**（phase1-plan §2）：git 工作区 diff 视图（高亮、hunk 导航）；产物卡片；Open in…（VS Code/Cursor/Zed/Terminal）；commit 辅助；补齐 Composer 分支选择器。
 
@@ -57,6 +57,7 @@
 - runner 清除继承的全部 `GIT_*` redirect/config 输入（含 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_COMMON_DIR`、`GIT_INDEX_FILE`、object/namespace/ceiling/config 三元组等），只重建 `GIT_TERMINAL_PROMPT=0`、`GIT_PAGER=cat`、`GIT_LITERAL_PATHSPECS=1`、`GIT_NO_LAZY_FETCH=1`、`LC_ALL=C`。正常 system/global/repo config 可按默认位置读取，但 CLI override 优先；`rev-parse --show-toplevel` 不等于 canonical project root 即拒绝。
 - 所有 Git 命令共享 exact global prefix：`/usr/bin/git --no-pager -c core.fsmonitor=false -c color.ui=false -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.auto=0`。trusted stage/commit/switch 再追加 `-c core.hooksPath=/dev/null`；不允许其他用户/模型 option。
 - read allowlist 只含固定模板的 `status`、`diff`、`rev-parse`、`for-each-ref`、`check-attr`、`ls-files`、`ls-tree`、`hash-object`。diff 固定带 `--no-ext-diff --no-textconv`；`hash-object` 只用 `--no-filters` 且绝不带 `-w`。`GIT_LITERAL_PATHSPECS=1` 适用于所有 read/mutation，`--` 不能单独当作 literal 安全保证。
+- T30 snapshot/status/diff 前，tracked snapshot raw path set 必须由 fixed `ls-files -z --cached --deduplicate` 取得，并以 bounded stdin 交 exact `check-attr -z --stdin --all`；trusted stage 必须按 C6 的 expanded selected set（含 untracked add）检查，switch 必须按 C7 的 materialized target set 检查（target tree exact顺序为 `check-attr --source=<captured_oid> -z --stdin --all`）。输出只要显式出现 attribute name=`filter`，无论 value 为何均保守拒绝。`--deduplicate`防止unmerged stage1/2/3重复路径误砖死，private parser仍拒绝其输出中的duplicate。untracked direct-read不经过 Git conversion仅限 T30 projection；未来 `git add` 仍必须对 expanded set 执行 filter 检查。preflight 前后 bytes-exact 重查；不得以 `unspecified`/`unset` 特判放行显式 filter，也不得解析或执行 filter config。
 - 每个 Git child 使用 `std::os::unix::process::CommandExt::process_group(0)`。stdout/stderr 用 16 KiB chunk 并发 bounded drain；有 stdin 时 writer 与两路 drain 同时推进，禁止写完 stdin 才读输出、顺序 drain、`wait_with_output` 或无界 `read_to_end`。
 - timeout/cancel/overflow 用固定 `/bin/kill` 向 negative PGID 发 TERM，等待 300ms，再 best-effort KILL，最后 wait/reap；TERM 失败也继续 KILL/wait。direct child 提前退出但继承 PGID descendant 持 pipe 时，最多 drain 500ms后同样收拢并 fail closed。主动 `setsid` 逃逸是已知 residual，报告不得宣称完整树隔离。
 - read-only timeout 10s；mutation 120s；read stdout+retained status 8 MiB、stderr 64 KiB；mutation stdout 1 MiB、stderr 64 KiB。进程 IO 在 bounded worker，旧 request generation 结果不得覆盖新状态。
@@ -99,7 +100,7 @@
 - private `IndexSnapshotId` 必须从同一 captured HEAD/request generation 下的 fixed `status --porcelain=v2 -z` 与 fixed `ls-files --stage -z` **交叉构造**；两次 bounded 输入共享 8 MiB/10,000 paths 上限。读取前后 HEAD/generation、raw path membership、tracked status 与 stage entry 任一变化/矛盾都拒绝，不能只信其中一个命令。
 - canonical codec bytes-first排序并绑定 captured HEAD、porcelain v2 status classification 与 logical stage entries `(mode, object_oid, raw_path)`。任何 tracked v2 record `XY=.A` 明确代表 intent-to-add，必须 fail closed；`ls-files` 的 stage0/nonzero OID不能推翻该判断。仍拒绝 unmerged stage>0、zero OID、unknown/corrupt record、重复冲突或 overflow。UI 只获 opaque id + bounded safe projection，绝不 hash/read raw `.git/index`。
 - 正常 staged empty file 是合法 positive：porcelain `XY=A.` 且 stage0 + repo-format nonzero empty-blob OID（默认 SHA-1 fixture 为 `e69de29...`）；不得把 empty blob误判为 intent-to-add。
-- selected `WorkspaceFileId` 展开 literal raw set：rename=old+new，delete=old，add/untracked=new，modify=current；bytes-first dedupe。任何 selected changed `.gitattributes` 直接拒绝。expanded set 经 exact `git check-attr --stdin -z filter`，任一非 `unspecified`/`unset` fail closed。
+- selected `WorkspaceFileId` 展开 literal raw set：rename=old+new，delete=old，add/untracked=new，modify=current；bytes-first dedupe。任何 selected changed `.gitattributes` 直接拒绝。expanded set 经 exact `git check-attr -z --stdin --all`；输出只要显式出现 attribute name=`filter`，无论 value 为何均 fail closed。
 - **Prepare**：初始 focus Cancel；Esc=Cancel；只有 Cmd+Enter 确认。面板完整展示 existing staged（始终包含、不可取消）+ selected paths。Prepare 前重新执行同一 status+ls-files cross-check codec，复验 HEAD/IndexSnapshot/conflict/filter 后，才用 mutation safe prefix执行 `add -A -- <expanded literal raw paths>`。
 - Prepare 后再次以同一 captured HEAD/new generation 的 status+ls-files cross-check codec刷新 exact final `IndexSnapshotId`/bounded cached patch；它必须等于 existing staged + selected staging 的 canonical logical预期，且无 `XY=.A`。任何差异不进入 Commit，不 reset/unstage/rollback，保留真实状态。
 - **Commit**：初始 focus Cancel；Esc=Cancel；message editor bare Enter 只换行；只有 Cmd+Enter 第二次确认 commit entire displayed final index。close panel/window/thread/project switch 是 first-wins cancel；重复 callback 不产生第二次 mutation。
@@ -112,7 +113,7 @@
 - 只列 `refs/heads/*` local refs并捕获 target OID及其bytes short branch name；raw ref/name留 private，UI只持 opaque id/escaped label。拒绝 empty/NUL/control/leading-`-` name、detached/remote guess/create/unknown/stale id/OID change；non-UTF8/ref label只展示 escaped串。
 - dirty/conflict（staged/unstaged/untracked/unmerged）或 merge/rebase/cherry-pick/revert/bisect/sequencer/`git am` operation marker一律拒绝。active agent run、pending permission、pending plan review、open commit panel 任一存在也拒绝。
 - current OID→captured target OID 固定执行 read safe prefix + `diff --name-status -z --diff-filter=ACMRT -M --no-ext-diff --no-textconv <current_oid> <target_oid>`，bounded bytes parser取得 materialized target path set（rename只取target/new path）；target deleted path不 materialize。若 changed set 含任意 `.gitattributes` 直接拒绝。
-- materialized target paths通过 stdin交 fixed `git check-attr --source=<target_oid> --stdin -z filter`；任一值非 `unspecified`/`unset`拒绝。`--source` capability self-test失败也拒绝。preflight后再次复验 target OID、clean/status/operation/active guards。
+- materialized target paths通过 stdin交 exact `git check-attr --source=<target_oid> -z --stdin --all`；输出只要显式出现 attribute name=`filter`，无论 value 为何均拒绝。`--source` capability self-test失败也拒绝。preflight后再次复验 target OID、clean/status/operation/active guards。
 - exact switch argv = mutation safe prefix + `switch --no-guess --no-overwrite-ignore --no-recurse-submodules <validated-local-branch-name>`。name 必须来自刚复验的 `refs/heads/*` enumeration；禁止 remote guess/create/detach/force/stash/reset/clean/checkout。
 - 无论 exit success/failure/timeout都刷新真实 HEAD/status/branch。filter-driver repository、ignored collision、submodule recurse、target smudge/process必须在 spawn switch 前 fail closed/zero side effect。
 
@@ -290,7 +291,7 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 
 ## 已知偏离、兼容限制与 residual（原样进入报告）
 
-1. filter driver repository：selected staging或target materialization命中 filter一律拒绝；same-user 在preflight后改 attributes/config是已知 TOCTOU residual，不宣称原子隔离。
+1. filter driver repository：所有 relevant `check-attr --all` 输出只要显式出现 attribute name=`filter` 即一律拒绝；same-user 在preflight后改 attributes/config是已知 TOCTOU residual，不宣称原子隔离。
 2. 所有 Git child收拢 inherited PGID descendants；主动 `setsid` 逃逸是 residual。
 3. hooks 与 signing固定关闭；依赖它们的repo需在终端提交。
 4. Phase 1 image metadata-only；Open in仅六个fixed targets。custom/configurable handoff、PR assistance、Diff v2留 Phase 2。
@@ -308,3 +309,4 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 - v0.1 (2026-08-30) S6 初始 SDD：T30-T34 与基础安全边界。
 - v0.2 (2026-08-30) 人类批准 A：PRD v0.3.3、raw path private、artifact provenance、two-stage stdin commit，重排 T30-T35。
 - v0.3 (2026-08-30) 最终 executable hardening：bounded projections、literal pathspec、PGID/maintenance、exact caps/Open argv、target filter preflight、porcelain-v2 + stage-entry cross-checked logical IndexSnapshot（显式拒绝 `XY=.A` intent-to-add、允许 `XY=A.` staged empty file）、controller ownership、copyable gates与报告 evidence timing定稿。
+- v0.4 (2026-08-30) 人类修订 filter 契约：所有 relevant `check-attr` 固定 `--all`，显式 attribute name=`filter` 无论 value 一律拒绝；same-user preflight TOCTOU保留为 residual。

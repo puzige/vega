@@ -1601,6 +1601,304 @@ impl ThreadUpdate {
     }
 }
 
+/// Opaque identifier for one file in one workspace snapshot.
+///
+/// The identifier is deliberately not serializable and cannot be constructed
+/// outside this crate. It is only meaningful while its snapshot generation is
+/// current.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WorkspaceFileId {
+    pub(crate) generation: u64,
+    pub(crate) slot: u32,
+    pub(crate) seal: u64,
+}
+
+impl std::fmt::Debug for WorkspaceFileId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("WorkspaceFileId([opaque])")
+    }
+}
+
+/// Current repository head projection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceHead {
+    Branch { label: String },
+    Detached,
+    Unborn { label: Option<String> },
+}
+
+/// One side of a tracked workspace change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceChangeKind {
+    Unchanged,
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Unmerged,
+    Untracked,
+}
+
+/// Line statistics are never guessed for binary or untracked files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceLineCount {
+    Known(u64),
+    Binary,
+    Unknown,
+}
+
+/// Safe file metadata projected from a private raw Git path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceFile {
+    pub id: WorkspaceFileId,
+    pub label: String,
+    pub previous_label: Option<String>,
+    pub staged: WorkspaceChangeKind,
+    pub unstaged: WorkspaceChangeKind,
+    pub additions: WorkspaceLineCount,
+    pub deletions: WorkspaceLineCount,
+    pub language: DiffLanguage,
+}
+
+/// Bounded aggregate snapshot statistics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceStats {
+    pub file_count: u32,
+    pub additions: WorkspaceLineCount,
+    pub deletions: WorkspaceLineCount,
+}
+
+/// Safe, ephemeral projection of the latest workspace snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSnapshot {
+    pub generation: u64,
+    pub head: WorkspaceHead,
+    pub files: Vec<WorkspaceFile>,
+    pub stats: WorkspaceStats,
+}
+
+/// Frozen syntax-highlight language vocabulary for Sprint 6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffLanguage {
+    Rust,
+    TypeScript,
+    Tsx,
+    JavaScript,
+    Python,
+    Plain,
+}
+
+/// Layer that produced a structured patch section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffLayer {
+    Staged,
+    Unstaged,
+    Untracked,
+}
+
+/// Structured diff row kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffRowKind {
+    Context,
+    Addition,
+    Deletion,
+}
+
+/// One source row. The body intentionally implements no `Debug` or serde
+/// traits so it cannot accidentally enter events, logs, persistence, or wire
+/// payloads.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DiffRow {
+    pub(crate) kind: DiffRowKind,
+    pub(crate) old_line: Option<u32>,
+    pub(crate) new_line: Option<u32>,
+    pub(crate) text: String,
+}
+
+impl DiffRow {
+    pub const fn kind(&self) -> DiffRowKind {
+        self.kind
+    }
+
+    pub const fn old_line(&self) -> Option<u32> {
+        self.old_line
+    }
+
+    pub const fn new_line(&self) -> Option<u32> {
+        self.new_line
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+/// Structured hunk with parsed coordinates rather than raw patch headers.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DiffHunk {
+    pub(crate) old_start: u32,
+    pub(crate) old_count: u32,
+    pub(crate) new_start: u32,
+    pub(crate) new_count: u32,
+    pub(crate) heading_suffix: Option<String>,
+    pub(crate) missing_trailing_newline: bool,
+    pub(crate) rows: Vec<DiffRow>,
+}
+
+impl DiffHunk {
+    pub const fn old_start(&self) -> u32 {
+        self.old_start
+    }
+
+    pub const fn old_count(&self) -> u32 {
+        self.old_count
+    }
+
+    pub const fn new_start(&self) -> u32 {
+        self.new_start
+    }
+
+    pub const fn new_count(&self) -> u32 {
+        self.new_count
+    }
+
+    pub fn heading_suffix(&self) -> Option<&str> {
+        self.heading_suffix.as_deref()
+    }
+
+    pub const fn missing_trailing_newline(&self) -> bool {
+        self.missing_trailing_newline
+    }
+
+    pub fn rows(&self) -> &[DiffRow] {
+        &self.rows
+    }
+}
+
+/// A staged, unstaged, or untracked structured diff section.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DiffSection {
+    pub(crate) layer: DiffLayer,
+    pub(crate) hunks: Vec<DiffHunk>,
+}
+
+impl DiffSection {
+    pub const fn layer(&self) -> DiffLayer {
+        self.layer
+    }
+
+    pub fn hunks(&self) -> &[DiffHunk] {
+        &self.hunks
+    }
+}
+
+/// Bounded source projection for Diff UI. Its debug representation is always
+/// redacted and it is deliberately not serializable.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DiffTextProjection {
+    pub(crate) file_id: WorkspaceFileId,
+    pub(crate) language: DiffLanguage,
+    pub(crate) sections: Vec<DiffSection>,
+}
+
+impl DiffTextProjection {
+    pub const fn file_id(&self) -> WorkspaceFileId {
+        self.file_id
+    }
+
+    pub const fn language(&self) -> DiffLanguage {
+        self.language
+    }
+
+    pub fn sections(&self) -> &[DiffSection] {
+        &self.sections
+    }
+}
+
+impl std::fmt::Debug for DiffTextProjection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DiffTextProjection")
+            .field("file_id", &self.file_id)
+            .field("language", &self.language)
+            .field("sections", &"[redacted]")
+            .finish()
+    }
+}
+
+/// Stable, content-free Git workspace error vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitWorkspaceErrorCode {
+    InvalidRoot,
+    NotRepository,
+    SpawnFailed,
+    GitFailed,
+    TimedOut,
+    Cancelled,
+    OutputTooLarge,
+    MalformedOutput,
+    StaleGeneration,
+    UnknownFile,
+    MetadataOnly,
+    ChangedDuringRead,
+    ProcessControlFailed,
+}
+
+impl GitWorkspaceErrorCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRoot => "invalid_root",
+            Self::NotRepository => "not_repository",
+            Self::SpawnFailed => "spawn_failed",
+            Self::GitFailed => "git_failed",
+            Self::TimedOut => "timed_out",
+            Self::Cancelled => "cancelled",
+            Self::OutputTooLarge => "output_too_large",
+            Self::MalformedOutput => "malformed_output",
+            Self::StaleGeneration => "stale_generation",
+            Self::UnknownFile => "unknown_file",
+            Self::MetadataOnly => "metadata_only",
+            Self::ChangedDuringRead => "changed_during_read",
+            Self::ProcessControlFailed => "process_control_failed",
+        }
+    }
+}
+
+/// Public error containing no root, path, stderr, or patch content.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct GitWorkspaceError {
+    code: GitWorkspaceErrorCode,
+}
+
+impl GitWorkspaceError {
+    pub(crate) const fn new(code: GitWorkspaceErrorCode) -> Self {
+        Self { code }
+    }
+
+    pub const fn code(self) -> GitWorkspaceErrorCode {
+        self.code
+    }
+}
+
+impl std::fmt::Debug for GitWorkspaceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("GitWorkspaceError")
+            .field(&self.code.as_str())
+            .finish()
+    }
+}
+
+impl std::fmt::Display for GitWorkspaceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.code.as_str())
+    }
+}
+
+impl std::error::Error for GitWorkspaceError {}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
