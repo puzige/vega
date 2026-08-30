@@ -1,6 +1,6 @@
 # ✦ Vega (北极星) — Native AI Agent Desktop PRD
 
-**✦ Vega PRD v0.3.2** · 7 项关键决策已锁定 · 2026-08-29
+**✦ Vega PRD v0.3.3** · 7 项关键决策已锁定 · 2026-08-30
 *Rust + GPU 原生 Agent 工作台 · 性能碾压 Electron，成本与质量透明可控*
 
 > Notion 源页面：https://app.notion.com/p/3caae0ca542b8056b086ee2e990d9b8a
@@ -8,6 +8,7 @@
 > v0.3 变更：定位从「AI Coding IDE」修正为「Agent 工作台（Agent Window）」，对标 WorkBuddy / Codex Desktop / Antigravity / ZCode。
 > v0.3.1 变更：基于五家竞品功能拆解（[vega-feature-teardown.md](vega-feature-teardown.md)）——Composer 补 Ask/Plan/Execute 三模式；A5 补 Checkpoint 回退；A7 补闲时任务；新增项目记忆；A10 差异化基准上调为「必须超越 ZCode 用量统计页」。
 > v0.3.2 变更（2026-08-29，人类批准）：D1 依赖来源修订——crates.io 发布线自 2025-10 停滞且无 `gpui_platform`，GPUI 起步来源改为 Zed 官方仓库 git rev 锁定；D1 实质（官方源、锁定可复现、单一来源、Metal）不变。
+> v0.3.3 变更（2026-08-30，人类批准）：采用 phase1-plan S6 为 A5 交付边界——Phase 1 提前交付 Diff v1、产物卡、fixed-allowlist Open in v1 与 user-confirmed commit assistance v1；Phase 2 保留 Diff v2、custom/configurable handoff、PR assistance、Checkpoint 与 advanced polish。D1-D7 均不变。
 
 ---
 
@@ -161,11 +162,11 @@ macOS 优先，深度适配 Apple Silicon + Metal + ProMotion 120Hz。
 - 外部 agent 的 token/成本归集（尽力而为，API 返回为准）
 
 ### A5 · 产物 & Diff 审阅 [Phase 1-2]
-- Git 变更感知（工作区 diff 实时视图）
-- Diff viewer（语法高亮、hunk 导航、行内评论）
-- 产物卡片（文件/报告/图片，present & preview）
-- **Open in…** 外部编辑器交接（VS Code/Cursor/Zed/Terminal/默认 app）
-- Commit / PR 辅助（生成 commit message）
+- Phase 1 · Diff v1：Git 工作区变更感知、统一/分栏审阅、语法高亮、hunk 导航与变更统计
+- Phase 1 · 产物卡 v1：文件/报告/图片的有界 present & preview
+- Phase 1 · **Open in… v1**：fixed allowlist 外部交接（VS Code/Cursor/Zed/Terminal/默认 app/Finder）
+- Phase 1 · Commit assistance v1：生成 commit message 草稿，用户两阶段确认后提交
+- Phase 2 · Diff v2：行内评论、custom/configurable handoff、PR assistance 与 advanced polish
 - **Checkpoint 回退**（Phase 2：任务内自动检查点，一键回退到任意 checkpoint，对齐 ZCode Goal-checkpoint）
 
 ### A6 · 终端视图 [Phase 2]
@@ -224,7 +225,9 @@ macOS 优先，深度适配 Apple Silicon + Metal + ProMotion 120Hz。
 - 流式 markdown 会话流（虚拟化）
 - Vega Runtime v1：单 provider（OpenAI 兼容）+ agentic 循环 + bash/read/write 工具
 - 权限门禁（变更前确认模式）
-- 工具调用卡片 + diff viewer（只读）
+- 工具调用卡片 + Diff v1（工作区统计、高亮、hunk 导航）
+- 产物卡 v1 + fixed-allowlist Open in v1（VS Code/Cursor/Zed/Terminal/默认 app/Finder）
+- user-confirmed commit assistance v1（生成草稿 → 两阶段确认 → commit）
 - 💎 Token 实时计数 + 每次任务成本标注
 
 > ✅ 里程碑：用 Vega 自研 Runtime 在真实仓库上完成一个任务（改代码 → diff 审阅 → commit），token 成本全程可见；内部 dogfood 一周
@@ -237,7 +240,7 @@ macOS 优先，深度适配 Apple Silicon + Metal + ProMotion 120Hz。
 - ACP client：编排 codex / claude-code
 - 统一会话模型（自研/外部 agent 同视图）
 - PTY 终端 + 命令卡片
-- Open in… 外部编辑器交接 + commit 辅助
+- Diff v2（行内评论）+ custom/configurable handoff + PR assistance + advanced polish
 - Checkpoint 回退（任务内检查点）
 - 多 Provider（Anthropic 原生 + DeepSeek + Ollama）
 - 子 agent 派发
@@ -319,7 +322,7 @@ macOS 优先，深度适配 Apple Silicon + Metal + ProMotion 120Hz。
 ### 验收标准
 
 - **P1 (M4)** — 自研 Runtime 完成真实任务（改代码+commit）；token 成本可见；dogfood 一周。
-- **P2 (M8)** — ACP 编排 codex 可用；Open in… 交接顺畅；成本仪表盘上线。
+- **P2 (M8)** — ACP 编排 codex 可用；Diff v2/custom handoff/PR assistance 可用；成本仪表盘上线。
 - **P3 (M14)** — Harness 面板 + 自动化完整；公开 Beta。
 - **P4 (M18)** — SSH 远程可用；Win/Linux 支持；≥10 插件。
 
@@ -335,4 +338,4 @@ macOS 优先，深度适配 Apple Silicon + Metal + ProMotion 120Hz。
 
 ---
 
-*✦ Vega PRD v0.3.2 · Agent Window · GPUI · macOS First · Runtime+ACP 双模 · Harness + Token 透明 · 2026-08-29*
+*✦ Vega PRD v0.3.3 · Agent Window · GPUI · macOS First · Runtime+ACP 双模 · Harness + Token 透明 · 2026-08-30*
