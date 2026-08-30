@@ -227,6 +227,75 @@ impl fmt::Display for MutationError {
 
 impl std::error::Error for MutationError {}
 
+/// Stable bash preparation/execution failure codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BashErrorCode {
+    InvalidInput,
+    ScopeMismatch,
+    HardlinkPreflight,
+    SandboxUnavailable,
+    TempUnavailable,
+    CleanupFailed,
+    SpawnFailed,
+    ProcessControlFailed,
+    OutputFailed,
+    Cancelled,
+    TimedOut,
+}
+
+impl BashErrorCode {
+    /// Stable code for tool lifecycle and tests.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidInput => "invalid_input",
+            Self::ScopeMismatch => "scope_mismatch",
+            Self::HardlinkPreflight => "hardlink_preflight",
+            Self::SandboxUnavailable => "sandbox_unavailable",
+            Self::TempUnavailable => "temp_unavailable",
+            Self::CleanupFailed => "cleanup_failed",
+            Self::SpawnFailed => "spawn_failed",
+            Self::ProcessControlFailed => "process_control_failed",
+            Self::OutputFailed => "output_failed",
+            Self::Cancelled => "cancelled",
+            Self::TimedOut => "timed_out",
+        }
+    }
+}
+
+/// Content-free bash failure.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct BashError {
+    code: BashErrorCode,
+}
+
+impl BashError {
+    pub(crate) const fn new(code: BashErrorCode) -> Self {
+        Self { code }
+    }
+
+    /// Stable failure code.
+    pub const fn code(self) -> BashErrorCode {
+        self.code
+    }
+}
+
+impl fmt::Debug for BashError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BashError")
+            .field("code", &self.code)
+            .finish()
+    }
+}
+
+impl fmt::Display for BashError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "bash failed ({})", self.code.as_str())
+    }
+}
+
+impl std::error::Error for BashError {}
+
 /// Errors surfaced by the built-in tools.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {

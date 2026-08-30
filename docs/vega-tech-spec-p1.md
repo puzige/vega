@@ -1,6 +1,6 @@
 # ✦ Vega — Phase 1 技术实现规格（SDD · Spec-Driven Development）
 
-**版本** v0.4 · 2026-08-30 · 关联：[vega-phase1-plan.md](vega-phase1-plan.md) · [vega-features.md](vega-features.md) · [vega-ui-spec.md](vega-ui-spec.md)
+**版本** v0.6 · 2026-08-30 · 关联：[vega-phase1-plan.md](vega-phase1-plan.md) · [vega-features.md](vega-features.md) · [vega-ui-spec.md](vega-ui-spec.md)
 
 > **SDD 工作约定**：每个 Sprint 开工前，对应模块的 spec（本文件对应章节）必须先定稿；实现以 spec 为准；实现完成后对照 spec 验收。spec 变更走文档修改 + 变更记录，不允许代码先行 spec 后补。
 > 本文件覆盖 Phase 1（S1-S8）。所有 Rust 签名为**设计目标**，实现时可微调参数名，但 trait 边界、状态机、DDL 不得偏离。
@@ -354,7 +354,11 @@ validation step -2 是 permission 前置安全边界：invalid write/edit 不产
 #### 4.4.2 bash
 
 - bash 仅接收 `cmd` 与可选 `timeout_ms`；调用方不存在 cwd 参数。timeout 缺省 120_000ms，0 与不可表示值拒绝。执行固定为 `/bin/zsh -lc`，cwd 固定 canonical project root，无 PTY。
-- 所有生产 bash 都由 `/usr/bin/sandbox-exec` 启动。workspace-write profile 基线 deny `file-write*`，只放行 project root 与 `/private/tmp`，再 deny `.git` 与实际 gitdir；网络按 tech-risks §4 workspace-write 档开放。sandbox-exec 缺失/profile 自测失败必须 fail closed，禁止裸 shell。
+- 所有生产 bash 都由 `/usr/bin/sandbox-exec` 启动。workspace-write profile 基线 deny `file-write*`，只放行 project root 与当次 Vega-owned temp exact subpath，再 deny `.git` 与实际 gitdir；禁止 broad-allow 共享 `/private/tmp`，网络按 tech-risks §4 workspace-write 档开放。sandbox-exec 缺失/profile 自测失败必须 fail closed，禁止裸 shell。
+- 每个 bash call 在 spawn 前以独占创建方式于 canonical `/private/tmp` 下建立不可预测的专用目录，权限必须收紧为 0700；记录其初始 dev/inode，并在 profile 参数化前验证 `symlink_metadata` 为目录、不是 symlink、canonical path 仍位于 `/private/tmp`、dev/inode 未变。`TMPDIR`、`TMP`、`TEMP`、`TEMPDIR` 全设为此 exact path；不得把真实路径写入 tool wire、output、event、SQLite 或普通错误文本。
+- Seatbelt 是 path-based，不能阻止任一可写根内预存 hardlink 修改其他路径的同一 inode。每次 spawn 前必须对 canonical project root 与专用 temp dir 执行 no-follow 扫描：project 覆盖 hidden/ignored entry，只跳过 profile 已强制只读的 `.git` entry 与已发现实际 gitdir；temp dir 不跳过任何 entry。任一普通文件 Unix `nlink > 1`，或目录遍历、`symlink_metadata`/metadata 读取失败，均以 hardlink preflight failure 终止且不得创建子进程。不得用 canonicalize 跟随 entry symlink 做此扫描。
+- 成功、命令失败、cancel、timeout 均在 child 完成并 reap 后清理专用 temp dir。cleanup 必须锚定创建时记录的 canonical root/dev/inode，递归时不跟随 symlink；根身份/containment 不符时禁止递归删除。cleanup 失败返回脱敏 tool failure，路径留待后续安全 GC，不得暴露绝对 temp root 或放宽 profile。pre-spawn 任一步失败时同样尝试上述安全 cleanup，但仍保证零 command spawn。
+- dual-root 扫描只关闭 launch 时已存在的 hardlink；外部并发进程在 scan 后、sandboxed command 打开文件前创建或替换 hardlink 仍是用户态 TOCTOU 残余。Phase 1 接受并在报告列明；不得据此宣称 inode 级 100% containment，也不得跳过扫描。
 - 子进程用 `std::os::unix::process::CommandExt::process_group(0)` 建独立 process group；取消/超时以系统 `/bin/kill` 向负 PGID 发 SIGTERM，短 grace 后 SIGKILL，并 wait/reap。测试须证明 shell 与仍继承该 PGID 的 descendants 均退出；主动调用 `setsid` 的后代可逃逸，是 tech-risks §3.5 已知残余，不得宣称 100% process-tree containment。不得为信号引入白名单外 `libc`/`nix`。
 - shell 内 `exec 2>&1` 合并 stdout/stderr；用固定 16 KiB chunk 流式读取，禁止取消不安全/无界的 `read_to_end`、`read_to_string`、`wait_with_output`。单条 rendered line 最多 65,536 bytes（含稳定 middle marker）；整体同时限制 head/tail 各最多 2,000 行与各 4 MiB rendered bytes，所有 line/output marker 均计入预算；tail 为有界 ring，总 retained output ≤8 MiB。
 - 峰值 owned payload 上界为 8 MiB retained + 64 KiB current-line + 16 KiB read chunk + 常数级索引/marker；测试用内部 high-water 计数断言，不用 RSS 推测。多 MiB 无换行输入也必须保持此上界，并用稳定 replacement 规则避免截断产生无效 UTF-8 展示。返回 `exit_code`、`duration_ms`、`truncated`；S5 不落完整输出文件，`output_full_path` 保持 NULL。
@@ -457,7 +461,7 @@ S5 必测矩阵与安全语料：
 - SHA-256 公开向量、domain/length-prefix 字段边界；valid write/edit audit exact shape 与正文缺席；recovery 的 DB tool/projection tool/path/fingerprint 任一 mismatch 都 conflict 且零执行。
 - checkpoint ref 与 write/edit success output 的 exact roundtrip；对全部 strict schema 做 missing/extra/wrong-type、负数/小数/u64 overflow、错误常量、非法 path/lower-hex/ref negative tests。T23 覆盖 tools-local codec/metadata 原子性；T26 覆盖 runtime→ConversationEvent→Store→recovery/provider wire roundtrip；T27 只消费安全成功/失败投影；T29 端到端证明 DB/event/provider/UI 无正文、raw id 或绝对数据根。
 - malformed JSON（含 secret-like 文本）、write/edit 缺失/错误类型字段、absolute/`..`/symlink-invalid path：断言 `write_edit_invalid_v1` exact shape、raw byte hash/error code deterministic、raw path/body 在 DB/event/error/tool_result 全 absent、approval=deny/validation/danger=null，且零 permission/execution。
-- bash 默认/自定义 timeout、4001+ 行头尾、多 MiB 无换行、64 KiB line/8 MiB retained/high-water、stdout/stderr 合流；cancel/timeout 后 shell 与继承 PGID descendants 退出。setsid escape 作为已知残余记录，不伪造通过；sandbox/profile 不可用时 fail closed。
+- bash 默认/自定义 timeout、4001+ 行头尾、多 MiB 无换行、64 KiB line/8 MiB retained/high-water、stdout/stderr 合流；cancel/timeout 后 shell 与继承 PGID descendants 退出。共享 `/private/tmp` 不可写；专用 temp 可写且四个 temp env 精确指向它。预存 project→outside 与 temp→outside hardlink、hidden/ignored hardlink、dual-root scan traversal/metadata failure 必须在 spawn 前拒绝并以 test-only spawn probe 证明零子进程；普通单链接文件不误拒。success/failure/cancel/timeout 与 pre-spawn reject 均清理；symlink entry 不被跟随，根被替换时禁止递归清理且错误脱敏。setsid escape 与 dual-scan 后竞态作为已知残余记录，不伪造通过；sandbox/profile/temp-root 任一步不可用时 fail closed。
 - Plan 重启仍 pending，approve 后才首次执行，change/abandon 不预执行；0002 CHECK 拒绝非法值、corrupt read fail closed。连续/重启/并发 completion 后仅最后提交者 pending，旧项 abandoned+superseded+reviewed_at；completion-vs-old-approve 两种提交顺序分别断言旧 approval=0 或 completion fail closed；新 plan 写失败时 supersede 同事务回滚。审批竞态只有 affected-rows==1 的赢家能切 mode/插消息；新旧 DB 均恰好六表。
 - 权限卡 GPUI 测普通/危险两套焦点与键盘；危险卡 Tab/Shift+Tab wrap、Space 激活三种焦点、bare Enter 在全部焦点始终 deny、Cmd+Enter always、Esc deny；另测附言、重复提交、超时、切线程/关窗 fail closed。不能自动化的 ui-spec §6 项逐项记录人工走查证据。
 
@@ -483,3 +487,5 @@ S5 的“checkpoint”测试只验证修改前 preimage；Checkpoint 列表、�
 - v0.2 (2026-08-29) T14 spike 结论回写：§5.0 尽调更新（mdstream 0.3.0 锁定、license/gpui 结论修正、0.4 移除 committed/pending 模型的 vendoring 预案、白名单增补待人类批准）；§5.1 路线 A 定稿附实测数据（1.23µs/δ vs 方案 B 712µs/δ）；§5.2 三项验收实测（60Hz 显示器下 120fps 余量成立、CPU 16.5%、冻结区 CLEAN）。
 - v0.3 (2026-08-30) S5 SDD 契约闭合：§2 固定六表 add-only 的 0002 Plan CHECK/事务赢家/旧计划 supersede、严格 approval/recovery JSON、valid fingerprint_v1 与 invalid input hash projection；§3 补权限/invalid audit UI 投影与双层 headless 边界；§4.3 增 validation step -2、RunMode capability step -1，并固定 Execute 的 danger→ReadOnly→rule→Auto→Confirm 顺序；§4.4 定稿 write/edit preimage/围栏/脱敏验证、SHA-256 recovery identity，以及 Seatbelt bash 的行/字节双上限、process-group 与 setsid 残余；§6 固定 checkpoint id 编码/files+metadata 布局并区分 Phase 2 Checkpoint；§8 增加权限、路径、recovery、bash、Plan supersede 与 UI 验收矩阵。
 - v0.4 (2026-08-30) 人类批准 S5 strict wire schema：§2/§3 固定 valid `write_edit_v1`、created-new-file metadata、opaque `checkpoint_ref`、write/edit success output 与 strict codec 类型；§4.4/§6 固定 metadata 落盘时序、existing-target absence 与只传 ref 的边界；§8 分配 T23/T26/T27/T29 roundtrip/negative/e2e 验收。
+- v0.5 (2026-08-30) 人类批准 T24 hardlink 补充契约：§4.4.2 固定 bash spawn 前 no-follow 扫描可写树，普通文件 `nlink > 1` 或扫描失败均 fail closed/零 spawn；§8 增预存/hidden/ignored hardlink 与扫描失败测试，并明确 scan 后并发替换为 Phase 1 TOCTOU 残余。
+- v0.6 (2026-08-30) 人类批准 T24 temp-root 补充契约：§4.4.2 移除 broad `/private/tmp` allow，固定每 call 0700 exact temp subpath、四 temp env、project/temp dual-root scan 与 reap 后身份校验/no-follow cleanup；§8 增 shared tmp 拒绝、temp hardlink 零 spawn、全终态 cleanup 与根替换保护。
