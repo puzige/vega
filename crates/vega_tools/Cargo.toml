@@ -4,9 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# 只读工具 read/glob/grep（S4-T21；exec-guide §5 工具白名单）
+# 内置工具 read/glob/grep/write/edit（S4-T21 / S5-T23；exec-guide §5 白名单）
 ignore = { workspace = true }
 regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

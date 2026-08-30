@@ -6378,6 +6378,8 @@ version = "0.1.0"
 dependencies = [
  "ignore",
  "regex",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
 ]

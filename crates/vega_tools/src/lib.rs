@@ -1,5 +1,5 @@
-//! Built-in read-only tools: `read`, `glob`, and `grep` (tech-spec §4.4,
-//! A3-05~07 部分 / S4-T21).
+//! Built-in project tools: `read`, `glob`, `grep`, `write`, and `edit`
+//! (tech-spec §4.4, A3-05~07 / S4-T21 / S5-T23).
 //!
 //! [`Tools`] is the single entry point: bind one instance to the canonical
 //! project root and every path argument is fenced against it — interpreted
@@ -8,7 +8,9 @@
 //! absolute-path injection, or a symlink jumping out; tech-spec §3 red
 //! line, risks #4).
 //!
-//! All tools return the same success shape, [`ToolOutput`] (text plus a
+//! Mutations remain disabled until the caller explicitly supplies a
+//! checkpoint root plus project/thread/call ids. All tools return the same
+//! success shape, [`ToolOutput`] (text plus a
 //! truncation flag), so the agentic loop (T20) can append every result as a
 //! `tool_result` without per-tool branching.
 //!
@@ -35,15 +37,24 @@
 //! # }
 //! ```
 
+mod checkpoint;
+mod codec;
 mod error;
 mod fence;
 mod glob;
 mod grep;
+mod mutation;
 mod output;
 mod read;
+mod sha256;
 mod tools;
 
-pub use error::ToolError;
+pub use codec::{
+    CheckpointIds, CheckpointRef, CreatedNewFileMetadata, EditSuccessOutput, InvalidWriteEditAudit,
+    MutationTool, WriteEditAudit, WriteSuccessOutput,
+};
+pub use error::{EditFailureContext, MutationError, MutationErrorCode, ToolError};
+pub use mutation::{InvalidMutation, PrepareMutationError, PreparedEdit, PreparedWrite};
 pub use output::{
     LINE_TRUNCATION_MARKER, MAX_LINE_CHARS, MAX_RESULTS, RESULT_TRUNCATION_MARKER, ToolOutput,
 };
