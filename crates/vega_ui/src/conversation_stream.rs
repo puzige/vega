@@ -50,6 +50,7 @@
 
 pub mod bench;
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,7 +61,7 @@ use gpui::{
     AnyElement, App, Context, Entity, FontWeight, MouseButton, MouseUpEvent, Render, Rgba, Window,
     actions, div, px, uniform_list,
 };
-use vega_conversation::types::Thread;
+use vega_conversation::types::{ConversationEvent, Thread};
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
     RenderNode, StreamSnapshot, TableAlignment, TableBlock,
@@ -69,6 +70,7 @@ use vega_theme::{ThemeColors, Typography, theme};
 
 use crate::sidebar::CONTENT_MIN_PADDING;
 use crate::text_input::TextInput;
+use crate::tool_card::ToolCard;
 
 actions!(vega_conversation_stream, [SendMessage]);
 
@@ -92,7 +94,7 @@ const COMPOSER_ROWS: usize = 3;
 
 /// Monospace family for code rows (ui-spec §3 代码等宽档位；本机 macOS 以
 /// Menlo 承担，spike 探针同款).
-const MONOFONT: &str = "Menlo";
+pub(crate) const MONOFONT: &str = "Menlo";
 
 // ─── anchor state machine (P4, pure & unit-tested) ───────────────────────────
 
@@ -866,13 +868,16 @@ pub(crate) enum StreamEntry {
         stream: Box<MarkdownStream>,
         model: StreamModel,
     },
+    /// One audited tool card. Expansion adds fixed-height virtual rows.
+    Tool { card: Entity<ToolCard> },
 }
 
 impl StreamEntry {
-    fn row_count(&self) -> usize {
+    fn row_count(&self, cx: &App) -> usize {
         match self {
             StreamEntry::User { lines } => lines.len(),
             StreamEntry::Assistant { model, .. } => model.row_count(),
+            StreamEntry::Tool { card } => card.read(cx).row_count(),
         }
     }
 }
@@ -920,7 +925,7 @@ pub(crate) fn build_entry_rows(
     let mut rows: Vec<AnyElement> = Vec::new();
     let mut offset = 0usize;
     for entry in entries {
-        let count = entry.row_count();
+        let count = entry.row_count(cx);
         let start = range.start.saturating_sub(offset);
         let end = range.end.saturating_sub(offset).min(count);
         if start < end {
@@ -934,6 +939,11 @@ pub(crate) fn build_entry_rows(
                 }
                 StreamEntry::Assistant { model, .. } => {
                     rows.extend(model.rows_in(start..end, &colors));
+                }
+                StreamEntry::Tool { card } => {
+                    rows.extend(
+                        (start..end).map(|row| ToolCard::render_row(card.clone(), row, cx)),
+                    );
                 }
             }
         }
@@ -1173,6 +1183,8 @@ pub struct ConversationStream {
     /// Rows changed outside the assistant sync path (user send) — feeds the
     /// anchor's `content_grew` on the next frame.
     rows_dirty: bool,
+    /// Opaque provider call ids are retained only as non-rendered map keys.
+    tool_cards: HashMap<String, Entity<ToolCard>>,
 }
 
 struct InjectionState {
@@ -1206,12 +1218,100 @@ impl ConversationStream {
             input,
             user_block_seq: USER_BLOCK_BASE,
             rows_dirty: false,
+            tool_cards: HashMap::new(),
         }
     }
 
     /// Total row count across all entries.
-    fn total_rows(&self) -> usize {
-        self.entries.iter().map(StreamEntry::row_count).sum()
+    fn total_rows(&self, cx: &App) -> usize {
+        self.entries.iter().map(|entry| entry.row_count(cx)).sum()
+    }
+
+    /// Applies an already-durable shared lifecycle event. The UI never reads
+    /// SQLite and never consumes runtime-local events.
+    pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
+        match event {
+            ConversationEvent::ToolCallProposed { call } => {
+                if let Some(existing) = self.tool_cards.get(&call.id) {
+                    existing.update(cx, |card, cx| {
+                        if !card.matches_call(&call) {
+                            card.fail_corrupt(cx);
+                        }
+                    });
+                    return;
+                }
+                let call_id = call.id.clone();
+                let card = cx.new(|_| ToolCard::proposed(&call));
+                cx.observe(&card, |this, _, cx| {
+                    this.rows_dirty = true;
+                    cx.notify();
+                })
+                .detach();
+                self.entries.push(StreamEntry::Tool { card: card.clone() });
+                self.tool_cards.insert(call_id, card);
+                self.rows_dirty = true;
+                cx.notify();
+            }
+            ConversationEvent::ToolCallApproved { call_id, approval } => {
+                if let Some(card) = self.tool_cards.get(&call_id) {
+                    card.update(cx, |card, cx| {
+                        if card.apply_approved(approval) {
+                            cx.notify();
+                        }
+                    });
+                } else {
+                    self.push_corrupt_tool(call_id, cx);
+                }
+            }
+            ConversationEvent::ToolCallOutput { .. } => {
+                // T26 emits a post-commit bounded output immediately before
+                // Finished. Ignore it here: write/edit chunks can contain the
+                // strict success JSON (including the opaque checkpoint ref),
+                // and terminal projection is the sole card decode boundary.
+            }
+            ConversationEvent::ToolCallFinished { call_id, result } => {
+                if let Some(card) = self.tool_cards.get(&call_id) {
+                    card.update(cx, |card, cx| {
+                        card.apply_finished(&result);
+                        cx.notify();
+                    });
+                } else {
+                    let card = if result.invalid.is_some() {
+                        ToolCard::invalid_terminal(&result)
+                    } else {
+                        ToolCard::corrupt()
+                    };
+                    self.push_tool_card(call_id, card, cx);
+                }
+            }
+            ConversationEvent::MessageStarted { .. }
+            | ConversationEvent::TextDelta { .. }
+            | ConversationEvent::ThinkingDelta { .. }
+            | ConversationEvent::UsageUpdated { .. }
+            | ConversationEvent::MessageFinished { .. }
+            | ConversationEvent::Error { .. }
+            | ConversationEvent::Interrupted { .. } => {}
+        }
+    }
+
+    fn push_corrupt_tool(&mut self, call_id: String, cx: &mut Context<Self>) {
+        self.push_tool_card(call_id, ToolCard::corrupt(), cx);
+    }
+
+    fn push_tool_card(&mut self, call_id: String, card: ToolCard, cx: &mut Context<Self>) {
+        if self.tool_cards.contains_key(&call_id) {
+            return;
+        }
+        let card = cx.new(|_| card);
+        cx.observe(&card, |this, _, cx| {
+            this.rows_dirty = true;
+            cx.notify();
+        })
+        .detach();
+        self.entries.push(StreamEntry::Tool { card: card.clone() });
+        self.tool_cards.insert(call_id, card);
+        self.rows_dirty = true;
+        cx.notify();
     }
 
     /// Starts the demo injection (标题头旁按钮)：drives the built-in
@@ -1482,7 +1582,7 @@ impl Render for ConversationStream {
             self.scroll.scroll_to_bottom();
         }
 
-        let rows = self.total_rows();
+        let rows = self.total_rows(cx);
         let body: AnyElement = if rows == 0 {
             // §4.6 空态：内存态会话从演示注入或 Composer 开始。
             div()

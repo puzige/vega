@@ -10,6 +10,7 @@ pub mod conversation_stream;
 pub mod settings;
 pub mod sidebar;
 pub mod text_input;
+pub mod tool_card;
 
 use gpui::{App, KeyBinding};
 

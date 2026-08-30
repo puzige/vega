@@ -1,8 +1,10 @@
 //! Conversation-layer orchestration for the headless runtime (S4-T20).
 
+use std::collections::VecDeque;
+use std::fmt;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
@@ -31,6 +33,9 @@ const TEXT_BATCH_MAX_DELAY: Duration = Duration::from_millis(4);
 const TEXT_BATCH_MAX_BYTES: usize = 4 * 1024;
 const PERSISTENCE_CHANNEL_CAPACITY: usize = 64;
 
+/// Authoritative production permission-card lifetime.
+pub const PERMISSION_TIMEOUT: Duration = vega_runtime::PERMISSION_TIMEOUT;
+
 /// Shared cancellable permission boundary implemented by the S5 UI.
 pub trait PermissionHook: Send + Sync {
     /// Requests one content-free permission decision.
@@ -39,6 +44,333 @@ pub trait PermissionHook: Send + Sync {
         request: PermissionRequest,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>>;
+}
+
+/// A single UI-visible permission request and its first-wins responder.
+pub struct PendingPermission {
+    request: Option<PermissionRequest>,
+    responder: Option<PermissionResponder>,
+    armed: bool,
+}
+
+impl PendingPermission {
+    /// Content-free request safe for card rendering.
+    pub fn request(&self) -> Option<&PermissionRequest> {
+        self.request.as_ref()
+    }
+
+    /// Transfers the request into a card. Dropping before this transfer is a
+    /// fail-closed Timeout; the installed card must resolve on release.
+    pub fn into_lease(mut self) -> Option<PermissionLease> {
+        self.armed = false;
+        Some(PermissionLease {
+            request: self.request.take()?,
+            responder: self.responder.take()?,
+            armed: true,
+        })
+    }
+}
+
+/// Fail-closed ownership guard held for the exact lifetime of one UI card.
+pub struct PermissionLease {
+    request: PermissionRequest,
+    responder: PermissionResponder,
+    armed: bool,
+}
+
+impl PermissionLease {
+    /// Content-free request safe for rendering and identity matching.
+    pub fn request(&self) -> &PermissionRequest {
+        &self.request
+    }
+
+    /// Resolves the shared latch and disarms the disappearance guard.
+    pub fn respond(&mut self, decision: PermissionDecision) -> bool {
+        let won = self.responder.respond(decision);
+        if self.responder.is_resolved() {
+            self.armed = false;
+        }
+        won
+    }
+
+    /// Whether runtime cancellation, timeout, or an explicit action won.
+    pub fn is_resolved(&self) -> bool {
+        self.responder.is_resolved()
+    }
+}
+
+impl Drop for PermissionLease {
+    fn drop(&mut self) {
+        if self.armed {
+            self.responder.respond(PermissionDecision::Timeout);
+        }
+    }
+}
+
+impl fmt::Debug for PermissionLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PermissionLease")
+            .field("tool", &self.request.tool)
+            .field("danger", &self.request.danger_rule_id.is_some())
+            .field("display_target", &"[REDACTED]")
+            .field("call_id", &"[OPAQUE]")
+            .field("resolved", &self.is_resolved())
+            .finish()
+    }
+}
+
+impl Drop for PendingPermission {
+    fn drop(&mut self) {
+        if self.armed
+            && let Some(responder) = &self.responder
+        {
+            responder.respond(PermissionDecision::Timeout);
+        }
+    }
+}
+
+impl fmt::Debug for PendingPermission {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PendingPermission")
+            .field("tool", &self.request.as_ref().map(|request| &request.tool))
+            .field(
+                "danger",
+                &self
+                    .request
+                    .as_ref()
+                    .is_some_and(|request| request.danger_rule_id.is_some()),
+            )
+            .field("display_target", &"[REDACTED]")
+            .field("call_id", &"[OPAQUE]")
+            .finish()
+    }
+}
+
+struct PermissionResponseState {
+    sender: Mutex<Option<oneshot::Sender<PermissionDecision>>>,
+}
+
+impl Drop for PermissionResponseState {
+    fn drop(&mut self) {
+        if let Ok(sender) = self.sender.get_mut()
+            && let Some(sender) = sender.take()
+        {
+            let _ = sender.send(PermissionDecision::Timeout);
+        }
+    }
+}
+
+/// Thread-safe first-wins permission response latch.
+#[derive(Clone)]
+pub struct PermissionResponder {
+    state: Arc<PermissionResponseState>,
+}
+
+impl PermissionResponder {
+    /// Resolves the request exactly once. Returns false after another path won.
+    pub fn respond(&self, decision: PermissionDecision) -> bool {
+        let Ok(mut sender) = self.state.sender.lock() else {
+            return false;
+        };
+        let Some(sender) = sender.take() else {
+            return false;
+        };
+        let _ = sender.send(decision);
+        true
+    }
+
+    /// Whether any explicit or implicit terminal path already won.
+    pub fn is_resolved(&self) -> bool {
+        self.state
+            .sender
+            .lock()
+            .map_or(true, |sender| sender.is_none())
+    }
+
+    fn same_latch(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl fmt::Debug for PermissionResponder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PermissionResponder")
+            .field("resolved", &self.is_resolved())
+            .finish()
+    }
+}
+
+struct PermissionWaitGuard {
+    responder: PermissionResponder,
+    queue_state: Arc<Mutex<PermissionQueueState>>,
+}
+
+impl Drop for PermissionWaitGuard {
+    fn drop(&mut self) {
+        self.responder.respond(PermissionDecision::Timeout);
+        if let Ok(mut state) = self.queue_state.lock()
+            && state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.same_latch(&self.responder))
+        {
+            state.active = None;
+            state.queued.retain(|pending| {
+                !pending
+                    .responder
+                    .as_ref()
+                    .is_some_and(|queued| queued.same_latch(&self.responder))
+            });
+        }
+    }
+}
+
+#[derive(Default)]
+struct PermissionQueueState {
+    active: Option<PermissionResponder>,
+    queued: VecDeque<PendingPermission>,
+}
+
+/// Concrete conversation-to-GPUI request/response handoff.
+///
+/// This is not a lifecycle stream: durable lifecycle visibility remains
+/// exclusively on [`ConversationEvent`]. The queue carries only the pending
+/// human decision and resolves every disappearance as Timeout.
+#[derive(Clone, Default)]
+pub struct PermissionQueue {
+    state: Arc<Mutex<PermissionQueueState>>,
+}
+
+impl PermissionQueue {
+    /// Creates an empty queue.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Removes the newest pending card request for the UI. At most one exists.
+    pub fn take_pending(&self) -> Option<PendingPermission> {
+        let Ok(mut state) = self.state.lock() else {
+            return None;
+        };
+        while let Some(pending) = state.queued.pop_front() {
+            if pending
+                .responder
+                .as_ref()
+                .is_some_and(|responder| !responder.is_resolved())
+            {
+                return Some(pending);
+            }
+        }
+        None
+    }
+
+    /// Fails the current prompt closed, used when the owning view disappears.
+    pub fn timeout_active(&self) -> bool {
+        let responder = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.active.clone());
+        responder.is_some_and(|responder| responder.respond(PermissionDecision::Timeout))
+    }
+}
+
+impl fmt::Debug for PermissionQueue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let pending = self
+            .state
+            .lock()
+            .map_or(0, |state| usize::from(state.active.is_some()));
+        formatter
+            .debug_struct("PermissionQueue")
+            .field("pending_count", &pending)
+            .finish()
+    }
+}
+
+impl PermissionHook for PermissionQueue {
+    fn request(
+        &self,
+        request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
+        if !valid_permission_request(&request) {
+            return async { Ok(PermissionDecision::Timeout) }.boxed();
+        }
+        let (sender, receiver) = oneshot::channel();
+        let responder = PermissionResponder {
+            state: Arc::new(PermissionResponseState {
+                sender: Mutex::new(Some(sender)),
+            }),
+        };
+        let pending = PendingPermission {
+            request: Some(request),
+            responder: Some(responder.clone()),
+            armed: true,
+        };
+        let old = match self.state.lock() {
+            Ok(mut state) => {
+                let old_active = state.active.replace(responder.clone());
+                let old_queued = state.queued.drain(..).collect::<Vec<_>>();
+                state.queued.push_back(pending);
+                Some((old_active, old_queued))
+            }
+            Err(_) => None,
+        };
+        let Some((old_active, old_queued)) = old else {
+            responder.respond(PermissionDecision::Timeout);
+            return async { Ok(PermissionDecision::Timeout) }.boxed();
+        };
+        if let Some(old_active) = old_active {
+            old_active.respond(PermissionDecision::Timeout);
+        }
+        drop(old_queued);
+
+        let guard = PermissionWaitGuard {
+            responder,
+            queue_state: self.state.clone(),
+        };
+        async move {
+            let decision = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    guard.responder.respond(PermissionDecision::Timeout);
+                    PermissionDecision::Timeout
+                }
+                result = receiver => result.unwrap_or(PermissionDecision::Timeout),
+            };
+            Ok(decision)
+        }
+        .boxed()
+    }
+}
+
+fn valid_permission_request(request: &PermissionRequest) -> bool {
+    if request.call_id.is_empty() || request.display_target.is_empty() {
+        return false;
+    }
+    let danger_valid = match (&request.danger_rule_id, &request.danger_reason) {
+        (None, None) => true,
+        (Some(rule), Some(reason)) => !rule.is_empty() && !reason.is_empty(),
+        _ => false,
+    };
+    if !danger_valid {
+        return false;
+    }
+    match request.tool.as_str() {
+        "bash" => true,
+        "write" | "edit" if request.danger_rule_id.is_none() => {
+            let path = std::path::Path::new(&request.display_target);
+            !path.is_absolute()
+                && path
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+        }
+        _ => false,
+    }
 }
 
 struct RejectPermissionHook;

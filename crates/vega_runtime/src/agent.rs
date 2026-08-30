@@ -35,7 +35,8 @@ pub const CANCELLED_BEFORE_EXECUTION_OUTPUT: &str = "Tool cancelled before execu
 
 const OUTPUT_HALF_LINES: usize = 2_000;
 const OUTPUT_TRUNCATION_MARKER: &str = "…[tool output truncated: middle lines omitted]";
-const PERMISSION_TIMEOUT: Duration = Duration::from_secs(600);
+/// Authoritative production permission wait required by tech-spec §4.3.
+pub const PERMISSION_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// One project-scoped exact permission rule preloaded by conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
