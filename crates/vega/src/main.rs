@@ -3,6 +3,7 @@
 //! render_frame self-measurement probe (see
 //! [`vega_ui::conversation_stream::bench`]).
 
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
@@ -13,13 +14,17 @@ use gpui::{
     WindowOptions, actions, div, px, size,
 };
 use gpui_platform::application;
-use vega_conversation::GitWorkspaceService;
 use vega_conversation::types::{
-    DiffTextProjection, GitWorkspaceErrorCode, Plan, PlanReviewOutcome, Thread, WorkspaceFileId,
-    WorkspaceSnapshot,
+    ArtifactCard as ArtifactProjection, ArtifactCardId, ArtifactPreviewProjection,
+    ConversationEvent, DiffTextProjection, GitWorkspaceErrorCode, OpenInOutcome, OpenInTarget,
+    Plan, PlanReviewOutcome, Thread, ToolCall, WorkspaceFileId, WorkspaceSnapshot,
 };
+use vega_conversation::{ArtifactCaptureCandidate, ArtifactService, GitWorkspaceService};
 use vega_store::Store;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
+use vega_ui::artifact_card::{
+    ArtifactCard, ArtifactCleared, ArtifactOpenRequested, ArtifactPreviewRequested,
+};
 use vega_ui::conversation_stream::{
     ComposerSubmitted, ConversationStream, OpenWorkspaceDiffRequested, ThreadSettingsRequested,
     WorkspaceToolTerminal, bench as render_frame_bench,
@@ -117,6 +122,12 @@ struct ActiveAgentRun {
     cancel: tokio_util::sync::CancellationToken,
     pending_user_content: Option<String>,
     pending_approved_instruction: Option<String>,
+}
+
+enum AgentBatchIngress {
+    Stale,
+    Running,
+    Finished { success: bool, run: ActiveAgentRun },
 }
 
 struct PendingPlanReview {
@@ -229,6 +240,258 @@ struct ThreadStateRefresh {
     plans: Vec<Plan>,
     history: Vec<String>,
     recoverable_approved_instruction: Option<String>,
+}
+
+const ARTIFACT_ROUTE_CAP: usize = 10_000;
+#[cfg(test)]
+static ARTIFACT_OPEN_WORKER_STARTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static ARTIFACT_PREVIEW_WORKER_STARTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[derive(Clone, PartialEq, Eq)]
+struct ArtifactRouteIdentity {
+    epoch: u64,
+    thread_id: String,
+    project_id: String,
+    stream: Entity<ConversationStream>,
+}
+
+struct ArtifactTerminalJob {
+    sequence: u64,
+    work: ArtifactTerminalWork,
+}
+
+struct ArtifactTerminalDispatch {
+    identity: ArtifactRouteIdentity,
+    workspace: Arc<GitWorkspaceService>,
+    service: Arc<ArtifactService>,
+    job: ArtifactTerminalJob,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+enum ArtifactTerminalWork {
+    Refresh,
+    Capture {
+        call_id: String,
+        candidate: ArtifactCaptureCandidate,
+    },
+}
+
+struct ArtifactProposal {
+    generation: u64,
+    call: Option<ToolCall>,
+}
+
+struct ArtifactTerminalResult {
+    captured: Option<(String, ArtifactProjection)>,
+    cards: Vec<ArtifactProjection>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ArtifactPreviewFence {
+    route: ArtifactRouteIdentity,
+    sequence: u64,
+    card_id: ArtifactCardId,
+    file_id: WorkspaceFileId,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ArtifactOpenFence {
+    route: ArtifactRouteIdentity,
+    sequence: u64,
+    card_id: ArtifactCardId,
+    file_id: WorkspaceFileId,
+    target: OpenInTarget,
+}
+
+struct ActiveArtifactRoute {
+    identity: ArtifactRouteIdentity,
+    workspace: Arc<GitWorkspaceService>,
+    service: Arc<ArtifactService>,
+    cancel: tokio_util::sync::CancellationToken,
+    agent_generation: Option<u64>,
+    proposals: HashMap<String, ArtifactProposal>,
+    terminal_sequence: u64,
+    terminal_in_flight: Option<u64>,
+    terminal_queue: VecDeque<ArtifactTerminalJob>,
+    cards: HashMap<ArtifactCardId, Entity<ArtifactCard>>,
+    preview_sequence: u64,
+    preview_fence: Option<ArtifactPreviewFence>,
+    preview_cancel: Option<tokio_util::sync::CancellationToken>,
+    open_sequence: u64,
+    open_fence: Option<ArtifactOpenFence>,
+    open_cancel: Option<tokio_util::sync::CancellationToken>,
+}
+
+#[derive(Default)]
+struct ArtifactController {
+    next_route_epoch: u64,
+    active: Option<ActiveArtifactRoute>,
+}
+
+impl ArtifactController {
+    fn begin(
+        &mut self,
+        thread: &Thread,
+        stream: Entity<ConversationStream>,
+        root: PathBuf,
+    ) -> Result<ArtifactRouteIdentity, GitWorkspaceErrorCode> {
+        if self.active.is_some() {
+            return Err(GitWorkspaceErrorCode::ArtifactConflict);
+        }
+        let epoch = self
+            .next_route_epoch
+            .checked_add(1)
+            .ok_or(GitWorkspaceErrorCode::ArtifactLimit)?;
+        let workspace = Arc::new(GitWorkspaceService::new(root).map_err(|failure| failure.code())?);
+        let service = Arc::new(
+            ArtifactService::new(
+                workspace.clone(),
+                thread.project_id.clone(),
+                thread.id.clone(),
+                epoch,
+            )
+            .map_err(|failure| failure.code())?,
+        );
+        self.next_route_epoch = epoch;
+        let identity = ArtifactRouteIdentity {
+            epoch,
+            thread_id: thread.id.clone(),
+            project_id: thread.project_id.clone(),
+            stream,
+        };
+        self.active = Some(ActiveArtifactRoute {
+            identity: identity.clone(),
+            workspace,
+            service,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            agent_generation: None,
+            proposals: HashMap::new(),
+            terminal_sequence: 0,
+            terminal_in_flight: None,
+            terminal_queue: VecDeque::new(),
+            cards: HashMap::new(),
+            preview_sequence: 0,
+            preview_fence: None,
+            preview_cancel: None,
+            open_sequence: 0,
+            open_fence: None,
+            open_cancel: None,
+        });
+        Ok(identity)
+    }
+
+    fn close(&mut self) -> Option<ActiveArtifactRoute> {
+        let active = self.active.take();
+        if let Some(active) = &active {
+            active.cancel.cancel();
+            if let Some(cancel) = &active.preview_cancel {
+                cancel.cancel();
+            }
+            if let Some(cancel) = &active.open_cancel {
+                cancel.cancel();
+            }
+        }
+        active
+    }
+
+    fn matches(&self, identity: &ArtifactRouteIdentity) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.identity == *identity)
+    }
+}
+
+fn run_artifact_terminal_worker(
+    workspace: Arc<GitWorkspaceService>,
+    service: Arc<ArtifactService>,
+    job: ArtifactTerminalJob,
+    cancel: tokio_util::sync::CancellationToken,
+    sender: mpsc::SyncSender<Result<(u64, ArtifactTerminalResult), GitWorkspaceErrorCode>>,
+) {
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
+        .and_then(|runtime| {
+            runtime.block_on(async {
+                let refreshed = workspace.refresh(cancel.child_token()).await;
+                service
+                    .reconcile(cancel.child_token())
+                    .await
+                    .map_err(|failure| failure.code())?;
+                if let Err(failure) = refreshed {
+                    if failure.code() == GitWorkspaceErrorCode::Cancelled {
+                        return Err(failure.code());
+                    }
+                    return Ok((
+                        job.sequence,
+                        ArtifactTerminalResult {
+                            captured: None,
+                            cards: service.cards(),
+                        },
+                    ));
+                }
+                let captured = match job.work {
+                    ArtifactTerminalWork::Capture { call_id, candidate } => service
+                        .capture_candidate(candidate, cancel.child_token())
+                        .await
+                        .map_err(|failure| failure.code())?
+                        .map(|card| (call_id, card)),
+                    ArtifactTerminalWork::Refresh => None,
+                };
+                let cards = service
+                    .reconcile(cancel)
+                    .await
+                    .map_err(|failure| failure.code())?;
+                Ok((job.sequence, ArtifactTerminalResult { captured, cards }))
+            })
+        });
+    let _ = sender.send(result);
+}
+
+fn run_artifact_preview_worker(
+    service: Arc<ArtifactService>,
+    fence: ArtifactPreviewFence,
+    cancel: tokio_util::sync::CancellationToken,
+    sender: mpsc::SyncSender<(
+        ArtifactPreviewFence,
+        Result<ArtifactPreviewProjection, GitWorkspaceErrorCode>,
+    )>,
+) {
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
+        .and_then(|runtime| {
+            runtime
+                .block_on(service.preview(fence.card_id, cancel))
+                .map_err(|failure| failure.code())
+        });
+    let _ = sender.send((fence, result));
+}
+
+fn run_artifact_open_worker(
+    service: Arc<ArtifactService>,
+    fence: ArtifactOpenFence,
+    cancel: tokio_util::sync::CancellationToken,
+    sender: mpsc::SyncSender<(
+        ArtifactOpenFence,
+        Result<OpenInOutcome, GitWorkspaceErrorCode>,
+    )>,
+) {
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
+        .and_then(|runtime| {
+            runtime
+                .block_on(service.open_in(fence.card_id, fence.target, cancel))
+                .map_err(|failure| failure.code())
+        });
+    let _ = sender.send((fence, result));
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -648,16 +911,23 @@ struct VegaWindow {
     stream_view: Option<(String, Entity<ConversationStream>)>,
     agent_controller: AppAgentController,
     diff_controller: DiffController,
+    artifact_controller: ArtifactController,
 }
 
 impl VegaWindow {
     fn new(cx: &mut Context<Self>) -> Self {
         cx.observe_global::<OpenedThread>(|this, cx| {
             this.close_diff_if_route_stale(cx);
+            this.close_artifact_if_route_stale(cx);
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
             this.close_diff_if_route_stale(cx);
+            this.close_artifact_if_route_stale(cx);
+        })
+        .detach();
+        cx.observe_global::<vega_ui::sidebar::SelectedProject>(|this, cx| {
+            this.close_artifact_if_route_stale(cx);
         })
         .detach();
         Self {
@@ -666,6 +936,710 @@ impl VegaWindow {
             stream_view: None,
             agent_controller: AppAgentController::default(),
             diff_controller: DiffController::default(),
+            artifact_controller: ArtifactController::default(),
+        }
+    }
+
+    fn artifact_route_is_current(identity: &ArtifactRouteIdentity, cx: &App) -> bool {
+        !cx.global::<SettingsOpen>().0
+            && cx
+                .global::<vega_ui::sidebar::SelectedProject>()
+                .0
+                .as_deref()
+                == Some(identity.project_id.as_str())
+            && cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|thread| {
+                    thread.id == identity.thread_id && thread.project_id == identity.project_id
+                })
+    }
+
+    fn close_artifact_route(&mut self, code: GitWorkspaceErrorCode, cx: &mut Context<Self>) {
+        if let Some(active) = self.artifact_controller.close() {
+            for card in active.cards.into_values() {
+                card.update(cx, |card, cx| card.invalidate(code, cx));
+            }
+            cx.notify();
+        }
+    }
+
+    fn close_artifact_if_route_stale(&mut self, cx: &mut Context<Self>) {
+        let stale = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| !Self::artifact_route_is_current(&active.identity, cx));
+        if stale {
+            self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
+        }
+    }
+
+    fn artifact_project_root(thread: &Thread, cx: &App) -> Result<PathBuf, GitWorkspaceErrorCode> {
+        let store = cx
+            .global::<VegaStore>()
+            .0
+            .as_ref()
+            .map_err(|_| GitWorkspaceErrorCode::InvalidRoot)?;
+        let project = vega_store::projects::find(store.conn(), &thread.project_id)
+            .map_err(|_| GitWorkspaceErrorCode::InvalidRoot)?
+            .ok_or(GitWorkspaceErrorCode::InvalidRoot)?;
+        Ok(PathBuf::from(project.path))
+    }
+
+    fn ensure_artifact_route(
+        &mut self,
+        thread: &Thread,
+        stream: Entity<ConversationStream>,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| {
+                active.identity.thread_id == thread.id
+                    && active.identity.project_id == thread.project_id
+                    && active.identity.stream == stream
+            });
+        if current {
+            return;
+        }
+        self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
+        let result = Self::artifact_project_root(thread, cx).and_then(|root| {
+            self.artifact_controller
+                .begin(thread, stream, root)
+                .map(|_| ())
+        });
+        if result.is_err() {
+            self.close_artifact_route(GitWorkspaceErrorCode::InvalidRoot, cx);
+        }
+    }
+
+    fn begin_artifact_agent_generation(
+        &mut self,
+        generation: u64,
+        stream: &Entity<ConversationStream>,
+    ) {
+        if let Some(active) = self.artifact_controller.active.as_mut()
+            && active.identity.stream == *stream
+        {
+            active.proposals.clear();
+            active.agent_generation = Some(generation);
+        }
+    }
+
+    fn poison_artifact_agent_generation(
+        &mut self,
+        generation: u64,
+        stream: &Entity<ConversationStream>,
+    ) {
+        if let Some(active) = self.artifact_controller.active.as_mut()
+            && active.identity.stream == *stream
+            && active.agent_generation == Some(generation)
+        {
+            active.proposals.clear();
+            active.agent_generation = None;
+        }
+    }
+
+    /// Applies one drained batch through the production ownership boundary.
+    /// The caller remains responsible for finished-run reload and UI recovery.
+    fn apply_agent_batch_ingress(
+        &mut self,
+        generation: u64,
+        thread_id: &str,
+        stream: &Entity<ConversationStream>,
+        batch: AgentBatch,
+        cx: &mut Context<Self>,
+    ) -> AgentBatchIngress {
+        if !self.agent_controller.matches(generation, thread_id, stream) {
+            return AgentBatchIngress::Stale;
+        }
+        for event in batch.events {
+            self.observe_artifact_event(generation, stream, &event, cx);
+            if matches!(event, ConversationEvent::MessageStarted { .. })
+                && let Some(content) = self
+                    .agent_controller
+                    .accept_durable_start(generation, thread_id, stream)
+            {
+                stream.update(cx, |stream, cx| {
+                    stream.accept_composer_submission(&content, cx)
+                });
+            }
+            stream.update(cx, |stream, cx| stream.apply_event(event, cx));
+        }
+        let Some(success) = batch.finished else {
+            return AgentBatchIngress::Running;
+        };
+        self.poison_artifact_agent_generation(generation, stream);
+        let Some(run) = self.agent_controller.finish(generation, thread_id, stream) else {
+            return AgentBatchIngress::Stale;
+        };
+        AgentBatchIngress::Finished { success, run }
+    }
+
+    fn cancel_artifact_interactions(active: &mut ActiveArtifactRoute, cx: &mut App) {
+        let preview_card = active.preview_fence.take().map(|fence| fence.card_id);
+        let open_card = active.open_fence.take().map(|fence| fence.card_id);
+        if let Some(cancel) = active.preview_cancel.take() {
+            cancel.cancel();
+        }
+        if let Some(cancel) = active.open_cancel.take() {
+            cancel.cancel();
+        }
+        for card_id in [preview_card, open_card].into_iter().flatten() {
+            if let Some(card) = active.cards.get(&card_id) {
+                card.update(cx, |card, cx| {
+                    card.fail_request(GitWorkspaceErrorCode::StaleGeneration, cx)
+                });
+            }
+        }
+    }
+
+    /// The only production artifact capture ingress: real AgentBatch events
+    /// are observed here before ownership moves to ConversationStream.
+    fn observe_artifact_event(
+        &mut self,
+        generation: u64,
+        stream: &Entity<ConversationStream>,
+        event: &ConversationEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| {
+                active.identity.stream == *stream
+                    && active.agent_generation == Some(generation)
+                    && Self::artifact_route_is_current(&active.identity, cx)
+            });
+        if !current {
+            return;
+        }
+        let Some(active) = self.artifact_controller.active.as_mut() else {
+            return;
+        };
+        match event {
+            ConversationEvent::ToolCallProposed { call }
+                if matches!(call.tool.as_str(), "write" | "edit") =>
+            {
+                if let Err(failure) = ArtifactService::validate_proposal(call) {
+                    self.close_artifact_route(failure.code(), cx);
+                    return;
+                }
+                if let Some(existing) = active.proposals.get_mut(&call.id) {
+                    if existing.generation != generation || existing.call.as_ref() != Some(call) {
+                        existing.call = None;
+                    }
+                } else if active.proposals.len() < ARTIFACT_ROUTE_CAP {
+                    active.proposals.insert(
+                        call.id.clone(),
+                        ArtifactProposal {
+                            generation,
+                            call: Some(call.clone()),
+                        },
+                    );
+                } else {
+                    self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+                }
+            }
+            ConversationEvent::ToolCallFinished { call_id, result } => {
+                Self::cancel_artifact_interactions(active, cx);
+                let call = active
+                    .proposals
+                    .remove(call_id)
+                    .filter(|proposal| proposal.generation == generation)
+                    .and_then(|proposal| proposal.call);
+                let work = if let Some(call) = call {
+                    match active.service.prepare_capture(&call, result) {
+                        Ok(Some(candidate)) => ArtifactTerminalWork::Capture {
+                            call_id: call_id.clone(),
+                            candidate,
+                        },
+                        Ok(None) => ArtifactTerminalWork::Refresh,
+                        Err(failure) => {
+                            let code = failure.code();
+                            self.close_artifact_route(code, cx);
+                            return;
+                        }
+                    }
+                } else {
+                    ArtifactTerminalWork::Refresh
+                };
+                let Some(sequence) = active.terminal_sequence.checked_add(1) else {
+                    self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+                    return;
+                };
+                if active.terminal_queue.len() >= ARTIFACT_ROUTE_CAP {
+                    self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+                    return;
+                }
+                active.terminal_sequence = sequence;
+                active
+                    .terminal_queue
+                    .push_back(ArtifactTerminalJob { sequence, work });
+                self.launch_next_artifact_terminal(cx);
+            }
+            _ => {}
+        }
+    }
+
+    fn launch_next_artifact_terminal(&mut self, cx: &mut Context<Self>) {
+        let Some(dispatch) = self.take_next_artifact_terminal() else {
+            return;
+        };
+        let ArtifactTerminalDispatch {
+            identity,
+            workspace,
+            service,
+            job,
+            cancel,
+        } = dispatch;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("vega-artifact-terminal".into())
+            .spawn(move || run_artifact_terminal_worker(workspace, service, job, cancel, sender));
+        if worker.is_err() {
+            self.finish_artifact_terminal(&identity, Err(GitWorkspaceErrorCode::SpawnFailed), cx);
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let result = match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Some(Err(GitWorkspaceErrorCode::SpawnFailed))
+                    }
+                };
+                let Some(result) = result else {
+                    continue;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.finish_artifact_terminal(&identity, result, cx)
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn take_next_artifact_terminal(&mut self) -> Option<ArtifactTerminalDispatch> {
+        let active = self.artifact_controller.active.as_mut()?;
+        if active.terminal_in_flight.is_some() {
+            return None;
+        }
+        let job = active.terminal_queue.pop_front()?;
+        active.terminal_in_flight = Some(job.sequence);
+        Some(ArtifactTerminalDispatch {
+            identity: active.identity.clone(),
+            workspace: active.workspace.clone(),
+            service: active.service.clone(),
+            job,
+            cancel: active.cancel.child_token(),
+        })
+    }
+
+    fn finish_artifact_terminal(
+        &mut self,
+        identity: &ArtifactRouteIdentity,
+        result: Result<(u64, ArtifactTerminalResult), GitWorkspaceErrorCode>,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::artifact_route_is_current(identity, cx) {
+            if self.artifact_controller.matches(identity) {
+                self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
+            }
+            return;
+        }
+        let expected = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .filter(|active| active.identity == *identity)
+            .and_then(|active| active.terminal_in_flight);
+        let sequence = result.as_ref().ok().map(|(sequence, _)| *sequence);
+        if sequence.is_some() && sequence != expected {
+            return;
+        }
+        if let Err(
+            code @ (GitWorkspaceErrorCode::ArtifactConflict | GitWorkspaceErrorCode::ArtifactLimit),
+        ) = &result
+        {
+            self.close_artifact_route(*code, cx);
+            return;
+        }
+        let stream = {
+            let Some(active) = self.artifact_controller.active.as_mut() else {
+                return;
+            };
+            if active.identity != *identity {
+                return;
+            }
+            active.terminal_in_flight = None;
+            active.identity.stream.clone()
+        };
+        if let Ok((_, result)) = result {
+            for projection in result.cards {
+                let card = self
+                    .artifact_controller
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.cards.get(&projection.id).cloned());
+                if let Some(card) = card {
+                    card.update(cx, |card, cx| {
+                        let _ = card.apply_metadata(projection, cx);
+                    });
+                }
+            }
+            if let Some((call_id, projection)) = result.captured {
+                let existing = self
+                    .artifact_controller
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.cards.get(&projection.id).cloned());
+                if let Some(card) = existing {
+                    card.update(cx, |card, cx| {
+                        let _ = card.apply_metadata(projection, cx);
+                    });
+                } else {
+                    let card = cx.new(|cx| {
+                        ArtifactCard::new(
+                            identity.thread_id.clone(),
+                            identity.project_id.clone(),
+                            projection.clone(),
+                            cx,
+                        )
+                    });
+                    cx.subscribe(&card, |this, card, request, cx| {
+                        this.request_artifact_preview(card.clone(), request, cx);
+                    })
+                    .detach();
+                    cx.subscribe(&card, |this, card, request, cx| {
+                        this.request_artifact_open(card.clone(), request, cx);
+                    })
+                    .detach();
+                    cx.subscribe(&card, |this, card, request, cx| {
+                        this.clear_artifact_requests(card.clone(), request, cx);
+                    })
+                    .detach();
+                    if stream.update(cx, |stream, cx| {
+                        stream.apply_artifact_card(&call_id, card.clone(), cx)
+                    }) && let Some(active) = self.artifact_controller.active.as_mut()
+                    {
+                        active.cards.insert(projection.id, card);
+                    }
+                }
+            }
+        }
+        self.launch_next_artifact_terminal(cx);
+    }
+
+    fn request_artifact_preview(
+        &mut self,
+        card: Entity<ArtifactCard>,
+        request: &ArtifactPreviewRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let route_current = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| Self::artifact_route_is_current(&active.identity, cx));
+        if !route_current {
+            card.update(cx, |card, cx| {
+                card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
+            });
+            self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
+            return;
+        }
+        let (fence, service, cancel) = {
+            let Some(active) = self.artifact_controller.active.as_mut() else {
+                card.update(cx, |card, cx| {
+                    card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
+                });
+                return;
+            };
+            let current = active.identity.thread_id == request.thread_id
+                && active.identity.project_id == request.project_id
+                && active.cards.get(&request.card_id) == Some(&card)
+                && card.read(cx).projection().current_file_id == Some(request.file_id)
+                && card.read(cx).projection().preview_available;
+            if !current {
+                card.update(cx, |card, cx| {
+                    card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
+                });
+                return;
+            }
+            let Some(sequence) = active.preview_sequence.checked_add(1) else {
+                self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+                return;
+            };
+            active.preview_sequence = sequence;
+            if let Some(cancel) = active.preview_cancel.take() {
+                cancel.cancel();
+            }
+            let fence = ArtifactPreviewFence {
+                route: active.identity.clone(),
+                sequence,
+                card_id: request.card_id,
+                file_id: request.file_id,
+            };
+            let cancel = active.cancel.child_token();
+            active.preview_fence = Some(fence.clone());
+            active.preview_cancel = Some(cancel.clone());
+            (fence, active.service.clone(), cancel)
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        #[cfg(test)]
+        ARTIFACT_PREVIEW_WORKER_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let worker_fence = fence.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-artifact-preview".into())
+            .spawn(move || run_artifact_preview_worker(service, worker_fence, cancel, sender));
+        if worker.is_err() {
+            self.finish_artifact_preview(fence, Err(GitWorkspaceErrorCode::SpawnFailed), cx);
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let (fence, result) = match receiver.try_recv() {
+                    Ok(output) => output,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        (fence, Err(GitWorkspaceErrorCode::SpawnFailed))
+                    }
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.finish_artifact_preview(fence, result, cx)
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn finish_artifact_preview(
+        &mut self,
+        fence: ArtifactPreviewFence,
+        result: Result<ArtifactPreviewProjection, GitWorkspaceErrorCode>,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::artifact_route_is_current(&fence.route, cx) {
+            return;
+        }
+        let card = {
+            let Some(active) = self.artifact_controller.active.as_mut() else {
+                return;
+            };
+            if active.preview_fence.as_ref() != Some(&fence) {
+                return;
+            }
+            active.preview_fence = None;
+            active.preview_cancel = None;
+            active.cards.get(&fence.card_id).cloned()
+        };
+        let Some(card) = card else {
+            return;
+        };
+        if card.read(cx).projection().current_file_id != Some(fence.file_id) {
+            card.update(cx, |card, cx| {
+                card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
+            });
+            return;
+        }
+        match result {
+            Ok(preview) => {
+                card.update(cx, |card, cx| {
+                    let _ = card.apply_preview(preview, cx);
+                });
+            }
+            Err(GitWorkspaceErrorCode::Cancelled | GitWorkspaceErrorCode::StaleGeneration) => {}
+            Err(code) => {
+                card.update(cx, |card, cx| {
+                    let _ = card.apply_preview_error(fence.card_id, fence.file_id, code, cx);
+                });
+            }
+        }
+    }
+
+    fn request_artifact_open(
+        &mut self,
+        card: Entity<ArtifactCard>,
+        request: &ArtifactOpenRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let route_current = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| Self::artifact_route_is_current(&active.identity, cx));
+        if !route_current {
+            card.update(cx, |card, cx| {
+                card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
+            });
+            self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
+            return;
+        }
+        let (fence, service, cancel) = {
+            let Some(active) = self.artifact_controller.active.as_mut() else {
+                card.update(cx, |card, cx| {
+                    card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
+                });
+                return;
+            };
+            let current = active.identity.thread_id == request.thread_id
+                && active.identity.project_id == request.project_id
+                && active.cards.get(&request.card_id) == Some(&card)
+                && card.read(cx).projection().current_file_id == Some(request.file_id)
+                && active.open_fence.is_none();
+            if !current {
+                card.update(cx, |card, cx| {
+                    card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
+                });
+                return;
+            }
+            let Some(sequence) = active.open_sequence.checked_add(1) else {
+                card.update(cx, |card, cx| {
+                    let _ = card.apply_open_error(
+                        request.card_id,
+                        request.target,
+                        GitWorkspaceErrorCode::ArtifactLimit,
+                        cx,
+                    );
+                });
+                self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+                return;
+            };
+            active.open_sequence = sequence;
+            if let Some(cancel) = active.open_cancel.take() {
+                cancel.cancel();
+            }
+            let fence = ArtifactOpenFence {
+                route: active.identity.clone(),
+                sequence,
+                card_id: request.card_id,
+                file_id: request.file_id,
+                target: request.target,
+            };
+            let cancel = active.cancel.child_token();
+            active.open_fence = Some(fence.clone());
+            active.open_cancel = Some(cancel.clone());
+            (fence, active.service.clone(), cancel)
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        #[cfg(test)]
+        ARTIFACT_OPEN_WORKER_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let worker_fence = fence.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-artifact-open".into())
+            .spawn(move || run_artifact_open_worker(service, worker_fence, cancel, sender));
+        if worker.is_err() {
+            self.finish_artifact_open(fence, Err(GitWorkspaceErrorCode::SpawnFailed), cx);
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let (fence, result) = match receiver.try_recv() {
+                    Ok(output) => output,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        (fence, Err(GitWorkspaceErrorCode::SpawnFailed))
+                    }
+                };
+                let _ = this.update(cx, |this, cx| this.finish_artifact_open(fence, result, cx));
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn finish_artifact_open(
+        &mut self,
+        fence: ArtifactOpenFence,
+        result: Result<OpenInOutcome, GitWorkspaceErrorCode>,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::artifact_route_is_current(&fence.route, cx) {
+            return;
+        }
+        let card = {
+            let Some(active) = self.artifact_controller.active.as_mut() else {
+                return;
+            };
+            if active.open_fence.as_ref() != Some(&fence) {
+                return;
+            }
+            active.open_fence = None;
+            active.open_cancel = None;
+            active.cards.get(&fence.card_id).cloned()
+        };
+        let Some(card) = card else {
+            return;
+        };
+        if card.read(cx).projection().current_file_id != Some(fence.file_id) {
+            card.update(cx, |card, cx| {
+                card.invalidate(GitWorkspaceErrorCode::StaleGeneration, cx)
+            });
+            return;
+        }
+        match result {
+            Ok(outcome) => {
+                card.update(cx, |card, cx| {
+                    let _ = card.apply_open_outcome(outcome, cx);
+                });
+            }
+            Err(GitWorkspaceErrorCode::Cancelled | GitWorkspaceErrorCode::StaleGeneration) => {
+                card.update(cx, |card, cx| card.set_opening(None, cx));
+            }
+            Err(code) => {
+                card.update(cx, |card, cx| {
+                    let _ = card.apply_open_error(fence.card_id, fence.target, code, cx);
+                });
+            }
+        }
+    }
+
+    fn clear_artifact_requests(
+        &mut self,
+        card: Entity<ArtifactCard>,
+        request: &ArtifactCleared,
+        _cx: &mut Context<Self>,
+    ) {
+        let Some(active) = self.artifact_controller.active.as_mut() else {
+            return;
+        };
+        if active.identity.thread_id != request.thread_id
+            || active.identity.project_id != request.project_id
+            || active.cards.get(&request.card_id) != Some(&card)
+        {
+            return;
+        }
+        if active
+            .preview_fence
+            .as_ref()
+            .is_some_and(|fence| fence.card_id == request.card_id)
+        {
+            if let Some(cancel) = active.preview_cancel.take() {
+                cancel.cancel();
+            }
+            active.preview_fence = None;
+        }
+        if active
+            .open_fence
+            .as_ref()
+            .is_some_and(|fence| fence.card_id == request.card_id)
+        {
+            if let Some(cancel) = active.open_cancel.take() {
+                cancel.cancel();
+            }
+            active.open_fence = None;
         }
     }
 
@@ -1260,11 +2234,19 @@ impl VegaWindow {
 
     fn cancel_active_agent(&mut self, cx: &mut Context<Self>) {
         let pending_review = self.agent_controller.pending_review.take();
+        let artifact_run = self
+            .agent_controller
+            .active
+            .as_ref()
+            .map(|active| (active.generation, active.stream.clone()));
         if let Some(active) = &self.agent_controller.active {
             active.cancel.cancel();
             active
                 .stream
                 .update(cx, |stream, cx| stream.timeout_permission(cx));
+        }
+        if let Some((generation, stream)) = artifact_run {
+            self.poison_artifact_agent_generation(generation, &stream);
         }
         if let Some(pending) = pending_review
             && self.owns_stream_request(&pending.stream, &pending.request.thread_id, cx)
@@ -1351,6 +2333,7 @@ impl VegaWindow {
             pending_user_content,
             pending_approved_instruction,
         );
+        self.begin_artifact_agent_generation(generation, &stream);
         let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
         let worker_sender = sender.clone();
         let worker = std::thread::Builder::new()
@@ -1367,6 +2350,7 @@ impl VegaWindow {
                 );
             });
         if worker.is_err() {
+            self.poison_artifact_agent_generation(generation, &stream);
             let failed_run = self.agent_controller.active.take();
             if failed_run
                 .as_ref()
@@ -1388,37 +2372,15 @@ impl VegaWindow {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(AGENT_EVENT_POLL).await;
-                let AgentBatch { events, finished } = drain_agent_updates(&receiver);
+                let batch = drain_agent_updates(&receiver);
                 let keep_running = this
                     .update(cx, |this, cx| {
-                        if !this
-                            .agent_controller
-                            .matches(generation, &thread_id, &stream)
+                        let (success, finished_run) = match this
+                            .apply_agent_batch_ingress(generation, &thread_id, &stream, batch, cx)
                         {
-                            return false;
-                        }
-                        for event in events {
-                            if matches!(
-                                event,
-                                vega_conversation::types::ConversationEvent::MessageStarted { .. }
-                            ) && let Some(content) = this
-                                .agent_controller
-                                .accept_durable_start(generation, &thread_id, &stream)
-                            {
-                                stream.update(cx, |stream, cx| {
-                                    stream.accept_composer_submission(&content, cx)
-                                });
-                            }
-                            stream.update(cx, |stream, cx| stream.apply_event(event, cx));
-                        }
-                        let Some(success) = finished else {
-                            return true;
-                        };
-                        let Some(finished_run) = this
-                            .agent_controller
-                            .finish(generation, &thread_id, &stream)
-                        else {
-                            return false;
+                            AgentBatchIngress::Stale => return false,
+                            AgentBatchIngress::Running => return true,
+                            AgentBatchIngress::Finished { success, run } => (success, run),
                         };
                         let ActiveAgentRun {
                             pending_user_content: pending_user,
@@ -1565,6 +2527,9 @@ impl VegaWindow {
         }
         if self.agent_controller.active.is_some() {
             if self.agent_controller.queue_review(&stream, request) {
+                if let Some(active) = self.agent_controller.active.as_ref() {
+                    self.poison_artifact_agent_generation(active.generation, &stream);
+                }
                 stream.update(cx, |stream, cx| stream.timeout_permission(cx));
             } else {
                 stream.update(cx, ConversationStream::apply_controller_error);
@@ -1610,6 +2575,7 @@ impl Drop for VegaWindow {
             active.cancel.cancel();
         }
         self.diff_controller.close();
+        let _ = self.artifact_controller.close();
     }
 }
 
@@ -1632,6 +2598,16 @@ impl Render for VegaWindow {
             settings_open || !Self::diff_route_is_current(&active.identity, cx)
         }) {
             self.diff_controller.close();
+        }
+        if self
+            .artifact_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| {
+                settings_open || !Self::artifact_route_is_current(&active.identity, cx)
+            })
+        {
+            self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
         }
         let content: AnyElement = if settings_open {
             self.cancel_active_agent(cx);
@@ -1747,6 +2723,7 @@ impl Render for VegaWindow {
                             view
                         }
                     };
+                    self.ensure_artifact_route(&thread, stream.clone(), cx);
                     stream.into_any_element()
                 }
                 None => {
@@ -1956,7 +2933,7 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
     use vega_conversation::types::{
-        PermissionMode, PlanReviewAction, PlanStatus, ThreadMode, ThreadStatus,
+        PermissionMode, PlanReviewAction, PlanStatus, ThreadMode, ThreadStatus, ToolResult,
     };
     use vega_store::messages::{MessageRow, complete_plan, insert};
 
@@ -2472,6 +3449,1106 @@ mod tests {
             DiffRefreshWorkerResult::Ready { service, snapshot } => (service, snapshot),
             DiffRefreshWorkerResult::Failed(code) => panic!("refresh failed: {}", code.as_str()),
         }
+    }
+
+    fn artifact_controller_repo() -> TempDir {
+        let repo = tempfile::tempdir().expect("fresh artifact controller repo");
+        run_fixture_git(repo.path(), &["init", "-q"]);
+        run_fixture_git(
+            repo.path(),
+            &["config", "--local", "user.name", "Vega Test"],
+        );
+        run_fixture_git(
+            repo.path(),
+            &["config", "--local", "user.email", "vega@example.invalid"],
+        );
+        fs::write(repo.path().join("base.txt"), "base\n").expect("artifact fixture base");
+        run_fixture_git(repo.path(), &["add", "--", "base.txt"]);
+        run_fixture_git(repo.path(), &["commit", "-q", "-m", "base"]);
+        repo
+    }
+
+    fn artifact_write_call(call_id: &str, path: &str, bytes: u64) -> ToolCall {
+        ToolCall {
+            id: call_id.to_owned(),
+            tool: "write".to_owned(),
+            input_json: format!(
+                r#"{{"audit_version":"write_edit_v1","tool":"write","path":"{path}","content_bytes":{bytes},"fingerprint_v1":"{}"}}"#,
+                "a".repeat(64)
+            ),
+        }
+    }
+
+    fn artifact_write_result(
+        project_id: &str,
+        thread_id: &str,
+        call_id: &str,
+        path: &str,
+        bytes: u64,
+        reused: bool,
+    ) -> ToolResult {
+        ToolResult {
+            status: vega_conversation::types::ToolCallStatus::Success,
+            output: vega_tools::WriteSuccessOutput {
+                path: path.to_owned(),
+                bytes_written: bytes,
+                checkpoint_ref: vega_tools::CheckpointIds::new(project_id, thread_id, call_id)
+                    .expect("artifact checkpoint ids")
+                    .checkpoint_ref(),
+            }
+            .to_json()
+            .expect("artifact result JSON"),
+            reused,
+            exit_code: None,
+            duration_ms: None,
+            truncated: (!reused).then_some(false),
+            invalid: None,
+        }
+    }
+
+    fn receive_artifact_terminal(
+        workspace: Arc<GitWorkspaceService>,
+        service: Arc<ArtifactService>,
+        job: ArtifactTerminalJob,
+    ) -> Result<(u64, ArtifactTerminalResult), GitWorkspaceErrorCode> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        run_artifact_terminal_worker(
+            workspace,
+            service,
+            job,
+            tokio_util::sync::CancellationToken::new(),
+            sender,
+        );
+        receiver.recv().expect("artifact terminal result")
+    }
+
+    fn artifact_capture_work(
+        service: &ArtifactService,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> ArtifactTerminalWork {
+        let call_id = call.id.clone();
+        let candidate = service
+            .prepare_capture(&call, &result)
+            .expect("strict artifact terminal")
+            .expect("eligible artifact terminal");
+        ArtifactTerminalWork::Capture { call_id, candidate }
+    }
+
+    #[test]
+    fn artifact_controller_terminal_refresh_captures_and_bash_reconciles_downgrade() {
+        const PROJECT: &str = "artifact-project";
+        const THREAD: &str = "artifact-thread";
+        let repo = artifact_controller_repo();
+        fs::write(repo.path().join("artifact.txt"), "agent\n").expect("agent artifact body");
+        let workspace =
+            Arc::new(GitWorkspaceService::new(repo.path()).expect("artifact controller workspace"));
+        let service = Arc::new(
+            ArtifactService::new(workspace.clone(), PROJECT.into(), THREAD.into(), 1)
+                .expect("artifact controller service"),
+        );
+        let first = receive_artifact_terminal(
+            workspace.clone(),
+            service.clone(),
+            ArtifactTerminalJob {
+                sequence: 1,
+                work: artifact_capture_work(
+                    &service,
+                    artifact_write_call("write-1", "artifact.txt", 6),
+                    artifact_write_result(PROJECT, THREAD, "write-1", "artifact.txt", 6, false),
+                ),
+            },
+        )
+        .expect("strict terminal capture");
+        let (_, captured) = first.1.captured.expect("eligible terminal card");
+        assert_eq!(
+            captured.source,
+            vega_conversation::types::ArtifactSource::AgentArtifact
+        );
+        assert!(captured.preview_available);
+
+        fs::write(repo.path().join("artifact.txt"), "human\n").expect("later workspace mutation");
+        let reconciled = receive_artifact_terminal(
+            workspace,
+            service,
+            ArtifactTerminalJob {
+                sequence: 2,
+                work: ArtifactTerminalWork::Refresh,
+            },
+        )
+        .expect("bash terminal reconciliation");
+        assert!(reconciled.1.captured.is_none());
+        assert_eq!(reconciled.1.cards.len(), 1);
+        assert_eq!(
+            reconciled.1.cards[0].source,
+            vega_conversation::types::ArtifactSource::WorkspaceChange
+        );
+    }
+
+    #[gpui::test]
+    async fn artifact_controller_real_batch_pairing_conflict_overflow_and_route_cancel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = artifact_controller_repo();
+        let store = Store::open(":memory:").expect("artifact window memory store");
+        store.migrate().expect("artifact window migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 artifact root"),
+            "artifact",
+            None,
+        )
+        .expect("artifact project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("artifact thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let root = cx.new(VegaWindow::new);
+        let route_cancel = root.update(cx, |root, _| {
+            root.artifact_controller
+                .begin(&thread, stream.clone(), repo.path().to_path_buf())
+                .expect("artifact route");
+            root.artifact_controller
+                .active
+                .as_mut()
+                .expect("active artifact route")
+                .agent_generation = Some(1);
+            root.artifact_controller
+                .active
+                .as_ref()
+                .expect("active artifact route")
+                .cancel
+                .clone()
+        });
+        let original = artifact_write_call("reused-id", "artifact.txt", 6);
+        let conflicting = artifact_write_call("reused-id", "other.txt", 1);
+        root.update(cx, |root, cx| {
+            // This is the same ordering as the real AgentBatch loop: observe
+            // before ownership moves into ConversationStream.
+            root.observe_artifact_event(
+                1,
+                &stream,
+                &ConversationEvent::ToolCallProposed {
+                    call: original.clone(),
+                },
+                cx,
+            );
+            root.observe_artifact_event(
+                1,
+                &stream,
+                &ConversationEvent::ToolCallProposed { call: conflicting },
+                cx,
+            );
+            assert!(
+                root.artifact_controller
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.proposals.get("reused-id"))
+                    .is_some_and(|proposal| proposal.call.is_none()),
+                "a reused id with different safe audit data is corrupt"
+            );
+            root.artifact_controller
+                .active
+                .as_mut()
+                .expect("active artifact route")
+                .terminal_sequence = u64::MAX;
+            root.observe_artifact_event(
+                1,
+                &stream,
+                &ConversationEvent::ToolCallFinished {
+                    call_id: "reused-id".into(),
+                    result: artifact_write_result(
+                        &thread.project_id,
+                        &thread.id,
+                        "reused-id",
+                        "artifact.txt",
+                        6,
+                        false,
+                    ),
+                },
+                cx,
+            );
+            assert!(root.artifact_controller.active.is_none());
+        });
+        assert!(route_cancel.is_cancelled(), "checked overflow closes route");
+
+        fs::write(repo.path().join("artifact.txt"), "agent\n")
+            .expect("first conflicting artifact body");
+        fs::write(repo.path().join("other.txt"), "x").expect("second conflicting artifact body");
+        let first_call = artifact_write_call("fifo-conflict", "artifact.txt", 6);
+        let second_call = artifact_write_call("fifo-conflict", "other.txt", 1);
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: first_call.clone(),
+                },
+                cx,
+            )
+        });
+        let (identity, workspace, service, first_job, second_job, conflict_cancel) =
+            root.update(cx, |root, _| {
+                let identity = root
+                    .artifact_controller
+                    .begin(&thread, stream.clone(), repo.path().to_path_buf())
+                    .expect("replacement artifact route");
+                let active = root
+                    .artifact_controller
+                    .active
+                    .as_mut()
+                    .expect("conflict artifact route");
+                let first_job = ArtifactTerminalJob {
+                    sequence: 1,
+                    work: artifact_capture_work(
+                        &active.service,
+                        first_call.clone(),
+                        artifact_write_result(
+                            &thread.project_id,
+                            &thread.id,
+                            "fifo-conflict",
+                            "artifact.txt",
+                            6,
+                            false,
+                        ),
+                    ),
+                };
+                let second_job = ArtifactTerminalJob {
+                    sequence: 2,
+                    work: artifact_capture_work(
+                        &active.service,
+                        second_call,
+                        artifact_write_result(
+                            &thread.project_id,
+                            &thread.id,
+                            "fifo-conflict",
+                            "other.txt",
+                            1,
+                            false,
+                        ),
+                    ),
+                };
+                active.terminal_in_flight = Some(1);
+                (
+                    identity,
+                    active.workspace.clone(),
+                    active.service.clone(),
+                    first_job,
+                    second_job,
+                    active.cancel.clone(),
+                )
+            });
+        let first_result = receive_artifact_terminal(workspace, service, first_job)
+            .expect("first FIFO candidate capture");
+        let card = root.update(cx, |root, cx| {
+            root.finish_artifact_terminal(&identity, Ok(first_result), cx);
+            let active = root
+                .artifact_controller
+                .active
+                .as_mut()
+                .expect("route after first FIFO capture");
+            active.terminal_queue.push_back(second_job);
+            active.terminal_queue.push_back(ArtifactTerminalJob {
+                sequence: 3,
+                work: ArtifactTerminalWork::Refresh,
+            });
+            active
+                .cards
+                .values()
+                .next()
+                .cloned()
+                .expect("first FIFO card inserted adjacent to tool")
+        });
+        let ArtifactTerminalDispatch {
+            identity: next_identity,
+            workspace,
+            service,
+            job,
+            cancel,
+        } = root
+            .update(cx, |root, _| root.take_next_artifact_terminal())
+            .expect("production FIFO takes conflict before refresh");
+        assert_eq!(job.sequence, 2);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        run_artifact_terminal_worker(workspace, service, job, cancel, sender);
+        let conflict = receiver.recv().expect("FIFO conflict worker result");
+        assert!(matches!(
+            conflict,
+            Err(GitWorkspaceErrorCode::ArtifactConflict)
+        ));
+        root.update(cx, |root, cx| {
+            assert_eq!(
+                root.artifact_controller
+                    .active
+                    .as_ref()
+                    .expect("route before conflict completion")
+                    .terminal_queue
+                    .len(),
+                1,
+                "later FIFO work remains queued until conflict closes the route"
+            );
+            root.finish_artifact_terminal(&next_identity, conflict, cx);
+        });
+        assert!(conflict_cancel.is_cancelled());
+        assert!(root.read_with(cx, |root, _| root.artifact_controller.active.is_none()));
+        assert!(card.read_with(cx, |card, _| {
+            card.projection().current_file_id.is_none()
+                && !card.projection().preview_available
+                && card.inline_error_code() == Some(GitWorkspaceErrorCode::ArtifactConflict)
+        }));
+        let cap_cancel = root.update(cx, |root, cx| {
+            root.artifact_controller
+                .begin(&thread, stream.clone(), repo.path().to_path_buf())
+                .expect("proposal cap route");
+            root.artifact_controller
+                .active
+                .as_mut()
+                .expect("proposal cap active route")
+                .agent_generation = Some(1);
+            let id = "i".repeat(120);
+            let exact = ToolCall {
+                input_json: "x".repeat(64 * 1024 - id.len() - "write".len()),
+                id,
+                tool: "write".into(),
+            };
+            root.observe_artifact_event(
+                1,
+                &stream,
+                &ConversationEvent::ToolCallProposed {
+                    call: exact.clone(),
+                },
+                cx,
+            );
+            assert!(
+                root.artifact_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.proposals.contains_key(&exact.id))
+            );
+            let mut plus_one = exact;
+            plus_one.input_json.push('x');
+            let cancel = root
+                .artifact_controller
+                .active
+                .as_ref()
+                .expect("proposal cap route before plus one")
+                .cancel
+                .clone();
+            root.observe_artifact_event(
+                1,
+                &stream,
+                &ConversationEvent::ToolCallProposed { call: plus_one },
+                cx,
+            );
+            cancel
+        });
+        assert!(cap_cancel.is_cancelled());
+        assert!(root.read_with(cx, |root, _| root.artifact_controller.active.is_none()));
+        root.update(cx, |root, _| {
+            root.artifact_controller
+                .begin(&thread, stream, repo.path().to_path_buf())
+                .expect("settings artifact route");
+        });
+        cx.update(|cx| cx.set_global(SettingsOpen(true)));
+        cx.run_until_parked();
+        assert!(root.read_with(cx, |root, _| root.artifact_controller.active.is_none()));
+    }
+
+    #[gpui::test]
+    async fn artifact_controller_agent_batch_generation_orphans_are_content_free_refreshes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = artifact_controller_repo();
+        let store = Store::open(":memory:").expect("artifact generation store");
+        store.migrate().expect("artifact generation migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 artifact root"),
+            "artifact",
+            None,
+        )
+        .expect("artifact generation project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("artifact generation thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let root = cx.new(VegaWindow::new);
+        root.update(cx, |root, _| {
+            root.artifact_controller
+                .begin(&thread, stream.clone(), repo.path().to_path_buf())
+                .expect("artifact generation route");
+        });
+        let generation_a = root.update(cx, |root, _| {
+            let (generation, _) =
+                root.agent_controller
+                    .begin(thread.id.clone(), stream.clone(), None, None);
+            root.begin_artifact_agent_generation(generation, &stream);
+            generation
+        });
+        let (sender, receiver) = mpsc::sync_channel(4);
+        sender
+            .send(AgentUpdate::Event(ConversationEvent::ToolCallProposed {
+                call: artifact_write_call("same-id", "artifact.txt", 6),
+            }))
+            .expect("orphan proposal");
+        sender
+            .send(AgentUpdate::Finished(false))
+            .expect("orphan terminal");
+        let batch = drain_agent_updates(&receiver);
+        assert!(root.update(cx, |root, cx| matches!(
+            root.apply_agent_batch_ingress(generation_a, &thread.id, &stream, batch, cx),
+            AgentBatchIngress::Finished { success: false, .. }
+        )));
+
+        let generation_b = root.update(cx, |root, _| {
+            let (generation, _) =
+                root.agent_controller
+                    .begin(thread.id.clone(), stream.clone(), None, None);
+            root.begin_artifact_agent_generation(generation, &stream);
+            root.artifact_controller
+                .active
+                .as_mut()
+                .expect("active generation route")
+                .terminal_in_flight = Some(999);
+            generation
+        });
+        assert!(root.update(cx, |root, cx| matches!(
+            root.apply_agent_batch_ingress(
+                generation_a,
+                &thread.id,
+                &stream,
+                AgentBatch {
+                    events: vec![ConversationEvent::ToolCallProposed {
+                        call: artifact_write_call("stale-generation", "artifact.txt", 6),
+                    }],
+                    finished: None,
+                },
+                cx,
+            ),
+            AgentBatchIngress::Stale
+        )));
+        assert!(root.read_with(cx, |root, _| {
+            root.artifact_controller
+                .active
+                .as_ref()
+                .is_some_and(|active| active.proposals.is_empty())
+        }));
+        let huge_output = "sensitive unrelated output".repeat(100_000);
+        let (sender, receiver) = mpsc::sync_channel(4);
+        sender
+            .send(AgentUpdate::Event(ConversationEvent::ToolCallFinished {
+                call_id: "same-id".into(),
+                result: ToolResult {
+                    status: vega_conversation::types::ToolCallStatus::Success,
+                    output: huge_output,
+                    reused: false,
+                    exit_code: None,
+                    duration_ms: None,
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            }))
+            .expect("later same-id terminal");
+        let batch = drain_agent_updates(&receiver);
+        root.update(cx, |root, cx| {
+            assert!(matches!(
+                root.apply_agent_batch_ingress(generation_b, &thread.id, &stream, batch, cx),
+                AgentBatchIngress::Running
+            ));
+            let active = root
+                .artifact_controller
+                .active
+                .as_ref()
+                .expect("active artifact generation");
+            assert!(matches!(
+                active.terminal_queue.back().map(|job| &job.work),
+                Some(ArtifactTerminalWork::Refresh)
+            ));
+            assert!(active.service.cards().is_empty());
+        });
+
+        assert!(root.update(cx, |root, cx| matches!(
+            root.apply_agent_batch_ingress(
+                generation_b,
+                &thread.id,
+                &stream,
+                AgentBatch {
+                    events: Vec::new(),
+                    finished: Some(false),
+                },
+                cx,
+            ),
+            AgentBatchIngress::Finished { success: false, .. }
+        )));
+        let generation_c = root.update(cx, |root, _| {
+            let (generation, _) =
+                root.agent_controller
+                    .begin(thread.id.clone(), stream.clone(), None, None);
+            root.begin_artifact_agent_generation(generation, &stream);
+            generation
+        });
+        root.update(cx, |root, cx| {
+            assert!(matches!(
+                root.apply_agent_batch_ingress(
+                    generation_c,
+                    &thread.id,
+                    &stream,
+                    AgentBatch {
+                        events: vec![ConversationEvent::ToolCallProposed {
+                            call: artifact_write_call("cancelled-id", "artifact.txt", 6),
+                        }],
+                        finished: None,
+                    },
+                    cx,
+                ),
+                AgentBatchIngress::Running
+            ));
+            root.cancel_active_agent(cx);
+            assert!(
+                root.artifact_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.proposals.is_empty())
+            );
+            assert!(matches!(
+                root.apply_agent_batch_ingress(
+                    generation_c,
+                    &thread.id,
+                    &stream,
+                    AgentBatch {
+                        events: Vec::new(),
+                        finished: Some(false),
+                    },
+                    cx,
+                ),
+                AgentBatchIngress::Finished { success: false, .. }
+            ));
+        });
+        let generation_d = root.update(cx, |root, _| {
+            let (generation, _) =
+                root.agent_controller
+                    .begin(thread.id.clone(), stream.clone(), None, None);
+            root.begin_artifact_agent_generation(generation, &stream);
+            generation
+        });
+        root.update(cx, |root, cx| {
+            assert!(matches!(
+                root.apply_agent_batch_ingress(
+                    generation_d,
+                    &thread.id,
+                    &stream,
+                    AgentBatch {
+                        events: vec![ConversationEvent::ToolCallFinished {
+                            call_id: "cancelled-id".into(),
+                            result: artifact_write_result(
+                                &thread.project_id,
+                                &thread.id,
+                                "cancelled-id",
+                                "artifact.txt",
+                                6,
+                                false,
+                            ),
+                        }],
+                        finished: None,
+                    },
+                    cx,
+                ),
+                AgentBatchIngress::Running
+            ));
+            let active = root
+                .artifact_controller
+                .active
+                .as_ref()
+                .expect("active cancelled replacement generation");
+            assert!(matches!(
+                active.terminal_queue.back().map(|job| &job.work),
+                Some(ArtifactTerminalWork::Refresh)
+            ));
+            assert!(active.service.cards().is_empty());
+        });
+    }
+
+    #[gpui::test]
+    async fn artifact_controller_preview_open_latest_stale_and_max_fences(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = artifact_controller_repo();
+        fs::write(repo.path().join("artifact.txt"), "agent\n").expect("preview artifact body");
+        let store = Store::open(":memory:").expect("artifact fence memory store");
+        store.migrate().expect("artifact fence migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 artifact root"),
+            "artifact",
+            None,
+        )
+        .expect("artifact project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("artifact thread");
+        let workspace =
+            Arc::new(GitWorkspaceService::new(repo.path()).expect("artifact fence workspace"));
+        let service = Arc::new(
+            ArtifactService::new(
+                workspace.clone(),
+                thread.project_id.clone(),
+                thread.id.clone(),
+                1,
+            )
+            .expect("artifact fence service"),
+        );
+        let terminal = receive_artifact_terminal(
+            workspace.clone(),
+            service.clone(),
+            ArtifactTerminalJob {
+                sequence: 1,
+                work: artifact_capture_work(
+                    &service,
+                    artifact_write_call("write-1", "artifact.txt", 6),
+                    artifact_write_result(
+                        &thread.project_id,
+                        &thread.id,
+                        "write-1",
+                        "artifact.txt",
+                        6,
+                        false,
+                    ),
+                ),
+            },
+        )
+        .expect("artifact fence capture");
+        let (_, projection) = terminal.1.captured.expect("artifact fence card");
+        let file_id = projection.current_file_id.expect("current artifact file");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("artifact preview runtime");
+        let preview = runtime
+            .block_on(service.preview(projection.id, tokio_util::sync::CancellationToken::new()))
+            .expect("artifact preview");
+
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let root = cx.new(VegaWindow::new);
+        let card = cx.new(|cx| {
+            ArtifactCard::new(
+                thread.id.clone(),
+                thread.project_id.clone(),
+                projection.clone(),
+                cx,
+            )
+        });
+        assert!(!stream.update(cx, |stream, cx| {
+            stream.apply_artifact_card("missing-call", card.clone(), cx)
+        }));
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "assistant-before-artifact".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: artifact_write_call("write-1", "artifact.txt", 6),
+                },
+                cx,
+            );
+            assert!(stream.apply_artifact_card("write-1", card.clone(), cx));
+            assert!(
+                stream.apply_artifact_card("write-1", card.clone(), cx),
+                "an identical duplicate is idempotent"
+            );
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: artifact_write_call("later-tool", "later.txt", 1),
+                },
+                cx,
+            );
+            assert!(stream.artifact_card_is_adjacent("write-1"));
+        });
+        let route = root.update(cx, |root, _| {
+            let route = root
+                .artifact_controller
+                .begin(&thread, stream.clone(), repo.path().to_path_buf())
+                .expect("artifact fence route");
+            let active = root
+                .artifact_controller
+                .active
+                .as_mut()
+                .expect("active artifact fence route");
+            active.workspace = workspace;
+            active.service = service;
+            active.cards.insert(projection.id, card.clone());
+            route
+        });
+        let older_preview = ArtifactPreviewFence {
+            route: route.clone(),
+            sequence: 1,
+            card_id: projection.id,
+            file_id,
+        };
+        let latest_preview = ArtifactPreviewFence {
+            sequence: 2,
+            ..older_preview.clone()
+        };
+        let rows_before_preview = stream.read_with(cx, |stream, cx| stream.virtual_row_count(cx));
+        let expected_preview_rows = preview.text().split_inclusive('\n').count();
+        root.update(cx, |root, cx| {
+            let active = root
+                .artifact_controller
+                .active
+                .as_mut()
+                .expect("active artifact preview fence");
+            active.preview_sequence = 2;
+            active.preview_fence = Some(latest_preview.clone());
+            root.finish_artifact_preview(older_preview, Ok(preview.clone()), cx);
+            assert_eq!(card.read(cx).row_count(), 2, "stale preview is dropped");
+            root.finish_artifact_preview(latest_preview, Ok(preview), cx);
+            assert!(card.read(cx).row_count() > 2, "latest preview is applied");
+            assert_eq!(
+                stream.read(cx).virtual_row_count(cx),
+                rows_before_preview + expected_preview_rows
+            );
+        });
+
+        let older_open = ArtifactOpenFence {
+            route: route.clone(),
+            sequence: 1,
+            card_id: projection.id,
+            file_id,
+            target: OpenInTarget::VisualStudioCode,
+        };
+        let latest_open = ArtifactOpenFence {
+            sequence: 2,
+            ..older_open.clone()
+        };
+        card.update(cx, |card, cx| {
+            card.set_opening(Some(OpenInTarget::VisualStudioCode), cx)
+        });
+        root.update(cx, |root, cx| {
+            let active = root
+                .artifact_controller
+                .active
+                .as_mut()
+                .expect("active artifact open fence");
+            active.open_sequence = 2;
+            active.open_fence = Some(latest_open.clone());
+            root.finish_artifact_open(
+                older_open,
+                Ok(OpenInOutcome {
+                    card_id: projection.id,
+                    target: OpenInTarget::VisualStudioCode,
+                }),
+                cx,
+            );
+            assert!(
+                root.artifact_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.open_fence.as_ref() == Some(&latest_open)),
+                "stale open completion cannot release the latest fence"
+            );
+            root.finish_artifact_open(
+                latest_open,
+                Ok(OpenInOutcome {
+                    card_id: projection.id,
+                    target: OpenInTarget::VisualStudioCode,
+                }),
+                cx,
+            );
+            assert!(
+                root.artifact_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.open_fence.is_none()),
+                "latest open completion is accepted"
+            );
+        });
+
+        let terminal_cancel = tokio_util::sync::CancellationToken::new();
+        card.update(cx, |card, cx| {
+            card.set_opening(Some(OpenInTarget::Terminal), cx)
+        });
+        root.update(cx, |root, cx| {
+            let active = root
+                .artifact_controller
+                .active
+                .as_mut()
+                .expect("active terminal cancellation route");
+            active.agent_generation = Some(7);
+            active.terminal_in_flight = Some(999);
+            active.open_cancel = Some(terminal_cancel.clone());
+            active.open_fence = Some(ArtifactOpenFence {
+                route: route.clone(),
+                sequence: 3,
+                card_id: projection.id,
+                file_id,
+                target: OpenInTarget::Terminal,
+            });
+            root.observe_artifact_event(
+                7,
+                &route.stream,
+                &ConversationEvent::ToolCallFinished {
+                    call_id: "bash-terminal".into(),
+                    result: ToolResult {
+                        status: vega_conversation::types::ToolCallStatus::Success,
+                        output: "unrelated raw output".repeat(100_000),
+                        reused: false,
+                        exit_code: Some(0),
+                        duration_ms: Some(1),
+                        truncated: Some(false),
+                        invalid: None,
+                    },
+                },
+                cx,
+            );
+            let active = root
+                .artifact_controller
+                .active
+                .as_ref()
+                .expect("terminal cancellation keeps route");
+            assert!(active.open_fence.is_none());
+            assert!(matches!(
+                active.terminal_queue.back().map(|job| &job.work),
+                Some(ArtifactTerminalWork::Refresh)
+            ));
+        });
+        assert!(terminal_cancel.is_cancelled());
+        assert_eq!(card.read_with(cx, |card, _| card.row_count()), 3);
+
+        let open_starts = ARTIFACT_OPEN_WORKER_STARTS.load(std::sync::atomic::Ordering::SeqCst);
+        card.update(cx, |card, cx| {
+            card.set_opening(Some(OpenInTarget::Cursor), cx)
+        });
+        let cancel = root.update(cx, |root, cx| {
+            let active = root
+                .artifact_controller
+                .active
+                .as_mut()
+                .expect("active artifact max fence");
+            active.open_sequence = u64::MAX;
+            let cancel = active.cancel.clone();
+            root.request_artifact_open(
+                card.clone(),
+                &ArtifactOpenRequested {
+                    thread_id: route.thread_id.clone(),
+                    project_id: route.project_id.clone(),
+                    card_id: projection.id,
+                    file_id,
+                    target: OpenInTarget::Cursor,
+                },
+                cx,
+            );
+            cancel
+        });
+        assert!(cancel.is_cancelled());
+        assert!(root.read_with(cx, |root, _| root.artifact_controller.active.is_none()));
+        assert_eq!(
+            ARTIFACT_OPEN_WORKER_STARTS.load(std::sync::atomic::Ordering::SeqCst),
+            open_starts,
+            "checked overflow cannot start an Open worker"
+        );
+        assert_eq!(card.read_with(cx, |card, _| card.row_count()), 3);
+        assert!(card.read_with(cx, |card, _| card.projection().current_file_id.is_none()));
+
+        let removed_card = cx.new(|cx| {
+            ArtifactCard::new(
+                thread.id.clone(),
+                thread.project_id.clone(),
+                projection.clone(),
+                cx,
+            )
+        });
+        let removed_cancel = root.update(cx, |root, _| {
+            root.artifact_controller
+                .begin(&thread, stream.clone(), repo.path().to_path_buf())
+                .expect("selected-project route");
+            let active = root
+                .artifact_controller
+                .active
+                .as_mut()
+                .expect("selected-project active route");
+            active.cards.insert(projection.id, removed_card.clone());
+            active.cancel.clone()
+        });
+        cx.update(|cx| {
+            cx.set_global(vega_ui::sidebar::SelectedProject(None));
+        });
+        cx.run_until_parked();
+        assert!(removed_cancel.is_cancelled());
+        assert!(removed_card.read_with(cx, |card, _| card.projection().current_file_id.is_none()));
+        removed_card.update(cx, |card, cx| card.set_opening(Some(OpenInTarget::Zed), cx));
+        root.update(cx, |root, cx| {
+            root.request_artifact_open(
+                removed_card.clone(),
+                &ArtifactOpenRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                    card_id: projection.id,
+                    file_id,
+                    target: OpenInTarget::Zed,
+                },
+                cx,
+            );
+        });
+        assert_eq!(
+            ARTIFACT_OPEN_WORKER_STARTS.load(std::sync::atomic::Ordering::SeqCst),
+            open_starts,
+            "removed project cannot start an Open worker"
+        );
+        assert_eq!(removed_card.read_with(cx, |card, _| card.row_count()), 3);
+
+        let active_none_card = cx.new(|cx| {
+            ArtifactCard::new(
+                thread.id.clone(),
+                thread.project_id.clone(),
+                projection.clone(),
+                cx,
+            )
+        });
+        let preview_starts =
+            ARTIFACT_PREVIEW_WORKER_STARTS.load(std::sync::atomic::Ordering::SeqCst);
+        root.update(cx, |root, cx| {
+            root.request_artifact_preview(
+                active_none_card.clone(),
+                &ArtifactPreviewRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                    card_id: projection.id,
+                    file_id,
+                },
+                cx,
+            );
+            root.request_artifact_open(
+                active_none_card.clone(),
+                &ArtifactOpenRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                    card_id: projection.id,
+                    file_id,
+                    target: OpenInTarget::DefaultApplication,
+                },
+                cx,
+            );
+            root.request_artifact_open(
+                active_none_card.clone(),
+                &ArtifactOpenRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                    card_id: projection.id,
+                    file_id,
+                    target: OpenInTarget::DefaultApplication,
+                },
+                cx,
+            );
+        });
+        assert!(active_none_card.read_with(cx, |card, _| {
+            card.projection().current_file_id.is_none()
+                && !card.projection().preview_available
+                && card.inline_error_code() == Some(GitWorkspaceErrorCode::StaleGeneration)
+        }));
+        assert_eq!(
+            ARTIFACT_PREVIEW_WORKER_STARTS.load(std::sync::atomic::Ordering::SeqCst),
+            preview_starts
+        );
+        assert_eq!(
+            ARTIFACT_OPEN_WORKER_STARTS.load(std::sync::atomic::Ordering::SeqCst),
+            open_starts
+        );
+
+        cx.update(|cx| {
+            cx.set_global(vega_ui::sidebar::SelectedProject(Some(
+                thread.project_id.clone(),
+            )));
+        });
+        let owned_card = cx.new(|cx| {
+            ArtifactCard::new(
+                thread.id.clone(),
+                thread.project_id.clone(),
+                projection.clone(),
+                cx,
+            )
+        });
+        let foreign_card = cx.new(|cx| {
+            ArtifactCard::new(
+                thread.id.clone(),
+                thread.project_id.clone(),
+                projection.clone(),
+                cx,
+            )
+        });
+        root.update(cx, |root, _| {
+            root.artifact_controller
+                .begin(&thread, stream, repo.path().to_path_buf())
+                .expect("ownership mismatch route");
+            root.artifact_controller
+                .active
+                .as_mut()
+                .expect("ownership mismatch active route")
+                .cards
+                .insert(projection.id, owned_card.clone());
+        });
+        root.update(cx, |root, cx| {
+            root.request_artifact_open(
+                foreign_card.clone(),
+                &ArtifactOpenRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                    card_id: projection.id,
+                    file_id,
+                    target: OpenInTarget::RevealInFinder,
+                },
+                cx,
+            );
+        });
+        assert!(foreign_card.read_with(cx, |card, _| {
+            card.projection().current_file_id.is_none()
+                && !card.projection().preview_available
+                && card.inline_error_code() == Some(GitWorkspaceErrorCode::StaleGeneration)
+        }));
+
+        let (_, other_snapshot) = receive_refresh(None, Some(repo.path().to_path_buf()));
+        let mismatched_file_id = other_snapshot.files[0].id;
+        assert_ne!(mismatched_file_id, file_id);
+        root.update(cx, |root, cx| {
+            root.request_artifact_preview(
+                owned_card.clone(),
+                &ArtifactPreviewRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                    card_id: projection.id,
+                    file_id: mismatched_file_id,
+                },
+                cx,
+            );
+        });
+        assert!(owned_card.read_with(cx, |card, _| {
+            card.projection().current_file_id.is_none()
+                && !card.projection().preview_available
+                && card.inline_error_code() == Some(GitWorkspaceErrorCode::StaleGeneration)
+        }));
+        assert_eq!(
+            ARTIFACT_PREVIEW_WORKER_STARTS.load(std::sync::atomic::Ordering::SeqCst),
+            preview_starts
+        );
+        assert_eq!(
+            ARTIFACT_OPEN_WORKER_STARTS.load(std::sync::atomic::Ordering::SeqCst),
+            open_starts
+        );
     }
 
     fn install_diff_window_globals(store: Store, thread: Thread, cx: &mut App) {

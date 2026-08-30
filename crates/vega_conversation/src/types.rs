@@ -1865,6 +1865,9 @@ pub struct ArtifactCard {
     /// Present only while the artifact maps to a current, regular workspace
     /// file. Preview and Open in are disabled when this is absent.
     pub current_file_id: Option<WorkspaceFileId>,
+    /// Whether the private raw path is eligible for a bounded text preview.
+    /// Content validation still happens lazily when Preview is requested.
+    pub preview_available: bool,
 }
 
 /// Bounded text projection for an artifact preview. It intentionally does not

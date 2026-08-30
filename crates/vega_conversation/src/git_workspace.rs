@@ -513,6 +513,9 @@ impl GitWorkspaceService {
         let result = tokio::task::spawn_blocking(move || {
             let guard = build_artifact_open_guard(&runner, &file, &cancel)?;
             guard.revalidate()?;
+            if cancel.is_cancelled() {
+                return Err(error(GitWorkspaceErrorCode::Cancelled));
+            }
             let result = operation(&guard, &cancel);
             let postflight = guard.revalidate();
             match (result, postflight) {

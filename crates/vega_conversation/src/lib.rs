@@ -11,5 +11,5 @@ pub mod plans;
 pub mod threads;
 pub mod types;
 
-pub use artifact::ArtifactService;
+pub use artifact::{ArtifactCaptureCandidate, ArtifactService};
 pub use git_workspace::GitWorkspaceService;

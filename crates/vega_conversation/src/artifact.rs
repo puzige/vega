@@ -30,6 +30,11 @@ const PREVIEW_BYTES: usize = 1024 * 1024;
 const PREVIEW_LINES: usize = 10_000;
 const PREVIEW_LINE_BYTES: usize = 64 * 1024;
 const ROUTE_CARD_LIMIT: usize = 10_000;
+const PROPOSAL_RETAINED_BYTES: usize = 64 * 1024;
+const CALL_ID_BYTES: usize = 120;
+const LOGICAL_PATH_BYTES: usize = 4096;
+const TERMINAL_SUCCESS_BYTES: usize = 64 * 1024;
+const CAPTURE_CANDIDATE_RETAINED_BYTES: usize = 8192;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 static ARTIFACT_SERVICE_NONCE: AtomicU64 = AtomicU64::new(1);
 
@@ -48,6 +53,26 @@ enum TerminalFingerprint {
     },
 }
 
+/// Bounded, content-free capability produced by strict terminal validation.
+///
+/// The raw `ToolResult.output` is consumed during construction and is never
+/// retained in this value. Its fields remain private so callers cannot forge a
+/// capture after the trusted proposal/terminal pairing boundary.
+#[derive(Clone)]
+pub struct ArtifactCaptureCandidate {
+    call_id: String,
+    fingerprint: TerminalFingerprint,
+}
+
+impl std::fmt::Debug for ArtifactCaptureCandidate {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ArtifactCaptureCandidate")
+            .field("metadata", &"[redacted]")
+            .finish()
+    }
+}
+
 impl TerminalFingerprint {
     fn path(&self) -> &str {
         match self {
@@ -60,6 +85,27 @@ impl TerminalFingerprint {
             Self::Write { bytes_written, .. } | Self::Edit { bytes_written, .. } => *bytes_written,
         }
     }
+}
+
+fn validate_candidate_retained(
+    candidate: &ArtifactCaptureCandidate,
+) -> Result<(), GitWorkspaceError> {
+    let retained = std::mem::size_of::<ArtifactCaptureCandidate>()
+        .checked_add(candidate.call_id.len())
+        .and_then(|bytes| bytes.checked_add(candidate.fingerprint.path().len()))
+        .and_then(|bytes| match &candidate.fingerprint {
+            TerminalFingerprint::Write {
+                input_fingerprint, ..
+            }
+            | TerminalFingerprint::Edit {
+                input_fingerprint, ..
+            } => bytes.checked_add(input_fingerprint.len()),
+        })
+        .ok_or_else(|| workspace_error(GitWorkspaceErrorCode::ArtifactLimit))?;
+    if retained > CAPTURE_CANDIDATE_RETAINED_BYTES {
+        return Err(workspace_error(GitWorkspaceErrorCode::ArtifactLimit));
+    }
+    Ok(())
 }
 
 struct ArtifactRecord {
@@ -80,6 +126,9 @@ impl ArtifactRecord {
             label: self.label.clone(),
             source: self.source,
             current_file_id: self.current_file_id,
+            preview_available: !self.stale_disabled
+                && self.current_file_id.is_some()
+                && text_preview_path_allowed(&self.path),
         }
     }
 }
@@ -148,14 +197,37 @@ impl ArtifactService {
         })
     }
 
-    /// Records exactly one strict, non-reused write/edit success. Ordinary
-    /// non-candidates produce no card; identical duplicates are idempotent.
-    pub async fn capture(
+    /// Enforces the pre-clone retained proposal cap used by the app ingress.
+    pub fn validate_proposal(call: &ToolCall) -> Result<(), GitWorkspaceError> {
+        if call.id.len() > CALL_ID_BYTES {
+            return Err(workspace_error(GitWorkspaceErrorCode::ArtifactLimit));
+        }
+        let retained = call
+            .id
+            .len()
+            .checked_add(call.tool.len())
+            .and_then(|bytes| bytes.checked_add(call.input_json.len()))
+            .ok_or_else(|| workspace_error(GitWorkspaceErrorCode::ArtifactLimit))?;
+        if retained > PROPOSAL_RETAINED_BYTES {
+            return Err(workspace_error(GitWorkspaceErrorCode::ArtifactLimit));
+        }
+        Ok(())
+    }
+
+    /// Consumes a paired terminal immediately and returns only bounded,
+    /// content-free capture metadata. Raw terminal output is never retained.
+    pub fn prepare_capture(
         &self,
         call: &ToolCall,
         result: &ToolResult,
-        cancel: CancellationToken,
-    ) -> Result<Option<ArtifactCard>, GitWorkspaceError> {
+    ) -> Result<Option<ArtifactCaptureCandidate>, GitWorkspaceError> {
+        Self::validate_proposal(call)?;
+        if result.status == ToolCallStatus::Success
+            && !result.reused
+            && result.output.len() > TERMINAL_SUCCESS_BYTES
+        {
+            return Err(workspace_error(GitWorkspaceErrorCode::ArtifactLimit));
+        }
         let call_id = call.id.as_str();
         let Some(fingerprint) = verified_terminal(&self.project_id, &self.thread_id, call, result)?
         else {
@@ -164,7 +236,30 @@ impl ArtifactService {
             }
             return Ok(None);
         };
-        if let Some(existing) = self.existing_call(call_id, &fingerprint)? {
+        if fingerprint.path().len() > LOGICAL_PATH_BYTES {
+            return Err(workspace_error(GitWorkspaceErrorCode::ArtifactLimit));
+        }
+        let candidate = ArtifactCaptureCandidate {
+            call_id: call_id.to_owned(),
+            fingerprint,
+        };
+        validate_candidate_retained(&candidate)?;
+        let _ = self.existing_call(call_id, &candidate.fingerprint)?;
+        Ok(Some(candidate))
+    }
+
+    /// Records one already-validated mutation capability after workspace
+    /// refresh. Identical duplicates remain idempotent.
+    pub async fn capture_candidate(
+        &self,
+        candidate: ArtifactCaptureCandidate,
+        cancel: CancellationToken,
+    ) -> Result<Option<ArtifactCard>, GitWorkspaceError> {
+        let ArtifactCaptureCandidate {
+            call_id,
+            fingerprint,
+        } = candidate;
+        if let Some(existing) = self.existing_call(&call_id, &fingerprint)? {
             return Ok(Some(existing));
         }
 
@@ -198,7 +293,7 @@ impl ArtifactService {
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if let Some(slot) = state.by_call_id.get(call_id).copied() {
+        if let Some(slot) = state.by_call_id.get(&call_id).copied() {
             let existing = state
                 .cards
                 .get(slot)
@@ -230,9 +325,23 @@ impl ArtifactService {
             stale_disabled: current_file_id.is_none(),
         };
         let projection = card.projection();
-        state.by_call_id.insert(call_id.to_owned(), slot);
+        state.by_call_id.insert(call_id, slot);
         state.cards.push(card);
         Ok(Some(projection))
+    }
+
+    /// Convenience API for headless callers that do not need to queue the
+    /// bounded candidate separately.
+    pub async fn capture(
+        &self,
+        call: &ToolCall,
+        result: &ToolResult,
+        cancel: CancellationToken,
+    ) -> Result<Option<ArtifactCard>, GitWorkspaceError> {
+        let Some(candidate) = self.prepare_capture(call, result)? else {
+            return Ok(None);
+        };
+        self.capture_candidate(candidate, cancel).await
     }
 
     /// Reconciles every card against the latest workspace snapshot. Agent
@@ -363,6 +472,9 @@ impl ArtifactService {
         let attempts = self.launch_attempts.clone();
         self.workspace
             .artifact_open_with(file, cancel, move |guard, cancel| {
+                if cancel.is_cancelled() {
+                    return Err(workspace_error(GitWorkspaceErrorCode::Cancelled));
+                }
                 attempts.fetch_add(1, Ordering::SeqCst);
                 launch_open(&launcher, guard, target, timeout, cancel)
             })
@@ -980,6 +1092,91 @@ mod tests {
             truncated: Some(false),
             invalid: None,
         }
+    }
+
+    #[test]
+    fn artifact_retained_caps_are_inclusive_and_plus_one_fails_closed() {
+        let exact_id = "i".repeat(CALL_ID_BYTES);
+        let exact_total_input = "x".repeat(PROPOSAL_RETAINED_BYTES - exact_id.len() - 5);
+        let exact_proposal = ToolCall {
+            id: exact_id.clone(),
+            tool: "write".into(),
+            input_json: exact_total_input,
+        };
+        assert!(ArtifactService::validate_proposal(&exact_proposal).is_ok());
+        let mut plus_one_total = exact_proposal.clone();
+        plus_one_total.input_json.push('x');
+        assert_eq!(
+            ArtifactService::validate_proposal(&plus_one_total).map_err(|failure| failure.code()),
+            Err(GitWorkspaceErrorCode::ArtifactLimit)
+        );
+        let mut plus_one_id = exact_proposal;
+        plus_one_id.id.push('i');
+        plus_one_id.input_json.clear();
+        assert_eq!(
+            ArtifactService::validate_proposal(&plus_one_id).map_err(|failure| failure.code()),
+            Err(GitWorkspaceErrorCode::ArtifactLimit)
+        );
+
+        let repo = Repo::new();
+        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).unwrap());
+        let service =
+            ArtifactService::new(workspace, PROJECT_ID.into(), THREAD_ID.into(), 909).unwrap();
+        let call = write_call("cap", "artifact.txt", 1);
+        let mut exact_envelope = write_result("cap", "artifact.txt", 1, false);
+        exact_envelope.output = "x".repeat(TERMINAL_SUCCESS_BYTES);
+        assert!(matches!(
+            service
+                .prepare_capture(&call, &exact_envelope)
+                .map_err(|failure| failure.code()),
+            Err(code) if code != GitWorkspaceErrorCode::ArtifactLimit
+        ));
+        exact_envelope.output.push('x');
+        assert!(matches!(
+            service
+                .prepare_capture(&call, &exact_envelope)
+                .map_err(|failure| failure.code()),
+            Err(GitWorkspaceErrorCode::ArtifactLimit)
+        ));
+
+        let exact_path = "p".repeat(LOGICAL_PATH_BYTES);
+        assert!(
+            service
+                .prepare_capture(
+                    &write_call("path-cap", &exact_path, 1),
+                    &write_result("path-cap", &exact_path, 1, false),
+                )
+                .is_ok()
+        );
+        let plus_one_path = "p".repeat(LOGICAL_PATH_BYTES + 1);
+        assert!(matches!(
+            service
+                .prepare_capture(
+                    &write_call("path-over", &plus_one_path, 1),
+                    &write_result("path-over", &plus_one_path, 1, false),
+                )
+                .map_err(|failure| failure.code()),
+            Err(GitWorkspaceErrorCode::ArtifactLimit)
+        ));
+
+        let fixed = std::mem::size_of::<ArtifactCaptureCandidate>() + 1 + 64;
+        let exact_candidate = ArtifactCaptureCandidate {
+            call_id: "c".into(),
+            fingerprint: TerminalFingerprint::Write {
+                path: "p".repeat(CAPTURE_CANDIDATE_RETAINED_BYTES - fixed),
+                input_fingerprint: "a".repeat(64),
+                bytes_written: 1,
+            },
+        };
+        assert!(validate_candidate_retained(&exact_candidate).is_ok());
+        let mut plus_one_candidate = exact_candidate;
+        if let TerminalFingerprint::Write { path, .. } = &mut plus_one_candidate.fingerprint {
+            path.push('p');
+        }
+        assert_eq!(
+            validate_candidate_retained(&plus_one_candidate).map_err(|failure| failure.code()),
+            Err(GitWorkspaceErrorCode::ArtifactLimit)
+        );
     }
 
     async fn refreshed_workspace(repo: &Repo) -> Arc<GitWorkspaceService> {
