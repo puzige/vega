@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_remains_six_tables_at_user_version_one() {
+    fn schema_remains_six_tables_at_user_version_two() {
         let store = store();
         let user_version: i64 = store
             .conn()
@@ -287,7 +287,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(user_version, 1);
+        assert_eq!(user_version, 2);
         assert_eq!(table_count, 6);
     }
 }

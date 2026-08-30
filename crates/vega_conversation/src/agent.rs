@@ -591,16 +591,29 @@ struct PersistenceActor {
     task: tokio::task::JoinHandle<Result<(), VegaError>>,
 }
 
+struct PersistenceActorStart {
+    database_path: PathBuf,
+    project_id: String,
+    thread_id: String,
+    message_id: String,
+    model: String,
+    is_plan: bool,
+    next_tool_seq: i64,
+    config: PersistenceActorConfig,
+}
+
 impl PersistenceActor {
-    async fn start(
-        database_path: PathBuf,
-        project_id: String,
-        thread_id: String,
-        message_id: String,
-        model: String,
-        next_tool_seq: i64,
-        config: PersistenceActorConfig,
-    ) -> Result<Self, VegaError> {
+    async fn start(start: PersistenceActorStart) -> Result<Self, VegaError> {
+        let PersistenceActorStart {
+            database_path,
+            project_id,
+            thread_id,
+            message_id,
+            model,
+            is_plan,
+            next_tool_seq,
+            config,
+        } = start;
         let (sender, mut receiver) = mpsc::channel(PERSISTENCE_CHANNEL_CAPACITY);
         let (ready, opened) = oneshot::channel();
         let task = tokio::task::spawn_blocking(move || {
@@ -652,6 +665,7 @@ impl PersistenceActor {
                                 &thread_id,
                                 &message_id,
                                 &model,
+                                is_plan,
                                 &content,
                                 &mut next_tool_seq,
                                 &event,
@@ -732,6 +746,7 @@ struct PreparedRun {
     database_path: PathBuf,
     project_id: String,
     model: String,
+    is_plan: bool,
     user_message_id: String,
     assistant_message_id: String,
     assistant_seq: i64,
@@ -798,6 +813,65 @@ pub async fn run_thread_task(
     .await
 }
 
+/// Starts the Execute turn created by a committed Plan approval without
+/// inserting a duplicate user instruction. The durable instruction is loaded
+/// and validated before the runtime starts.
+pub async fn run_approved_plan_task(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    instruction_message_id: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+) -> Result<ConversationRun, ConversationError> {
+    run_approved_plan_task_with_permission_sink(
+        store,
+        provider,
+        tools,
+        thread_id,
+        instruction_message_id,
+        system_prompt,
+        cancel,
+        &RejectPermissionHook,
+        |_| Ok(()),
+    )
+    .await
+}
+
+/// Permission-aware variant of [`run_approved_plan_task`]. The review
+/// transaction has already committed before this function can call provider.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_approved_plan_task_with_permission_sink<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    instruction_message_id: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    event_sink: F,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_permission_config(
+        store,
+        provider,
+        tools,
+        thread_id,
+        crate::plans::APPROVAL_INSTRUCTION,
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        PersistenceActorConfig::default(),
+        Some(instruction_message_id.to_string()),
+    )
+    .await
+}
+
 /// Runs a thread task while forwarding each shared event at the actual
 /// runtime boundary. Critical persistence completes before `event_sink` is
 /// invoked; returning an error from the sink stops the task.
@@ -856,6 +930,7 @@ where
         permission_hook,
         event_sink,
         PersistenceActorConfig::default(),
+        None,
     )
     .await
 }
@@ -887,6 +962,7 @@ where
         &RejectPermissionHook,
         event_sink,
         actor_config,
+        None,
     )
     .await
 }
@@ -903,11 +979,14 @@ async fn run_thread_task_with_permission_config<F>(
     permission_hook: &dyn PermissionHook,
     mut event_sink: F,
     actor_config: PersistenceActorConfig,
+    persisted_user_message_id: Option<String>,
 ) -> Result<ConversationRun, ConversationError>
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
-    let user_message_id = ulid::Ulid::generate().to_string();
+    let user_message_id = persisted_user_message_id
+        .clone()
+        .unwrap_or_else(|| ulid::Ulid::generate().to_string());
     let assistant_message_id = ulid::Ulid::generate().to_string();
     let database_path = match store.database_path() {
         Some(path) => path.to_path_buf(),
@@ -928,6 +1007,7 @@ where
     let preparation_user_id = user_message_id.clone();
     let preparation_assistant_id = assistant_message_id.clone();
     let preparation_config = actor_config.clone();
+    let preparation_uses_existing_user = persisted_user_message_id.is_some();
     let prepared = match tokio::task::spawn_blocking(move || {
         prepare_run(
             preparation_path,
@@ -937,6 +1017,7 @@ where
             preparation_user_id,
             preparation_assistant_id,
             preparation_config,
+            preparation_uses_existing_user,
         )
     })
     .await
@@ -956,15 +1037,16 @@ where
         }
     };
 
-    let actor = match PersistenceActor::start(
-        prepared.database_path.clone(),
-        prepared.project_id.clone(),
-        thread_id.to_string(),
-        prepared.assistant_message_id.clone(),
-        prepared.model.clone(),
-        prepared.next_tool_seq,
-        actor_config,
-    )
+    let actor = match PersistenceActor::start(PersistenceActorStart {
+        database_path: prepared.database_path.clone(),
+        project_id: prepared.project_id.clone(),
+        thread_id: thread_id.to_string(),
+        message_id: prepared.assistant_message_id.clone(),
+        model: prepared.model.clone(),
+        is_plan: prepared.is_plan,
+        next_tool_seq: prepared.next_tool_seq,
+        config: actor_config,
+    })
     .await
     {
         Ok(actor) => actor,
@@ -1099,6 +1181,7 @@ fn prepare_run(
     user_message_id: String,
     assistant_message_id: String,
     config: PersistenceActorConfig,
+    uses_existing_user: bool,
 ) -> Result<PreparedRun, ConversationError> {
     #[cfg(not(test))]
     let _ = &config;
@@ -1115,12 +1198,11 @@ fn prepare_run(
             .execute_batch("PRAGMA query_only = ON")
             .map_err(runtime_store_error)?;
     }
-    vega_store::recovery::recover_thread(store.conn(), &thread_id, now_ms())
-        .map_err(runtime_store_error)?;
-    let transaction = store
-        .conn()
-        .unchecked_transaction()
-        .map_err(runtime_store_error)?;
+    if !uses_existing_user {
+        vega_store::recovery::recover_thread(store.conn(), &thread_id, now_ms())
+            .map_err(runtime_store_error)?;
+    }
+    let transaction = store.immediate_transaction().map_err(runtime_store_error)?;
     let thread = vega_store::threads::find(&transaction, &thread_id)
         .map_err(runtime_store_error)?
         .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
@@ -1178,23 +1260,66 @@ fn prepare_run(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let user_seq = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
     let now = now_ms();
-    messages::insert(
-        &transaction,
-        &messages::MessageRow {
-            id: user_message_id.clone(),
-            thread_id: thread_id.clone(),
-            seq: user_seq,
-            role: "user".to_string(),
-            kind: "text".to_string(),
-            content: user_content,
-            status: "done".to_string(),
-            created_at: now,
-        },
-    )
-    .map_err(runtime_store_error)?;
-    let assistant_seq = user_seq + 1;
+    if uses_existing_user {
+        let existing = messages::find(&transaction, &user_message_id)
+            .map_err(runtime_store_error)?
+            .ok_or_else(|| ConversationError::NotFound(user_message_id.clone()))?;
+        if existing.thread_id != thread_id
+            || existing.role != "user"
+            || existing.kind != "text"
+            || existing.status != "done"
+            || existing.content != crate::plans::APPROVAL_INSTRUCTION
+            || user_content != crate::plans::APPROVAL_INSTRUCTION
+            || run_mode != ThreadMode::Execute
+        {
+            return Err(ConversationError::CorruptRow(
+                "approved instruction identity mismatch".to_string(),
+            ));
+        }
+        let next = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
+        if next != existing.seq + 1 {
+            return Err(ConversationError::CorruptRow(
+                "approved instruction was already consumed".to_string(),
+            ));
+        }
+        let plans =
+            messages::plans_for_thread(&transaction, &thread_id).map_err(runtime_store_error)?;
+        let matching_approvals = plans
+            .iter()
+            .filter(|plan| plan.seq < existing.seq)
+            .filter(|plan| {
+                plan.plan_status.as_deref() == Some("approved")
+                    && plan.plan_reviewed_at == Some(existing.created_at)
+            })
+            .count();
+        if matching_approvals != 1 {
+            return Err(ConversationError::CorruptRow(
+                "approved instruction has no matching plan".to_string(),
+            ));
+        }
+    } else {
+        let user_seq = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
+        messages::insert(
+            &transaction,
+            &messages::MessageRow {
+                id: user_message_id.clone(),
+                thread_id: thread_id.clone(),
+                seq: user_seq,
+                role: "user".to_string(),
+                kind: "text".to_string(),
+                content: user_content,
+                status: "done".to_string(),
+                created_at: now,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .map_err(runtime_store_error)?;
+    }
+    let assistant_seq =
+        messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
     messages::insert(
         &transaction,
         &messages::MessageRow {
@@ -1202,10 +1327,15 @@ fn prepare_run(
             thread_id: thread_id.clone(),
             seq: assistant_seq,
             role: "assistant".to_string(),
+            // A Plan is promoted atomically only on successful completion.
+            // Interrupted/failed streams remain ordinary text history rows.
             kind: "text".to_string(),
             content: String::new(),
             status: "streaming".to_string(),
             created_at: now,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
         },
     )
     .map_err(runtime_store_error)?;
@@ -1282,6 +1412,7 @@ fn prepare_run(
         database_path,
         project_id: thread.project_id.clone(),
         model: thread.model.clone(),
+        is_plan: run_mode == ThreadMode::Plan,
         user_message_id,
         assistant_message_id,
         assistant_seq,
@@ -1875,6 +2006,7 @@ fn persist_runtime_event(
     thread_id: &str,
     message_id: &str,
     model: &str,
+    is_plan: bool,
     streamed_content: &str,
     next_tool_seq: &mut i64,
     event: &RuntimeEvent,
@@ -2093,11 +2225,25 @@ fn persist_runtime_event(
             )?;
         }
         RuntimeEvent::Finished(_) => {
-            ensure_message_updated(
-                messages::finish_streaming(store.conn(), message_id, streamed_content, "done")?,
-                message_id,
-            )?;
-            vega_store::threads::open_thread(store.conn(), thread_id, now_ms())?;
+            if is_plan {
+                messages::complete_plan(
+                    store.conn(),
+                    thread_id,
+                    message_id,
+                    streamed_content,
+                    now_ms(),
+                )
+                .map_err(|error| VegaError::Tool {
+                    tool: "plan".to_string(),
+                    message: error.to_string(),
+                })?;
+            } else {
+                ensure_message_updated(
+                    messages::finish_streaming(store.conn(), message_id, streamed_content, "done")?,
+                    message_id,
+                )?;
+                vega_store::threads::open_thread(store.conn(), thread_id, now_ms())?;
+            }
         }
         RuntimeEvent::Interrupted => {
             ensure_message_updated(
@@ -3629,6 +3775,9 @@ mod tests {
                     content: String::new(),
                     status: "done".into(),
                     created_at: 1,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
                 },
             )
             .unwrap();
@@ -3716,6 +3865,9 @@ mod tests {
                 content: "partial".into(),
                 status: "streaming".into(),
                 created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
             },
         )
         .unwrap();
@@ -4649,6 +4801,9 @@ mod tests {
                     content: content.into(),
                     status: status.into(),
                     created_at: seq,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
                 },
             )
             .unwrap();
@@ -5190,6 +5345,9 @@ mod tests {
                 content: String::new(),
                 status: "interrupted".into(),
                 created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
             },
         )
         .unwrap();
@@ -5313,5 +5471,490 @@ mod tests {
         assert!(!wire.contains("recovery-secret"));
         assert!(!wire.contains("recovery-new"));
         assert!(!wire.contains("must-not-survive"));
+    }
+
+    #[tokio::test]
+    async fn plan_success_is_promoted_only_at_durable_completion() {
+        let (store, dir, _project_id) = setup();
+        vega_store::threads::set_mode(store.conn(), "thread-1", "plan", 2).unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("1. inspect\n2. change".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]);
+        let run = run_thread_task(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            "make a plan",
+            "system",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let row = messages::find(store.conn(), &run.assistant_message_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.kind, "plan");
+        assert_eq!(row.status, "done");
+        assert_eq!(row.plan_status.as_deref(), Some("pending"));
+        drop(store);
+        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        assert_eq!(
+            messages::plans_for_thread(reopened.conn(), "thread-1")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_cancel_and_provider_error_restart_as_non_plan_history() {
+        for (provider, cancel) in [
+            (
+                MockProvider::new(vec![ScriptStep::Cancelled]),
+                CancellationToken::new(),
+            ),
+            (
+                MockProvider::new(vec![ScriptStep::Error {
+                    status: Some(500),
+                    message: "mock failure".into(),
+                    retryable: false,
+                }]),
+                CancellationToken::new(),
+            ),
+        ] {
+            let (store, dir, _project_id) = setup();
+            vega_store::threads::set_mode(store.conn(), "thread-1", "plan", 2).unwrap();
+            let tools = vega_tools::Tools::new(dir.path()).unwrap();
+            let _ = run_thread_task(
+                &store,
+                &provider,
+                &tools,
+                "thread-1",
+                "make a plan",
+                "system",
+                cancel,
+            )
+            .await;
+            let assistant: (String, String) = store
+                .conn()
+                .query_row(
+                    "SELECT kind,status FROM messages WHERE role='assistant' ORDER BY seq DESC LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(assistant.0, "text");
+            assert!(matches!(assistant.1.as_str(), "interrupted" | "failed"));
+            drop(store);
+            let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+            reopened.migrate().unwrap();
+            assert!(messages::recent(reopened.conn(), "thread-1", 10).is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn approved_instruction_starts_execute_turn_without_duplicate_user_row() {
+        let (store, dir, _project_id) = setup();
+        vega_store::threads::set_mode(store.conn(), "thread-1", "plan", 2).unwrap();
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: "plan".into(),
+                thread_id: "thread-1".into(),
+                seq: 1,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "streaming".into(),
+                created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+        messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 3).unwrap();
+        let outcome = crate::plans::review_plan(
+            &store,
+            "thread-1",
+            "plan",
+            crate::types::PlanReviewAction::Approve,
+        )
+        .unwrap();
+        let crate::types::PlanReviewOutcome::Applied {
+            instruction_message_id: Some(instruction_id),
+        } = outcome
+        else {
+            panic!("approval must create an instruction")
+        };
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]);
+        let run = run_approved_plan_task(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            &instruction_id,
+            "system",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(run.user_message_id, instruction_id);
+        let user_count: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE thread_id='thread-1' AND role='user'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(user_count, 1);
+        assert_eq!(provider.requests().len(), 1);
+        let replay = run_approved_plan_task(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            &instruction_id,
+            "system",
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(replay.is_err());
+        assert_eq!(provider.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn forged_or_tampered_user_rows_cannot_start_approved_turn() {
+        let (store, dir, _project_id) = setup();
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: "forged".into(),
+                thread_id: "thread-1".into(),
+                seq: 1,
+                role: "user".into(),
+                kind: "text".into(),
+                content: crate::plans::APPROVAL_INSTRUCTION.into(),
+                status: "done".into(),
+                created_at: 10,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]);
+        assert!(
+            run_approved_plan_task(
+                &store,
+                &provider,
+                &tools,
+                "thread-1",
+                "forged",
+                "system",
+                CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(provider.requests().is_empty());
+
+        store
+            .conn()
+            .execute("DELETE FROM messages WHERE id='forged'", [])
+            .unwrap();
+        vega_store::threads::set_mode(store.conn(), "thread-1", "plan", 11).unwrap();
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: "plan".into(),
+                thread_id: "thread-1".into(),
+                seq: 1,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "streaming".into(),
+                created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+        messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 12).unwrap();
+        let outcome = crate::plans::review_plan(
+            &store,
+            "thread-1",
+            "plan",
+            crate::types::PlanReviewAction::Approve,
+        )
+        .unwrap();
+        let crate::types::PlanReviewOutcome::Applied {
+            instruction_message_id: Some(instruction_id),
+        } = outcome
+        else {
+            panic!("approval must create instruction")
+        };
+        store
+            .conn()
+            .execute(
+                "UPDATE messages SET content='tampered' WHERE id=?1",
+                [&instruction_id],
+            )
+            .unwrap();
+        assert!(
+            run_approved_plan_task(
+                &store,
+                &provider,
+                &tools,
+                "thread-1",
+                &instruction_id,
+                "system",
+                CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(provider.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn approval_winner_executes_after_late_plan_completion_loses() {
+        let (store, dir, _project_id) = setup();
+        vega_store::threads::set_mode(store.conn(), "thread-1", "plan", 2).unwrap();
+        for (id, seq) in [("old", 1), ("late", 2)] {
+            messages::insert(
+                store.conn(),
+                &messages::MessageRow {
+                    id: id.into(),
+                    thread_id: "thread-1".into(),
+                    seq,
+                    role: "assistant".into(),
+                    kind: "text".into(),
+                    content: String::new(),
+                    status: "streaming".into(),
+                    created_at: seq,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .unwrap();
+            if id == "old" {
+                messages::complete_plan(store.conn(), "thread-1", id, "old plan", 3).unwrap();
+            }
+        }
+        let outcome = crate::plans::review_plan(
+            &store,
+            "thread-1",
+            "old",
+            crate::types::PlanReviewAction::Approve,
+        )
+        .unwrap();
+        let crate::types::PlanReviewOutcome::Applied {
+            instruction_message_id: Some(instruction_id),
+        } = outcome
+        else {
+            panic!("approval must create instruction")
+        };
+        assert!(messages::complete_plan(store.conn(), "thread-1", "late", "late plan", 4).is_err());
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]);
+        run_approved_plan_task(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            &instruction_id,
+            "system",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(provider.requests().len(), 1);
+        assert!(
+            run_approved_plan_task(
+                &store,
+                &provider,
+                &tools,
+                "thread-1",
+                &instruction_id,
+                "system",
+                CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(provider.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_approved_instruction_claim_starts_provider_once() {
+        let (store, dir, _project_id) = setup();
+        vega_store::threads::set_mode(store.conn(), "thread-1", "plan", 2).unwrap();
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: "plan".into(),
+                thread_id: "thread-1".into(),
+                seq: 1,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "streaming".into(),
+                created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+        messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 3).unwrap();
+        let outcome = crate::plans::review_plan(
+            &store,
+            "thread-1",
+            "plan",
+            crate::types::PlanReviewAction::Approve,
+        )
+        .unwrap();
+        let crate::types::PlanReviewOutcome::Applied {
+            instruction_message_id: Some(instruction_id),
+        } = outcome
+        else {
+            panic!("approval must create instruction")
+        };
+        drop(store);
+        let first_store = Store::open(dir.path().join("vega.db")).unwrap();
+        let second_store = Store::open(dir.path().join("vega.db")).unwrap();
+        first_store
+            .conn()
+            .busy_timeout(Duration::from_secs(5))
+            .unwrap();
+        second_store
+            .conn()
+            .busy_timeout(Duration::from_secs(5))
+            .unwrap();
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]);
+        let first_provider = provider.clone();
+        let second_provider = provider.clone();
+        let first_tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let second_tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let first_id = instruction_id.clone();
+        let second_id = instruction_id.clone();
+        let first = async {
+            run_approved_plan_task(
+                &first_store,
+                &first_provider,
+                &first_tools,
+                "thread-1",
+                &first_id,
+                "system",
+                CancellationToken::new(),
+            )
+            .await
+        };
+        let second = async {
+            run_approved_plan_task(
+                &second_store,
+                &second_provider,
+                &second_tools,
+                "thread-1",
+                &second_id,
+                "system",
+                CancellationToken::new(),
+            )
+            .await
+        };
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+        assert_eq!(provider.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_same_timestamp_approved_plans_reject_instruction() {
+        let (store, dir, _project_id) = setup();
+        vega_store::threads::set_mode(store.conn(), "thread-1", "plan", 2).unwrap();
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: "plan".into(),
+                thread_id: "thread-1".into(),
+                seq: 1,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "streaming".into(),
+                created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+        messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 3).unwrap();
+        let outcome = crate::plans::review_plan(
+            &store,
+            "thread-1",
+            "plan",
+            crate::types::PlanReviewAction::Approve,
+        )
+        .unwrap();
+        let crate::types::PlanReviewOutcome::Applied {
+            instruction_message_id: Some(instruction_id),
+        } = outcome
+        else {
+            panic!("approval must create instruction")
+        };
+        let timestamp: i64 = store
+            .conn()
+            .query_row(
+                "SELECT created_at FROM messages WHERE id=?1",
+                [&instruction_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at,plan_status,plan_reviewed_at) \
+                 VALUES ('ambiguous','thread-1',0,'assistant','plan','other','done',0,'approved',?1)",
+                [timestamp],
+            )
+            .unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]);
+        assert!(
+            run_approved_plan_task(
+                &store,
+                &provider,
+                &tools,
+                "thread-1",
+                &instruction_id,
+                "system",
+                CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(provider.requests().is_empty());
     }
 }

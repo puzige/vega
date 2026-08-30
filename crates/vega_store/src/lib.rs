@@ -52,13 +52,16 @@ pub mod tool_calls;
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 /// Ordered, compile-time-embedded schema migrations.
 ///
 /// `MIGRATIONS[i]` migrates the schema from `user_version == i` to
 /// `user_version == i + 1`.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_plan_review.sql"),
+];
 
 /// Single-connection SQLite store for the six-table Vega schema.
 pub struct Store {
@@ -120,6 +123,13 @@ impl Store {
     /// the executor and break cancellation.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    /// Opens an unchecked `BEGIN IMMEDIATE` transaction through the shared
+    /// connection reference. Conversation orchestration uses this to claim
+    /// persisted one-shot work before any provider activity.
+    pub fn immediate_transaction(&self) -> Result<Transaction<'_>, rusqlite::Error> {
+        Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
     }
 
     /// Returns the file backing this store, or `None` for SQLite in-memory or
@@ -190,9 +200,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_1() {
+    fn migrated_store_is_wal_at_user_version_2() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 1);
+        assert_eq!(user_version(&store), 2);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -206,13 +216,102 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 1);
+        assert_eq!(user_version(&store), 2);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
             .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
             .unwrap();
         assert_eq!(thread_count, 0);
+    }
+
+    #[test]
+    fn version_one_database_upgrades_in_place_without_a_seventh_table() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let store = Store::open(&path).unwrap();
+        store
+            .conn()
+            .execute_batch(include_str!("../migrations/0001_init.sql"))
+            .unwrap();
+        store
+            .conn()
+            .pragma_update(None, "user_version", 1_u32)
+            .unwrap();
+        store
+            .conn()
+            .execute_batch(
+                "INSERT INTO projects VALUES ('p','/tmp/p','project',NULL,1,2); \
+                 INSERT INTO threads VALUES ('t','p','thread','plan','confirm','mock','active',0,0,3,4); \
+                 INSERT INTO messages VALUES ('m','t',1,'assistant','text','kept','done',5); \
+                 INSERT INTO tool_calls (id,thread_id,message_id,seq,tool,input_json,status,created_at) \
+                   VALUES ('c','t','m',1,'read','{}','success',6); \
+                 INSERT INTO token_usage (thread_id,message_id,model,input_tokens,output_tokens,cost_microcents,created_at) \
+                   VALUES ('t','m','mock',1,2,0,7); \
+                 INSERT INTO permissions (project_id,tool,pattern,created_at) VALUES ('p','write','safe',8);",
+            )
+            .unwrap();
+        store.migrate().unwrap();
+        assert_eq!(user_version(&store), 2);
+        let kept: (String, Option<String>, Option<String>, Option<i64>) = store
+            .conn()
+            .query_row(
+                "SELECT content,plan_status,plan_review_note,plan_reviewed_at FROM messages WHERE id='m'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, ("kept".into(), None, None, None));
+        let tables: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 6);
+        for table in [
+            "projects",
+            "threads",
+            "messages",
+            "tool_calls",
+            "token_usage",
+            "permissions",
+        ] {
+            let count: i64 = store
+                .conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 1, "lost data from {table}");
+        }
+    }
+
+    #[test]
+    fn plan_status_check_rejects_unknown_values() {
+        let (store, _dir) = open_temp_store();
+        store
+            .conn()
+            .execute_batch(
+                "INSERT INTO projects VALUES ('p','/tmp/p','p',NULL,0,0); \
+                 INSERT INTO threads (id,project_id,model,created_at,updated_at) VALUES ('t','p','m',0,0);",
+            )
+            .unwrap();
+        let error = store
+            .conn()
+            .execute(
+                "INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at,plan_status) \
+                 VALUES ('m','t',1,'assistant','plan','x','done',0,'unknown')",
+                [],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            rusqlite::Error::SqliteFailure(error, _)
+                if error.code == ErrorCode::ConstraintViolation
+        ));
     }
 
     #[test]
