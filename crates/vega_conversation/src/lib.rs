@@ -5,6 +5,9 @@
 //! land in S3/S4.
 
 pub mod agent;
+mod git_workspace;
 pub mod plans;
 pub mod threads;
 pub mod types;
+
+pub use git_workspace::GitWorkspaceService;
