@@ -1,6 +1,6 @@
 # ✦ Vega — S7 任务卡（Sprint 7 · Token 经济 v1 · W13-14）
 
-**版本** v0.1 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.2 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S7 目标**（phase1-plan §2）：API usage 精确回收；流式期间实时估算；每次调用与每个任务的成本可见；数据目录 `pricing.json` 内置主流模型并支持用户自定义。
 
@@ -25,6 +25,16 @@
 - 内置目录至少 5 个 exact model id，覆盖 DeepSeek、GPT、Claude 三个系列。实现卡须在报告记录每条价格的官方来源与核验日期；价格属于时点数据，不在 SDD 中伪造数值。Anthropic 模型价格可用于 OpenAI-compatible 渠道的自定义 model id；Anthropic 原生 provider 仍属 Phase 2。
 - 用户自定义通过设置页对 exact model id 新增/编辑/删除；保存采用同目录临时文件 → flush/sync → rename 的原子替换，先完整校验再写。内置条目可覆盖价格但不能产生重复 key；损坏文件保留原样并显示 typed inline error，禁止删除、截断或静默回退覆盖。
 - configured model 在真实 provider 调用前必须有 exact 有效价格；缺失/损坏定价时拒绝启动并内联提示“先配置价格”，保证 `0` 不被冒充“免费”。该 preflight 不读取或暴露 API key。
+
+T36 动态价格补充契约（v0.2）：
+
+- model 顶层四价是 base/off-peak profile；可选 `max_standard_input_tokens` 为正 JSON 整数，可选 `schedule` exact 为 `{"kind":"utc_weekly_v1","windows":[...],"peak":{...}}`。`peak` exact 含与 model 顶层同名的四个十进制价格字段；`windows` 为 1..=32 项，每项 exact 为 `{"weekdays":[...],"start_minute":N,"end_minute":N}`。weekday 使用 ISO `1=Mon..7=Sun`，每窗 weekday 1..=7 项且不重复，minute 为 UTC 当日 `0..=1440` 的半开区间，必须 `start < end`；同一 weekday 的窗口不得重叠。所有层继续 `deny_unknown_fields`。
+- quote 必须显式接收 Unix UTC 秒，以无依赖整数 `div_euclid` 计算 weekday/minute；窗口命中使用 peak，否则使用 base，并返回 exact `pricing_v1` 与 `base|peak_utc_weekly` profile。静态 custom entry 省略 `schedule`。
+- OpenAI `gpt-5.6-terra` / `gpt-5.6-luna` 的 `max_standard_input_tokens=272000`；usage `input` 在 exact 上限可计价，`+1` 返回 typed unsupported，禁止按 standard 低价估算长上下文。DeepSeek `deepseek-v4-flash` / `deepseek-v4-pro` 的 peak 为 Mon-Fri UTC `[01:00,04:00)` 与 `[06:00,10:00)`；Anthropic `claude-sonnet-5` 的 cache-write 只代表 5m standard profile，1h/geo/fast 不自动猜价。
+- atomic save 以同目录 `rename` 成功为 commit point。rename 前任一步失败必须保持旧 target bytes 精确不变，并 best-effort 清理 `create_new`、有界唯一尝试创建的 temp；rename 后 directory fsync 失败返回 typed `CommittedDurabilityUnknown`，明确新 bytes 可能已可见，调用方不得把它当作普通未提交失败盲重试，且不承诺恢复旧 bytes。preflight 保守拒绝既有 target symlink、non-regular 或 `nlink>1`。
+- safe model id v1 grammar 固定为首字节 ASCII alphanumeric，后续仅 ASCII alphanumeric / `.` / `_` / `:` / `/` / `-`，并拒绝 `..`、`//` 与尾随 `/`；长度仍按 UTF-8 bytes 计 1..=200。十进制允许 leading zero，save/reload 保留调用方字符串字面；不做 trim 或数值 canonical rewrite。`max_standard_input_tokens` 与 `schedule` 不得同时出现。
+- `models` / `windows` / `weekdays` 的 logical cap 在 serde sequence 边界执行：retain 到 exact limit 后只用零 `T` 构造的 ignored probe 判断 `+1`，不得先 deserialize 第 `limit+1` 个业务对象。ordinary save 对既有 target snapshot 的 exact bytes 必须在创建 temp 前走同一 strict decoder；损坏文件返回 typed codec/schema error、bytes 不变、零 temp/rename。missing target 的首次 seed 不受此限制。
+- optional 只表示 field absent：`max_standard_input_tokens` / `schedule` 缺失映射为 `None`，但字段显式出现为 JSON `null` 必须拒绝；所有 required field 的 `null` 同样拒绝，不做缺失或默认值归一。
 
 ### C2 · 整数成本与 cache 语义（A10-04）
 
@@ -186,3 +196,8 @@ S7 SDD PR → T36 pricing catalog + integer engine → T37 pricing settings/cust
 3. 真实账单 `<5%`、真实 provider、key 与 dogfood 属人类活动；executor 只提供 mock E2E 与操作模板。
 4. A10-07 dashboard、A10-08预算、A10-09跨模型对比、A10-10优化、A10-11闲时联动、A10-12导出均不在 S7。
 5. S6 尚并行；只先并行无交叉的 T36 纯 headless 卡；T37-T41 只在 rebase 后按真实 Settings/Composer/diff/route seam 接入，不反向修改已冻结 S6 契约。
+
+## 变更记录
+
+- v0.2 (2026-08-31) T36 官方价格核验后补齐 flat schema 缺口：冻结 strict UTC weekly schedule、显式 quote timestamp、OpenAI 272K standard 上限及 DeepSeek peak 半开窗口；Anthropic cache-write 限定为 5m standard profile；原子保存明确 rename commit point、post-commit durability-unknown 与保守 target preflight。
+- v0.1 (2026-08-31) S7 首版任务拆分与冻结契约。
