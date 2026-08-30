@@ -16,6 +16,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 3. **任务来源**：`docs/vega-s*-tasks.md` 任务卡（如 T01-T08）。一张卡 = 一个 PR。卡外工作先问。
 4. **主 agent 角色**：协调、验收、集成；**代码实现委托给专用 subagent**，主上下文不被实现细节污染。
 5. **遇阻**：按 exec-guide §6 用 `[BLOCKED]` 格式上报，禁止自创方案绕过。
+6. **验收强制 E2E-first**：优先以真实 production 入口、owned temp repo 与真实 controller 的端到端证据验收；test-only seam 仅保留无法由 E2E 稳定证明的安全不变量，证据分级与留存格式见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ## 提交与 PR
 

@@ -71,6 +71,7 @@ use vega_theme::{ThemeColors, Typography, theme};
 
 use crate::artifact_card::ArtifactCard;
 use crate::branch_selector::BranchSelector;
+use crate::commit_panel::CommitPanel;
 use crate::permission_card::{PermissionCard, PermissionCardResolved};
 use crate::plan_card::{PlanCard, PlanReviewRequested};
 use crate::settings::SettingsOpen;
@@ -126,6 +127,22 @@ pub struct ComposerSubmitted {
 pub struct OpenWorkspaceDiffRequested {
     pub thread_id: String,
     pub project_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct OpenCommitPanelRequested {
+    pub thread_id: String,
+    pub project_id: String,
+}
+
+impl std::fmt::Debug for OpenCommitPanelRequested {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenCommitPanelRequested")
+            .field("thread_id_bytes", &self.thread_id.len())
+            .field("project_id_bytes", &self.project_id.len())
+            .finish()
+    }
 }
 
 /// Content-free notification that a tool reached a terminal state.
@@ -1259,6 +1276,8 @@ pub struct ConversationStream {
     artifact_cards: HashMap<String, Entity<ArtifactCard>>,
     /// Route-owned safe branch selector; Git authority remains in the app controller.
     branch_selector: Entity<BranchSelector>,
+    /// IO-free canonical commit panel; repository authority stays in app/headless.
+    commit_panel: Entity<CommitPanel>,
     /// Concrete runtime permission hook shared by the owning conversation.
     permission_queue: PermissionQueue,
     /// The sole visible prompt; the opaque call id is only a map association.
@@ -1287,6 +1306,7 @@ impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
 impl EventEmitter<OpenWorkspaceDiffRequested> for ConversationStream {}
+impl EventEmitter<OpenCommitPanelRequested> for ConversationStream {}
 impl EventEmitter<WorkspaceToolTerminal> for ConversationStream {}
 
 struct InjectionState {
@@ -1319,6 +1339,8 @@ impl ConversationStream {
         });
         let branch_selector =
             cx.new(|cx| BranchSelector::new(thread.id.clone(), thread.project_id.clone(), cx));
+        let commit_panel =
+            cx.new(|cx| CommitPanel::new(thread.id.clone(), thread.project_id.clone(), cx));
         // 空输入禁用发送：输入内容变化即重渲染 Composer。
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
         let mut listener = permission_queue.subscribe();
@@ -1354,6 +1376,7 @@ impl ConversationStream {
             tool_cards: HashMap::new(),
             artifact_cards: HashMap::new(),
             branch_selector,
+            commit_panel,
             permission_queue,
             active_permission: None,
             plan_cards: HashMap::new(),
@@ -1476,6 +1499,10 @@ impl ConversationStream {
         self.branch_selector.clone()
     }
 
+    pub fn commit_panel(&self) -> Entity<CommitPanel> {
+        self.commit_panel.clone()
+    }
+
     /// Content-free app-controller guards for trusted workspace actions.
     pub fn has_active_agent(&self) -> bool {
         self.active_agent_message.is_some()
@@ -1495,6 +1522,9 @@ impl ConversationStream {
         self.trusted_action_busy = busy;
         self.branch_selector
             .update(cx, |selector, cx| selector.set_disabled(busy, cx));
+        self.commit_panel.update(cx, |panel, cx| {
+            panel.set_disabled(busy && !panel.is_open(), cx)
+        });
         cx.notify();
     }
 
@@ -2055,6 +2085,16 @@ impl ConversationStream {
         self.emit_open_diff(cx);
     }
 
+    fn open_commit_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.trusted_action_busy {
+            return;
+        }
+        cx.emit(OpenCommitPanelRequested {
+            thread_id: self.thread.id.clone(),
+            project_id: self.thread.project_id.clone(),
+        });
+    }
+
     /// Renders the thread header: title + anchor status + demo button.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
@@ -2118,7 +2158,7 @@ impl ConversationStream {
                     .bg(colors.bg_elevated)
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_secondary)
-                    .cursor_pointer()
+                    .when(!self.trusted_action_busy, |button| button.cursor_pointer())
                     .hover(move |style| style.bg(colors.bg_hover))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::start_demo_injection))
                     .child(if injected > 0 {
@@ -2142,6 +2182,29 @@ impl ConversationStream {
                     .hover(move |style| style.bg(colors.bg_hover))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::open_diff_clicked))
                     .child("Diff"),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .bg(colors.bg_elevated)
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(if self.trusted_action_busy {
+                        colors.text_tertiary
+                    } else {
+                        colors.text_secondary
+                    })
+                    .when(!self.trusted_action_busy, |button| {
+                        button
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(colors.bg_hover))
+                    })
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::open_commit_clicked))
+                    .child("Commit"),
             )
             .into_any_element()
     }
@@ -2404,6 +2467,7 @@ impl Render for ConversationStream {
             .h_full()
             .flex()
             .flex_col()
+            .relative()
             .bg(colors.bg_base)
             .text_color(colors.text_primary)
             .key_context("ConversationStream")
@@ -2420,6 +2484,7 @@ impl Render for ConversationStream {
                     .child(body),
             )
             .child(self.render_composer(cx))
+            .child(self.commit_panel.clone())
             .into_any_element();
         counters.record_render(render_t0);
         element

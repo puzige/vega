@@ -12,4 +12,6 @@ pub mod threads;
 pub mod types;
 
 pub use artifact::{ArtifactCaptureCandidate, ArtifactService};
-pub use git_workspace::{BranchSwitchPermit, BranchWorkspaceService, GitWorkspaceService};
+pub use git_workspace::{
+    BranchSwitchPermit, BranchWorkspaceService, GitWorkspaceService, TrustedGitService,
+};

@@ -22,7 +22,7 @@ use crate::provider::{ChatRequest, EventStream, Provider, ProviderEvent};
 /// (provider failure / cancellation) while staying `Clone` — [`VegaError`]
 /// itself wraps non-cloneable std errors and therefore cannot be stored in a
 /// script directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ScriptStep {
     /// Events replayed in order; the stream continues with the next step.
     Events(Vec<ProviderEvent>),
@@ -40,6 +40,29 @@ pub enum ScriptStep {
     Cancelled,
     /// Cancel-aware pause before the next step (test-only replay timing).
     Delay(Duration),
+}
+
+impl std::fmt::Debug for ScriptStep {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Events(events) => formatter
+                .debug_struct("Events")
+                .field("event_count", &events.len())
+                .finish(),
+            Self::Error {
+                status,
+                message,
+                retryable,
+            } => formatter
+                .debug_struct("Error")
+                .field("status", status)
+                .field("message_bytes", &message.len())
+                .field("retryable", retryable)
+                .finish(),
+            Self::Cancelled => formatter.write_str("Cancelled"),
+            Self::Delay(duration) => formatter.debug_tuple("Delay").field(duration).finish(),
+        }
+    }
 }
 
 impl ScriptStep {
@@ -63,12 +86,27 @@ impl ScriptStep {
 ///
 /// Every `chat_stream` call gets a fresh replay of the same script, so one
 /// instance drives any number of loop iterations in tests.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MockProvider {
     scripts: Arc<Vec<Vec<ScriptStep>>>,
     repeat_first: bool,
     call_index: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<ChatRequest>>>,
+}
+
+impl std::fmt::Debug for MockProvider {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MockProvider")
+            .field("script_count", &self.scripts.len())
+            .field("repeat_first", &self.repeat_first)
+            .field("call_count", &self.call_index.load(Ordering::SeqCst))
+            .field(
+                "request_count",
+                &self.requests.lock().map_or(0, |requests| requests.len()),
+            )
+            .finish()
+    }
 }
 
 impl MockProvider {
@@ -215,8 +253,7 @@ mod tests {
     }
 
     /// Element-wise comparison: `Ok` items via `ProviderEvent: PartialEq`,
-    /// `Err` items via `VegaError`'s `Display` (it wraps non-`PartialEq`
-    /// std errors, so direct equality is unavailable).
+    /// `Err` items via closed typed fields without formatting payloads.
     fn assert_items_eq(
         actual: &[Result<ProviderEvent, VegaError>],
         expected: &[Result<ProviderEvent, VegaError>],
@@ -229,10 +266,48 @@ mod tests {
         for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
             match (a, e) {
                 (Ok(a), Ok(e)) => assert_eq!(a, e, "item #{i}"),
-                (Err(a), Err(e)) => assert_eq!(a.to_string(), e.to_string(), "item #{i}"),
+                (Err(a), Err(e)) => assert_error_eq(a, e, i),
                 _ => panic!("item #{i} mismatch: {a:?} vs {e:?}"),
             }
         }
+    }
+
+    fn assert_error_eq(actual: &VegaError, expected: &VegaError, index: usize) {
+        let equal = match (actual, expected) {
+            (
+                VegaError::Provider {
+                    status: actual_status,
+                    message: actual_message,
+                    retryable: actual_retryable,
+                },
+                VegaError::Provider {
+                    status: expected_status,
+                    message: expected_message,
+                    retryable: expected_retryable,
+                },
+            ) => {
+                actual_status == expected_status
+                    && actual_message == expected_message
+                    && actual_retryable == expected_retryable
+            }
+            (VegaError::Cancelled, VegaError::Cancelled) => true,
+            (
+                VegaError::Tool {
+                    tool: actual_tool,
+                    message: actual_message,
+                },
+                VegaError::Tool {
+                    tool: expected_tool,
+                    message: expected_message,
+                },
+            ) => actual_tool == expected_tool && actual_message == expected_message,
+            (VegaError::Io(actual), VegaError::Io(expected)) => actual.kind() == expected.kind(),
+            (VegaError::Store(actual), VegaError::Store(expected)) => {
+                std::mem::discriminant(actual) == std::mem::discriminant(expected)
+            }
+            _ => false,
+        };
+        assert!(equal, "item #{index} error mismatch");
     }
 
     #[tokio::test]
@@ -393,6 +468,25 @@ mod tests {
                 .unwrap();
             let items = collect(&mut stream, 2).await;
             assert_items_eq(&items, &[Ok(ProviderEvent::TextDelta("again".into()))]);
+        }
+    }
+
+    #[test]
+    fn mock_debug_carriers_redact_distinct_script_and_request_payloads() {
+        let sentinels = [
+            "VEGA_MOCK_MESSAGE_SENTINEL",
+            "VEGA_MOCK_MODEL_SENTINEL",
+            "VEGA_MOCK_TEXT_SENTINEL",
+        ];
+        let step = ScriptStep::Error {
+            status: Some(503),
+            message: sentinels[0].into(),
+            retryable: true,
+        };
+        let provider = MockProvider::new(vec![step.clone(), ScriptStep::text(sentinels[2])]);
+        let rendered = format!("{step:?} {provider:?}");
+        for sentinel in sentinels {
+            assert!(!rendered.contains(sentinel), "mock Debug leaked payload");
         }
     }
 }

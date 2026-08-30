@@ -8,6 +8,7 @@
 
 pub mod artifact_card;
 pub mod branch_selector;
+pub mod commit_panel;
 pub mod conversation_stream;
 pub mod diff_view;
 pub mod permission_card;
@@ -128,6 +129,32 @@ pub fn init(cx: &mut App) {
             "escape",
             branch_selector::CloseBranchSelector,
             Some("BranchSelector"),
+        ),
+        KeyBinding::new(
+            "enter",
+            commit_panel::ActivateCommitEnter,
+            Some("CommitPanel"),
+        ),
+        KeyBinding::new(
+            "cmd-enter",
+            commit_panel::ConfirmCommitStage,
+            Some("CommitPanel"),
+        ),
+        KeyBinding::new(
+            "escape",
+            commit_panel::CloseCommitPanel,
+            Some("CommitPanel"),
+        ),
+        KeyBinding::new(
+            "space",
+            commit_panel::ActivateCommitSpace,
+            Some("CommitPanel"),
+        ),
+        KeyBinding::new("tab", commit_panel::NextCommitFocus, Some("CommitPanel")),
+        KeyBinding::new(
+            "shift-tab",
+            commit_panel::PreviousCommitFocus,
+            Some("CommitPanel"),
         ),
         KeyBinding::new(
             "cmd-shift-d",

@@ -39,12 +39,22 @@ const OUTPUT_TRUNCATION_MARKER: &str = "…[tool output truncated: middle lines 
 pub const PERMISSION_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// One project-scoped exact permission rule preloaded by conversation.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RuntimeExactRule {
     /// Mutating tool name.
     pub tool: RuntimeMutatingTool,
     /// Byte-exact command or normalized project-relative path.
     pub pattern: String,
+}
+
+impl fmt::Debug for RuntimeExactRule {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeExactRule")
+            .field("tool", &self.tool)
+            .field("pattern_bytes", &self.pattern.len())
+            .finish()
+    }
 }
 
 /// Headless tool and permission facts for one task.
@@ -125,10 +135,10 @@ impl fmt::Debug for RuntimeToolConfig {
             .debug_struct("RuntimeToolConfig")
             .field("run_mode", &self.run_mode)
             .field("permission_mode", &self.permission_mode)
-            .field("project_id", &self.project_id)
-            .field("thread_id", &self.thread_id)
+            .field("project_id_bytes", &self.project_id.len())
+            .field("thread_id_bytes", &self.thread_id.len())
             .field("checkpoint_root", &"[REDACTED]")
-            .field("exact_rules", &self.exact_rules)
+            .field("exact_rule_count", &self.exact_rules.len())
             .field("foreign_call_id_count", &self.foreign_call_ids.len())
             .finish()
     }
@@ -157,7 +167,7 @@ impl RuntimePermissionHook for RejectPermissionHook {
 }
 
 /// Inputs for one agent task.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentRequest {
     /// Provider model id.
     pub model: String,
@@ -176,8 +186,25 @@ pub struct AgentRequest {
     pub tool_config: RuntimeToolConfig,
 }
 
+impl fmt::Debug for AgentRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentRequest")
+            .field("model_bytes", &self.model.len())
+            .field("system_prompt_bytes", &self.system_prompt.len())
+            .field("history_count", &self.history.len())
+            .field("max_tokens", &self.max_tokens)
+            .field(
+                "completed_tool_result_count",
+                &self.completed_tool_results.len(),
+            )
+            .field("tool_config", &self.tool_config)
+            .finish()
+    }
+}
+
 /// One terminal tool call recovered from persistence for idempotent retry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CompletedToolCall {
     /// Original tool name.
     pub tool: String,
@@ -185,6 +212,17 @@ pub struct CompletedToolCall {
     pub input_json: String,
     /// Terminal result to observe again.
     pub result: RuntimeToolResult,
+}
+
+impl fmt::Debug for CompletedToolCall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CompletedToolCall")
+            .field("tool_bytes", &self.tool.len())
+            .field("input_json_bytes", &self.input_json.len())
+            .field("result", &self.result)
+            .finish()
+    }
 }
 
 /// Why the whole runtime loop converged.
@@ -227,9 +265,9 @@ impl fmt::Debug for RuntimeToolCall {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RuntimeToolCall")
-            .field("id", &self.id)
-            .field("name", &self.name)
-            .field("input_json", &"[REDACTED]")
+            .field("id_bytes", &self.id.len())
+            .field("name_bytes", &self.name.len())
+            .field("input_json_bytes", &self.input_json.len())
             .finish()
     }
 }
@@ -248,7 +286,7 @@ pub enum RuntimeToolStatus {
 }
 
 /// Terminal tool result appended to provider context.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RuntimeToolResult {
     /// Call id.
     pub call_id: String,
@@ -270,9 +308,26 @@ pub struct RuntimeToolResult {
     pub remember_rule: Option<RuntimePermissionTarget>,
 }
 
+impl fmt::Debug for RuntimeToolResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeToolResult")
+            .field("call_id_bytes", &self.call_id.len())
+            .field("output_bytes", &self.output.len())
+            .field("status", &self.status)
+            .field("reused", &self.reused)
+            .field("exit_code", &self.exit_code)
+            .field("duration_ms", &self.duration_ms)
+            .field("truncated", &self.truncated)
+            .field("has_approval", &self.approval.is_some())
+            .field("has_remember_rule", &self.remember_rule.is_some())
+            .finish()
+    }
+}
+
 /// Runtime-only event stream. `vega_conversation` is responsible for
 /// converting it into the sole UI/store event type.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum RuntimeEvent {
     /// Visible assistant delta.
     TextDelta(String),
@@ -332,8 +387,70 @@ pub enum RuntimeEvent {
     Error(Arc<VegaError>),
 }
 
+impl fmt::Debug for RuntimeEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TextDelta(value) => formatter
+                .debug_tuple("TextDelta")
+                .field(&format_args!("{} bytes", value.len()))
+                .finish(),
+            Self::ThinkingDelta(value) => formatter
+                .debug_tuple("ThinkingDelta")
+                .field(&format_args!("{} bytes", value.len()))
+                .finish(),
+            Self::ToolCallProposed(call) => formatter
+                .debug_tuple("ToolCallProposed")
+                .field(call)
+                .finish(),
+            Self::ToolCallValidationRejected { call, result } => formatter
+                .debug_struct("ToolCallValidationRejected")
+                .field("call", call)
+                .field("result", result)
+                .finish(),
+            Self::ToolCallConflict { call, result } => formatter
+                .debug_struct("ToolCallConflict")
+                .field("call", call)
+                .field("result", result)
+                .finish(),
+            Self::ToolCallApproved {
+                call_id,
+                audit: _,
+                remember_rule,
+            } => formatter
+                .debug_struct("ToolCallApproved")
+                .field("call_id_bytes", &call_id.len())
+                .field("has_remember_rule", &remember_rule.is_some())
+                .finish(),
+            Self::ToolCallRunning { call_id } => formatter
+                .debug_struct("ToolCallRunning")
+                .field("call_id_bytes", &call_id.len())
+                .finish(),
+            Self::ToolCallOutput { call_id, chunk } => formatter
+                .debug_struct("ToolCallOutput")
+                .field("call_id_bytes", &call_id.len())
+                .field("chunk_bytes", &chunk.len())
+                .finish(),
+            Self::ToolCallFinished(result) => formatter
+                .debug_tuple("ToolCallFinished")
+                .field(result)
+                .finish(),
+            Self::UsageUpdated {
+                usage,
+                cost_microcents,
+            } => formatter
+                .debug_struct("UsageUpdated")
+                .field("usage", usage)
+                .field("cost_microcents", cost_microcents)
+                .finish(),
+            Self::Finished(reason) => formatter.debug_tuple("Finished").field(reason).finish(),
+            Self::Interrupted => formatter.write_str("Interrupted"),
+            Self::Error(_) => formatter.write_str("Error([redacted])"),
+        }
+    }
+}
+
 /// Complete headless task outcome.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentOutcome {
     /// Ordered runtime events.
     pub events: Vec<RuntimeEvent>,
@@ -349,6 +466,21 @@ pub struct AgentOutcome {
     pub interrupted: bool,
     /// Whether a provider/runtime error ended the task.
     pub failed: bool,
+}
+
+impl fmt::Debug for AgentOutcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AgentOutcome")
+            .field("event_count", &self.events.len())
+            .field("message_count", &self.messages.len())
+            .field("final_text_bytes", &self.final_text.len())
+            .field("tool_call_count", &self.tool_call_count)
+            .field("executed_tool_call_count", &self.executed_tool_call_count)
+            .field("interrupted", &self.interrupted)
+            .field("failed", &self.failed)
+            .finish()
+    }
 }
 
 /// Runs the S4 headless agent loop with real fenced read/glob/grep tools.

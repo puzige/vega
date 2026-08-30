@@ -26,7 +26,9 @@ use crate::types::{
 };
 
 mod branch;
+mod trusted_git;
 pub use branch::{BranchSwitchPermit, BranchWorkspaceService};
+pub use trusted_git::TrustedGitService;
 
 const GIT: &str = "/usr/bin/git";
 const KILL: &str = "/bin/kill";
@@ -194,6 +196,7 @@ struct FileIdentity {
     dev: u64,
     ino: u64,
     kind: u8,
+    mode: u32,
     size: u64,
     mtime: i64,
     mtime_ns: i64,
@@ -217,10 +220,24 @@ struct ServiceState {
     next_request: u64,
     latest_request: u64,
     next_generation: u64,
+    content_revision: u64,
+    next_mutation_owner: u64,
+    active_mutation_owner: Option<WorkspaceMutationOwner>,
     generation: u64,
     identity: Option<Arc<SnapshotIdentity>>,
     snapshot: Option<WorkspaceSnapshot>,
     files: Vec<PrivateFile>,
+}
+
+/// Single-use capability for the authoritative snapshot handoff following a
+/// trusted mutation. It is minted before mutation begins so failed captures
+/// and concurrent ordinary polls cannot silently transfer owner authority.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorkspaceMutationOwner {
+    sequence: u64,
+    parent_generation: u64,
+    parent_revision: u64,
+    seal: u64,
 }
 
 /// Headless, ephemeral Git snapshot and lazy-diff service.
@@ -353,11 +370,188 @@ impl GitWorkspaceService {
             invalidate_current(&mut state);
             return Err(failure);
         }
+        let Some(content_revision) = state.content_revision.checked_add(1) else {
+            invalidate_current(&mut state);
+            return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+        };
         state.next_generation = generation;
+        state.content_revision = content_revision;
         state.generation = generation;
         state.identity = Some(identity);
         state.files = files;
         state.snapshot = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    /// Reserves the exact A -> terminal handoff before a trusted mutation.
+    /// Only this capability can retry a failed owner capture or publish into
+    /// an invalidated state that has not observed another successful content
+    /// generation.
+    pub(crate) fn begin_owned_refresh(
+        &self,
+        parent_generation: u64,
+    ) -> Result<WorkspaceMutationOwner, GitWorkspaceError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if state.active_mutation_owner.is_some()
+            || state.generation != parent_generation
+            || state.snapshot.as_ref().map(|snapshot| snapshot.generation)
+                != Some(parent_generation)
+        {
+            return Err(error(GitWorkspaceErrorCode::StaleGeneration));
+        }
+        let sequence = state
+            .next_mutation_owner
+            .checked_add(1)
+            .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+        let slot =
+            u32::try_from(sequence).map_err(|_| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+        let owner = WorkspaceMutationOwner {
+            sequence,
+            parent_generation,
+            parent_revision: state.content_revision,
+            seal: seal(
+                self.identity,
+                self.instance_nonce,
+                parent_generation,
+                slot,
+                b"workspace-mutation-owner",
+            ),
+        };
+        state.next_mutation_owner = sequence;
+        state.active_mutation_owner = Some(owner);
+        Ok(owner)
+    }
+
+    pub(crate) fn active_owned_refresh(&self) -> Option<WorkspaceMutationOwner> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .active_mutation_owner
+    }
+
+    /// Publishes the authoritative snapshot following one trusted mutation.
+    ///
+    /// Unlike an ordinary poll, this capture owns the A -> B handoff. Its
+    /// commit linearization fences every poll registered before it, accepts a
+    /// byte-exact B already published by such a poll, and rejects C/ABA rather
+    /// than making success depend on callback order.
+    pub(crate) async fn refresh_owned_after_mutation(
+        &self,
+        owner: WorkspaceMutationOwner,
+        cancel: CancellationToken,
+    ) -> Result<WorkspaceSnapshot, GitWorkspaceError> {
+        let root = self.root.clone();
+        let identity = self.identity;
+        let instance_nonce = self.instance_nonce;
+        #[cfg(test)]
+        let executable = self.executable.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let runner = Runner::new(
+                root,
+                identity,
+                #[cfg(test)]
+                executable,
+            );
+            build_snapshot(&runner, 0, instance_nonce, &cancel)
+        })
+        .await
+        .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))
+        .and_then(|result| result);
+
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if state.active_mutation_owner != Some(owner)
+            || owner.seal
+                != seal(
+                    self.identity,
+                    self.instance_nonce,
+                    owner.parent_generation,
+                    u32::try_from(owner.sequence)
+                        .map_err(|_| error(GitWorkspaceErrorCode::StaleGeneration))?,
+                    b"workspace-mutation-owner",
+                )
+        {
+            return Err(error(GitWorkspaceErrorCode::StaleGeneration));
+        }
+        let (mut snapshot, mut files, identity) = match result {
+            Ok(result) => result,
+            // The exact owner retains retry authority after a failed capture.
+            // In particular, do not destroy its parent/revision evidence here.
+            Err(failure) => return Err(failure),
+        };
+
+        let revision_delta = state
+            .content_revision
+            .checked_sub(owner.parent_revision)
+            .ok_or_else(|| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+        if same_snapshot_content(&state, &identity, &snapshot, &files) {
+            // One changed generation may be the exact B published by an
+            // ordinary poll. Two or more changes are C/ABA and must never
+            // revive the owner's earlier capability.
+            if revision_delta <= 1 {
+                let request = state
+                    .next_request
+                    .checked_add(1)
+                    .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+                state.next_request = request;
+                state.latest_request = request;
+                state.active_mutation_owner = None;
+                return state
+                    .snapshot
+                    .clone()
+                    .ok_or_else(|| error(GitWorkspaceErrorCode::ChangedDuringRead));
+            }
+            state.active_mutation_owner = None;
+            return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+        }
+
+        let parent_is_current = state.generation == owner.parent_generation && revision_delta == 0;
+        let only_failed_poll_invalidated =
+            state.generation == 0 && state.snapshot.is_none() && revision_delta == 0;
+        if !parent_is_current && !only_failed_poll_invalidated {
+            state.active_mutation_owner = None;
+            return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+        }
+        let Some(generation) = state.next_generation.checked_add(1) else {
+            state.active_mutation_owner = None;
+            invalidate_current(&mut state);
+            return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+        };
+        if let Err(failure) = assign_generation(
+            &mut snapshot,
+            &mut files,
+            generation,
+            self.identity,
+            self.instance_nonce,
+        ) {
+            state.active_mutation_owner = None;
+            invalidate_current(&mut state);
+            return Err(failure);
+        }
+        let Some(content_revision) = state.content_revision.checked_add(1) else {
+            state.active_mutation_owner = None;
+            invalidate_current(&mut state);
+            return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+        };
+        state.next_generation = generation;
+        state.content_revision = content_revision;
+        state.generation = generation;
+        state.identity = Some(identity);
+        state.files = files;
+        state.snapshot = Some(snapshot.clone());
+        let Some(request) = state.next_request.checked_add(1) else {
+            state.active_mutation_owner = None;
+            invalidate_current(&mut state);
+            return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+        };
+        state.next_request = request;
+        state.latest_request = request;
+        state.active_mutation_owner = None;
         Ok(snapshot)
     }
 
@@ -668,6 +862,7 @@ struct Runner {
 
 struct Output {
     stdout: Vec<u8>,
+    overflow: bool,
 }
 
 impl Runner {
@@ -736,7 +931,11 @@ impl Runner {
         let executable = Path::new(GIT);
         let mut command = Command::new(executable);
         command.current_dir(&self.root);
-        command.args(PREFIX).arg(verb).args(args);
+        command
+            .args(PREFIX)
+            .arg("--no-optional-locks")
+            .arg(verb)
+            .args(args);
         scrub_git_environment(&mut command);
         command
             .stdin(if input.is_some() {
@@ -757,6 +956,7 @@ impl Runner {
             STDERR_LIMIT,
             READ_TIMEOUT,
             cancel,
+            OverflowPolicy::IMMEDIATE,
         )
     }
 
@@ -770,6 +970,139 @@ impl Runner {
         #[cfg(not(test))]
         let executable = Path::new(GIT);
         self.run_trusted_switch_with_executable(branch, cancel, executable)
+    }
+
+    fn run_trusted_mutation(
+        &self,
+        verb: &'static str,
+        args: &[OsString],
+        input: Arc<[u8]>,
+        cancel: &CancellationToken,
+    ) -> Result<Output, GitWorkspaceError> {
+        #[cfg(test)]
+        let executable = self.executable.as_deref().unwrap_or_else(|| Path::new(GIT));
+        #[cfg(not(test))]
+        let executable = Path::new(GIT);
+        self.run_trusted_mutation_with_executable(verb, args, input, cancel, executable)
+    }
+
+    fn run_trusted_mutation_with_executable(
+        &self,
+        verb: &'static str,
+        args: &[OsString],
+        input: Arc<[u8]>,
+        cancel: &CancellationToken,
+        executable: &Path,
+    ) -> Result<Output, GitWorkspaceError> {
+        self.run_trusted_mutation_with_executable_and_timeout(
+            verb,
+            args,
+            input,
+            cancel,
+            executable,
+            MUTATION_TIMEOUT,
+        )
+    }
+
+    fn run_trusted_mutation_with_executable_and_timeout(
+        &self,
+        verb: &'static str,
+        args: &[OsString],
+        input: Arc<[u8]>,
+        cancel: &CancellationToken,
+        executable: &Path,
+        timeout: Duration,
+    ) -> Result<Output, GitWorkspaceError> {
+        if !matches!(verb, "add" | "commit") {
+            return Err(error(GitWorkspaceErrorCode::GitFailed));
+        }
+        self.verify_root()?;
+        if cancel.is_cancelled() {
+            return Err(error(GitWorkspaceErrorCode::Cancelled));
+        }
+        let mut command = Command::new(executable);
+        command.current_dir(&self.root);
+        command
+            .args(PREFIX)
+            .args(["-c", "core.hooksPath=/dev/null"])
+            .arg(verb)
+            .args(args);
+        scrub_git_environment(&mut command);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        let mut child = command
+            .spawn()
+            .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
+        collect_child(
+            &mut child,
+            Some(input),
+            MUTATION_STDOUT_LIMIT,
+            STDERR_LIMIT,
+            timeout,
+            cancel,
+            OverflowPolicy::IMMEDIATE,
+        )
+    }
+
+    fn run_commit_summary(
+        &self,
+        stdout_limit: usize,
+        cancel: &CancellationToken,
+    ) -> Result<Output, GitWorkspaceError> {
+        self.run_commit_summary_with_timeout(stdout_limit, cancel, READ_TIMEOUT)
+    }
+
+    fn run_commit_summary_with_timeout(
+        &self,
+        stdout_limit: usize,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<Output, GitWorkspaceError> {
+        self.verify_root()?;
+        if cancel.is_cancelled() {
+            return Err(error(GitWorkspaceErrorCode::Cancelled));
+        }
+        #[cfg(test)]
+        let executable = self.executable.as_deref().unwrap_or_else(|| Path::new(GIT));
+        #[cfg(not(test))]
+        let executable = Path::new(GIT);
+        let mut command = Command::new(executable);
+        command.current_dir(&self.root);
+        command
+            .args(PREFIX)
+            .args(["-c", "core.quotePath=true"])
+            .arg("--no-optional-locks")
+            .args([
+                "diff",
+                "--cached",
+                "--patch",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--full-index",
+                "--",
+            ]);
+        scrub_git_environment(&mut command);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        let mut child = command
+            .spawn()
+            .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
+        collect_child(
+            &mut child,
+            None,
+            stdout_limit,
+            STDERR_LIMIT,
+            timeout,
+            cancel,
+            OverflowPolicy::DEFERRED,
+        )
     }
 
     fn run_trusted_switch_with_executable(
@@ -809,6 +1142,7 @@ impl Runner {
             STDERR_LIMIT,
             MUTATION_TIMEOUT,
             cancel,
+            OverflowPolicy::IMMEDIATE,
         )
     }
 
@@ -862,6 +1196,23 @@ enum Stream {
     Stderr,
 }
 
+#[derive(Clone, Copy)]
+struct OverflowPolicy {
+    stdout_immediate: bool,
+    stderr_immediate: bool,
+}
+
+impl OverflowPolicy {
+    const IMMEDIATE: Self = Self {
+        stdout_immediate: true,
+        stderr_immediate: true,
+    };
+    const DEFERRED: Self = Self {
+        stdout_immediate: false,
+        stderr_immediate: false,
+    };
+}
+
 fn collect_child(
     child: &mut Child,
     input: Option<Arc<[u8]>>,
@@ -869,6 +1220,7 @@ fn collect_child(
     stderr_limit: usize,
     timeout: Duration,
     cancel: &CancellationToken,
+    overflow_policy: OverflowPolicy,
 ) -> Result<Output, GitWorkspaceError> {
     let pgid = child.id();
     let stdout = child.stdout.take();
@@ -909,6 +1261,7 @@ fn collect_child(
         Stream::Stdout,
         stdout_limit,
         overflowed.clone(),
+        overflow_policy.stdout_immediate,
         sender.clone(),
     );
     spawn_reader(
@@ -916,6 +1269,7 @@ fn collect_child(
         Stream::Stderr,
         stderr_limit,
         overflowed.clone(),
+        overflow_policy.stderr_immediate,
         sender,
     );
 
@@ -1015,7 +1369,10 @@ fn collect_child(
     if let Some(code) = stop_code {
         return Err(error(code));
     }
-    if outputs.iter().any(|output| output.overflow) {
+    if outputs.iter().any(|output| {
+        output.overflow
+            && (matches!(output.stream, Stream::Stderr) || overflow_policy.stdout_immediate)
+    }) {
         return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
     }
     if outputs.iter().any(|output| output.failed) {
@@ -1028,9 +1385,11 @@ fn collect_child(
     let stdout = outputs
         .into_iter()
         .find(|output| matches!(output.stream, Stream::Stdout))
-        .map(|output| output.bytes)
         .ok_or_else(|| error(GitWorkspaceErrorCode::GitFailed))?;
-    Ok(Output { stdout })
+    Ok(Output {
+        stdout: stdout.bytes,
+        overflow: stdout.overflow,
+    })
 }
 
 fn cleanup_partial_child(
@@ -1051,12 +1410,13 @@ fn cleanup_partial_child(
             Stream::Stdout,
             0,
             overflowed.clone(),
+            true,
             sender.clone(),
         );
     }
     if let Some(stderr) = stderr {
         readers += 1;
-        spawn_reader(stderr, Stream::Stderr, 0, overflowed, sender.clone());
+        spawn_reader(stderr, Stream::Stderr, 0, overflowed, true, sender.clone());
     }
     drop(sender);
     let _ = terminate_group(child, pgid);
@@ -1072,6 +1432,7 @@ fn spawn_reader<R: Read + Send + 'static>(
     stream: Stream,
     limit: usize,
     overflowed: Arc<AtomicBool>,
+    overflow_is_fatal: bool,
     sender: mpsc::Sender<ReaderResult>,
 ) {
     thread::spawn(move || {
@@ -1083,11 +1444,14 @@ fn spawn_reader<R: Read + Send + 'static>(
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(read) => {
-                    if retained.len().saturating_add(read) <= limit {
-                        retained.extend_from_slice(&chunk[..read]);
-                    } else {
+                    let remaining = limit.saturating_sub(retained.len());
+                    let retain = remaining.min(read);
+                    retained.extend_from_slice(&chunk[..retain]);
+                    if retain < read {
                         overflow = true;
-                        overflowed.store(true, Ordering::SeqCst);
+                        if overflow_is_fatal {
+                            overflowed.store(true, Ordering::SeqCst);
+                        }
                     }
                 }
                 Err(_) => {
@@ -1726,6 +2090,7 @@ fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
         dev: metadata.dev(),
         ino: metadata.ino(),
         kind,
+        mode: metadata.mode(),
         size: metadata.size(),
         mtime: metadata.mtime(),
         mtime_ns: metadata.mtime_nsec(),
@@ -2118,7 +2483,12 @@ fn cross_check_raw(
         })
         .collect();
     let entry_paths: BTreeSet<&[u8]> = entries.iter().map(|entry| entry.path.as_slice()).collect();
-    if entry_paths.len() != expected.len() {
+    if entry_paths.len() > expected.len()
+        || expected.iter().any(|(path, (kind, _))| {
+            !entry_paths.contains(path.as_slice())
+                && (staged || *kind != WorkspaceChangeKind::Modified)
+        })
+    {
         return Err(error(GitWorkspaceErrorCode::MalformedOutput));
     }
     for entry in entries {
@@ -2982,6 +3352,7 @@ fn trim_one_newline(bytes: &[u8]) -> &[u8] {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::sync::atomic::AtomicUsize;
     use tempfile::{TempDir, tempdir};
 
     struct Repo {
@@ -4112,7 +4483,7 @@ mod tests {
         let script = repo.path().join("fixture-git");
         fs::write(
             &script,
-            "#!/bin/sh\nif [ \"${12}\" != check-attr ] || [ \"${13}\" != -z ] || [ \"${14}\" != --stdin ] || [ \"${15}\" != --all ]; then exit 91; fi\npython3 -c 'import sys; sys.stdout.write(\"o\" * 65536); sys.stdout.flush(); data=sys.stdin.buffer.read(); sys.stderr.write(\"e\" * 32768); sys.stderr.flush(); sys.stdout.write(str(len(data)))'\n",
+            "#!/bin/sh\nif [ \"${13}\" != check-attr ] || [ \"${14}\" != -z ] || [ \"${15}\" != --stdin ] || [ \"${16}\" != --all ]; then exit 91; fi\npython3 -c 'import sys; sys.stdout.write(\"o\" * 65536); sys.stdout.flush(); data=sys.stdin.buffer.read(); sys.stderr.write(\"e\" * 32768); sys.stderr.flush(); sys.stdout.write(str(len(data)))'\n",
         )
         .unwrap();
         let mut permissions = fs::metadata(&script).unwrap().permissions();
@@ -4174,6 +4545,268 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(stderr_error.code(), GitWorkspaceErrorCode::OutputTooLarge);
+    }
+
+    #[test]
+    fn commit_summary_exact_argv_null_stdin_and_full_dual_drain() {
+        let repo = Repo::new();
+        let fixture = tempdir().unwrap();
+        let script = fixture.path().join("summary-git");
+        let argv = fixture.path().join("argv");
+        let stdin = fixture.path().join("stdin");
+        let cwd = fixture.path().join("cwd");
+        let env = fixture.path().join("env");
+        let tail = fixture.path().join("tail");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nset -eu\n: > '{argv}'\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '{argv}'; done\nwc -c > '{stdin}'\npwd > '{cwd}'\nenv | grep '^GIT_' > '{env}'\npython3 -c 'import os,sys; sys.stdout.buffer.write(b\"o\" * 131072); sys.stdout.flush(); sys.stderr.buffer.write(b\"e\" * 65536); sys.stderr.flush(); open(sys.argv[1], \"wb\").close()' '{tail}'\n",
+                argv = argv.display(),
+                stdin = stdin.display(),
+                cwd = cwd.display(),
+                env = env.display(),
+                tail = tail.display(),
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let service = GitWorkspaceService::new_for_test(repo.path(), script.clone()).unwrap();
+        let runner = Runner::new(service.root.clone(), service.identity, Some(script));
+        let output = runner
+            .run_commit_summary(256 * 1024, &CancellationToken::new())
+            .unwrap();
+        assert_eq!(output.stdout, vec![b'o'; 131_072]);
+        assert!(!output.overflow);
+        assert!(tail.exists());
+        assert_eq!(fs::read_to_string(stdin).unwrap().trim(), "0");
+        assert_eq!(
+            fs::read_to_string(cwd).unwrap().trim(),
+            service.root.to_str().unwrap()
+        );
+        let mut git_environment: Vec<_> = fs::read_to_string(env)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        git_environment.sort();
+        assert_eq!(
+            git_environment,
+            [
+                "GIT_LITERAL_PATHSPECS=1",
+                "GIT_NO_LAZY_FETCH=1",
+                "GIT_PAGER=cat",
+                "GIT_TERMINAL_PROMPT=0",
+            ]
+        );
+        let mut expected = Vec::new();
+        for argument in PREFIX.iter().copied().chain([
+            "-c",
+            "core.quotePath=true",
+            "--no-optional-locks",
+            "diff",
+            "--cached",
+            "--patch",
+            "--find-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--full-index",
+            "--",
+        ]) {
+            expected.extend_from_slice(argument.as_bytes());
+            expected.push(0);
+        }
+        assert_eq!(fs::read(argv).unwrap(), expected);
+    }
+
+    #[test]
+    fn commit_summary_stderr_overflow_is_fully_drained_then_rejected() {
+        let repo = Repo::new();
+        let fixture = tempdir().unwrap();
+        let script = fixture.path().join("summary-git");
+        let tail = fixture.path().join("stderr-tail");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nexec python3 -c 'import sys; sys.stderr.buffer.write(b\"e\" * 196608); sys.stderr.flush(); open(sys.argv[1], \"wb\").close()' '{}'\n",
+                tail.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let service = GitWorkspaceService::new_for_test(repo.path(), script.clone()).unwrap();
+        let runner = Runner::new(service.root.clone(), service.identity, Some(script));
+        let started = Instant::now();
+        let error = match runner.run_commit_summary(256 * 1024, &CancellationToken::new()) {
+            Ok(_) => panic!("stderr overflow was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), GitWorkspaceErrorCode::OutputTooLarge);
+        assert!(
+            tail.exists(),
+            "producer did not reach its post-overflow tail"
+        );
+        assert!(started.elapsed() < READ_TIMEOUT);
+    }
+
+    #[test]
+    fn commit_summary_raw_cap_is_inclusive_and_overflow_tail_is_drained() {
+        let repo = Repo::new();
+        let fixture = tempdir().unwrap();
+        let script = fixture.path().join("summary-git");
+        let tail = fixture.path().join("stdout-tail");
+        let service = GitWorkspaceService::new_for_test(repo.path(), script.clone()).unwrap();
+        let runner = Runner::new(service.root.clone(), service.identity, Some(script.clone()));
+        const CAP: usize = 256 * 1024;
+        for (size, overflow) in [(CAP, false), (CAP + 1, true), (CAP * 3, true)] {
+            let _ = fs::remove_file(&tail);
+            fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\nexec python3 -c 'import sys; sys.stdout.buffer.write(b\"x\" * {size}); sys.stdout.flush(); open(sys.argv[1], \"wb\").close()' '{}'\n",
+                    tail.display()
+                ),
+            )
+            .unwrap();
+            let mut permissions = fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(&script, permissions).unwrap();
+            let output = runner
+                .run_commit_summary(CAP, &CancellationToken::new())
+                .unwrap();
+            assert_eq!(output.stdout, vec![b'x'; CAP.min(size)]);
+            assert_eq!(output.overflow, overflow, "size {size}");
+            assert!(tail.exists(), "size {size} tail was not drained");
+        }
+    }
+
+    #[test]
+    fn summary_reader_chunk_partition_is_irrelevant() {
+        struct Chunked {
+            bytes: Vec<u8>,
+            offset: usize,
+            chunk: usize,
+        }
+        impl Read for Chunked {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                let available = self.bytes.len().saturating_sub(self.offset);
+                let read = available.min(self.chunk).min(target.len());
+                target[..read].copy_from_slice(&self.bytes[self.offset..self.offset + read]);
+                self.offset += read;
+                Ok(read)
+            }
+        }
+        let bytes: Vec<u8> = (0..65_567).map(|index| (index % 251) as u8).collect();
+        for chunk in [1, 4 * 1024, IO_CHUNK] {
+            let (sender, receiver) = mpsc::channel();
+            spawn_reader(
+                Chunked {
+                    bytes: bytes.clone(),
+                    offset: 0,
+                    chunk,
+                },
+                Stream::Stdout,
+                65_536,
+                Arc::new(AtomicBool::new(false)),
+                false,
+                sender,
+            );
+            let output = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert_eq!(output.bytes, bytes[..65_536]);
+            assert!(output.overflow);
+            assert!(!output.failed);
+        }
+    }
+
+    #[test]
+    fn summary_reader_first_read_crosses_cap_and_still_drains_tail() {
+        struct OneRead {
+            bytes: Vec<u8>,
+            consumed: Arc<AtomicUsize>,
+        }
+        impl Read for OneRead {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                if self.bytes.is_empty() {
+                    return Ok(0);
+                }
+                let read = self.bytes.len().min(target.len());
+                target[..read].copy_from_slice(&self.bytes[..read]);
+                self.bytes.drain(..read);
+                self.consumed.fetch_add(read, Ordering::SeqCst);
+                Ok(read)
+            }
+        }
+        const CAP: usize = 37;
+        let bytes: Vec<u8> = (0..(CAP + 211)).map(|index| (index % 251) as u8).collect();
+        assert!(bytes.len() < IO_CHUNK, "fixture must cross cap in one read");
+        let consumed = Arc::new(AtomicUsize::new(0));
+        let (sender, receiver) = mpsc::channel();
+        spawn_reader(
+            OneRead {
+                bytes: bytes.clone(),
+                consumed: consumed.clone(),
+            },
+            Stream::Stdout,
+            CAP,
+            Arc::new(AtomicBool::new(false)),
+            false,
+            sender,
+        );
+        let output = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(output.bytes, bytes[..CAP]);
+        assert!(output.overflow);
+        assert_eq!(consumed.load(Ordering::SeqCst), bytes.len());
+    }
+
+    #[test]
+    fn commit_summary_deferred_overflow_never_eof_uses_bounded_timeout() {
+        let repo = Repo::new();
+        let fixture = tempdir().unwrap();
+        let script = fixture.path().join("summary-git");
+        let overflow_reached = fixture.path().join("overflow-reached");
+        let descendant_pid = fixture.path().join("descendant-pid");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nset -eu\npython3 -c 'import sys; sys.stdout.buffer.write(b\"x\" * 262145); sys.stdout.flush()'\n: > '{}'\nsleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait\n",
+                overflow_reached.display(),
+                descendant_pid.display(),
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let service = GitWorkspaceService::new_for_test(repo.path(), script.clone()).unwrap();
+        let runner = Runner::new(service.root.clone(), service.identity, Some(script));
+        let started = Instant::now();
+        let error = match runner.run_commit_summary_with_timeout(
+            256 * 1024,
+            &CancellationToken::new(),
+            Duration::from_millis(750),
+        ) {
+            Ok(_) => panic!("never-EOF summary was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), GitWorkspaceErrorCode::TimedOut);
+        assert!(overflow_reached.exists());
+        assert!(started.elapsed() >= Duration::from_millis(700));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let pid = fs::read_to_string(descendant_pid).unwrap();
+        assert!(
+            !Command::new(KILL)
+                .args(["-0", &pid])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "summary timeout descendant survived cleanup"
+        );
     }
 
     #[test]
@@ -4274,6 +4907,60 @@ mod tests {
                 .file_id(),
             file.id
         );
+    }
+
+    #[tokio::test]
+    async fn git_workspace_owner_finalize_fences_pre_registered_poll_completion() {
+        let repo = Repo::new();
+        repo.write("tracked.txt", b"base\n");
+        repo.commit_all();
+        let fixture = tempdir().unwrap();
+        let script = fixture.path().join("fixture-git");
+        let arm = fixture.path().join("arm");
+        let lock = fixture.path().join("poll.lock");
+        let ready = fixture.path().join("poll.ready");
+        let release = fixture.path().join("poll.release");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nset -eu\nis_status=0\nfor arg in \"$@\"; do [ \"$arg\" = status ] && is_status=1 || true; done\nif [ \"$is_status\" = 1 ] && [ -e '{}' ] && mkdir '{}' 2>/dev/null; then : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; fi\nexec /usr/bin/git \"$@\"\n",
+                arm.display(),
+                lock.display(),
+                ready.display(),
+                release.display(),
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let service = Arc::new(GitWorkspaceService::new_for_test(repo.path(), script).unwrap());
+        let a = service.refresh(CancellationToken::new()).await.unwrap();
+        let owner = service.begin_owned_refresh(a.generation).unwrap();
+        repo.write("tracked.txt", b"terminal B\n");
+        fs::write(&arm, b"arm").unwrap();
+        let poll = tokio::spawn({
+            let service = service.clone();
+            async move { service.refresh(CancellationToken::new()).await }
+        });
+        for _ in 0..500 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ready.exists(), "ordinary poll did not enter barrier");
+        let b = service
+            .refresh_owned_after_mutation(owner, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(b.generation > a.generation);
+        fs::write(&release, b"release").unwrap();
+        assert_eq!(
+            poll.await.unwrap().unwrap_err().code(),
+            GitWorkspaceErrorCode::StaleGeneration
+        );
+        assert_eq!(service.state.lock().unwrap().generation, b.generation);
     }
 
     #[tokio::test]

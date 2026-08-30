@@ -49,6 +49,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 本项目采用 **SDD（Spec-Driven Development）**：spec 先行，代码不允许先于 spec。
 参与开发前必读 [`AGENTS.md`](AGENTS.md) 和 [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md)。
+验收统一采用 **E2E-first**：真实 production 入口为主证据，安全内核回归为辅；分级与留存规则见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ### 前置要求（macOS）
 

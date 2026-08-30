@@ -1,6 +1,6 @@
 # ✦ Vega — 执行层开发总纲（Executor's Constitution）
 
-**版本** v0.5 · 2026-08-29 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
+**版本** v0.6 · 2026-08-31 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
 **关联**：[vega-tech-spec-p1.md](vega-tech-spec-p1.md)（实现规格）· [vega-tech-risks.md](vega-tech-risks.md)（难点方案）· [vega-features.md](vega-features.md)（功能点 ID）· [vega-ui-spec.md](vega-ui-spec.md)（UI 准线）
 
 > 本文件是执行模型的**最高行为准则**。每个任务 prompt 都必须附本文件路径。任何与本文件冲突的"看起来更合理"的做法都是错的。
@@ -98,7 +98,37 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 - **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
 - **报告**：贴验收命令原始输出，不许概述"通过了"
+- **E2E-first（2026-08-31 人类裁决）**：任务验收优先运行真实 production 入口的 owned temp-repo/headless 或 UI handler E2E。test-only seam/probe 只保留无法由 E2E 稳定证明的 parser、authority、process、codec 等安全不变量；禁止为了笛卡尔覆盖率扩大 production public API 或长期堆叠仅测试状态机。已经验证且仍保护安全边界的精确回归不得为缩短测试而删除。
+- **证据留存**：每 Sprint 报告必须记录命令、UTC/本地时间、branch、测试时 tree/content hash、结果与 accepted residual；raw 日志可暂存 `/tmp`，仓库文档不得写入真实 key、raw workspace path/OID或伪造尚不存在的 commit/PR。
+
+### 7.1 E2E 证据分级与仓库模板
+
+| 等级 | 允许的 seam | 可证明的范围 |
+|---|---|---|
+| `E2E-REAL` | owned `TempDir`、repo-local config、`MockProvider` | 真实 filesystem/Git/production service 或 controller 链；不代表真实 provider/network/key |
+| `INTEGRATION-DELEGATING` | observer/recorder须逐次委托真实 executable并复核repo终态 | exact argv/stdin/process lifecycle 与真实命令效果 |
+| `FAULT-INJECTION` | bounded scripted executable/provider/clock | 该故障后的 typed failure、zero/one attempt与恢复责任；不得冒充真实 happy path |
+| `UNIT/PROPERTY` | 纯函数、bytes/table/state-machine | 闭合 grammar/codec/bounds/redaction/并发不变量；不得冒充production wiring |
+
+`E2E-REAL` 禁止 override Git read/mutation executable、伪造 authority/prepared/result或由 probe 决定成功分支；`MockProvider` 只能替换 provider/network 边界。probe只能观察，且断言必须同时包含真实repo/UI/controller终态。每个不同production故障阶段至多保留一个代表 seam；不得为覆盖率扩大public API。
+
+仓库证据文档使用以下最小结构（大日志只留fresh `/private/tmp`，仓库只记录bounded footer与hash）：
+
+```markdown
+## Freeze
+- verified_at_utc / verified_at_local
+- git_head / tracked_diff_sha256 / task_contract
+- os_arch / rustc / cargo / git
+
+## Results
+| requirement | evidence class | exact command | result | duration | bounded footer/hash |
+
+## Residuals
+- ACCEPTED / LIMIT / SKIP / NOT RUN（不得把skip、mock或未执行项写成PASS）
+```
+
+日志与报告禁止包含absolute workspace path、raw Git path/OID、diff/provider正文、Authorization/Keychain值。失败后重跑必须保留首次失败及原因，不能只留下最终pass。
 
 ---
 
-*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）；v0.4 (2026-08-29) 基础白名单新增 toml（config.toml 解析，人类批准）；v0.5 (2026-08-29) mdstream 白名单条件激活（`待 spike 确认` → T14 spike 确认引入，锁定 =0.3.0）。*
+*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）；v0.4 (2026-08-29) 基础白名单新增 toml（config.toml 解析，人类批准）；v0.5 (2026-08-29) mdstream 白名单条件激活（`待 spike 确认` → T14 spike 确认引入，锁定 =0.3.0）；v0.6 (2026-08-31) 人类冻结 E2E-first 验收与仓库证据留存规则，限制 test-only 笛卡尔扩张。*
