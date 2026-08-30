@@ -77,16 +77,11 @@ impl Tools {
     /// Strictly parse provider JSON without executing it. T26 must complete
     /// permission handling before passing the prepared value to execution.
     pub fn prepare_bash_json(&self, raw_input: &str) -> Result<PreparedBash, BashError> {
-        let input: BashInput = serde_json::from_str(raw_input)
-            .map_err(|_| BashError::new(BashErrorCode::InvalidInput))?;
-        let timeout_ms = input.timeout_ms.0.unwrap_or(DEFAULT_BASH_TIMEOUT_MS);
-        if timeout_ms == 0 {
-            return Err(BashError::new(BashErrorCode::InvalidInput));
-        }
+        let (command, timeout_ms) = parse_bash_input(raw_input)?;
         Ok(PreparedBash {
             instance_id: self.instance_id,
             project_root: self.root.clone(),
-            command: input.cmd,
+            command,
             timeout_ms,
         })
     }
@@ -253,6 +248,22 @@ impl Tools {
     ) -> Result<BashOutput, BashError> {
         self.execute_bash_inner(prepared, cancel, hooks).await
     }
+}
+
+/// Strictly extracts the exact permission signature without creating an
+/// execution capability. Conversation uses this to validate persisted rules.
+pub fn bash_permission_signature(raw_input: &str) -> Result<String, BashError> {
+    parse_bash_input(raw_input).map(|(command, _)| command)
+}
+
+fn parse_bash_input(raw_input: &str) -> Result<(String, u64), BashError> {
+    let input: BashInput =
+        serde_json::from_str(raw_input).map_err(|_| BashError::new(BashErrorCode::InvalidInput))?;
+    let timeout_ms = input.timeout_ms.0.unwrap_or(DEFAULT_BASH_TIMEOUT_MS);
+    if input.cmd.is_empty() || timeout_ms == 0 {
+        return Err(BashError::new(BashErrorCode::InvalidInput));
+    }
+    Ok((input.cmd, timeout_ms))
 }
 
 struct BashAttempt {

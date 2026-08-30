@@ -27,7 +27,7 @@ pub enum RuntimePermissionMode {
 }
 
 /// Mutating tool vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeMutatingTool {
     /// Sandboxed shell command.
     Bash,
@@ -120,8 +120,14 @@ pub enum RuntimeApprovalSource {
     User,
     /// Permission timeout.
     Timeout,
+    /// Invalid tool input rejected without permission or execution.
+    Validation,
     /// Read-only built-in tool.
     ReadonlyTool,
+    /// Startup recovery.
+    Recovery,
+    /// Exact S4 bare compatibility value loaded from persistence.
+    Legacy,
 }
 
 /// Nested dangerous-command audit.

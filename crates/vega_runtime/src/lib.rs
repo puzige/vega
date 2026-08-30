@@ -69,9 +69,10 @@ mod provider;
 mod retry;
 
 pub use agent::{
-    AgentOutcome, AgentRequest, CompletedToolCall, RuntimeEvent, RuntimeFinishReason,
-    RuntimeTokenUsage, RuntimeToolCall, RuntimeToolResult, RuntimeToolStatus, TOOL_CALL_LIMIT,
-    run_agent, run_agent_with_sink,
+    AgentOutcome, AgentRequest, CALL_ID_CONFLICT_OUTPUT, CANCELLED_BEFORE_EXECUTION_OUTPUT,
+    CompletedToolCall, RuntimeEvent, RuntimeExactRule, RuntimeFinishReason, RuntimePermissionHook,
+    RuntimeTokenUsage, RuntimeToolCall, RuntimeToolConfig, RuntimeToolResult, RuntimeToolStatus,
+    TOOL_CALL_LIMIT, run_agent, run_agent_with_permission_sink, run_agent_with_sink,
 };
 pub use error::VegaError;
 pub use mock::{MockProvider, ScriptStep};

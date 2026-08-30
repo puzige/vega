@@ -4,6 +4,7 @@ use std::fs;
 use tempfile::tempdir;
 use tokio_util::sync::CancellationToken;
 use vega_conversation::agent::run_thread_task;
+use vega_conversation::types::{Approval, ApprovalAudit, ApprovalSource};
 use vega_runtime::{ChatRole, MockProvider, ProviderEvent, ScriptStep, StopReason};
 use vega_store::{Store, projects, threads};
 
@@ -172,7 +173,7 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            ["read", "glob", "grep"]
+            ["read", "glob", "grep", "write", "edit", "bash"]
         );
     }
     assert_eq!(
@@ -272,7 +273,9 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
         assert_eq!(tool.1, run.assistant_message_id);
         assert_eq!(tool.2, (index + 1) as i64);
         assert_eq!(tool.4, "success");
-        assert_eq!(tool.5, "once");
+        let approval = ApprovalAudit::from_json(&tool.5)?;
+        assert_eq!(approval.decision, Approval::Once);
+        assert_eq!(approval.source, ApprovalSource::ReadonlyTool);
         assert!(!tool.6.is_empty());
         assert!(tool.7);
     }

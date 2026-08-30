@@ -183,7 +183,35 @@ impl fmt::Debug for PreparedEdit {
     }
 }
 
+struct AuditedWriteInput {
+    path: String,
+    content: String,
+    audit: WriteEditAudit,
+}
+
+struct AuditedEditInput {
+    path: String,
+    old_string: String,
+    new_string: String,
+    audit: WriteEditAudit,
+}
+
 impl Tools {
+    /// Validate and fence raw write input into a content-free audit projection.
+    /// This never creates an executable mutation capability or checkpoint.
+    pub fn audit_write_json(
+        &self,
+        raw_input: &str,
+    ) -> Result<WriteEditAudit, PrepareMutationError> {
+        Ok(self.parse_write_input(raw_input)?.audit)
+    }
+
+    /// Validate and fence raw edit input into a content-free audit projection.
+    /// This never creates an executable mutation capability or checkpoint.
+    pub fn audit_edit_json(&self, raw_input: &str) -> Result<WriteEditAudit, PrepareMutationError> {
+        Ok(self.parse_edit_input(raw_input)?.audit)
+    }
+
     /// Parse strict raw provider JSON, normalize/fence its path, and create a
     /// content-free write audit projection. No filesystem mutation occurs.
     pub fn prepare_write_json(
@@ -195,6 +223,21 @@ impl Tools {
                 MutationErrorCode::CheckpointUnavailable,
             ))
         })?;
+        let input = self.parse_write_input(raw_input)?;
+        Ok(PreparedWrite {
+            instance_id: self.instance_id,
+            project_root: self.root.clone(),
+            checkpoint_scope: context.scope_key().to_string(),
+            path: input.path,
+            content: input.content,
+            audit: input.audit,
+        })
+    }
+
+    fn parse_write_input(
+        &self,
+        raw_input: &str,
+    ) -> Result<AuditedWriteInput, PrepareMutationError> {
         let values = parse_object(raw_input, MutationTool::Write)?;
         let path = required_string(
             &values,
@@ -224,10 +267,7 @@ impl Tools {
             .map_err(|code| invalid_error(MutationTool::Write, raw_input, code))?;
         let audit = WriteEditAudit::write(&target.display, &content)
             .map_err(PrepareMutationError::Internal)?;
-        Ok(PreparedWrite {
-            instance_id: self.instance_id,
-            project_root: self.root.clone(),
-            checkpoint_scope: context.scope_key().to_string(),
+        Ok(AuditedWriteInput {
             path: target.display,
             content,
             audit,
@@ -243,6 +283,19 @@ impl Tools {
                 MutationErrorCode::CheckpointUnavailable,
             ))
         })?;
+        let input = self.parse_edit_input(raw_input)?;
+        Ok(PreparedEdit {
+            instance_id: self.instance_id,
+            project_root: self.root.clone(),
+            checkpoint_scope: context.scope_key().to_string(),
+            path: input.path,
+            old_string: input.old_string,
+            new_string: input.new_string,
+            audit: input.audit,
+        })
+    }
+
+    fn parse_edit_input(&self, raw_input: &str) -> Result<AuditedEditInput, PrepareMutationError> {
         let values = parse_object(raw_input, MutationTool::Edit)?;
         let path = required_string(
             &values,
@@ -287,10 +340,7 @@ impl Tools {
             .map_err(|code| invalid_error(MutationTool::Edit, raw_input, code))?;
         let audit = WriteEditAudit::edit(&target.display, &old_string, &new_string)
             .map_err(PrepareMutationError::Internal)?;
-        Ok(PreparedEdit {
-            instance_id: self.instance_id,
-            project_root: self.root.clone(),
-            checkpoint_scope: context.scope_key().to_string(),
+        Ok(AuditedEditInput {
             path: target.display,
             old_string,
             new_string,
@@ -767,6 +817,45 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn audit_only_mutations_match_scoped_audits_without_creating_capabilities() {
+        let fixture = Fixture::new();
+        fs::write(fixture.project.path().join("target.txt"), "old-secret").unwrap();
+        let base = Tools::new(fixture.project.path()).unwrap();
+        let write_raw = r#"{"path":"new.txt","content":"write-secret"}"#;
+        let edit_raw =
+            r#"{"path":"target.txt","old_string":"old-secret","new_string":"new-secret"}"#;
+
+        let write_audit = base.audit_write_json(write_raw).unwrap();
+        let edit_audit = base.audit_edit_json(edit_raw).unwrap();
+        let scoped = fixture.tools("audit-call");
+        assert_eq!(
+            &write_audit,
+            scoped.prepare_write_json(write_raw).unwrap().audit()
+        );
+        assert_eq!(
+            &edit_audit,
+            scoped.prepare_edit_json(edit_raw).unwrap().audit()
+        );
+        let debug = format!("{write_audit:?}{edit_audit:?}");
+        assert!(!debug.contains("write-secret"));
+        assert!(!debug.contains("old-secret"));
+        assert!(!debug.contains("new-secret"));
+        assert!(!fixture.project.path().join("new.txt").exists());
+        assert_eq!(
+            fs::read_to_string(fixture.project.path().join("target.txt")).unwrap(),
+            "old-secret"
+        );
+        assert_eq!(fs::read_dir(fixture.checkpoints.path()).unwrap().count(), 0);
+
+        let invalid_raw = r#"{"path":"../escape","content":"invalid-secret"}"#;
+        let invalid = invalid(base.audit_write_json(invalid_raw).unwrap_err());
+        assert_eq!(invalid.code(), MutationErrorCode::PathParent);
+        let projection = invalid.audit().to_json().unwrap();
+        assert!(!projection.contains("invalid-secret"));
+        assert!(!projection.contains("../escape"));
     }
 
     #[test]

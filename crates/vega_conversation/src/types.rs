@@ -425,13 +425,54 @@ pub fn approval_audit_from_runtime(audit: &vega_runtime::RuntimeApprovalAudit) -
             vega_runtime::RuntimeApprovalSource::Auto => ApprovalSource::Auto,
             vega_runtime::RuntimeApprovalSource::User => ApprovalSource::User,
             vega_runtime::RuntimeApprovalSource::Timeout => ApprovalSource::Timeout,
+            vega_runtime::RuntimeApprovalSource::Validation => ApprovalSource::Validation,
             vega_runtime::RuntimeApprovalSource::ReadonlyTool => ApprovalSource::ReadonlyTool,
+            vega_runtime::RuntimeApprovalSource::Recovery => ApprovalSource::Recovery,
+            vega_runtime::RuntimeApprovalSource::Legacy => ApprovalSource::Legacy,
         },
         danger: audit.danger.as_ref().map(|danger| DangerAudit {
             rule_id: danger.rule_id.clone(),
             decision: approval_from_runtime(danger.decision),
             note: danger.note.clone(),
         }),
+    }
+}
+
+/// Maps a strict persisted/shared audit back into the runtime-local recovery
+/// representation without weakening its source or nested danger facts.
+pub fn approval_audit_to_runtime(audit: &ApprovalAudit) -> vega_runtime::RuntimeApprovalAudit {
+    vega_runtime::RuntimeApprovalAudit {
+        decision: approval_to_runtime(audit.decision),
+        note: audit.note.clone(),
+        source: match audit.source {
+            ApprovalSource::Danger => vega_runtime::RuntimeApprovalSource::Danger,
+            ApprovalSource::ReadOnly => vega_runtime::RuntimeApprovalSource::ReadOnly,
+            ApprovalSource::RunMode => vega_runtime::RuntimeApprovalSource::RunMode,
+            ApprovalSource::Rule => vega_runtime::RuntimeApprovalSource::Rule,
+            ApprovalSource::Auto => vega_runtime::RuntimeApprovalSource::Auto,
+            ApprovalSource::User => vega_runtime::RuntimeApprovalSource::User,
+            ApprovalSource::Timeout => vega_runtime::RuntimeApprovalSource::Timeout,
+            ApprovalSource::Validation => vega_runtime::RuntimeApprovalSource::Validation,
+            ApprovalSource::ReadonlyTool => vega_runtime::RuntimeApprovalSource::ReadonlyTool,
+            ApprovalSource::Recovery => vega_runtime::RuntimeApprovalSource::Recovery,
+            ApprovalSource::Legacy => vega_runtime::RuntimeApprovalSource::Legacy,
+        },
+        danger: audit
+            .danger
+            .as_ref()
+            .map(|danger| vega_runtime::RuntimeDangerAudit {
+                rule_id: danger.rule_id.clone(),
+                decision: approval_to_runtime(danger.decision),
+                note: danger.note.clone(),
+            }),
+    }
+}
+
+fn approval_to_runtime(decision: Approval) -> vega_runtime::RuntimeApprovalDecision {
+    match decision {
+        Approval::Once => vega_runtime::RuntimeApprovalDecision::Once,
+        Approval::Always => vega_runtime::RuntimeApprovalDecision::Always,
+        Approval::Deny => vega_runtime::RuntimeApprovalDecision::Deny,
     }
 }
 
@@ -483,7 +524,8 @@ pub struct ToolCall {
     pub id: CallId,
     /// Tool name.
     pub tool: String,
-    /// Complete raw JSON input.
+    /// Safe complete JSON input. Write/edit bodies are replaced by strict
+    /// content-free audit projections before this boundary.
     pub input_json: String,
 }
 
@@ -551,6 +593,12 @@ pub struct ToolResult {
     pub output: String,
     /// True when a persisted result was reused by call id.
     pub reused: bool,
+    /// Exact bash exit code when available.
+    pub exit_code: Option<i32>,
+    /// Exact bash duration when available.
+    pub duration_ms: Option<u64>,
+    /// Exact live truncation fact; absent on persisted recovery.
+    pub truncated: Option<bool>,
 }
 
 /// Why a conversation message finished.
@@ -646,7 +694,7 @@ pub enum ConversationEvent {
 
 /// Converts one headless runtime event into the shared conversation event.
 /// Runtime-only `ToolCallRunning` is persisted but has no UI event in §3.
-pub fn from_runtime_event(
+pub(crate) fn from_runtime_event(
     message_id: &str,
     event: &vega_runtime::RuntimeEvent,
 ) -> Option<ConversationEvent> {
@@ -662,16 +710,41 @@ pub fn from_runtime_event(
             delta: delta.clone(),
         }),
         RuntimeEvent::ToolCallProposed(call) => Some(ConversationEvent::ToolCallProposed {
-            call: ToolCall {
-                id: call.id.clone(),
-                tool: call.name.clone(),
-                input_json: call.input_json.clone(),
-            },
+            call: safe_runtime_tool_call(call)?,
         }),
-        RuntimeEvent::ToolCallApproved { call_id } => Some(ConversationEvent::ToolCallApproved {
-            call_id: call_id.clone(),
-            approval: Approval::Once,
-        }),
+        RuntimeEvent::ToolCallValidationRejected { call, result } => {
+            validate_runtime_validation_rejection(call, result)?;
+            Some(ConversationEvent::ToolCallFinished {
+                call_id: result.call_id.clone(),
+                result: ToolResult {
+                    status: ToolCallStatus::Rejected,
+                    output: result.output.clone(),
+                    reused: result.reused,
+                    exit_code: result.exit_code,
+                    duration_ms: result.duration_ms,
+                    truncated: result.truncated,
+                },
+            })
+        }
+        RuntimeEvent::ToolCallConflict { result, .. } => {
+            Some(ConversationEvent::ToolCallFinished {
+                call_id: result.call_id.clone(),
+                result: ToolResult {
+                    status: ToolCallStatus::Failed,
+                    output: result.output.clone(),
+                    reused: result.reused,
+                    exit_code: result.exit_code,
+                    duration_ms: result.duration_ms,
+                    truncated: result.truncated,
+                },
+            })
+        }
+        RuntimeEvent::ToolCallApproved { call_id, audit, .. } => {
+            Some(ConversationEvent::ToolCallApproved {
+                call_id: call_id.clone(),
+                approval: approval_from_runtime(audit.decision),
+            })
+        }
         RuntimeEvent::ToolCallRunning { .. } => None,
         RuntimeEvent::ToolCallOutput { call_id, chunk } => {
             Some(ConversationEvent::ToolCallOutput {
@@ -690,6 +763,9 @@ pub fn from_runtime_event(
                 },
                 output: result.output.clone(),
                 reused: result.reused,
+                exit_code: result.exit_code,
+                duration_ms: result.duration_ms,
+                truncated: result.truncated,
             },
         }),
         RuntimeEvent::UsageUpdated {
@@ -720,6 +796,51 @@ pub fn from_runtime_event(
             message_id: Some(message_id.to_string()),
             error: error.clone(),
         }),
+    }
+}
+
+fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Option<ToolCall> {
+    if matches!(call.name.as_str(), "write" | "edit") {
+        let audit = vega_tools::WriteEditAudit::from_json(&call.input_json).ok()?;
+        if audit.tool().as_str() != call.name {
+            return None;
+        }
+    } else if !matches!(call.name.as_str(), "read" | "glob" | "grep" | "bash")
+        && call.input_json != "{}"
+    {
+        return None;
+    }
+    Some(ToolCall {
+        id: call.id.clone(),
+        tool: call.name.clone(),
+        input_json: call.input_json.clone(),
+    })
+}
+
+fn validate_runtime_validation_rejection(
+    call: &vega_runtime::RuntimeToolCall,
+    result: &vega_runtime::RuntimeToolResult,
+) -> Option<()> {
+    let audit = vega_tools::InvalidWriteEditAudit::from_json(&call.input_json).ok()?;
+    let approval = result.approval.as_ref()?;
+    let expected = format!(
+        "Tool error: invalid {} input ({})",
+        call.name,
+        audit.validation_error_code().as_str()
+    );
+    if audit.tool().as_str() == call.name
+        && call.id == result.call_id
+        && result.status == vega_runtime::RuntimeToolStatus::Rejected
+        && result.output == expected
+        && result.exit_code.is_none()
+        && result.duration_ms.is_none()
+        && result.remember_rule.is_none()
+        && approval.decision == vega_runtime::RuntimeApprovalDecision::Deny
+        && approval.source == vega_runtime::RuntimeApprovalSource::Validation
+    {
+        Some(())
+    } else {
+        None
     }
 }
 

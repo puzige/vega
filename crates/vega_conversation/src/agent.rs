@@ -1,5 +1,6 @@
 //! Conversation-layer orchestration for the headless runtime (S4-T20).
 
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -7,19 +8,67 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use vega_runtime::{
-    AgentRequest, Provider, RuntimeEvent, RuntimeToolStatus, VegaError, run_agent_with_sink,
+    AgentRequest, Provider, RuntimeEvent, RuntimeExactRule, RuntimeMutatingTool,
+    RuntimePermissionHook, RuntimePermissionMode, RuntimeRunMode, RuntimeToolConfig,
+    RuntimeToolStatus, RuntimeUserDecision, VegaError, run_agent_with_permission_sink,
 };
-use vega_store::{Store, messages, token_usage, tool_calls};
+use vega_store::{Store, messages, permissions, token_usage, tool_calls};
 
-use crate::types::{ConversationError, ConversationEvent, from_runtime_event};
+use crate::types::{
+    Approval, ApprovalAudit, ApprovalSource, ConversationError, ConversationEvent,
+    PermissionDecision, PermissionRequest, ThreadMode, approval_audit_from_runtime,
+    approval_audit_to_runtime, from_runtime_event, permission_decision_to_runtime,
+    permission_request_from_runtime,
+};
 
 const HISTORY_WINDOW: usize = 50;
 const TEXT_BATCH_MAX_DELAY: Duration = Duration::from_millis(4);
 const TEXT_BATCH_MAX_BYTES: usize = 4 * 1024;
 const PERSISTENCE_CHANNEL_CAPACITY: usize = 64;
+
+/// Shared cancellable permission boundary implemented by the S5 UI.
+pub trait PermissionHook: Send + Sync {
+    /// Requests one content-free permission decision.
+    fn request(
+        &self,
+        request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>>;
+}
+
+struct RejectPermissionHook;
+
+impl PermissionHook for RejectPermissionHook {
+    fn request(
+        &self,
+        _request: PermissionRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
+        async { Ok(PermissionDecision::Timeout) }.boxed()
+    }
+}
+
+struct RuntimePermissionAdapter<'a> {
+    shared: &'a dyn PermissionHook,
+}
+
+impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
+    fn request(
+        &self,
+        prompt: vega_runtime::RuntimePermissionPrompt,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>> {
+        self.shared
+            .request(permission_request_from_runtime(&prompt), cancel)
+            .map(|decision| decision.map(permission_decision_to_runtime))
+            .boxed()
+    }
+}
 
 #[derive(Clone, Default)]
 struct PersistenceActorConfig {
@@ -37,6 +86,8 @@ struct PersistenceActorConfig {
     actor_query_only: bool,
     #[cfg(test)]
     fail_start: bool,
+    #[cfg(test)]
+    checkpoint_root: Option<PathBuf>,
 }
 
 #[cfg(test)]
@@ -101,7 +152,7 @@ enum PersistenceCommand {
         ack: oneshot::Sender<Result<(), VegaError>>,
     },
     Event {
-        event: RuntimeEvent,
+        event: Box<RuntimeEvent>,
         content: String,
         ack: oneshot::Sender<Result<(), VegaError>>,
     },
@@ -115,6 +166,7 @@ struct PersistenceActor {
 impl PersistenceActor {
     async fn start(
         database_path: PathBuf,
+        project_id: String,
         thread_id: String,
         message_id: String,
         model: String,
@@ -168,6 +220,7 @@ impl PersistenceActor {
                         let result = config.check_event(&event).and_then(|()| {
                             persist_runtime_event(
                                 &store,
+                                &project_id,
                                 &thread_id,
                                 &message_id,
                                 &model,
@@ -223,7 +276,7 @@ impl PersistenceActor {
         let (ack, received) = oneshot::channel();
         self.sender
             .send(PersistenceCommand::Event {
-                event,
+                event: Box::new(event),
                 content,
                 ack,
             })
@@ -249,6 +302,7 @@ struct RuntimeEnvelope {
 
 struct PreparedRun {
     database_path: PathBuf,
+    project_id: String,
     model: String,
     user_message_id: String,
     assistant_message_id: String,
@@ -302,7 +356,7 @@ pub async fn run_thread_task(
     system_prompt: &str,
     cancel: CancellationToken,
 ) -> Result<ConversationRun, ConversationError> {
-    run_thread_task_with_sink(
+    run_thread_task_with_permission_sink(
         store,
         provider,
         tools,
@@ -310,6 +364,7 @@ pub async fn run_thread_task(
         user_content,
         system_prompt,
         cancel,
+        &RejectPermissionHook,
         |_| Ok(()),
     )
     .await
@@ -332,7 +387,7 @@ pub async fn run_thread_task_with_sink<F>(
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
-    run_thread_task_with_sink_config(
+    run_thread_task_with_permission_sink(
         store,
         provider,
         tools,
@@ -340,6 +395,37 @@ where
         user_content,
         system_prompt,
         cancel,
+        &RejectPermissionHook,
+        event_sink,
+    )
+    .await
+}
+
+/// Runs a thread task with the shared S5 permission hook and event sink.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_thread_task_with_permission_sink<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    user_content: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    event_sink: F,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_permission_config(
+        store,
+        provider,
+        tools,
+        thread_id,
+        user_content,
+        system_prompt,
+        cancel,
+        permission_hook,
         event_sink,
         PersistenceActorConfig::default(),
     )
@@ -347,6 +433,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 async fn run_thread_task_with_sink_config<F>(
     store: &Store,
     provider: &dyn Provider,
@@ -355,6 +442,37 @@ async fn run_thread_task_with_sink_config<F>(
     user_content: &str,
     system_prompt: &str,
     cancel: CancellationToken,
+    event_sink: F,
+    actor_config: PersistenceActorConfig,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_permission_config(
+        store,
+        provider,
+        tools,
+        thread_id,
+        user_content,
+        system_prompt,
+        cancel,
+        &RejectPermissionHook,
+        event_sink,
+        actor_config,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_thread_task_with_permission_config<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    user_content: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
     mut event_sink: F,
     actor_config: PersistenceActorConfig,
 ) -> Result<ConversationRun, ConversationError>
@@ -412,6 +530,7 @@ where
 
     let actor = match PersistenceActor::start(
         prepared.database_path.clone(),
+        prepared.project_id.clone(),
         thread_id.to_string(),
         prepared.assistant_message_id.clone(),
         prepared.model.clone(),
@@ -460,11 +579,15 @@ where
     let task_cancel = cancel.child_token();
     let processor_cancel = task_cancel.clone();
     let mut streamed_content = String::new();
-    let runtime_future = run_agent_with_sink(
+    let permission_adapter = RuntimePermissionAdapter {
+        shared: permission_hook,
+    };
+    let runtime_future = run_agent_with_permission_sink(
         provider,
         tools,
         prepared.request,
         task_cancel,
+        &permission_adapter,
         move |event| {
             let sender = runtime_sender.clone();
             async move {
@@ -573,6 +696,60 @@ fn prepare_run(
     let thread = vega_store::threads::find(&transaction, &thread_id)
         .map_err(runtime_store_error)?
         .ok_or_else(|| ConversationError::NotFound(thread_id.clone()))?;
+    let run_mode = ThreadMode::parse(&thread.mode)
+        .ok_or_else(|| ConversationError::CorruptRow(format!("run mode: {}", thread.mode)))?;
+    let permission_mode =
+        crate::types::PermissionMode::parse(&thread.permission_mode).ok_or_else(|| {
+            ConversationError::CorruptRow(format!("permission_mode: {}", thread.permission_mode))
+        })?;
+    #[cfg(test)]
+    let checkpoint_root = config.checkpoint_root.clone().unwrap_or_else(|| {
+        database_path
+            .parent()
+            .map_or_else(PathBuf::new, |parent| parent.join("checkpoints"))
+    });
+    #[cfg(not(test))]
+    let checkpoint_root = database_path
+        .parent()
+        .ok_or_else(|| ConversationError::CorruptRow("database path has no parent".to_string()))?
+        .join("checkpoints");
+    if checkpoint_root.as_os_str().is_empty() {
+        return Err(ConversationError::CorruptRow(
+            "database path has no parent".to_string(),
+        ));
+    }
+    if run_mode == ThreadMode::Execute {
+        fs::create_dir_all(&checkpoint_root).map_err(|_| {
+            ConversationError::Runtime(Arc::new(VegaError::Io(std::io::Error::other(
+                "checkpoint root unavailable",
+            ))))
+        })?;
+    }
+    let exact_rules = permissions::list_exact(&transaction, &thread.project_id)
+        .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
+        .into_iter()
+        .map(|rule| {
+            if rule.pattern.is_empty() {
+                return Err(ConversationError::CorruptRow(
+                    "permission rule has empty exact pattern".to_string(),
+                ));
+            }
+            let tool = match rule.tool.as_str() {
+                "bash" => RuntimeMutatingTool::Bash,
+                "write" => RuntimeMutatingTool::Write,
+                "edit" => RuntimeMutatingTool::Edit,
+                _ => {
+                    return Err(ConversationError::CorruptRow(
+                        "permission rule has unsupported tool".to_string(),
+                    ));
+                }
+            };
+            Ok(RuntimeExactRule {
+                tool,
+                pattern: rule.pattern,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let user_seq = messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
     let now = now_ms();
     messages::insert(
@@ -618,9 +795,14 @@ fn prepare_run(
         })
         .collect();
     let completed_tool_results = tool_calls::terminal_results(&transaction, &thread_id)
-        .map_err(runtime_store_error)?
+        .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
         .into_iter()
         .map(|(call_id, call)| -> Result<_, ConversationError> {
+            let approval = ApprovalAudit::from_json(&call.approval).map_err(|_| {
+                ConversationError::CorruptRow(format!(
+                    "terminal tool call {call_id} has invalid approval"
+                ))
+            })?;
             let status = match call.status.as_str() {
                 "success" => RuntimeToolStatus::Success,
                 "failed" => RuntimeToolStatus::Failed,
@@ -632,14 +814,31 @@ fn prepare_run(
                     )));
                 }
             };
+            let canonical_input = validate_recovered_projection(
+                &thread.project_id,
+                &thread_id,
+                &call_id,
+                &call.tool,
+                &call.input_json,
+                &call.output,
+                status,
+                &approval,
+                call.exit_code,
+                call.duration_ms,
+            )?;
             let completed = vega_runtime::CompletedToolCall {
                 tool: call.tool,
-                input_json: call.input_json,
+                input_json: canonical_input,
                 result: vega_runtime::RuntimeToolResult {
                     call_id: call_id.clone(),
                     output: call.output,
                     status,
                     reused: true,
+                    exit_code: call.exit_code,
+                    duration_ms: call.duration_ms,
+                    truncated: None,
+                    approval: Some(approval_audit_to_runtime(&approval)),
+                    remember_rule: None,
                 },
             };
             Ok((call_id, completed))
@@ -647,10 +846,13 @@ fn prepare_run(
         .collect::<Result<_, _>>()?;
     let next_tool_seq =
         tool_calls::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
+    let foreign_call_ids =
+        tool_calls::foreign_call_ids(&transaction, &thread_id).map_err(runtime_store_error)?;
     transaction.commit().map_err(runtime_store_error)?;
 
     Ok(PreparedRun {
         database_path,
+        project_id: thread.project_id.clone(),
         model: thread.model.clone(),
         user_message_id,
         assistant_message_id,
@@ -661,9 +863,397 @@ fn prepare_run(
             history,
             max_tokens: None,
             completed_tool_results,
+            tool_config: RuntimeToolConfig::new(
+                match run_mode {
+                    ThreadMode::Ask => RuntimeRunMode::Ask,
+                    ThreadMode::Plan => RuntimeRunMode::Plan,
+                    ThreadMode::Execute => RuntimeRunMode::Execute,
+                },
+                match permission_mode {
+                    crate::types::PermissionMode::ReadOnly => RuntimePermissionMode::ReadOnly,
+                    crate::types::PermissionMode::Confirm => RuntimePermissionMode::Confirm,
+                    crate::types::PermissionMode::Auto => RuntimePermissionMode::Auto,
+                },
+                thread.project_id,
+                thread_id,
+                checkpoint_root,
+                exact_rules,
+            )
+            .with_foreign_call_ids(foreign_call_ids),
         },
         next_tool_seq,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_recovered_projection(
+    project_id: &str,
+    thread_id: &str,
+    call_id: &str,
+    tool: &str,
+    input_json: &str,
+    output: &str,
+    status: RuntimeToolStatus,
+    approval: &ApprovalAudit,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
+) -> Result<String, ConversationError> {
+    let corrupt = || {
+        ConversationError::CorruptRow(format!(
+            "terminal tool call {call_id} has invalid safe projection"
+        ))
+    };
+    match tool {
+        "write" | "edit" => {
+            if exit_code.is_some() || duration_ms.is_some() {
+                return Err(corrupt());
+            }
+            if let Ok(valid) = vega_tools::WriteEditAudit::from_json(input_json) {
+                if valid.tool().as_str() != tool
+                    || approval.source == ApprovalSource::Validation
+                    || !approval_source_matches(tool, status, approval.source, false)
+                {
+                    return Err(corrupt());
+                }
+                let decision_valid = match status {
+                    RuntimeToolStatus::Rejected => {
+                        approval.decision == Approval::Deny
+                            && (approval.source != ApprovalSource::Recovery
+                                || output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT)
+                    }
+                    RuntimeToolStatus::Success
+                    | RuntimeToolStatus::Failed
+                    | RuntimeToolStatus::Cancelled => approval.decision != Approval::Deny,
+                };
+                if !decision_valid {
+                    return Err(corrupt());
+                }
+                let output_valid = match status {
+                    RuntimeToolStatus::Success if tool == "write" => {
+                        mutation_success_matches(&valid, project_id, thread_id, call_id, output)
+                    }
+                    RuntimeToolStatus::Success => {
+                        mutation_success_matches(&valid, project_id, thread_id, call_id, output)
+                    }
+                    RuntimeToolStatus::Failed => {
+                        output == format!("Tool error: {tool} failed")
+                            || output == "Tool error: tool worker failed"
+                            || output == "Tool error: invalid mutation result"
+                    }
+                    RuntimeToolStatus::Rejected if approval.source == ApprovalSource::RunMode => {
+                        output == "Tool error: denied by run mode"
+                    }
+                    RuntimeToolStatus::Rejected if approval.source == ApprovalSource::Recovery => {
+                        output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+                    }
+                    RuntimeToolStatus::Rejected if approval.source == ApprovalSource::Legacy => {
+                        output == legacy_unavailable_output(tool)
+                            || output == "Tool error: permission denied"
+                    }
+                    RuntimeToolStatus::Rejected => output == "Tool error: permission denied",
+                    RuntimeToolStatus::Cancelled
+                        if output == vega_store::recovery::RECOVERY_CANCELLED_OUTPUT =>
+                    {
+                        true
+                    }
+                    RuntimeToolStatus::Cancelled
+                        if output == vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT =>
+                    {
+                        true
+                    }
+                    RuntimeToolStatus::Cancelled if tool == "write" => {
+                        mutation_success_matches(&valid, project_id, thread_id, call_id, output)
+                            || output == "Tool error: write failed"
+                            || output == "Tool error: tool worker failed"
+                    }
+                    RuntimeToolStatus::Cancelled => {
+                        mutation_success_matches(&valid, project_id, thread_id, call_id, output)
+                            || output == "Tool error: edit failed"
+                            || output == "Tool error: tool worker failed"
+                    }
+                };
+                if !output_valid {
+                    return Err(corrupt());
+                }
+                return valid.to_json().map_err(|_| corrupt());
+            }
+            if let Ok(invalid) = vega_tools::InvalidWriteEditAudit::from_json(input_json) {
+                let expected = format!(
+                    "Tool error: invalid {tool} input ({})",
+                    invalid.validation_error_code().as_str()
+                );
+                if invalid.tool().as_str() != tool
+                    || status != RuntimeToolStatus::Rejected
+                    || approval.decision != Approval::Deny
+                    || approval.source != ApprovalSource::Validation
+                    || output != expected
+                {
+                    return Err(corrupt());
+                }
+                return invalid.to_json().map_err(|_| corrupt());
+            }
+            Err(corrupt())
+        }
+        "read" | "glob" | "grep" | "bash" => {
+            if !approval_source_matches(tool, status, approval.source, false) {
+                return Err(corrupt());
+            }
+            if tool == "bash" && !bash_danger_audit_matches(input_json, approval) {
+                return Err(corrupt());
+            }
+            let decision_valid = match status {
+                RuntimeToolStatus::Rejected => approval.decision == Approval::Deny,
+                RuntimeToolStatus::Success
+                | RuntimeToolStatus::Failed
+                | RuntimeToolStatus::Cancelled => approval.decision != Approval::Deny,
+            };
+            if !decision_valid || (tool != "bash" && (exit_code.is_some() || duration_ms.is_some()))
+            {
+                return Err(corrupt());
+            }
+            if tool != "bash"
+                && status == RuntimeToolStatus::Rejected
+                && !matches!(
+                    (approval.source, output),
+                    (
+                        ApprovalSource::Recovery,
+                        vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+                    ) | (ApprovalSource::Timeout, "Tool error: permission denied")
+                )
+            {
+                return Err(corrupt());
+            }
+            if tool == "bash" {
+                let metadata_valid = match status {
+                    RuntimeToolStatus::Success => exit_code.is_some() && duration_ms.is_some(),
+                    RuntimeToolStatus::Failed
+                    | RuntimeToolStatus::Rejected
+                    | RuntimeToolStatus::Cancelled => exit_code.is_none() && duration_ms.is_none(),
+                };
+                let output_valid = match status {
+                    RuntimeToolStatus::Rejected if approval.source == ApprovalSource::RunMode => {
+                        output == "Tool error: denied by run mode"
+                    }
+                    RuntimeToolStatus::Rejected
+                        if approval.source == ApprovalSource::Validation =>
+                    {
+                        output == "Tool error: invalid bash input (invalid_input)"
+                    }
+                    RuntimeToolStatus::Rejected if approval.source == ApprovalSource::Recovery => {
+                        output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+                    }
+                    RuntimeToolStatus::Rejected if approval.source == ApprovalSource::Legacy => {
+                        output == legacy_unavailable_output(tool)
+                            || output == "Tool error: permission denied"
+                    }
+                    RuntimeToolStatus::Rejected => output == "Tool error: permission denied",
+                    RuntimeToolStatus::Failed => is_safe_bash_failure(output),
+                    RuntimeToolStatus::Cancelled => {
+                        output == "Tool error: bash failed (cancelled)"
+                            || output == vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                            || output == vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                    }
+                    RuntimeToolStatus::Success => true,
+                };
+                if !metadata_valid || !output_valid {
+                    return Err(corrupt());
+                }
+            }
+            Ok(input_json.to_string())
+        }
+        _ if status == RuntimeToolStatus::Rejected
+            && approval.decision == Approval::Deny
+            && ((approval.source == ApprovalSource::RunMode
+                && output == "Tool error: denied: unavailable tool")
+                || (approval.source == ApprovalSource::Recovery
+                    && output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT)
+                || (approval.source == ApprovalSource::Legacy
+                    && output == legacy_unavailable_output(tool)))
+            && input_json == "{}"
+            && exit_code.is_none()
+            && duration_ms.is_none() =>
+        {
+            Ok(input_json.to_string())
+        }
+        _ => Err(corrupt()),
+    }
+}
+
+fn mutation_success_matches(
+    audit: &vega_tools::WriteEditAudit,
+    project_id: &str,
+    thread_id: &str,
+    call_id: &str,
+    output: &str,
+) -> bool {
+    let Ok(ids) = vega_tools::CheckpointIds::new(project_id, thread_id, call_id) else {
+        return false;
+    };
+    let expected_ref = ids.checkpoint_ref();
+    match audit {
+        vega_tools::WriteEditAudit::Write {
+            path,
+            content_bytes,
+            ..
+        } => vega_tools::WriteSuccessOutput::from_json(output)
+            .ok()
+            .is_some_and(|success| {
+                success.path == *path
+                    && success.bytes_written == *content_bytes
+                    && success.checkpoint_ref == expected_ref
+            }),
+        vega_tools::WriteEditAudit::Edit { path, .. } => {
+            vega_tools::EditSuccessOutput::from_json(output)
+                .ok()
+                .is_some_and(|success| {
+                    success.path == *path && success.checkpoint_ref == expected_ref
+                })
+        }
+    }
+}
+
+fn is_safe_bash_failure(output: &str) -> bool {
+    const CODES: [&str; 9] = [
+        "scope_mismatch",
+        "hardlink_preflight",
+        "sandbox_unavailable",
+        "temp_unavailable",
+        "cleanup_failed",
+        "spawn_failed",
+        "process_control_failed",
+        "output_failed",
+        "timed_out",
+    ];
+    CODES
+        .iter()
+        .any(|code| output == format!("Tool error: bash failed ({code})"))
+}
+
+fn legacy_unavailable_output(tool: &str) -> String {
+    format!("Tool error: denied: tool '{tool}' is unavailable until the S5 permission gate")
+}
+
+fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAudit) -> bool {
+    let Ok(command) = vega_tools::bash_permission_signature(input_json) else {
+        return matches!(
+            approval.source,
+            ApprovalSource::Validation
+                | ApprovalSource::RunMode
+                | ApprovalSource::Recovery
+                | ApprovalSource::Legacy
+        ) && approval.danger.is_none();
+    };
+    let Ok(danger) = vega_tools::danger::detect_danger(&command) else {
+        return false;
+    };
+    let Some(danger) = danger else {
+        return approval.source != ApprovalSource::Danger && approval.danger.is_none();
+    };
+    if matches!(
+        approval.source,
+        ApprovalSource::RunMode | ApprovalSource::Recovery
+    ) {
+        return approval.danger.is_none();
+    }
+    if approval.source == ApprovalSource::Legacy {
+        return approval.decision == Approval::Deny && approval.danger.is_none();
+    }
+    let Some(audit) = &approval.danger else {
+        return false;
+    };
+    if audit.rule_id != danger.rule_id {
+        return false;
+    }
+    match approval.source {
+        ApprovalSource::Danger => {
+            approval.decision == audit.decision && approval.note == audit.note
+        }
+        ApprovalSource::ReadOnly => {
+            approval.decision == Approval::Deny
+                && approval.note.is_none()
+                && matches!(audit.decision, Approval::Once | Approval::Always)
+        }
+        ApprovalSource::Timeout => {
+            approval.decision == Approval::Deny
+                && approval.note.is_none()
+                && audit.decision == Approval::Deny
+                && audit.note.is_none()
+        }
+        ApprovalSource::RunMode
+        | ApprovalSource::Rule
+        | ApprovalSource::Auto
+        | ApprovalSource::User
+        | ApprovalSource::Validation
+        | ApprovalSource::ReadonlyTool
+        | ApprovalSource::Recovery
+        | ApprovalSource::Legacy => false,
+    }
+}
+
+fn approval_source_matches(
+    tool: &str,
+    status: RuntimeToolStatus,
+    source: ApprovalSource,
+    invalid_projection: bool,
+) -> bool {
+    if invalid_projection {
+        return status == RuntimeToolStatus::Rejected && source == ApprovalSource::Validation;
+    }
+    match tool {
+        "read" | "glob" | "grep" => {
+            (status == RuntimeToolStatus::Rejected
+                && matches!(source, ApprovalSource::Recovery | ApprovalSource::Timeout))
+                || (status != RuntimeToolStatus::Rejected
+                    && matches!(
+                        source,
+                        ApprovalSource::ReadonlyTool | ApprovalSource::Legacy
+                    ))
+        }
+        "write" | "edit" => match status {
+            RuntimeToolStatus::Rejected => matches!(
+                source,
+                ApprovalSource::RunMode
+                    | ApprovalSource::ReadOnly
+                    | ApprovalSource::User
+                    | ApprovalSource::Timeout
+                    | ApprovalSource::Legacy
+                    | ApprovalSource::Recovery
+            ),
+            RuntimeToolStatus::Success
+            | RuntimeToolStatus::Failed
+            | RuntimeToolStatus::Cancelled => matches!(
+                source,
+                ApprovalSource::User
+                    | ApprovalSource::Rule
+                    | ApprovalSource::Auto
+                    | ApprovalSource::Legacy
+            ),
+        },
+        "bash" => match status {
+            RuntimeToolStatus::Rejected => matches!(
+                source,
+                ApprovalSource::RunMode
+                    | ApprovalSource::Validation
+                    | ApprovalSource::Danger
+                    | ApprovalSource::ReadOnly
+                    | ApprovalSource::User
+                    | ApprovalSource::Timeout
+                    | ApprovalSource::Legacy
+                    | ApprovalSource::Recovery
+            ),
+            RuntimeToolStatus::Success
+            | RuntimeToolStatus::Failed
+            | RuntimeToolStatus::Cancelled => matches!(
+                source,
+                ApprovalSource::User
+                    | ApprovalSource::Rule
+                    | ApprovalSource::Auto
+                    | ApprovalSource::Danger
+                    | ApprovalSource::Legacy
+            ),
+        },
+        _ => status == RuntimeToolStatus::Rejected && source == ApprovalSource::RunMode,
+    }
 }
 
 async fn finish_prepared_failure(
@@ -782,19 +1372,29 @@ where
             batch_deadline = None;
             pending_text_bytes = 0;
             match flushed {
+                Ok(()) if matches!(event, RuntimeEvent::ToolCallOutput { .. }) => Ok(()),
                 Ok(()) => match actor.event(event.clone(), streamed_content.clone()).await {
                     Ok(()) => {
-                        if let Some(converted) = from_runtime_event(message_id, &event) {
-                            match event_sink(&converted) {
-                                Ok(()) => {
-                                    events.push(converted);
-                                    Ok(())
-                                }
-                                Err(error) => Err(error),
+                        let terminal_output = match &event {
+                            RuntimeEvent::ToolCallFinished(result)
+                            | RuntimeEvent::ToolCallValidationRejected { result, .. }
+                            | RuntimeEvent::ToolCallConflict { result, .. } => {
+                                Some(ConversationEvent::ToolCallOutput {
+                                    call_id: result.call_id.clone(),
+                                    chunk: crate::types::ToolOutputChunk(result.output.clone()),
+                                })
                             }
-                        } else {
-                            Ok(())
+                            _ => None,
+                        };
+                        if let Some(output) = terminal_output {
+                            event_sink(&output)?;
+                            events.push(output);
                         }
+                        if let Some(converted) = from_runtime_event(message_id, &event) {
+                            event_sink(&converted)?;
+                            events.push(converted);
+                        }
+                        Ok(())
                     }
                     Err(error) => Err(error),
                 },
@@ -840,8 +1440,10 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_runtime_event(
     store: &Store,
+    project_id: &str,
     thread_id: &str,
     message_id: &str,
     model: &str,
@@ -851,10 +1453,15 @@ fn persist_runtime_event(
 ) -> Result<(), VegaError> {
     match event {
         RuntimeEvent::ToolCallProposed(call) => {
+            validate_runtime_proposal(call)?;
             if let Some(existing) = tool_calls::find_identity(store.conn(), &call.id)? {
                 if existing.thread_id != thread_id
                     || existing.tool != call.name
-                    || existing.input_json != call.input_json
+                    || !tool_inputs_semantically_equal(
+                        &call.name,
+                        &existing.input_json,
+                        &call.input_json,
+                    )
                 {
                     return Err(VegaError::Tool {
                         tool: call.name.clone(),
@@ -865,7 +1472,7 @@ fn persist_runtime_event(
                     });
                 }
             } else {
-                tool_calls::insert(
+                tool_calls::insert_pending(
                     store.conn(),
                     tool_calls::NewToolCall {
                         id: &call.id,
@@ -877,40 +1484,166 @@ fn persist_runtime_event(
                         status: "pending_approval",
                         created_at: now_ms(),
                     },
-                )?;
+                )
+                .map_err(tool_transition_error)?;
                 *next_tool_seq += 1;
             }
         }
-        RuntimeEvent::ToolCallApproved { call_id } => {
-            ensure_tool_updated(
-                tool_calls::update(store.conn(), call_id, "approved", Some("once"), None, None)?,
-                call_id,
-            )?;
+        RuntimeEvent::ToolCallValidationRejected { call, result } => {
+            validate_runtime_validation_event(call, result)?;
+            if result.reused {
+                let state = required_tool_state(store, &call.id, thread_id)?;
+                validate_reused_terminal(project_id, thread_id, &state, result)?;
+            }
+            if !result.reused {
+                let approval = result.approval.as_ref().ok_or_else(|| VegaError::Tool {
+                    tool: call.name.clone(),
+                    message: "validation rejection missing approval audit".to_string(),
+                })?;
+                let approval_json = approval_audit_from_runtime(approval)
+                    .to_json()
+                    .map_err(|_| safe_audit_error(&call.name))?;
+                tool_calls::insert_validation_rejected(
+                    store.conn(),
+                    tool_calls::ValidationRejectedToolCall {
+                        call: tool_calls::NewToolCall {
+                            id: &call.id,
+                            thread_id,
+                            message_id,
+                            seq: *next_tool_seq,
+                            tool: &call.name,
+                            input_json: &call.input_json,
+                            status: "rejected",
+                            created_at: now_ms(),
+                        },
+                        approval_json: &approval_json,
+                        output_text: &result.output,
+                        finished_at: now_ms(),
+                    },
+                )
+                .map_err(tool_transition_error)?;
+                *next_tool_seq += 1;
+            }
+        }
+        RuntimeEvent::ToolCallConflict { call, result } => {
+            validate_runtime_conflict_event(call, result)?;
+            let existing = tool_calls::find_identity(store.conn(), &call.id)?.ok_or_else(|| {
+                VegaError::Tool {
+                    tool: "persistence".to_string(),
+                    message: "call id conflict has no persisted identity".to_string(),
+                }
+            })?;
+            let is_same_identity = existing.thread_id == thread_id
+                && existing.tool == call.name
+                && tool_inputs_semantically_equal(
+                    &call.name,
+                    &existing.input_json,
+                    &call.input_json,
+                );
+            if is_same_identity {
+                return Err(safe_audit_error(&call.name));
+            }
+        }
+        RuntimeEvent::ToolCallApproved {
+            call_id,
+            audit,
+            remember_rule,
+        } => {
+            let state = required_tool_state(store, call_id, thread_id)?;
+            validate_runtime_approval_event(&state, call_id, audit, remember_rule.as_ref())?;
+            let approval_json = approval_audit_from_runtime(audit)
+                .to_json()
+                .map_err(|_| safe_audit_error("permission"))?;
+            let remember = remember_rule
+                .as_ref()
+                .map(|target| tool_calls::RememberExactRule {
+                    project_id,
+                    tool: target.tool.as_str(),
+                    pattern: &target.exact_pattern,
+                });
+            tool_calls::approve(store.conn(), call_id, &approval_json, remember, now_ms())
+                .map_err(tool_transition_error)?;
         }
         RuntimeEvent::ToolCallRunning { call_id } => {
-            ensure_tool_updated(
-                tool_calls::update(store.conn(), call_id, "running", None, None, None)?,
-                call_id,
-            )?;
+            let state = required_tool_state(store, call_id, thread_id)?;
+            if state.status != "approved" {
+                return Err(safe_audit_error(&state.tool));
+            }
+            tool_calls::mark_running(store.conn(), call_id).map_err(tool_transition_error)?;
+        }
+        RuntimeEvent::ToolCallFinished(result) if result.reused => {
+            let state = required_tool_state(store, &result.call_id, thread_id)?;
+            validate_reused_terminal(project_id, thread_id, &state, result)?;
         }
         RuntimeEvent::ToolCallFinished(result) if !result.reused => {
-            let (status, approval) = match result.status {
-                RuntimeToolStatus::Rejected => ("rejected", Some("deny")),
-                RuntimeToolStatus::Success => ("success", Some("once")),
-                RuntimeToolStatus::Failed => ("failed", Some("once")),
-                RuntimeToolStatus::Cancelled => ("cancelled", Some("once")),
-            };
-            ensure_tool_updated(
-                tool_calls::update(
+            let state = required_tool_state(store, &result.call_id, thread_id)?;
+            if result.status == RuntimeToolStatus::Rejected {
+                let approval = result.approval.as_ref().ok_or_else(|| VegaError::Tool {
+                    tool: "permission".to_string(),
+                    message: "rejection missing approval audit".to_string(),
+                })?;
+                let approval_json = approval_audit_from_runtime(approval)
+                    .to_json()
+                    .map_err(|_| safe_audit_error("permission"))?;
+                validate_runtime_terminal(
+                    project_id,
+                    thread_id,
+                    &result.call_id,
+                    &state,
+                    result,
+                    &approval_audit_from_runtime(approval),
+                )?;
+                validate_rejected_remember(&state, result, &approval_audit_from_runtime(approval))?;
+                tool_calls::reject(
                     store.conn(),
                     &result.call_id,
-                    status,
-                    approval,
-                    Some(&result.output),
-                    Some(now_ms()),
-                )?,
-                &result.call_id,
-            )?;
+                    &approval_json,
+                    &result.output,
+                    now_ms(),
+                    result
+                        .remember_rule
+                        .as_ref()
+                        .map(|target| tool_calls::RememberExactRule {
+                            project_id,
+                            tool: target.tool.as_str(),
+                            pattern: &target.exact_pattern,
+                        }),
+                )
+                .map_err(tool_transition_error)?;
+            } else {
+                let approval_json = state
+                    .approval
+                    .as_deref()
+                    .ok_or_else(|| safe_audit_error(&state.tool))?;
+                let approval = ApprovalAudit::from_json(approval_json)
+                    .map_err(|_| safe_audit_error(&state.tool))?;
+                validate_runtime_terminal(
+                    project_id,
+                    thread_id,
+                    &result.call_id,
+                    &state,
+                    result,
+                    &approval,
+                )?;
+                let status = match result.status {
+                    RuntimeToolStatus::Success => "success",
+                    RuntimeToolStatus::Failed => "failed",
+                    RuntimeToolStatus::Cancelled => "cancelled",
+                    RuntimeToolStatus::Rejected => return Err(safe_audit_error("permission")),
+                };
+                tool_calls::finish(
+                    store.conn(),
+                    tool_calls::FinishToolCall {
+                        id: &result.call_id,
+                        status,
+                        output_text: &result.output,
+                        exit_code: result.exit_code,
+                        duration_ms: result.duration_ms,
+                        finished_at: now_ms(),
+                    },
+                )
+                .map_err(tool_transition_error)?;
+            }
         }
         RuntimeEvent::UsageUpdated {
             usage,
@@ -965,22 +1698,328 @@ fn persist_runtime_event(
     Ok(())
 }
 
+fn tool_transition_error(error: tool_calls::ToolCallTransitionError) -> VegaError {
+    VegaError::Tool {
+        tool: "persistence".to_string(),
+        message: error.to_string(),
+    }
+}
+
+fn safe_audit_error(tool: &str) -> VegaError {
+    VegaError::Tool {
+        tool: tool.to_string(),
+        message: "strict approval audit failed".to_string(),
+    }
+}
+
+fn required_tool_state(
+    store: &Store,
+    call_id: &str,
+    thread_id: &str,
+) -> Result<tool_calls::ToolCallState, VegaError> {
+    let state = tool_calls::find_state(store.conn(), call_id)?.ok_or_else(|| VegaError::Tool {
+        tool: "persistence".to_string(),
+        message: "tool call state is missing".to_string(),
+    })?;
+    if state.thread_id != thread_id {
+        return Err(VegaError::Tool {
+            tool: "persistence".to_string(),
+            message: "tool call ownership mismatch".to_string(),
+        });
+    }
+    Ok(state)
+}
+
+fn validate_runtime_proposal(call: &vega_runtime::RuntimeToolCall) -> Result<(), VegaError> {
+    if matches!(call.name.as_str(), "write" | "edit") {
+        let audit = vega_tools::WriteEditAudit::from_json(&call.input_json)
+            .map_err(|_| safe_audit_error(&call.name))?;
+        if audit.tool().as_str() != call.name {
+            return Err(safe_audit_error(&call.name));
+        }
+    } else if !matches!(call.name.as_str(), "read" | "glob" | "grep" | "bash")
+        && call.input_json != "{}"
+    {
+        return Err(safe_audit_error(&call.name));
+    }
+    Ok(())
+}
+
+fn tool_inputs_semantically_equal(tool: &str, left: &str, right: &str) -> bool {
+    if !matches!(tool, "write" | "edit") {
+        return left == right;
+    }
+    if let (Ok(left), Ok(right)) = (
+        vega_tools::WriteEditAudit::from_json(left),
+        vega_tools::WriteEditAudit::from_json(right),
+    ) {
+        return left.tool().as_str() == tool && right.tool().as_str() == tool && left == right;
+    }
+    if let (Ok(left), Ok(right)) = (
+        vega_tools::InvalidWriteEditAudit::from_json(left),
+        vega_tools::InvalidWriteEditAudit::from_json(right),
+    ) {
+        return left.tool().as_str() == tool && right.tool().as_str() == tool && left == right;
+    }
+    false
+}
+
+fn validate_runtime_validation_event(
+    call: &vega_runtime::RuntimeToolCall,
+    result: &vega_runtime::RuntimeToolResult,
+) -> Result<(), VegaError> {
+    let invalid = vega_tools::InvalidWriteEditAudit::from_json(&call.input_json)
+        .map_err(|_| safe_audit_error(&call.name))?;
+    let approval = result
+        .approval
+        .as_ref()
+        .ok_or_else(|| safe_audit_error(&call.name))?;
+    let expected = format!(
+        "Tool error: invalid {} input ({})",
+        call.name,
+        invalid.validation_error_code().as_str()
+    );
+    if invalid.tool().as_str() != call.name
+        || result.call_id != call.id
+        || result.status != RuntimeToolStatus::Rejected
+        || result.output != expected
+        || result.exit_code.is_some()
+        || result.duration_ms.is_some()
+        || result.truncated.is_some()
+        || result.remember_rule.is_some()
+        || approval.decision != vega_runtime::RuntimeApprovalDecision::Deny
+        || approval.source != vega_runtime::RuntimeApprovalSource::Validation
+    {
+        return Err(safe_audit_error(&call.name));
+    }
+    Ok(())
+}
+
+fn validate_runtime_conflict_event(
+    call: &vega_runtime::RuntimeToolCall,
+    result: &vega_runtime::RuntimeToolResult,
+) -> Result<(), VegaError> {
+    if matches!(call.name.as_str(), "write" | "edit") {
+        let valid = vega_tools::WriteEditAudit::from_json(&call.input_json)
+            .ok()
+            .is_some_and(|audit| audit.tool().as_str() == call.name);
+        let invalid = vega_tools::InvalidWriteEditAudit::from_json(&call.input_json)
+            .ok()
+            .is_some_and(|audit| audit.tool().as_str() == call.name);
+        if !valid && !invalid {
+            return Err(safe_audit_error(&call.name));
+        }
+    } else {
+        validate_runtime_proposal(call)?;
+    }
+    if result.call_id != call.id
+        || result.output != vega_runtime::CALL_ID_CONFLICT_OUTPUT
+        || result.status != RuntimeToolStatus::Failed
+        || result.reused
+        || result.exit_code.is_some()
+        || result.duration_ms.is_some()
+        || result.truncated.is_some()
+        || result.approval.is_some()
+        || result.remember_rule.is_some()
+    {
+        return Err(safe_audit_error(&call.name));
+    }
+    Ok(())
+}
+
+fn validate_runtime_approval_event(
+    state: &tool_calls::ToolCallState,
+    call_id: &str,
+    audit: &vega_runtime::RuntimeApprovalAudit,
+    remember: Option<&vega_runtime::RuntimePermissionTarget>,
+) -> Result<(), VegaError> {
+    if state.status != "pending_approval"
+        || audit.decision == vega_runtime::RuntimeApprovalDecision::Deny
+    {
+        return Err(safe_audit_error(&state.tool));
+    }
+    let shared = approval_audit_from_runtime(audit);
+    shared
+        .to_json()
+        .map_err(|_| safe_audit_error(&state.tool))?;
+    if !approval_source_matches(
+        &state.tool,
+        RuntimeToolStatus::Success,
+        shared.source,
+        false,
+    ) {
+        return Err(safe_audit_error(&state.tool));
+    }
+    if state.tool == "bash" && !bash_danger_audit_matches(&state.input_json, &shared) {
+        return Err(safe_audit_error(&state.tool));
+    }
+    let expects_remember = audit.decision == vega_runtime::RuntimeApprovalDecision::Always
+        && matches!(
+            audit.source,
+            vega_runtime::RuntimeApprovalSource::User | vega_runtime::RuntimeApprovalSource::Danger
+        );
+    if remember.is_some() != expects_remember {
+        return Err(safe_audit_error(&state.tool));
+    }
+    if let Some(target) = remember
+        && !target_matches_state(state, call_id, target)
+    {
+        return Err(safe_audit_error(&state.tool));
+    }
+    Ok(())
+}
+
+fn validate_rejected_remember(
+    state: &tool_calls::ToolCallState,
+    result: &vega_runtime::RuntimeToolResult,
+    approval: &ApprovalAudit,
+) -> Result<(), VegaError> {
+    let expects_remember = approval.source == ApprovalSource::ReadOnly
+        && approval
+            .danger
+            .as_ref()
+            .is_some_and(|danger| danger.decision == Approval::Always);
+    if result.remember_rule.is_some() != expects_remember {
+        return Err(safe_audit_error(&state.tool));
+    }
+    if let Some(target) = &result.remember_rule
+        && !target_matches_state(state, &result.call_id, target)
+    {
+        return Err(safe_audit_error(&state.tool));
+    }
+    Ok(())
+}
+
+fn target_matches_state(
+    state: &tool_calls::ToolCallState,
+    call_id: &str,
+    target: &vega_runtime::RuntimePermissionTarget,
+) -> bool {
+    let exact_matches_input = match state.tool.as_str() {
+        "write" | "edit" => vega_tools::WriteEditAudit::from_json(&state.input_json)
+            .ok()
+            .is_some_and(|audit| {
+                audit.tool().as_str() == state.tool && audit.path() == target.exact_pattern
+            }),
+        "bash" => vega_tools::bash_permission_signature(&state.input_json)
+            .ok()
+            .is_some_and(|command| command == target.exact_pattern),
+        _ => false,
+    };
+    target.call_id == call_id
+        && target.tool.as_str() == state.tool
+        && !target.exact_pattern.is_empty()
+        && target.exact_pattern == target.display_target
+        && exact_matches_input
+}
+
+fn validate_runtime_terminal(
+    project_id: &str,
+    thread_id: &str,
+    call_id: &str,
+    state: &tool_calls::ToolCallState,
+    result: &vega_runtime::RuntimeToolResult,
+    approval: &ApprovalAudit,
+) -> Result<(), VegaError> {
+    let result_approval = result.approval.as_ref().map(approval_audit_from_runtime);
+    if result_approval.as_ref() != Some(approval)
+        || result.call_id != call_id
+        || (result.status == RuntimeToolStatus::Rejected && state.status != "pending_approval")
+        || (result.status != RuntimeToolStatus::Rejected && state.status != "running")
+        || (result.status != RuntimeToolStatus::Rejected && result.remember_rule.is_some())
+        || matches!(
+            result.status,
+            RuntimeToolStatus::Rejected | RuntimeToolStatus::Failed
+        ) && result.truncated.is_some()
+        || result.status == RuntimeToolStatus::Success && result.truncated.is_none()
+        || result.status == RuntimeToolStatus::Cancelled
+            && state.tool == "bash"
+            && result.truncated.is_some()
+    {
+        return Err(safe_audit_error(&state.tool));
+    }
+    let canonical = validate_recovered_projection(
+        project_id,
+        thread_id,
+        call_id,
+        &state.tool,
+        &state.input_json,
+        &result.output,
+        result.status,
+        approval,
+        result.exit_code,
+        result.duration_ms,
+    )
+    .map_err(|_| safe_audit_error(&state.tool))?;
+    if !tool_inputs_semantically_equal(&state.tool, &canonical, &state.input_json) {
+        return Err(safe_audit_error(&state.tool));
+    }
+    Ok(())
+}
+
+fn validate_reused_terminal(
+    project_id: &str,
+    thread_id: &str,
+    state: &tool_calls::ToolCallState,
+    result: &vega_runtime::RuntimeToolResult,
+) -> Result<(), VegaError> {
+    let expected_status = match result.status {
+        RuntimeToolStatus::Rejected => "rejected",
+        RuntimeToolStatus::Success => "success",
+        RuntimeToolStatus::Failed => "failed",
+        RuntimeToolStatus::Cancelled => "cancelled",
+    };
+    let approval_json = state
+        .approval
+        .as_deref()
+        .ok_or_else(|| safe_audit_error(&state.tool))?;
+    let approval =
+        ApprovalAudit::from_json(approval_json).map_err(|_| safe_audit_error(&state.tool))?;
+    let runtime_approval = result
+        .approval
+        .as_ref()
+        .map(approval_audit_from_runtime)
+        .ok_or_else(|| safe_audit_error(&state.tool))?;
+    let persisted_duration = state
+        .duration_ms
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| safe_audit_error(&state.tool))?;
+    if state.status != expected_status
+        || runtime_approval != approval
+        || result.remember_rule.is_some()
+        || result.truncated.is_some()
+        || state.output_full_path.is_some()
+        || state.output_text.as_deref() != Some(result.output.as_str())
+        || state.exit_code != result.exit_code
+        || persisted_duration != result.duration_ms
+    {
+        return Err(safe_audit_error(&state.tool));
+    }
+    let canonical = validate_recovered_projection(
+        project_id,
+        thread_id,
+        &result.call_id,
+        &state.tool,
+        &state.input_json,
+        &result.output,
+        result.status,
+        &approval,
+        result.exit_code,
+        result.duration_ms,
+    )
+    .map_err(|_| safe_audit_error(&state.tool))?;
+    if !tool_inputs_semantically_equal(&state.tool, &canonical, &state.input_json) {
+        return Err(safe_audit_error(&state.tool));
+    }
+    Ok(())
+}
+
 fn ensure_message_updated(updated: usize, message_id: &str) -> Result<(), VegaError> {
     if updated == 0 {
         Err(VegaError::Tool {
             tool: "runtime".to_string(),
             message: format!("streaming message row disappeared or became terminal: {message_id}"),
-        })
-    } else {
-        Ok(())
-    }
-}
-
-fn ensure_tool_updated(updated: usize, call_id: &str) -> Result<(), VegaError> {
-    if updated == 0 {
-        Err(VegaError::Tool {
-            tool: "runtime".to_string(),
-            message: format!("tool call row disappeared: {call_id}"),
         })
     } else {
         Ok(())
@@ -1001,6 +2040,7 @@ fn now_ms() -> i64 {
 mod tests {
     use std::fs;
     use std::io::Write;
+    use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, Instant};
 
     use tempfile::tempdir;
@@ -1008,6 +2048,23 @@ mod tests {
 
     use super::*;
     use crate::types::{ConversationEvent, ToolCallStatus};
+
+    struct FixedPermissionHook {
+        calls: Arc<AtomicUsize>,
+        decision: PermissionDecision,
+    }
+
+    impl PermissionHook for FixedPermissionHook {
+        fn request(
+            &self,
+            _request: PermissionRequest,
+            _cancel: CancellationToken,
+        ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let decision = self.decision.clone();
+            async move { Ok(decision) }.boxed()
+        }
+    }
 
     fn setup() -> (Store, tempfile::TempDir, String) {
         let dir = tempdir().unwrap();
@@ -1039,6 +2096,40 @@ mod tests {
         )
         .unwrap();
         (store, dir, project.id)
+    }
+
+    fn setup_external(
+        permission_mode: &str,
+    ) -> (Store, tempfile::TempDir, tempfile::TempDir, String) {
+        let project_dir = tempdir().unwrap();
+        let data_dir = tempdir().unwrap();
+        let store = Store::open(data_dir.path().join("vega.db")).unwrap();
+        store.migrate().unwrap();
+        let project = vega_store::projects::create(
+            store.conn(),
+            project_dir.path().to_str().unwrap(),
+            "external-fixture",
+            Some("master"),
+        )
+        .unwrap();
+        vega_store::threads::create(
+            store.conn(),
+            vega_store::threads::NewThread {
+                id: "thread-1",
+                project_id: &project.id,
+                title: "",
+                mode: "execute",
+                permission_mode,
+                model: "mock-model",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        (store, project_dir, data_dir, project.id)
     }
 
     fn scripted_provider(call_id: &str, input_json: &str) -> MockProvider {
@@ -1123,7 +2214,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tool.0, "success");
-        assert_eq!(tool.1, "once");
+        let approval = ApprovalAudit::from_json(&tool.1).unwrap();
+        assert_eq!(approval.decision, Approval::Once);
+        assert_eq!(approval.source, ApprovalSource::ReadonlyTool);
         assert!(tool.2.contains("lib.rs:1:// TODO"));
         assert_eq!(tool.3, r#"{"pattern":"TODO","path":"lib.rs"}"#);
         let usage: (i64, i64, i64, i64, i64, String) = store
@@ -1259,7 +2352,7 @@ mod tests {
                             [call_id],
                             |row| row.get(0),
                         )?;
-                        assert_eq!(status, "running");
+                        assert_eq!(status, "success");
                         observed.push("output");
                     }
                     ConversationEvent::UsageUpdated { .. } => {
@@ -1893,9 +2986,11 @@ mod tests {
 
     #[tokio::test]
     async fn retry_reuses_failed_and_rejected_terminal_results_verbatim() {
-        for (call_id, status, approval, output, expected) in [
+        for (call_id, tool, input, status, approval, output, expected) in [
             (
                 "failed-call",
+                "read",
+                r#"{"path":"missing.txt"}"#,
                 "failed",
                 "once",
                 "original failed output",
@@ -1903,13 +2998,17 @@ mod tests {
             ),
             (
                 "rejected-call",
+                "unknown",
+                "{}",
                 "rejected",
-                "deny",
-                "original rejected output",
+                r#"{"decision":"deny","note":null,"source":"run_mode","danger":null}"#,
+                "Tool error: denied: unavailable tool",
                 ToolCallStatus::Rejected,
             ),
             (
                 "cancelled-call",
+                "read",
+                r#"{"path":"missing.txt"}"#,
                 "cancelled",
                 "once",
                 "original cancelled output",
@@ -1938,8 +3037,8 @@ mod tests {
                     thread_id: "thread-1",
                     message_id: "prior-assistant",
                     seq: 1,
-                    tool: "read",
-                    input_json: r#"{"path":"missing.txt"}"#,
+                    tool,
+                    input_json: input,
                     status: "pending_approval",
                     created_at: 1,
                 },
@@ -1958,8 +3057,8 @@ mod tests {
                 vec![ScriptStep::events(vec![
                     ProviderEvent::ToolUse {
                         id: call_id.into(),
-                        name: "read".into(),
-                        input_json: r#"{"path":"missing.txt"}"#.into(),
+                        name: tool.into(),
+                        input_json: input.into(),
                     },
                     ProviderEvent::Done {
                         stop_reason: StopReason::ToolUse,
@@ -2376,19 +3475,24 @@ mod tests {
             Some(2),
         )
         .unwrap();
-        let provider = MockProvider::new(vec![ScriptStep::events(vec![
-            ProviderEvent::ToolUse {
-                id: "shared-call".into(),
-                name: "read".into(),
-                input_json: r#"{"path":"lib.rs"}"#.into(),
-            },
-            ProviderEvent::Done {
-                stop_reason: StopReason::ToolUse,
-            },
-        ])]);
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: "shared-call".into(),
+                    name: "read".into(),
+                    input_json: r#"{"path":"lib.rs"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+            vec![ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }])],
+        ]);
         let tools = vega_tools::Tools::new(dir.path()).unwrap();
 
-        let error = run_thread_task(
+        let run = run_thread_task(
             &store,
             &provider,
             &tools,
@@ -2398,9 +3502,15 @@ mod tests {
             CancellationToken::new(),
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.to_string().contains("collides with persisted owner"));
+        assert!(run.events.iter().any(|event| matches!(
+            event,
+            ConversationEvent::ToolCallFinished { result, .. }
+                if result.status == ToolCallStatus::Failed
+                    && !result.reused
+                    && result.output == vega_runtime::CALL_ID_CONFLICT_OUTPUT
+        )));
         let persisted: (String, String, String) = store
             .conn()
             .query_row(
@@ -2413,15 +3523,15 @@ mod tests {
             persisted,
             ("thread-2".into(), "success".into(), "other output".into())
         );
-        let failed_assistants: i64 = store
+        let done_assistants: i64 = store
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM messages WHERE thread_id = 'thread-1' AND role = 'assistant' AND status = 'failed'",
+                "SELECT COUNT(*) FROM messages WHERE thread_id = 'thread-1' AND role = 'assistant' AND status = 'done'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(failed_assistants, 1);
+        assert_eq!(done_assistants, 1);
     }
 
     #[tokio::test]
@@ -2450,19 +3560,24 @@ mod tests {
             Some(2),
         )
         .unwrap();
-        let provider = MockProvider::new(vec![ScriptStep::events(vec![
-            ProviderEvent::ToolUse {
-                id: "changed-call".into(),
-                name: "read".into(),
-                input_json: r#"{"path":"lib.rs"}"#.into(),
-            },
-            ProviderEvent::Done {
-                stop_reason: StopReason::ToolUse,
-            },
-        ])]);
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: "changed-call".into(),
+                    name: "read".into(),
+                    input_json: r#"{"path":"lib.rs"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+            vec![ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }])],
+        ]);
         let tools = vega_tools::Tools::new(dir.path()).unwrap();
 
-        let error = run_thread_task(
+        let run = run_thread_task(
             &store,
             &provider,
             &tools,
@@ -2472,9 +3587,14 @@ mod tests {
             CancellationToken::new(),
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.to_string().contains("collides with persisted owner"));
+        assert!(run.events.iter().any(|event| matches!(
+            event,
+            ConversationEvent::ToolCallFinished { result, .. }
+                if result.status == ToolCallStatus::Failed
+                    && result.output == vega_runtime::CALL_ID_CONFLICT_OUTPUT
+        )));
         let persisted: (String, String, String) = store
             .conn()
             .query_row(
@@ -2494,8 +3614,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejected_unknown_tool_is_audited_without_execution() {
+    async fn invalid_write_is_atomically_audited_without_execution() {
         let (store, dir, _project_id) = setup();
+        let data = tempdir().unwrap();
+        let checkpoint_root = data.path().join("checkpoints");
         let tools = vega_tools::Tools::new(dir.path()).unwrap();
         let provider = MockProvider::new_rounds(vec![
             vec![ScriptStep::events(vec![
@@ -2512,7 +3634,7 @@ mod tests {
                 stop_reason: StopReason::End,
             }])],
         ]);
-        let run = run_thread_task(
+        let run = run_thread_task_with_sink_config(
             &store,
             &provider,
             &tools,
@@ -2520,13 +3642,18 @@ mod tests {
             "Write",
             "System",
             CancellationToken::new(),
+            |_| Ok(()),
+            PersistenceActorConfig {
+                checkpoint_root: Some(checkpoint_root),
+                ..PersistenceActorConfig::default()
+            },
         )
         .await
         .unwrap();
         assert!(run.events.iter().any(|event| matches!(
             event,
             ConversationEvent::ToolCallFinished { result, .. }
-                if result.status == ToolCallStatus::Rejected && result.output.contains("denied")
+                if result.status == ToolCallStatus::Rejected && result.output.contains("invalid write input")
         )));
         let status: (String, String) = store
             .conn()
@@ -2536,7 +3663,10 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(status, ("rejected".into(), "deny".into()));
+        let approval = ApprovalAudit::from_json(&status.1).unwrap();
+        assert_eq!(status.0, "rejected");
+        assert_eq!(approval.decision, Approval::Deny);
+        assert_eq!(approval.source, ApprovalSource::Validation);
         assert!(!run.events.iter().any(|event| matches!(
             event,
             ConversationEvent::ToolCallFinished { result, .. }
@@ -2955,5 +4085,631 @@ mod tests {
                 (vega_runtime::ChatRole::User, "current question"),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn always_permission_and_rule_are_durable_before_second_write() {
+        let (store, project_dir, _data_dir, project_id) = setup_external("confirm");
+        let tools = vega_tools::Tools::new(project_dir.path()).unwrap();
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: "write-first".into(),
+                    name: "write".into(),
+                    input_json: r#"{"path":"same.txt","content":"first-secret"}"#.into(),
+                },
+                ProviderEvent::ToolUse {
+                    id: "write-second".into(),
+                    name: "write".into(),
+                    input_json: r#"{"path":"same.txt","content":"second-secret"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+            vec![ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }])],
+        ]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook = FixedPermissionHook {
+            calls: calls.clone(),
+            decision: PermissionDecision::Always,
+        };
+        let run = run_thread_task_with_permission_sink(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            "write twice",
+            "system",
+            CancellationToken::new(),
+            &hook,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            fs::read_to_string(project_dir.path().join("same.txt")).unwrap(),
+            "second-secret"
+        );
+        let rules = permissions::list_exact(store.conn(), &project_id).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].tool, "write");
+        assert_eq!(rules[0].pattern, "same.txt");
+        let approvals = ["write-first", "write-second"].map(|id| {
+            let json: String = store
+                .conn()
+                .query_row(
+                    "SELECT approval FROM tool_calls WHERE id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            ApprovalAudit::from_json(&json).unwrap()
+        });
+        assert_eq!(approvals[0].source, ApprovalSource::User);
+        assert_eq!(approvals[0].decision, Approval::Always);
+        assert_eq!(approvals[1].source, ApprovalSource::Rule);
+        assert_eq!(approvals[1].decision, Approval::Always);
+        assert!(run.events.iter().all(|event| {
+            !format!("{event:?}").contains("first-secret")
+                && !format!("{event:?}").contains("second-secret")
+        }));
+    }
+
+    #[tokio::test]
+    async fn danger_readonly_always_rejects_and_persists_rule_atomically() {
+        let (store, project_dir, data_dir, project_id) = setup_external("readonly");
+        let tools = vega_tools::Tools::new(project_dir.path()).unwrap();
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: "danger-1".into(),
+                    name: "bash".into(),
+                    input_json: r#"{"cmd":"rm -rf /"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+            vec![ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }])],
+        ]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook = FixedPermissionHook {
+            calls: calls.clone(),
+            decision: PermissionDecision::Always,
+        };
+        let run = run_thread_task_with_permission_sink(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            "danger",
+            "system",
+            CancellationToken::new(),
+            &hook,
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let (status, approval_json): (String, String) = store
+            .conn()
+            .query_row(
+                "SELECT status, approval FROM tool_calls WHERE id = 'danger-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "rejected");
+        let approval = ApprovalAudit::from_json(&approval_json).unwrap();
+        assert_eq!(approval.source, ApprovalSource::ReadOnly);
+        assert_eq!(approval.decision, Approval::Deny);
+        assert_eq!(
+            approval.danger.as_ref().map(|danger| danger.decision),
+            Some(Approval::Always)
+        );
+        let rules = permissions::list_exact(store.conn(), &project_id).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].tool, "bash");
+        assert_eq!(rules[0].pattern, "rm -rf /");
+        assert!(run.events.iter().any(|event| matches!(
+            event,
+            ConversationEvent::ToolCallFinished { result, .. }
+                if result.status == ToolCallStatus::Rejected
+        )));
+        assert_eq!(
+            fs::read_dir(data_dir.path().join("checkpoints"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn write_edit_and_bash_execute_serially_with_strict_db_results() {
+        let (store, project_dir, data_dir, _project_id) = setup_external("auto");
+        fs::write(project_dir.path().join("serial.txt"), "initial").unwrap();
+        let tools = vega_tools::Tools::new(project_dir.path()).unwrap();
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: "write-1".into(),
+                    name: "write".into(),
+                    input_json: r#"{"path":"serial.txt","content":"hello"}"#.into(),
+                },
+                ProviderEvent::ToolUse {
+                    id: "edit-1".into(),
+                    name: "edit".into(),
+                    input_json:
+                        r#"{"path":"serial.txt","old_string":"hello","new_string":"world"}"#.into(),
+                },
+                ProviderEvent::ToolUse {
+                    id: "bash-1".into(),
+                    name: "bash".into(),
+                    input_json: r#"{"cmd":"cat serial.txt"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+            vec![ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }])],
+        ]);
+        let run = run_thread_task_with_permission_sink(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            "serial tools",
+            "system",
+            CancellationToken::new(),
+            &FixedPermissionHook {
+                calls: Arc::new(AtomicUsize::new(0)),
+                decision: PermissionDecision::Deny { note: None },
+            },
+            |_| Ok(()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(project_dir.path().join("serial.txt")).unwrap(),
+            "world"
+        );
+        let finished = run
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                ConversationEvent::ToolCallFinished { call_id, result } => {
+                    Some((call_id.as_str(), result.status))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            finished,
+            vec![
+                ("write-1", ToolCallStatus::Success),
+                ("edit-1", ToolCallStatus::Success),
+                ("bash-1", ToolCallStatus::Success),
+            ]
+        );
+        let rows = ["write-1", "edit-1", "bash-1"].map(|id| {
+            store
+                .conn()
+                .query_row(
+                    "SELECT status, output_text, exit_code, duration_ms, output_full_path FROM tool_calls WHERE id = ?1",
+                    [id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<i32>>(2)?,
+                            row.get::<_, Option<i64>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        });
+        assert!(rows.iter().all(|row| row.0 == "success" && row.4.is_none()));
+        assert!(vega_tools::WriteSuccessOutput::from_json(&rows[0].1).is_ok());
+        assert!(vega_tools::EditSuccessOutput::from_json(&rows[1].1).is_ok());
+        assert!(rows[2].1.contains("world"));
+        assert_eq!(rows[2].2, Some(0));
+        assert!(rows[2].3.is_some());
+        assert!(data_dir.path().join("checkpoints").exists());
+    }
+
+    #[test]
+    fn strict_projection_validation_is_semantic_and_binds_results_and_danger() {
+        let project = tempdir().unwrap();
+        let tools = vega_tools::Tools::new(project.path()).unwrap();
+        let audit = tools
+            .audit_write_json(r#"{"path":"bound.txt","content":"body"}"#)
+            .unwrap();
+        let canonical = audit.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&canonical).unwrap();
+        let reordered = format!(
+            r#"{{"fingerprint_v1":{},"content_bytes":{},"path":{},"tool":{},"audit_version":{}}}"#,
+            value["fingerprint_v1"],
+            value["content_bytes"],
+            value["path"],
+            value["tool"],
+            value["audit_version"]
+        );
+        assert!(tool_inputs_semantically_equal(
+            "write", &canonical, &reordered
+        ));
+
+        let invalid = vega_tools::InvalidMutation::from_raw(
+            vega_tools::MutationTool::Write,
+            r#"{"path":"x","content":"secret","extra":true}"#,
+            vega_tools::MutationErrorCode::UnexpectedField,
+        )
+        .unwrap();
+        let invalid_json = invalid.audit().to_json().unwrap();
+        let invalid_value: serde_json::Value = serde_json::from_str(&invalid_json).unwrap();
+        let invalid_reordered = format!(
+            r#"{{"validation_error_code":{},"raw_input_sha256":{},"raw_input_bytes":{},"tool":{},"audit_version":{}}}"#,
+            invalid_value["validation_error_code"],
+            invalid_value["raw_input_sha256"],
+            invalid_value["raw_input_bytes"],
+            invalid_value["tool"],
+            invalid_value["audit_version"]
+        );
+        assert!(tool_inputs_semantically_equal(
+            "write",
+            &invalid_json,
+            &invalid_reordered
+        ));
+
+        let ids = vega_tools::CheckpointIds::new("project", "thread", "call").unwrap();
+        let success = vega_tools::WriteSuccessOutput {
+            path: "bound.txt".to_string(),
+            bytes_written: 4,
+            checkpoint_ref: ids.checkpoint_ref(),
+        };
+        let success_json = success.to_json().unwrap();
+        let auto = ApprovalAudit {
+            decision: Approval::Once,
+            note: None,
+            source: ApprovalSource::Auto,
+            danger: None,
+        };
+        assert!(
+            validate_recovered_projection(
+                "project",
+                "thread",
+                "call",
+                "write",
+                &reordered,
+                &success_json,
+                RuntimeToolStatus::Success,
+                &auto,
+                None,
+                None,
+            )
+            .is_ok()
+        );
+        for corrupt_output in [
+            vega_tools::WriteSuccessOutput {
+                path: "other.txt".to_string(),
+                ..success.clone()
+            }
+            .to_json()
+            .unwrap(),
+            vega_tools::WriteSuccessOutput {
+                bytes_written: 5,
+                ..success.clone()
+            }
+            .to_json()
+            .unwrap(),
+            vega_tools::WriteSuccessOutput {
+                checkpoint_ref: vega_tools::CheckpointIds::new("project", "thread", "other")
+                    .unwrap()
+                    .checkpoint_ref(),
+                ..success.clone()
+            }
+            .to_json()
+            .unwrap(),
+            "SECRET_RECOVERY_BODY".to_string(),
+        ] {
+            assert!(
+                validate_recovered_projection(
+                    "project",
+                    "thread",
+                    "call",
+                    "write",
+                    &canonical,
+                    &corrupt_output,
+                    RuntimeToolStatus::Success,
+                    &auto,
+                    None,
+                    None,
+                )
+                .is_err()
+            );
+        }
+
+        let validation = ApprovalAudit {
+            decision: Approval::Deny,
+            note: None,
+            source: ApprovalSource::Validation,
+            danger: None,
+        };
+        assert!(
+            validate_recovered_projection(
+                "project",
+                "thread",
+                "invalid",
+                "write",
+                &invalid_reordered,
+                invalid.tool_result(),
+                RuntimeToolStatus::Rejected,
+                &validation,
+                None,
+                None,
+            )
+            .is_ok()
+        );
+
+        let dangerous = r#"{"cmd":"rm -rf /"}"#;
+        let safe = r#"{"cmd":"printf safe"}"#;
+        let wrong_danger = crate::types::DangerAudit {
+            rule_id: "wrong".to_string(),
+            decision: Approval::Once,
+            note: None,
+        };
+        for (input, approval) in [
+            (dangerous, auto.clone()),
+            (
+                dangerous,
+                ApprovalAudit {
+                    decision: Approval::Once,
+                    note: None,
+                    source: ApprovalSource::Danger,
+                    danger: Some(wrong_danger.clone()),
+                },
+            ),
+            (
+                dangerous,
+                ApprovalAudit {
+                    decision: Approval::Once,
+                    note: None,
+                    source: ApprovalSource::Legacy,
+                    danger: None,
+                },
+            ),
+            (
+                safe,
+                ApprovalAudit {
+                    decision: Approval::Once,
+                    note: None,
+                    source: ApprovalSource::Danger,
+                    danger: Some(wrong_danger),
+                },
+            ),
+        ] {
+            assert!(
+                validate_recovered_projection(
+                    "project",
+                    "thread",
+                    "bash-call",
+                    "bash",
+                    input,
+                    "output",
+                    RuntimeToolStatus::Success,
+                    &approval,
+                    Some(0),
+                    Some(1),
+                )
+                .is_err()
+            );
+        }
+
+        let recovery = ApprovalAudit {
+            decision: Approval::Deny,
+            note: None,
+            source: ApprovalSource::Recovery,
+            danger: None,
+        };
+        assert!(
+            validate_recovered_projection(
+                "project",
+                "thread",
+                "unknown",
+                "future_tool",
+                "{}",
+                vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
+                RuntimeToolStatus::Rejected,
+                &recovery,
+                None,
+                None,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_recovered_projection(
+                "project",
+                "thread",
+                "unknown",
+                "future_tool",
+                "{\"secret\":true}",
+                vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
+                RuntimeToolStatus::Rejected,
+                &recovery,
+                None,
+                None,
+            )
+            .is_err()
+        );
+
+        let legacy_deny = ApprovalAudit {
+            decision: Approval::Deny,
+            note: None,
+            source: ApprovalSource::Legacy,
+            danger: None,
+        };
+        assert!(
+            validate_recovered_projection(
+                "project",
+                "thread",
+                "legacy",
+                "write",
+                &canonical,
+                &legacy_unavailable_output("write"),
+                RuntimeToolStatus::Rejected,
+                &legacy_deny,
+                None,
+                None,
+            )
+            .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn file_backed_recovery_reuses_write_edit_and_unknown_without_execution() {
+        let (store, project_dir, data_dir, _project_id) = setup_external("auto");
+        fs::write(project_dir.path().join("edit.txt"), "old").unwrap();
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: "old-assistant".into(),
+                thread_id: "thread-1".into(),
+                seq: 1,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "interrupted".into(),
+                created_at: 1,
+            },
+        )
+        .unwrap();
+        let tools = vega_tools::Tools::new(project_dir.path()).unwrap();
+        let write_raw = r#"{"path":"new.txt","content":"recovery-secret"}"#;
+        let edit_raw = r#"{"path":"edit.txt","old_string":"old","new_string":"recovery-new"}"#;
+        let write_audit = tools
+            .audit_write_json(write_raw)
+            .unwrap()
+            .to_json()
+            .unwrap();
+        let edit_audit = tools.audit_edit_json(edit_raw).unwrap().to_json().unwrap();
+        for (seq, (id, tool, input, status)) in [
+            (
+                "recover-write",
+                "write",
+                write_audit.as_str(),
+                "pending_approval",
+            ),
+            ("recover-edit", "edit", edit_audit.as_str(), "running"),
+            ("recover-unknown", "future_tool", "{}", "pending_approval"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            tool_calls::insert(
+                store.conn(),
+                tool_calls::NewToolCall {
+                    id,
+                    thread_id: "thread-1",
+                    message_id: "old-assistant",
+                    seq: i64::try_from(seq + 1).unwrap(),
+                    tool,
+                    input_json: input,
+                    status,
+                    created_at: 1,
+                },
+            )
+            .unwrap();
+        }
+        let auto_json = ApprovalAudit {
+            decision: Approval::Once,
+            note: None,
+            source: ApprovalSource::Auto,
+            danger: None,
+        }
+        .to_json()
+        .unwrap();
+        tool_calls::update(
+            store.conn(),
+            "recover-edit",
+            "running",
+            Some(&auto_json),
+            None,
+            None,
+        )
+        .unwrap();
+        let database_path = data_dir.path().join("vega.db");
+        drop(store);
+        let reopened = Store::open(&database_path).unwrap();
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: "recover-write".into(),
+                    name: "write".into(),
+                    input_json: write_raw.into(),
+                },
+                ProviderEvent::ToolUse {
+                    id: "recover-edit".into(),
+                    name: "edit".into(),
+                    input_json: edit_raw.into(),
+                },
+                ProviderEvent::ToolUse {
+                    id: "recover-unknown".into(),
+                    name: "future_tool".into(),
+                    input_json: r#"{"secret":"must-not-survive"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+            vec![ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }])],
+        ]);
+        let run = run_thread_task(
+            &reopened,
+            &provider,
+            &tools,
+            "thread-1",
+            "resume",
+            "system",
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let reused = run
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                ConversationEvent::ToolCallFinished { call_id, result } if result.reused => {
+                    Some((call_id.as_str(), result.status))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reused,
+            vec![
+                ("recover-write", ToolCallStatus::Rejected),
+                ("recover-edit", ToolCallStatus::Cancelled),
+                ("recover-unknown", ToolCallStatus::Rejected),
+            ]
+        );
+        assert!(!project_dir.path().join("new.txt").exists());
+        assert_eq!(
+            fs::read_to_string(project_dir.path().join("edit.txt")).unwrap(),
+            "old"
+        );
+        let wire = format!("{:?}", provider.requests());
+        assert!(!wire.contains("recovery-secret"));
+        assert!(!wire.contains("recovery-new"));
+        assert!(!wire.contains("must-not-survive"));
     }
 }
