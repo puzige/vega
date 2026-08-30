@@ -66,6 +66,7 @@ vega_tools = { path = "crates/vega_tools" }
 vega_theme = { path = "crates/vega_theme" }
 vega_ui = { path = "crates/vega_ui" }
 vega_markdown = { path = "crates/vega_markdown" }
+vega_token = { path = "crates/vega_token" }
 # 仅供 xtask 使用
 anyhow = "=1.0.104"
 # 仅供测试使用（dev-dependency）
