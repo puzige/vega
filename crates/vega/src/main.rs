@@ -6279,7 +6279,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn commit_app_production_handlers_reconcile_before_release_across_close_and_routes(
+    async fn commit_app_production_handlers_reconcile_before_release_across_close_and_routes_s6_controller(
         cx: &mut gpui::TestAppContext,
     ) {
         let repo = diff_controller_repo();
@@ -7249,7 +7249,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn branch_controller_owner_success_applies_authority_then_releases(
+    async fn branch_controller_s6_controller_owner_success_applies_authority_then_releases(
         cx: &mut gpui::TestAppContext,
     ) {
         let repo = artifact_controller_repo();
