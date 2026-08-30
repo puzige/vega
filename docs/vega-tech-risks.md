@@ -1,6 +1,6 @@
 # ✦ Vega — 技术难点攻坚（Tech Risks Deep-dive）
 
-**版本** v0.1 · 2026-08-28 · 关联：[vega-tech-spec-p1.md](vega-tech-spec-p1.md)
+**版本** v0.3 · 2026-08-30 · 关联：[vega-tech-spec-p1.md](vega-tech-spec-p1.md)
 
 > 逐个攻破 Phase 1 的技术难点。每篇：问题分解 → 生态调研（可验证来源）→ 方案 → 验证计划。
 > 目录：**#1 流式 markdown 渲染** · **#2 GPUI 虚拟化滚动与锚定** · **#3 Agent 中断与断点续跑** · **#4 macOS 权限沙箱（Seatbelt）** · **#5 SSE 背压与事件管线**
@@ -183,6 +183,8 @@ SQLite：WAL + synchronous=NORMAL，单写连接 + mpsc 写队列（写库走 ac
 4. Rust 调用：直接 `Command::new("/usr/bin/sandbox-exec")`，无成熟封装 crate（生态空白）
 5. **危险命令正则必被绕过**（base64/变量拼接/`$()`）——业界共识：正则只做 UX 兜底，真边界靠 OS 沙箱；清单参考 Cline 官方博客（确认）
 6. Linux 等价物：bubblewrap + Landlock + seccomp（codex 同款，Phase 4 再说）
+7. **macOS 27 实测 hardlink 缺口（2026-08-30）**：Seatbelt 的 `(subpath project)` 按路径放行；若项目内在 spawn 前已存在指向项目外 inode 的 hardlink，沙箱内写该项目路径会同步修改外部文件。普通外部路径、`.git`、实际 gitdir、symlink 外跳均被 profile 拒绝，sandbox 内新建跨边界 hardlink也失败，但这不能修复预存 hardlink。
+8. **共享 `/private/tmp` 是同类第二可写根（2026-08-30）**：broad `(subpath "/private/tmp")` 允许写预先放在共享 tmp 的外部 inode hardlink；只扫描 project 不能闭环。扫描整个共享 tmp 会受其他进程文件、权限与竞态影响，不可作为可用方案。
 
 ### 4.3 方案
 Seatbelt profile 骨架（workspace-write 档）：
@@ -191,19 +193,26 @@ Seatbelt profile 骨架（workspace-write 档）：
 (allow default)
 (deny file-write*)
 (allow file-write* (subpath (param "WRITABLE_ROOT_0")))  ; 项目目录
-(allow file-write* (subpath "/private/tmp"))
+(allow file-write* (subpath (param "TEMP_ROOT")))       ; 每 call 独占 0700 子目录，禁止放行共享 /private/tmp
 (deny file-write*  (subpath (param "GIT_DIR")))          ; .git 只读
 (allow network*)                                        ; 构建模式；只读档删此行
 ```
 ```rust
 Command::new("/usr/bin/sandbox-exec")
-  .arg("-p").arg(profile).arg("-D").arg(format!("WRITABLE_ROOT_0={ws}"))
+  .arg("-p").arg(profile)
+  .arg("-D").arg(format!("WRITABLE_ROOT_0={ws}"))
+  .arg("-D").arg(format!("TEMP_ROOT={temp}"))
   .arg("--").args(cmd).spawn()
 ```
+每 call 先在 canonical `/private/tmp` 下独占创建不可预测的 0700 Vega temp dir，记录 dev/inode 并验证非 symlink/containment；四个常见 temp env 均指向它。每次 bash spawn 前分别对 workspace 与专用 temp root 做 no-follow 遍历；workspace 覆盖 hidden/ignored entry并仅跳过 profile 强制只读的 `.git` entry/实际 gitdir，temp 不跳过 entry。发现任一普通文件 `nlink > 1` 或任何遍历/metadata 错误即 fail closed，零 spawn。该扫描保守拒绝根内合法多链接文件，以换取不猜测 inode 的其他路径。
+
+child reap 后按创建时的 canonical root/dev/inode 做 no-follow cleanup；根被替换或 containment 不符时禁止递归删除，cleanup failure 脱敏返回并留给后续安全 GC。不能用 broad `/private/tmp` allow 或不受控递归清理换取兼容性。
+
 write/edit 工具围栏（不经 bash 的直接 FS 写）：`canonicalize(target).starts_with(canonicalize(root))` 逐段校验防 symlink 逃逸（或用 `cap-std` capability API）；额外 deny `~/.ssh`、`.git/hooks`。
 
 ### 4.4 验证计划（量化）
-- 逃逸测试集 ≥30 条（`$HOME`/`/etc`/symlink 链/hardlink/`..` 穿越）：拦截率 100%
+- 逃逸测试集 ≥30 条（`$HOME`/`/etc`/共享 `/private/tmp`/symlink 链/project+temp 预存 hardlink/hidden+ignored hardlink/`..` 穿越）：launch-time 拦截率 100%；hardlink 与扫描错误用 spawn probe 证明零进程启动
+- temp lifecycle 覆盖四 env、0700/exact profile root、success/failure/cancel/timeout/pre-spawn reject cleanup、symlink 不跟随与根替换拒绝递归删除
 - 禁网模式 curl 出站 100% 失败；联网模式 `cargo build` 成功率 ≥95%（10 个真实 crate 回归）
 - sandbox-exec 启动增量 <50ms/命令
 - 混淆危险命令语料（编码/拼接各 20 条）逃逸率 <5%
@@ -214,6 +223,7 @@ write/edit 工具围栏（不经 bash 的直接 FS 写）：`canonicalize(target
 - `(allow default)` 基线宽松，IPC/mach 面未收紧；fork bomb 不在防护范围
 - 网络二值化（放行=全放行），域名级控制需叠 HTTP 代理（Phase 3+）
 - 用户态写围栏有 TOCTOU 窗口；高保障场景把写操作也路由进沙箱子进程
+- project/temp dual-root hardlink preflight 到 sandboxed command 打开目标之间仍有竞态：外部并发进程可在扫描后替换 inode。Phase 1 接受并显式报告；inode 级 containment 需要更强 capability/容器边界，不能由 Seatbelt path rule 或一次扫描宣称解决。
 
 ---
 
@@ -265,4 +275,3 @@ SSE stream (eventsource-stream + bytes_stream, 自管重连)
 | 5 | SSE 背压 | ✅ 两层合并管线已定 | 真实 delta 峰值未校准 | S4 前抓包 |
 
 **结论：五大难点全部有已验证的对标实现（Zed/Codex/Claude Code/markstream），无无人区。剩余不确定性都可在对应 Sprint 的 1-3 天 spike 内闭环。具备开工条件。**
-

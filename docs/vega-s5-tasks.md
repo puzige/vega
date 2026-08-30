@@ -1,6 +1,6 @@
 # ✦ Vega — S5 任务卡（Sprint 5 · 写工具 + 权限门禁 + 三模式 · W9-10）
 
-**版本** v0.2 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.4 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S5 目标**（phase1-plan §2）：write/edit/bash 工具；权限状态机（只读/变更前确认/全自动）；权限确认 UI；危险命令拦截；Ask/Plan/Execute 三模式 + Plan 产物审批流。
 
@@ -9,6 +9,10 @@
 > 本文档合入即为 S5 的 SDD 开工门禁。代码不得先于本文及同一 PR 对 tech-spec §2/§3/§4.3/§4.4/§8、ui-spec §4.3 的契约回写。
 >
 > **人类裁决（2026-08-30）**：普通权限卡 `Enter=允许一次`；危险命令卡默认焦点为「拒绝」，Tab/Shift+Tab 遍历、Space 激活焦点按钮，但 bare `Enter` 无论焦点均拒绝；两类卡均为 `Cmd+Enter=总是允许`、`Esc=拒绝`。
+>
+> **人类裁决（2026-08-30，T24 hardlink）**：macOS Seatbelt 的 path profile 无法隔离项目内预存 hardlink 指向的项目外 inode。每次 bash spawn 前必须不跟随 symlink 扫描项目的可写树（排除 `.git` entry 与已发现的实际 gitdir）；任一普通文件 `nlink > 1`、遍历/metadata 失败均 fail closed，零进程启动。并发外部进程在扫描后创建/替换 hardlink 是已接受的用户态 TOCTOU 残余，报告必须如实记录。
+>
+> **人类裁决（2026-08-30，T24 temp root）**：禁止 broad-allow 共享 `/private/tmp`。每次 bash call 必须以独占创建方式建立 Vega-owned 随机 0700 专用目录，只向 Seatbelt 放行该 exact subpath，并把 `TMPDIR`（以及兼容的 `TMP`/`TEMP`/`TEMPDIR`）指向它。spawn 前扫描 project 与该专用目录；reap 后以 no-follow、根身份校验的方式清理。创建、校验、扫描失败均零 spawn；cleanup 失败返回脱敏失败且保留给后续安全 GC，不得扩大路径权限。
 
 ---
 
@@ -49,7 +53,9 @@
 
 - 危险规则只放一处（`vega_tools::danger`），每条有稳定 rule id/reason；runtime/UI 不复制正则。规则可追加或加强，移除/削弱须先改 spec 并经人类批准。
 - 最低覆盖：根递归删除（`rm -rf /`，含组合/拆分/换序选项与空白变体）、forced push（`git push -f|--force|--force-with-lease`）、raw device write（`dd ... of=/dev/...`）、`mkfs*`、`diskutil eraseDisk|partitionDisk|secureErase`；每条正反例单测。
-- danger regex 只负责强制确认，不冒充沙箱。所有 bash 必须经 `/usr/bin/sandbox-exec`：默认 deny `file-write*`，只放行项目根与 `/private/tmp`，再 deny `.git` 与实际 gitdir；按 tech-risks workspace-write 档开放网络。
+- danger regex 只负责强制确认，不冒充沙箱。所有 bash 必须经 `/usr/bin/sandbox-exec`：默认 deny `file-write*`，只放行项目根与当次 Vega-owned temp exact subpath，再 deny `.git` 与实际 gitdir；禁止 broad-allow `/private/tmp`，按 tech-risks workspace-write 档开放网络。
+- Seatbelt 按 path 裁决，不能阻止可写根内预存 hardlink 写到其他路径的同一 inode。每次 bash spawn 前必须对 project 与当次专用 temp dir 执行 no-follow regular-file scan；发现 `nlink > 1` 或扫描失败立即拒绝，不能启动 sandbox-exec。project 扫描覆盖 hidden/ignored 文件，只排除 profile 已强制只读的 `.git` entry 与实际 gitdir；fresh temp dir 不得跳过任何 entry。
+- 专用 temp dir 必须在 canonical `/private/tmp` 下独占创建、权限收紧为 0700，并在放行前以 `symlink_metadata`、canonical containment 与初始 dev/inode 身份校验；命令环境的 `TMPDIR`/`TMP`/`TEMP`/`TEMPDIR` 全部指向该目录且 wire/output 不暴露其绝对路径。成功、失败、cancel、timeout 都在 child reap 后执行 no-follow cleanup；cleanup 前重验根身份，失败时脱敏报错并留给后续安全 GC，绝不递归清理已被替换的路径。
 - `/usr/bin/sandbox-exec` 缺失、profile 自测失败或进程组无法可靠收拢时 fail closed，禁止裸 shell降级。
 - bash 使用 `/bin/zsh -lc`、cwd 强制项目根、无 PTY；`CommandExt::process_group(0)` 建独立组，取消/超时通过 `/bin/kill` 向负 PGID 发 SIGTERM，grace 后 SIGKILL，最后 wait/reap。验收包含仍继承该 PGID 的 descendants；主动 `setsid` 脱离进程组是 tech-risks §3.5 的已知残余，不虚称 100% tree containment。不得为此引入 `libc`/`nix`。
 
@@ -114,8 +120,8 @@ S5 SDD PR
 
 - **前置/参考**：T23；tech-spec §4.3/§4.4；tech-risks §3/#4；C4/C5/C6。
 - **范围**：`vega_tools` 的 bash/danger/sandbox/output/tools；只激活既有 tokio/tokio-util/regex，无 PTY/白名单外 crate。
-- **产出**：cmd + timeout_ms（默认 120_000，0/溢出拒绝）；cwd 只能为 canonical project root；16 KiB 流式合流；64 KiB 单行、head/tail 各 2,000 行与各 4 MiB 三重上限；exit_code/duration/truncated；process-group TERM→KILL→reap；Seatbelt fail closed；集中 danger rule id/reason。
-- **验收**：`cargo test -p vega_tools bash`；`cargo test -p vega_tools danger`；`cargo clippy -p vega_tools --all-targets -- -D warnings`；macOS 集成覆盖 cwd、timeout、4001+ 行、多 MiB 无换行/high-water、合流、cancel/timeout 后 shell 与继承 PGID descendants 均退出、项目外/.git 写失败、项目内普通写成功、危险正反例；setsid 逃逸只记录残余，不伪造全树断言。
+- **产出**：cmd + timeout_ms（默认 120_000，0/溢出拒绝）；cwd 只能为 canonical project root；16 KiB 流式合流；64 KiB 单行、head/tail 各 2,000 行与各 4 MiB 三重上限；exit_code/duration/truncated；process-group TERM→KILL→reap；Seatbelt exact per-call temp root + dual-root hardlink scan + safe cleanup fail closed；集中 danger rule id/reason。
+- **验收**：`cargo test -p vega_tools bash`；`cargo test -p vega_tools danger`；`cargo clippy -p vega_tools --all-targets -- -D warnings`；macOS 集成覆盖 cwd、timeout、4001+ 行、多 MiB 无换行/high-water、合流、cancel/timeout 后 shell 与继承 PGID descendants 均退出、项目外/共享 `/private/tmp`/`.git` 写失败、项目内与专用 temp 普通写成功、四个 temp env 指向专用根、project/temp 预存 hardlink 与 scan metadata/traversal failure 均零 spawn、success/failure/cancel/timeout cleanup、根替换时拒绝递归清理、危险正反例；setsid 与 dual-scan 后竞态只记录残余，不伪造全树断言。
 - **commit**：`feat(A3-05): add sandboxed cancellable bash tool`；必要时 `feat(A3-09): centralize dangerous command rules`。
 - **禁区/停止**：不做 PTY/A6/SSH；不以 regex 替代 Seatbelt；sandbox-exec/profile/process-group 环境不可用则 `[BLOCKED] S5-T24`。
 
@@ -174,7 +180,7 @@ S5 SDD PR
 - [ ] danger 先于 ReadOnly/rule/Auto，危险卡按人类裁决，集中规则未削弱。
 - [ ] write/edit fence/preimage/唯一匹配/fingerprint recovery；new-file metadata、existing-target metadata absent、opaque checkpoint ref、valid audit 与 success output exact schema 全过；raw content/raw id/绝对数据根零持久化或传播；approval JSON 精确且 legacy fail closed。
 - [ ] invalid write/edit 输入以 deterministic content-free projection + deny/validation 严格 JSON 终结；零 permission/execution；startup recovery 只新写 deny/recovery 严格 JSON。
-- [ ] bash cwd/120s/16KiB streaming/64KiB 单行/头尾各 2k 行与 4MiB/process-group/Seatbelt 全过。
+- [ ] bash cwd/120s/16KiB streaming/64KiB 单行/头尾各 2k 行与 4MiB/process-group/Seatbelt exact temp root/dual-root hardlink preflight/safe cleanup 全过；预存 hardlink 与扫描失败均零 spawn。
 - [ ] 危险卡 Tab/Shift+Tab/Space 可达；bare Enter 在任意焦点均拒绝；Cmd+Enter/Esc 固定。
 - [ ] Ask/Plan 零写；Plan 持久化且批准后才 Execute；change/abandon/重复审批正确。
 - [ ] 新 Plan 原子 supersede 旧 pending；重启/竞态后仅最新可批，旧项带 stable superseded note。
@@ -202,3 +208,5 @@ S5 SDD PR
 
 - v0.1 (2026-08-30) S5 开工 SDD：T23-T29、C1-C7、安全红线与 DoD 定稿；contract review 随同一开工 commit 补定 valid/invalid content-free fingerprints、approval/recovery 严格 JSON、bash 字节/行双上限、危险卡完整键盘语义、RunMode capability 前置门禁、Plan CHECK/事务赢家/旧计划 supersede、checkpoint id/layout 与 setsid 残余。
 - v0.2 (2026-08-30) 人类批准 schema 补充：固定 valid `write_edit_v1`、created-new-file metadata、opaque `checkpoint_ref` 与 write/edit success output 的 exact JSON；补齐 T23 tools-local codec、T26 shared event/DB/recovery、T27 安全投影 UI、T29 e2e 与 DoD 的 strict negative tests。
+- v0.3 (2026-08-30) 人类批准 T24 hardlink 契约：补充 bash pre-spawn no-follow 全可写树扫描，普通文件 `nlink > 1` 或扫描失败均 fail closed/零 spawn；明确 Seatbelt path profile 的预存 hardlink 缺口与 scan 后 TOCTOU 残余。
+- v0.4 (2026-08-30) 人类批准 T24 temp-root 契约：移除 broad `/private/tmp` allow，改为每 call 独占 0700 exact temp subpath + 四 temp env；project/temp dual-root scan 后才 spawn，reap 后做身份校验/no-follow cleanup，并补 shared tmp/hardlink/cleanup 验收。
