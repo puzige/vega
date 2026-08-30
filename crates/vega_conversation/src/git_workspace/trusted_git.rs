@@ -3346,16 +3346,8 @@ exec /usr/bin/git "$@"
             .await;
         assert_eq!(completion.error, None);
         assert!(completion.prepared.is_some());
-        let status = Command::new("/usr/bin/git")
-            .args([
-                "-C",
-                repo.path().to_str().expect("root"),
-                "status",
-                "--porcelain",
-            ])
-            .output()
-            .expect("status");
-        assert_eq!(status.stdout, b"A  added.txt\n");
+        let status = run_git_output(repo.path(), &["status", "--porcelain"]);
+        assert_eq!(status, b"A  added.txt\n");
     }
 
     #[tokio::test]
@@ -3384,16 +3376,8 @@ exec /usr/bin/git "$@"
             )
             .await;
         assert_eq!(completion.error, None);
-        let status = Command::new("/usr/bin/git")
-            .args([
-                "-C",
-                repo.path().to_str().expect("root"),
-                "status",
-                "--porcelain",
-            ])
-            .output()
-            .expect("status");
-        assert_eq!(status.stdout, b"A  renamed.txt\nD  tracked.txt\n");
+        let status = run_git_output(repo.path(), &["status", "--porcelain"]);
+        assert_eq!(status, b"A  renamed.txt\nD  tracked.txt\n");
     }
 
     #[tokio::test]
@@ -3569,18 +3553,8 @@ exec /usr/bin/git "$@"
             )
             .await;
         assert_eq!(completion.error, None);
-        let index = Command::new("/usr/bin/git")
-            .args([
-                "-C",
-                repo.path().to_str().expect("root"),
-                "ls-files",
-                "--stage",
-                "--",
-                "tracked.txt",
-            ])
-            .output()
-            .expect("index");
-        assert!(index.stdout.starts_with(b"120000 "));
+        let index = run_git_output(repo.path(), &["ls-files", "--stage", "--", "tracked.txt"]);
+        assert!(index.starts_with(b"120000 "));
     }
 
     #[tokio::test]
@@ -3608,18 +3582,8 @@ exec /usr/bin/git "$@"
             )
             .await;
         assert_eq!(completion.error, None);
-        let index = Command::new("/usr/bin/git")
-            .args([
-                "-C",
-                repo.path().to_str().expect("root"),
-                "ls-files",
-                "--stage",
-                "--",
-                "run.sh",
-            ])
-            .output()
-            .expect("index");
-        assert!(index.stdout.starts_with(b"100755 "));
+        let index = run_git_output(repo.path(), &["ls-files", "--stage", "--", "run.sh"]);
+        assert!(index.starts_with(b"100755 "));
     }
 
     #[tokio::test]

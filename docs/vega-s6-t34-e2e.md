@@ -2,17 +2,20 @@
 
 ## Freeze
 
-- verified_at_utc: `2026-08-30T23:00:01Z`
-- verified_at_local: `2026-08-31T07:00:01+08:00`
+- verified_at_utc: `2026-08-30T23:13:29Z`
+- verified_at_local: `2026-08-31T07:13:29+08:00`
 - branch: `feat/s6-t34-commit-assistance`
-- git_head: `d836df0037fb08d8463cb559416c8872ffc6add2` (existing SDD commit only)
-- implementation commit / PR / squash: `PENDING / NOT CREATED / NOT CREATED`
-- tracked_patch_sha256_before_this_evidence_file: `d1418218105974b4428edbb5e0fd6e7828d8198b842445658bbadaac61b62dd5`
-- implementation_changed_file_content_sha256_excluding_this_evidence_file: `9504df0cc1af59d70e12ccea9d99624ec03a2aef9bacf79d4f95c84b1dee02e7`
+- git_head: `1dc7b804cb3ee6aa943eb989d98466f818860be3` (implementation commit; fixture-isolation fix pending)
+- implementation commit / PR / squash: `1dc7b804cb3ee6aa943eb989d98466f818860be3 / NOT CREATED / NOT CREATED`
+- fixture-isolation fix commit: `PENDING`
+- implementation_tracked_patch_sha256_before_original_evidence_file: `d1418218105974b4428edbb5e0fd6e7828d8198b842445658bbadaac61b62dd5`
+- implementation_changed_file_content_sha256_excluding_original_evidence_file: `9504df0cc1af59d70e12ccea9d99624ec03a2aef9bacf79d4f95c84b1dee02e7`
+- fixture_fix_tracked_patch_sha256_before_this_evidence_update: `b2d3eb0004b90a774d190294347fc26cc629d45e1cb8642fee28fe7800f9e1bb`
+- fixture_fix_changed_file_content_sha256_excluding_this_evidence_file: `df4474df1ef9f14884f1a9421871562960ee681efb8ce20b251f056be4aaaf0e`
 - task_contract: `docs/vega-s6-tasks.md v0.16`; global verification contract: `docs/vega-exec-guide.md v0.6`
 - verifier: local execution agent
 
-The content hash above covers every modified or untracked implementation/spec file by sorted path and content, while deliberately excluding this self-referential evidence file. No raw diff body is committed.
+The original implementation hash covers every implementation/spec file in the pre-commit freeze. The fixture-fix hash covers the two current non-evidence files by sorted path and content; both deliberately exclude this self-referential evidence file. No raw diff body is committed.
 
 ## Environment
 
@@ -43,6 +46,8 @@ The content hash above covers every modified or untracked implementation/spec fi
 | Lints | gate | `cargo clippy --workspace --all-targets -- -D warnings` | `PASS` | final run `2.34s`; exit `0` |
 | Build | gate | `cargo build --workspace --all-targets` | `PASS` | final run `2.39s`; exit `0` |
 | Patch whitespace | gate | `git diff --check` | `PASS` | empty output; exit `0` |
+| Hook-local Git environment isolation | gate | absolute `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_INDEX_FILE` + `./.githooks/pre-push` | `PASS` | hook enumerated and cleared Git local env; `677 passed; 0 failed; 1 ignored`; doctests `5 passed`; clippy/build green |
+| T34 direct fixture regression under polluted Git environment | `FAULT-INJECTION` | same three absolute variables + `cargo test -p vega_conversation --lib trusted_git_selected_ -- --nocapture` | `PASS` | after fix `4 passed; 0 failed`; before fix `0 passed; 4 failed` |
 
 ## Production assertions exercised by the two primary E2Es
 
@@ -62,6 +67,9 @@ The content hash above covers every modified or untracked implementation/spec fi
 
 - Before the E2E-first prune, the monolithic app fixture failed at a timing-dependent post-commit branch-generation assertion after it had torn down and rebuilt routes for generation-C/stale-route test-only sections. This was retained as a failed pre-freeze observation, not rewritten as a pass.
 - After removing those unverified Cartesian sections while preserving production behavior, the reduced production-handler E2E passed twice. The full workspace regression then passed.
+- The first real pre-push attempt completed `232` conversation tests and failed exactly four T34 fixture-only assertions. Those assertions invoked `/usr/bin/git -C <temp>` directly while inheriting hook-local `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_INDEX_FILE`, so their read-only `status`/`ls-files` queries inspected the Vega worktree index instead of the owned temporary repository. The pre-push hook stopped and the remote was not pushed.
+- Explicitly reproducing the same polluted environment produced the same `0 passed; 4 failed`. The four assertions now reuse the fixture helper that clears every inherited `GIT_*` variable before invoking Git; the same reproduction is `4 passed; 0 failed`. A full direct-Git audit found no other unsanitized T34 fixture Git child.
+- The pre-push hook now fails closed if `git rev-parse --local-env-vars` cannot enumerate its repository-local environment, rejects unexpected non-`GIT_*` names, clears the complete enumerated set before Cargo, and preserves `PATH`/`HOME`. With all three repository-targeting variables set to absolute paths, the real hook passed clippy, all `677` workspace tests (`1` ignored Keychain test), all `5` doctests, and the workspace build.
 
 ## Redlines
 

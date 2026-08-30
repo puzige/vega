@@ -8,6 +8,25 @@
 PATH="$HOME/.cargo/bin:$PATH"
 export PATH
 
+# Git exports repository-local variables while invoking hooks. They must not
+# leak into Cargo test fixtures because those fixtures own separate temporary
+# repositories. Ask this Git version for the complete local-variable set, then
+# fail closed unless every returned name is a Git variable we can safely unset.
+git_local_env_vars=$(git rev-parse --local-env-vars) || {
+    echo "[pre-push] FAILED: could not enumerate Git local environment variables."
+    exit 1
+}
+for git_local_env_var in $git_local_env_vars; do
+    case "$git_local_env_var" in
+        GIT_*) unset "$git_local_env_var" ;;
+        *)
+            echo "[pre-push] FAILED: unexpected local environment variable name."
+            exit 1
+            ;;
+    esac
+done
+unset git_local_env_var git_local_env_vars
+
 echo "[pre-push] cargo clippy --all-targets -- -D warnings"
 if ! cargo clippy --all-targets -- -D warnings; then
     echo ""
