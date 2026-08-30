@@ -52,7 +52,7 @@ mod sandbox;
 mod sha256;
 mod tools;
 
-pub use bash::{DEFAULT_BASH_TIMEOUT_MS, PreparedBash};
+pub use bash::{DEFAULT_BASH_TIMEOUT_MS, PreparedBash, bash_permission_signature};
 pub use codec::{
     CheckpointIds, CheckpointRef, CreatedNewFileMetadata, EditSuccessOutput, InvalidWriteEditAudit,
     MutationTool, WriteEditAudit, WriteSuccessOutput,

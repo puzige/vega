@@ -199,7 +199,7 @@ impl Provider for OpenAiProvider {
 
 /// Serializes a [`ChatRequest`] into the OpenAI chat-completion body:
 /// `stream: true` + `stream_options.include_usage` always on.
-fn build_request_body(req: &ChatRequest) -> serde_json::Value {
+pub(crate) fn build_request_body(req: &ChatRequest) -> serde_json::Value {
     let messages = req
         .messages
         .iter()
