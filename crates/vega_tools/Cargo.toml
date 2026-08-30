@@ -4,12 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# 内置工具 read/glob/grep/write/edit（S4-T21 / S5-T23；exec-guide §5 白名单）
+# 内置工具 read/glob/grep/write/edit/bash（S4-T21 / S5-T23~T24；exec-guide §5 白名单）
 ignore = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "time"] }
+tokio-util = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

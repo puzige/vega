@@ -37,8 +37,10 @@
 //! # }
 //! ```
 
+mod bash;
 mod checkpoint;
 mod codec;
+pub mod danger;
 mod error;
 mod fence;
 mod glob;
@@ -46,16 +48,22 @@ mod grep;
 mod mutation;
 mod output;
 mod read;
+mod sandbox;
 mod sha256;
 mod tools;
 
+pub use bash::{DEFAULT_BASH_TIMEOUT_MS, PreparedBash};
 pub use codec::{
     CheckpointIds, CheckpointRef, CreatedNewFileMetadata, EditSuccessOutput, InvalidWriteEditAudit,
     MutationTool, WriteEditAudit, WriteSuccessOutput,
 };
-pub use error::{EditFailureContext, MutationError, MutationErrorCode, ToolError};
+pub use error::{
+    BashError, BashErrorCode, EditFailureContext, MutationError, MutationErrorCode, ToolError,
+};
 pub use mutation::{InvalidMutation, PrepareMutationError, PreparedEdit, PreparedWrite};
 pub use output::{
-    LINE_TRUNCATION_MARKER, MAX_LINE_CHARS, MAX_RESULTS, RESULT_TRUNCATION_MARKER, ToolOutput,
+    BASH_LINE_MIDDLE_MARKER, BASH_MAX_BYTES_PER_SIDE, BASH_MAX_LINE_BYTES, BASH_MAX_LINES_PER_SIDE,
+    BASH_OUTPUT_MIDDLE_MARKER, BASH_READ_CHUNK_BYTES, BashOutput, LINE_TRUNCATION_MARKER,
+    MAX_LINE_CHARS, MAX_RESULTS, RESULT_TRUNCATION_MARKER, ToolOutput,
 };
 pub use tools::Tools;
