@@ -1,6 +1,6 @@
 # ✦ Vega — S6 任务卡（Sprint 6 · Diff 审阅 & 产物 · W11-12）
 
-**版本** v0.4 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.5 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S6 目标**（phase1-plan §2）：git 工作区 diff 视图（高亮、hunk 导航）；产物卡片；Open in…（VS Code/Cursor/Zed/Terminal）；commit 辅助；补齐 Composer 分支选择器。
 
@@ -9,6 +9,9 @@
 > 本文档合入即为 S6 的 SDD 开工门禁。T30-T35 严格串行，每卡在前一卡 squash merge 后开工。
 >
 > **人类裁决（2026-08-30）**：采用 A，以 phase1-plan S6 为准，PRD v0.3.3 已闭合冲突。Phase 1 交付 Diff v1、artifact cards、fixed-allowlist Open in v1、user-confirmed commit assistance v1；Phase 2 保留 Diff v2、custom/configurable handoff、PR assistance 与 advanced polish。D1-D7 不变。
+>
+> **人类裁决（2026-08-30，T31 generation 契约）**：workspace refresh 的 latest request sequence 与 content generation 必须分离并在同一 mutex 下线性化。refresh 在途时保留 current；完整 private semantic identity（含 raw path、HEAD、filter/status/raw/numstat bytes、ordered private records 与 revalidated `FileIdentity`）byte-exact 不变才保留 generation/opaque IDs，真正变化或 latest refresh 失败后必须轮换且旧 ID fail closed；ABA 不得复活旧 ID。
+> committed private files 以 canonical path-byte-ordered `Vec` 为唯一 authority，`WorkspaceFileId.slot` O(1) 定位后仍须 exact id/seal复验。8 MiB metadata snapshot cap 按真实 committed representation 的 checked logical-retained size 计算：`ServiceState` fixed一次、identity payload一次、fixed identity/Arc allocation，以及 public/private Vec buffers + head/labels/raw current+previous path payload；candidate handles不重复计费。这是逻辑保留量门禁，不宣称 allocator high-water。
 >
 > stage/commit、branch switch 与 Open in 都是当前窗口的显式用户动作，不是 `vega_tools` 工具、不注册 provider schema。模型只能生成 bounded commit 草稿，永远不能 Prepare、stage、commit、切分支或启动应用。
 >
@@ -310,3 +313,4 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 - v0.2 (2026-08-30) 人类批准 A：PRD v0.3.3、raw path private、artifact provenance、two-stage stdin commit，重排 T30-T35。
 - v0.3 (2026-08-30) 最终 executable hardening：bounded projections、literal pathspec、PGID/maintenance、exact caps/Open argv、target filter preflight、porcelain-v2 + stage-entry cross-checked logical IndexSnapshot（显式拒绝 `XY=.A` intent-to-add、允许 `XY=A.` staged empty file）、controller ownership、copyable gates与报告 evidence timing定稿。
 - v0.4 (2026-08-30) 人类修订 filter 契约：所有 relevant `check-attr` 固定 `--all`，显式 attribute name=`filter` 无论 value 一律拒绝；same-user preflight TOCTOU保留为 residual。
+- v0.5 (2026-08-30) 人类冻结 T31 request/content generation 契约：mutex 线性化 latest-wins；unchanged private identity 保留 opaque IDs；change/failure/ABA fail-closed 轮换；8 MiB cap覆盖真实 committed metadata snapshot。

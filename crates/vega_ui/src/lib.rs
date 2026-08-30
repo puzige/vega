@@ -7,6 +7,7 @@
 //! and the sidebar blocks render the lists now.
 
 pub mod conversation_stream;
+pub mod diff_view;
 pub mod permission_card;
 pub mod plan_card;
 pub mod settings;
@@ -94,5 +95,13 @@ pub fn init(cx: &mut App) {
             conversation_stream::ActivateThreadSetting,
             Some("ThreadSettings"),
         ),
+        KeyBinding::new(
+            "cmd-shift-d",
+            conversation_stream::OpenWorkspaceDiff,
+            Some("ConversationStream"),
+        ),
+        KeyBinding::new("escape", diff_view::CloseDiff, Some("DiffView")),
+        KeyBinding::new("[", diff_view::PreviousDiffHunk, Some("DiffView")),
+        KeyBinding::new("]", diff_view::NextDiffHunk, Some("DiffView")),
     ]);
 }

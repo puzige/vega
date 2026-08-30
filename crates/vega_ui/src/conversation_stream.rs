@@ -78,7 +78,12 @@ use crate::tool_card::ToolCard;
 
 actions!(
     vega_conversation_stream,
-    [SendMessage, PreviousMessage, ActivateThreadSetting]
+    [
+        SendMessage,
+        PreviousMessage,
+        ActivateThreadSetting,
+        OpenWorkspaceDiff
+    ]
 );
 
 /// Uniform row height (logical px). A `uniform_list` requires one fixed item
@@ -112,6 +117,20 @@ pub struct ThreadSettingsRequested {
 pub struct ComposerSubmitted {
     pub thread_id: String,
     pub content: String,
+}
+
+/// Safe route request emitted by the thread header and Cmd+Shift+D.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenWorkspaceDiffRequested {
+    pub thread_id: String,
+    pub project_id: String,
+}
+
+/// Content-free notification that a tool reached a terminal state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceToolTerminal {
+    pub thread_id: String,
+    pub project_id: String,
 }
 
 /// Monospace family for code rows (ui-spec §3 代码等宽档位；本机 macOS 以
@@ -235,16 +254,16 @@ pub(crate) enum SpanStyle {
 }
 
 /// One resolved code-token style: token color + weight + italic.
-struct TokenStyle {
-    color: Rgba,
-    weight: FontWeight,
-    italic: bool,
+pub(crate) struct TokenStyle {
+    pub(crate) color: Rgba,
+    pub(crate) weight: FontWeight,
+    pub(crate) italic: bool,
 }
 
 /// S3-T18 高亮整合的**唯一映射表**：HighlightKind → 既有 ui-spec §2 色值
 /// token（无新色值）：Keyword/Type → text_primary 加粗，String → success，
 /// Comment → text_tertiary 斜体，Number → warning，其余 → text_primary。
-fn code_token_style(kind: HighlightKind, colors: &ThemeColors) -> TokenStyle {
+pub(crate) fn code_token_style(kind: HighlightKind, colors: &ThemeColors) -> TokenStyle {
     match kind {
         HighlightKind::Keyword | HighlightKind::Type => TokenStyle {
             color: colors.text_primary,
@@ -1251,6 +1270,8 @@ pub struct ConversationStream {
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
+impl EventEmitter<OpenWorkspaceDiffRequested> for ConversationStream {}
+impl EventEmitter<WorkspaceToolTerminal> for ConversationStream {}
 
 struct InjectionState {
     /// Which assistant entry the replayer feeds.
@@ -1597,6 +1618,10 @@ impl ConversationStream {
                     };
                     self.push_tool_card(call_id, card, cx);
                 }
+                cx.emit(WorkspaceToolTerminal {
+                    thread_id: self.thread.id.clone(),
+                    project_id: self.thread.project_id.clone(),
+                });
             }
             ConversationEvent::MessageFinished { message_id, .. }
             | ConversationEvent::Interrupted { message_id } => {
@@ -1897,6 +1922,21 @@ impl ConversationStream {
         ((max_offset + offset).max(0.0), viewport)
     }
 
+    fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
+        cx.emit(OpenWorkspaceDiffRequested {
+            thread_id: self.thread.id.clone(),
+            project_id: self.thread.project_id.clone(),
+        });
+    }
+
+    fn open_diff_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.emit_open_diff(cx);
+    }
+
+    fn open_diff_action(&mut self, _: &OpenWorkspaceDiff, _: &mut Window, cx: &mut Context<Self>) {
+        self.emit_open_diff(cx);
+    }
+
     /// Renders the thread header: title + anchor status + demo button.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
@@ -1968,6 +2008,22 @@ impl ConversationStream {
                     } else {
                         "演示注入".to_string()
                     }),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .bg(colors.bg_elevated)
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_secondary)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(colors.bg_hover))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::open_diff_clicked))
+                    .child("Diff"),
             )
             .into_any_element()
     }
@@ -2230,6 +2286,8 @@ impl Render for ConversationStream {
             .flex_col()
             .bg(colors.bg_base)
             .text_color(colors.text_primary)
+            .key_context("ConversationStream")
+            .on_action(cx.listener(Self::open_diff_action))
             // tech-spec §5.4 动效禁令：流式期间节点无任何入场 opacity/动画
             // （本管线自 T17 起即不引入入场动画，T18 维持）。
             .child(self.render_header(cx))
