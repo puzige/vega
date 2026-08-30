@@ -3,20 +3,29 @@
 //! render_frame self-measurement probe (see
 //! [`vega_ui::conversation_stream::bench`]).
 
-use std::sync::mpsc;
+use std::path::PathBuf;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Bounds, Entity, KeyBinding, TitlebarOptions, Window, WindowBounds,
+    AnyElement, App, Bounds, Entity, Focusable, KeyBinding, TitlebarOptions, Window, WindowBounds,
     WindowOptions, actions, div, px, size,
 };
 use gpui_platform::application;
-use vega_conversation::types::{Plan, PlanReviewOutcome, Thread};
+use vega_conversation::GitWorkspaceService;
+use vega_conversation::types::{
+    DiffTextProjection, GitWorkspaceErrorCode, Plan, PlanReviewOutcome, Thread, WorkspaceFileId,
+    WorkspaceSnapshot,
+};
 use vega_store::Store;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
 use vega_ui::conversation_stream::{
-    ComposerSubmitted, ConversationStream, ThreadSettingsRequested, bench as render_frame_bench,
+    ComposerSubmitted, ConversationStream, OpenWorkspaceDiffRequested, ThreadSettingsRequested,
+    WorkspaceToolTerminal, bench as render_frame_bench,
+};
+use vega_ui::diff_view::{
+    DIFF_REFRESH_INTERVAL, DiffClosed, DiffProjectionRequested, DiffRetryRequested, DiffView,
 };
 use vega_ui::plan_card::PlanReviewRequested;
 use vega_ui::settings::{CloseSettings, OpenSettings, SettingsOpen, SettingsView};
@@ -38,6 +47,7 @@ const EMPTY_STATE_TEMPLATES: [&str; 3] = ["快捷模板 1", "快捷模板 2", "�
 const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);
 const AGENT_EVENT_CAPACITY: usize = 256;
 const AGENT_EVENT_BATCH: usize = 128;
+const DIFF_RESULT_POLL: Duration = Duration::from_millis(4);
 const SYSTEM_PROMPT: &str =
     "You are Vega, a careful coding agent working inside the selected project.";
 
@@ -221,6 +231,248 @@ struct ThreadStateRefresh {
     recoverable_approved_instruction: Option<String>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct DiffRouteIdentity {
+    epoch: u64,
+    thread_id: String,
+    project_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DiffProjectionFence {
+    route: DiffRouteIdentity,
+    refresh_request_seq: u64,
+    snapshot_generation: u64,
+    file_request_seq: u64,
+    file_id: WorkspaceFileId,
+}
+
+struct PendingDiffProjection {
+    fence: DiffProjectionFence,
+    result: Result<DiffTextProjection, GitWorkspaceErrorCode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffProjectionDisposition {
+    Apply,
+    Defer,
+    Drop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffRefreshDecision {
+    Start(u64),
+    Coalesced,
+    Overflow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffRefreshCompletion {
+    Latest,
+    Superseded(Option<u64>),
+}
+
+struct ActiveDiffRoute {
+    identity: DiffRouteIdentity,
+    view: Entity<DiffView>,
+    service: Option<Arc<GitWorkspaceService>>,
+    cancel: tokio_util::sync::CancellationToken,
+    refresh_request_seq: u64,
+    refresh_in_flight: Option<u64>,
+    queued_refresh_seq: Option<u64>,
+    snapshot_generation: Option<u64>,
+    file_request_seq: u64,
+    requested_file: Option<WorkspaceFileId>,
+    projection_cancel: Option<tokio_util::sync::CancellationToken>,
+    pending_projection: Option<PendingDiffProjection>,
+    focus_pending: bool,
+}
+
+impl ActiveDiffRoute {
+    fn request_refresh(&mut self) -> DiffRefreshDecision {
+        let Some(next) = self.refresh_request_seq.checked_add(1) else {
+            return DiffRefreshDecision::Overflow;
+        };
+        self.refresh_request_seq = next;
+        if self.refresh_in_flight.is_some() {
+            self.queued_refresh_seq = Some(next);
+            return DiffRefreshDecision::Coalesced;
+        }
+        self.refresh_in_flight = Some(next);
+        DiffRefreshDecision::Start(next)
+    }
+
+    fn complete_refresh(&mut self, request_seq: u64) -> Option<DiffRefreshCompletion> {
+        if self.refresh_in_flight != Some(request_seq) {
+            return None;
+        }
+        self.refresh_in_flight = None;
+        let queued = self.queued_refresh_seq.take();
+        if request_seq == self.refresh_request_seq {
+            Some(DiffRefreshCompletion::Latest)
+        } else {
+            if let Some(next) = queued {
+                self.refresh_in_flight = Some(next);
+            }
+            Some(DiffRefreshCompletion::Superseded(queued))
+        }
+    }
+
+    fn next_projection_fence(
+        &mut self,
+        generation: u64,
+        file_id: WorkspaceFileId,
+    ) -> Option<DiffProjectionFence> {
+        if self.snapshot_generation != Some(generation) {
+            return None;
+        }
+        let next = self.file_request_seq.checked_add(1)?;
+        self.file_request_seq = next;
+        self.requested_file = Some(file_id);
+        Some(DiffProjectionFence {
+            route: self.identity.clone(),
+            refresh_request_seq: self.refresh_request_seq,
+            snapshot_generation: generation,
+            file_request_seq: next,
+            file_id,
+        })
+    }
+
+    fn projection_disposition(&self, fence: &DiffProjectionFence) -> DiffProjectionDisposition {
+        let current = self.identity == fence.route
+            && self.snapshot_generation == Some(fence.snapshot_generation)
+            && self.file_request_seq == fence.file_request_seq
+            && self.requested_file == Some(fence.file_id)
+            && fence.refresh_request_seq <= self.refresh_request_seq;
+        if !current {
+            DiffProjectionDisposition::Drop
+        } else if self.refresh_in_flight.is_some() {
+            DiffProjectionDisposition::Defer
+        } else {
+            DiffProjectionDisposition::Apply
+        }
+    }
+}
+
+#[derive(Default)]
+struct DiffController {
+    next_route_epoch: u64,
+    active: Option<ActiveDiffRoute>,
+}
+
+impl DiffController {
+    fn begin(
+        &mut self,
+        thread_id: String,
+        project_id: String,
+        view: Entity<DiffView>,
+    ) -> Option<DiffRouteIdentity> {
+        self.close();
+        let epoch = self.next_route_epoch.checked_add(1)?;
+        self.next_route_epoch = epoch;
+        let identity = DiffRouteIdentity {
+            epoch,
+            thread_id,
+            project_id,
+        };
+        self.active = Some(ActiveDiffRoute {
+            identity: identity.clone(),
+            view,
+            service: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            refresh_request_seq: 0,
+            refresh_in_flight: None,
+            queued_refresh_seq: None,
+            snapshot_generation: None,
+            file_request_seq: 0,
+            requested_file: None,
+            projection_cancel: None,
+            pending_projection: None,
+            focus_pending: true,
+        });
+        Some(identity)
+    }
+
+    fn close(&mut self) {
+        if let Some(active) = self.active.take() {
+            active.cancel.cancel();
+            if let Some(cancel) = active.projection_cancel {
+                cancel.cancel();
+            }
+        }
+    }
+
+    fn matches(&self, identity: &DiffRouteIdentity) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.identity == *identity)
+    }
+
+    fn visible_view(&self, thread: &Thread) -> Option<Entity<DiffView>> {
+        self.active.as_ref().and_then(|active| {
+            (active.identity.thread_id == thread.id
+                && active.identity.project_id == thread.project_id)
+                .then(|| active.view.clone())
+        })
+    }
+}
+
+enum DiffRefreshWorkerResult {
+    Ready {
+        service: Arc<GitWorkspaceService>,
+        snapshot: WorkspaceSnapshot,
+    },
+    Failed(GitWorkspaceErrorCode),
+}
+
+fn run_diff_refresh_worker(
+    service: Option<Arc<GitWorkspaceService>>,
+    root: Option<PathBuf>,
+    cancel: tokio_util::sync::CancellationToken,
+    sender: mpsc::SyncSender<DiffRefreshWorkerResult>,
+) {
+    let result = (|| {
+        let service = match service {
+            Some(service) => service,
+            None => Arc::new(
+                GitWorkspaceService::new(root.ok_or(GitWorkspaceErrorCode::InvalidRoot)?)
+                    .map_err(|error| error.code())?,
+            ),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)?;
+        let snapshot = runtime
+            .block_on(service.refresh(cancel))
+            .map_err(|error| error.code())?;
+        Ok::<_, GitWorkspaceErrorCode>((service, snapshot))
+    })();
+    let output = match result {
+        Ok((service, snapshot)) => DiffRefreshWorkerResult::Ready { service, snapshot },
+        Err(code) => DiffRefreshWorkerResult::Failed(code),
+    };
+    let _ = sender.send(output);
+}
+
+fn run_diff_projection_worker(
+    service: Arc<GitWorkspaceService>,
+    file_id: WorkspaceFileId,
+    cancel: tokio_util::sync::CancellationToken,
+    sender: mpsc::SyncSender<Result<DiffTextProjection, GitWorkspaceErrorCode>>,
+) {
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| GitWorkspaceErrorCode::SpawnFailed)
+        .and_then(|runtime| {
+            runtime
+                .block_on(service.diff(file_id, cancel))
+                .map_err(|error| error.code())
+        });
+    let _ = sender.send(result);
+}
+
 /// Persists the first-wins review. Only the committed approval winner returns
 /// a durable instruction capability for the controller runner boundary.
 fn persist_review(
@@ -395,15 +647,544 @@ struct VegaWindow {
     /// thread is opened. The stream itself is memory-only (no persistence).
     stream_view: Option<(String, Entity<ConversationStream>)>,
     agent_controller: AppAgentController,
+    diff_controller: DiffController,
 }
 
 impl VegaWindow {
     fn new(cx: &mut Context<Self>) -> Self {
+        cx.observe_global::<OpenedThread>(|this, cx| {
+            this.close_diff_if_route_stale(cx);
+        })
+        .detach();
+        cx.observe_global::<SettingsOpen>(|this, cx| {
+            this.close_diff_if_route_stale(cx);
+        })
+        .detach();
         Self {
             sidebar: cx.new(Sidebar::new),
             settings_view: None,
             stream_view: None,
             agent_controller: AppAgentController::default(),
+            diff_controller: DiffController::default(),
+        }
+    }
+
+    fn diff_route_is_current(identity: &DiffRouteIdentity, cx: &App) -> bool {
+        !cx.global::<SettingsOpen>().0
+            && cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|thread| {
+                    thread.id == identity.thread_id && thread.project_id == identity.project_id
+                })
+    }
+
+    fn close_diff_if_route_stale(&mut self, cx: &mut Context<Self>) {
+        let stale = self
+            .diff_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| !Self::diff_route_is_current(&active.identity, cx));
+        if stale {
+            self.diff_controller.close();
+            cx.notify();
+        }
+    }
+
+    fn diff_project_root(
+        &self,
+        identity: &DiffRouteIdentity,
+        cx: &App,
+    ) -> Result<PathBuf, GitWorkspaceErrorCode> {
+        let thread_matches = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .is_some_and(|thread| {
+                thread.id == identity.thread_id && thread.project_id == identity.project_id
+            });
+        if !thread_matches {
+            return Err(GitWorkspaceErrorCode::Cancelled);
+        }
+        let store = cx
+            .global::<VegaStore>()
+            .0
+            .as_ref()
+            .map_err(|_| GitWorkspaceErrorCode::InvalidRoot)?;
+        let project = vega_store::projects::find(store.conn(), &identity.project_id)
+            .map_err(|_| GitWorkspaceErrorCode::InvalidRoot)?
+            .ok_or(GitWorkspaceErrorCode::InvalidRoot)?;
+        Ok(PathBuf::from(project.path))
+    }
+
+    fn open_workspace_diff(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &OpenWorkspaceDiffRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        let project_matches = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .is_some_and(|thread| thread.project_id == request.project_id);
+        if !project_matches {
+            return;
+        }
+        let view =
+            cx.new(|cx| DiffView::new(request.thread_id.clone(), request.project_id.clone(), cx));
+        cx.subscribe(&view, |this, view, request, cx| {
+            this.request_diff_projection(view.clone(), request, cx);
+        })
+        .detach();
+        cx.subscribe(&view, |this, view, request, cx| {
+            this.retry_workspace_diff(view.clone(), request, cx);
+        })
+        .detach();
+        cx.subscribe(&view, |this, view, request, cx| {
+            this.close_workspace_diff(view.clone(), request, cx);
+        })
+        .detach();
+        let Some(identity) = self.diff_controller.begin(
+            request.thread_id.clone(),
+            request.project_id.clone(),
+            view.clone(),
+        ) else {
+            view.update(cx, |view, cx| {
+                view.apply_refresh_error(GitWorkspaceErrorCode::OutputTooLarge, cx)
+            });
+            return;
+        };
+        self.schedule_diff_refresh(&identity, cx);
+        self.start_diff_poll(identity, view, cx);
+        cx.notify();
+    }
+
+    fn start_diff_poll(
+        &mut self,
+        identity: DiffRouteIdentity,
+        view: Entity<DiffView>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_REFRESH_INTERVAL).await;
+                let keep_polling = this
+                    .update(cx, |this, cx| {
+                        let visible = this.diff_controller.active.as_ref().is_some_and(|active| {
+                            active.identity == identity && active.view == view
+                        }) && Self::diff_route_is_current(&identity, cx);
+                        if visible {
+                            this.schedule_diff_refresh(&identity, cx);
+                        } else if this.diff_controller.matches(&identity) {
+                            this.diff_controller.close();
+                            cx.notify();
+                        }
+                        visible
+                    })
+                    .unwrap_or(false);
+                if !keep_polling {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn schedule_diff_refresh(&mut self, identity: &DiffRouteIdentity, cx: &mut Context<Self>) {
+        if !Self::diff_route_is_current(identity, cx) {
+            if self.diff_controller.matches(identity) {
+                self.diff_controller.close();
+                cx.notify();
+            }
+            return;
+        }
+        let request_seq = {
+            let Some(active) = self.diff_controller.active.as_mut() else {
+                return;
+            };
+            if active.identity != *identity {
+                return;
+            }
+            let request_seq = match active.request_refresh() {
+                DiffRefreshDecision::Start(request_seq) => request_seq,
+                DiffRefreshDecision::Coalesced => return,
+                DiffRefreshDecision::Overflow => {
+                    self.diff_controller.close();
+                    cx.notify();
+                    return;
+                }
+            };
+            active
+                .view
+                .update(cx, |view, cx| view.set_refreshing(true, cx));
+            request_seq
+        };
+        self.launch_diff_refresh(identity, request_seq, cx);
+    }
+
+    fn launch_diff_refresh(
+        &mut self,
+        identity: &DiffRouteIdentity,
+        request_seq: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::diff_route_is_current(identity, cx) {
+            if self.diff_controller.matches(identity) {
+                self.diff_controller.close();
+                cx.notify();
+            }
+            return;
+        }
+        let (service, cancel) = {
+            let Some(active) = self.diff_controller.active.as_ref() else {
+                return;
+            };
+            if active.identity != *identity || active.refresh_in_flight != Some(request_seq) {
+                return;
+            }
+            (active.service.clone(), active.cancel.child_token())
+        };
+        let root = if service.is_none() {
+            match self.diff_project_root(identity, cx) {
+                Ok(root) => Some(root),
+                Err(code) => {
+                    self.finish_diff_refresh(
+                        identity,
+                        request_seq,
+                        DiffRefreshWorkerResult::Failed(code),
+                        cx,
+                    );
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("vega-diff-refresh".into())
+            .spawn(move || run_diff_refresh_worker(service, root, cancel, sender));
+        if worker.is_err() {
+            self.finish_diff_refresh(
+                identity,
+                request_seq,
+                DiffRefreshWorkerResult::Failed(GitWorkspaceErrorCode::SpawnFailed),
+                cx,
+            );
+            return;
+        }
+        let identity = identity.clone();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let result = match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => Some(DiffRefreshWorkerResult::Failed(
+                        GitWorkspaceErrorCode::SpawnFailed,
+                    )),
+                };
+                let Some(result) = result else {
+                    continue;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.finish_diff_refresh(&identity, request_seq, result, cx)
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn finish_diff_refresh(
+        &mut self,
+        identity: &DiffRouteIdentity,
+        request_seq: u64,
+        result: DiffRefreshWorkerResult,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::diff_route_is_current(identity, cx) {
+            if self.diff_controller.matches(identity) {
+                self.diff_controller.close();
+                cx.notify();
+            }
+            return;
+        }
+        enum RefreshUi {
+            Snapshot(Entity<DiffView>, WorkspaceSnapshot),
+            Error(Entity<DiffView>, GitWorkspaceErrorCode),
+            Drop(Entity<DiffView>),
+        }
+
+        let completion = {
+            let Some(active) = self.diff_controller.active.as_mut() else {
+                return;
+            };
+            if active.identity != *identity {
+                return;
+            }
+            let Some(completion) = active.complete_refresh(request_seq) else {
+                return;
+            };
+            completion
+        };
+        if let DiffRefreshCompletion::Superseded(rerun_seq) = completion {
+            if let DiffRefreshWorkerResult::Ready { service, .. } = result
+                && let Some(active) = self.diff_controller.active.as_mut()
+                && active.identity == *identity
+            {
+                active.service = Some(service);
+            }
+            if let Some(next) = rerun_seq {
+                self.launch_diff_refresh(identity, next, cx);
+            }
+            return;
+        }
+
+        let (ui, pending) = {
+            let Some(active) = self.diff_controller.active.as_mut() else {
+                return;
+            };
+            if active.identity != *identity {
+                return;
+            }
+            let view = active.view.clone();
+            let mut pending = None;
+            let ui = match result {
+                DiffRefreshWorkerResult::Ready { service, snapshot } => {
+                    let generation_changed =
+                        active.snapshot_generation != Some(snapshot.generation);
+                    active.service = Some(service);
+                    active.snapshot_generation = Some(snapshot.generation);
+                    if generation_changed {
+                        if let Some(cancel) = active.projection_cancel.take() {
+                            cancel.cancel();
+                        }
+                        active.requested_file = None;
+                        active.pending_projection = None;
+                    } else {
+                        pending = active.pending_projection.take();
+                    }
+                    RefreshUi::Snapshot(view, snapshot)
+                }
+                DiffRefreshWorkerResult::Failed(
+                    GitWorkspaceErrorCode::Cancelled | GitWorkspaceErrorCode::StaleGeneration,
+                ) => RefreshUi::Drop(view),
+                DiffRefreshWorkerResult::Failed(code) => {
+                    active.snapshot_generation = None;
+                    active.requested_file = None;
+                    active.pending_projection = None;
+                    if let Some(cancel) = active.projection_cancel.take() {
+                        cancel.cancel();
+                    }
+                    RefreshUi::Error(view, code)
+                }
+            };
+            (ui, pending)
+        };
+        match ui {
+            RefreshUi::Snapshot(view, snapshot) => view.update(cx, |view, cx| {
+                view.set_refreshing(false, cx);
+                view.apply_snapshot(snapshot, cx);
+            }),
+            RefreshUi::Error(view, code) => view.update(cx, |view, cx| {
+                view.set_refreshing(false, cx);
+                view.apply_refresh_error(code, cx);
+            }),
+            RefreshUi::Drop(view) => {
+                view.update(cx, |view, cx| view.set_refreshing(false, cx));
+            }
+        }
+        if let Some(pending) = pending {
+            self.apply_diff_projection_result(pending.fence, pending.result, cx);
+        }
+    }
+
+    fn request_diff_projection(
+        &mut self,
+        view: Entity<DiffView>,
+        request: &DiffProjectionRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let route_is_current = self.diff_controller.active.as_ref().is_some_and(|active| {
+            active.view == view && Self::diff_route_is_current(&active.identity, cx)
+        });
+        if !route_is_current {
+            self.close_diff_if_route_stale(cx);
+            return;
+        }
+        let sequence_exhausted = self
+            .diff_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| active.file_request_seq == u64::MAX);
+        if sequence_exhausted {
+            self.diff_controller.close();
+            cx.notify();
+            return;
+        }
+        let (fence, service, cancel) = {
+            let Some(active) = self.diff_controller.active.as_mut() else {
+                return;
+            };
+            if active.view != view
+                || active.identity.thread_id != request.thread_id
+                || active.identity.project_id != request.project_id
+            {
+                return;
+            }
+            let Some(service) = active.service.clone() else {
+                return;
+            };
+            let Some(fence) = active.next_projection_fence(request.generation, request.file_id)
+            else {
+                return;
+            };
+            if let Some(cancel) = active.projection_cancel.take() {
+                cancel.cancel();
+            }
+            active.pending_projection = None;
+            let cancel = active.cancel.child_token();
+            active.projection_cancel = Some(cancel.clone());
+            (fence, service, cancel)
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let file_id = request.file_id;
+        let worker = std::thread::Builder::new()
+            .name("vega-diff-projection".into())
+            .spawn(move || run_diff_projection_worker(service, file_id, cancel, sender));
+        if worker.is_err() {
+            self.apply_diff_projection_result(fence, Err(GitWorkspaceErrorCode::SpawnFailed), cx);
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let result = match receiver.try_recv() {
+                    Ok(result) => Some(result),
+                    Err(mpsc::TryRecvError::Empty) => None,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Some(Err(GitWorkspaceErrorCode::SpawnFailed))
+                    }
+                };
+                let Some(result) = result else {
+                    continue;
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.apply_diff_projection_result(fence, result, cx)
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn apply_diff_projection_result(
+        &mut self,
+        fence: DiffProjectionFence,
+        result: Result<DiffTextProjection, GitWorkspaceErrorCode>,
+        cx: &mut Context<Self>,
+    ) {
+        if !Self::diff_route_is_current(&fence.route, cx) {
+            if self.diff_controller.matches(&fence.route) {
+                self.diff_controller.close();
+                cx.notify();
+            }
+            return;
+        }
+        let view = {
+            let Some(active) = self.diff_controller.active.as_mut() else {
+                return;
+            };
+            let disposition = active.projection_disposition(&fence);
+            if disposition == DiffProjectionDisposition::Drop {
+                return;
+            }
+            active.projection_cancel = None;
+            if disposition == DiffProjectionDisposition::Defer {
+                active.pending_projection = Some(PendingDiffProjection { fence, result });
+                return;
+            }
+            active.view.clone()
+        };
+        match result {
+            Ok(projection) => {
+                view.update(cx, |view, cx| {
+                    let _ = view.apply_projection(projection, cx);
+                });
+            }
+            Err(GitWorkspaceErrorCode::Cancelled | GitWorkspaceErrorCode::StaleGeneration) => {}
+            Err(code) => {
+                view.update(cx, |view, cx| {
+                    view.apply_projection_error(fence.file_id, code, cx)
+                });
+            }
+        }
+    }
+
+    fn retry_workspace_diff(
+        &mut self,
+        view: Entity<DiffView>,
+        request: &DiffRetryRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let identity = self
+            .diff_controller
+            .active
+            .as_ref()
+            .filter(|active| {
+                active.view == view
+                    && active.identity.thread_id == request.thread_id
+                    && active.identity.project_id == request.project_id
+            })
+            .map(|active| active.identity.clone());
+        if let Some(identity) = identity {
+            self.schedule_diff_refresh(&identity, cx);
+        }
+    }
+
+    fn close_workspace_diff(
+        &mut self,
+        view: Entity<DiffView>,
+        request: &DiffClosed,
+        cx: &mut Context<Self>,
+    ) {
+        let matches = self.diff_controller.active.as_ref().is_some_and(|active| {
+            active.view == view
+                && active.identity.thread_id == request.thread_id
+                && active.identity.project_id == request.project_id
+        });
+        if matches {
+            self.diff_controller.close();
+            cx.notify();
+        }
+    }
+
+    fn workspace_tool_terminal(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &WorkspaceToolTerminal,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        let identity = self
+            .diff_controller
+            .active
+            .as_ref()
+            .filter(|active| {
+                active.identity.thread_id == request.thread_id
+                    && active.identity.project_id == request.project_id
+            })
+            .map(|active| active.identity.clone());
+        if let Some(identity) = identity {
+            self.schedule_diff_refresh(&identity, cx);
         }
     }
 
@@ -828,6 +1609,7 @@ impl Drop for VegaWindow {
         if let Some(active) = self.agent_controller.active.take() {
             active.cancel.cancel();
         }
+        self.diff_controller.close();
     }
 }
 
@@ -845,7 +1627,13 @@ impl Render for VegaWindow {
         // Settings opens inside the content area (T09 layout change of the
         // T08 view switching): the sidebar stays visible unless collapsed.
         // 路由收敛（T12 + T17）：内容区 = 设置 or 会话流 or §4.6 空态。
-        let content: AnyElement = if cx.global::<SettingsOpen>().0 {
+        let settings_open = cx.global::<SettingsOpen>().0;
+        if self.diff_controller.active.as_ref().is_some_and(|active| {
+            settings_open || !Self::diff_route_is_current(&active.identity, cx)
+        }) {
+            self.diff_controller.close();
+        }
+        let content: AnyElement = if settings_open {
             self.cancel_active_agent(cx);
             // 设置视图：缓存 Entity，避免主题刷新等重渲染时重建导致表单输入丢失。
             let settings = self
@@ -857,6 +1645,39 @@ impl Render for VegaWindow {
             self.settings_view = None;
             match cx.global::<OpenedThread>().0.clone() {
                 Some(thread) => {
+                    if let Some(diff_view) = self.diff_controller.visible_view(&thread) {
+                        let should_focus = self
+                            .diff_controller
+                            .active
+                            .as_ref()
+                            .is_some_and(|active| active.focus_pending);
+                        if should_focus {
+                            let focus = diff_view.read(cx).focus_handle(cx);
+                            window.focus(&focus, cx);
+                            if let Some(active) = self.diff_controller.active.as_mut() {
+                                active.focus_pending = false;
+                            }
+                        }
+                        return div()
+                            .size_full()
+                            .flex()
+                            .flex_row()
+                            .relative()
+                            .bg(colors.bg_base)
+                            .text_color(colors.text_primary)
+                            .when(sidebar_visible, |row| row.child(self.sidebar.clone()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h_full()
+                                    .overflow_hidden()
+                                    .child(diff_view),
+                            )
+                            .children(pending_delete.map(|thread| {
+                                render_delete_confirm_overlay(&thread, self.sidebar.clone(), colors)
+                            }));
+                    }
                     // S3-T17：会话流视图（每线程一个实体，切换会话时重建；
                     // MarkdownStream 内存态构造，不落库）。
                     let cached = match &self.stream_view {
@@ -881,6 +1702,14 @@ impl Render for VegaWindow {
                             .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.submit_composer(stream.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&view, |this, stream, request, cx| {
+                                this.open_workspace_diff(stream.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&view, |this, stream, request, cx| {
+                                this.workspace_tool_terminal(stream.clone(), request, cx);
                             })
                             .detach();
                             let initial = match &cx.global::<VegaStore>().0 {
@@ -1121,7 +1950,12 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vega_conversation::types::{PermissionMode, PlanReviewAction, PlanStatus, ThreadMode};
+    use std::fs;
+    use std::process::Command;
+    use tempfile::TempDir;
+    use vega_conversation::types::{
+        PermissionMode, PlanReviewAction, PlanStatus, ThreadMode, ThreadStatus,
+    };
     use vega_store::messages::{MessageRow, complete_plan, insert};
 
     fn pending_plan() -> (Store, String) {
@@ -1489,5 +2323,386 @@ mod tests {
         assert!(refresh.approved_instruction_id.is_none());
         assert_eq!(refresh.plans[0].status, PlanStatus::Abandoned);
         assert_eq!(refresh.plans[1].status, PlanStatus::Pending);
+    }
+
+    fn run_fixture_git(root: &std::path::Path, args: &[&str]) {
+        let status = Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("LC_ALL", "C")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .status()
+            .expect("fixture git spawn");
+        assert!(status.success(), "fixture git failed: {args:?}");
+    }
+
+    fn diff_controller_repo() -> TempDir {
+        let repo = tempfile::tempdir().expect("fresh diff controller repo");
+        run_fixture_git(repo.path(), &["init", "-q"]);
+        run_fixture_git(
+            repo.path(),
+            &["config", "--local", "user.name", "Vega Test"],
+        );
+        run_fixture_git(
+            repo.path(),
+            &["config", "--local", "user.email", "vega@example.invalid"],
+        );
+        fs::write(repo.path().join("tracked.rs"), "fn base() {}\n").expect("fixture base");
+        run_fixture_git(repo.path(), &["add", "--", "tracked.rs"]);
+        run_fixture_git(repo.path(), &["commit", "-q", "-m", "base"]);
+        fs::write(
+            repo.path().join("tracked.rs"),
+            "fn base() {}\nfn changed() {}\n",
+        )
+        .expect("fixture change");
+        repo
+    }
+
+    fn receive_refresh(
+        service: Option<Arc<GitWorkspaceService>>,
+        root: Option<PathBuf>,
+    ) -> (Arc<GitWorkspaceService>, WorkspaceSnapshot) {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        run_diff_refresh_worker(
+            service,
+            root,
+            tokio_util::sync::CancellationToken::new(),
+            sender,
+        );
+        match receiver.recv().expect("refresh worker result") {
+            DiffRefreshWorkerResult::Ready { service, snapshot } => (service, snapshot),
+            DiffRefreshWorkerResult::Failed(code) => panic!("refresh failed: {}", code.as_str()),
+        }
+    }
+
+    fn install_diff_window_globals(store: Store, thread: Thread, cx: &mut App) {
+        cx.set_global(Theme::light());
+        cx.set_global(SettingsOpen(false));
+        cx.set_global(SidebarCollapsed(false));
+        cx.set_global(vega_ui::sidebar::SelectedProject(Some(
+            thread.project_id.clone(),
+        )));
+        cx.set_global(OpenedThread(Some(thread)));
+        cx.set_global(PendingDeleteConfirm(None));
+        cx.set_global(vega_ui::sidebar::ProjectsCollapsed(false));
+        cx.set_global(vega_ui::sidebar::SessionsCollapsed(false));
+        cx.set_global(VegaStore(Ok(store)));
+        vega_ui::init(cx);
+    }
+
+    #[test]
+    fn diff_controller_worker_preserves_unchanged_generation_and_rejects_stale_file() {
+        let repo = diff_controller_repo();
+        let (service, first) = receive_refresh(None, Some(repo.path().to_path_buf()));
+        assert_eq!(first.files.len(), 1);
+        let old_file = first.files[0].id;
+
+        let (service, unchanged) = receive_refresh(Some(service), None);
+        assert_eq!(unchanged.generation, first.generation);
+        assert_eq!(unchanged.files[0].id, old_file);
+
+        fs::write(
+            repo.path().join("tracked.rs"),
+            "fn base() {}\nfn changed_again() {}\n",
+        )
+        .expect("second fixture change");
+        let (service, changed) = receive_refresh(Some(service), None);
+        assert_ne!(changed.generation, unchanged.generation);
+
+        let (sender, receiver) = mpsc::sync_channel(1);
+        run_diff_projection_worker(
+            service,
+            old_file,
+            tokio_util::sync::CancellationToken::new(),
+            sender,
+        );
+        assert_eq!(
+            receiver
+                .recv()
+                .expect("stale projection result")
+                .expect_err("old file capability must fail"),
+            GitWorkspaceErrorCode::StaleGeneration
+        );
+    }
+
+    #[gpui::test]
+    async fn diff_controller_real_finish_drops_superseded_result_and_global_switch_closes_route(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = diff_controller_repo();
+        let (service, snapshot) = receive_refresh(None, Some(repo.path().to_path_buf()));
+        let snapshot_generation = snapshot.generation;
+        let file_id = snapshot.files[0].id;
+        let (projection_sender, projection_receiver) = mpsc::sync_channel(1);
+        run_diff_projection_worker(
+            service.clone(),
+            file_id,
+            tokio_util::sync::CancellationToken::new(),
+            projection_sender,
+        );
+        let projection = projection_receiver
+            .recv()
+            .expect("pending projection worker")
+            .expect("pending projection");
+        let store = Store::open(":memory:").expect("diff window memory store");
+        store.migrate().expect("diff window migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 fixture root"),
+            "diff",
+            None,
+        )
+        .expect("diff window project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("diff window thread");
+        let thread_id = thread.id.clone();
+        let project_id = thread.project_id.clone();
+        cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        let root = cx.new(VegaWindow::new);
+        let view = cx.new(|cx| DiffView::new(thread_id.clone(), project_id.clone(), cx));
+        let identity = root.update(cx, |root, _| {
+            root.diff_controller
+                .begin(thread_id, project_id, view.clone())
+                .expect("diff route")
+        });
+        root.update(cx, |root, cx| {
+            let active = root
+                .diff_controller
+                .active
+                .as_mut()
+                .expect("active diff route");
+            assert_eq!(active.request_refresh(), DiffRefreshDecision::Start(1));
+            assert_eq!(active.request_refresh(), DiffRefreshDecision::Coalesced);
+            active.snapshot_generation = Some(snapshot_generation);
+            let pending_fence = active
+                .next_projection_fence(snapshot_generation, file_id)
+                .expect("pending projection fence");
+            active.pending_projection = Some(PendingDiffProjection {
+                fence: pending_fence,
+                result: Ok(projection),
+            });
+            root.finish_diff_refresh(
+                &identity,
+                1,
+                DiffRefreshWorkerResult::Ready { service, snapshot },
+                cx,
+            );
+            assert_eq!(view.read(cx).generation(), None, "R1 must not reach the UI");
+            assert!(
+                root.diff_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.pending_projection.is_some()),
+                "R1 must not release a projection while R2 is outstanding"
+            );
+            assert_eq!(
+                root.diff_controller
+                    .active
+                    .as_ref()
+                    .and_then(|active| active.refresh_in_flight),
+                Some(2),
+                "only the latest queued refresh may remain active"
+            );
+        });
+        let window_root = root.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, _| window_root)
+                .expect("diff controller focus window")
+        });
+        cx.run_until_parked();
+        assert!(root.read_with(cx, |root, _| {
+            root.diff_controller
+                .active
+                .as_ref()
+                .is_some_and(|active| !active.focus_pending)
+        }));
+        let focused = window
+            .update(cx, |_, window, cx| {
+                view.read(cx).focus_handle(cx).is_focused(window)
+            })
+            .expect("diff controller focus window");
+        assert!(focused, "the visible DiffView must receive one-shot focus");
+        cx.update(|cx| cx.set_global(SettingsOpen(true)));
+        cx.run_until_parked();
+        assert!(root.read_with(cx, |root, _| root.diff_controller.active.is_none()));
+
+        cx.update(|cx| cx.set_global(SettingsOpen(false)));
+        let exhausted_view = cx.new(|cx| DiffView::new("thread".into(), "project".into(), cx));
+        let exhausted_cancel = root.update(cx, |root, cx| {
+            let identity = root
+                .diff_controller
+                .begin(
+                    cx.global::<OpenedThread>()
+                        .0
+                        .as_ref()
+                        .expect("current thread")
+                        .id
+                        .clone(),
+                    cx.global::<OpenedThread>()
+                        .0
+                        .as_ref()
+                        .expect("current thread")
+                        .project_id
+                        .clone(),
+                    exhausted_view.clone(),
+                )
+                .expect("exhausted route");
+            let active = root
+                .diff_controller
+                .active
+                .as_mut()
+                .expect("exhausted active route");
+            active.file_request_seq = u64::MAX;
+            let cancel = active.cancel.clone();
+            root.request_diff_projection(
+                exhausted_view,
+                &DiffProjectionRequested {
+                    thread_id: identity.thread_id,
+                    project_id: identity.project_id,
+                    generation: snapshot_generation,
+                    file_id,
+                },
+                cx,
+            );
+            assert!(root.diff_controller.active.is_none());
+            cancel
+        });
+        assert!(exhausted_cancel.is_cancelled());
+    }
+
+    #[gpui::test]
+    async fn diff_controller_route_latest_poll_tool_and_cross_project_fences(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(Theme::light());
+            cx.set_global(SettingsOpen(false));
+            cx.set_global(OpenedThread(Some(Thread {
+                id: "thread-b".into(),
+                project_id: "project-b".into(),
+                title: String::new(),
+                mode: ThreadMode::Execute,
+                permission_mode: PermissionMode::Confirm,
+                model: String::new(),
+                status: ThreadStatus::Active,
+                pinned: false,
+                unread: false,
+                created_at: 0,
+                updated_at: 0,
+            })));
+            vega_ui::init(cx);
+        });
+        let repo = diff_controller_repo();
+        let (_, snapshot) = receive_refresh(None, Some(repo.path().to_path_buf()));
+        let file_id = snapshot.files[0].id;
+        let first_view = cx.new(|cx| DiffView::new("thread-a".into(), "project-a".into(), cx));
+        let second_view = cx.new(|cx| DiffView::new("thread-b".into(), "project-b".into(), cx));
+        let mut controller = DiffController::default();
+        let first_route = controller
+            .begin("thread-a".into(), "project-a".into(), first_view)
+            .expect("first route");
+        let first_cancel = controller
+            .active
+            .as_ref()
+            .expect("first active")
+            .cancel
+            .clone();
+        let second_route = controller
+            .begin("thread-b".into(), "project-b".into(), second_view)
+            .expect("second route");
+        assert!(first_cancel.is_cancelled());
+        assert!(!controller.matches(&first_route));
+        assert!(controller.matches(&second_route));
+        assert!(
+            controller
+                .active
+                .as_ref()
+                .is_some_and(|active| active.focus_pending)
+        );
+        cx.update(|cx| {
+            assert!(VegaWindow::diff_route_is_current(&second_route, cx));
+            cx.set_global(SettingsOpen(true));
+            assert!(!VegaWindow::diff_route_is_current(&second_route, cx));
+            cx.set_global(SettingsOpen(false));
+            let mut other = cx
+                .global::<OpenedThread>()
+                .0
+                .clone()
+                .expect("opened thread fixture");
+            other.id = "thread-c".into();
+            cx.set_global(OpenedThread(Some(other)));
+            assert!(!VegaWindow::diff_route_is_current(&second_route, cx));
+        });
+
+        let active = controller.active.as_mut().expect("second active");
+        active.snapshot_generation = Some(snapshot.generation);
+        assert_eq!(
+            active.request_refresh(),
+            DiffRefreshDecision::Start(1),
+            "initial/poll refresh starts one worker"
+        );
+        assert_eq!(
+            active.request_refresh(),
+            DiffRefreshDecision::Coalesced,
+            "tool terminal coalesces while the poll refresh is active"
+        );
+        assert_eq!(active.refresh_request_seq, 2);
+        assert_eq!(active.refresh_in_flight, Some(1));
+        assert_eq!(active.queued_refresh_seq, Some(2));
+        assert_eq!(
+            active.complete_refresh(1),
+            Some(DiffRefreshCompletion::Superseded(Some(2))),
+            "the pre-terminal poll result is dropped and only queues R2"
+        );
+        assert_eq!(active.refresh_in_flight, Some(2));
+        assert_eq!(
+            active.complete_refresh(2),
+            Some(DiffRefreshCompletion::Latest)
+        );
+
+        let older = active
+            .next_projection_fence(snapshot.generation, file_id)
+            .expect("older file request");
+        let latest = active
+            .next_projection_fence(snapshot.generation, file_id)
+            .expect("latest file request");
+        assert_eq!(
+            active.projection_disposition(&older),
+            DiffProjectionDisposition::Drop
+        );
+        assert_eq!(
+            active.projection_disposition(&latest),
+            DiffProjectionDisposition::Apply
+        );
+        assert_eq!(active.request_refresh(), DiffRefreshDecision::Start(3));
+        assert_eq!(
+            active.projection_disposition(&latest),
+            DiffProjectionDisposition::Defer,
+            "a projection waits for an in-flight refresh"
+        );
+        active.refresh_in_flight = None;
+        assert_eq!(
+            active.projection_disposition(&latest),
+            DiffProjectionDisposition::Apply,
+            "unchanged generation survives a newer completed refresh"
+        );
+        let mut wrong_project = latest.clone();
+        wrong_project.route.project_id = "project-a".into();
+        assert_eq!(
+            active.projection_disposition(&wrong_project),
+            DiffProjectionDisposition::Drop
+        );
+        active.snapshot_generation = Some(snapshot.generation + 1);
+        assert_eq!(
+            active.projection_disposition(&latest),
+            DiffProjectionDisposition::Drop
+        );
+        assert_eq!(DIFF_REFRESH_INTERVAL, Duration::from_millis(750));
     }
 }
