@@ -5,6 +5,12 @@ use rusqlite::{Connection, params};
 /// Canonical strict audit written for an incomplete approval at startup.
 pub const RECOVERY_DENIAL_APPROVAL_JSON: &str =
     r#"{"decision":"deny","note":null,"source":"recovery","danger":null}"#;
+/// Canonical provider-safe output for an incomplete startup approval.
+pub const RECOVERY_REJECTED_OUTPUT: &str =
+    "Tool error: rejected during startup recovery because approval was incomplete.";
+/// Canonical provider-safe output for execution interrupted by startup.
+pub const RECOVERY_CANCELLED_OUTPUT: &str =
+    "Tool cancelled during startup recovery because execution was incomplete.";
 
 /// Counts of stale rows normalized before a thread resumes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,18 +36,20 @@ pub fn recover_thread(
         [thread_id],
     )?;
     let tools_rejected = tx.execute(
-        "UPDATE tool_calls SET status = 'rejected', approval = ?1, \
-         output_text = 'Tool error: rejected during startup recovery because approval was incomplete.', \
-         finished_at = ?2 \
-         WHERE thread_id = ?3 AND status = 'pending_approval'",
-        params![RECOVERY_DENIAL_APPROVAL_JSON, now_ms, thread_id],
+        "UPDATE tool_calls SET status = 'rejected', approval = ?1, output_text = ?2, \
+         finished_at = ?3 \
+         WHERE thread_id = ?4 AND status = 'pending_approval'",
+        params![
+            RECOVERY_DENIAL_APPROVAL_JSON,
+            RECOVERY_REJECTED_OUTPUT,
+            now_ms,
+            thread_id
+        ],
     )?;
     let tools_cancelled = tx.execute(
-        "UPDATE tool_calls SET status = 'cancelled', \
-         output_text = 'Tool cancelled during startup recovery because execution was incomplete.', \
-         finished_at = ?1 \
-         WHERE thread_id = ?2 AND status IN ('approved', 'running')",
-        params![now_ms, thread_id],
+        "UPDATE tool_calls SET status = 'cancelled', output_text = ?1, finished_at = ?2 \
+         WHERE thread_id = ?3 AND status IN ('approved', 'running')",
+        params![RECOVERY_CANCELLED_OUTPUT, now_ms, thread_id],
     )?;
     tx.commit()?;
     Ok(RecoveryCounts {
