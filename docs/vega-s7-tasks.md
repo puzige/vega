@@ -1,0 +1,188 @@
+# ✦ Vega — S7 任务卡（Sprint 7 · Token 经济 v1 · W13-14）
+
+**版本** v0.1 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+
+**S7 目标**（phase1-plan §2）：API usage 精确回收；流式期间实时估算；每次调用与每个任务的成本可见；数据目录 `pricing.json` 内置主流模型并支持用户自定义。
+
+**Sprint DoD**：确定性 mock 任务完整证明“流式近似 → API usage 校准 → `cost_microcents` 实算 → 六表内落库 → Composer/任务汇总可见”；真实任务与 API 账单误差 `<5%` 的最终证据由人类 dogfood 提供，executor 不索取 key、不发真实请求、不产生费用。
+
+> **并行基线**：本 SDD 分支从 `master` `7e57e6328487` 创建时，S6 T33-T35 尚在其他 worktree 串行实施。S7 本卡只新增本文档，不引用未合并代码。T36 纯 headless 可并行；T37-T41 开工前必须 rebase 到已合并 S6，并只适配届时真实 Settings/Composer/route seam；不得在本 SDD 卡预改 S6 代码。
+>
+> **白名单降级裁决**：phase1-plan §2/§3.3 与 features A10-02 写有 `tiktoken-rs`，但它不在 exec-guide §5 白名单。S7 不引入它或任何替代 tokenizer；v1 固定为“API usage 最终权威 + 流式期间按 Unicode scalar 字符数作有界近似”，并以 `≈` 明示估算。估算不写 `token_usage`，usage 到达后原位校准。未来引入 tokenizer 必须另行获批。
+>
+> **币种裁决**：`Microcents` 依 tech-spec §3 表示 `1/1_000_000 USD`；S7 定价与聚合只用 USD，不做实时汇率、CNY 换算或混币种求和。ui-spec §4.4 的 `¥0.17` 视为展示样例，S7 实装显示 `US$`；该字面偏离进入 S7 报告。
+
+---
+
+## S7 冻结契约
+
+### C1 · 定价目录与安全持久化（A1-12/A10-03）
+
+- `vega_token` 是纯 headless 定价/计量 crate；不得依赖 GPUI、SQLite、Keychain、网络或 `vega_runtime`。调用方只向它传显式文件路径、模型 id 与 token usage。
+- `pricing.json` 固定在 tech-spec §6 的数据根；首次缺失时由内置目录原子创建，父目录沿用 `vega_store::paths::data_dir()`。测试只注入 `tempfile` 路径，不触碰真实用户数据目录。
+- v1 JSON 顶层 exact 为 `schema_version="pricing_v1"`、`currency="USD"`、`models`；未知/缺失/重复字段或重复 exact model id 均拒绝，不静默覆盖。每个模型含 exact UTF-8 `model` 与四个十进制定价字符串：`input_usd_per_million`、`output_usd_per_million`、`cache_read_usd_per_million`、`cache_write_usd_per_million`。禁止 JSON float 进入计价路径。
+- 限额 inclusive：文件 `<=1 MiB`、模型 `<=1,000`、model id `1..=200 bytes`、价格为非负十进制且小数位 `<=6`；解析成每百万 token 的整数 microcents，所有转换 checked。model 匹配大小写敏感、exact only；不做 glob/prefix/alias 猜测。
+- 内置目录至少 5 个 exact model id，覆盖 DeepSeek、GPT、Claude 三个系列。实现卡须在报告记录每条价格的官方来源与核验日期；价格属于时点数据，不在 SDD 中伪造数值。Anthropic 模型价格可用于 OpenAI-compatible 渠道的自定义 model id；Anthropic 原生 provider 仍属 Phase 2。
+- 用户自定义通过设置页对 exact model id 新增/编辑/删除；保存采用同目录临时文件 → flush/sync → rename 的原子替换，先完整校验再写。内置条目可覆盖价格但不能产生重复 key；损坏文件保留原样并显示 typed inline error，禁止删除、截断或静默回退覆盖。
+- configured model 在真实 provider 调用前必须有 exact 有效价格；缺失/损坏定价时拒绝启动并内联提示“先配置价格”，保证 `0` 不被冒充“免费”。该 preflight 不读取或暴露 API key。
+
+### C2 · 整数成本与 cache 语义（A10-04）
+
+- OpenAI-compatible `input` 保持 API 的 total prompt token；计价时 `uncached_input = input - cache_read`，`cache_read > input` 拒绝为 invalid usage；`cache_write` 按独立字段另计，S4 OpenAI wire 当前无该字段时仍为 0。
+- 一次调用的 numerator exact 为 `uncached_input*input_rate + output*output_rate + cache_read*cache_read_rate + cache_write*cache_write_rate`；用 checked `u128` 累加，最后仅一次 half-up 除以 `1_000_000`，结果必须可转 `i64 >= 0`。禁止 `f32/f64`、逐项先舍入、saturating 或 wrapping arithmetic。
+- API usage 是每次 provider call 的权威记录；每个 agentic round 独立计价并保留一行 `token_usage`。任务/会话成本只聚合已落库行，checked overflow/负历史值/损坏行 fail closed，不显示貌似可信的部分和。
+
+### C3 · 校准、估算与事件边界（A10-01/A10-02）
+
+- S4 `ProviderEvent::Usage → RuntimeEvent::UsageUpdated → ConversationEvent::UsageUpdated` 双层边界保持唯一事件流；只替换 runtime 中 `cost_microcents: 0` 占位，不新增 UI→runtime 反向依赖，不让 UI 直接读 SQLite。
+- 每个 provider call 的 `TextDelta` 只形成内存 **visible-output-only** provisional estimate：累计 Unicode scalar 数后 `ceil(chars/4)`，全程 checked、有固定上限；UI 标 `≈`。Thinking/reasoning 与 tool JSON 不在可见输出估算内，因此不得将该值声称为完整 completion usage。它不修改 API usage、不落库、不写日志，下一轮从 0 开始。
+- 对应 `UsageUpdated` 到达时，清除该轮 provisional 值，并以 API 的 input/output/cache_read/cache_write 与实算 cost 更新累计值；若无 usage 便进入 tool round，在该轮首个 `ToolCallProposed` 边界清除 provisional，保证下一 provider call 从 0 开始。`MessageFinished`/error/interrupted 无 usage 时同样清除 provisional 且显示“usage unavailable”，绝不把近似写成权威值。
+- 重试未产生 usage 不写行；一次 provider call 只接受一个 terminal usage。重复/malformed/usage-after-terminal fail closed；测试必须覆盖多轮工具调用、重试、取消、迟到/重复 usage 与 overflow。
+
+### C4 · UI 投影与性能（A10-05/A10-06）
+
+- Composer 右下角常驻 compact counter；空闲/已校准显示 `<tokens> tok · US$<cost>`，流式 provisional 显示 `≈<tokens> tok · ≈US$<cost>`，未知 usage/price 明确显示 `—`，不能显示 `$0`。token 使用 k/M 紧凑格式，cost 至少保留足以区分非零 microcents 的精度。
+- `ConversationStream` 只消费 `vega_conversation::types` 的 bounded meter/summary projection与既有事件；pricing file、SQLite query、成本公式均不在 `vega_ui`。路由切 thread/project/run generation 时丢弃晚到更新，重开 thread 从 conversation 查询恢复已校准累计值。
+- 任务结束追加一张只读 summary card：input/output/cache read/cache write、总成本、耗时、工具调用数、cache hit rate；仅聚合本次 assistant message 的 provider-call rows与既有 tool call audit。token/cost/cache/tool count 可按现有 `message_id` 持久化归属恢复；完整任务 wall-clock duration 只在当前运行内存可用，因现有 `messages` 无 finished timestamp，重启后该项显示 `—`，不以 tool duration 冒充。无 usage 字段显示 `—`，除 0 input 时 cache hit rate 显示 `0%`。不做日/周/月 dashboard、预算、跨模型对比或 CSV（A10-07+ 后置）。
+- meter 更新不得做同步 IO，不得每 delta 查库/读 pricing 文件；沿用 S3 批次上屏，目标仍为 P2 `<16ms`，已冻结会话区不因 counter 数字宽度变化而重排。
+
+### C5 · 数据、错误与红线
+
+- 保持 `projects/threads/messages/tool_calls/token_usage/permissions` 恰好六表；不改/删旧 migration，只追加下一号 migration，为 `token_usage` 增加 nullable `pricing_version` 列。已有 S4/S5 `cost_microcents=0` 行的 NULL 表示 `legacy_unpriced`；S7 后完成定价的行写 exact `pricing_v1`，从而区分“历史占位 0”与“经计价后舍入为 0”。不回填/重算历史成本，不新增表。查询/聚合 API 落在 `vega_store`，由 `vega_conversation` 调用；遇到 NULL/未知 version 时该行成本显示 unavailable，不冒充免费。
+- 定价/usage 错误映射为 typed `VegaError`/conversation error；错误文本可含 safe model id 与字段名，不含 key、请求正文、文件内容或绝对用户路径。
+- 零真实 key、零真实 provider 请求、零真实费用；所有测试只用 `MockProvider`、本地 fixture 与 temp data root。依赖只用现有白名单与 workspace 内部 crate，`Cargo.lock` 如因内部依赖接线变化必须随卡提交。
+
+---
+
+## 卡依赖图
+
+```text
+S7 SDD PR → T36 pricing catalog + integer engine → T37 pricing settings/custom persistence
+                                                   ↓
+             T38 calibrated runtime/store pipeline → T39 stream estimate + Composer counter
+                                                       ↓
+                                                   T40 task summary
+                                                       ↓
+                                                   T41 acceptance/report
+```
+
+> 每张实现卡使用独立 sibling worktree/PR，并在上一卡 squash merge 后从最新 `master` 创建；S6 并行期间只允许无交叉写入的准备/审阅，发生 UI seam 交叉时先 rebase 再适配。
+
+## T36 · Versioned pricing catalog + integer cost engine（A10-03/A10-04）
+
+- **前置**：S7 SDD · **参考**：C1/C2/C5；tech-spec §3/§6；features A10-03/A10-04。
+- **范围**：填实 `vega_token`；补 workspace 内部依赖声明；不改 runtime/store/UI/app。
+- **产出**：strict `pricing_v1` codec、内置至少五模型目录、显式路径 load/seed/atomic save、exact lookup、checked integer quote 与 safe typed errors。
+- **验收**：内置三系列覆盖；missing seed/reopen；custom exact override；missing/extra/duplicate/oversize/malformed decimal/negative/7位小数/overflow；cache 计价与 half-up 边界；原文件在失败保存后 byte-identical；crate 无 GPUI/SQLite/network。
+- **命令**：
+
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_token
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega_token --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && ! cargo tree -p vega_token | rg 'gpui|rusqlite|reqwest|keyring|tiktoken'
+  git diff --check
+  ```
+
+- **commit**：`feat(A10-03): add versioned model pricing`（≤3 commits）。
+
+## T37 · Pricing settings + custom model persistence（A1-12/A10-03）
+
+- **前置**：T36 + 已合并 S6 最新 master · **参考**：C1/C4/C5；ui-spec §4.6/§6。
+- **范围**：现有 Settings route、app controller 与必要 conversation safe projection；UI 不直接读写文件。
+- **产出**：data-root `pricing.json` wiring；模型价格列表/新增/编辑/删除；四项 USD/1M string inputs；校验/损坏文件 typed inline error；真实 provider call 前 exact model pricing preflight。内置项与 custom 统一展示，保存后重新读取并 byte/semantic verify。
+- **验收**：临时 data root 下完整 CRUD + restart；duplicate/unknown/malformed/atomic-write failure 保留旧文件；键盘可达、960×600、Light/Dark/CJK；未定价 model 在 spawn/provider request 计数仍 0 时被拒绝。
+- **禁区**：不做模型在线拉价、汇率、provider/key 编辑重构、通配匹配；不触碰真实 data root/key。
+- **commit**：`feat(A1-12): add custom pricing settings`（≤3 commits）。
+
+## T38 · API usage calibration + runtime/store cost pipeline（A10-01/A10-04）
+
+- **前置**：T37 · **参考**：C2/C3/C5；tech-spec §4.2；现有 S4 cost hook与 `token_usage` insert。
+- **范围**：`vega_runtime` 纯计价接钩、`vega_conversation` 事件/持久化、`vega_store::token_usage` typed query，以及 C5 单一追加 migration；不改 UI。
+- **产出**：selected exact model price 安全注入 runtime；每次 `ProviderEvent::Usage` 实算 cost；既有双层事件映射与一行一调用持久化；`pricing_version` 区分 legacy/unpriced 与 priced zero；按 thread/message 的 checked aggregate查询，恢复后结果一致。
+- **验收**：MockProvider 单轮/多工具轮/zero/cache/maximum/invalid；DB 四 token 列 + 非零 cost exact；event/DB aggregate一致；duplicate/late/retry/cancel无双记；删除 thread 后 usage 审计仍可聚合；S4 TODO E2E 仅改期望成本 fixture且继续全绿。
+- **命令**：
+
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_runtime usage
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_store token_usage
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation usage
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation --test todo_e2e
+  git diff --check
+  ```
+
+- **commit**：`feat(A10-01): persist priced provider usage`（≤3 commits）。
+
+## T39 · Bounded stream estimate + Composer live counter（A10-02/A10-05）
+
+- **前置**：T38 + 已合并 S6 最新 master · **参考**：C3/C4/C5；ui-spec §4.4/§5 P2/P3/P5。
+- **范围**：conversation meter projection、`ConversationStream`/app route wiring；不改 provider wire、pricing file或 DDL。
+- **产出**：按 `ceil(chars/4)` 的每轮 provisional output；API usage 原位校准；Composer 右下常驻 compact token/cost；thread/run/generation fence；restart 从 durable aggregate恢复。
+- **验收**：ASCII/CJK/emoji/空 delta/exact cap/+1；多轮 estimate→calibrate不双算；无 usage/error/interrupted清 provisional；route switch/reopen/late event；`≈`/`—`/US$语义；1,000 delta/s counter 更新不做 IO且 P2 不回退。
+- **禁区**：不引 tokenizer；不持久化 estimate；不做 @引用、/命令或模型选择器。
+- **commit**：`feat(A10-05): show calibrated live token costs`（≤3 commits）。
+
+## T40 · Per-task cost summary card（A10-06）
+
+- **前置**：T39 · **参考**：C4/C5；ui-spec §4.2/§4.6/§6。
+- **范围**：conversation typed summary query/projection + compact read-only UI card；不做 dashboard。
+- **产出**：MessageFinished 后显示本任务 token 四项、cost、duration、tool count、cache hit；重启恢复 token/cost/cache/tool count，duration 明确降级为 `—`；missing usage/pricing/overflow 为 typed unavailable，不伪造 0。
+- **验收**：0/1/N provider calls、0/N tools、cache ratio、无 usage、interrupted/error、restart 持久字段与 duration 降级、thread deletion保留 usage审计；卡片 token/Light-Dark/CJK/键盘焦点不阻断会话导航。
+- **commit**：`feat(A10-06): add task cost summaries`（≤3 commits）。
+
+## T41 · S7 end-to-end acceptance + report（A10-01~06）
+
+- **前置**：T36-T40 · **参考**：phase1-plan §2 S7验收；PRD §9；ui-spec §5/§6；exec-guide §3/§7。
+- **产出**：
+  - deterministic mock E2E：两轮 provider call + tool → provisional counter → 两次 API usage 校准 → exact DB rows/cost → task summary → restart恢复；fixture 同时计算模拟“账单”并断言误差 0。
+  - `docs/vega-s7-report.md`：全部 PR/commit、测试总数与原始命令输出、T36-T40/DoD/ui-spec §6/红线对照、官方价格来源+日期、偏离/后置/未测证据；更新 README 状态行与文档表。
+  - 真实任务 vs provider 账单 `<5%` 明确记为 **⚠️ human dogfood pending**，附不含 key 的操作步骤与记录模板；禁止用 mock 0% 误差冒充真实 KPI。
+- **门禁**：
+
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --all -- --check
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test --workspace
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo build --workspace
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo xtask bench
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo tree
+  rg -n '#[0-9a-fA-F]{6}' crates/vega_ui
+  rg -n '\.(unwrap|expect)\(' crates --glob '*.rs'
+  rg -n 'tiktoken|API[_ -]?KEY|sk-[A-Za-z0-9]' crates docs --glob '!target/**'
+  rg -n 'CREATE TABLE|DROP TABLE|ALTER TABLE' crates migrations
+  git diff --check
+  ```
+
+  所有 scan 逐条分类测试段/既有安全文本/真实违规，禁止用“有输出所以失败”或“零输出所以完成”替代审阅。
+- **commit**：`docs(A10-06): report S7 token economy acceptance`（≤3 commits）。
+
+---
+
+## S7 完成定义（DoD）
+
+- [ ] T36-T41 全部 squash merge；master 四门禁全绿，`Cargo.lock` 与内部依赖接线一致。
+- [ ] `pricing.json` 位于注入的数据根；内置至少 5 个模型且覆盖 DeepSeek/GPT/Claude；custom CRUD、损坏保留与原子保存有测试证据。
+- [ ] 每个 mock provider call 的 API usage 四项与实算 `cost_microcents` 一行落库；多轮总计、事件、DB、重启恢复一致。
+- [ ] Composer 流式显示 `≈`，usage 到达后校准为权威值；任务结束 summary 六项完整；unknown/unavailable不伪装为 0。
+- [ ] mock 账单对照误差 0；真实账单 `<5%` 只标 human pending，零真实 key/请求/费用。
+- [ ] 恰好六表；旧 migration 不改/不删，仅有 C5 的 `token_usage.pricing_version` 追加 DDL；`vega_runtime`/`vega_token` 零 GPUI；UI 零 SQLite/定价文件 IO；共享类型只在 `vega_conversation::types`；非测试 `unwrap/expect` 零新增；色值/字号只用 token。
+- [ ] ui-spec §6 逐项有自动化/人工/硬件三分证据，不能自动化的项不写 ✅；P1-P8 不回退，真实窗口/ProMotion/RSS 项可明确留 S8。
+
+## ui-spec §6 Sprint 末检查矩阵
+
+| 检查项 | 自动化最低证据 | 人工/硬件边界 |
+|---|---|---|
+| token | counter/summary 全用 theme/Typography token；色值 scan 分类 | 真实字体与金额对齐观感 |
+| Light/Dark | 双 theme render/state tests | 真实切换无闪烁 |
+| CJK | CJK/emoji 估算与布局不 panic | fallback/豆腐块真实窗口 |
+| keyboard | Settings custom pricing + Composer/summary 可达 | 完整真实窗口链路 |
+| 960×600 | layout constraints/compact formatter tests | 像素截图人工 |
+| P1-P8 | `xtask bench` 原始值并与 S6 baseline 比较 | ProMotion/首帧/RSS归 S8 |
+| competitor | 无自动化替代 | Codex/ZCode并排截图未做即 ⚠️ |
+
+## 已知偏离与后置（原样进入 S7 报告）
+
+1. `tiktoken-rs` 因白名单红线未引入；流式 v1 是字符近似，只有 API usage 是权威值。
+2. ui-spec §4.4 的 `¥` 样例改为 `US$`，因为 `Microcents` 与内置官方价格均按 USD；Phase 1 不做 FX。
+3. 真实账单 `<5%`、真实 provider、key 与 dogfood 属人类活动；executor 只提供 mock E2E 与操作模板。
+4. A10-07 dashboard、A10-08预算、A10-09跨模型对比、A10-10优化、A10-11闲时联动、A10-12导出均不在 S7。
+5. S6 尚并行；只先并行无交叉的 T36 纯 headless 卡；T37-T41 只在 rebase 后按真实 Settings/Composer/diff/route seam 接入，不反向修改已冻结 S6 契约。
