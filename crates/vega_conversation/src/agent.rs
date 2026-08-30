@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use vega_runtime::{
     AgentRequest, Provider, RuntimeEvent, RuntimeExactRule, RuntimeMutatingTool,
@@ -59,31 +59,28 @@ impl PendingPermission {
         self.request.as_ref()
     }
 
-    /// Transfers the request into a card. Dropping before this transfer is a
-    /// fail-closed Timeout; the installed card must resolve on release.
-    pub fn into_lease(mut self) -> Option<PermissionLease> {
+    /// Transfers the safe request and a responder-only card lease. The UI may
+    /// use the request call id transiently for card lookup, then must discard
+    /// it before storing the lease in an entity.
+    pub fn into_parts(mut self) -> Option<(PermissionRequest, PermissionLease)> {
         self.armed = false;
-        Some(PermissionLease {
-            request: self.request.take()?,
-            responder: self.responder.take()?,
-            armed: true,
-        })
+        Some((
+            self.request.take()?,
+            PermissionLease {
+                responder: self.responder.take()?,
+                armed: true,
+            },
+        ))
     }
 }
 
 /// Fail-closed ownership guard held for the exact lifetime of one UI card.
 pub struct PermissionLease {
-    request: PermissionRequest,
     responder: PermissionResponder,
     armed: bool,
 }
 
 impl PermissionLease {
-    /// Content-free request safe for rendering and identity matching.
-    pub fn request(&self) -> &PermissionRequest {
-        &self.request
-    }
-
     /// Resolves the shared latch and disarms the disappearance guard.
     pub fn respond(&mut self, decision: PermissionDecision) -> bool {
         let won = self.responder.respond(decision);
@@ -111,10 +108,6 @@ impl fmt::Debug for PermissionLease {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PermissionLease")
-            .field("tool", &self.request.tool)
-            .field("danger", &self.request.danger_rule_id.is_some())
-            .field("display_target", &"[REDACTED]")
-            .field("call_id", &"[OPAQUE]")
             .field("resolved", &self.is_resolved())
             .finish()
     }
@@ -228,10 +221,65 @@ impl Drop for PermissionWaitGuard {
     }
 }
 
+/// Lost-wake-safe listener owned by the exact lifetime of one UI task.
+///
+/// Dropping the listener clears only its own generation and rejects
+/// an unresolved prompt, so a window/thread disappearance cannot leave the
+/// runtime waiting on a stale card.
+pub struct PermissionQueueListener {
+    state: Arc<Mutex<PermissionQueueState>>,
+    generation: u64,
+    receiver: watch::Receiver<u64>,
+}
+
+impl PermissionQueueListener {
+    /// Waits for a newly enqueued request. False means the subscription was
+    /// closed or replaced and the UI task must stop.
+    pub async fn changed(&mut self) -> bool {
+        self.receiver.changed().await.is_ok()
+    }
+}
+
+impl fmt::Debug for PermissionQueueListener {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PermissionQueueListener")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for PermissionQueueListener {
+    fn drop(&mut self) {
+        let closed = self.state.lock().ok().and_then(|mut state| {
+            if state
+                .notifier
+                .as_ref()
+                .is_some_and(|(generation, _)| *generation == self.generation)
+            {
+                state.notifier = None;
+                let responder = state.active.take();
+                let queued = state.queued.drain(..).collect::<Vec<_>>();
+                Some((responder, queued))
+            } else {
+                None
+            }
+        });
+        if let Some((responder, queued)) = closed {
+            if let Some(responder) = responder {
+                responder.respond(PermissionDecision::Timeout);
+            }
+            drop(queued);
+        }
+    }
+}
+
 #[derive(Default)]
 struct PermissionQueueState {
     active: Option<PermissionResponder>,
     queued: VecDeque<PendingPermission>,
+    notifier: Option<(u64, watch::Sender<u64>)>,
+    next_generation: u64,
+    notification_version: u64,
 }
 
 /// Concrete conversation-to-GPUI request/response handoff.
@@ -248,6 +296,44 @@ impl PermissionQueue {
     /// Creates an empty queue.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Installs the sole live UI wakeup seam. Registration happens before a
+    /// runtime turn starts, eliminating the Proposed-before-enqueue lost wake.
+    pub fn subscribe(&self) -> PermissionQueueListener {
+        let (notifier, receiver) = watch::channel(0);
+        let (generation, replaced_active, replaced_queued) = match self.state.lock() {
+            Ok(mut state) => {
+                let replacing = state.notifier.is_some();
+                let replaced_active = replacing.then(|| state.active.take()).flatten();
+                let replaced_queued = if replacing {
+                    state.queued.drain(..).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                state.next_generation = state.next_generation.wrapping_add(1);
+                if state.next_generation == 0 {
+                    state.next_generation = 1;
+                }
+                let generation = state.next_generation;
+                state.notifier = Some((generation, notifier));
+                (generation, replaced_active, replaced_queued)
+            }
+            Err(_) => (0, None, Vec::new()),
+        };
+        if let Some(replaced_active) = replaced_active {
+            replaced_active.respond(PermissionDecision::Timeout);
+        }
+        drop(replaced_queued);
+        let listener = PermissionQueueListener {
+            state: self.state.clone(),
+            generation,
+            receiver,
+        };
+        if generation == 0 {
+            self.timeout_active();
+        }
+        listener
     }
 
     /// Removes the newest pending card request for the UI. At most one exists.
@@ -316,11 +402,17 @@ impl PermissionHook for PermissionQueue {
                 let old_active = state.active.replace(responder.clone());
                 let old_queued = state.queued.drain(..).collect::<Vec<_>>();
                 state.queued.push_back(pending);
-                Some((old_active, old_queued))
+                state.notification_version = state.notification_version.wrapping_add(1);
+                let version = state.notification_version;
+                let notifier = state
+                    .notifier
+                    .as_ref()
+                    .map(|(_, notifier)| notifier.clone());
+                Some((old_active, old_queued, notifier, version))
             }
             Err(_) => None,
         };
-        let Some((old_active, old_queued)) = old else {
+        let Some((old_active, old_queued, notifier, version)) = old else {
             responder.respond(PermissionDecision::Timeout);
             return async { Ok(PermissionDecision::Timeout) }.boxed();
         };
@@ -328,6 +420,10 @@ impl PermissionHook for PermissionQueue {
             old_active.respond(PermissionDecision::Timeout);
         }
         drop(old_queued);
+        let notified = notifier.is_some_and(|notifier| notifier.send(version).is_ok());
+        if !notified {
+            responder.respond(PermissionDecision::Timeout);
+        }
 
         let guard = PermissionWaitGuard {
             responder,
@@ -2396,6 +2492,180 @@ mod tests {
             let decision = self.decision.clone();
             async move { Ok(decision) }.boxed()
         }
+    }
+
+    fn permission_request(tool: &str, target: &str) -> PermissionRequest {
+        PermissionRequest {
+            call_id: "opaque-call".into(),
+            tool: tool.into(),
+            display_target: target.into(),
+            danger_rule_id: None,
+            danger_reason: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_queue_notifies_after_enqueue_without_holding_its_mutex() {
+        let queue = PermissionQueue::new();
+        let mut listener = queue.subscribe();
+
+        let future = queue.request(
+            permission_request("write", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        assert!(listener.changed().await);
+        let pending = queue.take_pending().unwrap();
+        let (_, mut lease) = pending.into_parts().unwrap();
+        assert!(lease.respond(PermissionDecision::Once));
+        assert_eq!(future.await.unwrap(), PermissionDecision::Once);
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn permission_queue_fails_closed_without_a_live_notifier() {
+        let queue = PermissionQueue::new();
+        let decision = queue
+            .request(
+                permission_request("bash", "printf ok"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(decision, PermissionDecision::Timeout);
+        assert!(queue.take_pending().is_none());
+
+        let listener = queue.subscribe();
+        drop(listener);
+        let decision = queue
+            .request(
+                permission_request("edit", "src/lib.rs"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(decision, PermissionDecision::Timeout);
+        assert!(queue.take_pending().is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_queue_drop_paths_and_replacement_are_first_wins() {
+        let queue = PermissionQueue::new();
+        let listener = queue.subscribe();
+
+        let first = queue.request(
+            permission_request("write", "first.txt"),
+            CancellationToken::new(),
+        );
+        let second = queue.request(
+            permission_request("write", "second.txt"),
+            CancellationToken::new(),
+        );
+        assert_eq!(first.await.unwrap(), PermissionDecision::Timeout);
+        let (_, mut lease) = queue.take_pending().unwrap().into_parts().unwrap();
+        assert!(lease.respond(PermissionDecision::Always));
+        assert!(!lease.respond(PermissionDecision::Once));
+        assert_eq!(second.await.unwrap(), PermissionDecision::Always);
+
+        let dropped_pending = queue.request(
+            permission_request("edit", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        drop(queue.take_pending().unwrap());
+        assert_eq!(dropped_pending.await.unwrap(), PermissionDecision::Timeout);
+
+        let dropped_lease = queue.request(
+            permission_request("bash", "printf ok"),
+            CancellationToken::new(),
+        );
+        drop(queue.take_pending().unwrap().into_parts().unwrap().1);
+        assert_eq!(dropped_lease.await.unwrap(), PermissionDecision::Timeout);
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn replacing_subscription_rejects_an_already_taken_old_card() {
+        let queue = PermissionQueue::new();
+        let old_listener = queue.subscribe();
+        let waiting = queue.request(
+            permission_request("write", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        let (_, mut old_lease) = queue.take_pending().unwrap().into_parts().unwrap();
+
+        let new_listener = queue.subscribe();
+        assert_eq!(waiting.await.unwrap(), PermissionDecision::Timeout);
+        assert!(old_lease.is_resolved());
+        assert!(!old_lease.respond(PermissionDecision::Always));
+        assert!(queue.take_pending().is_none());
+
+        let new_waiting = queue.request(
+            permission_request("edit", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        let (_, mut new_lease) = queue.take_pending().unwrap().into_parts().unwrap();
+        drop(old_listener);
+        assert!(!new_lease.is_resolved());
+        assert!(new_lease.respond(PermissionDecision::Once));
+        assert_eq!(new_waiting.await.unwrap(), PermissionDecision::Once);
+        drop(new_listener);
+    }
+
+    #[tokio::test]
+    async fn permission_queue_future_drop_and_cancellation_clear_stale_cards() {
+        let queue = PermissionQueue::new();
+        let listener = queue.subscribe();
+
+        let never_polled = queue.request(
+            permission_request("write", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        let (_, mut lease) = queue.take_pending().unwrap().into_parts().unwrap();
+        drop(never_polled);
+        assert!(lease.is_resolved());
+        assert!(!lease.respond(PermissionDecision::Once));
+        assert!(queue.take_pending().is_none());
+
+        let mut polled = queue.request(
+            permission_request("write", "src/main.rs"),
+            CancellationToken::new(),
+        );
+        assert!(futures::poll!(&mut polled).is_pending());
+        let (_, mut polled_lease) = queue.take_pending().unwrap().into_parts().unwrap();
+        drop(polled);
+        assert!(polled_lease.is_resolved());
+        assert!(!polled_lease.respond(PermissionDecision::Always));
+
+        let cancel = CancellationToken::new();
+        let cancelled = queue.request(permission_request("bash", "printf ok"), cancel.clone());
+        cancel.cancel();
+        assert_eq!(cancelled.await.unwrap(), PermissionDecision::Timeout);
+        assert!(queue.take_pending().is_none());
+
+        let unresolved = queue.request(
+            permission_request("edit", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        drop(listener);
+        assert_eq!(unresolved.await.unwrap(), PermissionDecision::Timeout);
+        assert!(queue.take_pending().is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_queue_rejects_malformed_or_cross_tool_danger_requests() {
+        let queue = PermissionQueue::new();
+        let listener = queue.subscribe();
+        let mut request = permission_request("write", "src/lib.rs");
+        request.danger_rule_id = Some("danger".into());
+        request.danger_reason = Some("not legal for write".into());
+        assert_eq!(
+            queue
+                .request(request, CancellationToken::new())
+                .await
+                .unwrap(),
+            PermissionDecision::Timeout
+        );
+        assert!(queue.take_pending().is_none());
+        drop(listener);
     }
 
     fn setup() -> (Store, tempfile::TempDir, String) {

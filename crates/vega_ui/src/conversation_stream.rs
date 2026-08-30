@@ -61,6 +61,7 @@ use gpui::{
     AnyElement, App, Context, Entity, FontWeight, MouseButton, MouseUpEvent, Render, Rgba, Window,
     actions, div, px, uniform_list,
 };
+use vega_conversation::agent::PermissionQueue;
 use vega_conversation::types::{ConversationEvent, Thread};
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -68,6 +69,8 @@ use vega_markdown::{
 };
 use vega_theme::{ThemeColors, Typography, theme};
 
+use crate::permission_card::{PermissionCard, PermissionCardResolved};
+use crate::settings::SettingsOpen;
 use crate::sidebar::CONTENT_MIN_PADDING;
 use crate::text_input::TextInput;
 use crate::tool_card::ToolCard;
@@ -870,6 +873,8 @@ pub(crate) enum StreamEntry {
     },
     /// One audited tool card. Expansion adds fixed-height virtual rows.
     Tool { card: Entity<ToolCard> },
+    /// Sole active permission request/response handoff card.
+    Permission { card: Entity<PermissionCard> },
 }
 
 impl StreamEntry {
@@ -878,6 +883,7 @@ impl StreamEntry {
             StreamEntry::User { lines } => lines.len(),
             StreamEntry::Assistant { model, .. } => model.row_count(),
             StreamEntry::Tool { card } => card.read(cx).row_count(),
+            StreamEntry::Permission { card } => card.read(cx).row_count(),
         }
     }
 }
@@ -918,7 +924,8 @@ pub(crate) fn build_entry_rows(
     entries: &[StreamEntry],
     range: Range<usize>,
     counters: &StreamCounters,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> Vec<AnyElement> {
     let row_t0 = Instant::now();
     let colors = theme(cx).colors;
@@ -943,6 +950,12 @@ pub(crate) fn build_entry_rows(
                 StreamEntry::Tool { card } => {
                     rows.extend(
                         (start..end).map(|row| ToolCard::render_row(card.clone(), row, cx)),
+                    );
+                }
+                StreamEntry::Permission { card } => {
+                    rows.extend(
+                        (start..end)
+                            .map(|row| PermissionCard::render_row(card.clone(), row, window, cx)),
                     );
                 }
             }
@@ -1185,6 +1198,12 @@ pub struct ConversationStream {
     rows_dirty: bool,
     /// Opaque provider call ids are retained only as non-rendered map keys.
     tool_cards: HashMap<String, Entity<ToolCard>>,
+    /// Concrete runtime permission hook shared by the owning conversation.
+    permission_queue: PermissionQueue,
+    /// The sole visible prompt; the opaque call id is only a map association.
+    active_permission: Option<Entity<PermissionCard>>,
+    /// Cancels the watch listener and drops its fail-closed guard with the view.
+    _permission_listener_task: gpui::Task<()>,
 }
 
 struct InjectionState {
@@ -1199,6 +1218,15 @@ impl ConversationStream {
     /// 持久化：会话内容由流式注入与 Composer 回显产生，不落库；重启后清空
     /// 是预期行为).
     pub fn new(thread: Thread, cx: &mut Context<Self>) -> Self {
+        Self::new_with_permission_queue(thread, PermissionQueue::new(), cx)
+    }
+
+    /// Builds a stream with the exact permission queue passed to the runtime.
+    pub fn new_with_permission_queue(
+        thread: Thread,
+        permission_queue: PermissionQueue,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let input = cx.new(|cx| {
             TextInput::new_multiline(
                 cx,
@@ -1208,6 +1236,26 @@ impl ConversationStream {
         });
         // 空输入禁用发送：输入内容变化即重渲染 Composer。
         cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        let mut listener = permission_queue.subscribe();
+        let permission_listener_task = cx.spawn(async move |this, cx| {
+            while listener.changed().await {
+                let alive = this
+                    .update(cx, |this, cx| this.install_pending_permission(cx))
+                    .is_ok();
+                if !alive {
+                    break;
+                }
+            }
+        });
+        cx.observe_global::<SettingsOpen>(|this, cx| {
+            if cx
+                .try_global::<SettingsOpen>()
+                .is_some_and(|settings| settings.0)
+            {
+                this.timeout_permission(cx);
+            }
+        })
+        .detach();
         Self {
             thread,
             entries: Vec::new(),
@@ -1219,7 +1267,88 @@ impl ConversationStream {
             user_block_seq: USER_BLOCK_BASE,
             rows_dirty: false,
             tool_cards: HashMap::new(),
+            permission_queue,
+            active_permission: None,
+            _permission_listener_task: permission_listener_task,
         }
+    }
+
+    /// Hook passed to the conversation runner for this visible stream.
+    pub fn permission_queue(&self) -> PermissionQueue {
+        self.permission_queue.clone()
+    }
+
+    /// Fails the visible/pending prompt closed before Settings, thread switch,
+    /// or window teardown hides the card.
+    pub fn timeout_permission(&mut self, cx: &mut Context<Self>) {
+        self.permission_queue.timeout_active();
+        self.remove_active_permission(cx);
+    }
+
+    fn install_pending_permission(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.permission_queue.take_pending() else {
+            return;
+        };
+        if cx
+            .try_global::<SettingsOpen>()
+            .is_some_and(|settings| settings.0)
+        {
+            drop(pending);
+            return;
+        }
+        let Some(request) = pending.request() else {
+            drop(pending);
+            return;
+        };
+        let call_id = request.call_id.clone();
+        let identity_matches = self.tool_cards.get(&call_id).is_some_and(|card| {
+            card.read(cx)
+                .permission_identity()
+                .is_some_and(|(tool, target)| {
+                    tool == request.tool && target == request.display_target
+                })
+        });
+        if !identity_matches {
+            drop(pending);
+            if let Some(card) = self.tool_cards.get(&call_id) {
+                card.update(cx, ToolCard::fail_corrupt);
+            } else {
+                self.push_corrupt_tool(call_id, cx);
+            }
+            return;
+        }
+        self.remove_active_permission(cx);
+        let Some((request, lease)) = pending.into_parts() else {
+            return;
+        };
+        let card = cx.new(|cx| PermissionCard::new(&request, lease, cx));
+        cx.subscribe(&card, |this, card, _: &PermissionCardResolved, cx| {
+            if this
+                .active_permission
+                .as_ref()
+                .is_some_and(|active| active == &card)
+            {
+                this.remove_active_permission(cx);
+            }
+        })
+        .detach();
+        self.entries
+            .push(StreamEntry::Permission { card: card.clone() });
+        self.active_permission = Some(card);
+        self.anchor = anchor::AnchorState::Following;
+        self.scroll.scroll_to_bottom();
+        self.rows_dirty = true;
+        cx.notify();
+    }
+
+    fn remove_active_permission(&mut self, cx: &mut Context<Self>) {
+        let Some(active) = self.active_permission.take() else {
+            return;
+        };
+        self.entries
+            .retain(|entry| !matches!(entry, StreamEntry::Permission { card } if card == &active));
+        self.rows_dirty = true;
+        cx.notify();
     }
 
     /// Total row count across all entries.
@@ -1255,9 +1384,8 @@ impl ConversationStream {
             ConversationEvent::ToolCallApproved { call_id, approval } => {
                 if let Some(card) = self.tool_cards.get(&call_id) {
                     card.update(cx, |card, cx| {
-                        if card.apply_approved(approval) {
-                            cx.notify();
-                        }
+                        card.apply_approved(approval);
+                        cx.notify();
                     });
                 } else {
                     self.push_corrupt_tool(call_id, cx);
@@ -1270,6 +1398,9 @@ impl ConversationStream {
                 // and terminal projection is the sole card decode boundary.
             }
             ConversationEvent::ToolCallFinished { call_id, result } => {
+                if self.active_permission.is_some() {
+                    self.timeout_permission(cx);
+                }
                 if let Some(card) = self.tool_cards.get(&call_id) {
                     card.update(cx, |card, cx| {
                         card.apply_finished(&result);
@@ -1287,10 +1418,10 @@ impl ConversationStream {
             ConversationEvent::MessageStarted { .. }
             | ConversationEvent::TextDelta { .. }
             | ConversationEvent::ThinkingDelta { .. }
-            | ConversationEvent::UsageUpdated { .. }
-            | ConversationEvent::MessageFinished { .. }
+            | ConversationEvent::UsageUpdated { .. } => {}
+            ConversationEvent::MessageFinished { .. }
             | ConversationEvent::Error { .. }
-            | ConversationEvent::Interrupted { .. } => {}
+            | ConversationEvent::Interrupted { .. } => self.timeout_permission(cx),
         }
     }
 
@@ -1606,9 +1737,9 @@ impl Render for ConversationStream {
                         cx.processor(
                             move |this: &mut ConversationStream,
                                   range: Range<usize>,
-                                  _window,
+                                  window,
                                   cx| {
-                                build_entry_rows(&this.entries, range, &this.counters, cx)
+                                build_entry_rows(&this.entries, range, &this.counters, window, cx)
                             },
                         ),
                     )
@@ -1647,13 +1778,302 @@ impl Render for ConversationStream {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::pin::Pin;
+
     use super::*;
+    use gpui::{TestAppContext, WindowHandle};
+    use tokio_util::sync::CancellationToken;
+    use vega_conversation::agent::PermissionHook;
+    use vega_conversation::types::{
+        PermissionDecision, PermissionMode, PermissionRequest, ThreadMode, ThreadStatus, ToolCall,
+        ToolCallStatus, ToolResult,
+    };
     use vega_markdown::split_deltas;
     use vega_markdown::{ListItem, TableCell};
 
     // ---------- 锚定状态机（P4） ----------
 
     use anchor::{AnchorAction as Action, AnchorState as State};
+
+    type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
+
+    fn permission_thread() -> Thread {
+        Thread {
+            id: "thread-safe-id".into(),
+            project_id: "project-safe-id".into(),
+            title: "Permission test".into(),
+            mode: ThreadMode::Execute,
+            permission_mode: PermissionMode::Confirm,
+            model: "mock".into(),
+            status: ThreadStatus::Active,
+            pinned: false,
+            unread: false,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn init_permission_test(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            cx.set_global(SettingsOpen(false));
+            crate::init(cx);
+        });
+    }
+
+    fn open_permission_stream(
+        cx: &mut TestAppContext,
+    ) -> (WindowHandle<ConversationStream>, PermissionQueue) {
+        let queue = PermissionQueue::new();
+        let stream_queue = queue.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, cx| {
+                cx.new(|cx| {
+                    ConversationStream::new_with_permission_queue(
+                        permission_thread(),
+                        stream_queue,
+                        cx,
+                    )
+                })
+            })
+            .expect("test window")
+        });
+        cx.run_until_parked();
+        (window, queue)
+    }
+
+    fn bash_call(id: &str, command: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            tool: "bash".into(),
+            input_json: serde_json::json!({ "cmd": command }).to_string(),
+        }
+    }
+
+    fn propose(window: WindowHandle<ConversationStream>, cx: &mut TestAppContext, call: ToolCall) {
+        window
+            .update(cx, |stream, _, cx| {
+                stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
+            })
+            .expect("stream window");
+    }
+
+    fn request_permission(queue: &PermissionQueue, call_id: &str, target: &str) -> DecisionFuture {
+        let future = queue.request(
+            PermissionRequest {
+                call_id: call_id.into(),
+                tool: "bash".into(),
+                display_target: target.into(),
+                danger_rule_id: None,
+                danger_reason: None,
+            },
+            CancellationToken::new(),
+        );
+        Box::pin(async move { future.await.unwrap_or(PermissionDecision::Timeout) })
+    }
+
+    fn has_active_permission(
+        window: WindowHandle<ConversationStream>,
+        cx: &mut TestAppContext,
+    ) -> bool {
+        window
+            .update(cx, |stream, _, _| stream.active_permission.is_some())
+            .unwrap_or(false)
+    }
+
+    #[gpui::test]
+    async fn permission_queue_installs_matching_card_and_once_resolves(cx: &mut TestAppContext) {
+        init_permission_test(cx);
+        let (window, queue) = open_permission_stream(cx);
+        propose(window, cx, bash_call("call-once", "printf ok"));
+        let future = request_permission(&queue, "call-once", "printf ok");
+        cx.run_until_parked();
+        assert!(has_active_permission(window, cx));
+
+        cx.simulate_keystrokes(window.into(), "enter");
+        assert_eq!(future.await, PermissionDecision::Once);
+        cx.run_until_parked();
+        assert!(!has_active_permission(window, cx));
+    }
+
+    #[gpui::test]
+    async fn permission_target_mismatch_times_out_and_corrupts_tool_card(cx: &mut TestAppContext) {
+        init_permission_test(cx);
+        let (window, queue) = open_permission_stream(cx);
+        propose(window, cx, bash_call("call-mismatch", "printf safe"));
+        let future = request_permission(&queue, "call-mismatch", "printf different");
+        cx.run_until_parked();
+        assert_eq!(future.await, PermissionDecision::Timeout);
+        assert!(!has_active_permission(window, cx));
+        let visible = window
+            .update(cx, |stream, _, cx| {
+                stream.tool_cards["call-mismatch"].read(cx).visible_text()
+            })
+            .expect("stream window");
+        assert!(visible.contains("工具结果损坏"));
+        assert!(!visible.contains("printf different"));
+    }
+
+    #[gpui::test]
+    async fn late_permission_requests_for_approved_terminal_or_corrupt_cards_timeout(
+        cx: &mut TestAppContext,
+    ) {
+        init_permission_test(cx);
+        let (window, queue) = open_permission_stream(cx);
+
+        propose(window, cx, bash_call("call-approved", "printf approved"));
+        window
+            .update(cx, |stream, _, cx| {
+                stream.apply_event(
+                    ConversationEvent::ToolCallApproved {
+                        call_id: "call-approved".into(),
+                        approval: vega_conversation::types::Approval::Once,
+                    },
+                    cx,
+                );
+            })
+            .expect("stream window");
+        let future = request_permission(&queue, "call-approved", "printf approved");
+        cx.run_until_parked();
+        assert_eq!(future.await, PermissionDecision::Timeout);
+        assert!(!has_active_permission(window, cx));
+
+        propose(
+            window,
+            cx,
+            bash_call("call-terminal-late", "printf terminal"),
+        );
+        window
+            .update(cx, |stream, _, cx| {
+                stream.apply_event(
+                    ConversationEvent::ToolCallFinished {
+                        call_id: "call-terminal-late".into(),
+                        result: ToolResult {
+                            status: ToolCallStatus::Rejected,
+                            output: "Tool error: permission denied".into(),
+                            reused: false,
+                            exit_code: None,
+                            duration_ms: None,
+                            truncated: None,
+                            invalid: None,
+                        },
+                    },
+                    cx,
+                );
+            })
+            .expect("stream window");
+        let future = request_permission(&queue, "call-terminal-late", "printf terminal");
+        cx.run_until_parked();
+        assert_eq!(future.await, PermissionDecision::Timeout);
+        assert!(!has_active_permission(window, cx));
+
+        propose(
+            window,
+            cx,
+            ToolCall {
+                id: "call-corrupt".into(),
+                tool: "bash".into(),
+                input_json: r#"{"cmd":1}"#.into(),
+            },
+        );
+        let future = request_permission(&queue, "call-corrupt", "printf corrupt");
+        cx.run_until_parked();
+        assert_eq!(future.await, PermissionDecision::Timeout);
+        assert!(!has_active_permission(window, cx));
+        let permission_entries = window
+            .update(cx, |stream, _, _| {
+                stream
+                    .entries
+                    .iter()
+                    .filter(|entry| matches!(entry, StreamEntry::Permission { .. }))
+                    .count()
+            })
+            .expect("stream window");
+        assert_eq!(permission_entries, 0);
+    }
+
+    #[gpui::test]
+    async fn settings_hidden_and_terminal_paths_fail_closed_without_rendering(
+        cx: &mut TestAppContext,
+    ) {
+        init_permission_test(cx);
+        let (window, queue) = open_permission_stream(cx);
+        propose(window, cx, bash_call("call-settings", "printf settings"));
+        let future = request_permission(&queue, "call-settings", "printf settings");
+        cx.run_until_parked();
+        assert!(has_active_permission(window, cx));
+        cx.update(|cx| cx.set_global(SettingsOpen(true)));
+        cx.run_until_parked();
+        assert_eq!(future.await, PermissionDecision::Timeout);
+        assert!(!has_active_permission(window, cx));
+
+        cx.update(|cx| cx.set_global(SettingsOpen(false)));
+        propose(window, cx, bash_call("call-terminal", "printf terminal"));
+        let future = request_permission(&queue, "call-terminal", "printf terminal");
+        cx.run_until_parked();
+        assert!(has_active_permission(window, cx));
+        window
+            .update(cx, |stream, _, cx| {
+                stream.apply_event(
+                    ConversationEvent::ToolCallFinished {
+                        call_id: "call-terminal".into(),
+                        result: ToolResult {
+                            status: ToolCallStatus::Rejected,
+                            output: "Tool error: permission denied".into(),
+                            reused: false,
+                            exit_code: None,
+                            duration_ms: None,
+                            truncated: None,
+                            invalid: None,
+                        },
+                    },
+                    cx,
+                );
+            })
+            .expect("stream window");
+        assert_eq!(future.await, PermissionDecision::Timeout);
+        assert!(!has_active_permission(window, cx));
+
+        cx.update(|cx| cx.set_global(SettingsOpen(true)));
+        propose(window, cx, bash_call("call-hidden", "printf hidden"));
+        let future = request_permission(&queue, "call-hidden", "printf hidden");
+        cx.run_until_parked();
+        assert_eq!(future.await, PermissionDecision::Timeout);
+        assert!(!has_active_permission(window, cx));
+    }
+
+    #[gpui::test]
+    async fn window_release_drops_listener_and_active_card_fail_closed(cx: &mut TestAppContext) {
+        init_permission_test(cx);
+        let (window, queue) = open_permission_stream(cx);
+        propose(window, cx, bash_call("call-window", "printf close"));
+        let future = request_permission(&queue, "call-window", "printf close");
+        cx.run_until_parked();
+        assert!(has_active_permission(window, cx));
+        window
+            .update(cx, |_, window, _| window.remove_window())
+            .expect("stream window");
+        cx.run_until_parked();
+        assert_eq!(future.await, PermissionDecision::Timeout);
+    }
+
+    #[gpui::test]
+    async fn thread_switch_timeout_contract_removes_prompt_before_view_replacement(
+        cx: &mut TestAppContext,
+    ) {
+        init_permission_test(cx);
+        let (window, queue) = open_permission_stream(cx);
+        propose(window, cx, bash_call("call-thread", "printf switch"));
+        let future = request_permission(&queue, "call-thread", "printf switch");
+        cx.run_until_parked();
+        assert!(has_active_permission(window, cx));
+        window
+            .update(cx, |stream, _, cx| stream.timeout_permission(cx))
+            .expect("stream window");
+        assert_eq!(future.await, PermissionDecision::Timeout);
+        assert!(!has_active_permission(window, cx));
+    }
 
     fn step(state: State, distance: f32, viewport: f32, grew: bool) -> (State, Action) {
         let decision = anchor::step(state, distance, viewport, grew);

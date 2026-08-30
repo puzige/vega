@@ -14,3 +14,7 @@ vega_theme.workspace = true
 # （exec-guide §5 白名单内依赖）。
 vega_markdown.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tokio-util.workspace = true
