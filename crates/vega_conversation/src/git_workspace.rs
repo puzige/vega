@@ -122,12 +122,19 @@ struct SnapshotIdentity {
     status: Vec<u8>,
     staged_raw: Vec<u8>,
     unstaged_raw: Vec<u8>,
+    staged_numstat: Vec<u8>,
+    unstaged_numstat: Vec<u8>,
 }
 
 #[derive(Default)]
 struct ServiceState {
+    next_request: u64,
+    latest_request: u64,
+    next_generation: u64,
     generation: u64,
-    files: HashMap<WorkspaceFileId, PrivateFile>,
+    identity: Option<Arc<SnapshotIdentity>>,
+    snapshot: Option<WorkspaceSnapshot>,
+    files: Vec<PrivateFile>,
 }
 
 /// Headless, ephemeral Git snapshot and lazy-diff service.
@@ -135,7 +142,6 @@ pub struct GitWorkspaceService {
     root: PathBuf,
     identity: RootIdentity,
     instance_nonce: u64,
-    next_generation: AtomicU64,
     state: Arc<Mutex<ServiceState>>,
     #[cfg(test)]
     executable: Option<PathBuf>,
@@ -143,10 +149,15 @@ pub struct GitWorkspaceService {
 
 impl std::fmt::Debug for GitWorkspaceService {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let generation = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .generation;
         formatter
             .debug_struct("GitWorkspaceService")
             .field("root", &"[redacted]")
-            .field("generation", &self.next_generation.load(Ordering::Relaxed))
+            .field("generation", &generation)
             .finish()
     }
 }
@@ -179,34 +190,32 @@ impl GitWorkspaceService {
                 ino: metadata.ino(),
             },
             instance_nonce,
-            next_generation: AtomicU64::new(0),
             state: Arc::new(Mutex::new(ServiceState::default())),
             #[cfg(test)]
             executable,
         })
     }
 
-    /// Refreshes the complete metadata snapshot. A newer refresh invalidates
-    /// an older in-flight result (latest generation wins).
+    /// Refreshes the complete metadata snapshot. A newer request invalidates
+    /// an older in-flight result, while byte-identical content retains its
+    /// generation and opaque file identifiers.
     pub async fn refresh(
         &self,
         cancel: CancellationToken,
     ) -> Result<WorkspaceSnapshot, GitWorkspaceError> {
-        {
+        let request = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
-            state.files.clear();
-            state.generation = 0;
-        }
-        let generation = self
-            .next_generation
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| error(GitWorkspaceErrorCode::OutputTooLarge))?
-            + 1;
+            let request = state
+                .next_request
+                .checked_add(1)
+                .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+            state.next_request = request;
+            state.latest_request = request;
+            request
+        };
         let root = self.root.clone();
         let identity = self.identity;
         let instance_nonce = self.instance_nonce;
@@ -219,24 +228,50 @@ impl GitWorkspaceService {
                 #[cfg(test)]
                 executable,
             );
-            build_snapshot(&runner, generation, instance_nonce, &cancel)
+            build_snapshot(&runner, 0, instance_nonce, &cancel)
         })
         .await
-        .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))??;
-
-        if self.next_generation.load(Ordering::SeqCst) != generation {
-            return Err(error(GitWorkspaceErrorCode::StaleGeneration));
-        }
-        let (snapshot, files) = result;
+        .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))
+        .and_then(|result| result);
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if self.next_generation.load(Ordering::SeqCst) != generation {
+        if state.latest_request != request {
             return Err(error(GitWorkspaceErrorCode::StaleGeneration));
         }
+        let (mut snapshot, mut files, identity) = match result {
+            Ok(result) => result,
+            Err(failure) => {
+                invalidate_current(&mut state);
+                return Err(failure);
+            }
+        };
+        if same_snapshot_content(&state, &identity, &snapshot, &files) {
+            return state
+                .snapshot
+                .clone()
+                .ok_or_else(|| error(GitWorkspaceErrorCode::ChangedDuringRead));
+        }
+        let Some(generation) = state.next_generation.checked_add(1) else {
+            invalidate_current(&mut state);
+            return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+        };
+        if let Err(failure) = assign_generation(
+            &mut snapshot,
+            &mut files,
+            generation,
+            self.identity,
+            self.instance_nonce,
+        ) {
+            invalidate_current(&mut state);
+            return Err(failure);
+        }
+        state.next_generation = generation;
         state.generation = generation;
-        state.files = files.into_iter().map(|file| (file.id, file)).collect();
+        state.identity = Some(identity);
+        state.files = files;
+        state.snapshot = Some(snapshot.clone());
         Ok(snapshot)
     }
 
@@ -254,9 +289,12 @@ impl GitWorkspaceService {
             if state.generation != file_id.generation {
                 return Err(error(GitWorkspaceErrorCode::StaleGeneration));
             }
+            let slot = usize::try_from(file_id.slot)
+                .map_err(|_| error(GitWorkspaceErrorCode::UnknownFile))?;
             state
                 .files
-                .get(&file_id)
+                .get(slot)
+                .filter(|file| file.id == file_id)
                 .cloned()
                 .ok_or_else(|| error(GitWorkspaceErrorCode::UnknownFile))?
         };
@@ -279,7 +317,11 @@ impl GitWorkspaceService {
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if state.generation != file_id.generation || !state.files.contains_key(&file_id) {
+        let current = usize::try_from(file_id.slot)
+            .ok()
+            .and_then(|slot| state.files.get(slot))
+            .is_some_and(|file| file.id == file_id);
+        if state.generation != file_id.generation || !current {
             return Err(error(GitWorkspaceErrorCode::StaleGeneration));
         }
         Ok(result)
@@ -289,6 +331,98 @@ impl GitWorkspaceService {
     fn new_for_test(root: &Path, executable: PathBuf) -> Result<Self, GitWorkspaceError> {
         Self::new_inner(root, Some(executable))
     }
+}
+
+fn invalidate_current(state: &mut ServiceState) {
+    state.generation = 0;
+    state.identity = None;
+    state.snapshot = None;
+    state.files.clear();
+}
+
+fn same_snapshot_content(
+    state: &ServiceState,
+    candidate_identity: &SnapshotIdentity,
+    candidate: &WorkspaceSnapshot,
+    candidate_files: &[PrivateFile],
+) -> bool {
+    let Some(current) = state.snapshot.as_ref() else {
+        return false;
+    };
+    if state.identity.as_deref() != Some(candidate_identity)
+        || current.head != candidate.head
+        || current.stats != candidate.stats
+        || current.files.len() != candidate.files.len()
+        || current.files.len() != candidate_files.len()
+        || current.files.len() != state.files.len()
+    {
+        return false;
+    }
+    current
+        .files
+        .iter()
+        .zip(&candidate.files)
+        .zip(&state.files)
+        .zip(candidate_files)
+        .all(
+            |(((current_public, candidate_public), current_private), candidate_private)| {
+                current_public.label == candidate_public.label
+                    && current_public.previous_label == candidate_public.previous_label
+                    && current_public.staged == candidate_public.staged
+                    && current_public.unstaged == candidate_public.unstaged
+                    && current_public.additions == candidate_public.additions
+                    && current_public.deletions == candidate_public.deletions
+                    && current_public.language == candidate_public.language
+                    && current_private.id == current_public.id
+                    && current_private.path.as_bytes() == candidate_private.path.as_bytes()
+                    && current_private
+                        .previous_path
+                        .as_ref()
+                        .map(|path| path.as_bytes())
+                        == candidate_private
+                            .previous_path
+                            .as_ref()
+                            .map(|path| path.as_bytes())
+                    && current_private.staged == candidate_private.staged
+                    && current_private.unstaged == candidate_private.unstaged
+                    && current_private.binary == candidate_private.binary
+                    && current_private.metadata_only == candidate_private.metadata_only
+                    && current_private.language == candidate_private.language
+                    && current_private.worktree_identity == candidate_private.worktree_identity
+                    && current_private.snapshot_identity.as_ref()
+                        == candidate_private.snapshot_identity.as_ref()
+            },
+        )
+}
+
+fn assign_generation(
+    snapshot: &mut WorkspaceSnapshot,
+    files: &mut [PrivateFile],
+    generation: u64,
+    identity: RootIdentity,
+    instance_nonce: u64,
+) -> Result<(), GitWorkspaceError> {
+    if snapshot.files.len() != files.len() {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    snapshot.generation = generation;
+    for (slot, (public, private)) in snapshot.files.iter_mut().zip(files).enumerate() {
+        let slot = u32::try_from(slot).map_err(|_| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+        let id = WorkspaceFileId {
+            generation,
+            slot,
+            seal: seal(
+                identity,
+                instance_nonce,
+                generation,
+                slot,
+                private.path.as_bytes(),
+            ),
+        };
+        public.id = id;
+        private.id = id;
+    }
+    Ok(())
 }
 
 struct Runner {
@@ -778,7 +912,7 @@ fn build_snapshot(
     generation: u64,
     instance_nonce: u64,
     cancel: &CancellationToken,
-) -> Result<(WorkspaceSnapshot, Vec<PrivateFile>), GitWorkspaceError> {
+) -> Result<(WorkspaceSnapshot, Vec<PrivateFile>, Arc<SnapshotIdentity>), GitWorkspaceError> {
     let top = runner.run(
         "rev-parse",
         &[OsString::from("--show-toplevel")],
@@ -807,6 +941,7 @@ fn build_snapshot(
     let worktree_before = capture_worktree_identities(&runner.root, &parsed.files)?;
     budget.charge(status_output.stdout.len())?;
     let mut raw_outputs = Vec::with_capacity(2);
+    let mut numstat_outputs = Vec::with_capacity(2);
     for cached in [true, false] {
         verify_filter_bytes_with_retained(
             runner,
@@ -822,16 +957,7 @@ fn build_snapshot(
         budget.charge(raw.stdout.len())?;
         raw_outputs.push(raw.stdout);
 
-        let mut numstat_args = vec![
-            OsString::from("--numstat"),
-            OsString::from("-z"),
-            OsString::from("--find-renames"),
-            OsString::from("--no-ext-diff"),
-            OsString::from("--no-textconv"),
-        ];
-        if cached {
-            numstat_args.insert(0, OsString::from("--cached"));
-        }
+        let numstat_args = numstat_args(cached);
         verify_filter_bytes_with_retained(
             runner,
             &filter_identity.paths,
@@ -847,6 +973,7 @@ fn build_snapshot(
             return Err(error(GitWorkspaceErrorCode::MalformedOutput));
         }
         budget.charge(numstat.stdout.len())?;
+        numstat_outputs.push(numstat.stdout);
     }
 
     if parsed.files.len() > PATH_LIMIT {
@@ -858,6 +985,8 @@ fn build_snapshot(
         status: status_output.stdout,
         staged_raw: raw_outputs.remove(0),
         unstaged_raw: raw_outputs.remove(0),
+        staged_numstat: numstat_outputs.remove(0),
+        unstaged_numstat: numstat_outputs.remove(0),
     });
     verify_snapshot_identity(runner, &snapshot_identity, cancel)?;
     let mut worktree_after = capture_worktree_identities(&runner.root, &parsed.files)?;
@@ -926,9 +1055,13 @@ fn build_snapshot(
         },
         files: public_files,
     };
-    let retained = estimate_snapshot_bytes(&snapshot);
-    budget.charge(retained)?;
-    Ok((snapshot, private_files))
+    ensure_candidate_retained(
+        &snapshot_identity,
+        &snapshot,
+        &private_files,
+        SNAPSHOT_LIMIT,
+    )?;
+    Ok((snapshot, private_files, snapshot_identity))
 }
 
 fn path_multiplicity<'a>(paths: impl Iterator<Item = &'a [u8]>) -> BTreeMap<Vec<u8>, usize> {
@@ -1089,6 +1222,20 @@ fn raw_args(cached: bool) -> Vec<OsString> {
     args
 }
 
+fn numstat_args(cached: bool) -> Vec<OsString> {
+    let mut args = vec![
+        OsString::from("--numstat"),
+        OsString::from("-z"),
+        OsString::from("--find-renames"),
+        OsString::from("--no-ext-diff"),
+        OsString::from("--no-textconv"),
+    ];
+    if cached {
+        args.insert(0, OsString::from("--cached"));
+    }
+    args
+}
+
 fn verify_snapshot_identity(
     runner: &Runner,
     expected: &SnapshotIdentity,
@@ -1140,6 +1287,22 @@ fn verify_snapshot_identity(
             return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
         }
     }
+    for (cached, expected_numstat) in [
+        (true, &expected.staged_numstat),
+        (false, &expected.unstaged_numstat),
+    ] {
+        verify_filter_bytes_with_retained(
+            runner,
+            &expected.filter_paths,
+            &expected.filter_attrs,
+            retained,
+            cancel,
+        )?;
+        let numstat = runner.run("diff", &numstat_args(cached), remaining, cancel)?;
+        if numstat.stdout != *expected_numstat {
+            return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+        }
+    }
     verify_filter_bytes_with_retained(
         runner,
         &expected.filter_paths,
@@ -1151,14 +1314,76 @@ fn verify_snapshot_identity(
 }
 
 fn snapshot_identity_retained(expected: &SnapshotIdentity) -> Result<usize, GitWorkspaceError> {
-    expected
-        .filter_paths
-        .len()
-        .checked_add(expected.filter_attrs.len())
-        .and_then(|value| value.checked_add(expected.status.len()))
-        .and_then(|value| value.checked_add(expected.staged_raw.len()))
-        .and_then(|value| value.checked_add(expected.unstaged_raw.len()))
-        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))
+    let mut retained = 0_usize;
+    charge_logical(&mut retained, std::mem::size_of::<SnapshotIdentity>())?;
+    // Both Arc allocations retain two counters outside their pointed-to
+    // value: the snapshot identity and its tracked-path slice.
+    charge_logical(
+        &mut retained,
+        4_usize
+            .checked_mul(std::mem::size_of::<usize>())
+            .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?,
+    )?;
+    for bytes in [
+        expected.filter_paths.len(),
+        expected.filter_attrs.len(),
+        expected.status.len(),
+        expected.staged_raw.len(),
+        expected.unstaged_raw.len(),
+        expected.staged_numstat.len(),
+        expected.unstaged_numstat.len(),
+    ] {
+        charge_logical(&mut retained, bytes)?;
+    }
+    Ok(retained)
+}
+
+fn ensure_candidate_retained(
+    identity: &SnapshotIdentity,
+    snapshot: &WorkspaceSnapshot,
+    private_files: &[PrivateFile],
+    cap: usize,
+) -> Result<usize, GitWorkspaceError> {
+    let mut retained = snapshot_identity_retained(identity)?;
+    // The committed authority is one ServiceState allocation. Its fixed size
+    // already includes counters plus the identity, snapshot and Vec handles;
+    // candidate-local handles are deliberately not charged again.
+    charge_logical(&mut retained, std::mem::size_of::<ServiceState>())?;
+    let head_label = match &snapshot.head {
+        WorkspaceHead::Branch { label } => label.len(),
+        WorkspaceHead::Unborn { label } => label.as_ref().map_or(0, String::len),
+        WorkspaceHead::Detached => 0,
+    };
+    charge_logical(&mut retained, head_label)?;
+    for file in &snapshot.files {
+        charge_logical(&mut retained, std::mem::size_of::<WorkspaceFile>())?;
+        charge_logical(&mut retained, file.label.len())?;
+        charge_logical(
+            &mut retained,
+            file.previous_label.as_ref().map_or(0, String::len),
+        )?;
+    }
+    for file in private_files {
+        charge_logical(&mut retained, std::mem::size_of::<PrivateFile>())?;
+        charge_logical(&mut retained, file.path.as_bytes().len())?;
+        charge_logical(
+            &mut retained,
+            file.previous_path
+                .as_ref()
+                .map_or(0, |path| path.as_bytes().len()),
+        )?;
+    }
+    if retained > cap {
+        return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+    }
+    Ok(retained)
+}
+
+fn charge_logical(retained: &mut usize, bytes: usize) -> Result<(), GitWorkspaceError> {
+    *retained = retained
+        .checked_add(bytes)
+        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+    Ok(())
 }
 
 fn capture_worktree_identities(
@@ -2276,15 +2501,6 @@ fn seal(
     value
 }
 
-fn estimate_snapshot_bytes(snapshot: &WorkspaceSnapshot) -> usize {
-    snapshot.files.iter().fold(0_usize, |total, file| {
-        total
-            .saturating_add(std::mem::size_of::<WorkspaceFile>())
-            .saturating_add(file.label.len())
-            .saturating_add(file.previous_label.as_ref().map_or(0, String::len))
-    })
-}
-
 fn trim_one_newline(bytes: &[u8]) -> &[u8] {
     bytes.strip_suffix(b"\n").unwrap_or(bytes)
 }
@@ -2630,6 +2846,7 @@ mod tests {
             .refresh(CancellationToken::new())
             .await
             .unwrap();
+        repo.write("other.txt", b"other\n");
         other_service
             .refresh(CancellationToken::new())
             .await
@@ -2642,6 +2859,7 @@ mod tests {
                 .code(),
             GitWorkspaceErrorCode::UnknownFile
         );
+        fs::remove_file(repo.path().join("other.txt")).unwrap();
         repo.write("b.txt", b"b\n");
         service.refresh(CancellationToken::new()).await.unwrap();
         assert_eq!(
@@ -2672,6 +2890,286 @@ mod tests {
                 .unwrap_err()
                 .code(),
             GitWorkspaceErrorCode::NotRepository
+        );
+    }
+
+    #[tokio::test]
+    async fn git_workspace_identical_refresh_retains_generation_and_opaque_ids() {
+        let repo = Repo::new();
+        repo.write("stable.rs", b"fn stable() {}\n");
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let first = service.refresh(CancellationToken::new()).await.unwrap();
+        let first_id = first.files[0].id;
+
+        let second = service.refresh(CancellationToken::new()).await.unwrap();
+        assert_eq!(second.generation, first.generation);
+        assert_eq!(second.files[0].id, first_id);
+        assert_eq!(second, first);
+        assert_eq!(
+            service
+                .diff(first_id, CancellationToken::new())
+                .await
+                .unwrap()
+                .file_id(),
+            first_id
+        );
+
+        repo.write("stable.rs", b"fn changed() {}\n");
+        let changed = service.refresh(CancellationToken::new()).await.unwrap();
+        assert_ne!(changed.generation, first.generation);
+        assert_ne!(changed.files[0].id, first_id);
+        assert_eq!(
+            service
+                .diff(first_id, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::StaleGeneration
+        );
+    }
+
+    #[tokio::test]
+    async fn git_workspace_canonical_vec_slot_and_seal_are_lookup_authority() {
+        let repo = Repo::new();
+        repo.write("z-last.txt", b"z\n");
+        repo.write("a-first.txt", b"a\n");
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
+        assert_eq!(snapshot.files.len(), 2);
+        {
+            let state = service
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            assert_eq!(state.files.len(), snapshot.files.len());
+            for (slot, (public, private)) in snapshot.files.iter().zip(&state.files).enumerate() {
+                assert_eq!(usize::try_from(public.id.slot).unwrap(), slot);
+                assert_eq!(private.id, public.id);
+                assert_eq!(escape_path(private.path.as_bytes()), public.label);
+            }
+        }
+        let valid = snapshot.files[0].id;
+        assert_eq!(
+            service
+                .diff(valid, CancellationToken::new())
+                .await
+                .unwrap()
+                .file_id(),
+            valid
+        );
+        let forged = WorkspaceFileId {
+            generation: valid.generation,
+            slot: valid.slot,
+            seal: valid.seal ^ 1,
+        };
+        assert_eq!(
+            service
+                .diff(forged, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::UnknownFile
+        );
+    }
+
+    #[tokio::test]
+    async fn git_workspace_clean_unchanged_refresh_retains_generation() {
+        let repo = Repo::new();
+        repo.write("clean.txt", b"clean\n");
+        repo.commit_all();
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+
+        let first = service.refresh(CancellationToken::new()).await.unwrap();
+        let second = service.refresh(CancellationToken::new()).await.unwrap();
+
+        assert!(first.files.is_empty());
+        assert_eq!(second, first);
+    }
+
+    #[tokio::test]
+    async fn git_workspace_clean_head_only_change_rotates_generation() {
+        let repo = Repo::new();
+        repo.write("clean.txt", b"clean\n");
+        repo.commit_all();
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let before = service.refresh(CancellationToken::new()).await.unwrap();
+
+        git(
+            repo.path(),
+            &["commit", "-q", "--allow-empty", "-m", "head"],
+        );
+        let after = service.refresh(CancellationToken::new()).await.unwrap();
+
+        assert!(before.files.is_empty());
+        assert!(after.files.is_empty());
+        assert_eq!(after.head, before.head);
+        assert_eq!(after.stats, before.stats);
+        assert_ne!(after.generation, before.generation);
+    }
+
+    #[tokio::test]
+    async fn git_workspace_clean_info_attributes_change_rotates_generation() {
+        let repo = Repo::new();
+        repo.write("clean.txt", b"clean\n");
+        repo.commit_all();
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let before = service.refresh(CancellationToken::new()).await.unwrap();
+
+        fs::write(
+            repo.path().join(".git/info/attributes"),
+            b"clean.txt linguist-language=Rust\n",
+        )
+        .unwrap();
+        let after = service.refresh(CancellationToken::new()).await.unwrap();
+
+        assert!(before.files.is_empty());
+        assert!(after.files.is_empty());
+        assert_eq!(after.head, before.head);
+        assert_eq!(after.stats, before.stats);
+        assert_ne!(after.generation, before.generation);
+    }
+
+    #[tokio::test]
+    async fn git_workspace_private_content_head_and_raw_rename_rotate_ids() {
+        let repo = Repo::new();
+        repo.write("tracked.txt", b"base\n");
+        repo.commit_all();
+        repo.write("tracked.txt", b"aaaa\n");
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let content_a = service.refresh(CancellationToken::new()).await.unwrap();
+        let content_a_id = content_a.files[0].id;
+
+        // Same path, size, classification and line statistics: ctime/private
+        // file identity is still part of the equality authority.
+        repo.write("tracked.txt", b"bbbb\n");
+        let content_b = service.refresh(CancellationToken::new()).await.unwrap();
+        assert_ne!(content_b.generation, content_a.generation);
+        assert_eq!(
+            service
+                .diff(content_a_id, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::StaleGeneration
+        );
+
+        // An empty commit changes only the captured HEAD while the safe file
+        // projection remains equal.
+        let before_head = content_b;
+        git(
+            repo.path(),
+            &["commit", "-q", "--allow-empty", "-m", "head"],
+        );
+        let after_head = service.refresh(CancellationToken::new()).await.unwrap();
+        assert_ne!(after_head.generation, before_head.generation);
+        assert_eq!(after_head.files[0].label, before_head.files[0].label);
+        assert_eq!(after_head.files[0].staged, before_head.files[0].staged);
+        assert_eq!(after_head.files[0].unstaged, before_head.files[0].unstaged);
+        assert_eq!(after_head.stats, before_head.stats);
+
+        let old_path_id = after_head.files[0].id;
+        fs::rename(
+            repo.path().join("tracked.txt"),
+            repo.path().join("renamed.txt"),
+        )
+        .unwrap();
+        let renamed = service.refresh(CancellationToken::new()).await.unwrap();
+        assert_ne!(renamed.generation, after_head.generation);
+        assert!(renamed.files.iter().any(|file| file.label == "renamed.txt"));
+        assert_eq!(
+            service
+                .diff(old_path_id, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::StaleGeneration
+        );
+    }
+
+    #[tokio::test]
+    async fn git_workspace_aba_allocates_fresh_generation_without_id_revival() {
+        let repo = Repo::new();
+        repo.write("aba.txt", b"state-a\n");
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let first_a = service.refresh(CancellationToken::new()).await.unwrap();
+        let first_id = first_a.files[0].id;
+
+        repo.write("aba.txt", b"state-b\n");
+        let state_b = service.refresh(CancellationToken::new()).await.unwrap();
+        repo.write("aba.txt", b"state-a\n");
+        let second_a = service.refresh(CancellationToken::new()).await.unwrap();
+
+        assert_ne!(state_b.generation, first_a.generation);
+        assert_ne!(second_a.generation, state_b.generation);
+        assert_ne!(second_a.generation, first_a.generation);
+        assert_ne!(second_a.files[0].id, first_id);
+        assert_eq!(
+            service
+                .diff(first_id, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::StaleGeneration
+        );
+    }
+
+    #[tokio::test]
+    async fn git_workspace_latest_failure_invalidates_ids_and_next_success_reseals() {
+        let repo = Repo::new();
+        repo.write("failure.txt", b"stable\n");
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let before = service.refresh(CancellationToken::new()).await.unwrap();
+        let old_id = before.files[0].id;
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            service.refresh(cancelled).await.unwrap_err().code(),
+            GitWorkspaceErrorCode::Cancelled
+        );
+        assert_eq!(
+            service
+                .diff(old_id, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::StaleGeneration
+        );
+
+        let after = service.refresh(CancellationToken::new()).await.unwrap();
+        assert_ne!(after.generation, before.generation);
+        assert_ne!(after.files[0].id, old_id);
+    }
+
+    #[tokio::test]
+    async fn git_workspace_generation_allocation_failure_invalidates_current() {
+        let repo = Repo::new();
+        repo.write("overflow.txt", b"before\n");
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let before = service.refresh(CancellationToken::new()).await.unwrap();
+        let old_id = before.files[0].id;
+        service
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .next_generation = u64::MAX;
+        repo.write("overflow.txt", b"after!\n");
+
+        assert_eq!(
+            service
+                .refresh(CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::OutputTooLarge
+        );
+        assert_eq!(
+            service
+                .diff(old_id, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::StaleGeneration
         );
     }
 
@@ -2850,6 +3348,72 @@ mod tests {
         }
         assert_eq!(
             parse_nul_paths(&paths).unwrap_err().code(),
+            GitWorkspaceErrorCode::OutputTooLarge
+        );
+    }
+
+    #[test]
+    fn git_workspace_candidate_logical_retained_private_paths_are_exactly_bounded() {
+        let identity = Arc::new(SnapshotIdentity {
+            filter_paths: Arc::from([]),
+            filter_attrs: Vec::new(),
+            status: Vec::new(),
+            staged_raw: Vec::new(),
+            unstaged_raw: Vec::new(),
+            staged_numstat: Vec::new(),
+            unstaged_numstat: Vec::new(),
+        });
+        let id = WorkspaceFileId {
+            generation: 0,
+            slot: 0,
+            seal: 0,
+        };
+        let snapshot = WorkspaceSnapshot {
+            generation: 0,
+            head: WorkspaceHead::Detached,
+            files: vec![WorkspaceFile {
+                id,
+                label: String::new(),
+                previous_label: None,
+                staged: WorkspaceChangeKind::Modified,
+                unstaged: WorkspaceChangeKind::Unchanged,
+                additions: WorkspaceLineCount::Unknown,
+                deletions: WorkspaceLineCount::Unknown,
+                language: DiffLanguage::Plain,
+            }],
+            stats: WorkspaceStats {
+                file_count: 1,
+                additions: WorkspaceLineCount::Unknown,
+                deletions: WorkspaceLineCount::Unknown,
+            },
+        };
+        let make_private = |current_len: usize, previous_len: usize| PrivateFile {
+            id,
+            path: OsString::from_vec(vec![b'p'; current_len]),
+            previous_path: Some(OsString::from_vec(vec![b'o'; previous_len])),
+            staged: WorkspaceChangeKind::Modified,
+            unstaged: WorkspaceChangeKind::Unchanged,
+            binary: false,
+            metadata_only: false,
+            language: DiffLanguage::Plain,
+            snapshot_identity: identity.clone(),
+            worktree_identity: None,
+        };
+        let base_private = [make_private(0, 1)];
+        let base =
+            ensure_candidate_retained(&identity, &snapshot, &base_private, usize::MAX).unwrap();
+        let current_len = SNAPSHOT_LIMIT.checked_sub(base).unwrap();
+        let exact_private = [make_private(current_len, 1)];
+        assert_eq!(
+            ensure_candidate_retained(&identity, &snapshot, &exact_private, SNAPSHOT_LIMIT)
+                .unwrap(),
+            SNAPSHOT_LIMIT
+        );
+        let plus_one_private = [make_private(current_len, 2)];
+        assert_eq!(
+            ensure_candidate_retained(&identity, &snapshot, &plus_one_private, SNAPSHOT_LIMIT)
+                .unwrap_err()
+                .code(),
             GitWorkspaceErrorCode::OutputTooLarge
         );
     }
@@ -3228,6 +3792,64 @@ mod tests {
             .files
             .iter()
             .find(|file| file.label == "latest.txt")
+            .unwrap();
+        assert_eq!(
+            service
+                .diff(file.id, CancellationToken::new())
+                .await
+                .unwrap()
+                .file_id(),
+            file.id
+        );
+    }
+
+    #[tokio::test]
+    async fn git_workspace_obsolete_failure_does_not_invalidate_newer_snapshot() {
+        let repo = Repo::new();
+        repo.write("newer.txt", b"newer\n");
+        let script = repo.path().join("fixture-git");
+        let gate = tempdir().unwrap();
+        let lock = gate.path().join("first.lock");
+        let ready = gate.path().join("first.ready");
+        let release = gate.path().join("first.release");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif mkdir '{}' 2>/dev/null; then : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; exit 91; fi\nexec /usr/bin/git \"$@\"\n",
+                lock.display(),
+                ready.display(),
+                release.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let service = Arc::new(GitWorkspaceService::new_for_test(repo.path(), script).unwrap());
+        let obsolete = tokio::spawn({
+            let service = service.clone();
+            async move { service.refresh(CancellationToken::new()).await }
+        });
+        for _ in 0..500 {
+            if ready.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            ready.exists(),
+            "obsolete refresh did not enter fixture delay"
+        );
+        let latest = service.refresh(CancellationToken::new()).await.unwrap();
+        fs::write(&release, b"release\n").unwrap();
+        assert_eq!(
+            obsolete.await.unwrap().unwrap_err().code(),
+            GitWorkspaceErrorCode::StaleGeneration
+        );
+        let file = latest
+            .files
+            .iter()
+            .find(|file| file.label == "newer.txt")
             .unwrap();
         assert_eq!(
             service
