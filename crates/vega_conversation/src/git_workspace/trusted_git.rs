@@ -657,7 +657,7 @@ impl TrustedGitService {
                 .ok_or(CommitErrorCode::ChangedDuringRead)?;
             let staged_closure = component_closure(record, true);
             let optional_closure = component_closure(record, false);
-            if record.x != b'.' {
+            if record.shape != StatusShape::Untracked && record.x != b'.' {
                 staged.push(ChecklistRow {
                     public: project_selection(public, record, true)?,
                     closure: staged_closure,
@@ -1960,7 +1960,18 @@ fn validate_transition(
                     Some(current) => current.intersection(&path_owners).copied().collect(),
                 });
             }
-            if candidates.is_none_or(|candidates| candidates.len() != 1) {
+            let selected_delete_untracked_merge = record.shape == StatusShape::Rename
+                && record.previous.as_ref().is_some_and(|previous| {
+                    is_selected_delete_untracked_rename(
+                        selected,
+                        &b.records,
+                        previous,
+                        &record.path,
+                    )
+                });
+            if candidates.is_none_or(|candidates| candidates.len() != 1)
+                && !selected_delete_untracked_merge
+            {
                 return Err(CommitErrorCode::ChangedDuringRead);
             }
         }
@@ -1973,6 +1984,16 @@ fn validate_transition(
             .find(|record| record.path == a_record.path && record.previous == a_record.previous);
         match row.optional_kind {
             CommitSelectionKind::Deleted => {
+                let merged_rename = selected.iter().any(|candidate| {
+                    candidate.optional_kind == CommitSelectionKind::Added
+                        && candidate.record.shape == StatusShape::Untracked
+                        && is_selected_delete_untracked_rename(
+                            selected,
+                            &b.records,
+                            &a_record.path,
+                            &candidate.record.path,
+                        )
+                });
                 let canonical_delete = if a_record.shape == StatusShape::Rename {
                     a_record.previous.as_ref().is_some_and(|previous| {
                         let mut old_records =
@@ -1991,6 +2012,7 @@ fn validate_transition(
                     })
                 } else {
                     b_record.is_some_and(|record| record.x == b'D' && record.y == b'.')
+                        || merged_rename
                 };
                 if b_stage.contains_key(a_record.path.as_slice()) || !canonical_delete {
                     return Err(CommitErrorCode::ChangedDuringRead);
@@ -2044,13 +2066,23 @@ fn validate_transition(
                 }
             }
             CommitSelectionKind::Added => {
+                let merged_rename = selected.iter().any(|candidate| {
+                    candidate.optional_kind == CommitSelectionKind::Deleted
+                        && is_selected_delete_untracked_rename(
+                            selected,
+                            &b.records,
+                            &candidate.record.path,
+                            &a_record.path,
+                        )
+                });
                 let expected_mode = row.worktree_mode.as_ref().is_some_and(|mode| {
                     b_stage
                         .get(a_record.path.as_slice())
                         .is_some_and(|entry| entry.mode == *mode)
                 });
                 if !expected_mode
-                    || b_record.is_none_or(|record| record.x != b'A' || record.y != b'.')
+                    || (!merged_rename
+                        && b_record.is_none_or(|record| record.x != b'A' || record.y != b'.'))
                 {
                     return Err(CommitErrorCode::ChangedDuringRead);
                 }
@@ -2137,6 +2169,48 @@ fn validate_transition(
         return Err(CommitErrorCode::ChangedDuringRead);
     }
     Ok(())
+}
+
+fn is_selected_delete_untracked_rename(
+    selected: &[&ChecklistRow],
+    b_records: &[StatusRecord],
+    source: &[u8],
+    destination: &[u8],
+) -> bool {
+    let source_selected = selected.iter().filter(|row| {
+        row.optional_kind == CommitSelectionKind::Deleted
+            && row.record.shape == StatusShape::Ordinary
+            && row.record.x == b'.'
+            && row.record.y == b'D'
+            && row.record.previous.is_none()
+            && row.record.path == source
+    });
+    let destination_selected = selected.iter().filter(|row| {
+        row.optional_kind == CommitSelectionKind::Added
+            && row.record.shape == StatusShape::Untracked
+            && row.record.previous.is_none()
+            && row.record.path == destination
+    });
+    if source_selected.count() != 1 || destination_selected.count() != 1 {
+        return false;
+    }
+    let mut touching = b_records.iter().filter(|record| {
+        record.path == source
+            || record.path == destination
+            || record
+                .previous
+                .as_deref()
+                .is_some_and(|previous| previous == source || previous == destination)
+    });
+    let Some(merged) = touching.next() else {
+        return false;
+    };
+    touching.next().is_none()
+        && merged.shape == StatusShape::Rename
+        && merged.x == b'R'
+        && merged.y == b'.'
+        && merged.path == destination
+        && merged.previous.as_deref() == Some(source)
 }
 
 fn optional_kind(record: &StatusRecord) -> CommitSelectionKind {
@@ -3348,6 +3422,173 @@ exec /usr/bin/git "$@"
         assert!(completion.prepared.is_some());
         let status = run_git_output(repo.path(), &["status", "--porcelain"]);
         assert_eq!(status, b"A  added.txt\n");
+    }
+
+    #[tokio::test]
+    async fn untracked_entry_is_optional_only_and_prepares_as_added() {
+        let repo = Repo::new();
+        fs::write(repo.path().join("untracked.txt"), "new\n").expect("new file");
+        let (workspace, trusted) = repo.services().await;
+        workspace
+            .refresh(CancellationToken::new())
+            .await
+            .expect("refresh untracked");
+        let checklist = trusted
+            .open_checklist(CancellationToken::new())
+            .await
+            .expect("untracked checklist");
+        assert!(checklist.staged.is_empty());
+        assert_eq!(checklist.optional.len(), 1);
+        assert_eq!(checklist.optional[0].kind, CommitSelectionKind::Added);
+        assert!(!checklist.optional[0].forced);
+        let completion = trusted
+            .prepare(
+                checklist.id,
+                vec![checklist.optional[0].file_id],
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(completion.error, None);
+        assert!(completion.prepared.is_some());
+        assert_eq!(
+            run_git_output(repo.path(), &["status", "--porcelain"]),
+            b"A  untracked.txt\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_delete_and_untracked_destination_may_canonicalize_to_staged_rename() {
+        let repo = Repo::new();
+        fs::rename(
+            repo.path().join("tracked.txt"),
+            repo.path().join("renamed.txt"),
+        )
+        .expect("rename fixture");
+        let (workspace, trusted) = repo.services().await;
+        workspace
+            .refresh(CancellationToken::new())
+            .await
+            .expect("refresh delete and untracked");
+        let checklist = trusted
+            .open_checklist(CancellationToken::new())
+            .await
+            .expect("rename checklist");
+        assert!(checklist.staged.is_empty());
+        assert_eq!(checklist.optional.len(), 2);
+        assert!(
+            checklist
+                .optional
+                .iter()
+                .any(|row| row.kind == CommitSelectionKind::Deleted)
+        );
+        assert!(
+            checklist
+                .optional
+                .iter()
+                .any(|row| row.kind == CommitSelectionKind::Added)
+        );
+        let selected = checklist.optional.iter().map(|row| row.file_id).collect();
+        let completion = trusted
+            .prepare(checklist.id, selected, CancellationToken::new())
+            .await;
+        assert_eq!(completion.error, None);
+        assert_eq!(
+            completion
+                .prepared
+                .as_ref()
+                .map(|prepared| prepared.staged_file_count),
+            Some(1)
+        );
+        assert_eq!(
+            run_git_output(repo.path(), &["status", "--porcelain"]),
+            b"R  tracked.txt -> renamed.txt\n"
+        );
+    }
+
+    #[test]
+    fn delete_untracked_joint_rename_rejects_any_extra_touching_b_record() {
+        let oid = |byte: u8| vec![byte; 40];
+        let source_record = StatusRecord {
+            shape: StatusShape::Ordinary,
+            x: b'.',
+            y: b'D',
+            sub: b"N...".to_vec(),
+            head_mode: b"100644".to_vec(),
+            index_mode: b"100644".to_vec(),
+            worktree_mode: b"000000".to_vec(),
+            head_oid: oid(b'1'),
+            index_oid: oid(b'1'),
+            path: b"source.txt".to_vec(),
+            previous: None,
+        };
+        let destination_record = StatusRecord {
+            shape: StatusShape::Untracked,
+            x: b'?',
+            y: b'?',
+            sub: b"N...".to_vec(),
+            head_mode: b"000000".to_vec(),
+            index_mode: b"000000".to_vec(),
+            worktree_mode: b"100644".to_vec(),
+            head_oid: oid(b'0'),
+            index_oid: oid(b'0'),
+            path: b"destination.txt".to_vec(),
+            previous: None,
+        };
+        let row = |slot: u32,
+                   record: StatusRecord,
+                   kind: CommitSelectionKind,
+                   mode: Option<Vec<u8>>| ChecklistRow {
+            public: CommitSelection {
+                file_id: WorkspaceFileId {
+                    generation: 1,
+                    slot,
+                    seal: u64::from(slot),
+                },
+                label: String::new(),
+                previous_label: None,
+                kind,
+                forced: false,
+            },
+            closure: vec![record.path.clone()],
+            record,
+            optional_kind: kind,
+            worktree_mode: mode,
+        };
+        let rows = [
+            row(1, source_record.clone(), CommitSelectionKind::Deleted, None),
+            row(
+                2,
+                destination_record,
+                CommitSelectionKind::Added,
+                Some(b"100644".to_vec()),
+            ),
+        ];
+        let selected = vec![&rows[0], &rows[1]];
+        let merged = StatusRecord {
+            shape: StatusShape::Rename,
+            x: b'R',
+            y: b'.',
+            sub: b"N...".to_vec(),
+            head_mode: b"100644".to_vec(),
+            index_mode: b"100644".to_vec(),
+            worktree_mode: b"100644".to_vec(),
+            head_oid: oid(b'1'),
+            index_oid: oid(b'1'),
+            path: b"destination.txt".to_vec(),
+            previous: Some(b"source.txt".to_vec()),
+        };
+        assert!(is_selected_delete_untracked_rename(
+            &selected,
+            std::slice::from_ref(&merged),
+            b"source.txt",
+            b"destination.txt"
+        ));
+        assert!(!is_selected_delete_untracked_rename(
+            &selected,
+            &[merged, source_record],
+            b"source.txt",
+            b"destination.txt"
+        ));
     }
 
     #[tokio::test]

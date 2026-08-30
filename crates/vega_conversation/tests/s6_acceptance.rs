@@ -12,9 +12,9 @@ use tempfile::tempdir;
 use tokio_util::sync::CancellationToken;
 use vega_conversation::agent::{PermissionHook, run_thread_task_with_permission_sink};
 use vega_conversation::types::{
-    ArtifactSource, BranchSwitchOutcome, CommitOutcome, ConversationEvent, DiffLayer,
-    GitWorkspaceErrorCode, PermissionDecision, PermissionRequest, ToolCall, ToolCallStatus,
-    ToolResult, WorkspaceChangeKind,
+    Approval, ArtifactSource, BranchSwitchOutcome, CommitOutcome, CommitSelectionKind,
+    ConversationEvent, DiffLayer, GitWorkspaceErrorCode, PermissionDecision, PermissionRequest,
+    ToolCall, ToolCallStatus, ToolResult, WorkspaceChangeKind,
 };
 use vega_conversation::{
     ArtifactService, BranchWorkspaceService, GitWorkspaceService, TrustedGitService,
@@ -152,6 +152,43 @@ async fn agent_tool_turn(
     let events = events
         .lock()
         .map_err(|_| std::io::Error::other("event sink poisoned"))?;
+    let proposed = events
+        .iter()
+        .position(|event| matches!(event, ConversationEvent::ToolCallProposed { call } if call.id == call_id))
+        .ok_or_else(|| std::io::Error::other("missing tool proposal"))?;
+    let approved = events
+        .iter()
+        .position(|event| matches!(event, ConversationEvent::ToolCallApproved { call_id: approved_id, .. } if approved_id == call_id))
+        .ok_or_else(|| std::io::Error::other("missing tool approval"))?;
+    let finished = events
+        .iter()
+        .position(|event| matches!(event, ConversationEvent::ToolCallFinished { call_id: terminal_id, .. } if terminal_id == call_id))
+        .ok_or_else(|| std::io::Error::other("missing tool terminal"))?;
+    assert!(proposed < approved && approved < finished);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ConversationEvent::ToolCallProposed { call } if call.id == call_id))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ConversationEvent::ToolCallApproved { call_id: approved_id, .. } if approved_id == call_id))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ConversationEvent::ToolCallFinished { call_id: terminal_id, .. } if terminal_id == call_id))
+            .count(),
+        1
+    );
+    assert!(events.iter().any(|event| {
+        matches!(event, ConversationEvent::ToolCallApproved { call_id: approved_id, approval: Approval::Once } if approved_id == call_id)
+    }));
     let call = events
         .iter()
         .find_map(|event| match event {
@@ -232,7 +269,7 @@ async fn agent_diff_artifact_dirty_reject_and_two_stage_commit() -> Result<(), B
         &tools,
         "s6-edit",
         "edit",
-        r##"{"path":"README.md","old_string":"# S6 fixture","new_string":"# S6 accepted fixture"}"##.into(),
+        r##"{"path":"src/original.rs","old_string":"fn original() {}","new_string":"fn accepted() {}"}"##.into(),
     )
     .await?;
     workspace.refresh(CancellationToken::new()).await?;
@@ -240,8 +277,28 @@ async fn agent_diff_artifact_dirty_reject_and_two_stage_commit() -> Result<(), B
         .capture(&edit_call, &edit_result, CancellationToken::new())
         .await?
         .ok_or_else(|| std::io::Error::other("edit artifact missing"))?;
-    assert_eq!(edit_card.label, "README.md");
+    assert_eq!(edit_card.label, "src/original.rs");
     assert_eq!(edit_card.source, ArtifactSource::AgentArtifact);
+    assert!(edit_card.current_file_id.is_some());
+    assert!(edit_card.preview_available);
+
+    let (readme_call, readme_result) = agent_tool_turn(
+        &store,
+        &tools,
+        "s6-readme-edit",
+        "edit",
+        r##"{"path":"README.md","old_string":"# S6 fixture","new_string":"# S6 accepted fixture"}"##.into(),
+    )
+    .await?;
+    workspace.refresh(CancellationToken::new()).await?;
+    let readme_card = artifacts
+        .capture(&readme_call, &readme_result, CancellationToken::new())
+        .await?
+        .ok_or_else(|| std::io::Error::other("README artifact missing"))?;
+    assert_eq!(readme_card.label, "README.md");
+    assert_eq!(readme_card.source, ArtifactSource::AgentArtifact);
+    assert!(readme_card.current_file_id.is_some());
+    assert!(readme_card.preview_available);
 
     agent_tool_turn(
         &store,
@@ -255,9 +312,23 @@ async fn agent_diff_artifact_dirty_reject_and_two_stage_commit() -> Result<(), B
     assert!(!repo.join("src/original.rs").exists());
     workspace.refresh(CancellationToken::new()).await?;
     let reconciled = artifacts.reconcile(CancellationToken::new()).await?;
-    assert_eq!(reconciled.len(), 1);
-    assert_eq!(reconciled[0].id, edit_card.id);
-    assert_eq!(reconciled[0].label, "README.md");
+    assert_eq!(reconciled.len(), 2);
+    let stale_edit = reconciled
+        .iter()
+        .find(|card| card.id == edit_card.id)
+        .ok_or_else(|| std::io::Error::other("stale edit card missing"))?;
+    assert_eq!(stale_edit.label, "src/original.rs");
+    assert_eq!(stale_edit.source, ArtifactSource::WorkspaceChange);
+    assert_eq!(stale_edit.current_file_id, None);
+    assert!(!stale_edit.preview_available);
+    let live_readme = reconciled
+        .iter()
+        .find(|card| card.id == readme_card.id)
+        .ok_or_else(|| std::io::Error::other("README card missing after reconcile"))?;
+    assert_eq!(live_readme.label, "README.md");
+    assert_eq!(live_readme.source, ArtifactSource::AgentArtifact);
+    assert!(live_readme.current_file_id.is_some());
+    assert!(live_readme.preview_available);
 
     let (write_call, write_result) = agent_tool_turn(
         &store,
@@ -318,28 +389,29 @@ async fn agent_diff_artifact_dirty_reject_and_two_stage_commit() -> Result<(), B
     assert_eq!(dirty.code(), GitWorkspaceErrorCode::BranchDirty);
     assert_eq!(git(&repo, &["rev-parse", "HEAD"])?.stdout, base);
 
-    // The real agent tool path keeps its own checkpoint/index lifecycle. Use
-    // an equivalent fresh owned repository for the trusted two-stage commit
-    // boundary instead of normalizing that state with a forbidden reset.
-    let commit_repo = fixture.path().join("commit-repo");
-    fs::create_dir_all(&commit_repo)?;
-    init_repo(&commit_repo)?;
-    fs::write(commit_repo.join("README.md"), "# S6 accepted fixture\n")?;
-    git(
-        &commit_repo,
-        &["mv", "--", "src/original.rs", "src/renamed.rs"],
-    )?;
-    fs::write(commit_repo.join("artifact.md"), "# Accepted artifact\n")?;
-    let commit_base = git(&commit_repo, &["rev-parse", "HEAD"])?.stdout;
-    let commit_workspace = Arc::new(GitWorkspaceService::new(&commit_repo)?);
-    commit_workspace.refresh(CancellationToken::new()).await?;
-    let trusted = TrustedGitService::new(&commit_repo, Arc::clone(&commit_workspace))
-        .map_err(commit_error)?;
+    let trusted = TrustedGitService::new(&repo, Arc::clone(&workspace)).map_err(commit_error)?;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
         .map_err(commit_error)?;
-    assert!(!checklist.optional.is_empty());
+    assert!(checklist.staged.is_empty());
+    assert_eq!(checklist.optional.len(), 4);
+    assert!(checklist.optional.iter().all(|row| !row.forced));
+    for (label, kind) in [
+        ("README.md", CommitSelectionKind::Modified),
+        ("artifact.md", CommitSelectionKind::Added),
+        ("src/original.rs", CommitSelectionKind::Deleted),
+        ("src/renamed.rs", CommitSelectionKind::Added),
+    ] {
+        assert_eq!(
+            checklist
+                .optional
+                .iter()
+                .filter(|row| row.label == label && row.kind == kind)
+                .count(),
+            1
+        );
+    }
     let selected = checklist
         .optional
         .iter()
@@ -352,10 +424,7 @@ async fn agent_diff_artifact_dirty_reject_and_two_stage_commit() -> Result<(), B
     let prepared = prepared
         .prepared
         .ok_or_else(|| std::io::Error::other("prepared authority missing"))?;
-    assert_eq!(
-        git(&commit_repo, &["rev-parse", "HEAD"])?.stdout,
-        commit_base
-    );
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"])?.stdout, base);
 
     let provider = Arc::new(MockProvider::new(vec![
         ScriptStep::text("feat: generated S6 message"),
@@ -385,32 +454,40 @@ async fn agent_diff_artifact_dirty_reject_and_two_stage_commit() -> Result<(), B
     assert_eq!(completion.outcome, CommitOutcome::Committed);
     assert!(completion.workspace.is_some());
 
-    let head = git(&commit_repo, &["rev-parse", "HEAD"])?.stdout;
-    assert_ne!(head, commit_base);
+    let head = git(&repo, &["rev-parse", "HEAD"])?.stdout;
+    assert_ne!(head, base);
+    let parents = git(&repo, &["rev-list", "--parents", "-n", "1", "HEAD"])?.stdout;
+    let parent_fields = parents
+        .strip_suffix(b"\n")
+        .unwrap_or(&parents)
+        .split(|byte| *byte == b' ')
+        .collect::<Vec<_>>();
+    assert_eq!(parent_fields.len(), 2);
+    assert_eq!(parent_fields[1], base.strip_suffix(b"\n").unwrap_or(&base));
+    assert_eq!(git(&repo, &["status", "--porcelain=v2", "-z"])?.stdout, b"");
     assert_eq!(
-        git(&commit_repo, &["status", "--porcelain=v2", "-z"])?.stdout,
-        b""
+        git(&repo, &["symbolic-ref", "--short", "HEAD"])?.stdout,
+        b"main\n"
     );
     assert_eq!(
-        String::from_utf8(git(&commit_repo, &["log", "-1", "--pretty=%B"])?.stdout)?.trim_end(),
+        String::from_utf8(git(&repo, &["log", "-1", "--pretty=%B"])?.stdout)?.trim_end(),
         edited_message
     );
-    let tree = git(&commit_repo, &["ls-tree", "-rz", "--name-only", "HEAD"])?.stdout;
-    assert!(
-        tree.windows(b"artifact.md\0".len())
-            .any(|item| item == b"artifact.md\0")
+    let tree = git(&repo, &["ls-tree", "-rz", "--name-only", "HEAD"])?.stdout;
+    assert_eq!(tree, b"README.md\0artifact.md\0src/renamed.rs\0");
+    assert_eq!(
+        fs::read(repo.join("README.md"))?,
+        b"# S6 accepted fixture\n"
     );
-    assert!(
-        tree.windows(b"src/renamed.rs\0".len())
-            .any(|item| item == b"src/renamed.rs\0")
+    assert_eq!(
+        fs::read(repo.join("artifact.md"))?,
+        b"# Accepted artifact\n"
     );
-    assert!(
-        !tree
-            .windows(b"src/original.rs\0".len())
-            .any(|item| item == b"src/original.rs\0")
+    assert_eq!(
+        fs::read(repo.join("src/renamed.rs"))?,
+        b"pub fn stable_one() {}\nfn accepted() {}\npub fn stable_two() {}\n"
     );
     assert!(git(&repo, &["remote"])?.stdout.is_empty());
-    assert!(git(&commit_repo, &["remote"])?.stdout.is_empty());
     Ok(())
 }
 
