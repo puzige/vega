@@ -103,6 +103,9 @@ impl Render for VegaWindow {
                     let stream = match cached {
                         Some(view) => view,
                         None => {
+                            if let Some((_, previous)) = self.stream_view.take() {
+                                previous.update(cx, |stream, cx| stream.timeout_permission(cx));
+                            }
                             let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
                             self.stream_view = Some((thread.id.clone(), view.clone()));
                             view
@@ -111,7 +114,9 @@ impl Render for VegaWindow {
                     stream.into_any_element()
                 }
                 None => {
-                    self.stream_view = None;
+                    if let Some((_, previous)) = self.stream_view.take() {
+                        previous.update(cx, |stream, cx| stream.timeout_permission(cx));
+                    }
                     render_empty_state(colors)
                 }
             }

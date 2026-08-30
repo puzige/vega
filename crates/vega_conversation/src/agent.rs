@@ -1,8 +1,10 @@
 //! Conversation-layer orchestration for the headless runtime (S4-T20).
 
+use std::collections::VecDeque;
+use std::fmt;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
@@ -10,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use vega_runtime::{
     AgentRequest, Provider, RuntimeEvent, RuntimeExactRule, RuntimeMutatingTool,
@@ -31,6 +33,9 @@ const TEXT_BATCH_MAX_DELAY: Duration = Duration::from_millis(4);
 const TEXT_BATCH_MAX_BYTES: usize = 4 * 1024;
 const PERSISTENCE_CHANNEL_CAPACITY: usize = 64;
 
+/// Authoritative production permission-card lifetime.
+pub const PERMISSION_TIMEOUT: Duration = vega_runtime::PERMISSION_TIMEOUT;
+
 /// Shared cancellable permission boundary implemented by the S5 UI.
 pub trait PermissionHook: Send + Sync {
     /// Requests one content-free permission decision.
@@ -39,6 +44,429 @@ pub trait PermissionHook: Send + Sync {
         request: PermissionRequest,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>>;
+}
+
+/// A single UI-visible permission request and its first-wins responder.
+pub struct PendingPermission {
+    request: Option<PermissionRequest>,
+    responder: Option<PermissionResponder>,
+    armed: bool,
+}
+
+impl PendingPermission {
+    /// Content-free request safe for card rendering.
+    pub fn request(&self) -> Option<&PermissionRequest> {
+        self.request.as_ref()
+    }
+
+    /// Transfers the safe request and a responder-only card lease. The UI may
+    /// use the request call id transiently for card lookup, then must discard
+    /// it before storing the lease in an entity.
+    pub fn into_parts(mut self) -> Option<(PermissionRequest, PermissionLease)> {
+        self.armed = false;
+        Some((
+            self.request.take()?,
+            PermissionLease {
+                responder: self.responder.take()?,
+                armed: true,
+            },
+        ))
+    }
+}
+
+/// Fail-closed ownership guard held for the exact lifetime of one UI card.
+pub struct PermissionLease {
+    responder: PermissionResponder,
+    armed: bool,
+}
+
+impl PermissionLease {
+    /// Resolves the shared latch and disarms the disappearance guard.
+    pub fn respond(&mut self, decision: PermissionDecision) -> bool {
+        let won = self.responder.respond(decision);
+        if self.responder.is_resolved() {
+            self.armed = false;
+        }
+        won
+    }
+
+    /// Whether runtime cancellation, timeout, or an explicit action won.
+    pub fn is_resolved(&self) -> bool {
+        self.responder.is_resolved()
+    }
+}
+
+impl Drop for PermissionLease {
+    fn drop(&mut self) {
+        if self.armed {
+            self.responder.respond(PermissionDecision::Timeout);
+        }
+    }
+}
+
+impl fmt::Debug for PermissionLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PermissionLease")
+            .field("resolved", &self.is_resolved())
+            .finish()
+    }
+}
+
+impl Drop for PendingPermission {
+    fn drop(&mut self) {
+        if self.armed
+            && let Some(responder) = &self.responder
+        {
+            responder.respond(PermissionDecision::Timeout);
+        }
+    }
+}
+
+impl fmt::Debug for PendingPermission {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PendingPermission")
+            .field("tool", &self.request.as_ref().map(|request| &request.tool))
+            .field(
+                "danger",
+                &self
+                    .request
+                    .as_ref()
+                    .is_some_and(|request| request.danger_rule_id.is_some()),
+            )
+            .field("display_target", &"[REDACTED]")
+            .field("call_id", &"[OPAQUE]")
+            .finish()
+    }
+}
+
+struct PermissionResponseState {
+    sender: Mutex<Option<oneshot::Sender<PermissionDecision>>>,
+}
+
+impl Drop for PermissionResponseState {
+    fn drop(&mut self) {
+        if let Ok(sender) = self.sender.get_mut()
+            && let Some(sender) = sender.take()
+        {
+            let _ = sender.send(PermissionDecision::Timeout);
+        }
+    }
+}
+
+/// Thread-safe first-wins permission response latch.
+#[derive(Clone)]
+pub struct PermissionResponder {
+    state: Arc<PermissionResponseState>,
+}
+
+impl PermissionResponder {
+    /// Resolves the request exactly once. Returns false after another path won.
+    pub fn respond(&self, decision: PermissionDecision) -> bool {
+        let Ok(mut sender) = self.state.sender.lock() else {
+            return false;
+        };
+        let Some(sender) = sender.take() else {
+            return false;
+        };
+        let _ = sender.send(decision);
+        true
+    }
+
+    /// Whether any explicit or implicit terminal path already won.
+    pub fn is_resolved(&self) -> bool {
+        self.state
+            .sender
+            .lock()
+            .map_or(true, |sender| sender.is_none())
+    }
+
+    fn same_latch(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl fmt::Debug for PermissionResponder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PermissionResponder")
+            .field("resolved", &self.is_resolved())
+            .finish()
+    }
+}
+
+struct PermissionWaitGuard {
+    responder: PermissionResponder,
+    queue_state: Arc<Mutex<PermissionQueueState>>,
+}
+
+impl Drop for PermissionWaitGuard {
+    fn drop(&mut self) {
+        self.responder.respond(PermissionDecision::Timeout);
+        if let Ok(mut state) = self.queue_state.lock()
+            && state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.same_latch(&self.responder))
+        {
+            state.active = None;
+            state.queued.retain(|pending| {
+                !pending
+                    .responder
+                    .as_ref()
+                    .is_some_and(|queued| queued.same_latch(&self.responder))
+            });
+        }
+    }
+}
+
+/// Lost-wake-safe listener owned by the exact lifetime of one UI task.
+///
+/// Dropping the listener clears only its own generation and rejects
+/// an unresolved prompt, so a window/thread disappearance cannot leave the
+/// runtime waiting on a stale card.
+pub struct PermissionQueueListener {
+    state: Arc<Mutex<PermissionQueueState>>,
+    generation: u64,
+    receiver: watch::Receiver<u64>,
+}
+
+impl PermissionQueueListener {
+    /// Waits for a newly enqueued request. False means the subscription was
+    /// closed or replaced and the UI task must stop.
+    pub async fn changed(&mut self) -> bool {
+        self.receiver.changed().await.is_ok()
+    }
+}
+
+impl fmt::Debug for PermissionQueueListener {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PermissionQueueListener")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for PermissionQueueListener {
+    fn drop(&mut self) {
+        let closed = self.state.lock().ok().and_then(|mut state| {
+            if state
+                .notifier
+                .as_ref()
+                .is_some_and(|(generation, _)| *generation == self.generation)
+            {
+                state.notifier = None;
+                let responder = state.active.take();
+                let queued = state.queued.drain(..).collect::<Vec<_>>();
+                Some((responder, queued))
+            } else {
+                None
+            }
+        });
+        if let Some((responder, queued)) = closed {
+            if let Some(responder) = responder {
+                responder.respond(PermissionDecision::Timeout);
+            }
+            drop(queued);
+        }
+    }
+}
+
+#[derive(Default)]
+struct PermissionQueueState {
+    active: Option<PermissionResponder>,
+    queued: VecDeque<PendingPermission>,
+    notifier: Option<(u64, watch::Sender<u64>)>,
+    next_generation: u64,
+    notification_version: u64,
+}
+
+/// Concrete conversation-to-GPUI request/response handoff.
+///
+/// This is not a lifecycle stream: durable lifecycle visibility remains
+/// exclusively on [`ConversationEvent`]. The queue carries only the pending
+/// human decision and resolves every disappearance as Timeout.
+#[derive(Clone, Default)]
+pub struct PermissionQueue {
+    state: Arc<Mutex<PermissionQueueState>>,
+}
+
+impl PermissionQueue {
+    /// Creates an empty queue.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Installs the sole live UI wakeup seam. Registration happens before a
+    /// runtime turn starts, eliminating the Proposed-before-enqueue lost wake.
+    pub fn subscribe(&self) -> PermissionQueueListener {
+        let (notifier, receiver) = watch::channel(0);
+        let (generation, replaced_active, replaced_queued) = match self.state.lock() {
+            Ok(mut state) => {
+                let replacing = state.notifier.is_some();
+                let replaced_active = replacing.then(|| state.active.take()).flatten();
+                let replaced_queued = if replacing {
+                    state.queued.drain(..).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                state.next_generation = state.next_generation.wrapping_add(1);
+                if state.next_generation == 0 {
+                    state.next_generation = 1;
+                }
+                let generation = state.next_generation;
+                state.notifier = Some((generation, notifier));
+                (generation, replaced_active, replaced_queued)
+            }
+            Err(_) => (0, None, Vec::new()),
+        };
+        if let Some(replaced_active) = replaced_active {
+            replaced_active.respond(PermissionDecision::Timeout);
+        }
+        drop(replaced_queued);
+        let listener = PermissionQueueListener {
+            state: self.state.clone(),
+            generation,
+            receiver,
+        };
+        if generation == 0 {
+            self.timeout_active();
+        }
+        listener
+    }
+
+    /// Removes the newest pending card request for the UI. At most one exists.
+    pub fn take_pending(&self) -> Option<PendingPermission> {
+        let Ok(mut state) = self.state.lock() else {
+            return None;
+        };
+        while let Some(pending) = state.queued.pop_front() {
+            if pending
+                .responder
+                .as_ref()
+                .is_some_and(|responder| !responder.is_resolved())
+            {
+                return Some(pending);
+            }
+        }
+        None
+    }
+
+    /// Fails the current prompt closed, used when the owning view disappears.
+    pub fn timeout_active(&self) -> bool {
+        let responder = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.active.clone());
+        responder.is_some_and(|responder| responder.respond(PermissionDecision::Timeout))
+    }
+}
+
+impl fmt::Debug for PermissionQueue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let pending = self
+            .state
+            .lock()
+            .map_or(0, |state| usize::from(state.active.is_some()));
+        formatter
+            .debug_struct("PermissionQueue")
+            .field("pending_count", &pending)
+            .finish()
+    }
+}
+
+impl PermissionHook for PermissionQueue {
+    fn request(
+        &self,
+        request: PermissionRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
+        if !valid_permission_request(&request) {
+            return async { Ok(PermissionDecision::Timeout) }.boxed();
+        }
+        let (sender, receiver) = oneshot::channel();
+        let responder = PermissionResponder {
+            state: Arc::new(PermissionResponseState {
+                sender: Mutex::new(Some(sender)),
+            }),
+        };
+        let pending = PendingPermission {
+            request: Some(request),
+            responder: Some(responder.clone()),
+            armed: true,
+        };
+        let old = match self.state.lock() {
+            Ok(mut state) => {
+                let old_active = state.active.replace(responder.clone());
+                let old_queued = state.queued.drain(..).collect::<Vec<_>>();
+                state.queued.push_back(pending);
+                state.notification_version = state.notification_version.wrapping_add(1);
+                let version = state.notification_version;
+                let notifier = state
+                    .notifier
+                    .as_ref()
+                    .map(|(_, notifier)| notifier.clone());
+                Some((old_active, old_queued, notifier, version))
+            }
+            Err(_) => None,
+        };
+        let Some((old_active, old_queued, notifier, version)) = old else {
+            responder.respond(PermissionDecision::Timeout);
+            return async { Ok(PermissionDecision::Timeout) }.boxed();
+        };
+        if let Some(old_active) = old_active {
+            old_active.respond(PermissionDecision::Timeout);
+        }
+        drop(old_queued);
+        let notified = notifier.is_some_and(|notifier| notifier.send(version).is_ok());
+        if !notified {
+            responder.respond(PermissionDecision::Timeout);
+        }
+
+        let guard = PermissionWaitGuard {
+            responder,
+            queue_state: self.state.clone(),
+        };
+        async move {
+            let decision = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    guard.responder.respond(PermissionDecision::Timeout);
+                    PermissionDecision::Timeout
+                }
+                result = receiver => result.unwrap_or(PermissionDecision::Timeout),
+            };
+            Ok(decision)
+        }
+        .boxed()
+    }
+}
+
+fn valid_permission_request(request: &PermissionRequest) -> bool {
+    if request.call_id.is_empty() || request.display_target.is_empty() {
+        return false;
+    }
+    let danger_valid = match (&request.danger_rule_id, &request.danger_reason) {
+        (None, None) => true,
+        (Some(rule), Some(reason)) => !rule.is_empty() && !reason.is_empty(),
+        _ => false,
+    };
+    if !danger_valid {
+        return false;
+    }
+    match request.tool.as_str() {
+        "bash" => true,
+        "write" | "edit" if request.danger_rule_id.is_none() => {
+            let path = std::path::Path::new(&request.display_target);
+            !path.is_absolute()
+                && path
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+        }
+        _ => false,
+    }
 }
 
 struct RejectPermissionHook;
@@ -2064,6 +2492,180 @@ mod tests {
             let decision = self.decision.clone();
             async move { Ok(decision) }.boxed()
         }
+    }
+
+    fn permission_request(tool: &str, target: &str) -> PermissionRequest {
+        PermissionRequest {
+            call_id: "opaque-call".into(),
+            tool: tool.into(),
+            display_target: target.into(),
+            danger_rule_id: None,
+            danger_reason: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_queue_notifies_after_enqueue_without_holding_its_mutex() {
+        let queue = PermissionQueue::new();
+        let mut listener = queue.subscribe();
+
+        let future = queue.request(
+            permission_request("write", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        assert!(listener.changed().await);
+        let pending = queue.take_pending().unwrap();
+        let (_, mut lease) = pending.into_parts().unwrap();
+        assert!(lease.respond(PermissionDecision::Once));
+        assert_eq!(future.await.unwrap(), PermissionDecision::Once);
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn permission_queue_fails_closed_without_a_live_notifier() {
+        let queue = PermissionQueue::new();
+        let decision = queue
+            .request(
+                permission_request("bash", "printf ok"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(decision, PermissionDecision::Timeout);
+        assert!(queue.take_pending().is_none());
+
+        let listener = queue.subscribe();
+        drop(listener);
+        let decision = queue
+            .request(
+                permission_request("edit", "src/lib.rs"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(decision, PermissionDecision::Timeout);
+        assert!(queue.take_pending().is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_queue_drop_paths_and_replacement_are_first_wins() {
+        let queue = PermissionQueue::new();
+        let listener = queue.subscribe();
+
+        let first = queue.request(
+            permission_request("write", "first.txt"),
+            CancellationToken::new(),
+        );
+        let second = queue.request(
+            permission_request("write", "second.txt"),
+            CancellationToken::new(),
+        );
+        assert_eq!(first.await.unwrap(), PermissionDecision::Timeout);
+        let (_, mut lease) = queue.take_pending().unwrap().into_parts().unwrap();
+        assert!(lease.respond(PermissionDecision::Always));
+        assert!(!lease.respond(PermissionDecision::Once));
+        assert_eq!(second.await.unwrap(), PermissionDecision::Always);
+
+        let dropped_pending = queue.request(
+            permission_request("edit", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        drop(queue.take_pending().unwrap());
+        assert_eq!(dropped_pending.await.unwrap(), PermissionDecision::Timeout);
+
+        let dropped_lease = queue.request(
+            permission_request("bash", "printf ok"),
+            CancellationToken::new(),
+        );
+        drop(queue.take_pending().unwrap().into_parts().unwrap().1);
+        assert_eq!(dropped_lease.await.unwrap(), PermissionDecision::Timeout);
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn replacing_subscription_rejects_an_already_taken_old_card() {
+        let queue = PermissionQueue::new();
+        let old_listener = queue.subscribe();
+        let waiting = queue.request(
+            permission_request("write", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        let (_, mut old_lease) = queue.take_pending().unwrap().into_parts().unwrap();
+
+        let new_listener = queue.subscribe();
+        assert_eq!(waiting.await.unwrap(), PermissionDecision::Timeout);
+        assert!(old_lease.is_resolved());
+        assert!(!old_lease.respond(PermissionDecision::Always));
+        assert!(queue.take_pending().is_none());
+
+        let new_waiting = queue.request(
+            permission_request("edit", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        let (_, mut new_lease) = queue.take_pending().unwrap().into_parts().unwrap();
+        drop(old_listener);
+        assert!(!new_lease.is_resolved());
+        assert!(new_lease.respond(PermissionDecision::Once));
+        assert_eq!(new_waiting.await.unwrap(), PermissionDecision::Once);
+        drop(new_listener);
+    }
+
+    #[tokio::test]
+    async fn permission_queue_future_drop_and_cancellation_clear_stale_cards() {
+        let queue = PermissionQueue::new();
+        let listener = queue.subscribe();
+
+        let never_polled = queue.request(
+            permission_request("write", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        let (_, mut lease) = queue.take_pending().unwrap().into_parts().unwrap();
+        drop(never_polled);
+        assert!(lease.is_resolved());
+        assert!(!lease.respond(PermissionDecision::Once));
+        assert!(queue.take_pending().is_none());
+
+        let mut polled = queue.request(
+            permission_request("write", "src/main.rs"),
+            CancellationToken::new(),
+        );
+        assert!(futures::poll!(&mut polled).is_pending());
+        let (_, mut polled_lease) = queue.take_pending().unwrap().into_parts().unwrap();
+        drop(polled);
+        assert!(polled_lease.is_resolved());
+        assert!(!polled_lease.respond(PermissionDecision::Always));
+
+        let cancel = CancellationToken::new();
+        let cancelled = queue.request(permission_request("bash", "printf ok"), cancel.clone());
+        cancel.cancel();
+        assert_eq!(cancelled.await.unwrap(), PermissionDecision::Timeout);
+        assert!(queue.take_pending().is_none());
+
+        let unresolved = queue.request(
+            permission_request("edit", "src/lib.rs"),
+            CancellationToken::new(),
+        );
+        drop(listener);
+        assert_eq!(unresolved.await.unwrap(), PermissionDecision::Timeout);
+        assert!(queue.take_pending().is_none());
+    }
+
+    #[tokio::test]
+    async fn permission_queue_rejects_malformed_or_cross_tool_danger_requests() {
+        let queue = PermissionQueue::new();
+        let listener = queue.subscribe();
+        let mut request = permission_request("write", "src/lib.rs");
+        request.danger_rule_id = Some("danger".into());
+        request.danger_reason = Some("not legal for write".into());
+        assert_eq!(
+            queue
+                .request(request, CancellationToken::new())
+                .await
+                .unwrap(),
+            PermissionDecision::Timeout
+        );
+        assert!(queue.take_pending().is_none());
+        drop(listener);
     }
 
     fn setup() -> (Store, tempfile::TempDir, String) {

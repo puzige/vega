@@ -7,9 +7,11 @@
 //! and the sidebar blocks render the lists now.
 
 pub mod conversation_stream;
+pub mod permission_card;
 pub mod settings;
 pub mod sidebar;
 pub mod text_input;
+pub mod tool_card;
 
 use gpui::{App, KeyBinding};
 
@@ -45,6 +47,36 @@ pub fn init(cx: &mut App) {
             "cmd-enter",
             conversation_stream::SendMessage,
             Some("Composer"),
+        ),
+        KeyBinding::new(
+            "enter",
+            permission_card::PermissionEnter,
+            Some("PermissionCard"),
+        ),
+        KeyBinding::new(
+            "cmd-enter",
+            permission_card::PermissionAlways,
+            Some("PermissionCard"),
+        ),
+        KeyBinding::new(
+            "escape",
+            permission_card::PermissionDeny,
+            Some("PermissionCard"),
+        ),
+        KeyBinding::new(
+            "tab",
+            permission_card::PermissionNextFocus,
+            Some("PermissionCard"),
+        ),
+        KeyBinding::new(
+            "shift-tab",
+            permission_card::PermissionPreviousFocus,
+            Some("PermissionCard"),
+        ),
+        KeyBinding::new(
+            "space",
+            permission_card::PermissionActivate,
+            Some("PermissionCard"),
         ),
     ]);
 }
