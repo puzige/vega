@@ -4,14 +4,14 @@
 //! module. Public callers receive only safe projections from `types`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -39,6 +39,35 @@ const PATCH_LIMIT: usize = 4 * 1024 * 1024;
 const PATCH_ROW_LIMIT: usize = 20_000;
 const PATCH_LINE_LIMIT: usize = 64 * 1024;
 static SERVICE_NONCE: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy)]
+struct RetainedBudget {
+    retained: usize,
+    cap: usize,
+}
+
+impl RetainedBudget {
+    fn new(cap: usize) -> Self {
+        Self { retained: 0, cap }
+    }
+
+    fn remaining(self) -> usize {
+        self.cap - self.retained
+    }
+
+    fn charge(&mut self, bytes: usize) -> Result<(), GitWorkspaceError> {
+        self.retained = self
+            .retained
+            .checked_add(bytes)
+            .filter(|retained| *retained <= self.cap)
+            .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+        Ok(())
+    }
+
+    fn retained(self) -> usize {
+        self.retained
+    }
+}
 
 const PREFIX: &[&str] = &[
     "--no-pager",
@@ -68,12 +97,28 @@ struct PrivateFile {
     staged: WorkspaceChangeKind,
     unstaged: WorkspaceChangeKind,
     binary: bool,
+    metadata_only: bool,
     language: DiffLanguage,
     snapshot_identity: Arc<SnapshotIdentity>,
+    worktree_identity: Option<FileIdentity>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    dev: u64,
+    ino: u64,
+    kind: u8,
+    size: u64,
+    mtime: i64,
+    mtime_ns: i64,
+    ctime: i64,
+    ctime_ns: i64,
 }
 
 #[derive(PartialEq, Eq)]
 struct SnapshotIdentity {
+    filter_paths: Arc<[u8]>,
+    filter_attrs: Vec<u8>,
     status: Vec<u8>,
     staged_raw: Vec<u8>,
     unstaged_raw: Vec<u8>,
@@ -278,6 +323,28 @@ impl Runner {
         stdout_limit: usize,
         cancel: &CancellationToken,
     ) -> Result<Output, GitWorkspaceError> {
+        self.run_inner(verb, args, None, stdout_limit, cancel)
+    }
+
+    fn run_with_input(
+        &self,
+        verb: &'static str,
+        args: &[OsString],
+        input: Arc<[u8]>,
+        stdout_limit: usize,
+        cancel: &CancellationToken,
+    ) -> Result<Output, GitWorkspaceError> {
+        self.run_inner(verb, args, Some(input), stdout_limit, cancel)
+    }
+
+    fn run_inner(
+        &self,
+        verb: &'static str,
+        args: &[OsString],
+        input: Option<Arc<[u8]>>,
+        stdout_limit: usize,
+        cancel: &CancellationToken,
+    ) -> Result<Output, GitWorkspaceError> {
         if !matches!(
             verb,
             "status"
@@ -304,14 +371,18 @@ impl Runner {
         command.args(PREFIX).arg(verb).args(args);
         scrub_git_environment(&mut command);
         command
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
         let mut child = command
             .spawn()
             .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
-        collect_child(&mut child, stdout_limit, cancel)
+        collect_child(&mut child, input, stdout_limit, cancel)
     }
 
     fn verify_root(&self) -> Result<(), GitWorkspaceError> {
@@ -366,19 +437,43 @@ enum Stream {
 
 fn collect_child(
     child: &mut Child,
+    input: Option<Arc<[u8]>>,
     stdout_limit: usize,
     cancel: &CancellationToken,
 ) -> Result<Output, GitWorkspaceError> {
     let pgid = child.id();
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| error(GitWorkspaceErrorCode::ProcessControlFailed))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| error(GitWorkspaceErrorCode::ProcessControlFailed))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdin = input.as_ref().and_then(|_| child.stdin.take());
+    let (stdout, stderr, stdin) = match (stdout, stderr, stdin, input.is_some()) {
+        (Some(stdout), Some(stderr), Some(stdin), true) => (stdout, stderr, Some(stdin)),
+        (Some(stdout), Some(stderr), None, false) => (stdout, stderr, None),
+        (stdout, stderr, stdin, _) => {
+            cleanup_partial_child(child, pgid, stdout, stderr, stdin);
+            return Err(error(GitWorkspaceErrorCode::ProcessControlFailed));
+        }
+    };
     let overflowed = Arc::new(AtomicBool::new(false));
+    let writer_done = Arc::new(AtomicBool::new(input.is_none()));
+    let writer_failed = Arc::new(AtomicBool::new(false));
+    if let Some(input) = input {
+        let Some(mut stdin) = stdin else {
+            cleanup_partial_child(child, pgid, None, None, None);
+            return Err(error(GitWorkspaceErrorCode::ProcessControlFailed));
+        };
+        let done = writer_done.clone();
+        let failed = writer_failed.clone();
+        thread::spawn(move || {
+            for chunk in input.chunks(IO_CHUNK) {
+                if stdin.write_all(chunk).is_err() {
+                    failed.store(true, Ordering::SeqCst);
+                    break;
+                }
+            }
+            drop(stdin);
+            done.store(true, Ordering::SeqCst);
+        });
+    }
     let (sender, receiver) = mpsc::channel();
     spawn_reader(
         stdout,
@@ -407,19 +502,28 @@ fn collect_child(
             stop_code = Some(GitWorkspaceErrorCode::OutputTooLarge);
             break;
         }
+        if writer_failed.load(Ordering::SeqCst) {
+            stop_code = Some(GitWorkspaceErrorCode::GitFailed);
+            break;
+        }
         if started.elapsed() >= READ_TIMEOUT {
             stop_code = Some(GitWorkspaceErrorCode::TimedOut);
             break;
         }
-        status = child
-            .try_wait()
-            .map_err(|_| error(GitWorkspaceErrorCode::ProcessControlFailed))?;
+        match child.try_wait() {
+            Ok(current) => status = current,
+            Err(_) => {
+                stop_code = Some(GitWorkspaceErrorCode::ProcessControlFailed);
+                break;
+            }
+        }
         if status.is_none() {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    if stop_code.is_some() {
-        terminate_group(child, pgid)?;
+    let mut cleanup_failed = false;
+    if stop_code.is_some() && terminate_group(child, pgid).is_err() {
+        cleanup_failed = true;
     }
 
     let drain_started = Instant::now();
@@ -432,20 +536,52 @@ fn collect_child(
         }
     }
     if outputs.len() < 2 {
-        terminate_group(child, pgid)?;
+        stop_code.get_or_insert(GitWorkspaceErrorCode::ProcessControlFailed);
+        if terminate_group(child, pgid).is_err() {
+            cleanup_failed = true;
+        }
         while outputs.len() < 2 {
             match receiver.recv_timeout(DRAIN_GRACE) {
                 Ok(output) => outputs.push(output),
-                Err(_) => return Err(error(GitWorkspaceErrorCode::ProcessControlFailed)),
+                Err(_) => {
+                    cleanup_failed = true;
+                    break;
+                }
             }
         }
     }
     if status.is_none() {
-        status = Some(
-            child
-                .wait()
-                .map_err(|_| error(GitWorkspaceErrorCode::ProcessControlFailed))?,
-        );
+        let deadline = Instant::now();
+        while status.is_none() && deadline.elapsed() < DRAIN_GRACE {
+            status = match child.try_wait() {
+                Ok(status) => status,
+                Err(_) => {
+                    cleanup_failed = true;
+                    let _ = terminate_group(child, pgid);
+                    break;
+                }
+            };
+            if status.is_none() {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+        if status.is_none() {
+            cleanup_failed = true;
+            let _ = terminate_group(child, pgid);
+        }
+    }
+    let writer_started = Instant::now();
+    while !writer_done.load(Ordering::SeqCst) && writer_started.elapsed() < DRAIN_GRACE {
+        thread::sleep(Duration::from_millis(5));
+    }
+    if !writer_done.load(Ordering::SeqCst) || writer_failed.load(Ordering::SeqCst) {
+        stop_code.get_or_insert(GitWorkspaceErrorCode::GitFailed);
+        if terminate_group(child, pgid).is_err() {
+            cleanup_failed = true;
+        }
+    }
+    if cleanup_failed {
+        return Err(error(GitWorkspaceErrorCode::ProcessControlFailed));
     }
     if let Some(code) = stop_code {
         return Err(error(code));
@@ -466,6 +602,40 @@ fn collect_child(
         .map(|output| output.bytes)
         .ok_or_else(|| error(GitWorkspaceErrorCode::GitFailed))?;
     Ok(Output { stdout })
+}
+
+fn cleanup_partial_child(
+    child: &mut Child,
+    pgid: u32,
+    stdout: Option<ChildStdout>,
+    stderr: Option<ChildStderr>,
+    stdin: Option<ChildStdin>,
+) {
+    drop(stdin);
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let (sender, receiver) = mpsc::channel();
+    let mut readers = 0;
+    if let Some(stdout) = stdout {
+        readers += 1;
+        spawn_reader(
+            stdout,
+            Stream::Stdout,
+            0,
+            overflowed.clone(),
+            sender.clone(),
+        );
+    }
+    if let Some(stderr) = stderr {
+        readers += 1;
+        spawn_reader(stderr, Stream::Stderr, 0, overflowed, sender.clone());
+    }
+    drop(sender);
+    let _ = terminate_group(child, pgid);
+    for _ in 0..readers {
+        if receiver.recv_timeout(DRAIN_GRACE).is_err() {
+            break;
+        }
+    }
 }
 
 fn spawn_reader<R: Read + Send + 'static>(
@@ -507,13 +677,25 @@ fn spawn_reader<R: Read + Send + 'static>(
 }
 
 fn terminate_group(child: &mut Child, pgid: u32) -> Result<(), GitWorkspaceError> {
-    let _ = signal_group(pgid, "-TERM");
+    let mut control_failed = !signal_group_checked(pgid, "-TERM");
     thread::sleep(TERM_GRACE);
-    let _ = signal_group(pgid, "-KILL");
-    child
-        .wait()
-        .map_err(|_| error(GitWorkspaceErrorCode::ProcessControlFailed))?;
-    Ok(())
+    if !signal_group_checked(pgid, "-KILL") {
+        control_failed = true;
+        if child.kill().is_err() {
+            control_failed = true;
+        }
+    }
+    let mut reaped = bounded_reap(child, DRAIN_GRACE);
+    if !reaped {
+        control_failed = true;
+        let _ = child.kill();
+        reaped = bounded_reap(child, DRAIN_GRACE);
+    }
+    if control_failed || !reaped {
+        Err(error(GitWorkspaceErrorCode::ProcessControlFailed))
+    } else {
+        Ok(())
+    }
 }
 
 fn signal_group(pgid: u32, signal: &str) -> std::io::Result<ExitStatus> {
@@ -523,6 +705,36 @@ fn signal_group(pgid: u32, signal: &str) -> std::io::Result<ExitStatus> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
+}
+
+fn signal_group_checked(pgid: u32, signal: &str) -> bool {
+    match signal_group(pgid, signal) {
+        Ok(status) if status.success() => true,
+        Ok(_) => !group_exists(pgid),
+        Err(_) => false,
+    }
+}
+
+fn group_exists(pgid: u32) -> bool {
+    Command::new(KILL)
+        .args(["-0", "--", &format!("-{pgid}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn bounded_reap(child: &mut Child, timeout: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => thread::sleep(Duration::from_millis(5)),
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn classify_git_failure(status: ExitStatus, outputs: &[ReaderResult]) -> GitWorkspaceError {
@@ -553,6 +765,7 @@ struct ParsedFile {
     unstaged: WorkspaceChangeKind,
     additions: WorkspaceLineCount,
     deletions: WorkspaceLineCount,
+    metadata_only: bool,
 }
 
 struct ParsedStatus {
@@ -578,16 +791,35 @@ fn build_snapshot(
     if top_path != runner.root {
         return Err(error(GitWorkspaceErrorCode::InvalidRoot));
     }
-    let status_output = runner.run("status", &status_args(), STDOUT_LIMIT, cancel)?;
+    let filter_identity = capture_filter_identity(runner, cancel, SNAPSHOT_LIMIT)?;
+    let mut budget = RetainedBudget::new(SNAPSHOT_LIMIT);
+    budget.charge(filter_identity.paths.len())?;
+    budget.charge(filter_identity.attrs.len())?;
+    verify_filter_bytes_with_retained(
+        runner,
+        &filter_identity.paths,
+        &filter_identity.attrs,
+        budget.retained(),
+        cancel,
+    )?;
+    let status_output = runner.run("status", &status_args(), budget.remaining(), cancel)?;
     let mut parsed = parse_status(&status_output.stdout)?;
-    let mut consumed = status_output.stdout.len();
+    let worktree_before = capture_worktree_identities(&runner.root, &parsed.files)?;
+    budget.charge(status_output.stdout.len())?;
     let mut raw_outputs = Vec::with_capacity(2);
     for cached in [true, false] {
+        verify_filter_bytes_with_retained(
+            runner,
+            &filter_identity.paths,
+            &filter_identity.attrs,
+            budget.retained(),
+            cancel,
+        )?;
         let raw_args = raw_args(cached);
-        let raw = runner.run("diff", &raw_args, STDOUT_LIMIT, cancel)?;
+        let raw = runner.run("diff", &raw_args, budget.remaining(), cancel)?;
         let raw_entries = validate_raw(&raw.stdout)?;
-        cross_check_raw(&parsed.files, &raw_entries, cached)?;
-        consumed = consumed.saturating_add(raw.stdout.len());
+        cross_check_raw(&mut parsed.files, &raw_entries, cached)?;
+        budget.charge(raw.stdout.len())?;
         raw_outputs.push(raw.stdout);
 
         let mut numstat_args = vec![
@@ -600,31 +832,38 @@ fn build_snapshot(
         if cached {
             numstat_args.insert(0, OsString::from("--cached"));
         }
-        let numstat = runner.run("diff", &numstat_args, STDOUT_LIMIT, cancel)?;
+        verify_filter_bytes_with_retained(
+            runner,
+            &filter_identity.paths,
+            &filter_identity.attrs,
+            budget.retained(),
+            cancel,
+        )?;
+        let numstat = runner.run("diff", &numstat_args, budget.remaining(), cancel)?;
         let numstat_paths = merge_numstat(&mut parsed.files, &numstat.stdout, cached)?;
-        let raw_paths: BTreeSet<&[u8]> = raw_entries
-            .iter()
-            .map(|entry| entry.path.as_slice())
-            .collect();
-        let numstat_paths: BTreeSet<&[u8]> = numstat_paths.iter().map(Vec::as_slice).collect();
+        let raw_paths = path_multiplicity(raw_entries.iter().map(|entry| entry.path.as_slice()));
+        let numstat_paths = path_multiplicity(numstat_paths.iter().map(Vec::as_slice));
         if raw_paths != numstat_paths {
             return Err(error(GitWorkspaceErrorCode::MalformedOutput));
         }
-        consumed = consumed.saturating_add(numstat.stdout.len());
-        if consumed > SNAPSHOT_LIMIT {
-            return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
-        }
+        budget.charge(numstat.stdout.len())?;
     }
 
     if parsed.files.len() > PATH_LIMIT {
         return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
     }
     let snapshot_identity = Arc::new(SnapshotIdentity {
+        filter_paths: filter_identity.paths,
+        filter_attrs: filter_identity.attrs,
         status: status_output.stdout,
         staged_raw: raw_outputs.remove(0),
         unstaged_raw: raw_outputs.remove(0),
     });
     verify_snapshot_identity(runner, &snapshot_identity, cancel)?;
+    let mut worktree_after = capture_worktree_identities(&runner.root, &parsed.files)?;
+    if worktree_before != worktree_after {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
     let mut public_files = Vec::with_capacity(parsed.files.len());
     let mut private_files = Vec::with_capacity(parsed.files.len());
     let mut aggregate_add = Some(0_u64);
@@ -646,6 +885,9 @@ fn build_snapshot(
         let language = language_for(&parsed_file.path);
         let binary = matches!(parsed_file.additions, WorkspaceLineCount::Binary)
             || matches!(parsed_file.deletions, WorkspaceLineCount::Binary);
+        let worktree_identity = worktree_after
+            .remove(&parsed_file.path)
+            .ok_or_else(|| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
         fold_count(&mut aggregate_add, parsed_file.additions)?;
         fold_count(&mut aggregate_delete, parsed_file.deletions)?;
         public_files.push(WorkspaceFile {
@@ -665,8 +907,10 @@ fn build_snapshot(
             staged: parsed_file.staged,
             unstaged: parsed_file.unstaged,
             binary,
+            metadata_only: parsed_file.metadata_only,
             language,
             snapshot_identity: snapshot_identity.clone(),
+            worktree_identity,
         });
     }
     let additions = aggregate_add.map_or(WorkspaceLineCount::Unknown, WorkspaceLineCount::Known);
@@ -683,10 +927,16 @@ fn build_snapshot(
         files: public_files,
     };
     let retained = estimate_snapshot_bytes(&snapshot);
-    if consumed.saturating_add(retained) > SNAPSHOT_LIMIT {
-        return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
-    }
+    budget.charge(retained)?;
     Ok((snapshot, private_files))
+}
+
+fn path_multiplicity<'a>(paths: impl Iterator<Item = &'a [u8]>) -> BTreeMap<Vec<u8>, usize> {
+    let mut counts = BTreeMap::new();
+    for path in paths {
+        *counts.entry(path.to_vec()).or_insert(0) += 1;
+    }
+    counts
 }
 
 fn status_args() -> Vec<OsString> {
@@ -697,6 +947,131 @@ fn status_args() -> Vec<OsString> {
         OsString::from("--renames"),
         OsString::from("--untracked-files=all"),
     ]
+}
+
+struct FilterIdentity {
+    paths: Arc<[u8]>,
+    attrs: Vec<u8>,
+}
+
+fn capture_filter_identity(
+    runner: &Runner,
+    cancel: &CancellationToken,
+    limit: usize,
+) -> Result<FilterIdentity, GitWorkspaceError> {
+    let paths = runner.run(
+        "ls-files",
+        &[
+            OsString::from("-z"),
+            OsString::from("--cached"),
+            OsString::from("--deduplicate"),
+        ],
+        limit,
+        cancel,
+    )?;
+    let path_bytes: Arc<[u8]> = paths.stdout.into();
+    let parsed_paths = parse_nul_paths(&path_bytes)?;
+    let remaining = limit
+        .checked_sub(path_bytes.len())
+        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+    let attrs = runner.run_with_input(
+        "check-attr",
+        &[
+            OsString::from("-z"),
+            OsString::from("--stdin"),
+            OsString::from("--all"),
+        ],
+        path_bytes.clone(),
+        remaining,
+        cancel,
+    )?;
+    validate_filter_attrs(&parsed_paths, &attrs.stdout)?;
+    Ok(FilterIdentity {
+        paths: path_bytes,
+        attrs: attrs.stdout,
+    })
+}
+
+fn parse_nul_paths(bytes: &[u8]) -> Result<Vec<Vec<u8>>, GitWorkspaceError> {
+    if !bytes.is_empty() && !bytes.ends_with(&[0]) {
+        return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+    }
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut paths = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut fields = bytes.split(|byte| *byte == 0).peekable();
+    while let Some(path) = fields.next() {
+        if path.is_empty() {
+            if fields.peek().is_none() {
+                break;
+            }
+            return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+        }
+        validate_relative_path(path)?;
+        if paths.len() == PATH_LIMIT {
+            return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+        }
+        if !seen.insert(path.to_vec()) {
+            return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+        }
+        paths.push(path.to_vec());
+    }
+    Ok(paths)
+}
+
+fn validate_filter_attrs(paths: &[Vec<u8>], bytes: &[u8]) -> Result<(), GitWorkspaceError> {
+    if !bytes.is_empty() && !bytes.ends_with(&[0]) {
+        return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+    }
+    let fields: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
+    if fields.last().is_some_and(|field| field.is_empty()) {
+        // trailing terminator is structural and excluded below
+    } else if !fields.is_empty() {
+        return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+    }
+    let fields = if fields.last().is_some_and(|field| field.is_empty()) {
+        &fields[..fields.len() - 1]
+    } else {
+        &fields[..]
+    };
+    let (triples, remainder) = fields.as_chunks::<3>();
+    if !remainder.is_empty() {
+        return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+    }
+    let allowed: BTreeSet<&[u8]> = paths.iter().map(Vec::as_slice).collect();
+    let mut seen = BTreeSet::new();
+    for triple in triples {
+        if !allowed.contains(triple[0])
+            || triple[1].is_empty()
+            || triple[2].is_empty()
+            || !seen.insert((triple[0].to_vec(), triple[1].to_vec()))
+        {
+            return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+        }
+        if triple[1] == b"filter" {
+            return Err(error(GitWorkspaceErrorCode::GitFailed));
+        }
+    }
+    Ok(())
+}
+
+fn verify_filter_bytes_with_retained(
+    runner: &Runner,
+    expected_paths: &[u8],
+    expected_attrs: &[u8],
+    retained: usize,
+    cancel: &CancellationToken,
+) -> Result<(), GitWorkspaceError> {
+    let remaining = SNAPSHOT_LIMIT
+        .checked_sub(retained)
+        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+    let current = capture_filter_identity(runner, cancel, remaining)?;
+    if current.paths.as_ref() != expected_paths || current.attrs != expected_attrs {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    Ok(())
 }
 
 fn raw_args(cached: bool) -> Vec<OsString> {
@@ -719,19 +1094,124 @@ fn verify_snapshot_identity(
     expected: &SnapshotIdentity,
     cancel: &CancellationToken,
 ) -> Result<(), GitWorkspaceError> {
-    let status = runner.run("status", &status_args(), STDOUT_LIMIT, cancel)?;
-    parse_status(&status.stdout)?;
-    let staged = runner.run("diff", &raw_args(true), STDOUT_LIMIT, cancel)?;
-    validate_raw(&staged.stdout)?;
-    let unstaged = runner.run("diff", &raw_args(false), STDOUT_LIMIT, cancel)?;
-    validate_raw(&unstaged.stdout)?;
-    if status.stdout != expected.status
-        || staged.stdout != expected.staged_raw
-        || unstaged.stdout != expected.unstaged_raw
+    let retained = snapshot_identity_retained(expected)?;
+    let remaining = SNAPSHOT_LIMIT
+        .checked_sub(retained)
+        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+    verify_filter_bytes_with_retained(
+        runner,
+        &expected.filter_paths,
+        &expected.filter_attrs,
+        retained,
+        cancel,
+    )?;
     {
-        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+        let status = runner.run("status", &status_args(), remaining, cancel)?;
+        parse_status(&status.stdout)?;
+        if status.stdout != expected.status {
+            return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+        }
     }
+    verify_filter_bytes_with_retained(
+        runner,
+        &expected.filter_paths,
+        &expected.filter_attrs,
+        retained,
+        cancel,
+    )?;
+    {
+        let staged = runner.run("diff", &raw_args(true), remaining, cancel)?;
+        validate_raw(&staged.stdout)?;
+        if staged.stdout != expected.staged_raw {
+            return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+        }
+    }
+    verify_filter_bytes_with_retained(
+        runner,
+        &expected.filter_paths,
+        &expected.filter_attrs,
+        retained,
+        cancel,
+    )?;
+    {
+        let unstaged = runner.run("diff", &raw_args(false), remaining, cancel)?;
+        validate_raw(&unstaged.stdout)?;
+        if unstaged.stdout != expected.unstaged_raw {
+            return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+        }
+    }
+    verify_filter_bytes_with_retained(
+        runner,
+        &expected.filter_paths,
+        &expected.filter_attrs,
+        retained,
+        cancel,
+    )?;
     Ok(())
+}
+
+fn snapshot_identity_retained(expected: &SnapshotIdentity) -> Result<usize, GitWorkspaceError> {
+    expected
+        .filter_paths
+        .len()
+        .checked_add(expected.filter_attrs.len())
+        .and_then(|value| value.checked_add(expected.status.len()))
+        .and_then(|value| value.checked_add(expected.staged_raw.len()))
+        .and_then(|value| value.checked_add(expected.unstaged_raw.len()))
+        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))
+}
+
+fn capture_worktree_identities(
+    root: &Path,
+    files: &BTreeMap<Vec<u8>, ParsedFile>,
+) -> Result<HashMap<Vec<u8>, Option<FileIdentity>>, GitWorkspaceError> {
+    let mut identities = HashMap::with_capacity(files.len());
+    for path in files.keys() {
+        identities.insert(path.clone(), read_worktree_identity(root, path)?);
+    }
+    Ok(identities)
+}
+
+fn read_worktree_identity(
+    root: &Path,
+    path: &[u8],
+) -> Result<Option<FileIdentity>, GitWorkspaceError> {
+    match fs::symlink_metadata(root.join(OsString::from_vec(path.to_vec()))) {
+        Ok(metadata) => Ok(Some(file_identity(&metadata))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(error(GitWorkspaceErrorCode::ChangedDuringRead)),
+    }
+}
+
+fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
+    let file_type = metadata.file_type();
+    let kind = if file_type.is_file() {
+        0
+    } else if file_type.is_dir() {
+        1
+    } else if file_type.is_symlink() {
+        2
+    } else if file_type.is_block_device() {
+        3
+    } else if file_type.is_char_device() {
+        4
+    } else if file_type.is_fifo() {
+        5
+    } else if file_type.is_socket() {
+        6
+    } else {
+        7
+    };
+    FileIdentity {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+        kind,
+        size: metadata.size(),
+        mtime: metadata.mtime(),
+        mtime_ns: metadata.mtime_nsec(),
+        ctime: metadata.ctime(),
+        ctime_ns: metadata.ctime_nsec(),
+    }
 }
 
 fn parse_status(bytes: &[u8]) -> Result<ParsedStatus, GitWorkspaceError> {
@@ -777,7 +1257,16 @@ fn parse_status(bytes: &[u8]) -> Result<ParsedStatus, GitWorkspaceError> {
                 let fields = split_prefix_fields(record, 8)?;
                 validate_ordinary_fields(&fields, false)?;
                 let (staged, unstaged) = parse_xy(fields[1])?;
-                insert_status(&mut files, fields[8], None, staged, unstaged)?;
+                insert_status(
+                    &mut files,
+                    fields[8],
+                    None,
+                    staged,
+                    unstaged,
+                    special_modes(&fields[3..=5])
+                        || matches!(staged, WorkspaceChangeKind::TypeChanged)
+                        || matches!(unstaged, WorkspaceChangeKind::TypeChanged),
+                )?;
             }
             b'2' => {
                 let fields = split_prefix_fields(record, 9)?;
@@ -787,7 +1276,16 @@ fn parse_status(bytes: &[u8]) -> Result<ParsedStatus, GitWorkspaceError> {
                     .filter(|value| !value.is_empty())
                     .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
                 let (staged, unstaged) = parse_xy(fields[1])?;
-                insert_status(&mut files, fields[9], Some(old), staged, unstaged)?;
+                insert_status(
+                    &mut files,
+                    fields[9],
+                    Some(old),
+                    staged,
+                    unstaged,
+                    special_modes(&fields[3..=5])
+                        || matches!(staged, WorkspaceChangeKind::TypeChanged)
+                        || matches!(unstaged, WorkspaceChangeKind::TypeChanged),
+                )?;
             }
             b'u' => {
                 let fields = split_prefix_fields(record, 10)?;
@@ -804,6 +1302,7 @@ fn parse_status(bytes: &[u8]) -> Result<ParsedStatus, GitWorkspaceError> {
                     None,
                     WorkspaceChangeKind::Unmerged,
                     WorkspaceChangeKind::Unmerged,
+                    special_modes(&fields[3..=6]),
                 )?;
             }
             b'?' => {
@@ -817,6 +1316,7 @@ fn parse_status(bytes: &[u8]) -> Result<ParsedStatus, GitWorkspaceError> {
                     None,
                     WorkspaceChangeKind::Unchanged,
                     WorkspaceChangeKind::Untracked,
+                    false,
                 )?;
             }
             _ => return Err(error(GitWorkspaceErrorCode::MalformedOutput)),
@@ -939,6 +1439,7 @@ fn insert_status(
     previous_path: Option<&[u8]>,
     staged: WorkspaceChangeKind,
     unstaged: WorkspaceChangeKind,
+    metadata_only: bool,
 ) -> Result<(), GitWorkspaceError> {
     validate_relative_path(path)?;
     if let Some(previous) = previous_path {
@@ -956,6 +1457,7 @@ fn insert_status(
             unstaged,
             additions: WorkspaceLineCount::Unknown,
             deletions: WorkspaceLineCount::Unknown,
+            metadata_only,
         },
     );
     Ok(())
@@ -977,6 +1479,7 @@ struct RawEntry {
     path: Vec<u8>,
     previous_path: Option<Vec<u8>>,
     kind: WorkspaceChangeKind,
+    metadata_only: bool,
 }
 
 fn validate_raw(bytes: &[u8]) -> Result<Vec<RawEntry>, GitWorkspaceError> {
@@ -988,6 +1491,8 @@ fn validate_raw(bytes: &[u8]) -> Result<Vec<RawEntry>, GitWorkspaceError> {
     }
     let mut records = bytes.split(|byte| *byte == 0).peekable();
     let mut entries = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut unmerged_companions = BTreeSet::new();
     let mut oid_width = None;
     while let Some(header) = records.next() {
         if header.is_empty() && records.peek().is_none() {
@@ -1027,6 +1532,9 @@ fn validate_raw(bytes: &[u8]) -> Result<Vec<RawEntry>, GitWorkspaceError> {
             .filter(|piece| !piece.is_empty())
             .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
         validate_relative_path(path)?;
+        let raw_metadata_only = matches!(old_mode, b"120000" | b"160000")
+            || matches!(new_mode, b"120000" | b"160000")
+            || status[0] == b'T';
         let mut previous_path = None;
         if matches!(status[0], b'R' | b'C') {
             let second = records
@@ -1035,6 +1543,9 @@ fn validate_raw(bytes: &[u8]) -> Result<Vec<RawEntry>, GitWorkspaceError> {
                 .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
             validate_relative_path(second)?;
             previous_path = Some(path.to_vec());
+            if !seen.insert(second.to_vec()) {
+                return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+            }
             entries.push(RawEntry {
                 path: second.to_vec(),
                 previous_path,
@@ -1043,12 +1554,30 @@ fn validate_raw(bytes: &[u8]) -> Result<Vec<RawEntry>, GitWorkspaceError> {
                 } else {
                     WorkspaceChangeKind::Copied
                 },
+                metadata_only: raw_metadata_only,
             });
         } else {
+            let kind = parse_change(status[0])?;
+            let duplicate = !seen.insert(path.to_vec());
+            if duplicate
+                && !(kind == WorkspaceChangeKind::Modified
+                    && !unmerged_companions.contains(path)
+                    && entries.iter().any(|entry| {
+                        entry.path == path
+                            && entry.kind == WorkspaceChangeKind::Unmerged
+                            && entry.previous_path.is_none()
+                    }))
+            {
+                return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+            }
+            if duplicate {
+                unmerged_companions.insert(path.to_vec());
+            }
             entries.push(RawEntry {
                 path: path.to_vec(),
                 previous_path,
-                kind: parse_change(status[0])?,
+                kind,
+                metadata_only: raw_metadata_only,
             });
         }
     }
@@ -1056,35 +1585,44 @@ fn validate_raw(bytes: &[u8]) -> Result<Vec<RawEntry>, GitWorkspaceError> {
 }
 
 fn cross_check_raw(
-    files: &BTreeMap<Vec<u8>, ParsedFile>,
+    files: &mut BTreeMap<Vec<u8>, ParsedFile>,
     entries: &[RawEntry],
     staged: bool,
 ) -> Result<(), GitWorkspaceError> {
-    let expected: BTreeMap<&[u8], (&ParsedFile, WorkspaceChangeKind)> = files
+    let expected: BTreeMap<Vec<u8>, (WorkspaceChangeKind, Option<Vec<u8>>)> = files
         .values()
         .filter_map(|file| {
             let kind = if staged { file.staged } else { file.unstaged };
             (kind != WorkspaceChangeKind::Unchanged && kind != WorkspaceChangeKind::Untracked)
-                .then_some((file.path.as_slice(), (file, kind)))
+                .then_some((file.path.clone(), (kind, file.previous_path.clone())))
         })
         .collect();
-    if entries.len() != expected.len() {
+    let entry_paths: BTreeSet<&[u8]> = entries.iter().map(|entry| entry.path.as_slice()).collect();
+    if entry_paths.len() != expected.len() {
         return Err(error(GitWorkspaceErrorCode::MalformedOutput));
     }
     for entry in entries {
-        let (file, kind) = expected
+        let (kind, previous_path) = expected
             .get(entry.path.as_slice())
             .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
         let expected_previous = matches!(
             kind,
             WorkspaceChangeKind::Renamed | WorkspaceChangeKind::Copied
         )
-        .then_some(file.previous_path.as_ref())
+        .then_some(previous_path.as_ref())
         .flatten();
-        if *kind != entry.kind
+        if (*kind != entry.kind
+            && !(*kind == WorkspaceChangeKind::Unmerged
+                && entry.kind == WorkspaceChangeKind::Modified))
             || expected_previous.map(Vec::as_slice) != entry.previous_path.as_deref()
         {
             return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+        }
+        if entry.metadata_only {
+            files
+                .get_mut(entry.path.as_slice())
+                .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?
+                .metadata_only = true;
         }
     }
     Ok(())
@@ -1099,6 +1637,12 @@ fn valid_mode(mode: &[u8]) -> bool {
         mode,
         b"000000" | b"100644" | b"100755" | b"120000" | b"160000"
     )
+}
+
+fn special_modes(modes: &[&[u8]]) -> bool {
+    modes
+        .iter()
+        .any(|mode| matches!(*mode, b"120000" | b"160000"))
 }
 
 fn valid_oid(oid: &[u8]) -> bool {
@@ -1136,6 +1680,7 @@ fn merge_numstat(
     }
     let mut records = bytes.split(|byte| *byte == 0).peekable();
     let mut paths = Vec::new();
+    let mut seen = BTreeMap::<Vec<u8>, usize>::new();
     while let Some(record) = records.next() {
         if record.is_empty() && records.peek().is_none() {
             break;
@@ -1178,6 +1723,14 @@ fn merge_numstat(
             .get_mut(path)
             .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
         let layer_kind = if staged { file.staged } else { file.unstaged };
+        let multiplicity = seen.entry(path.to_vec()).or_insert(0);
+        *multiplicity = multiplicity
+            .checked_add(1)
+            .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
+        if *multiplicity > 1 && !(layer_kind == WorkspaceChangeKind::Unmerged && *multiplicity == 2)
+        {
+            return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+        }
         let expected_old = matches!(
             layer_kind,
             WorkspaceChangeKind::Renamed | WorkspaceChangeKind::Copied
@@ -1187,8 +1740,13 @@ fn merge_numstat(
         if rename_old != expected_old {
             return Err(error(GitWorkspaceErrorCode::MalformedOutput));
         }
-        file.additions = merge_count(file.additions, additions)?;
-        file.deletions = merge_count(file.deletions, deletions)?;
+        if layer_kind == WorkspaceChangeKind::Unmerged {
+            file.additions = WorkspaceLineCount::Unknown;
+            file.deletions = WorkspaceLineCount::Unknown;
+        } else {
+            file.additions = merge_count(file.additions, additions)?;
+            file.deletions = merge_count(file.deletions, deletions)?;
+        }
         paths.push(path.to_vec());
     }
     Ok(paths)
@@ -1242,12 +1800,35 @@ fn build_projection(
     cancel: &CancellationToken,
 ) -> Result<DiffTextProjection, GitWorkspaceError> {
     verify_snapshot_identity(runner, &file.snapshot_identity, cancel)?;
-    if file.binary || file.staged == WorkspaceChangeKind::Unmerged {
+    if read_worktree_identity(&runner.root, file.path.as_bytes())? != file.worktree_identity {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    if file.binary || file.metadata_only || file.staged == WorkspaceChangeKind::Unmerged {
         return Err(error(GitWorkspaceErrorCode::MetadataOnly));
     }
+    let needs_worktree_hash = file
+        .worktree_identity
+        .is_some_and(|identity| identity.kind == 0)
+        && !matches!(
+            file.unstaged,
+            WorkspaceChangeKind::Unchanged
+                | WorkspaceChangeKind::Deleted
+                | WorkspaceChangeKind::Untracked
+        );
+    let worktree_hash = needs_worktree_hash
+        .then(|| hash_worktree_no_filters(runner, &file.path, cancel))
+        .transpose()?;
     let mut sections = Vec::new();
+    let mut remaining_bytes = PATCH_LIMIT;
+    let mut remaining_rows = PATCH_ROW_LIMIT;
     if file.unstaged == WorkspaceChangeKind::Untracked {
-        sections.push(project_untracked(runner, &file, cancel)?);
+        sections.push(project_untracked(
+            runner,
+            &file,
+            cancel,
+            &mut remaining_bytes,
+            &mut remaining_rows,
+        )?);
     } else {
         for (layer, changed) in [
             (
@@ -1277,8 +1858,18 @@ fn build_projection(
                 args.push(previous.clone());
             }
             args.push(file.path.clone());
-            let output = runner.run("diff", &args, PATCH_LIMIT, cancel)?;
-            sections.push(parse_patch(layer, &output.stdout)?);
+            verify_filter_bytes_with_retained(
+                runner,
+                &file.snapshot_identity.filter_paths,
+                &file.snapshot_identity.filter_attrs,
+                snapshot_identity_retained(&file.snapshot_identity)?,
+                cancel,
+            )?;
+            let output = runner.run("diff", &args, remaining_bytes, cancel)?;
+            remaining_bytes = remaining_bytes
+                .checked_sub(output.stdout.len())
+                .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+            sections.push(parse_patch(layer, &output.stdout, &mut remaining_rows)?);
         }
     }
     let projection = DiffTextProjection {
@@ -1287,13 +1878,48 @@ fn build_projection(
         sections,
     };
     verify_snapshot_identity(runner, &file.snapshot_identity, cancel)?;
+    if worktree_hash.is_some()
+        && worktree_hash.as_ref() != Some(&hash_worktree_no_filters(runner, &file.path, cancel)?)
+    {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    if read_worktree_identity(&runner.root, file.path.as_bytes())? != file.worktree_identity {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
     Ok(projection)
+}
+
+fn hash_worktree_no_filters(
+    runner: &Runner,
+    path: &OsStr,
+    cancel: &CancellationToken,
+) -> Result<Vec<u8>, GitWorkspaceError> {
+    let output = runner.run(
+        "hash-object",
+        &[
+            OsString::from("--no-filters"),
+            OsString::from("--"),
+            path.to_owned(),
+        ],
+        65,
+        cancel,
+    )?;
+    let digest = output
+        .stdout
+        .strip_suffix(b"\n")
+        .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
+    if !valid_oid(digest) {
+        return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+    }
+    Ok(digest.to_vec())
 }
 
 fn project_untracked(
     runner: &Runner,
     file: &PrivateFile,
     cancel: &CancellationToken,
+    remaining_bytes: &mut usize,
+    remaining_rows: &mut usize,
 ) -> Result<DiffSection, GitWorkspaceError> {
     if cancel.is_cancelled() {
         return Err(error(GitWorkspaceErrorCode::Cancelled));
@@ -1306,11 +1932,20 @@ fn project_untracked(
     }
     let before =
         fs::symlink_metadata(&path).map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
-    if !before.file_type().is_file() || before.nlink() > 1 || before.size() > PATCH_LIMIT as u64 {
+    if !before.file_type().is_file() || before.nlink() > 1 {
         return Err(error(GitWorkspaceErrorCode::MetadataOnly));
     }
+    if before.size() > *remaining_bytes as u64 {
+        return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+    }
     let mut reader = File::open(&path).map_err(|_| error(GitWorkspaceErrorCode::MetadataOnly))?;
-    let mut bytes = Vec::with_capacity((before.size() as usize).min(PATCH_LIMIT));
+    let opened = reader
+        .metadata()
+        .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    if file_identity(&opened) != file_identity(&before) {
+        return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
+    }
+    let mut bytes = Vec::with_capacity((before.size() as usize).min(*remaining_bytes));
     let mut chunk = [0_u8; IO_CHUNK];
     loop {
         let read = reader
@@ -1319,7 +1954,7 @@ fn project_untracked(
         if read == 0 {
             break;
         }
-        if bytes.len().saturating_add(read) > PATCH_LIMIT {
+        if bytes.len().saturating_add(read) > *remaining_bytes {
             return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
         }
         bytes.extend_from_slice(&chunk[..read]);
@@ -1329,9 +1964,16 @@ fn project_untracked(
     }
     let after =
         fs::symlink_metadata(&path).map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
+    let opened_after = reader
+        .metadata()
+        .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
     let after_canonical =
         fs::canonicalize(&path).map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
-    if after_canonical != canonical || identity_tuple(&before) != identity_tuple(&after) {
+    if after_canonical != canonical
+        || file_identity(&before) != file_identity(&after)
+        || file_identity(&opened) != file_identity(&opened_after)
+        || file_identity(&after) != file_identity(&opened_after)
+    {
         return Err(error(GitWorkspaceErrorCode::ChangedDuringRead));
     }
     let text =
@@ -1341,7 +1983,7 @@ fn project_untracked(
     }
     let mut rows = Vec::new();
     for (index, line) in logical_lines(text).enumerate() {
-        if line.len() > PATCH_LINE_LIMIT || rows.len() == PATCH_ROW_LIMIT {
+        if line.len() > PATCH_LINE_LIMIT || rows.len() == *remaining_rows {
             return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
         }
         rows.push(DiffRow {
@@ -1354,6 +1996,12 @@ fn project_untracked(
             text: line.to_owned(),
         });
     }
+    *remaining_bytes = remaining_bytes
+        .checked_sub(bytes.len())
+        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+    *remaining_rows = remaining_rows
+        .checked_sub(rows.len())
+        .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
     Ok(DiffSection {
         layer: DiffLayer::Untracked,
         hunks: vec![DiffHunk {
@@ -1369,20 +2017,11 @@ fn project_untracked(
     })
 }
 
-fn identity_tuple(metadata: &fs::Metadata) -> (u64, u64, u64, i64, i64) {
-    (
-        metadata.dev(),
-        metadata.ino(),
-        metadata.size(),
-        metadata.mtime(),
-        metadata.mtime_nsec(),
-    )
-}
-
-fn parse_patch(layer: DiffLayer, bytes: &[u8]) -> Result<DiffSection, GitWorkspaceError> {
-    if bytes.len() > PATCH_LIMIT {
-        return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
-    }
+fn parse_patch(
+    layer: DiffLayer,
+    bytes: &[u8],
+    remaining_rows: &mut usize,
+) -> Result<DiffSection, GitWorkspaceError> {
     let text =
         std::str::from_utf8(bytes).map_err(|_| error(GitWorkspaceErrorCode::MetadataOnly))?;
     if text.contains("Binary files ") || text.contains("GIT binary patch") {
@@ -1392,7 +2031,6 @@ fn parse_patch(layer: DiffLayer, bytes: &[u8]) -> Result<DiffSection, GitWorkspa
     let mut current: Option<DiffHunk> = None;
     let mut old_line = 0_u32;
     let mut new_line = 0_u32;
-    let mut rows = 0_usize;
     for line in logical_lines(text) {
         if line.starts_with("@@ ") {
             if line.len() > PATCH_LINE_LIMIT {
@@ -1427,13 +2065,16 @@ fn parse_patch(layer: DiffLayer, bytes: &[u8]) -> Result<DiffSection, GitWorkspa
             return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
         }
         if prefix == b'\\' {
+            if line != "\\ No newline at end of file" {
+                return Err(error(GitWorkspaceErrorCode::MalformedOutput));
+            }
             hunk.missing_trailing_newline = true;
             continue;
         }
-        rows += 1;
-        if rows > PATCH_ROW_LIMIT {
+        if *remaining_rows == 0 {
             return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
         }
+        *remaining_rows -= 1;
         let body = std::str::from_utf8(body)
             .map_err(|_| error(GitWorkspaceErrorCode::MetadataOnly))?
             .to_owned();
@@ -1445,8 +2086,12 @@ fn parse_patch(layer: DiffLayer, bytes: &[u8]) -> Result<DiffSection, GitWorkspa
                     new_line: Some(new_line),
                     text: body,
                 };
-                old_line = old_line.saturating_add(1);
-                new_line = new_line.saturating_add(1);
+                old_line = old_line
+                    .checked_add(1)
+                    .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
+                new_line = new_line
+                    .checked_add(1)
+                    .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
                 row
             }
             b'-' => {
@@ -1456,7 +2101,9 @@ fn parse_patch(layer: DiffLayer, bytes: &[u8]) -> Result<DiffSection, GitWorkspa
                     new_line: None,
                     text: body,
                 };
-                old_line = old_line.saturating_add(1);
+                old_line = old_line
+                    .checked_add(1)
+                    .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
                 row
             }
             b'+' => {
@@ -1466,7 +2113,9 @@ fn parse_patch(layer: DiffLayer, bytes: &[u8]) -> Result<DiffSection, GitWorkspa
                     new_line: Some(new_line),
                     text: body,
                 };
-                new_line = new_line.saturating_add(1);
+                new_line = new_line
+                    .checked_add(1)
+                    .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
                 row
             }
             _ => return Err(error(GitWorkspaceErrorCode::MalformedOutput)),
@@ -1640,7 +2289,6 @@ fn trim_one_newline(bytes: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsStr;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use tempfile::{TempDir, tempdir};
 
@@ -1651,7 +2299,7 @@ mod tests {
     impl Repo {
         fn new() -> Self {
             let dir = tempdir().unwrap();
-            git(dir.path(), &["init", "-q"]);
+            git(dir.path(), &["init", "-q", "--initial-branch=main"]);
             git(dir.path(), &["config", "user.name", "Vega Test"]);
             git(
                 dir.path(),
@@ -1737,6 +2385,26 @@ mod tests {
             .unwrap();
         assert_eq!(projection.sections[0].layer, DiffLayer::Untracked);
         assert_eq!(projection.sections[0].hunks[0].rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn git_workspace_staged_and_unstaged_sections_share_row_budget() {
+        let repo = Repo::new();
+        repo.write("large.txt", "a\n".repeat(6_000).as_bytes());
+        repo.commit_all();
+        repo.write("large.txt", "b\n".repeat(6_000).as_bytes());
+        git(repo.path(), &["add", "large.txt"]);
+        repo.write("large.txt", "c\n".repeat(6_000).as_bytes());
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
+        assert_eq!(
+            service
+                .diff(snapshot.files[0].id, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::OutputTooLarge
+        );
     }
 
     #[tokio::test]
@@ -1835,6 +2503,91 @@ mod tests {
                 GitWorkspaceErrorCode::MetadataOnly
             );
         }
+    }
+
+    #[tokio::test]
+    async fn git_workspace_tracked_staged_and_unstaged_symlinks_are_metadata_only() {
+        let repo = Repo::new();
+        repo.write("target.txt", b"target\n");
+        repo.write("staged-link", b"regular staged\n");
+        repo.write("unstaged-link", b"regular unstaged\n");
+        repo.commit_all();
+        fs::remove_file(repo.path().join("staged-link")).unwrap();
+        fs::remove_file(repo.path().join("unstaged-link")).unwrap();
+        symlink("target.txt", repo.path().join("staged-link")).unwrap();
+        symlink("target.txt", repo.path().join("unstaged-link")).unwrap();
+        git(repo.path(), &["add", "staged-link"]);
+
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
+        for label in ["staged-link", "unstaged-link"] {
+            let file = snapshot
+                .files
+                .iter()
+                .find(|file| file.label == label)
+                .unwrap();
+            assert_eq!(
+                service
+                    .diff(file.id, CancellationToken::new())
+                    .await
+                    .unwrap_err()
+                    .code(),
+                GitWorkspaceErrorCode::MetadataOnly
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn git_workspace_real_conflict_is_unmerged_metadata_only_without_filter_execution() {
+        let repo = Repo::new();
+        repo.write("conflict.txt", b"base\n");
+        repo.commit_all();
+        git(repo.path(), &["branch", "side"]);
+        git(repo.path(), &["checkout", "-q", "side"]);
+        repo.write("conflict.txt", b"side\n");
+        repo.commit_all();
+        git(repo.path(), &["checkout", "-q", "main"]);
+        repo.write("conflict.txt", b"main\n");
+        repo.commit_all();
+        let merge = Command::new(GIT)
+            .current_dir(repo.path())
+            .args(["merge", "--no-edit", "side"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!merge.success());
+        let marker = repo.path().join("filter-ran");
+        git(
+            repo.path(),
+            &[
+                "config",
+                "filter.unused.clean",
+                &format!("printf ran > '{}'; cat", marker.display()),
+            ],
+        );
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
+        let conflicted = snapshot
+            .files
+            .iter()
+            .find(|file| file.label == "conflict.txt")
+            .unwrap();
+        assert_eq!(conflicted.staged, WorkspaceChangeKind::Unmerged);
+        assert_eq!(conflicted.unstaged, WorkspaceChangeKind::Unmerged);
+        assert_eq!(conflicted.additions, WorkspaceLineCount::Unknown);
+        assert_eq!(conflicted.deletions, WorkspaceLineCount::Unknown);
+        assert_eq!(
+            service
+                .diff(conflicted.id, CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::MetadataOnly
+        );
+        assert!(!marker.exists());
     }
 
     #[tokio::test]
@@ -1959,6 +2712,7 @@ mod tests {
                 unstaged: WorkspaceChangeKind::Unchanged,
                 additions: WorkspaceLineCount::Unknown,
                 deletions: WorkspaceLineCount::Unknown,
+                metadata_only: false,
             },
         );
         assert_eq!(
@@ -1967,6 +2721,71 @@ mod tests {
                 .code(),
             GitWorkspaceErrorCode::MalformedOutput
         );
+        assert_eq!(
+            merge_numstat(&mut files, b"1\t1\tfile\x001\t1\tfile\0", true)
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::MalformedOutput
+        );
+        let oid = "a".repeat(40);
+        let raw = format!(
+            ":100644 100644 {oid} {oid} M\0file\0\
+             :100644 100644 {oid} {oid} M\0file\0"
+        );
+        let duplicate_error = match validate_raw(raw.as_bytes()) {
+            Ok(_) => panic!("duplicate raw path was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            duplicate_error.code(),
+            GitWorkspaceErrorCode::MalformedOutput
+        );
+
+        let mut unmerged_files = BTreeMap::from([(
+            b"conflict".to_vec(),
+            ParsedFile {
+                path: b"conflict".to_vec(),
+                previous_path: None,
+                staged: WorkspaceChangeKind::Unchanged,
+                unstaged: WorkspaceChangeKind::Unmerged,
+                additions: WorkspaceLineCount::Unknown,
+                deletions: WorkspaceLineCount::Unknown,
+                metadata_only: false,
+            },
+        )]);
+        let conflict_paths = merge_numstat(
+            &mut unmerged_files,
+            b"0\t0\tconflict\x004\t0\tconflict\0",
+            false,
+        )
+        .unwrap();
+        assert_eq!(conflict_paths, [b"conflict".to_vec(), b"conflict".to_vec()]);
+        assert_eq!(
+            unmerged_files[b"conflict".as_slice()].additions,
+            WorkspaceLineCount::Unknown
+        );
+        assert_eq!(
+            merge_numstat(
+                &mut unmerged_files,
+                b"0\t0\tconflict\x004\t0\tconflict\x001\t0\tconflict\0",
+                false,
+            )
+            .unwrap_err()
+            .code(),
+            GitWorkspaceErrorCode::MalformedOutput
+        );
+
+        let conflict_raw = format!(
+            ":100644 100644 {oid} {oid} U\0conflict\0\
+             :100644 100644 {oid} {oid} M\0conflict\0"
+        );
+        assert_eq!(validate_raw(conflict_raw.as_bytes()).unwrap().len(), 2);
+        let third_raw = format!("{conflict_raw}:100644 100644 {oid} {oid} M\0conflict\0");
+        let third_error = match validate_raw(third_raw.as_bytes()) {
+            Ok(_) => panic!("third unmerged raw record was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(third_error.code(), GitWorkspaceErrorCode::MalformedOutput);
         for (path, expected) in [
             (b"a.rs".as_slice(), DiffLanguage::Rust),
             (b"a.ts", DiffLanguage::TypeScript),
@@ -1980,6 +2799,33 @@ mod tests {
         ] {
             assert_eq!(language_for(path), expected);
         }
+    }
+
+    #[test]
+    fn git_workspace_retained_budget_and_path_caps_are_inclusive() {
+        let mut budget = RetainedBudget::new(10);
+        budget.charge(3).unwrap();
+        assert_eq!(budget.remaining(), 7);
+        budget.charge(7).unwrap();
+        assert_eq!(budget.remaining(), 0);
+        assert_eq!(budget.retained(), 10);
+        assert_eq!(
+            budget.charge(1).unwrap_err().code(),
+            GitWorkspaceErrorCode::OutputTooLarge
+        );
+
+        assert_eq!(
+            parse_nul_paths(b"one\0\0two\0").unwrap_err().code(),
+            GitWorkspaceErrorCode::MalformedOutput
+        );
+        let mut paths = Vec::new();
+        for index in 0..=PATH_LIMIT {
+            paths.extend_from_slice(format!("path-{index}\0").as_bytes());
+        }
+        assert_eq!(
+            parse_nul_paths(&paths).unwrap_err().code(),
+            GitWorkspaceErrorCode::OutputTooLarge
+        );
     }
 
     #[test]
@@ -2023,17 +2869,32 @@ mod tests {
         let exact_line = "x".repeat(PATCH_LINE_LIMIT);
         let patch =
             format!("@@ -0,0 +1,1 @@ fn name\n+{exact_line}\n\\ No newline at end of file\n");
-        let section = parse_patch(DiffLayer::Unstaged, patch.as_bytes()).unwrap();
+        let mut rows = PATCH_ROW_LIMIT;
+        let section = parse_patch(DiffLayer::Unstaged, patch.as_bytes(), &mut rows).unwrap();
         let hunk = &section.hunks[0];
         assert_eq!(hunk.heading_suffix.as_deref(), Some("fn name"));
         assert!(hunk.missing_trailing_newline);
         assert_eq!(hunk.rows[0].text.len(), PATCH_LINE_LIMIT);
         let too_long = format!("@@ -0,0 +1,1 @@\n+{}\n", "x".repeat(PATCH_LINE_LIMIT + 1));
-        let error = match parse_patch(DiffLayer::Unstaged, too_long.as_bytes()) {
+        let error = match parse_patch(DiffLayer::Unstaged, too_long.as_bytes(), &mut rows) {
             Ok(_) => panic!("oversized line was accepted"),
             Err(error) => error,
         };
         assert_eq!(error.code(), GitWorkspaceErrorCode::OutputTooLarge);
+        let mut rows = PATCH_ROW_LIMIT;
+        let bad_marker = b"@@ -1,1 +1,1 @@\n same\n\\ unexpected marker\n";
+        let error = match parse_patch(DiffLayer::Unstaged, bad_marker, &mut rows) {
+            Ok(_) => panic!("unknown backslash marker was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), GitWorkspaceErrorCode::MalformedOutput);
+        let mut rows = PATCH_ROW_LIMIT;
+        let overflow = b"@@ -4294967295,1 +1,1 @@\n same\n";
+        let error = match parse_patch(DiffLayer::Unstaged, overflow, &mut rows) {
+            Ok(_) => panic!("overflowing line coordinate was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), GitWorkspaceErrorCode::MalformedOutput);
     }
 
     #[test]
@@ -2091,6 +2952,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn git_workspace_explicit_filter_attribute_rejects_before_driver_execution() {
+        let repo = Repo::new();
+        repo.write("victim.txt", b"base\n");
+        repo.commit_all();
+        let marker = repo.path().join("filter-ran");
+        let driver = repo.path().join("filter-driver");
+        fs::write(
+            &driver,
+            format!("#!/bin/sh\nprintf ran > '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&driver).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&driver, permissions).unwrap();
+        git(
+            repo.path(),
+            &["config", "filter.evil.clean", &driver.to_string_lossy()],
+        );
+        repo.write(".gitattributes", b"*.txt filter=evil\n");
+        repo.write("victim.txt", b"changed\n");
+
+        let service = GitWorkspaceService::new(repo.path()).unwrap();
+        assert_eq!(
+            service
+                .refresh(CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::GitFailed
+        );
+        assert!(!marker.exists(), "filter driver executed during preflight");
+        assert_eq!(
+            validate_filter_attrs(&[b"victim.txt".to_vec()], b"victim.txt\0filter\0unset\0")
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::GitFailed
+        );
+    }
+
+    #[test]
+    fn git_workspace_bounded_stdin_stdout_stderr_progress_concurrently() {
+        let repo = Repo::new();
+        let script = repo.path().join("fixture-git");
+        fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"${12}\" != check-attr ] || [ \"${13}\" != -z ] || [ \"${14}\" != --stdin ] || [ \"${15}\" != --all ]; then exit 91; fi\npython3 -c 'import sys; sys.stdout.write(\"o\" * 65536); sys.stdout.flush(); data=sys.stdin.buffer.read(); sys.stderr.write(\"e\" * 32768); sys.stderr.flush(); sys.stdout.write(str(len(data)))'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let service = GitWorkspaceService::new_for_test(repo.path(), script.clone()).unwrap();
+        let runner = Runner::new(service.root.clone(), service.identity, Some(script));
+        let input = vec![b'i'; 128 * 1024];
+        let output = runner
+            .run_with_input(
+                "check-attr",
+                &[
+                    OsString::from("-z"),
+                    OsString::from("--stdin"),
+                    OsString::from("--all"),
+                ],
+                Arc::from(input),
+                128 * 1024,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(&output.stdout[..65_536], vec![b'o'; 65_536]);
+        assert!(output.stdout.ends_with(b"131072"));
+    }
+
+    #[test]
+    fn git_workspace_metadata_remaining_cap_is_inclusive_and_plus_one_fails() {
+        let repo = Repo::new();
+        let script = repo.path().join("fixture-git");
+        let write_fixture = |size: usize| {
+            fs::write(
+                &script,
+                format!("#!/bin/sh\npython3 -c 'import sys; sys.stdout.write(\"x\" * {size})'\n"),
+            )
+            .unwrap();
+            let mut permissions = fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(&script, permissions).unwrap();
+        };
+        write_fixture(1024);
+        let service = GitWorkspaceService::new_for_test(repo.path(), script.clone()).unwrap();
+        let runner = Runner::new(service.root.clone(), service.identity, Some(script.clone()));
+        assert_eq!(
+            verify_filter_bytes_with_retained(
+                &runner,
+                &[],
+                &[],
+                SNAPSHOT_LIMIT - 1024,
+                &CancellationToken::new(),
+            )
+            .unwrap_err()
+            .code(),
+            GitWorkspaceErrorCode::MalformedOutput
+        );
+        write_fixture(1025);
+        assert_eq!(
+            verify_filter_bytes_with_retained(
+                &runner,
+                &[],
+                &[],
+                SNAPSHOT_LIMIT - 1024,
+                &CancellationToken::new(),
+            )
+            .unwrap_err()
+            .code(),
+            GitWorkspaceErrorCode::OutputTooLarge
+        );
+    }
+
+    #[tokio::test]
     async fn git_workspace_cancel_is_typed_and_reaps_fixture_group() {
         let repo = Repo::new();
         let script = repo.path().join("fixture-git");
@@ -2141,5 +3118,44 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(gone, "descendant process survived cancellation");
+    }
+
+    #[tokio::test]
+    async fn git_workspace_early_parent_exit_with_inherited_pipes_fails_and_reaps_group() {
+        let repo = Repo::new();
+        let script = repo.path().join("fixture-git");
+        let pid_file = repo.path().join("early-descendant.pid");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nsleep 30 &\nprintf '%s' \"$!\" > '{}'\nexit 0\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let service = GitWorkspaceService::new_for_test(repo.path(), script).unwrap();
+        assert_eq!(
+            service
+                .refresh(CancellationToken::new())
+                .await
+                .unwrap_err()
+                .code(),
+            GitWorkspaceErrorCode::ProcessControlFailed
+        );
+        let pid = fs::read_to_string(pid_file).unwrap();
+        assert!(
+            !Command::new(KILL)
+                .args(["-0", &pid])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "inherited-pipe descendant survived cleanup"
+        );
     }
 }
