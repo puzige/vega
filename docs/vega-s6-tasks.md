@@ -1,6 +1,6 @@
 # ✦ Vega — S6 任务卡（Sprint 6 · Diff 审阅 & 产物 · W11-12）
 
-**版本** v0.11 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.12 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S6 目标**（phase1-plan §2）：git 工作区 diff 视图（高亮、hunk 导航）；产物卡片；Open in…（VS Code/Cursor/Zed/Terminal）；commit 辅助；补齐 Composer 分支选择器。
 
@@ -30,6 +30,8 @@
 > **人类裁决（2026-08-30，T32 Stage B retained caps/ingress）**：每个 retained write/edit proposal 的 `call_id.len + tool.len + input_json.len` checked logical sum 上限 inclusive 64 KiB，且 call id 单独上限 inclusive 120 B；normalized logical path 上限 inclusive 4096 B；paired strict-success terminal envelope上限 inclusive 64 KiB；`ArtifactCaptureCandidate` retained logical bytes上限 inclusive 8192 B。exact cap允许，+1须在 clone/parse/queue前以 `ArtifactLimit` 关闭route且不保留超限值。unpaired/non-write的大 output不受此cap限制，因为controller只生成content-free Refresh且不得clone。真实生产 `AgentBatch` ingress helper须由poll closure与app integration test共用，统一执行 AppAgentController generation match、event observe-before-move、finished poison与finish ownership。
 >
 > stage/commit、branch switch 与 Open in 都是当前窗口的显式用户动作，不是 `vega_tools` 工具、不注册 provider schema。模型只能生成 bounded commit 草稿，永远不能 Prepare、stage、commit、切分支或启动应用。
+>
+> **人类裁决（2026-08-30，T33 ref/filter authority）**：不同 local refs 允许共享同一 OID；只拒绝重复 full ref、raw short name或重复 record，current branch 只按 raw ref identity 判定，绝不按 OID 猜测。冻结 ACMRT materialized diff之外，再以相同 current/target OID和固定 read-safe prefix执行 `diff --name-status -z --diff-filter=D -M --no-ext-diff --no-textconv` 捕获纯删除 authority；D-only输出严格只接受 `D` record。R/C 的 old+new 以及 A/M/T/D 的 authority path 任一最终组件为 `.gitattributes` 都 zero switch。D-only canonical raw output/paths与 ACMRT canonical authority一起绑定 single-use permit，execute 前必须 byte-exact 重跑；D-only不加入 materialized/check-attr input。
 >
 > Phase 1 只做 viewer + diff 审阅（PRD D5）；不做自研编辑器/LSP、Checkpoint 回退、PR 创建或终端视图。
 
@@ -337,3 +339,4 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 - v0.9 (2026-08-30) 人类冻结 T32 Stage B compact inline card、六个显式 Open 控件、headless preview eligibility、真实 AgentBatch 唯一 capture 入口、terminal 串行 refresh/capture/reconcile，以及 preview/open/route latest-result fence。
 - v0.10 (2026-08-30) review hardening：Agent generation pairing、content-free terminal FIFO、SelectedProject/route invalidation、terminal-before-open cancellation、fail-closed historical card、无焦点陷阱与 exact preview 行语义。
 - v0.11 (2026-08-30) controller final hardening：冻结 proposal/id/path/terminal/candidate retained caps及exact/+1语义，并冻结production/tests共用的真实 AgentBatch ingress helper。
+- v0.12 (2026-08-30) 人类冻结 T33 shared-OID refs/current-by-raw-ref 契约，并增加 D-only authority capture与 R/C old+new `.gitattributes` 零切换、permit前后 byte-exact 重放。

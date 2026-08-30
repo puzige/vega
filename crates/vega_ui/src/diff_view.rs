@@ -1103,7 +1103,13 @@ fn error_label(code: GitWorkspaceErrorCode) -> &'static str {
         | GitWorkspaceErrorCode::MalformedOutput
         | GitWorkspaceErrorCode::ProcessControlFailed
         | GitWorkspaceErrorCode::ArtifactConflict
-        | GitWorkspaceErrorCode::ArtifactLimit => "Git diff could not be loaded safely.",
+        | GitWorkspaceErrorCode::ArtifactLimit
+        | GitWorkspaceErrorCode::BranchDirty
+        | GitWorkspaceErrorCode::BranchOperationInProgress
+        | GitWorkspaceErrorCode::BranchDetached
+        | GitWorkspaceErrorCode::BranchUnborn
+        | GitWorkspaceErrorCode::BranchUnsafeFilter
+        | GitWorkspaceErrorCode::BranchAlreadyCurrent => "Git diff could not be loaded safely.",
     }
 }
 

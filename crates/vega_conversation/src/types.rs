@@ -1619,6 +1619,51 @@ impl std::fmt::Debug for WorkspaceFileId {
     }
 }
 
+/// Opaque identifier for one local branch in one branch-list generation.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BranchId {
+    pub(crate) generation: u64,
+    pub(crate) slot: u32,
+    pub(crate) seal: u64,
+}
+
+impl std::fmt::Debug for BranchId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("BranchId([opaque])")
+    }
+}
+
+/// Safe projection of one local branch. Raw ref bytes and object ids remain
+/// private to the headless Git service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchItem {
+    pub id: BranchId,
+    pub label: String,
+    pub current: bool,
+}
+
+/// Bounded, ephemeral local-branch snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchSnapshot {
+    pub generation: u64,
+    pub branches: Vec<BranchItem>,
+}
+
+/// Content-free outcome of an attempted branch switch. The accompanying
+/// snapshot, when present, is authoritative for every exit path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BranchSwitchOutcome {
+    Switched,
+    Failed(GitWorkspaceErrorCode),
+}
+
+/// Authoritative post-switch refresh plus the content-free switch outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchSwitchCompletion {
+    pub outcome: BranchSwitchOutcome,
+    pub snapshot: Option<BranchSnapshot>,
+}
+
 /// Current repository head projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceHead {
@@ -1940,6 +1985,12 @@ pub enum GitWorkspaceErrorCode {
     ProcessControlFailed,
     ArtifactConflict,
     ArtifactLimit,
+    BranchDirty,
+    BranchOperationInProgress,
+    BranchDetached,
+    BranchUnborn,
+    BranchUnsafeFilter,
+    BranchAlreadyCurrent,
 }
 
 impl GitWorkspaceErrorCode {
@@ -1960,6 +2011,12 @@ impl GitWorkspaceErrorCode {
             Self::ProcessControlFailed => "process_control_failed",
             Self::ArtifactConflict => "artifact_conflict",
             Self::ArtifactLimit => "artifact_limit",
+            Self::BranchDirty => "branch_dirty",
+            Self::BranchOperationInProgress => "branch_operation_in_progress",
+            Self::BranchDetached => "branch_detached",
+            Self::BranchUnborn => "branch_unborn",
+            Self::BranchUnsafeFilter => "branch_unsafe_filter",
+            Self::BranchAlreadyCurrent => "branch_already_current",
         }
     }
 }

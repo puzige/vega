@@ -7,6 +7,7 @@
 //! and the sidebar blocks render the lists now.
 
 pub mod artifact_card;
+pub mod branch_selector;
 pub mod conversation_stream;
 pub mod diff_view;
 pub mod permission_card;
@@ -107,6 +108,27 @@ pub fn init(cx: &mut App) {
             Some("ArtifactCard"),
         ),
         KeyBinding::new("escape", artifact_card::ArtifactClear, Some("ArtifactCard")),
+        KeyBinding::new(
+            "enter",
+            branch_selector::ActivateBranch,
+            Some("BranchSelector"),
+        ),
+        KeyBinding::new(
+            "space",
+            branch_selector::ActivateBranch,
+            Some("BranchSelector"),
+        ),
+        KeyBinding::new(
+            "up",
+            branch_selector::PreviousBranch,
+            Some("BranchSelector"),
+        ),
+        KeyBinding::new("down", branch_selector::NextBranch, Some("BranchSelector")),
+        KeyBinding::new(
+            "escape",
+            branch_selector::CloseBranchSelector,
+            Some("BranchSelector"),
+        ),
         KeyBinding::new(
             "cmd-shift-d",
             conversation_stream::OpenWorkspaceDiff,
