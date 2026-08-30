@@ -1,6 +1,6 @@
 # ✦ Vega — S6 任务卡（Sprint 6 · Diff 审阅 & 产物 · W11-12）
 
-**版本** v0.12 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.13 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S6 目标**（phase1-plan §2）：git 工作区 diff 视图（高亮、hunk 导航）；产物卡片；Open in…（VS Code/Cursor/Zed/Terminal）；commit 辅助；补齐 Composer 分支选择器。
 
@@ -32,6 +32,12 @@
 > stage/commit、branch switch 与 Open in 都是当前窗口的显式用户动作，不是 `vega_tools` 工具、不注册 provider schema。模型只能生成 bounded commit 草稿，永远不能 Prepare、stage、commit、切分支或启动应用。
 >
 > **人类裁决（2026-08-30，T33 ref/filter authority）**：不同 local refs 允许共享同一 OID；只拒绝重复 full ref、raw short name或重复 record，current branch 只按 raw ref identity 判定，绝不按 OID 猜测。冻结 ACMRT materialized diff之外，再以相同 current/target OID和固定 read-safe prefix执行 `diff --name-status -z --diff-filter=D -M --no-ext-diff --no-textconv` 捕获纯删除 authority；D-only输出严格只接受 `D` record。R/C 的 old+new 以及 A/M/T/D 的 authority path 任一最终组件为 `.gitattributes` 都 zero switch。D-only canonical raw output/paths与 ACMRT canonical authority一起绑定 single-use permit，execute 前必须 byte-exact 重跑；D-only不加入 materialized/check-attr input。
+>
+> **人类裁决（2026-08-31，T34 canonical commit v0.4）**：T34 采用 three-source canonical authority：同一 immutable HEAD 下的 porcelain-v2 status、完整 stage-0 index 与 immutable HEAD tree；A capture 为 displayed authority，非空选择执行 exact one NUL-stdin add 后只能由 exact first-wins owned handoff绑定到 B，空选择必须 zero add。A 的每个 selected component 都保留结构义务，B 的每个变化必须由且仅由对应义务解释；不能用“都落在 S 内”代替 modify/delete/add/type/rename/copy/staged+unstaged 的拓扑证明。隐藏 intent-to-add、无真实 index-vs-tree delta、detached/operation state、非普通单 parent/root commit一律 fail closed。
+>
+> Prepare/Commit 共用 T33 `TrustedActionCoordinator` 的 commit lease；worker 在途关闭进入非视觉 `Retiring`，只取消、不 abort/drop owner future，必须在 owner uncancelled authoritative refresh + Diff/branch/artifact reconcile 后由 exact token 释放。Prepare 自身的 A→B generation 变化只能由 `(service_nonce, prepare_sequence, parent_A, exact_B, route/entity, lease)` capability 原子接管；普通 poll 只能提供 exact candidate，A→B→C、ABA、重复/旧 completion 全部毒化。
+>
+> staged summary 使用 fixed no-ext-diff/no-textconv cached patch命令，raw stdout 先 bounded收集再做 deterministic escaping，cap 256 KiB且 truncation marker计入；provider draft 是 exact prompts/model/`tools=[]`/`max_tokens=256`/retry=0 的单次 60s 请求，只接受 `TextDelta* Usage* Done(End) EOF`。provider/model/summary/draft/request/result/controller carrier 全部手写 redacted Debug，错误不得格式化 provider-controlled正文。T34 只支持 attached local ordinary branch；成功必须以 immutable `new_oid` 证明 exact parent、tree 与最终 raw ref，禁止 rollback/retry/amend/push。same-user 在 add/commit 前后替换 selected content/type/path、attrs/config/ref 的 TOCTOU 仍是 Phase 1 residual，不得宣称 byte-atomic。
 >
 > Phase 1 只做 viewer + diff 审阅（PRD D5）；不做自研编辑器/LSP、Checkpoint 回退、PR 创建或终端视图。
 
@@ -119,16 +125,22 @@
 
 ### C6 · cross-checked canonical IndexSnapshot + 两阶段 selected staging
 
-- private `IndexSnapshotId` 必须从同一 captured HEAD/request generation 下的 fixed `status --porcelain=v2 -z` 与 fixed `ls-files --stage -z` **交叉构造**；两次 bounded 输入共享 8 MiB/10,000 paths 上限。读取前后 HEAD/generation、raw path membership、tracked status 与 stage entry 任一变化/矛盾都拒绝，不能只信其中一个命令。
-- canonical codec bytes-first排序并绑定 captured HEAD、porcelain v2 status classification 与 logical stage entries `(mode, object_oid, raw_path)`。任何 tracked v2 record `XY=.A` 明确代表 intent-to-add，必须 fail closed；`ls-files` 的 stage0/nonzero OID不能推翻该判断。仍拒绝 unmerged stage>0、zero OID、unknown/corrupt record、重复冲突或 overflow。UI 只获 opaque id + bounded safe projection，绝不 hash/read raw `.git/index`。
-- 正常 staged empty file 是合法 positive：porcelain `XY=A.` 且 stage0 + repo-format nonzero empty-blob OID（默认 SHA-1 fixture 为 `e69de29...`）；不得把 empty blob误判为 intent-to-add。
-- selected `WorkspaceFileId` 展开 literal raw set：rename=old+new，delete=old，add/untracked=new，modify=current；bytes-first dedupe。任何 selected changed `.gitattributes` 直接拒绝。expanded set 经 exact `git check-attr -z --stdin --all`；输出只要显式出现 attribute name=`filter`，无论 value 为何均 fail closed。
-- **Prepare**：初始 focus Cancel；Esc=Cancel；只有 Cmd+Enter 确认。面板完整展示 existing staged（始终包含、不可取消）+ selected paths。Prepare 前重新执行同一 status+ls-files cross-check codec，复验 HEAD/IndexSnapshot/conflict/filter 后，才用 mutation safe prefix执行 `add -A -- <expanded literal raw paths>`。
-- Prepare 后再次以同一 captured HEAD/new generation 的 status+ls-files cross-check codec刷新 exact final `IndexSnapshotId`/bounded cached patch；它必须等于 existing staged + selected staging 的 canonical logical预期，且无 `XY=.A`。任何差异不进入 Commit，不 reset/unstage/rollback，保留真实状态。
-- **Commit**：初始 focus Cancel；Esc=Cancel；message editor bare Enter 只换行；只有 Cmd+Enter 第二次确认 commit entire displayed final index。close panel/window/thread/project switch 是 first-wins cancel；重复 callback 不产生第二次 mutation。
-- message 是 non-empty/no-NUL/bounded 32 KiB typed UTF-8 `String`。模型仅由用户点击请求，provider summary最多 256 KiB并显式 truncated marker；模型 tool call/超限失败。message/diff-summary用 sentinel 验证不进 Debug/log/event/DB/error。
-- commit argv = mutation safe prefix + `commit --no-gpg-sign --file=- --cleanup=verbatim`；message 从内存 stdin 写入，writer/stdout/stderr并发，不建 message file。Commit 前第三次运行同一 status+ls-files cross-check codec并与 displayed final `IndexSnapshotId` exact compare；任何 `XY=.A`/差异均为 zero commit spawn。
-- 无论 success/nonzero/timeout/cancel/ambiguous 都刷新真实 HEAD/status/index。成功后 fixed `ls-tree -rz --full-tree HEAD` 解析同一 canonical `(mode, object_oid, raw_path)` codec，与 displayed final index exact compare；HEAD 改变且完全一致才成功，不自动重试。
+- private `IndexSnapshotId` 必须从同一 request generation 与 immutable captured HEAD 下的三个 read-safe truth source **交叉构造**：`status --porcelain=v2 -z --branch --renames --untracked-files=all`、`ls-files --stage -z`、born HEAD 的 `ls-tree -rz --full-tree <captured_head_oid>`。unborn attached HEAD 必须被独立证明，tree视为空且 zero `ls-tree` spawn。三输入共享 checked 8 MiB/10,000 logical-path cap，rename 两侧都计；UI只获 opaque id和bounded safe projection，绝不读取/hash raw `.git/index`或接收 raw path/OID/tree。
+- canonical private value保存完整且bytes-first排序的 HEAD/ref identity、porcelain records（rename/copy两侧）、完整 stage entries `(mode, full_oid, raw_path)`、完整 immutable HEAD tree `(mode, type, full_oid, raw_path)`，比较 full value而非只比hash。OID统一绑定 status HEAD 的40/64宽度；拒绝abbreviated/mixed/zero OID、duplicate/conflict、stage>0、unmerged、sparse-directory `040000`、special mode、corrupt/overflow。只接受index mode `100644|100755|120000`和clean unchanged `160000`；tree中前三者type必须blob、gitlink必须commit，changed/selected gitlink全部拒绝。
+- porcelain HEAD-side `mH/hH/path` 与 rename/copy old side必须和 immutable HEAD tree一致；HEAD缺失只允许规范 staged add/rename-new。任何 tracked `XY=.A` 立即拒绝；还必须以 HEAD-tree cross-check识别 `add -N` 后 delete/move形成的隐藏 `.D` intent状态，均为zero add/commit。正常 staged empty `XY=A.` + stage0 nonzero empty-blob OID仍合法；tracked empty+worktree delete及staged-empty+worktree delete须保持可区分。
+- 每次 Checklist/A、add immediately-before、B acceptance和Commit preflight都要求 attached raw `refs/heads/*` ordinary local branch，并复用C7完整operation marker guard（merge/cherry-pick/revert/bisect/rebase/sequencer/git-am及linked-worktree-safe git-path checks）；detached或operation state一律zero mutation。authority绑定exact raw ref与A HEAD OID/unborn state，并用fixed for-each-ref parser交叉验证。
+- selected `WorkspaceFileId` 在A上建立private component ledger，绑定service nonce、A generation/seal、exact status/index/worktree kind、current/original raw path与闭包S。S bytes-first dedupe：rename/copy=old+new、delete=old、add/untracked=new、modify/type=current；staged+unstaged的forced staged部分不加入S，optional worktree part按对应闭包。任一side最终组件为`.gitattributes`、intent/unmerged/changed gitlink/duplicate/corrupt都拒绝。
+- non-empty S在preflight/immediately-before/after add对同一NUL S执行exact `check-attr -z --stdin --all`，raw output必须byte-exact稳定；显式attribute name=`filter`不论value一律拒绝。mutation只执行一次exact `add -A --pathspec-from-file=- --pathspec-file-nul`，stdin为non-empty、byte-sorted、dedup、final-NUL序列，path绝不进argv。empty S只允许full index-vs-HEAD存在真实staged delta，必须zero add，fresh B canonical byte-equal A；否则Prepare disabled/headless reject。
+- B除outside-S stage/status byte-exact保持外，每个变化都必须由且仅由一个selected ledger obligation解释：modify/type在B stage0存在full nonzero OID、mode/type匹配且Y/untracked清空；delete在worktree/index均缺失并形成相对HEAD的canonical staged deletion；add/untracked在B stage0存在并形成canonical add；rename old absent/new present、Y清空且pair不接触outside S；copy source保持exact A而destination形成canonical copy/add；optional-off保持A index与Y exact，optional-on只消费其selected worktree component。任何vanish/reappear/kind flip、ambiguous re-pair、extra/overlap unexplained delta都拒绝。B OID不预测，只要求Git产出的full-width/nonzero/stage0 codec authority。
+- B full stage0 index与immutable HEAD tree必须有至少一个真实add/modify/mode/delete/normalized-rename delta；EOL/CRLF或ignored filemode规范化为相同tree时Prepare失败、zero provider/commit。失败不reset/restore/unstage/rollback，返回refresh后的真实状态并清selection。
+- Prepare初始focus Cancel，Esc=Cancel，只有Cmd+Enter确认。successful worker返回owned handoff `(service_nonce, prepare_sequence, parent_A_IndexSnapshotId, A_generation, exact_B_IndexSnapshotId, B_generation, B_seal, route/thread/project/entity fence, shared_lease_token)`；只有exact first-wins completion能A→B。poll先/后观察exact B均可，C/多次transition/A→B→A/ABA/old completion/stale sequence毒化且无B capability；poll不得释放lease或覆盖newer fence。CommitReady前必须先reconcile Diff/branch/artifact到B。
+- staged summary固定read argv为read-safe prefix后 `-c core.quotePath=true --no-optional-locks diff --cached --patch --find-renames --no-ext-diff --no-textconv --full-index --`；并发drain full stdout/stderr，stdout只retained raw 256 KiB+overflow、stderr 64 KiB、timeout 10s。raw bytes一次性确定性转UTF-8：valid UTF-8保持、invalid byte=`\\xNN`、LF/TAB外control用固定escape；chunk边界不得影响结果。cap exact通过，overflow/escape expansion预留并追加exact `\n[vega-summary truncated=true]\n`且marker在256 KiB内。summary前后以及provider前后exact B都须复验。
+- provider draft只由用户click触发：60s deadline从`chat_stream`前开始覆盖setup/events/Done后EOF；exact thread model、`max_tokens=Some(256)`、exact两段prompt、`tools=[]`、real provider retry max=0。grammar只接受`TextDelta*`后`Usage*`、exact one `Done { End }`、再一次`next()==None`；cancel biased。Thinking/ToolUse/其他Done/text-after-Usage/post-Done event或error/missing/duplicate Done/early EOF/hang/provider error/empty/NUL/checked overflow/>32 KiB均直接content-free `DraftFailed`，不返回partial draft。
+- **Commit**初始focus Cancel；Esc=Cancel；editor bare Enter只换行；仅Cmd+Enter第二次确认。message为non-empty/no-NUL/1..=32768-byte typed UTF-8。B authority在第一个commit-reaching await前single-use consume；第三次three-source capture须full byte-equal B且route/ref/HEAD仍匹配，否则zero commit。mutation exact为 `commit --no-gpg-sign --file=- --cleanup=verbatim`，message仅内存stdin且writer/stdout/stderr并发，无temp file/合成尾字节。
+- T34只允许attached ordinary commit：born new commit必须exact one parent==A HEAD；unborn root必须zero parents。process成功后先捕获immutable `new_oid`+raw ref，proof只用explicit OID执行 `rev-parse <new_oid>^@` 与 `ls-tree -rz --full-tree <new_oid>`；new tree须exact等于B index tree，最后再次枚举并要求same raw ref仍指向new_oid且root identity不变。wrong parent/count/tree/ref moved/deleted/renamed/ABA均Failed。所有success/nonzero/timeout/cancel/ambiguous exit都执行owner uncancelled authoritative HEAD/status/index refresh及Diff/branch/artifact reconcile；禁止retry/rollback/amend/push。
+- controller states固定为`Closed|Checklist(A,lease)|Preparing(A,fence,lease,candidate)|CommitReady(B,lease)|Drafting(B,fence,lease)|Committing(consumed_B,fence,lease)|Retiring(fence,lease,cancel_requested,mutation_maybe_attempted)`。route open后获取T33 exact Commit token并贯穿两阶段；click/key callback先atomic transition再spawn。in-flight close/window/thread/project/route change立即隐藏UI并进Retiring，只cancel、不abort/drop owner future；owner真实终止/reap、authoritative refresh/reconcile后才由exact token release，old completion不得清newer token。无worker close才可清route/busy后立即release。
+- 所有provider/model-controlled string carrier均禁止derived raw Debug：`ChatMessage`/tool id、`ChatToolCall`、`ToolDefinition`、`ChatRequest`、`ProviderEvent`、`ScriptStep`/`MockProvider`、SSE fragment/assembler、test captured headers/body以及T34 summary/draft/request/result/fence/UI event只能手写长度/count/presence redaction或不实现Debug；provider error先映射为content-free code，禁止format/log。sentinel不得进入Debug/Display/tracing/error/event/DB/controller/UI。
+- same-user在pre/post check之间替换selected worktree content/type/path、attrs/config或ref（含ABA）仍为接受的Phase 1 path-based Git TOCTOU residual；身份/hash复验只能缩窗，不能证明Git add读取瞬间的exact bytes，报告不得宣称byte-atomic或race-free。
 
 ### C7 · branch target materialization preflight
 
@@ -232,7 +244,7 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 ## T34 · Canonical two-stage commit assistant（A5-06）
 
 - **范围**：conversation IndexSnapshot/trusted Git/provider draft、`crates/vega_ui/src/commit_panel.rs`、`crates/vega/src/main.rs` first-wins controller/wiring与app tests；零 DB/event/temp file。
-- **产出/验收**：C2/C6/C8；porcelain-v2 + stage-entry cross-checked IndexSnapshot/post-tree codec；`git add -N intent.txt` 的 `XY=.A` 必须 fail closed且 stage/commit spawn均为0，即使 `ls-files` 显示stage0+nonzero OID；正常 staged empty file `XY=A.` + nonzero empty-blob OID必须通过。另覆盖rename old+new/delete old、literal `:(glob)**`/`:!safe`、non-UTF8、changed `.gitattributes`/filter reject；Prepare前/后/Commit前都cross-check；两次Cancel focus/Esc/Cmd+Enter/bare Enter、duplicate/close/switch、empty/NUL/32KiB+1/Unicode boundary、full-duplex stdin/drain、PGID descendants/maintenance no-detach、message/summary redaction与零rollback/push/network/model mutation。
+- **产出/验收**：C2/C6/C8与2026-08-31 v0.4裁决全部；three-source canonical snapshot、hidden intent-to-add、mode/type/tree correlation、per-kind selected structural ledger、real index-vs-tree delta、exact NUL-stdin one-add/empty-S zero-add、owned A→B handoff与poll/ABA矩阵。另覆盖fixed summary argv与deterministic non-UTF8/cap、provider 60s strict Done+EOF grammar/retry0/max_tokens256、all carrier Debug redaction、attached ordinary parent/tree/ref proof、Retiring close/cancel/exact-token cleanup。所有prepare/add/commit成功与失败路径都在fresh temp repo验证zero/one spawn、PGID/reap、authoritative refresh/reconcile；无真实provider/key/network、temp message file、rollback/retry/amend/push。
 - **命令**：
 
   ```sh
@@ -247,7 +259,7 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
   ```
 
 - **commit**：`feat(A5-06): add canonical two-stage commit assistance`。
-- **停止**：stdin/index/tree契约矛盾即 `[BLOCKED] S6-T34`，不得降级 raw index hash/temp file。
+- **停止**：three-source/index/tree/ref、strict provider terminal或Retiring owner-lifecycle契约与实际API矛盾即 `[BLOCKED] S6-T34`，不得降级raw index hash、lossy path、temp file、early lease release或宽松provider grammar。
 
 ## T35 · S6 end-to-end acceptance + report（A5-02）
 
@@ -294,8 +306,8 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 - [ ] write/edit provenance绑定 immediate `(dev,ino,size,mtime_ns)+hash-object`；later变化降级；bash-only workspace change；image metadata-only。
 - [ ] Open in六套 exact argv；hardlink/symlink/gitdir/special fence；0/1 attempt语义、10s lifecycle、stale request drop；Terminal恒root。
 - [ ] branch local OID/clean+active+operation guards；target `.gitattributes`/filter preflight；exact no-overwrite-ignore/no-recurse switch；任意 exit真实 refresh。
-- [ ] IndexSnapshot由同一 HEAD/generation 的 porcelain v2 + `ls-files --stage -z` 交叉构造；`XY=.A` intent-to-add在Prepare前/后/Commit前均拒绝且零stage/commit spawn，不能靠nonzero OID放行；`XY=A.` staged empty file正例通过；仍拒绝stage>0/zero OID/corrupt/overflow。rename/delete mapping、post `ls-tree` compare与两次确认/first-wins完整。
-- [ ] commit 32 KiB UTF-8 stdin、provider summary 256 KiB、hooks/signing disabled；模型不能 mutation；无 temp/rollback/push/network；payload redacted。
+- [ ] IndexSnapshot由同一 immutable HEAD/generation 的 status + stage + HEAD tree 三源交叉构造；`.A`与隐藏`.D` intent、stage>0/zero/mode-type/tree冲突/corrupt/overflow均拒绝，staged empty正例通过。selected ledger逐kind、real delta、empty-S zero-add、NUL-stdin one-add与owned A→B generation handoff/ABA完整。
+- [ ] commit 32 KiB UTF-8 stdin；provider summary exact argv/256 KiB deterministic escaping；draft exact prompts/max_tokens256/tools empty/retry0/60s Done+EOF grammar。attached ordinary parent/tree/raw-ref proof、Retiring owner refresh/reconcile、hooks/signing disabled完整；模型不能mutation；无temp/rollback/retry/amend/push/network；全部carrier手写redacted。
 - [ ] fresh temp fixture/local identity/no global/current repo；零新依赖/DDL，仍六表，headless/UI边界不回退。
 - [ ] S6 report只列可存在证据；ui-spec §6自动/人工/硬件分开，未测不写 ✅。
 
@@ -320,6 +332,7 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 5. Composer @引用、/命令、模型选择器与 >8独立inner-scroll后置。
 6. T35 report无法包含自身尚未产生的 PR/squash hash；只列 branch commit + pending，Phase 1最终报告补 hash。
 7. fake launcher/MockProvider不等于真实 app/LLM/key/费用；真实 UI/CJK/960×600/竞品截图/ProMotion/P1-P8逐项留人类/S8。
+8. T34 path-based Git mutation接受同一用户在复验与Git实际读取/更新之间替换selected content/type/path、attrs/config/ref的TOCTOU；实现以three-source/identity/hash/ref前后复验缩窗，但不宣称byte-atomic。
 
 ## 未决阻塞检查
 
@@ -340,3 +353,4 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 - v0.10 (2026-08-30) review hardening：Agent generation pairing、content-free terminal FIFO、SelectedProject/route invalidation、terminal-before-open cancellation、fail-closed historical card、无焦点陷阱与 exact preview 行语义。
 - v0.11 (2026-08-30) controller final hardening：冻结 proposal/id/path/terminal/candidate retained caps及exact/+1语义，并冻结production/tests共用的真实 AgentBatch ingress helper。
 - v0.12 (2026-08-30) 人类冻结 T33 shared-OID refs/current-by-raw-ref 契约，并增加 D-only authority capture与 R/C old+new `.gitattributes` 零切换、permit前后 byte-exact 重放。
+- v0.13 (2026-08-31) 冻结 T34 canonical commit v0.4/P0/P1：status+stage+immutable HEAD tree三源、selected structural ledger、hidden intent与real-delta门禁、owned A→B generation handoff、attached ordinary parent/tree/ref proof；补fixed summary/strict 60s provider grammar、全carrier redacted Debug、Retiring lease生命周期及same-user TOCTOU诚实边界。
