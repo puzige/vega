@@ -64,6 +64,7 @@ mod agent;
 mod error;
 mod mock;
 mod openai;
+mod permission;
 mod provider;
 mod retry;
 
@@ -75,6 +76,13 @@ pub use agent::{
 pub use error::VegaError;
 pub use mock::{MockProvider, ScriptStep};
 pub use openai::OpenAiProvider;
+pub use permission::{
+    RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeCapabilityOutcome,
+    RuntimeDangerAudit, RuntimeDangerFacts, RuntimeExecuteEligibility, RuntimeExecutePermission,
+    RuntimeMutatingTool, RuntimePermissionError, RuntimePermissionMode, RuntimePermissionOutcome,
+    RuntimePermissionPrompt, RuntimePermissionTarget, RuntimeRunMode, RuntimeToolClass,
+    RuntimeUserDecision, decide_capability, decide_execute_permission,
+};
 pub use provider::{
     ChatMessage, ChatRequest, ChatRole, ChatToolCall, EventStream, Provider, ProviderEvent,
     StopReason, ToolDefinition,
