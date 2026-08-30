@@ -48,7 +48,7 @@ impl ChatRole {
 }
 
 /// One chat message (`role` + `content`, tech-spec §4.1 ChatRequest).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ChatMessage {
     /// Sender role.
     pub role: ChatRole,
@@ -58,6 +58,21 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     /// Calls requested by an assistant message before tool results follow.
     pub tool_calls: Vec<ChatToolCall>,
+}
+
+impl std::fmt::Debug for ChatMessage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChatMessage")
+            .field("role", &self.role)
+            .field("content_bytes", &self.content.len())
+            .field(
+                "tool_call_id_bytes",
+                &self.tool_call_id.as_ref().map(String::len),
+            )
+            .field("tool_call_count", &self.tool_calls.len())
+            .finish()
+    }
 }
 
 impl ChatMessage {
@@ -94,7 +109,7 @@ impl ChatMessage {
 
 /// One complete assistant function call serialized back to the provider on
 /// the observe round.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ChatToolCall {
     /// Provider-side call id.
     pub id: String,
@@ -104,8 +119,19 @@ pub struct ChatToolCall {
     pub input_json: String,
 }
 
+impl std::fmt::Debug for ChatToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChatToolCall")
+            .field("id_bytes", &self.id.len())
+            .field("name_bytes", &self.name.len())
+            .field("input_json_bytes", &self.input_json.len())
+            .finish()
+    }
+}
+
 /// A callable tool advertised to the model (OpenAI function-calling shape).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ToolDefinition {
     /// Tool name the model refers to, e.g. `read`.
     pub name: String,
@@ -115,9 +141,20 @@ pub struct ToolDefinition {
     pub input_schema: serde_json::Value,
 }
 
+impl std::fmt::Debug for ToolDefinition {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ToolDefinition")
+            .field("name_bytes", &self.name.len())
+            .field("description_bytes", &self.description.len())
+            .field("schema", &"[redacted]")
+            .finish()
+    }
+}
+
 /// A chat completion request (tech-spec §4.1):
 /// model / messages / tools / max_tokens.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct ChatRequest {
     /// Model name as understood by the provider, e.g. `deepseek-chat`.
     pub model: String,
@@ -127,6 +164,19 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDefinition>,
     /// Generation cap in tokens; `None` lets the provider default apply.
     pub max_tokens: Option<u32>,
+}
+
+impl std::fmt::Debug for ChatRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ChatRequest")
+            .field("model_is_empty", &self.model.is_empty())
+            .field("model_bytes", &self.model.len())
+            .field("message_count", &self.messages.len())
+            .field("tool_count", &self.tools.len())
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
 }
 
 /// Why the provider stopped generating (tech-spec §4.1 minimal set).
@@ -142,7 +192,7 @@ pub enum StopReason {
 
 /// Incremental provider event (tech-spec §4.1). [`ProviderEvent::ToolUse`]
 /// is emitted only after the model's argument fragments are fully aggregated.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ProviderEvent {
     /// Incremental visible text.
     TextDelta(String),
@@ -173,6 +223,47 @@ pub enum ProviderEvent {
         /// Merged from the wire `finish_reason`.
         stop_reason: StopReason,
     },
+}
+
+impl std::fmt::Debug for ProviderEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TextDelta(text) => formatter
+                .debug_tuple("TextDelta")
+                .field(&format_args!("[redacted; {} bytes]", text.len()))
+                .finish(),
+            Self::ThinkingDelta(text) => formatter
+                .debug_tuple("ThinkingDelta")
+                .field(&format_args!("[redacted; {} bytes]", text.len()))
+                .finish(),
+            Self::ToolUse {
+                id,
+                name,
+                input_json,
+            } => formatter
+                .debug_struct("ToolUse")
+                .field("id_bytes", &id.len())
+                .field("name_bytes", &name.len())
+                .field("input_json_bytes", &input_json.len())
+                .finish(),
+            Self::Usage {
+                input,
+                output,
+                cache_read,
+                cache_write,
+            } => formatter
+                .debug_struct("Usage")
+                .field("input", input)
+                .field("output", output)
+                .field("cache_read", cache_read)
+                .field("cache_write", cache_write)
+                .finish(),
+            Self::Done { stop_reason } => formatter
+                .debug_struct("Done")
+                .field("stop_reason", stop_reason)
+                .finish(),
+        }
+    }
 }
 
 /// LLM provider abstraction (tech-spec §4.1).
@@ -217,5 +308,57 @@ mod tests {
         assert!(req.messages.is_empty());
         assert!(req.tools.is_empty());
         assert_eq!(req.max_tokens, None);
+    }
+
+    #[test]
+    fn provider_debug_carriers_redact_distinct_payloads() {
+        let sentinels = [
+            "VEGA_MODEL_SENTINEL",
+            "VEGA_MESSAGE_SENTINEL",
+            "VEGA_CALL_ID_SENTINEL",
+            "VEGA_TOOL_NAME_SENTINEL",
+            "VEGA_TOOL_INPUT_SENTINEL",
+            "VEGA_SCHEMA_SENTINEL",
+            "VEGA_THINKING_SENTINEL",
+        ];
+        let call = ChatToolCall {
+            id: sentinels[2].into(),
+            name: sentinels[3].into(),
+            input_json: sentinels[4].into(),
+        };
+        let request = ChatRequest {
+            model: sentinels[0].into(),
+            messages: vec![ChatMessage::assistant_with_tools(sentinels[1], vec![call])],
+            tools: vec![ToolDefinition {
+                name: sentinels[3].into(),
+                description: sentinels[1].into(),
+                input_schema: serde_json::json!({"value": sentinels[5]}),
+            }],
+            max_tokens: Some(256),
+        };
+        let values = [
+            format!("{request:?}"),
+            format!("{:?}", request.messages[0]),
+            format!("{:?}", request.messages[0].tool_calls[0]),
+            format!("{:?}", request.tools[0]),
+            format!("{:?}", ProviderEvent::ThinkingDelta(sentinels[6].into())),
+            format!("{:?}", ProviderEvent::TextDelta(sentinels[1].into())),
+            format!(
+                "{:?}",
+                ProviderEvent::ToolUse {
+                    id: sentinels[2].into(),
+                    name: sentinels[3].into(),
+                    input_json: sentinels[4].into(),
+                }
+            ),
+        ];
+        for rendered in values {
+            for sentinel in sentinels {
+                assert!(
+                    !rendered.contains(sentinel),
+                    "provider Debug leaked payload"
+                );
+            }
+        }
     }
 }

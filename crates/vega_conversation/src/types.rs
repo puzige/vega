@@ -521,7 +521,7 @@ pub struct TokenUsage {
 }
 
 /// Complete tool proposal emitted to UI/store consumers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ToolCall {
     /// Provider call id.
     pub id: CallId,
@@ -530,6 +530,17 @@ pub struct ToolCall {
     /// Safe complete JSON input. Write/edit bodies are replaced by strict
     /// content-free audit projections before this boundary.
     pub input_json: String,
+}
+
+impl std::fmt::Debug for ToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ToolCall")
+            .field("id_bytes", &self.id.len())
+            .field("tool_bytes", &self.tool.len())
+            .field("input_json_bytes", &self.input_json.len())
+            .finish()
+    }
 }
 
 /// Permission decision recorded for a tool call.
@@ -584,8 +595,17 @@ pub enum ToolCallStatus {
 }
 
 /// A display chunk from a tool.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ToolOutputChunk(pub String);
+
+impl std::fmt::Debug for ToolOutputChunk {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("ToolOutputChunk")
+            .field(&format_args!("{} bytes", self.0.len()))
+            .finish()
+    }
+}
 
 /// Mutating tool identity for an invalid-input terminal projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -694,7 +714,7 @@ impl InvalidToolProjection {
 }
 
 /// Terminal tool result delivered to the conversation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ToolResult {
     /// Terminal lifecycle status.
     pub status: ToolCallStatus,
@@ -711,6 +731,21 @@ pub struct ToolResult {
     /// Typed content-free projection for the atomic invalid write/edit path.
     /// All ordinary terminal paths keep this absent.
     pub invalid: Option<InvalidToolProjection>,
+}
+
+impl std::fmt::Debug for ToolResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ToolResult")
+            .field("status", &self.status)
+            .field("output_bytes", &self.output.len())
+            .field("reused", &self.reused)
+            .field("exit_code", &self.exit_code)
+            .field("duration_ms", &self.duration_ms)
+            .field("truncated", &self.truncated)
+            .field("invalid", &self.invalid)
+            .finish()
+    }
 }
 
 /// Strict, content-free tool input prepared for UI cards.
@@ -1123,7 +1158,7 @@ pub enum ConversationStopReason {
 }
 
 /// Runtime-to-UI/store unique event stream (tech-spec §3).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ConversationEvent {
     /// A streaming assistant row was created.
     MessageStarted {
@@ -1200,6 +1235,76 @@ pub enum ConversationEvent {
         /// Interrupted assistant message id.
         message_id: MessageId,
     },
+}
+
+impl std::fmt::Debug for ConversationEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MessageStarted { message_id, seq } => formatter
+                .debug_struct("MessageStarted")
+                .field("message_id_bytes", &message_id.len())
+                .field("seq", seq)
+                .finish(),
+            Self::TextDelta { message_id, delta } => formatter
+                .debug_struct("TextDelta")
+                .field("message_id_bytes", &message_id.len())
+                .field("delta_bytes", &delta.len())
+                .finish(),
+            Self::ThinkingDelta { message_id, delta } => formatter
+                .debug_struct("ThinkingDelta")
+                .field("message_id_bytes", &message_id.len())
+                .field("delta_bytes", &delta.len())
+                .finish(),
+            Self::ToolCallProposed { call } => formatter
+                .debug_struct("ToolCallProposed")
+                .field("call", call)
+                .finish(),
+            Self::ToolCallApproved { call_id, approval } => formatter
+                .debug_struct("ToolCallApproved")
+                .field("call_id_bytes", &call_id.len())
+                .field("approval", approval)
+                .finish(),
+            Self::ToolCallOutput { call_id, chunk } => formatter
+                .debug_struct("ToolCallOutput")
+                .field("call_id_bytes", &call_id.len())
+                .field("chunk", chunk)
+                .finish(),
+            Self::ToolCallFinished { call_id, result } => formatter
+                .debug_struct("ToolCallFinished")
+                .field("call_id_bytes", &call_id.len())
+                .field("result", result)
+                .finish(),
+            Self::UsageUpdated {
+                message_id,
+                usage,
+                cost,
+            } => formatter
+                .debug_struct("UsageUpdated")
+                .field("message_id_bytes", &message_id.len())
+                .field("usage", usage)
+                .field("cost", cost)
+                .finish(),
+            Self::MessageFinished {
+                message_id,
+                stop_reason,
+            } => formatter
+                .debug_struct("MessageFinished")
+                .field("message_id_bytes", &message_id.len())
+                .field("stop_reason", stop_reason)
+                .finish(),
+            Self::Error {
+                message_id,
+                error: _,
+            } => formatter
+                .debug_struct("Error")
+                .field("message_id_bytes", &message_id.as_ref().map(String::len))
+                .finish(),
+            Self::Interrupted { message_id } => formatter
+                .debug_struct("Interrupted")
+                .field("message_id_bytes", &message_id.len())
+                .finish(),
+        }
+    }
 }
 
 /// Converts one headless runtime event into the shared conversation event.
@@ -1664,6 +1769,231 @@ pub struct BranchSwitchCompletion {
     pub snapshot: Option<BranchSnapshot>,
 }
 
+/// Opaque identifier for one canonical three-source index snapshot.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IndexSnapshotId {
+    pub(crate) generation: u64,
+    pub(crate) slot: u64,
+    pub(crate) seal: u64,
+}
+
+impl std::fmt::Debug for IndexSnapshotId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("IndexSnapshotId([opaque])")
+    }
+}
+
+/// Safe classification for one row in the commit checklist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitSelectionKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+}
+
+/// Safe checklist row. Raw paths, object ids and Git status bytes remain
+/// private to the trusted service.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CommitSelection {
+    pub file_id: WorkspaceFileId,
+    pub label: String,
+    pub previous_label: Option<String>,
+    pub kind: CommitSelectionKind,
+    pub forced: bool,
+}
+
+impl std::fmt::Debug for CommitSelection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommitSelection")
+            .field("file_id", &self.file_id)
+            .field("kind", &self.kind)
+            .field("forced", &self.forced)
+            .field("label_bytes", &self.label.len())
+            .field(
+                "has_previous_label",
+                &self.previous_label.as_ref().map(|label| label.len()),
+            )
+            .finish()
+    }
+}
+
+/// Canonical displayed A authority for the first commit confirmation.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CommitChecklist {
+    pub id: IndexSnapshotId,
+    pub workspace_generation: u64,
+    pub staged: Vec<CommitSelection>,
+    pub optional: Vec<CommitSelection>,
+}
+
+impl std::fmt::Debug for CommitChecklist {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommitChecklist")
+            .field("id", &self.id)
+            .field("workspace_generation", &self.workspace_generation)
+            .field("staged_count", &self.staged.len())
+            .field("optional_count", &self.optional.len())
+            .finish()
+    }
+}
+
+/// Opaque, single-use B authority displayed before the final commit.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PreparedCommitId {
+    pub(crate) generation: u64,
+    pub(crate) slot: u64,
+    pub(crate) seal: u64,
+}
+
+impl std::fmt::Debug for PreparedCommitId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PreparedCommitId([opaque])")
+    }
+}
+
+/// Content-free safe projection of an accepted B authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedCommit {
+    pub id: PreparedCommitId,
+    pub workspace_generation: u64,
+    pub staged_file_count: u32,
+    pub summary_truncated: bool,
+}
+
+/// Editable provider draft. Debug output deliberately excludes content.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CommitDraft {
+    text: String,
+}
+
+impl CommitDraft {
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub(crate) fn new(text: String) -> Self {
+        Self { text }
+    }
+}
+
+impl std::fmt::Debug for CommitDraft {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommitDraft")
+            .field("text_bytes", &self.text.len())
+            .finish()
+    }
+}
+
+/// Stable content-free failure vocabulary for T34.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitErrorCode {
+    InvalidRoot,
+    NotRepository,
+    SpawnFailed,
+    GitFailed,
+    TimedOut,
+    Cancelled,
+    OutputTooLarge,
+    MalformedOutput,
+    StaleAuthority,
+    UnsafeRepository,
+    UnsafeFilter,
+    IntentToAdd,
+    NoStagedChanges,
+    InvalidSelection,
+    ChangedDuringRead,
+    InvalidMessage,
+    DraftFailed,
+    ProcessControlFailed,
+}
+
+impl CommitErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRoot => "invalid_root",
+            Self::NotRepository => "not_repository",
+            Self::SpawnFailed => "spawn_failed",
+            Self::GitFailed => "git_failed",
+            Self::TimedOut => "timed_out",
+            Self::Cancelled => "cancelled",
+            Self::OutputTooLarge => "output_too_large",
+            Self::MalformedOutput => "malformed_output",
+            Self::StaleAuthority => "stale_authority",
+            Self::UnsafeRepository => "unsafe_repository",
+            Self::UnsafeFilter => "unsafe_filter",
+            Self::IntentToAdd => "intent_to_add",
+            Self::NoStagedChanges => "no_staged_changes",
+            Self::InvalidSelection => "invalid_selection",
+            Self::ChangedDuringRead => "changed_during_read",
+            Self::InvalidMessage => "invalid_message",
+            Self::DraftFailed => "draft_failed",
+            Self::ProcessControlFailed => "process_control_failed",
+        }
+    }
+}
+
+/// Prepare result always carries the authoritative post-attempt workspace
+/// snapshot when its owner refresh succeeds.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CommitPrepareCompletion {
+    pub prepared: Option<PreparedCommit>,
+    pub workspace: Option<WorkspaceSnapshot>,
+    pub error: Option<CommitErrorCode>,
+}
+
+impl std::fmt::Debug for CommitPrepareCompletion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommitPrepareCompletion")
+            .field("prepared", &self.prepared)
+            .field(
+                "workspace_generation",
+                &self
+                    .workspace
+                    .as_ref()
+                    .map(|workspace| workspace.generation),
+            )
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+/// Content-free terminal outcome of the trusted commit mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitOutcome {
+    Committed,
+    Failed(CommitErrorCode),
+}
+
+/// Commit result plus the authoritative post-attempt workspace snapshot.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CommitCompletion {
+    pub outcome: CommitOutcome,
+    pub workspace: Option<WorkspaceSnapshot>,
+}
+
+impl std::fmt::Debug for CommitCompletion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CommitCompletion")
+            .field("outcome", &self.outcome)
+            .field(
+                "workspace_generation",
+                &self
+                    .workspace
+                    .as_ref()
+                    .map(|workspace| workspace.generation),
+            )
+            .finish()
+    }
+}
+
 /// Current repository head projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkspaceHead {
@@ -2059,8 +2389,32 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        ConversationEvent, Microcents, ThreadMode, ThreadStatus, TokenUsage, from_runtime_event,
+        ConversationError, ConversationEvent, Microcents, ThreadMode, ThreadStatus, TokenUsage,
+        from_runtime_event,
     };
+
+    #[test]
+    fn conversation_runtime_error_debug_and_display_redact_provider_payload() {
+        const SENTINEL: &str = "VEGA_CONVERSATION_PROVIDER_SENTINEL";
+        let error = ConversationError::Runtime(Arc::new(vega_runtime::VegaError::Provider {
+            status: Some(503),
+            message: SENTINEL.into(),
+            retryable: true,
+        }));
+        assert!(!format!("{error:?}").contains(SENTINEL));
+        assert!(!error.to_string().contains(SENTINEL));
+        let ConversationError::Runtime(error) = error else {
+            unreachable!()
+        };
+        assert!(matches!(
+            error.as_ref(),
+            vega_runtime::VegaError::Provider {
+                status: Some(503),
+                message,
+                retryable: true,
+            } if message == SENTINEL
+        ));
+    }
 
     #[test]
     fn thread_mode_round_trips_the_ddl_vocabulary() {

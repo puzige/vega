@@ -5,7 +5,11 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::Duration;
 
 use gpui::prelude::*;
@@ -16,13 +20,14 @@ use gpui::{
 use gpui_platform::application;
 use vega_conversation::types::{
     ArtifactCard as ArtifactProjection, ArtifactCardId, ArtifactPreviewProjection, BranchId,
-    BranchSnapshot, BranchSwitchCompletion, BranchSwitchOutcome, ConversationEvent,
-    DiffTextProjection, GitWorkspaceErrorCode, OpenInOutcome, OpenInTarget, Plan,
-    PlanReviewOutcome, Thread, ToolCall, WorkspaceFileId, WorkspaceSnapshot,
+    BranchSnapshot, BranchSwitchCompletion, BranchSwitchOutcome, CommitChecklist, CommitCompletion,
+    CommitErrorCode, CommitOutcome, CommitPrepareCompletion, ConversationEvent, DiffTextProjection,
+    GitWorkspaceErrorCode, OpenInOutcome, OpenInTarget, Plan, PlanReviewOutcome, Thread, ToolCall,
+    WorkspaceFileId, WorkspaceSnapshot,
 };
 use vega_conversation::{
     ArtifactCaptureCandidate, ArtifactService, BranchSwitchPermit, BranchWorkspaceService,
-    GitWorkspaceService,
+    GitWorkspaceService, TrustedGitService,
 };
 use vega_store::Store;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
@@ -33,9 +38,13 @@ use vega_ui::branch_selector::{
     BranchListRequested, BranchOperationId, BranchSelector, BranchSelectorClosed,
     BranchSwitchRequested,
 };
+use vega_ui::commit_panel::{
+    CommitDraftRequested, CommitOperationId, CommitPanel, CommitPanelClosed,
+    CommitPrepareRequested, CommitRequested,
+};
 use vega_ui::conversation_stream::{
-    ComposerSubmitted, ConversationStream, OpenWorkspaceDiffRequested, ThreadSettingsRequested,
-    WorkspaceToolTerminal, bench as render_frame_bench,
+    ComposerSubmitted, ConversationStream, OpenCommitPanelRequested, OpenWorkspaceDiffRequested,
+    ThreadSettingsRequested, WorkspaceToolTerminal, bench as render_frame_bench,
 };
 use vega_ui::diff_view::{
     DIFF_REFRESH_INTERVAL, DiffClosed, DiffProjectionRequested, DiffRetryRequested, DiffView,
@@ -762,43 +771,632 @@ struct TrustedActionToken {
 }
 
 #[derive(Default)]
-struct TrustedActionCoordinator {
+struct TrustedActionState {
     next_generation: u64,
     active: Option<TrustedActionToken>,
 }
 
+#[derive(Clone, Default)]
+struct TrustedActionCoordinator {
+    state: Arc<Mutex<TrustedActionState>>,
+}
+
 impl TrustedActionCoordinator {
     fn acquire(
-        &mut self,
+        &self,
         kind: TrustedActionKind,
         owner_epoch: u64,
         request_sequence: u64,
     ) -> Option<TrustedActionToken> {
-        if self.active.is_some() {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if state.active.is_some() {
             return None;
         }
-        let generation = self.next_generation.checked_add(1)?;
-        self.next_generation = generation;
+        let generation = state.next_generation.checked_add(1)?;
+        state.next_generation = generation;
         let token = TrustedActionToken {
             generation,
             kind,
             owner_epoch,
             request_sequence,
         };
-        self.active = Some(token);
+        state.active = Some(token);
         Some(token)
     }
 
-    fn release(&mut self, token: TrustedActionToken) -> bool {
-        if self.active != Some(token) {
+    fn release(&self, token: TrustedActionToken) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if state.active != Some(token) {
             return false;
         }
-        self.active = None;
+        state.active = None;
         true
     }
 
     fn is_busy(&self) -> bool {
-        self.active.is_some()
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .active
+            .is_some()
+    }
+
+    #[cfg(test)]
+    fn active_token(&self) -> Option<TrustedActionToken> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .active
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct CommitRouteIdentity {
+    epoch: u64,
+    thread_id: String,
+    project_id: String,
+    stream: Entity<ConversationStream>,
+    panel: Entity<CommitPanel>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommitPhase {
+    Checklist,
+    Preparing,
+    CommitReady,
+    Drafting,
+    Committing,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommitFenceAuthority {
+    None,
+    Snapshot(vega_conversation::types::IndexSnapshotId),
+    Prepared(vega_conversation::types::PreparedCommitId),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct CommitFence {
+    route: CommitRouteIdentity,
+    sequence: u64,
+    operation: Option<CommitOperationId>,
+    phase: CommitPhase,
+    authority: CommitFenceAuthority,
+}
+
+struct ActiveCommitRoute {
+    identity: CommitRouteIdentity,
+    service: Arc<TrustedGitService>,
+    lease: TrustedActionToken,
+    next_sequence: u64,
+    phase: CommitPhase,
+    snapshot: Option<vega_conversation::types::IndexSnapshotId>,
+    prepared: Option<vega_conversation::types::PreparedCommitId>,
+    focus_pending: bool,
+    pending: Option<CommitFence>,
+    cancel: Option<tokio_util::sync::CancellationToken>,
+    terminal_done: Option<Arc<AtomicBool>>,
+}
+
+#[derive(Default)]
+struct CommitController {
+    next_epoch: u64,
+    active: Option<ActiveCommitRoute>,
+    retiring: Option<ActiveCommitRoute>,
+}
+
+impl CommitController {
+    fn is_open(&self) -> bool {
+        self.active.is_some() || self.retiring.is_some()
+    }
+
+    fn begin_fence(
+        active: &mut ActiveCommitRoute,
+        phase: CommitPhase,
+        operation: Option<CommitOperationId>,
+        authority: CommitFenceAuthority,
+    ) -> Option<(
+        CommitFence,
+        tokio_util::sync::CancellationToken,
+        Arc<AtomicBool>,
+    )> {
+        if active.pending.is_some() {
+            return None;
+        }
+        let sequence = active.next_sequence.checked_add(1)?;
+        active.next_sequence = sequence;
+        active.phase = phase;
+        let fence = CommitFence {
+            route: active.identity.clone(),
+            sequence,
+            operation,
+            phase,
+            authority,
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let terminal_done = Arc::new(AtomicBool::new(false));
+        active.pending = Some(fence.clone());
+        active.cancel = Some(cancel.clone());
+        active.terminal_done = Some(terminal_done.clone());
+        Some((fence, cancel, terminal_done))
+    }
+
+    fn retire_or_close(&mut self) -> Option<(TrustedActionToken, Entity<ConversationStream>)> {
+        let active = self.active.take()?;
+        if active.pending.is_some() {
+            if let Some(cancel) = &active.cancel {
+                cancel.cancel();
+            }
+            if self.retiring.is_none() {
+                self.retiring = Some(active);
+                return None;
+            }
+        }
+        Some((active.lease, active.identity.stream))
+    }
+
+    fn claim(&mut self, fence: &CommitFence) -> CommitClaim {
+        if self.active.as_ref().is_some_and(|active| {
+            active.pending.as_ref() == Some(fence)
+                && Self::authority_is_current(active, fence.authority)
+        }) {
+            if let Some(active) = self.active.as_mut() {
+                active.pending = None;
+                active.cancel = None;
+                active.terminal_done = None;
+            }
+            return CommitClaim::Active;
+        }
+        if self.retiring.as_ref().is_some_and(|active| {
+            active.pending.as_ref() == Some(fence)
+                && Self::authority_is_current(active, fence.authority)
+        }) && let Some(active) = self.retiring.take()
+        {
+            return CommitClaim::Retiring(Box::new(active));
+        }
+        CommitClaim::Stale
+    }
+
+    fn authority_is_current(active: &ActiveCommitRoute, authority: CommitFenceAuthority) -> bool {
+        match authority {
+            CommitFenceAuthority::None => true,
+            CommitFenceAuthority::Snapshot(id) => active.snapshot == Some(id),
+            CommitFenceAuthority::Prepared(id) => active.prepared == Some(id),
+        }
+    }
+}
+
+enum CommitClaim {
+    Active,
+    Retiring(Box<ActiveCommitRoute>),
+    Stale,
+}
+
+enum CommitWorkerResult {
+    Checklist(Result<CommitChecklist, CommitErrorCode>),
+    Prepare(CommitPrepareCompletion, CommitWorkspaceReconciliation),
+    Draft(Result<vega_conversation::types::CommitDraft, CommitErrorCode>),
+    Commit(CommitCompletion, CommitWorkspaceReconciliation),
+    Recovered(CommitErrorCode, CommitWorkspaceReconciliation),
+    RuntimeUnavailable(CommitErrorCode),
+}
+
+struct CommitWorkspaceReconciliation {
+    workspace: Result<WorkspaceSnapshot, CommitErrorCode>,
+    workspace_service: Arc<GitWorkspaceService>,
+    branch: Option<CommitBranchReconciliation>,
+    artifacts: Option<CommitArtifactReconciliation>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct CommitTestProbe {
+    prepare_workers: std::sync::atomic::AtomicUsize,
+    draft_workers: std::sync::atomic::AtomicUsize,
+    commit_workers: std::sync::atomic::AtomicUsize,
+    terminal_applications: std::sync::atomic::AtomicUsize,
+    drop_commit_sender: AtomicBool,
+    trace: Mutex<Vec<&'static str>>,
+}
+
+#[cfg(test)]
+impl CommitTestProbe {
+    fn record(&self, event: &'static str) {
+        self.trace
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(event);
+    }
+}
+
+type CommitBranchReconciliation = (
+    Arc<BranchWorkspaceService>,
+    Result<BranchSnapshot, GitWorkspaceErrorCode>,
+);
+type CommitArtifactReconciliation = (
+    Arc<ArtifactService>,
+    Result<Vec<ArtifactProjection>, GitWorkspaceErrorCode>,
+);
+
+fn reconcile_commit_consumers(
+    runtime: &tokio::runtime::Runtime,
+    service: &Arc<TrustedGitService>,
+    workspace: Option<WorkspaceSnapshot>,
+    branch: Option<Arc<BranchWorkspaceService>>,
+    artifacts: Option<Arc<ArtifactService>>,
+    #[cfg(test)] probe: Option<&Arc<CommitTestProbe>>,
+) -> CommitWorkspaceReconciliation {
+    // Mutation ownership is not terminal until one workspace snapshot is
+    // authoritative both before and after every consumer read. Branch and
+    // artifact failures remain typed projections, but a workspace failure or
+    // observed C generation retains the trusted-action lease and retries.
+    let mut candidate = workspace;
+    let mut backoff = Duration::from_millis(25);
+    loop {
+        let authoritative = match candidate.take() {
+            Some(snapshot) => snapshot,
+            None => match runtime.block_on(service.recover_disconnected_mutation()) {
+                Ok(snapshot) => snapshot,
+                Err(_) => {
+                    std::thread::sleep(backoff);
+                    backoff = next_commit_recovery_backoff(backoff);
+                    continue;
+                }
+            },
+        };
+        #[cfg(test)]
+        if let Some(probe) = probe {
+            probe.record("workspace_candidate");
+        }
+        let branch_result = branch.as_ref().map(|branch| {
+            let snapshot = runtime
+                .block_on(branch.refresh(tokio_util::sync::CancellationToken::new()))
+                .map_err(|failure| failure.code());
+            (branch.clone(), snapshot)
+        });
+        #[cfg(test)]
+        if branch_result.is_some()
+            && let Some(probe) = probe
+        {
+            probe.record("branch_result");
+        }
+        let artifact_result = artifacts.as_ref().map(|artifacts| {
+            let cards = runtime
+                .block_on(artifacts.reconcile(tokio_util::sync::CancellationToken::new()))
+                .map_err(|failure| failure.code());
+            (artifacts.clone(), cards)
+        });
+        #[cfg(test)]
+        if artifact_result.is_some()
+            && let Some(probe) = probe
+        {
+            probe.record("artifact_result");
+        }
+        match runtime.block_on(service.reconcile_workspace()) {
+            Ok(final_workspace) if final_workspace == authoritative => {
+                #[cfg(test)]
+                if let Some(probe) = probe {
+                    probe.record("workspace_final");
+                }
+                return CommitWorkspaceReconciliation {
+                    workspace: Ok(final_workspace),
+                    workspace_service: service.workspace_service(),
+                    branch: branch_result,
+                    artifacts: artifact_result,
+                };
+            }
+            Ok(final_workspace) => {
+                candidate = Some(final_workspace);
+                std::thread::sleep(backoff);
+                backoff = next_commit_recovery_backoff(backoff);
+            }
+            Err(_) => {
+                std::thread::sleep(backoff);
+                backoff = next_commit_recovery_backoff(backoff);
+            }
+        }
+    }
+}
+
+fn commit_result_has_authoritative_workspace(
+    phase: CommitPhase,
+    result: &CommitWorkerResult,
+) -> bool {
+    match (phase, result) {
+        (CommitPhase::Preparing, CommitWorkerResult::Prepare(completion, reconciled)) => {
+            match &reconciled.workspace {
+                Ok(workspace) => {
+                    completion.workspace.as_ref() == Some(workspace)
+                        && completion.prepared.as_ref().is_none_or(|prepared| {
+                            prepared.workspace_generation == workspace.generation
+                        })
+                }
+                Err(_) => completion.workspace.is_none() && completion.prepared.is_none(),
+            }
+        }
+        (CommitPhase::Committing, CommitWorkerResult::Commit(completion, reconciled)) => {
+            match &reconciled.workspace {
+                Ok(workspace) => completion.workspace.as_ref() == Some(workspace),
+                Err(_) => completion.workspace.is_none(),
+            }
+        }
+        (CommitPhase::Checklist, CommitWorkerResult::Checklist(_))
+        | (CommitPhase::Drafting, CommitWorkerResult::Draft(_)) => true,
+        (
+            CommitPhase::Preparing | CommitPhase::Committing,
+            CommitWorkerResult::Recovered(_, reconciled),
+        ) => reconciled.workspace.is_ok(),
+        (
+            CommitPhase::Preparing | CommitPhase::Committing,
+            CommitWorkerResult::RuntimeUnavailable(_),
+        ) => true,
+        _ => false,
+    }
+}
+
+fn commit_result_reconciliation(
+    result: &CommitWorkerResult,
+) -> Option<&CommitWorkspaceReconciliation> {
+    match result {
+        CommitWorkerResult::Prepare(_, reconciled)
+        | CommitWorkerResult::Commit(_, reconciled)
+        | CommitWorkerResult::Recovered(_, reconciled) => Some(reconciled),
+        CommitWorkerResult::Checklist(_)
+        | CommitWorkerResult::Draft(_)
+        | CommitWorkerResult::RuntimeUnavailable(_) => None,
+    }
+}
+
+fn map_commit_workspace_error(code: GitWorkspaceErrorCode) -> CommitErrorCode {
+    match code {
+        GitWorkspaceErrorCode::InvalidRoot => CommitErrorCode::InvalidRoot,
+        GitWorkspaceErrorCode::NotRepository => CommitErrorCode::NotRepository,
+        GitWorkspaceErrorCode::SpawnFailed => CommitErrorCode::SpawnFailed,
+        GitWorkspaceErrorCode::TimedOut => CommitErrorCode::TimedOut,
+        GitWorkspaceErrorCode::Cancelled => CommitErrorCode::Cancelled,
+        GitWorkspaceErrorCode::OutputTooLarge => CommitErrorCode::OutputTooLarge,
+        GitWorkspaceErrorCode::MalformedOutput => CommitErrorCode::MalformedOutput,
+        GitWorkspaceErrorCode::ProcessControlFailed => CommitErrorCode::ProcessControlFailed,
+        _ => CommitErrorCode::ChangedDuringRead,
+    }
+}
+
+fn map_commit_reconcile_error(code: CommitErrorCode) -> GitWorkspaceErrorCode {
+    match code {
+        CommitErrorCode::InvalidRoot => GitWorkspaceErrorCode::InvalidRoot,
+        CommitErrorCode::NotRepository => GitWorkspaceErrorCode::NotRepository,
+        CommitErrorCode::SpawnFailed => GitWorkspaceErrorCode::SpawnFailed,
+        CommitErrorCode::TimedOut => GitWorkspaceErrorCode::TimedOut,
+        CommitErrorCode::Cancelled => GitWorkspaceErrorCode::Cancelled,
+        CommitErrorCode::OutputTooLarge => GitWorkspaceErrorCode::OutputTooLarge,
+        CommitErrorCode::MalformedOutput => GitWorkspaceErrorCode::MalformedOutput,
+        CommitErrorCode::ProcessControlFailed => GitWorkspaceErrorCode::ProcessControlFailed,
+        CommitErrorCode::GitFailed
+        | CommitErrorCode::StaleAuthority
+        | CommitErrorCode::UnsafeRepository
+        | CommitErrorCode::UnsafeFilter
+        | CommitErrorCode::IntentToAdd
+        | CommitErrorCode::NoStagedChanges
+        | CommitErrorCode::InvalidSelection
+        | CommitErrorCode::ChangedDuringRead
+        | CommitErrorCode::InvalidMessage
+        | CommitErrorCode::DraftFailed => GitWorkspaceErrorCode::ChangedDuringRead,
+    }
+}
+
+fn mark_commit_worker_terminal(
+    done: Arc<AtomicBool>,
+    window_alive: Arc<AtomicBool>,
+    actions: TrustedActionCoordinator,
+    lease: TrustedActionToken,
+) {
+    done.store(true, Ordering::SeqCst);
+    if !window_alive.load(Ordering::SeqCst) {
+        let _ = actions.release(lease);
+    }
+}
+
+fn mark_commit_worker_terminal_if_authoritative(
+    phase: CommitPhase,
+    result: &CommitWorkerResult,
+    done: Arc<AtomicBool>,
+    window_alive: Arc<AtomicBool>,
+    actions: TrustedActionCoordinator,
+    lease: TrustedActionToken,
+) {
+    if commit_result_has_authoritative_workspace(phase, result) {
+        mark_commit_worker_terminal(done, window_alive, actions, lease);
+    }
+}
+
+fn build_commit_runtime() -> Result<tokio::runtime::Runtime, CommitErrorCode> {
+    build_commit_runtime_with(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+    })
+}
+
+fn build_commit_runtime_with(
+    factory: impl FnOnce() -> std::io::Result<tokio::runtime::Runtime>,
+) -> Result<tokio::runtime::Runtime, CommitErrorCode> {
+    factory().map_err(|_| CommitErrorCode::SpawnFailed)
+}
+
+fn next_commit_recovery_backoff(current: Duration) -> Duration {
+    current.saturating_mul(2).min(Duration::from_secs(1))
+}
+
+fn build_commit_recovery_runtime_with(
+    mut factory: impl FnMut() -> Result<tokio::runtime::Runtime, CommitErrorCode>,
+    mut wait: impl FnMut(Duration),
+) -> Result<tokio::runtime::Runtime, CommitErrorCode> {
+    let mut backoff = Duration::from_millis(25);
+    for attempt in 0..6 {
+        if let Ok(runtime) = factory() {
+            return Ok(runtime);
+        }
+        if attempt < 5 {
+            wait(backoff);
+            backoff = next_commit_recovery_backoff(backoff);
+        }
+    }
+    Err(CommitErrorCode::SpawnFailed)
+}
+
+fn run_commit_checklist_worker(
+    workspace: Arc<GitWorkspaceService>,
+    service: Arc<TrustedGitService>,
+    cancel: tokio_util::sync::CancellationToken,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
+) -> CommitWorkerResult {
+    #[cfg(test)]
+    let _ = probe;
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| CommitErrorCode::SpawnFailed)
+        .and_then(|runtime| {
+            runtime.block_on(async {
+                workspace
+                    .refresh(cancel.clone())
+                    .await
+                    .map_err(|error| map_commit_workspace_error(error.code()))?;
+                service.open_checklist(cancel).await
+            })
+        });
+    CommitWorkerResult::Checklist(result)
+}
+
+fn run_commit_prepare_worker(
+    service: Arc<TrustedGitService>,
+    snapshot_id: vega_conversation::types::IndexSnapshotId,
+    selected: Vec<WorkspaceFileId>,
+    cancel: tokio_util::sync::CancellationToken,
+    branch: Option<Arc<BranchWorkspaceService>>,
+    artifacts: Option<Arc<ArtifactService>>,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
+) -> CommitWorkerResult {
+    #[cfg(test)]
+    if let Some(probe) = &probe {
+        probe.prepare_workers.fetch_add(1, Ordering::SeqCst);
+    }
+    let Ok(runtime) = build_commit_runtime() else {
+        return CommitWorkerResult::RuntimeUnavailable(CommitErrorCode::SpawnFailed);
+    };
+    let mut completion = runtime.block_on(service.prepare(snapshot_id, selected, cancel));
+    let reconciled = reconcile_commit_consumers(
+        &runtime,
+        &service,
+        completion.workspace.take(),
+        branch,
+        artifacts,
+        #[cfg(test)]
+        probe.as_ref(),
+    );
+    match &reconciled.workspace {
+        Ok(workspace) => {
+            completion.workspace = Some(workspace.clone());
+            if completion
+                .prepared
+                .as_ref()
+                .is_some_and(|prepared| prepared.workspace_generation != workspace.generation)
+            {
+                completion.prepared = None;
+                completion.error = Some(CommitErrorCode::ChangedDuringRead);
+            }
+        }
+        Err(_) => {
+            completion.prepared = None;
+            completion.workspace = None;
+            completion.error = Some(CommitErrorCode::ChangedDuringRead);
+        }
+    }
+    CommitWorkerResult::Prepare(completion, reconciled)
+}
+
+fn run_commit_draft_worker(
+    service: Arc<TrustedGitService>,
+    prepared_id: vega_conversation::types::PreparedCommitId,
+    thread: Thread,
+    cancel: tokio_util::sync::CancellationToken,
+    provider_override: Option<Arc<dyn vega_runtime::Provider>>,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
+) -> CommitWorkerResult {
+    #[cfg(test)]
+    if let Some(probe) = &probe {
+        probe.draft_workers.fetch_add(1, Ordering::SeqCst);
+    }
+    let provider = provider_override.unwrap_or_else(|| commit_provider(&thread));
+    let result = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| CommitErrorCode::DraftFailed)
+        .and_then(|runtime| {
+            runtime.block_on(service.draft(prepared_id, thread.model, provider, cancel))
+        });
+    CommitWorkerResult::Draft(result)
+}
+
+fn run_commit_execute_worker(
+    service: Arc<TrustedGitService>,
+    prepared_id: vega_conversation::types::PreparedCommitId,
+    message: String,
+    cancel: tokio_util::sync::CancellationToken,
+    branch: Option<Arc<BranchWorkspaceService>>,
+    artifacts: Option<Arc<ArtifactService>>,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
+) -> CommitWorkerResult {
+    #[cfg(test)]
+    if let Some(probe) = &probe {
+        probe.commit_workers.fetch_add(1, Ordering::SeqCst);
+    }
+    let Ok(runtime) = build_commit_runtime() else {
+        return CommitWorkerResult::RuntimeUnavailable(CommitErrorCode::SpawnFailed);
+    };
+    let mut completion = runtime.block_on(service.commit(prepared_id, message, cancel));
+    let reconciled = reconcile_commit_consumers(
+        &runtime,
+        &service,
+        completion.workspace.take(),
+        branch,
+        artifacts,
+        #[cfg(test)]
+        probe.as_ref(),
+    );
+    completion.workspace = reconciled.workspace.as_ref().ok().cloned();
+    CommitWorkerResult::Commit(completion, reconciled)
+}
+
+fn run_commit_recovery_worker(
+    service: Arc<TrustedGitService>,
+    branch: Option<Arc<BranchWorkspaceService>>,
+    artifacts: Option<Arc<ArtifactService>>,
+    #[cfg(test)] probe: Option<Arc<CommitTestProbe>>,
+) -> CommitWorkerResult {
+    loop {
+        let runtime = build_commit_recovery_runtime_with(build_commit_runtime, std::thread::sleep);
+        if let Ok(runtime) = runtime {
+            let reconciled = reconcile_commit_consumers(
+                &runtime,
+                &service,
+                None,
+                branch,
+                artifacts,
+                #[cfg(test)]
+                probe.as_ref(),
+            );
+            return CommitWorkerResult::Recovered(CommitErrorCode::ChangedDuringRead, reconciled);
+        }
+        // Each construction batch is finite. Keep the exact owner live and
+        // reschedule with a bounded pause rather than forge authority or spin.
+        std::thread::sleep(Duration::from_secs(1));
     }
 }
 
@@ -1096,6 +1694,30 @@ fn unique_provider_for_model(
     Some(provider)
 }
 
+fn commit_provider(thread: &Thread) -> Arc<dyn vega_runtime::Provider> {
+    vega_store::config::load()
+        .ok()
+        .and_then(|config| unique_provider_for_model(&config, &thread.model))
+        .and_then(|provider| {
+            vega_store::keystore::get_key(&provider.key_ref)
+                .ok()
+                .filter(|key| !key.is_empty())
+                .and_then(|key| vega_runtime::OpenAiProvider::new(provider.base_url, key).ok())
+        })
+        .map(|provider| {
+            Arc::new(provider.with_retry_policy(commit_retry_policy()))
+                as Arc<dyn vega_runtime::Provider>
+        })
+        .unwrap_or_else(|| Arc::new(UnavailableProvider))
+}
+
+fn commit_retry_policy() -> vega_runtime::RetryPolicy {
+    vega_runtime::RetryPolicy {
+        max_retries: 0,
+        ..vega_runtime::RetryPolicy::default()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_agent_worker(
     database_path: std::path::PathBuf,
@@ -1192,27 +1814,56 @@ struct VegaWindow {
     diff_controller: DiffController,
     artifact_controller: ArtifactController,
     branch_controller: BranchController,
+    commit_controller: CommitController,
     trusted_actions: TrustedActionCoordinator,
-    commit_panel_open: bool,
+    window_alive: Arc<AtomicBool>,
+    #[cfg(test)]
+    commit_provider_override: Option<Arc<dyn vega_runtime::Provider>>,
+    #[cfg(test)]
+    commit_test_probe: Option<Arc<CommitTestProbe>>,
 }
 
 impl VegaWindow {
+    fn record_commit_probe(&self, event: &'static str) {
+        #[cfg(not(test))]
+        let _ = event;
+        #[cfg(test)]
+        if let Some(probe) = &self.commit_test_probe {
+            probe.record(event);
+        }
+    }
+
+    fn record_commit_terminal_application(&self, trace: bool) {
+        #[cfg(not(test))]
+        let _ = trace;
+        #[cfg(test)]
+        if let Some(probe) = &self.commit_test_probe {
+            probe.terminal_applications.fetch_add(1, Ordering::SeqCst);
+            if trace {
+                probe.record("panel_terminal");
+            }
+        }
+    }
+
     fn new(cx: &mut Context<Self>) -> Self {
         cx.observe_global::<OpenedThread>(|this, cx| {
             this.close_diff_if_route_stale(cx);
             this.close_artifact_if_route_stale(cx);
             this.close_branch_if_route_stale(cx);
+            this.close_commit_if_route_stale(cx);
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
             this.close_diff_if_route_stale(cx);
             this.close_artifact_if_route_stale(cx);
             this.close_branch_if_route_stale(cx);
+            this.close_commit_if_route_stale(cx);
         })
         .detach();
         cx.observe_global::<vega_ui::sidebar::SelectedProject>(|this, cx| {
             this.close_artifact_if_route_stale(cx);
             this.close_branch_if_route_stale(cx);
+            this.close_commit_if_route_stale(cx);
         })
         .detach();
         Self {
@@ -1223,8 +1874,42 @@ impl VegaWindow {
             diff_controller: DiffController::default(),
             artifact_controller: ArtifactController::default(),
             branch_controller: BranchController::default(),
+            commit_controller: CommitController::default(),
             trusted_actions: TrustedActionCoordinator::default(),
-            commit_panel_open: false,
+            window_alive: Arc::new(AtomicBool::new(true)),
+            #[cfg(test)]
+            commit_provider_override: None,
+            #[cfg(test)]
+            commit_test_probe: None,
+        }
+    }
+
+    fn window_terminal_cleanup(&mut self) {
+        self.window_alive.store(false, Ordering::SeqCst);
+        if let Some(active) = self.agent_controller.active.take() {
+            active.cancel.cancel();
+        }
+        self.diff_controller.close();
+        let _ = self.artifact_controller.close();
+        let _ = self.branch_controller.close();
+        for route in [
+            self.commit_controller.active.as_ref(),
+            self.commit_controller.retiring.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if let Some(cancel) = &route.cancel {
+                cancel.cancel();
+            }
+            if route.pending.is_none()
+                || route
+                    .terminal_done
+                    .as_ref()
+                    .is_some_and(|done| done.load(Ordering::SeqCst))
+            {
+                let _ = self.trusted_actions.release(route.lease);
+            }
         }
     }
 
@@ -1449,11 +2134,808 @@ impl VegaWindow {
 
     fn branch_guards_clear(&self, stream: &Entity<ConversationStream>, cx: &App) -> bool {
         !self.trusted_actions.is_busy()
-            && !self.commit_panel_open
+            && !self.commit_controller.is_open()
             && self.agent_controller.active.is_none()
             && !stream.read(cx).has_active_agent()
             && !stream.read(cx).has_pending_permission()
             && !stream.read(cx).has_pending_plan_review(cx)
+    }
+
+    fn commit_route_is_current(&self, identity: &CommitRouteIdentity, cx: &App) -> bool {
+        !cx.global::<SettingsOpen>().0
+            && cx
+                .global::<vega_ui::sidebar::SelectedProject>()
+                .0
+                .as_deref()
+                == Some(identity.project_id.as_str())
+            && cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|thread| {
+                    thread.id == identity.thread_id && thread.project_id == identity.project_id
+                })
+            && self
+                .stream_view
+                .as_ref()
+                .is_some_and(|(thread_id, stream)| {
+                    thread_id == &identity.thread_id
+                        && stream == &identity.stream
+                        && stream.read(cx).commit_panel() == identity.panel
+                })
+    }
+
+    fn commit_guards_clear(&self, stream: &Entity<ConversationStream>, cx: &App) -> bool {
+        !self.trusted_actions.is_busy()
+            && self.agent_controller.active.is_none()
+            && !stream.read(cx).has_active_agent()
+            && !stream.read(cx).has_pending_permission()
+            && !stream.read(cx).has_pending_plan_review(cx)
+    }
+
+    fn poll_commit_worker(
+        &mut self,
+        fence: CommitFence,
+        receiver: mpsc::Receiver<CommitWorkerResult>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let result = match receiver.try_recv() {
+                    Ok(result) => result,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.recover_disconnected_commit_worker(fence, cx)
+                        });
+                        return;
+                    }
+                };
+                let _ = this.update(cx, |this, cx| this.finish_commit_worker(fence, result, cx));
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn recover_disconnected_commit_worker(&mut self, fence: CommitFence, cx: &mut Context<Self>) {
+        if matches!(fence.phase, CommitPhase::Checklist | CommitPhase::Drafting) {
+            let result = if fence.phase == CommitPhase::Checklist {
+                CommitWorkerResult::Checklist(Err(CommitErrorCode::SpawnFailed))
+            } else {
+                CommitWorkerResult::Draft(Err(CommitErrorCode::DraftFailed))
+            };
+            self.finish_commit_worker(fence, result, cx);
+            return;
+        }
+        let route = self
+            .commit_controller
+            .active
+            .as_mut()
+            .filter(|active| active.pending.as_ref() == Some(&fence))
+            .or_else(|| {
+                self.commit_controller
+                    .retiring
+                    .as_mut()
+                    .filter(|active| active.pending.as_ref() == Some(&fence))
+            });
+        let Some(active) = route else {
+            return;
+        };
+        let service = active.service.clone();
+        let lease = active.lease;
+        let terminal_done = Arc::new(AtomicBool::new(false));
+        active.terminal_done = Some(terminal_done.clone());
+        let branch = self
+            .branch_controller
+            .active
+            .as_ref()
+            .filter(|branch| branch.identity.project_id == fence.route.project_id)
+            .map(|branch| branch.service.clone());
+        let artifacts = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .filter(|artifacts| {
+                artifacts.identity.project_id == fence.route.project_id
+                    && Arc::ptr_eq(&artifacts.workspace, &service.workspace_service())
+            })
+            .map(|artifacts| artifacts.service.clone());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let window_alive = self.window_alive.clone();
+        let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
+        let recovery_phase = fence.phase;
+        cx.background_executor()
+            .spawn(async move {
+                let result = run_commit_recovery_worker(
+                    service,
+                    branch,
+                    artifacts,
+                    #[cfg(test)]
+                    probe,
+                );
+                mark_commit_worker_terminal_if_authoritative(
+                    recovery_phase,
+                    &result,
+                    terminal_done,
+                    window_alive,
+                    actions,
+                    lease,
+                );
+                let _ = sender.send(result);
+            })
+            .detach();
+        self.poll_commit_worker(fence, receiver, cx);
+    }
+
+    fn finish_commit_worker(
+        &mut self,
+        fence: CommitFence,
+        result: CommitWorkerResult,
+        cx: &mut Context<Self>,
+    ) {
+        let has_authoritative_workspace =
+            commit_result_has_authoritative_workspace(fence.phase, &result);
+        let reconciliation = commit_result_reconciliation(&result);
+        match self.commit_controller.claim(&fence) {
+            CommitClaim::Stale => return,
+            CommitClaim::Retiring(mut active) => {
+                if !has_authoritative_workspace {
+                    active.pending = Some(fence.clone());
+                    self.commit_controller.retiring = Some(*active);
+                    self.recover_disconnected_commit_worker(fence, cx);
+                    return;
+                }
+                if let Some(reconciled) = reconciliation {
+                    self.apply_commit_workspace_reconciliation(&fence.route, reconciled, cx);
+                }
+                let terminal_applied = if let Some(operation) = fence.operation {
+                    active
+                        .identity
+                        .panel
+                        .update(cx, |panel, cx| panel.clear_pending(operation, cx))
+                } else {
+                    false
+                };
+                if terminal_applied {
+                    self.record_commit_terminal_application(true);
+                }
+                if self.trusted_actions.release(active.lease) {
+                    active
+                        .identity
+                        .stream
+                        .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                    self.record_commit_probe("lease_release");
+                }
+                return;
+            }
+            CommitClaim::Active => {}
+        }
+        if !has_authoritative_workspace {
+            if let Some(mut active) = self.commit_controller.active.take() {
+                let _ = active
+                    .identity
+                    .panel
+                    .update(cx, |panel, cx| panel.request_close(cx));
+                active.pending = Some(fence.clone());
+                self.commit_controller.retiring = Some(active);
+                self.recover_disconnected_commit_worker(fence, cx);
+            }
+            return;
+        }
+        if let Some(reconciled) = reconciliation {
+            self.apply_commit_workspace_reconciliation(&fence.route, reconciled, cx);
+        }
+        if !self.commit_route_is_current(&fence.route, cx) {
+            self.close_commit_route(cx);
+            return;
+        }
+        match (fence.phase, result) {
+            (CommitPhase::Checklist, CommitWorkerResult::Checklist(result)) => {
+                let accepted = match result {
+                    Ok(checklist) => {
+                        let snapshot_id = checklist.id;
+                        let accepted = fence
+                            .route
+                            .panel
+                            .update(cx, |panel, cx| panel.apply_checklist(checklist, cx));
+                        if accepted && let Some(active) = self.commit_controller.active.as_mut() {
+                            active.phase = CommitPhase::Checklist;
+                            active.snapshot = Some(snapshot_id);
+                            active.prepared = None;
+                        }
+                        accepted
+                    }
+                    Err(code) => fence.route.panel.update(cx, |panel, cx| {
+                        panel.apply_error(
+                            vega_ui::commit_panel::CommitPanelStage::Loading,
+                            code,
+                            cx,
+                        )
+                    }),
+                };
+                if !accepted {
+                    let _ = fence.route.panel.update(cx, |panel, cx| {
+                        panel.apply_error(
+                            vega_ui::commit_panel::CommitPanelStage::Loading,
+                            CommitErrorCode::MalformedOutput,
+                            cx,
+                        )
+                    });
+                    self.close_commit_route(cx);
+                } else {
+                    self.record_commit_terminal_application(false);
+                }
+            }
+            (CommitPhase::Preparing, CommitWorkerResult::Prepare(completion, _)) => {
+                let success = completion.prepared.is_some()
+                    && completion.workspace.is_some()
+                    && completion.error.is_none();
+                let prepared_id = completion.prepared.as_ref().map(|prepared| prepared.id);
+                if let Some(active) = self.commit_controller.active.as_mut() {
+                    active.phase = if success {
+                        CommitPhase::CommitReady
+                    } else {
+                        CommitPhase::Checklist
+                    };
+                    active.prepared = success.then_some(prepared_id).flatten();
+                }
+                if let Some(operation) = fence.operation {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
+                        let value = completion.prepared.ok_or(
+                            completion
+                                .error
+                                .unwrap_or(CommitErrorCode::ChangedDuringRead),
+                        );
+                        panel.finish_prepare(operation, value, cx)
+                    });
+                    if applied {
+                        self.record_commit_terminal_application(true);
+                    }
+                }
+            }
+            (CommitPhase::Drafting, CommitWorkerResult::Draft(result)) => {
+                if let Some(active) = self.commit_controller.active.as_mut() {
+                    active.phase = CommitPhase::CommitReady;
+                }
+                if let Some(operation) = fence.operation {
+                    let applied = fence
+                        .route
+                        .panel
+                        .update(cx, |panel, cx| panel.finish_draft(operation, result, cx));
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
+                }
+            }
+            (CommitPhase::Committing, CommitWorkerResult::Commit(completion, _)) => {
+                let error = match completion.outcome {
+                    CommitOutcome::Committed if completion.workspace.is_some() => None,
+                    CommitOutcome::Committed => Some(CommitErrorCode::ChangedDuringRead),
+                    CommitOutcome::Failed(code) => Some(code),
+                };
+                if let Some(operation) = fence.operation {
+                    let applied = fence
+                        .route
+                        .panel
+                        .update(cx, |panel, cx| panel.finish_commit(operation, error, cx));
+                    if applied {
+                        self.record_commit_terminal_application(true);
+                    }
+                }
+                if let Some(active) = self.commit_controller.active.take()
+                    && self.trusted_actions.release(active.lease)
+                {
+                    active
+                        .identity
+                        .stream
+                        .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                    self.record_commit_probe("lease_release");
+                }
+            }
+            (CommitPhase::Preparing, CommitWorkerResult::Recovered(code, _)) => {
+                if let Some(active) = self.commit_controller.active.as_mut() {
+                    active.phase = CommitPhase::Checklist;
+                    active.prepared = None;
+                }
+                if let Some(operation) = fence.operation {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
+                        panel.finish_prepare(operation, Err(code), cx)
+                    });
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
+                }
+            }
+            (CommitPhase::Committing, CommitWorkerResult::Recovered(code, _)) => {
+                if let Some(operation) = fence.operation {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
+                        panel.finish_commit(operation, Some(code), cx)
+                    });
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
+                }
+                if let Some(active) = self.commit_controller.active.take()
+                    && self.trusted_actions.release(active.lease)
+                {
+                    active
+                        .identity
+                        .stream
+                        .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                    self.record_commit_probe("lease_release");
+                }
+            }
+            (CommitPhase::Preparing, CommitWorkerResult::RuntimeUnavailable(code)) => {
+                if let Some(operation) = fence.operation {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
+                        panel.finish_prepare(operation, Err(code), cx)
+                    });
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
+                }
+                if let Some(active) = self.commit_controller.active.take()
+                    && self.trusted_actions.release(active.lease)
+                {
+                    active
+                        .identity
+                        .stream
+                        .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                }
+            }
+            (CommitPhase::Committing, CommitWorkerResult::RuntimeUnavailable(code)) => {
+                if let Some(operation) = fence.operation {
+                    let applied = fence.route.panel.update(cx, |panel, cx| {
+                        panel.finish_commit(operation, Some(code), cx)
+                    });
+                    if applied {
+                        self.record_commit_terminal_application(false);
+                    }
+                }
+                if let Some(active) = self.commit_controller.active.take()
+                    && self.trusted_actions.release(active.lease)
+                {
+                    active
+                        .identity
+                        .stream
+                        .update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+                }
+            }
+            _ => self.close_commit_route(cx),
+        }
+    }
+
+    fn open_commit_panel(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &OpenCommitPanelRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread) = cx.global::<OpenedThread>().0.clone().filter(|thread| {
+            thread.id == request.thread_id && thread.project_id == request.project_id
+        }) else {
+            return;
+        };
+        if self
+            .stream_view
+            .as_ref()
+            .is_none_or(|(thread_id, current)| thread_id != &thread.id || current != &stream)
+        {
+            return;
+        }
+        if !self.commit_guards_clear(&stream, cx) || self.commit_controller.is_open() {
+            return;
+        }
+        let Ok(root) = Self::artifact_project_root(&thread, cx) else {
+            return;
+        };
+        let workspace = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .filter(|active| {
+                active.identity.project_id == thread.project_id
+                    && active.identity.thread_id == thread.id
+                    && active.identity.stream == stream
+            })
+            .map(|active| active.workspace.clone())
+            .or_else(|| GitWorkspaceService::new(&root).ok().map(Arc::new));
+        let Some(workspace) = workspace else {
+            return;
+        };
+        let Ok(service) = TrustedGitService::new(&root, workspace.clone()).map(Arc::new) else {
+            return;
+        };
+        let Some(epoch) = self.commit_controller.next_epoch.checked_add(1) else {
+            return;
+        };
+        let Some(lease) = self
+            .trusted_actions
+            .acquire(TrustedActionKind::Commit, epoch, 1)
+        else {
+            return;
+        };
+        let panel = stream.read(cx).commit_panel();
+        if !panel.update(cx, |panel, cx| panel.request_open(cx)) {
+            let _ = self.trusted_actions.release(lease);
+            return;
+        }
+        let identity = CommitRouteIdentity {
+            epoch,
+            thread_id: thread.id,
+            project_id: thread.project_id,
+            stream: stream.clone(),
+            panel: panel.clone(),
+        };
+        let mut active = ActiveCommitRoute {
+            identity,
+            service: service.clone(),
+            lease,
+            next_sequence: 0,
+            phase: CommitPhase::Checklist,
+            snapshot: None,
+            prepared: None,
+            focus_pending: true,
+            pending: None,
+            cancel: None,
+            terminal_done: None,
+        };
+        let Some((fence, cancel, terminal_done)) = CommitController::begin_fence(
+            &mut active,
+            CommitPhase::Checklist,
+            None,
+            CommitFenceAuthority::None,
+        ) else {
+            let _ = panel.update(cx, |panel, cx| {
+                panel.apply_error(
+                    vega_ui::commit_panel::CommitPanelStage::Loading,
+                    CommitErrorCode::OutputTooLarge,
+                    cx,
+                )
+            });
+            let _ = self.trusted_actions.release(lease);
+            return;
+        };
+        self.commit_controller.next_epoch = epoch;
+        self.commit_controller.active = Some(active);
+        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let window_alive = self.window_alive.clone();
+        let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let result = run_commit_checklist_worker(
+                    workspace,
+                    service,
+                    cancel,
+                    #[cfg(test)]
+                    probe,
+                );
+                mark_commit_worker_terminal_if_authoritative(
+                    CommitPhase::Checklist,
+                    &result,
+                    terminal_done,
+                    window_alive,
+                    actions,
+                    lease,
+                );
+                let _ = sender.send(result);
+            })
+            .detach();
+        self.poll_commit_worker(fence, receiver, cx);
+    }
+
+    fn close_commit_route(&mut self, cx: &mut Context<Self>) {
+        if let Some((lease, stream)) = self.commit_controller.retire_or_close()
+            && self.trusted_actions.release(lease)
+        {
+            stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+        }
+    }
+
+    fn fail_commit_request_before_worker(
+        &mut self,
+        panel: &Entity<CommitPanel>,
+        operation: CommitOperationId,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = panel.update(cx, |panel, cx| {
+            panel.fail_pending(operation, CommitErrorCode::OutputTooLarge, cx)
+        });
+        self.close_commit_route(cx);
+    }
+
+    fn close_commit_if_route_stale(&mut self, cx: &mut Context<Self>) {
+        let stale = self
+            .commit_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| !self.commit_route_is_current(&active.identity, cx));
+        if stale {
+            if let Some(active) = self.commit_controller.active.as_ref() {
+                active.identity.panel.update(cx, |panel, cx| {
+                    let _ = panel.request_close(cx);
+                });
+            }
+            self.close_commit_route(cx);
+        }
+    }
+
+    fn request_commit_prepare(
+        &mut self,
+        panel: Entity<CommitPanel>,
+        request: &CommitPrepareRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let route_current = self
+            .commit_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| self.commit_route_is_current(&active.identity, cx));
+        let Some(active) = self.commit_controller.active.as_mut() else {
+            return;
+        };
+        if active.identity.panel != panel
+            || active.identity.thread_id != request.thread_id
+            || active.identity.project_id != request.project_id
+            || active.phase != CommitPhase::Checklist
+            || active.snapshot != Some(request.snapshot_id)
+            || active.pending.is_some()
+            || !panel.read(cx).owns_pending(request.operation_id)
+            || !route_current
+        {
+            return;
+        }
+        let Some((fence, cancel, terminal_done)) = CommitController::begin_fence(
+            active,
+            CommitPhase::Preparing,
+            Some(request.operation_id),
+            CommitFenceAuthority::Snapshot(request.snapshot_id),
+        ) else {
+            self.fail_commit_request_before_worker(&panel, request.operation_id, cx);
+            return;
+        };
+        let service = active.service.clone();
+        let lease = active.lease;
+        let snapshot_id = request.snapshot_id;
+        let selected = request.selected.clone();
+        let branch = self
+            .branch_controller
+            .active
+            .as_ref()
+            .filter(|branch| branch.identity.project_id == request.project_id)
+            .map(|branch| branch.service.clone());
+        let artifacts = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .filter(|artifacts| {
+                artifacts.identity.project_id == request.project_id
+                    && Arc::ptr_eq(&artifacts.workspace, &service.workspace_service())
+            })
+            .map(|artifacts| artifacts.service.clone());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let window_alive = self.window_alive.clone();
+        let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let result = run_commit_prepare_worker(
+                    service,
+                    snapshot_id,
+                    selected,
+                    cancel,
+                    branch,
+                    artifacts,
+                    #[cfg(test)]
+                    probe,
+                );
+                mark_commit_worker_terminal_if_authoritative(
+                    CommitPhase::Preparing,
+                    &result,
+                    terminal_done,
+                    window_alive,
+                    actions,
+                    lease,
+                );
+                let _ = sender.send(result);
+            })
+            .detach();
+        self.poll_commit_worker(fence, receiver, cx);
+    }
+
+    fn request_commit_draft(
+        &mut self,
+        panel: Entity<CommitPanel>,
+        request: &CommitDraftRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread) = cx.global::<OpenedThread>().0.clone() else {
+            return;
+        };
+        let route_current = self
+            .commit_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| self.commit_route_is_current(&active.identity, cx));
+        let Some(active) = self.commit_controller.active.as_mut() else {
+            return;
+        };
+        if active.identity.panel != panel
+            || active.identity.thread_id != request.thread_id
+            || active.identity.project_id != request.project_id
+            || active.phase != CommitPhase::CommitReady
+            || active.prepared != Some(request.prepared_id)
+            || active.pending.is_some()
+            || !panel.read(cx).owns_pending(request.operation_id)
+            || !route_current
+        {
+            return;
+        }
+        let Some((fence, cancel, terminal_done)) = CommitController::begin_fence(
+            active,
+            CommitPhase::Drafting,
+            Some(request.operation_id),
+            CommitFenceAuthority::Prepared(request.prepared_id),
+        ) else {
+            self.fail_commit_request_before_worker(&panel, request.operation_id, cx);
+            return;
+        };
+        let service = active.service.clone();
+        let lease = active.lease;
+        let prepared_id = request.prepared_id;
+        #[cfg(test)]
+        let provider_override = self.commit_provider_override.clone();
+        #[cfg(not(test))]
+        let provider_override = None;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let window_alive = self.window_alive.clone();
+        let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
+        cx.background_executor()
+            .spawn(async move {
+                let result = run_commit_draft_worker(
+                    service,
+                    prepared_id,
+                    thread,
+                    cancel,
+                    provider_override,
+                    #[cfg(test)]
+                    probe,
+                );
+                mark_commit_worker_terminal_if_authoritative(
+                    CommitPhase::Drafting,
+                    &result,
+                    terminal_done,
+                    window_alive,
+                    actions,
+                    lease,
+                );
+                let _ = sender.send(result);
+            })
+            .detach();
+        self.poll_commit_worker(fence, receiver, cx);
+    }
+
+    fn request_commit_execute(
+        &mut self,
+        panel: Entity<CommitPanel>,
+        request: &CommitRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let route_current = self
+            .commit_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| self.commit_route_is_current(&active.identity, cx));
+        let Some(active) = self.commit_controller.active.as_mut() else {
+            return;
+        };
+        if active.identity.panel != panel
+            || active.identity.thread_id != request.thread_id
+            || active.identity.project_id != request.project_id
+            || active.phase != CommitPhase::CommitReady
+            || active.prepared != Some(request.prepared_id)
+            || active.pending.is_some()
+            || !panel.read(cx).owns_pending(request.operation_id)
+            || !route_current
+        {
+            return;
+        }
+        let Some((fence, cancel, terminal_done)) = CommitController::begin_fence(
+            active,
+            CommitPhase::Committing,
+            Some(request.operation_id),
+            CommitFenceAuthority::Prepared(request.prepared_id),
+        ) else {
+            self.fail_commit_request_before_worker(&panel, request.operation_id, cx);
+            return;
+        };
+        let service = active.service.clone();
+        let lease = active.lease;
+        let prepared_id = request.prepared_id;
+        let message = request.message.clone();
+        let branch = self
+            .branch_controller
+            .active
+            .as_ref()
+            .filter(|branch| branch.identity.project_id == request.project_id)
+            .map(|branch| branch.service.clone());
+        let artifacts = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .filter(|artifacts| {
+                artifacts.identity.project_id == request.project_id
+                    && Arc::ptr_eq(&artifacts.workspace, &service.workspace_service())
+            })
+            .map(|artifacts| artifacts.service.clone());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let window_alive = self.window_alive.clone();
+        let actions = self.trusted_actions.clone();
+        #[cfg(test)]
+        let probe = self.commit_test_probe.clone();
+        cx.background_executor()
+            .spawn(async move {
+                #[cfg(test)]
+                let disconnect_probe = probe.clone();
+                let result = run_commit_execute_worker(
+                    service,
+                    prepared_id,
+                    message,
+                    cancel,
+                    branch,
+                    artifacts,
+                    #[cfg(test)]
+                    probe,
+                );
+                #[cfg(test)]
+                if disconnect_probe
+                    .as_ref()
+                    .is_some_and(|probe| probe.drop_commit_sender.swap(false, Ordering::SeqCst))
+                {
+                    return;
+                }
+                mark_commit_worker_terminal_if_authoritative(
+                    CommitPhase::Committing,
+                    &result,
+                    terminal_done,
+                    window_alive,
+                    actions,
+                    lease,
+                );
+                let _ = sender.send(result);
+            })
+            .detach();
+        self.poll_commit_worker(fence, receiver, cx);
+    }
+
+    fn commit_panel_closed(
+        &mut self,
+        panel: Entity<CommitPanel>,
+        request: &CommitPanelClosed,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .commit_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| {
+                active.identity.panel == panel
+                    && active.identity.thread_id == request.thread_id
+                    && active.identity.project_id == request.project_id
+            })
+        {
+            self.close_commit_route(cx);
+        }
     }
 
     fn request_branch_switch(
@@ -1805,6 +3287,106 @@ impl VegaWindow {
             self.schedule_diff_refresh(&identity, cx);
         }
         self.enqueue_artifact_workspace_reconcile(project_id, cx);
+    }
+
+    fn apply_commit_workspace_reconciliation(
+        &mut self,
+        route: &CommitRouteIdentity,
+        reconciled: &CommitWorkspaceReconciliation,
+        cx: &mut Context<Self>,
+    ) {
+        let exact_stream = self
+            .stream_view
+            .as_ref()
+            .is_some_and(|(thread_id, stream)| {
+                thread_id == &route.thread_id
+                    && stream == &route.stream
+                    && stream.read(cx).commit_panel() == route.panel
+            });
+        if !exact_stream {
+            return;
+        }
+        if let Some(active) = self.diff_controller.active.as_mut()
+            && active.identity.project_id == route.project_id
+            && active.identity.thread_id == route.thread_id
+        {
+            active.cancel.cancel();
+            if let Some(cancel) = active.projection_cancel.take() {
+                cancel.cancel();
+            }
+            active.cancel = tokio_util::sync::CancellationToken::new();
+            active.service = Some(reconciled.workspace_service.clone());
+            active.refresh_in_flight = None;
+            active.queued_refresh_seq = None;
+            active.requested_file = None;
+            active.pending_projection = None;
+            active.snapshot_generation = reconciled
+                .workspace
+                .as_ref()
+                .ok()
+                .map(|workspace| workspace.generation);
+            active
+                .view
+                .update(cx, |view, cx| match &reconciled.workspace {
+                    Ok(workspace) => {
+                        view.set_refreshing(false, cx);
+                        view.apply_snapshot(workspace.clone(), cx);
+                    }
+                    Err(code) => {
+                        view.set_refreshing(false, cx);
+                        view.apply_refresh_error(map_commit_reconcile_error(*code), cx);
+                    }
+                });
+            self.record_commit_probe("ui_diff");
+        }
+        if let Some((service, snapshot)) = &reconciled.branch
+            && let Some(active) = self.branch_controller.active.as_mut()
+            && active.identity.project_id == route.project_id
+            && active.identity.thread_id == route.thread_id
+            && active.identity.stream == route.stream
+            && Arc::ptr_eq(&active.service, service)
+        {
+            if let Some(cancel) = active.list_cancel.take() {
+                cancel.cancel();
+            }
+            active.list_fence = None;
+            active
+                .identity
+                .selector
+                .update(cx, |selector, cx| match snapshot {
+                    Ok(snapshot) => {
+                        let _ = selector.apply_snapshot(snapshot.clone(), cx);
+                    }
+                    Err(code) => selector.apply_error(*code, cx),
+                });
+            self.record_commit_probe("ui_branch");
+        }
+        let mut artifact_failure = None;
+        if let Some((service, cards)) = &reconciled.artifacts
+            && let Some(active) = self.artifact_controller.active.as_mut()
+            && active.identity.project_id == route.project_id
+            && active.identity.thread_id == route.thread_id
+            && active.identity.stream == route.stream
+            && Arc::ptr_eq(&active.service, service)
+        {
+            Self::cancel_artifact_interactions(active, cx);
+            match cards {
+                Ok(cards) => {
+                    for projection in cards {
+                        if let Some(card) = active.cards.get(&projection.id) {
+                            card.update(cx, |card, cx| {
+                                let _ = card.apply_metadata(projection.clone(), cx);
+                            });
+                        }
+                    }
+                }
+                Err(code) => artifact_failure = Some(*code),
+            }
+            self.record_commit_probe("ui_artifact");
+        }
+        if let Some(code) = artifact_failure {
+            self.close_artifact_route(code, cx);
+        }
     }
 
     fn finish_branch_switch(
@@ -3519,12 +5101,7 @@ impl VegaWindow {
 
 impl Drop for VegaWindow {
     fn drop(&mut self) {
-        if let Some(active) = self.agent_controller.active.take() {
-            active.cancel.cancel();
-        }
-        self.diff_controller.close();
-        let _ = self.artifact_controller.close();
-        let _ = self.branch_controller.close();
+        self.window_terminal_cleanup();
     }
 }
 
@@ -3644,6 +5221,10 @@ impl Render for VegaWindow {
                             })
                             .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
+                                this.open_commit_panel(stream.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&view, |this, stream, request, cx| {
                                 this.workspace_tool_terminal(stream.clone(), request, cx);
                             })
                             .detach();
@@ -3658,6 +5239,23 @@ impl Render for VegaWindow {
                             .detach();
                             cx.subscribe(&branch_selector, |this, selector, request, cx| {
                                 this.branch_selector_closed(selector.clone(), request, cx);
+                            })
+                            .detach();
+                            let commit_panel = view.read(cx).commit_panel();
+                            cx.subscribe(&commit_panel, |this, panel, request, cx| {
+                                this.request_commit_prepare(panel.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&commit_panel, |this, panel, request, cx| {
+                                this.request_commit_draft(panel.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&commit_panel, |this, panel, request, cx| {
+                                this.request_commit_execute(panel.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&commit_panel, |this, panel, request, cx| {
+                                this.commit_panel_closed(panel.clone(), request, cx);
                             })
                             .detach();
                             let initial = match &cx.global::<VegaStore>().0 {
@@ -3697,6 +5295,18 @@ impl Render for VegaWindow {
                     };
                     self.ensure_artifact_route(&thread, stream.clone(), cx);
                     self.ensure_branch_route(&thread, stream.clone(), cx);
+                    let commit_focus = self
+                        .commit_controller
+                        .active
+                        .as_ref()
+                        .filter(|active| active.focus_pending && active.identity.stream == stream)
+                        .map(|active| active.identity.panel.read(cx).focus_handle(cx));
+                    if let Some(focus) = commit_focus {
+                        window.focus(&focus, cx);
+                        if let Some(active) = self.commit_controller.active.as_mut() {
+                            active.focus_pending = false;
+                        }
+                    }
                     stream.into_any_element()
                 }
                 None => {
@@ -3911,8 +5521,47 @@ mod tests {
     use vega_store::messages::{MessageRow, complete_plan, insert};
 
     #[test]
+    fn commit_provider_policy_disables_retries() {
+        assert_eq!(commit_retry_policy().max_retries, 0);
+    }
+
+    struct CommitPanelHarness {
+        panel: Entity<CommitPanel>,
+    }
+
+    impl Render for CommitPanelHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.panel.clone())
+        }
+    }
+
+    #[derive(Clone)]
+    enum CapturedCommitEvent {
+        Prepare(CommitPrepareRequested),
+        Draft(CommitDraftRequested),
+        Commit(CommitRequested),
+        Close,
+    }
+
+    #[track_caller]
+    fn pump_test_app(
+        cx: &mut gpui::TestAppContext,
+        mut ready: impl FnMut(&mut gpui::TestAppContext) -> bool,
+    ) {
+        for _ in 0..400 {
+            cx.executor().advance_clock(DIFF_RESULT_POLL);
+            cx.run_until_parked();
+            if ready(cx) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("test app did not reach the expected terminal state");
+    }
+
+    #[test]
     fn branch_controller_shared_lease_is_first_wins_and_aba_safe() {
-        let mut actions = TrustedActionCoordinator::default();
+        let actions = TrustedActionCoordinator::default();
         let first = actions
             .acquire(TrustedActionKind::BranchSwitch, 7, 1)
             .expect("first owner");
@@ -3934,6 +5583,1098 @@ mod tests {
         assert!(!actions.release(first), "stale A cannot release B");
         assert!(actions.is_busy());
         assert!(actions.release(second));
+    }
+
+    #[test]
+    fn commit_worker_terminal_releases_exact_owner_after_window_drop() {
+        let actions = TrustedActionCoordinator::default();
+        let lease = actions
+            .acquire(TrustedActionKind::Commit, 7, 11)
+            .expect("commit lease");
+        let alive = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        mark_commit_worker_terminal(done.clone(), alive, actions.clone(), lease);
+        assert!(done.load(Ordering::Acquire));
+        assert!(!actions.is_busy());
+
+        let lease = actions
+            .acquire(TrustedActionKind::Commit, 8, 12)
+            .expect("fresh commit lease");
+        let alive = Arc::new(AtomicBool::new(true));
+        let done = Arc::new(AtomicBool::new(false));
+        mark_commit_worker_terminal(done.clone(), alive.clone(), actions.clone(), lease);
+        assert!(actions.is_busy(), "live window owns UI reconciliation");
+        alive.store(false, Ordering::Release);
+        assert!(done.load(Ordering::Acquire));
+        assert!(actions.release(lease), "Drop exact terminal cleanup");
+    }
+
+    #[test]
+    fn commit_terminal_and_window_cleanup_are_seqcst_race_safe() {
+        for generation in 1..=1_000 {
+            let actions = TrustedActionCoordinator::default();
+            let lease = actions
+                .acquire(TrustedActionKind::Commit, generation, 1)
+                .expect("race lease");
+            let alive = Arc::new(AtomicBool::new(true));
+            let done = Arc::new(AtomicBool::new(false));
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            std::thread::scope(|scope| {
+                scope.spawn({
+                    let actions = actions.clone();
+                    let alive = alive.clone();
+                    let done = done.clone();
+                    let barrier = barrier.clone();
+                    move || {
+                        barrier.wait();
+                        mark_commit_worker_terminal(done, alive, actions, lease);
+                    }
+                });
+                scope.spawn({
+                    let actions = actions.clone();
+                    let alive = alive.clone();
+                    let done = done.clone();
+                    let barrier = barrier.clone();
+                    move || {
+                        barrier.wait();
+                        alive.store(false, Ordering::SeqCst);
+                        if done.load(Ordering::SeqCst) {
+                            let _ = actions.release(lease);
+                        }
+                    }
+                });
+                barrier.wait();
+            });
+            assert!(!actions.is_busy(), "iteration {generation} leaked lease");
+            let fresh = actions
+                .acquire(TrustedActionKind::Commit, generation, 2)
+                .expect("fresh race lease");
+            assert!(
+                !actions.release(lease),
+                "stale terminal released fresh lease"
+            );
+            assert!(actions.release(fresh));
+        }
+    }
+
+    #[test]
+    fn commit_runtime_failure_is_typed_and_recovery_backoff_is_bounded() {
+        let failed = build_commit_runtime_with(|| Err(std::io::Error::other("fixture")));
+        assert!(matches!(failed, Err(CommitErrorCode::SpawnFailed)));
+        let terminal = CommitWorkerResult::RuntimeUnavailable(CommitErrorCode::SpawnFailed);
+        assert!(commit_result_has_authoritative_workspace(
+            CommitPhase::Preparing,
+            &terminal
+        ));
+        assert!(commit_result_has_authoritative_workspace(
+            CommitPhase::Committing,
+            &terminal
+        ));
+        assert!(commit_result_reconciliation(&terminal).is_none());
+
+        let mut delay = Duration::from_millis(25);
+        for expected in [50, 100, 200, 400, 800, 1000, 1000] {
+            delay = next_commit_recovery_backoff(delay);
+            assert_eq!(delay, Duration::from_millis(expected));
+        }
+
+        let attempts = std::cell::Cell::new(0_u8);
+        let mut waits = Vec::new();
+        let recovered = build_commit_recovery_runtime_with(
+            || {
+                let attempt = attempts.get() + 1;
+                attempts.set(attempt);
+                if attempt < 3 {
+                    Err(CommitErrorCode::SpawnFailed)
+                } else {
+                    build_commit_runtime()
+                }
+            },
+            |delay| waits.push(delay),
+        );
+        assert!(recovered.is_ok());
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(
+            waits,
+            [Duration::from_millis(25), Duration::from_millis(50)]
+        );
+
+        let attempts = std::cell::Cell::new(0_u8);
+        let mut waits = Vec::new();
+        assert!(matches!(
+            build_commit_recovery_runtime_with(
+                || {
+                    attempts.set(attempts.get() + 1);
+                    Err(CommitErrorCode::SpawnFailed)
+                },
+                |delay| waits.push(delay),
+            ),
+            Err(CommitErrorCode::SpawnFailed)
+        ));
+        assert_eq!(attempts.get(), 6);
+        assert_eq!(waits.len(), 5, "the terminal failure is bounded");
+    }
+
+    #[gpui::test]
+    async fn commit_controller_retiring_fence_is_first_wins_and_holds_owner(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(Theme::light());
+            cx.set_global(SettingsOpen(false));
+            vega_ui::init(cx);
+        });
+        let repo = diff_controller_repo();
+        let thread = Thread {
+            id: "commit-thread".into(),
+            project_id: "commit-project".into(),
+            title: String::new(),
+            mode: ThreadMode::Execute,
+            permission_mode: PermissionMode::Confirm,
+            model: String::new(),
+            status: ThreadStatus::Active,
+            pinned: false,
+            unread: false,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let panel = stream.read_with(cx, |stream, _| stream.commit_panel());
+        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+        let service = Arc::new(
+            TrustedGitService::new(repo.path(), workspace).expect("trusted commit service"),
+        );
+        let lease = TrustedActionToken {
+            generation: 1,
+            kind: TrustedActionKind::Commit,
+            owner_epoch: 1,
+            request_sequence: 1,
+        };
+        let identity = CommitRouteIdentity {
+            epoch: 1,
+            thread_id: thread.id,
+            project_id: thread.project_id,
+            stream: stream.clone(),
+            panel,
+        };
+        let mut active = ActiveCommitRoute {
+            identity,
+            service,
+            lease,
+            next_sequence: 0,
+            phase: CommitPhase::Checklist,
+            snapshot: None,
+            prepared: None,
+            focus_pending: false,
+            pending: None,
+            cancel: None,
+            terminal_done: None,
+        };
+        let (fence, cancel, _) = CommitController::begin_fence(
+            &mut active,
+            CommitPhase::Checklist,
+            None,
+            CommitFenceAuthority::None,
+        )
+        .expect("checklist owner fence");
+        let mut controller = CommitController {
+            next_epoch: 1,
+            active: Some(active),
+            retiring: None,
+        };
+        assert_eq!(controller.retire_or_close(), None);
+        assert!(cancel.is_cancelled());
+        assert!(controller.active.is_none());
+        assert!(controller.retiring.is_some());
+        assert!(matches!(
+            controller.claim(&fence),
+            CommitClaim::Retiring(active)
+                if active.lease == lease && active.identity.stream == stream
+        ));
+        assert!(matches!(controller.claim(&fence), CommitClaim::Stale));
+    }
+
+    #[gpui::test]
+    async fn commit_controller_binds_exact_snapshot_and_overflow_is_zero_work(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(Theme::light());
+            cx.set_global(SettingsOpen(false));
+            vega_ui::init(cx);
+        });
+        let repo = diff_controller_repo();
+        let thread = Thread {
+            id: "commit-capability-thread".into(),
+            project_id: "commit-capability-project".into(),
+            title: String::new(),
+            mode: ThreadMode::Execute,
+            permission_mode: PermissionMode::Confirm,
+            model: String::new(),
+            status: ThreadStatus::Active,
+            pinned: false,
+            unread: false,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let panel = stream.read_with(cx, |stream, _| stream.commit_panel());
+        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+        let service = Arc::new(
+            TrustedGitService::new(repo.path(), workspace.clone()).expect("trusted service"),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let first = runtime.block_on(async {
+            workspace
+                .refresh(tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("refresh");
+            service
+                .open_checklist(tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("first checklist")
+        });
+        let second = runtime
+            .block_on(service.open_checklist(tokio_util::sync::CancellationToken::new()))
+            .expect("second checklist");
+        assert_ne!(first.id, second.id);
+        let identity = CommitRouteIdentity {
+            epoch: 1,
+            thread_id: thread.id,
+            project_id: thread.project_id,
+            stream,
+            panel,
+        };
+        let lease = TrustedActionToken {
+            generation: 1,
+            kind: TrustedActionKind::Commit,
+            owner_epoch: 1,
+            request_sequence: 1,
+        };
+        let mut active = ActiveCommitRoute {
+            identity,
+            service,
+            lease,
+            next_sequence: 0,
+            phase: CommitPhase::Checklist,
+            snapshot: Some(first.id),
+            prepared: None,
+            focus_pending: false,
+            pending: None,
+            cancel: None,
+            terminal_done: None,
+        };
+        let (wrong, _, _) = CommitController::begin_fence(
+            &mut active,
+            CommitPhase::Preparing,
+            None,
+            CommitFenceAuthority::Snapshot(second.id),
+        )
+        .expect("wrong capability fixture");
+        let mut controller = CommitController {
+            next_epoch: 1,
+            active: Some(active),
+            retiring: None,
+        };
+        assert!(matches!(controller.claim(&wrong), CommitClaim::Stale));
+        let active = controller.active.as_mut().expect("active retained");
+        active.pending = None;
+        active.cancel = None;
+        active.next_sequence = u64::MAX;
+        let phase = active.phase;
+        assert!(
+            CommitController::begin_fence(
+                active,
+                CommitPhase::Preparing,
+                None,
+                CommitFenceAuthority::Snapshot(first.id),
+            )
+            .is_none()
+        );
+        assert!(active.phase == phase);
+        assert!(active.pending.is_none());
+        assert!(active.cancel.is_none());
+    }
+
+    #[gpui::test]
+    async fn commit_controller_same_id_entity_aba_is_stale_and_worker_recovers_authority(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = artifact_controller_repo();
+        let store = Store::open(":memory:").expect("commit window memory store");
+        store.migrate().expect("commit window migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 commit root"),
+            "commit",
+            None,
+        )
+        .expect("commit project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("commit thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let old_stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let fresh_stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let old_panel = old_stream.read_with(cx, |stream, _| stream.commit_panel());
+        let old_identity = CommitRouteIdentity {
+            epoch: 1,
+            thread_id: thread.id.clone(),
+            project_id: thread.project_id.clone(),
+            stream: old_stream,
+            panel: old_panel,
+        };
+        let root = cx.new(VegaWindow::new);
+        root.update(cx, |root, cx| {
+            root.stream_view = Some((thread.id.clone(), fresh_stream));
+            assert!(!root.commit_route_is_current(&old_identity, cx));
+        });
+        let fresh_diff =
+            cx.new(|cx| DiffView::new(thread.id.clone(), thread.project_id.clone(), cx));
+        root.update(cx, |root, _| {
+            assert!(
+                root.diff_controller
+                    .begin(
+                        thread.id.clone(),
+                        thread.project_id.clone(),
+                        fresh_diff.clone(),
+                    )
+                    .is_some()
+            );
+        });
+
+        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+        let service = Arc::new(
+            TrustedGitService::new(repo.path(), workspace.clone()).expect("trusted service"),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let stale = runtime.block_on(async {
+            workspace
+                .refresh(tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("refresh");
+            let stale = service
+                .open_checklist(tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("stale checklist");
+            service
+                .open_checklist(tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("replacement checklist");
+            stale
+        });
+        let result = run_commit_prepare_worker(
+            service,
+            stale.id,
+            Vec::new(),
+            tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            None,
+        );
+        let reconciliation = match result {
+            CommitWorkerResult::Prepare(
+                CommitPrepareCompletion {
+                    prepared: None,
+                    workspace: Some(_),
+                    error: Some(CommitErrorCode::StaleAuthority),
+                },
+                reconciliation,
+            ) => reconciliation,
+            _ => panic!("stale capability must return typed prepare completion"),
+        };
+        root.update(cx, |root, cx| {
+            root.apply_commit_workspace_reconciliation(&old_identity, &reconciliation, cx);
+        });
+        assert_eq!(
+            fresh_diff.read_with(cx, |view, _| view.generation()),
+            None,
+            "old same-id stream completion cannot overwrite fresh Diff route"
+        );
+    }
+
+    #[gpui::test]
+    async fn commit_panel_accepts_canonical_mixed_staged_and_unstaged_identity(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = diff_controller_repo();
+        run_fixture_git(repo.path(), &["add", "--", "tracked.rs"]);
+        fs::write(
+            repo.path().join("tracked.rs"),
+            "fn base() {}\nfn changed() {}\nfn later() {}\n",
+        )
+        .expect("mixed worktree update");
+        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+        let service = TrustedGitService::new(repo.path(), workspace.clone()).expect("service");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let checklist = runtime.block_on(async {
+            workspace
+                .refresh(tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("refresh");
+            service
+                .open_checklist(tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("mixed checklist")
+        });
+        assert_eq!(checklist.staged.len(), 1);
+        assert_eq!(checklist.optional.len(), 1);
+        assert_eq!(checklist.staged[0].file_id, checklist.optional[0].file_id);
+        let panel = cx.new(|cx| CommitPanel::new("thread".into(), "project".into(), cx));
+        panel.update(cx, |panel, cx| {
+            assert!(panel.request_open(cx));
+            assert!(panel.apply_checklist(checklist, cx));
+        });
+    }
+
+    #[gpui::test]
+    async fn commit_panel_real_key_handlers_are_scoped_and_first_wins(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(Theme::light());
+            vega_ui::init(cx);
+        });
+        let repo = diff_controller_repo();
+        run_fixture_git(repo.path(), &["add", "--", "tracked.rs"]);
+        fs::write(repo.path().join("optional.rs"), "fn optional() {}\n").expect("optional fixture");
+        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+        let service = Arc::new(
+            TrustedGitService::new(repo.path(), workspace.clone()).expect("trusted service"),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let checklist = runtime.block_on(async {
+            workspace
+                .refresh(tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("refresh");
+            service
+                .open_checklist(tokio_util::sync::CancellationToken::new())
+                .await
+                .expect("checklist")
+        });
+        assert!(!checklist.staged.is_empty());
+        assert_eq!(checklist.optional.len(), 1);
+
+        let panel = cx.new(|cx| CommitPanel::new("thread".into(), "project".into(), cx));
+        let events = Arc::new(Mutex::new(Vec::<CapturedCommitEvent>::new()));
+        let window_events = events.clone();
+        let root = panel.clone();
+        let window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), move |_, cx| {
+                    let events_prepare = window_events.clone();
+                    let events_draft = window_events.clone();
+                    let events_commit = window_events.clone();
+                    let events_close = window_events.clone();
+                    cx.new(|cx| {
+                        cx.subscribe(&root, move |_, _, event: &CommitPrepareRequested, _| {
+                            events_prepare
+                                .lock()
+                                .expect("events")
+                                .push(CapturedCommitEvent::Prepare(event.clone()));
+                        })
+                        .detach();
+                        cx.subscribe(&root, move |_, _, event: &CommitDraftRequested, _| {
+                            events_draft
+                                .lock()
+                                .expect("events")
+                                .push(CapturedCommitEvent::Draft(event.clone()));
+                        })
+                        .detach();
+                        cx.subscribe(&root, move |_, _, event: &CommitRequested, _| {
+                            events_commit
+                                .lock()
+                                .expect("events")
+                                .push(CapturedCommitEvent::Commit(event.clone()));
+                        })
+                        .detach();
+                        cx.subscribe(&root, move |_, _, _event: &CommitPanelClosed, _| {
+                            events_close
+                                .lock()
+                                .expect("events")
+                                .push(CapturedCommitEvent::Close);
+                        })
+                        .detach();
+                        CommitPanelHarness { panel: root }
+                    })
+                })
+            })
+            .expect("commit key window");
+        window
+            .update(cx, |_, window, cx| {
+                assert!(panel.update(cx, |panel, cx| panel.request_open(cx)));
+                assert!(panel.update(cx, |panel, cx| {
+                    panel.apply_checklist(checklist.clone(), cx)
+                }));
+                let focus = panel.read(cx).focus_handle(cx);
+                focus.focus(window, cx);
+            })
+            .expect("open checklist");
+
+        // Space at Cancel is inert; Tab skips the forced staged row and lands
+        // on the sole optional worktree row.
+        cx.simulate_keystrokes(window.into(), "space tab space cmd-enter cmd-enter");
+        let prepare = events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter_map(|event| match event {
+                CapturedCommitEvent::Prepare(request) => Some(request.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(prepare.len(), 1, "prepare is exact first-wins");
+        assert_eq!(prepare[0].selected.len(), 1, "optional Space toggles once");
+        let completion = runtime.block_on(service.prepare(
+            prepare[0].snapshot_id,
+            prepare[0].selected.clone(),
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        let prepared = completion.prepared.expect("prepared authority");
+        assert!(panel.update(cx, |panel, cx| {
+            panel.finish_prepare(prepare[0].operation_id, Ok(prepared.clone()), cx)
+        }));
+        cx.run_until_parked();
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.focused_control()),
+            vega_ui::commit_panel::CommitPanelFocus::Cancel
+        );
+
+        // Editor Enter remains newline and emits no draft. Generate Enter and
+        // Space each emit exactly once; repeating the same key while pending
+        // cannot duplicate the operation.
+        cx.simulate_keystrokes(window.into(), "tab enter");
+        assert!(
+            panel
+                .read_with(cx, |panel, cx| panel.commit_message(cx))
+                .contains('\n')
+        );
+        assert_eq!(
+            events
+                .lock()
+                .expect("events")
+                .iter()
+                .filter(|event| matches!(event, CapturedCommitEvent::Draft(_)))
+                .count(),
+            0
+        );
+        cx.simulate_keystrokes(window.into(), "tab enter enter space");
+        let first_draft = events
+            .lock()
+            .expect("events")
+            .iter()
+            .find_map(|event| match event {
+                CapturedCommitEvent::Draft(request) => Some(request.clone()),
+                _ => None,
+            })
+            .expect("Enter draft");
+        assert_eq!(
+            events
+                .lock()
+                .expect("events")
+                .iter()
+                .filter(|event| matches!(event, CapturedCommitEvent::Draft(_)))
+                .count(),
+            1
+        );
+        let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+            vega_runtime::ScriptStep::events(vec![
+                vega_runtime::ProviderEvent::TextDelta("feat: generated".into()),
+                vega_runtime::ProviderEvent::Done {
+                    stop_reason: vega_runtime::StopReason::End,
+                },
+            ]),
+        ]));
+        let draft = runtime
+            .block_on(service.draft(
+                prepared.id,
+                "mock".into(),
+                provider,
+                tokio_util::sync::CancellationToken::new(),
+            ))
+            .expect("mock draft");
+        assert!(panel.update(cx, |panel, cx| {
+            panel.finish_draft(first_draft.operation_id, Ok(draft), cx)
+        }));
+        cx.simulate_keystrokes(window.into(), "space space");
+        assert_eq!(
+            events
+                .lock()
+                .expect("events")
+                .iter()
+                .filter(|event| matches!(event, CapturedCommitEvent::Draft(_)))
+                .count(),
+            2,
+            "Generate Space is first-wins"
+        );
+        let second_draft = events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter_map(|event| match event {
+                CapturedCommitEvent::Draft(request) => Some(request.clone()),
+                _ => None,
+            })
+            .nth(1)
+            .expect("Space draft");
+        let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+            vega_runtime::ScriptStep::events(vec![
+                vega_runtime::ProviderEvent::TextDelta("feat: generated".into()),
+                vega_runtime::ProviderEvent::Done {
+                    stop_reason: vega_runtime::StopReason::End,
+                },
+            ]),
+        ]));
+        let draft = runtime
+            .block_on(service.draft(
+                prepared.id,
+                "mock".into(),
+                provider,
+                tokio_util::sync::CancellationToken::new(),
+            ))
+            .expect("second mock draft");
+        assert!(panel.update(cx, |panel, cx| {
+            panel.finish_draft(second_draft.operation_id, Ok(draft), cx)
+        }));
+        cx.simulate_keystrokes(window.into(), "tab cmd-enter cmd-enter escape escape");
+        let events = events.lock().expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, CapturedCommitEvent::Commit(_)))
+                .count(),
+            1,
+            "commit is exact first-wins"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, CapturedCommitEvent::Close))
+                .count(),
+            1,
+            "Esc close is exact first-wins"
+        );
+        let commit = events.iter().find_map(|event| match event {
+            CapturedCommitEvent::Commit(request) => Some(request),
+            _ => None,
+        });
+        assert!(commit.is_some_and(|request| request.prepared_id == prepared.id));
+    }
+
+    #[gpui::test]
+    async fn commit_app_production_handlers_reconcile_before_release_across_close_and_routes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let repo = diff_controller_repo();
+        let store = Store::open(":memory:").expect("commit production store");
+        store.migrate().expect("commit production migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 commit root"),
+            "commit-production",
+            None,
+        )
+        .expect("commit production project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("commit production thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let panel = stream.read_with(cx, |stream, _| stream.commit_panel());
+        let panel_root = panel.clone();
+        let panel_window = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), move |_, cx| {
+                    cx.new(|_| CommitPanelHarness { panel: panel_root })
+                })
+            })
+            .expect("commit production panel window");
+        let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+            vega_runtime::ScriptStep::events(vec![
+                vega_runtime::ProviderEvent::TextDelta("feat: generated".into()),
+                vega_runtime::ProviderEvent::Done {
+                    stop_reason: vega_runtime::StopReason::End,
+                },
+            ]),
+        ]));
+        let probe = Arc::new(CommitTestProbe::default());
+        let root = cx.new(VegaWindow::new);
+        root.update(cx, |root, cx| {
+            root.commit_provider_override = Some(provider.clone());
+            root.commit_test_probe = Some(probe.clone());
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            root.ensure_artifact_route(&thread, stream.clone(), cx);
+            root.ensure_branch_route(&thread, stream.clone(), cx);
+            root.open_workspace_diff(
+                stream.clone(),
+                &OpenWorkspaceDiffRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                },
+                cx,
+            );
+            cx.subscribe(&panel, |this, panel, request, cx| {
+                this.request_commit_prepare(panel.clone(), request, cx);
+            })
+            .detach();
+            cx.subscribe(&panel, |this, panel, request, cx| {
+                this.request_commit_draft(panel.clone(), request, cx);
+            })
+            .detach();
+            cx.subscribe(&panel, |this, panel, request, cx| {
+                this.request_commit_execute(panel.clone(), request, cx);
+            })
+            .detach();
+            cx.subscribe(&panel, |this, panel, request, cx| {
+                this.commit_panel_closed(panel.clone(), request, cx);
+            })
+            .detach();
+        });
+        let (branch_service, branch_selector, artifact_service) = root.read_with(cx, |root, _| {
+            let branch = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("initial branch route");
+            let artifacts = root
+                .artifact_controller
+                .active
+                .as_ref()
+                .expect("initial artifact route");
+            (
+                branch.service.clone(),
+                branch.identity.selector.clone(),
+                artifacts.service.clone(),
+            )
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("commit production runtime");
+        branch_selector.update(cx, |selector, cx| {
+            assert!(selector.request_open(cx));
+        });
+        let initial_branch_error = runtime
+            .block_on(branch_service.refresh(tokio_util::sync::CancellationToken::new()))
+            .expect_err("dirty initial branch state");
+        assert_eq!(
+            initial_branch_error.code(),
+            GitWorkspaceErrorCode::BranchDirty
+        );
+        runtime
+            .block_on(artifact_service.reconcile(tokio_util::sync::CancellationToken::new()))
+            .expect("initial artifact reconciliation");
+        branch_selector.update(cx, |selector, cx| {
+            selector.apply_error(initial_branch_error.code(), cx);
+        });
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, cx| {
+                root.diff_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.view.read(cx).generation().is_some())
+            })
+        });
+        root.update(cx, |root, cx| {
+            root.open_commit_panel(
+                stream.clone(),
+                &OpenCommitPanelRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                },
+                cx,
+            );
+        });
+        for _ in 0..400 {
+            cx.executor().advance_clock(DIFF_RESULT_POLL);
+            cx.run_until_parked();
+            if panel.read_with(cx, |panel, _| panel.stage())
+                == vega_ui::commit_panel::CommitPanelStage::Checklist
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.stage()),
+            vega_ui::commit_panel::CommitPanelStage::Checklist,
+            "second checklist controller_open={} lease_busy={}",
+            root.read_with(cx, |root, _| root.commit_controller.is_open()),
+            root.read_with(cx, |root, _| root.trusted_actions.is_busy())
+        );
+        panel_window
+            .update(cx, |_, window, cx| {
+                let focus = panel.read(cx).focus_handle(cx);
+                focus.focus(window, cx);
+            })
+            .expect("focus first checklist");
+        cx.simulate_keystrokes(panel_window.into(), "tab space cmd-enter cmd-enter");
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.stage()),
+            vega_ui::commit_panel::CommitPanelStage::Preparing
+        );
+        let cached_clean = fixture_git_command(repo.path(), &["diff", "--cached", "--quiet"])
+            .status()
+            .expect("inspect prepare mutation")
+            .success();
+        assert!(!cached_clean, "prepare worker established owned B");
+        assert_eq!(probe.prepare_workers.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            root.read_with(cx, |root, _| {
+                root.commit_controller
+                    .active
+                    .as_ref()
+                    .map(|active| active.next_sequence)
+            }),
+            Some(2),
+            "repeated prepare ingress starts one production fence"
+        );
+        cx.simulate_keystrokes(panel_window.into(), "escape");
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                !root.commit_controller.is_open() && !root.trusted_actions.is_busy()
+            })
+        });
+        root.read_with(cx, |root, cx| {
+            let diff = root
+                .diff_controller
+                .active
+                .as_ref()
+                .expect("diff survives prepare close");
+            assert!(diff.view.read(cx).generation().is_some());
+            let branch = root
+                .branch_controller
+                .active
+                .as_ref()
+                .expect("branch survives prepare close");
+            assert_eq!(
+                branch.identity.selector.read(cx).snapshot_generation(),
+                None,
+                "dirty prepare invalidates the clean-only branch snapshot"
+            );
+            let artifacts = root
+                .artifact_controller
+                .active
+                .as_ref()
+                .expect("artifact survives prepare close");
+            assert!(artifacts.terminal_in_flight.is_none());
+        });
+
+        // Reopen against owned B, prepare without another add, enter a real
+        // message through TextInput, and close while commit owns the lease.
+        root.update(cx, |root, cx| {
+            root.open_commit_panel(
+                stream.clone(),
+                &OpenCommitPanelRequested {
+                    thread_id: thread.id.clone(),
+                    project_id: thread.project_id.clone(),
+                },
+                cx,
+            );
+        });
+        for _ in 0..400 {
+            cx.executor().advance_clock(DIFF_RESULT_POLL);
+            cx.run_until_parked();
+            if panel.read_with(cx, |panel, _| panel.stage())
+                == vega_ui::commit_panel::CommitPanelStage::Checklist
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.stage()),
+            vega_ui::commit_panel::CommitPanelStage::Checklist,
+            "reopen state controller_open={} lease_busy={}",
+            root.read_with(cx, |root, _| root.commit_controller.is_open()),
+            root.read_with(cx, |root, _| root.trusted_actions.is_busy())
+        );
+        panel_window
+            .update(cx, |_, window, cx| {
+                let focus = panel.read(cx).focus_handle(cx);
+                focus.focus(window, cx);
+            })
+            .expect("focus second checklist");
+        probe
+            .trace
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+        cx.simulate_keystrokes(panel_window.into(), "tab cmd-enter cmd-enter");
+        for _ in 0..400 {
+            cx.executor().advance_clock(DIFF_RESULT_POLL);
+            cx.run_until_parked();
+            if panel.read_with(cx, |panel, _| panel.stage())
+                == vega_ui::commit_panel::CommitPanelStage::CommitReady
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.stage()),
+            vega_ui::commit_panel::CommitPanelStage::CommitReady,
+            "prepare ready controller_open={} lease_busy={}",
+            root.read_with(cx, |root, _| root.commit_controller.is_open()),
+            root.read_with(cx, |root, _| root.trusted_actions.is_busy())
+        );
+        assert_eq!(probe.prepare_workers.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            probe
+                .trace
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .as_slice(),
+            [
+                "workspace_candidate",
+                "branch_result",
+                "artifact_result",
+                "workspace_final",
+                "ui_diff",
+                "ui_branch",
+                "ui_artifact",
+                "panel_terminal",
+            ],
+            "Prepare consumers must precede CommitReady and retain the lease"
+        );
+        cx.simulate_keystrokes(panel_window.into(), "tab tab enter enter");
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.stage()),
+            vega_ui::commit_panel::CommitPanelStage::Drafting
+        );
+        pump_test_app(cx, |cx| {
+            panel.read_with(cx, |panel, cx| {
+                panel.stage() == vega_ui::commit_panel::CommitPanelStage::CommitReady
+                    && panel.commit_message(cx) == "feat: generated"
+            })
+        });
+        assert_eq!(probe.draft_workers.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.requests().len(), 1, "draft provider is exact once");
+        probe
+            .trace
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+        let terminal_before_commit = probe.terminal_applications.load(Ordering::SeqCst);
+        probe.drop_commit_sender.store(true, Ordering::SeqCst);
+        cx.simulate_keystrokes(panel_window.into(), "tab cmd-enter cmd-enter");
+        assert_eq!(
+            panel.read_with(cx, |panel, _| panel.stage()),
+            vega_ui::commit_panel::CommitPanelStage::Committing
+        );
+        let commit_count = fixture_git_command(repo.path(), &["rev-list", "--count", "HEAD"])
+            .output()
+            .expect("inspect commit mutation");
+        assert!(commit_count.status.success());
+        assert_eq!(commit_count.stdout, b"2\n");
+        cx.simulate_keystrokes(panel_window.into(), "escape");
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                !root.commit_controller.is_open() && !root.trusted_actions.is_busy()
+            })
+        });
+        assert_eq!(probe.commit_workers.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            probe.terminal_applications.load(Ordering::SeqCst),
+            terminal_before_commit + 1,
+            "disconnected completion applies exactly one accepted terminal"
+        );
+        let trace = probe
+            .trace
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone();
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|event| **event == "workspace_final")
+                .count(),
+            2,
+            "the dropped result is followed by one authoritative recovery"
+        );
+        for event in ["ui_diff", "ui_branch", "ui_artifact", "panel_terminal"] {
+            assert_eq!(
+                trace
+                    .iter()
+                    .filter(|candidate| **candidate == event)
+                    .count(),
+                1,
+                "visible terminal event is exact once: {event}"
+            );
+        }
+        let panel_terminal = trace
+            .iter()
+            .position(|event| *event == "panel_terminal")
+            .expect("accepted panel terminal trace");
+        assert!(
+            ["ui_diff", "ui_branch", "ui_artifact"]
+                .into_iter()
+                .all(
+                    |event| trace.iter().position(|candidate| *candidate == event)
+                        < Some(panel_terminal)
+                ),
+            "visible consumers precede the panel terminal"
+        );
+        assert_eq!(
+            trace.last(),
+            Some(&"lease_release"),
+            "exact shared lease release remains the final action"
+        );
+        let status = fixture_git_command(repo.path(), &["status", "--porcelain=v1"])
+            .output()
+            .expect("post-commit status");
+        assert!(status.status.success());
+        assert!(status.stdout.is_empty(), "commit leaves repository clean");
+        let post_commit_branch = runtime
+            .block_on(branch_service.refresh(tokio_util::sync::CancellationToken::new()))
+            .expect("post-commit branch service refresh");
+        root.read_with(cx, |root, cx| {
+            assert!(
+                root.diff_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.view.read(cx).generation().is_some())
+            );
+            assert!(
+                root.branch_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(
+                        |active| active.identity.selector.read(cx).snapshot_generation()
+                            == Some(post_commit_branch.generation)
+                    )
+            );
+            assert!(root.artifact_controller.active.is_some());
+        });
+
+        let actions = root.read_with(cx, |root, _| root.trusted_actions.clone());
+        root.update(cx, |root, _| root.window_terminal_cleanup());
+        pump_test_app(cx, |_| !actions.is_busy());
+        panel_window
+            .update(cx, |_, window, _| window.remove_window())
+            .expect("close commit production panel window");
+        cx.run_until_parked();
     }
 
     #[gpui::test]
@@ -3970,10 +6711,6 @@ mod tests {
             assert_eq!(active.identity.stream, stream);
             assert_eq!(active.identity.selector, stream.read(cx).branch_selector());
             assert!(root.branch_guards_clear(&stream, cx));
-
-            root.commit_panel_open = true;
-            assert!(!root.branch_guards_clear(&stream, cx));
-            root.commit_panel_open = false;
 
             let lease = root
                 .trusted_actions
@@ -4120,7 +6857,7 @@ mod tests {
                     .is_some_and(|active| active.switch_fence.is_none()),
                 "guard change starts zero execute"
             );
-            assert_eq!(root.trusted_actions.active, Some(competing));
+            assert_eq!(root.trusted_actions.active_token(), Some(competing));
             assert!(root.trusted_actions.release(competing));
         });
         let output = fixture_git_command(repo.path(), &["symbolic-ref", "--short", "HEAD"])

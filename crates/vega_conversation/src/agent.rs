@@ -789,7 +789,6 @@ fn runtime_event_requires_ack(event: &RuntimeEvent) -> bool {
 
 /// Persisted task result and the sole event stream exposed to UI/store
 /// consumers.
-#[derive(Debug)]
 pub struct ConversationRun {
     /// User message id.
     pub user_message_id: String,
@@ -803,6 +802,23 @@ pub struct ConversationRun {
     pub interrupted: bool,
     /// Whether a provider/runtime error failed the message.
     pub failed: bool,
+}
+
+impl fmt::Debug for ConversationRun {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ConversationRun")
+            .field("user_message_id_bytes", &self.user_message_id.len())
+            .field(
+                "assistant_message_id_bytes",
+                &self.assistant_message_id.len(),
+            )
+            .field("event_count", &self.events.len())
+            .field("content_bytes", &self.content.len())
+            .field("interrupted", &self.interrupted)
+            .field("failed", &self.failed)
+            .finish()
+    }
 }
 
 /// Persists a user turn, drives the runtime, converts every runtime event,

@@ -769,7 +769,7 @@ fn valid_oid(oid: &[u8]) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-fn reject_operation_markers(
+pub(super) fn reject_operation_markers(
     runner: &Runner,
     cancel: &CancellationToken,
 ) -> Result<(), GitWorkspaceError> {

@@ -56,7 +56,7 @@ impl fmt::Debug for OpenAiProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // 红线：key 永不进日志/调试输出
         f.debug_struct("OpenAiProvider")
-            .field("base_url", &self.base_url)
+            .field("base_url_bytes", &self.base_url.len())
             .field("key", &"<redacted>")
             .field("retry", &self.retry)
             .finish()
@@ -343,8 +343,10 @@ fn event_stream(resp: reqwest::Response, cancel: CancellationToken) -> EventStre
                 Some(Ok(event)) => {
                     if event.data.trim() == DONE_SENTINEL {
                         st.done = true;
-                        st.pending
-                            .extend(st.assembler.finalize().into_iter().map(Ok));
+                        match st.assembler.finalize() {
+                            Ok(events) => st.pending.extend(events.into_iter().map(Ok)),
+                            Err(error) => st.pending.push_back(Err(error)),
+                        }
                     } else {
                         match st.assembler.absorb(&event.data) {
                             Ok(events) => st.pending.extend(events.into_iter().map(Ok)),
@@ -361,8 +363,10 @@ fn event_stream(resp: reqwest::Response, cancel: CancellationToken) -> EventStre
                 }
                 None => {
                     st.done = true;
-                    st.pending
-                        .extend(st.assembler.finalize().into_iter().map(Ok));
+                    match st.assembler.finalize() {
+                        Ok(events) => st.pending.extend(events.into_iter().map(Ok)),
+                        Err(error) => st.pending.push_back(Err(error)),
+                    }
                 }
             }
         }
@@ -379,11 +383,22 @@ fn map_sse_error(err: EventStreamError<reqwest::Error>) -> VegaError {
 }
 
 /// One `delta.tool_calls` fragment slot, keyed by the wire `index` field.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct ToolFragment {
     id: String,
     name: String,
     arguments: String,
+}
+
+impl fmt::Debug for ToolFragment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ToolFragment")
+            .field("id_bytes", &self.id.len())
+            .field("name_bytes", &self.name.len())
+            .field("argument_bytes", &self.arguments.len())
+            .finish()
+    }
 }
 
 /// Incremental assembler from OpenAI chat-completion chunks to
@@ -398,10 +413,20 @@ struct ToolFragment {
 /// - `choices[0].finish_reason` → the terminal [`StopReason`]
 ///
 /// Unknown JSON fields are ignored.
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct SseAssembler {
     tools: BTreeMap<u64, ToolFragment>,
     finish_reason: Option<StopReason>,
+}
+
+impl fmt::Debug for SseAssembler {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SseAssembler")
+            .field("tool_count", &self.tools.len())
+            .field("finish_reason", &self.finish_reason)
+            .finish()
+    }
 }
 
 impl SseAssembler {
@@ -470,14 +495,18 @@ impl SseAssembler {
         }
     }
 
-    /// Emits the terminal events: any still-buffered tool calls (in index
-    /// order), then `Done` with the mapped finish reason (default `End`).
-    fn finalize(&mut self) -> Vec<ProviderEvent> {
+    /// Emits terminal events only after an explicit wire finish reason.
+    fn finalize(&mut self) -> Result<Vec<ProviderEvent>, VegaError> {
+        let finish_reason = self.finish_reason.ok_or_else(|| VegaError::Provider {
+            status: None,
+            message: String::from("SSE stream ended without finish_reason"),
+            retryable: false,
+        })?;
         let mut events = self.flush_tools();
         events.push(ProviderEvent::Done {
-            stop_reason: self.finish_reason.unwrap_or(StopReason::End),
+            stop_reason: finish_reason,
         });
-        events
+        Ok(events)
     }
 
     fn flush_tools(&mut self) -> Vec<ProviderEvent> {
@@ -602,6 +631,7 @@ mod tests {
             &[
                 r#"{"id":"c1","object":"chat.completion.chunk","created":1,"model":"m","system_fingerprint":"fp","choices":[{"index":0,"delta":{"content":"Hel"},"logprobs":null,"finish_reason":null}]}"#,
                 r#"{"choices":[{"delta":{"content":"lo"},"service_tier":"default"}]}"#,
+                r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
             ],
         );
         assert_eq!(
@@ -612,7 +642,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            assembler.finalize(),
+            assembler.finalize().expect("explicit finish reason"),
             vec![ProviderEvent::Done {
                 stop_reason: StopReason::End
             }]
@@ -659,7 +689,7 @@ mod tests {
             }]
         );
         assert_eq!(
-            assembler.finalize(),
+            assembler.finalize().expect("explicit finish reason"),
             vec![ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse
             }]
@@ -743,7 +773,7 @@ mod tests {
                 ))
                 .unwrap();
             assert_eq!(
-                assembler.finalize(),
+                assembler.finalize().expect("explicit finish reason"),
                 vec![ProviderEvent::Done {
                     stop_reason: expected
                 }]
@@ -774,6 +804,37 @@ mod tests {
         assert!(events.is_empty());
     }
 
+    #[test]
+    fn openai_internal_debug_carriers_redact_distinct_sentinels() {
+        let sentinels = [
+            "VEGA_ENDPOINT_USERINFO_SENTINEL",
+            "VEGA_ENDPOINT_QUERY_SENTINEL",
+            "VEGA_KEY_SENTINEL",
+            "VEGA_FRAGMENT_ID_SENTINEL",
+            "VEGA_FRAGMENT_NAME_SENTINEL",
+            "VEGA_FRAGMENT_ARGUMENT_SENTINEL",
+        ];
+        let provider = OpenAiProvider::new(
+            format!(
+                "http://{}@127.0.0.1/v1?query={}",
+                sentinels[0], sentinels[1]
+            ),
+            sentinels[2],
+        )
+        .expect("provider");
+        let fragment = ToolFragment {
+            id: sentinels[3].into(),
+            name: sentinels[4].into(),
+            arguments: sentinels[5].into(),
+        };
+        let mut assembler = SseAssembler::default();
+        assembler.tools.insert(0, fragment);
+        let rendered = format!("{provider:?} {assembler:?}");
+        for sentinel in sentinels {
+            assert!(!rendered.contains(sentinel), "OpenAI Debug leaked payload");
+        }
+    }
+
     // ---------- 纯单元：跨 chunk SSE 切分 ----------
 
     #[tokio::test]
@@ -786,12 +847,13 @@ mod tests {
             Ok(b"\n"),
             Ok(b"da"),
             Ok(b"ta: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n"),
+            Ok(b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"),
             Ok(b"data: [DONE]\n\ndata: {\"ignored\":true}\n\n"),
         ];
         let sse = futures::stream::iter(chunks).eventsource();
         let raw: Vec<_> = sse.collect().await;
         // 4 个完整 SSE 事件：两个内容 chunk、[DONE]、以及 [DONE] 后的 junk 事件
-        assert_eq!(raw.len(), 4, "SSE events must reassemble across chunks");
+        assert_eq!(raw.len(), 5, "SSE events must reassemble across chunks");
 
         let mut assembler = SseAssembler::default();
         let mut events = Vec::new();
@@ -803,7 +865,7 @@ mod tests {
             events.extend(assembler.absorb(&event.data).unwrap());
         }
         // [DONE] 后的 junk 事件被丢弃（不在 events 里，也不再 absorb）
-        events.extend(assembler.finalize());
+        events.extend(assembler.finalize().expect("explicit finish reason"));
         assert_eq!(
             events,
             vec![
@@ -821,10 +883,20 @@ mod tests {
     type HandlerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
     type Handler = Arc<dyn Fn(u64, TcpStream) -> HandlerFuture + Send + Sync>;
 
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     struct CapturedRequest {
         authorization: String,
         body: serde_json::Value,
+    }
+
+    impl fmt::Debug for CapturedRequest {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("CapturedRequest")
+                .field("authorization_bytes", &self.authorization.len())
+                .field("body", &"[redacted]")
+                .finish()
+        }
     }
 
     struct TestServer {
@@ -1019,8 +1091,8 @@ mod tests {
     }
 
     /// Element-wise comparison of stream items: `Ok` items via
-    /// `ProviderEvent: PartialEq`, `Err` items via `VegaError`'s `Display`
-    /// (it wraps non-`PartialEq` std errors).
+    /// `ProviderEvent: PartialEq`, `Err` items via closed typed fields without
+    /// formatting provider-controlled payloads.
     fn assert_items_eq(
         actual: &[Result<ProviderEvent, VegaError>],
         expected: &[Result<ProviderEvent, VegaError>],
@@ -1033,10 +1105,48 @@ mod tests {
         for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
             match (a, e) {
                 (Ok(a), Ok(e)) => assert_eq!(a, e, "item #{i}"),
-                (Err(a), Err(e)) => assert_eq!(a.to_string(), e.to_string(), "item #{i}"),
+                (Err(a), Err(e)) => assert_error_eq(a, e, i),
                 _ => panic!("item #{i} mismatch: {a:?} vs {e:?}"),
             }
         }
+    }
+
+    fn assert_error_eq(actual: &VegaError, expected: &VegaError, index: usize) {
+        let equal = match (actual, expected) {
+            (
+                VegaError::Provider {
+                    status: actual_status,
+                    message: actual_message,
+                    retryable: actual_retryable,
+                },
+                VegaError::Provider {
+                    status: expected_status,
+                    message: expected_message,
+                    retryable: expected_retryable,
+                },
+            ) => {
+                actual_status == expected_status
+                    && actual_message == expected_message
+                    && actual_retryable == expected_retryable
+            }
+            (VegaError::Cancelled, VegaError::Cancelled) => true,
+            (
+                VegaError::Tool {
+                    tool: actual_tool,
+                    message: actual_message,
+                },
+                VegaError::Tool {
+                    tool: expected_tool,
+                    message: expected_message,
+                },
+            ) => actual_tool == expected_tool && actual_message == expected_message,
+            (VegaError::Io(actual), VegaError::Io(expected)) => actual.kind() == expected.kind(),
+            (VegaError::Store(actual), VegaError::Store(expected)) => {
+                std::mem::discriminant(actual) == std::mem::discriminant(expected)
+            }
+            _ => false,
+        };
+        assert!(equal, "item #{index} error mismatch");
     }
 
     // ---------- 集成：请求/响应走本地 TCP ----------
@@ -1046,6 +1156,7 @@ mod tests {
         let body = sse_response(
             &[
                 r#"{"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}"#,
+                r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
                 usage_chunk(),
                 r#"{"junk-after-usage":true}"#,
             ],
@@ -1090,22 +1201,132 @@ mod tests {
         let captured = server.captured();
         assert_eq!(captured.len(), 1);
         // Authorization 只出现在请求头；body/路径不带 key
-        assert_eq!(captured[0].authorization, format!("{AUTH_SCHEME} {KEY}"));
+        assert!(
+            captured[0].authorization == format!("{AUTH_SCHEME} {KEY}"),
+            "authorization mismatch"
+        );
         let wire = &captured[0].body;
-        assert_eq!(wire["model"], MODEL);
-        assert_eq!(wire["stream"], true);
-        assert_eq!(wire["stream_options"]["include_usage"], true);
-        assert_eq!(wire["max_tokens"], 64);
-        assert_eq!(wire["messages"][0]["role"], "user");
-        assert_eq!(wire["messages"][0]["content"], "hello");
-        assert_eq!(wire["tools"][0]["type"], "function");
-        assert_eq!(wire["tools"][0]["function"]["name"], "read");
-        assert_eq!(wire["tools"][0]["function"]["parameters"]["type"], "object");
+        assert!(wire["model"] == MODEL, "wire model mismatch");
+        assert!(wire["stream"] == true, "wire stream flag mismatch");
+        assert!(
+            wire["stream_options"]["include_usage"] == true,
+            "wire usage flag mismatch"
+        );
+        assert!(wire["max_tokens"] == 64, "wire token cap mismatch");
+        assert!(wire["messages"][0]["role"] == "user", "wire role mismatch");
+        assert!(
+            wire["messages"][0]["content"] == "hello",
+            "wire content mismatch"
+        );
+        assert!(
+            wire["tools"][0]["type"] == "function",
+            "wire tool type mismatch"
+        );
+        assert!(
+            wire["tools"][0]["function"]["name"] == "read",
+            "wire tool name mismatch"
+        );
+        assert!(
+            wire["tools"][0]["function"]["parameters"]["type"] == "object",
+            "wire schema mismatch"
+        );
+    }
+
+    #[test]
+    fn captured_request_debug_redacts_distinct_authorization_and_body_sentinels() {
+        let sentinels = [
+            "VEGA_AUTHORIZATION_SENTINEL",
+            "VEGA_MODEL_SENTINEL",
+            "VEGA_PROMPT_SENTINEL",
+            "VEGA_TOOL_SENTINEL",
+        ];
+        let captured = CapturedRequest {
+            authorization: sentinels[0].into(),
+            body: serde_json::json!({
+                "model": sentinels[1],
+                "messages": [{"content": sentinels[2]}],
+                "tools": [{"name": sentinels[3]}],
+            }),
+        };
+        let rendered = format!("{captured:?}");
+        for sentinel in sentinels {
+            assert!(
+                !rendered.contains(sentinel),
+                "captured request Debug leaked payload"
+            );
+        }
+        assert!(rendered.contains("authorization_bytes"));
+        assert!(rendered.contains("[redacted]"));
+    }
+
+    #[tokio::test]
+    async fn retry_policy_zero_makes_exactly_one_local_http_attempt() {
+        let success = sse_response(
+            &[r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#],
+            true,
+        );
+        let server = spawn_server(scripted_server(vec![
+            status_response("500 Internal Server Error", &[], "first failure"),
+            success,
+        ]))
+        .await;
+        let provider = provider_for(
+            &server,
+            RetryPolicy {
+                max_retries: 0,
+                base_delay: Duration::from_millis(1),
+                ..RetryPolicy::default()
+            },
+        );
+        let result = provider
+            .chat_stream(request(), CancellationToken::new())
+            .await;
+        assert!(matches!(
+            result,
+            Err(VegaError::Provider {
+                status: Some(500),
+                retryable: false,
+                ..
+            })
+        ));
+        assert_eq!(server.connection_count(), 1);
+        assert_eq!(server.captured().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn missing_finish_reason_is_protocol_error_for_done_and_raw_eof() {
+        let partial = r#"{"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}"#;
+        for done in [false, true] {
+            let server = spawn_server(scripted_server(vec![sse_response(&[partial], done)])).await;
+            let provider = provider_for(&server, fast_policy(25));
+            let stream = provider
+                .chat_stream(
+                    ChatRequest {
+                        model: MODEL.into(),
+                        ..ChatRequest::default()
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+                .expect("stream setup");
+            let events = collect_events(stream, 4).await;
+            assert!(matches!(
+                events.as_slice(),
+                [Ok(ProviderEvent::TextDelta(text)), Err(VegaError::Provider { retryable: false, .. })]
+                    if text == "partial"
+            ));
+        }
     }
 
     #[tokio::test]
     async fn retries_5xx_with_backoff_then_succeeds() {
-        let ok = sse_response(&[r#"{"choices":[{"delta":{"content":"Hi"}}]}"#], true);
+        let ok = sse_response(
+            &[
+                r#"{"choices":[{"delta":{"content":"Hi"}}]}"#,
+                r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            ],
+            true,
+        );
         let server = spawn_server(scripted_server(vec![
             status_response("500 Internal Server Error", &[], "boom"),
             status_response("500 Internal Server Error", &[], "boom"),
@@ -1138,7 +1359,13 @@ mod tests {
 
     #[tokio::test]
     async fn retry_429_honors_retry_after_header() {
-        let ok = sse_response(&[r#"{"choices":[{"delta":{"content":"Hi"}}]}"#], true);
+        let ok = sse_response(
+            &[
+                r#"{"choices":[{"delta":{"content":"Hi"}}]}"#,
+                r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            ],
+            true,
+        );
         let server = spawn_server(scripted_server(vec![
             status_response(
                 "429 Too Many Requests",
@@ -1169,7 +1396,13 @@ mod tests {
 
     #[tokio::test]
     async fn retry_429_without_retry_after_falls_back_to_backoff() {
-        let ok = sse_response(&[r#"{"choices":[{"delta":{"content":"Hi"}}]}"#], true);
+        let ok = sse_response(
+            &[
+                r#"{"choices":[{"delta":{"content":"Hi"}}]}"#,
+                r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            ],
+            true,
+        );
         let server = spawn_server(scripted_server(vec![
             status_response("429 Too Many Requests", &[], "slow down"),
             ok,
@@ -1219,8 +1452,8 @@ mod tests {
                     !retryable,
                     "exhausted retries must not advertise retryability"
                 );
-                assert!(message.contains("after 3 retries"), "{message}");
-                assert!(!message.contains(KEY), "key must never leak: {message}");
+                assert!(message.contains("after 3 retries"), "retry summary missing");
+                assert!(!message.contains(KEY), "provider message leaked key");
             }
             other => panic!("expected exhausted provider error, got {other:?}"),
         }
@@ -1233,7 +1466,13 @@ mod tests {
         let handler: Handler = Arc::new(move |idx: u64, mut stream: TcpStream| {
             Box::pin(async move {
                 if idx == 1 {
-                    let ok = sse_response(&[r#"{"choices":[{"delta":{"content":"Hi"}}]}"#], true);
+                    let ok = sse_response(
+                        &[
+                            r#"{"choices":[{"delta":{"content":"Hi"}}]}"#,
+                            r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+                        ],
+                        true,
+                    );
                     let _ = stream.write_all(&ok).await;
                     let _ = stream.flush().await;
                 }
@@ -1288,7 +1527,10 @@ mod tests {
             } => {
                 assert_eq!(status, Some(401));
                 assert!(!retryable);
-                assert!(message.contains("invalid credentials"), "{message}");
+                assert!(
+                    message.contains("invalid credentials"),
+                    "provider detail missing"
+                );
             }
             other => panic!("expected 401 provider error, got {other:?}"),
         }
@@ -1315,8 +1557,8 @@ mod tests {
         };
         match err {
             VegaError::Provider { message, .. } => {
-                assert!(!message.contains(KEY), "key must never leak: {message}");
-                assert!(message.contains("<redacted>"), "{message}");
+                assert!(!message.contains(KEY), "provider message leaked key");
+                assert!(message.contains("<redacted>"), "redaction marker missing");
             }
             other => panic!("expected provider error, got {other:?}"),
         }

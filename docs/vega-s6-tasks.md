@@ -1,6 +1,6 @@
 # ✦ Vega — S6 任务卡（Sprint 6 · Diff 审阅 & 产物 · W11-12）
 
-**版本** v0.13 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.16 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S6 目标**（phase1-plan §2）：git 工作区 diff 视图（高亮、hunk 导航）；产物卡片；Open in…（VS Code/Cursor/Zed/Terminal）；commit 辅助；补齐 Composer 分支选择器。
 
@@ -38,6 +38,8 @@
 > Prepare/Commit 共用 T33 `TrustedActionCoordinator` 的 commit lease；worker 在途关闭进入非视觉 `Retiring`，只取消、不 abort/drop owner future，必须在 owner uncancelled authoritative refresh + Diff/branch/artifact reconcile 后由 exact token 释放。Prepare 自身的 A→B generation 变化只能由 `(service_nonce, prepare_sequence, parent_A, exact_B, route/entity, lease)` capability 原子接管；普通 poll 只能提供 exact candidate，A→B→C、ABA、重复/旧 completion 全部毒化。
 >
 > staged summary 使用 fixed no-ext-diff/no-textconv cached patch命令，raw stdout 先 bounded收集再做 deterministic escaping，cap 256 KiB且 truncation marker计入；provider draft 是 exact prompts/model/`tools=[]`/`max_tokens=256`/retry=0 的单次 60s 请求，只接受 `TextDelta* Usage* Done(End) EOF`。provider/model/summary/draft/request/result/controller carrier 全部手写 redacted Debug，错误不得格式化 provider-controlled正文。T34 只支持 attached local ordinary branch；成功必须以 immutable `new_oid` 证明 exact parent、tree 与最终 raw ref，禁止 rollback/retry/amend/push。same-user 在 add/commit 前后替换 selected content/type/path、attrs/config/ref 的 TOCTOU 仍是 Phase 1 residual，不得宣称 byte-atomic。
+>
+> **人类裁决（2026-08-31，T34/T35 E2E-first）**：T34 保留无法由端到端稳定证明的 parser/authority/process/codec 安全不变量回归，但不再以 test-only probe/barrier 的笛卡尔矩阵替代验收。T34 最小主证据固定为一条 production headless owned temp-repo Checklist→Prepare→Mock draft→Commit E2E，以及一条 production GPUI handler E2E（duplicate/close/recovery/reconcile/release ordering）；其余精确拒绝点由最小定向安全回归支撑。T35 复用这些已记录证据并执行跨功能 E2E/全量门禁，不重复制造同构 test-only 状态机。命令、时间、branch/tree hash、结果与 residual 写入仓库 Sprint 报告，raw日志可留 `/tmp`，不得记录raw path/OID/key或预填不存在的commit/PR。
 >
 > Phase 1 只做 viewer + diff 审阅（PRD D5）；不做自研编辑器/LSP、Checkpoint 回退、PR 创建或终端视图。
 
@@ -125,7 +127,7 @@
 
 ### C6 · cross-checked canonical IndexSnapshot + 两阶段 selected staging
 
-- private `IndexSnapshotId` 必须从同一 request generation 与 immutable captured HEAD 下的三个 read-safe truth source **交叉构造**：`status --porcelain=v2 -z --branch --renames --untracked-files=all`、`ls-files --stage -z`、born HEAD 的 `ls-tree -rz --full-tree <captured_head_oid>`。unborn attached HEAD 必须被独立证明，tree视为空且 zero `ls-tree` spawn。三输入共享 checked 8 MiB/10,000 logical-path cap，rename 两侧都计；UI只获 opaque id和bounded safe projection，绝不读取/hash raw `.git/index`或接收 raw path/OID/tree。
+- private `IndexSnapshotId` 必须从同一 request generation 与 immutable captured HEAD 下的三个 read-safe truth source **交叉构造**：`status --porcelain=v2 -z --branch --renames --untracked-files=all`、`ls-files --stage -z`、born HEAD 的 `ls-tree -rz --full-tree <captured_head_oid>`。unborn attached HEAD 必须被独立证明，tree视为空且 zero `ls-tree` spawn。三输入共享 checked 8 MiB/10,000 logical-path cap，rename 两侧都计；T34不另设单path byte cap，任一路径的raw bytes只按shared combined 8 MiB retained budget计费并仍受10,000 logical-path cap与relative-path codec约束；UI只获 opaque id和bounded safe projection，绝不读取/hash raw `.git/index`或接收 raw path/OID/tree。
 - canonical private value保存完整且bytes-first排序的 HEAD/ref identity、porcelain records（rename/copy两侧）、完整 stage entries `(mode, full_oid, raw_path)`、完整 immutable HEAD tree `(mode, type, full_oid, raw_path)`，比较 full value而非只比hash。OID统一绑定 status HEAD 的40/64宽度；拒绝abbreviated/mixed/zero OID、duplicate/conflict、stage>0、unmerged、sparse-directory `040000`、special mode、corrupt/overflow。只接受index mode `100644|100755|120000`和clean unchanged `160000`；tree中前三者type必须blob、gitlink必须commit，changed/selected gitlink全部拒绝。
 - porcelain HEAD-side `mH/hH/path` 与 rename/copy old side必须和 immutable HEAD tree一致；HEAD缺失只允许规范 staged add/rename-new。任何 tracked `XY=.A` 立即拒绝；还必须以 HEAD-tree cross-check识别 `add -N` 后 delete/move形成的隐藏 `.D` intent状态，均为zero add/commit。正常 staged empty `XY=A.` + stage0 nonzero empty-blob OID仍合法；tracked empty+worktree delete及staged-empty+worktree delete须保持可区分。
 - 每次 Checklist/A、add immediately-before、B acceptance和Commit preflight都要求 attached raw `refs/heads/*` ordinary local branch，并复用C7完整operation marker guard（merge/cherry-pick/revert/bisect/rebase/sequencer/git-am及linked-worktree-safe git-path checks）；detached或operation state一律zero mutation。authority绑定exact raw ref与A HEAD OID/unborn state，并用fixed for-each-ref parser交叉验证。
@@ -137,7 +139,7 @@
 - staged summary固定read argv为read-safe prefix后 `-c core.quotePath=true --no-optional-locks diff --cached --patch --find-renames --no-ext-diff --no-textconv --full-index --`；并发drain full stdout/stderr，stdout只retained raw 256 KiB+overflow、stderr 64 KiB、timeout 10s。raw bytes一次性确定性转UTF-8：valid UTF-8保持、invalid byte=`\\xNN`、LF/TAB外control用固定escape；chunk边界不得影响结果。cap exact通过，overflow/escape expansion预留并追加exact `\n[vega-summary truncated=true]\n`且marker在256 KiB内。summary前后以及provider前后exact B都须复验。
 - provider draft只由用户click触发：60s deadline从`chat_stream`前开始覆盖setup/events/Done后EOF；exact thread model、`max_tokens=Some(256)`、exact两段prompt、`tools=[]`、real provider retry max=0。grammar只接受`TextDelta*`后`Usage*`、exact one `Done { End }`、再一次`next()==None`；cancel biased。Thinking/ToolUse/其他Done/text-after-Usage/post-Done event或error/missing/duplicate Done/early EOF/hang/provider error/empty/NUL/checked overflow/>32 KiB均直接content-free `DraftFailed`，不返回partial draft。
 - **Commit**初始focus Cancel；Esc=Cancel；editor bare Enter只换行；仅Cmd+Enter第二次确认。message为non-empty/no-NUL/1..=32768-byte typed UTF-8。B authority在第一个commit-reaching await前single-use consume；第三次three-source capture须full byte-equal B且route/ref/HEAD仍匹配，否则zero commit。mutation exact为 `commit --no-gpg-sign --file=- --cleanup=verbatim`，message仅内存stdin且writer/stdout/stderr并发，无temp file/合成尾字节。
-- T34只允许attached ordinary commit：born new commit必须exact one parent==A HEAD；unborn root必须zero parents。process成功后先捕获immutable `new_oid`+raw ref，proof只用explicit OID执行 `rev-parse <new_oid>^@` 与 `ls-tree -rz --full-tree <new_oid>`；new tree须exact等于B index tree，最后再次枚举并要求same raw ref仍指向new_oid且root identity不变。wrong parent/count/tree/ref moved/deleted/renamed/ABA均Failed。所有success/nonzero/timeout/cancel/ambiguous exit都执行owner uncancelled authoritative HEAD/status/index refresh及Diff/branch/artifact reconcile；禁止retry/rollback/amend/push。
+- T34只允许attached ordinary commit：born new commit必须exact one parent==A HEAD；unborn root必须zero parents。process成功后先捕获immutable `new_oid`+raw ref，proof只用explicit OID执行 `rev-parse <new_oid>^@` 与 `ls-tree -rz --full-tree <new_oid>`；new tree须exact等于B index tree，最后再次枚举并要求same raw ref仍指向new_oid且root identity不变。wrong parent/count/tree以及最终捕获时ref moved/deleted/renamed/different OID均Failed；完全发生于两次捕获之间且最终回到same raw ref+same OID的same-user ABA不可观测，明确归入下一条accepted TOCTOU residual，禁止宣称检测或关闭。所有success/nonzero/timeout/cancel/ambiguous exit都执行owner uncancelled authoritative HEAD/status/index refresh及Diff/branch/artifact reconcile；禁止retry/rollback/amend/push。
 - controller states固定为`Closed|Checklist(A,lease)|Preparing(A,fence,lease,candidate)|CommitReady(B,lease)|Drafting(B,fence,lease)|Committing(consumed_B,fence,lease)|Retiring(fence,lease,cancel_requested,mutation_maybe_attempted)`。route open后获取T33 exact Commit token并贯穿两阶段；click/key callback先atomic transition再spawn。in-flight close/window/thread/project/route change立即隐藏UI并进Retiring，只cancel、不abort/drop owner future；owner真实终止/reap、authoritative refresh/reconcile后才由exact token release，old completion不得清newer token。无worker close才可清route/busy后立即release。
 - 所有provider/model-controlled string carrier均禁止derived raw Debug：`ChatMessage`/tool id、`ChatToolCall`、`ToolDefinition`、`ChatRequest`、`ProviderEvent`、`ScriptStep`/`MockProvider`、SSE fragment/assembler、test captured headers/body以及T34 summary/draft/request/result/fence/UI event只能手写长度/count/presence redaction或不实现Debug；provider error先映射为content-free code，禁止format/log。sentinel不得进入Debug/Display/tracing/error/event/DB/controller/UI。
 - same-user在pre/post check之间替换selected worktree content/type/path、attrs/config或ref（含ABA）仍为接受的Phase 1 path-based Git TOCTOU residual；身份/hash复验只能缩窗，不能证明Git add读取瞬间的exact bytes，报告不得宣称byte-atomic或race-free。
@@ -244,7 +246,7 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 ## T34 · Canonical two-stage commit assistant（A5-06）
 
 - **范围**：conversation IndexSnapshot/trusted Git/provider draft、`crates/vega_ui/src/commit_panel.rs`、`crates/vega/src/main.rs` first-wins controller/wiring与app tests；零 DB/event/temp file。
-- **产出/验收**：C2/C6/C8与2026-08-31 v0.4裁决全部；three-source canonical snapshot、hidden intent-to-add、mode/type/tree correlation、per-kind selected structural ledger、real index-vs-tree delta、exact NUL-stdin one-add/empty-S zero-add、owned A→B handoff与poll/ABA矩阵。另覆盖fixed summary argv与deterministic non-UTF8/cap、provider 60s strict Done+EOF grammar/retry0/max_tokens256、all carrier Debug redaction、attached ordinary parent/tree/ref proof、Retiring close/cancel/exact-token cleanup。所有prepare/add/commit成功与失败路径都在fresh temp repo验证zero/one spawn、PGID/reap、authoritative refresh/reconcile；无真实provider/key/network、temp message file、rollback/retry/amend/push。
+- **产出/验收**：C2/C6/C8与2026-08-31 v0.4裁决全部；three-source canonical snapshot、hidden intent-to-add、mode/type/tree correlation、per-kind selected structural ledger、real index-vs-tree delta、exact NUL-stdin one-add/empty-S zero-add与owned A→B handoff。主证据按E2E-first裁决使用真实production入口；parser/authority/process/codec的exact bounds、fixed summary、strict provider grammar、redaction、immutable proof与Retiring owner-lifecycle仅保留最小高价值回归。无真实provider/key/network、temp message file、rollback/retry/amend/push。
 - **命令**：
 
   ```sh
@@ -264,6 +266,7 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 ## T35 · S6 end-to-end acceptance + report（A5-02）
 
 - **场景**：main temp repo 验证 agent edit/rename/untracked→diff→artifact/fake Open→dirty branch reject→Prepare→Commit→post-tree；positive branch switch使用独立 clean fixture或在commit后执行，绝不在dirty中伪造通过。
+- **证据复用**：T35读取 `docs/vega-s6-t34-e2e.md` 的T34 production E2E与安全回归结果，只补跨功能链及里程碑实测；除非production行为变化或既有证据失效，不重复扩张同构test-only fixture。
 - **报告**：`docs/vega-s6-report.md` + README。只列 SDD/T30-T34 已 merged PR/squash hashes；T35 只列自身 branch commits并明确 PR/squash pending，最终 Phase 1 milestone report再补 T35 squash hash。不得自报尚不存在的 evidence。
 - **精确门禁**：
 
@@ -354,3 +357,6 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 - v0.11 (2026-08-30) controller final hardening：冻结 proposal/id/path/terminal/candidate retained caps及exact/+1语义，并冻结production/tests共用的真实 AgentBatch ingress helper。
 - v0.12 (2026-08-30) 人类冻结 T33 shared-OID refs/current-by-raw-ref 契约，并增加 D-only authority capture与 R/C old+new `.gitattributes` 零切换、permit前后 byte-exact 重放。
 - v0.13 (2026-08-31) 冻结 T34 canonical commit v0.4/P0/P1：status+stage+immutable HEAD tree三源、selected structural ledger、hidden intent与real-delta门禁、owned A→B generation handoff、attached ordinary parent/tree/ref proof；补fixed summary/strict 60s provider grammar、全carrier redacted Debug、Retiring lease生命周期及same-user TOCTOU诚实边界。
+- v0.14 (2026-08-31) 人类消歧 T34 immutable proof：最终ref moved/deleted/renamed/different OID必须Failed；两次捕获之间完整away-and-back到same raw ref+OID的same-user ABA明确归accepted TOCTOU residual，不宣称检测/关闭。
+- v0.15 (2026-08-31) T34 D32边界消歧：不发明single-path byte cap；status/stage/tree与raw path共同计入checked shared 8 MiB retained budget，另以inclusive 10,000 unique logical-path cap（rename两侧分别计）限制authority。
+- v0.16 (2026-08-31) 人类冻结T34/T35 E2E-first策略：保留最小高价值安全不变量回归，以production headless+GPUI handler E2E为主证据，仓库记录命令/时间/hash/result/residual且禁止伪造commit/PR。
