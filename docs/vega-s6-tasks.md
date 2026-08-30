@@ -1,201 +1,310 @@
 # ✦ Vega — S6 任务卡（Sprint 6 · Diff 审阅 & 产物 · W11-12）
 
-**版本** v0.2 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.3 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S6 目标**（phase1-plan §2）：git 工作区 diff 视图（高亮、hunk 导航）；产物卡片；Open in…（VS Code/Cursor/Zed/Terminal）；commit 辅助；补齐 Composer 分支选择器。
 
-**Sprint DoD**：agent 改完代码后，用户可在 Vega 内审阅包含未跟踪文件的工作区 diff，通过显式点击把围栏内产物交接到 fixed allowlist 外部应用，生成并编辑 commit message，最终经过 Prepare 与 Commit 两次用户确认，由不可被模型调用的 trusted Git 路径提交；全过程不引入 shell、新依赖、新事件类型或 DDL。
+**Sprint DoD**：agent 改完代码后，用户可审阅包含未跟踪文件的 diff，通过显式点击把围栏内产物交接到 fixed allowlist 外部应用，生成并编辑 commit message，再经过 Prepare 与 Commit 两次用户确认，由不可被模型调用的 trusted Git 路径提交；不引入 shell、新依赖、新事件类型或 DDL。
 
 > 本文档合入即为 S6 的 SDD 开工门禁。T30-T35 严格串行，每卡在前一卡 squash merge 后开工。
 >
-> **人类裁决（2026-08-30）**：采用 A，以 phase1-plan S6 为准并修订 PRD v0.3.3。Phase 1 交付 Diff v1、artifact cards、fixed-allowlist Open in v1、user-confirmed commit assistance v1；Phase 2 保留 Diff v2、custom/configurable handoff、PR assistance 与 advanced polish。此前 PRD 冲突已闭合，D1-D7 不变。
+> **人类裁决（2026-08-30）**：采用 A，以 phase1-plan S6 为准，PRD v0.3.3 已闭合冲突。Phase 1 交付 Diff v1、artifact cards、fixed-allowlist Open in v1、user-confirmed commit assistance v1；Phase 2 保留 Diff v2、custom/configurable handoff、PR assistance 与 advanced polish。D1-D7 不变。
 >
-> stage/commit、branch switch 与 Open in 都是当前窗口的显式用户动作，不是 `vega_tools` 工具、不注册 provider schema。模型只能生成 bounded commit message 草稿，永远不能 Prepare、stage、commit、切分支或启动外部应用。
+> stage/commit、branch switch 与 Open in 都是当前窗口的显式用户动作，不是 `vega_tools` 工具、不注册 provider schema。模型只能生成 bounded commit 草稿，永远不能 Prepare、stage、commit、切分支或启动应用。
 >
 > Phase 1 只做 viewer + diff 审阅（PRD D5）；不做自研编辑器/LSP、Checkpoint 回退、PR 创建或终端视图。
 
 ---
 
+## S6 冻结常量（所有上限均 inclusive）
+
+| 常量 | 冻结值 | 超限语义 |
+|---|---:|---|
+| process IO chunk | 16 KiB | 每次读取/写入不超过该值 |
+| read-only Git timeout | 10s | kill process group，typed timeout，整次请求 fail closed |
+| trusted mutation timeout | 120s | kill process group，刷新真实状态，不自动重放 |
+| `/usr/bin/open` timeout | 10s | kill/reap open command，exact one attempt，无 fallback |
+| TERM grace / residual drain | 300ms / 500ms | TERM→300ms→KILL→wait；pipes 最多再 drain 500ms |
+| read-only stdout + retained status | 8 MiB combined | 多 1 byte 即 typed too-large，snapshot fail closed |
+| Git stderr | 64 KiB | 多 1 byte 即 typed too-large；正文不进入 error |
+| workspace paths | 10,000 | 第 10,001 条使 snapshot fail closed |
+| workspace metadata snapshot | 8 MiB | 多 1 byte fail closed；patch 必须 lazy per-file |
+| IndexSnapshot status + stage inputs | shared 8 MiB / 10,000 paths | 任一输入超限、交叉不一致或 generation/HEAD 变化均 fail closed |
+| per-file diff | 4 MiB / 20,000 rows / 64 KiB per line | 任一多 1 即该文件 typed too-large/truncated，不返回部分正文 |
+| text/report preview | 1 MiB / 10,000 lines / 64 KiB per line | 任一多 1 即 metadata-only + typed too-large |
+| image preview | metadata-only | Phase 1 禁止 decode，不留 dimensions/frame allocation 例外 |
+| commit message | 32 KiB UTF-8 | empty/NUL/多 1 byte fail closed；typed `String` 无 invalid-UTF8 分支 |
+| provider diff summary | 256 KiB | 确定性截断并在 cap 内含 marker，显式 `truncated=true` |
+| mutation stdout / stderr | 1 MiB / 64 KiB | 多 1 byte kill group并 fail closed，随后真实状态 refresh |
+| visible workspace poll | exactly 750ms | 仅 panel visible 持有 cancellable task；隐藏即取消 |
+
+> `== cap` 接受，读取到第一个超限 byte/row/path 才触发上述语义。marker 计入 cap；禁止 UI、配置或测试放宽。
+
+---
+
 ## S6 最小契约闭合
 
-### C1 · Git service 是私有 headless 边界，不新增事件流
+### C1 · 私有 raw service + 唯一 bounded UI 正文通道
 
 - Git workspace/artifact/trusted-action service 落在 headless `vega_conversation` 私有模块；`vega_ui` 不 spawn 进程、不直接读 SQLite，`vega_runtime`/`vega_tools` 不新增反向依赖或 Git wire type。
-- raw `OsString`/path bytes 只存在于 private service。跨 UI 的共享类型只暴露 opaque、单 snapshot 有效的 `WorkspaceFileId`、escaped display label 与安全状态/统计；禁止把 raw path、绝对 root、stderr 或文件正文塞入 shared event、`Debug`、日志或 SQLite。`WorkspaceFileId` 只能由当前 snapshot 解析，过期/未知 id fail closed。
-- S6 workspace/artifact/branch/commit UI 是 ephemeral view state，不新增 `ConversationEvent`/`RuntimeEvent` variant，不建事件旁路；既有 ConversationEvent 唯一业务流不变。
-- 全部 Git 调用只用 `std::process::Command` 启动固定 `/usr/bin/git`，`current_dir` 固定 canonical project root；禁止 shell、命令字符串、Git alias、自定义 executable 或从模型输入构造 option。production 代码无 `unwrap/expect`。
+- raw `OsString`/path bytes、canonical root、Git stderr 与 runner 只留 private service。UI 只持 snapshot-scoped opaque `WorkspaceFileId`/`BranchId`/`IndexSnapshotId`、escaped label 与安全统计；generation 或 id 失效立即丢弃，不把 display label 反向变 argv。
+- 允许且只允许 dedicated ephemeral bounded `DiffTextProjection` 与 `ArtifactPreviewProjection` 从 `vega_conversation::types` 交给 UI。两者不得实现 `Serialize`；不得派生正文 `Debug`（不实现或手写 redacted Debug）；不得进入 ConversationEvent/RuntimeEvent、SQLite、审计、日志、error 或 provider tool wire。
+- projection 只能由 current generation + opaque id 请求，按冻结 cap 生成；generation 在完成前失效则结果丢弃。除此之外 raw path/root/stderr/文件正文一律不跨边界。
+- S6 不新增 `ConversationEvent`/`RuntimeEvent` variant，不建第二业务生命周期流；workspace UI state 完全 ephemeral。
 
-### C2 · 固定进程环境、并发 drain 与可收拢生命周期
+### C2 · Git runner 环境、safe prefix 与进程组生命周期
 
-- runner 清除继承的 Git redirect/config 环境，包括 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_COMMON_DIR`、`GIT_INDEX_FILE`、`GIT_OBJECT_DIRECTORY`、`GIT_ALTERNATE_OBJECT_DIRECTORIES`、`GIT_NAMESPACE`、`GIT_CEILING_DIRECTORIES`、`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`、`GIT_CONFIG_SYSTEM`、`GIT_CONFIG_GLOBAL`、`GIT_CONFIG_NOSYSTEM` 及其他 `GIT_*` 输入；随后只重建集中 allowlist：`GIT_TERMINAL_PROMPT=0`、`GIT_PAGER=cat`、`LC_ALL=C`。正常 system/global/repo config 仍由 Git 按默认位置读取，但 CLI 安全 override 优先，且 `rev-parse --show-toplevel` 不等于 canonical project root 时 fail closed。
-- read-only subcommand allowlist 只含固定模板的 `status`、`diff`、`rev-parse`、`for-each-ref`、`check-attr`；diff argv 明确带 `--no-ext-diff --no-textconv`。任何未列 verb 都不能从 workspace refresh 路径执行。
-- 每个 argv 固定禁 pager/color/prompt/fsmonitor；diff 固定禁 external diff/textconv。不得依赖用户 alias、pager、prompt、fsmonitor hook、external diff 或 textconv 产生结果。
-- stdout/stderr 必须同时以固定 chunk 并发 drain，各自及合计都有集中 bytes 上限；禁止先等 child 再顺序读另一 pipe、`wait_with_output` 或无界 `read_to_end`。超限、timeout、cancel 都 kill 后 wait/reap；无论 exit 结果都收拢 child 并返回 typed、脱敏错误。
-- 进程 IO 离开 UI 上屏关键路径，在 bounded blocking worker 中运行；同项目只接受最新 refresh generation，旧结果不得覆盖新 snapshot。工具完成后即时 refresh，面板可见时再用有界低频 polling 捕获外部改动。
+- runner 清除继承的全部 `GIT_*` redirect/config 输入（含 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_COMMON_DIR`、`GIT_INDEX_FILE`、object/namespace/ceiling/config 三元组等），只重建 `GIT_TERMINAL_PROMPT=0`、`GIT_PAGER=cat`、`GIT_LITERAL_PATHSPECS=1`、`GIT_NO_LAZY_FETCH=1`、`LC_ALL=C`。正常 system/global/repo config 可按默认位置读取，但 CLI override 优先；`rev-parse --show-toplevel` 不等于 canonical project root 即拒绝。
+- 所有 Git 命令共享 exact global prefix：`/usr/bin/git --no-pager -c core.fsmonitor=false -c color.ui=false -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.auto=0`。trusted stage/commit/switch 再追加 `-c core.hooksPath=/dev/null`；不允许其他用户/模型 option。
+- read allowlist 只含固定模板的 `status`、`diff`、`rev-parse`、`for-each-ref`、`check-attr`、`ls-files`、`ls-tree`、`hash-object`。diff 固定带 `--no-ext-diff --no-textconv`；`hash-object` 只用 `--no-filters` 且绝不带 `-w`。`GIT_LITERAL_PATHSPECS=1` 适用于所有 read/mutation，`--` 不能单独当作 literal 安全保证。
+- 每个 Git child 使用 `std::os::unix::process::CommandExt::process_group(0)`。stdout/stderr 用 16 KiB chunk 并发 bounded drain；有 stdin 时 writer 与两路 drain 同时推进，禁止写完 stdin 才读输出、顺序 drain、`wait_with_output` 或无界 `read_to_end`。
+- timeout/cancel/overflow 用固定 `/bin/kill` 向 negative PGID 发 TERM，等待 300ms，再 best-effort KILL，最后 wait/reap；TERM 失败也继续 KILL/wait。direct child 提前退出但继承 PGID descendant 持 pipe 时，最多 drain 500ms后同样收拢并 fail closed。主动 `setsid` 逃逸是已知 residual，报告不得宣称完整树隔离。
+- read-only timeout 10s；mutation 120s；read stdout+retained status 8 MiB、stderr 64 KiB；mutation stdout 1 MiB、stderr 64 KiB。进程 IO 在 bounded worker，旧 request generation 结果不得覆盖新状态。
 
-### C3 · project-root fence 与 bytes-first snapshot/diff
+### C3 · bytes-first snapshot、lazy diff 与 language mapping
 
-- project root 必须存在、为目录且 canonicalize 成功。private service 对 Git 返回路径拒绝 absolute、空路径、NUL、`.`/`..` component；所有 path argv 来自当前 snapshot，前置 `--`，禁止 provider/raw markdown 注入。
-- status/raw/numstat 使用 NUL-delimited bytes parser，保留空格、tab、换行、non-UTF8 与 rename old/new path。escaped label 只用于显示，永不反向用于 Git/Open in。
-- snapshot 区分 staged、unstaged、untracked、deleted、renamed、conflicted；默认聚合 HEAD→working tree 审阅，同时保留 staged/unstaged layer，不能丢失同路径双层变更。unborn HEAD 不硬编码 SHA-1 empty-tree oid。
-- tracked patch 固定 rename detection，并关闭 external diff/textconv。untracked regular text 经同一 private fence 读取并合成 addition hunk；binary、非 UTF-8 内容、symlink/special file、过大或读取前后 identity 变化只呈 bounded metadata placeholder。binary numstat `-` 不伪造行数，deleted 只用 Git preimage。
-- command timeout、per-stream/per-command bytes、per-file lines/bytes 与 total snapshot 上限在 T30 固定为集中常量并做边界测试；触顶显示 truncated/too-large，不由 UI 放宽。
+- canonical project root 必须存在且为目录。private parser 拒绝 absolute/empty/NUL/`.`/`..` Git path；NUL-delimited raw/status/numstat 保留空格、tab、newline、non-UTF8 与 rename old/new path。所有 path argv 来自当前 snapshot并受 literal env保护。
+- metadata snapshot 区分 staged/unstaged/untracked/deleted/renamed/conflicted；最多 10,000 paths/8 MiB，不携带全部 patch。面板 visible 时 exactly 750ms poll，工具 terminal 触发即时 refresh；每文件 patch 按 opaque id lazy 请求。
+- tracked patch 开 rename detection，关闭 external diff/textconv；同路径 staged+unstaged 两层都保留。untracked regular UTF-8 text 合成 addition；binary、non-UTF8 content、symlink/special、identity race仅 metadata。unborn HEAD 不硬编码 SHA-1 empty-tree oid。
+- `DiffTextProjection` 接受至多 4 MiB/20,000 rows/64 KiB line；超限不返回部分正文。extension mapping 固定：`.rs→rs`、`.ts→ts`、`.tsx→tsx`、`.js/.jsx/.mjs/.cjs→js`、`.py→py`，其他等宽 plain text。
+- literal filename `:(glob)**`、`:!safe` 必须按 raw exact path diff/stage，不得扩大 pathspec。
 
-### C4 · artifact 来源可证明且只做 bounded preview
+### C4 · artifact provenance 与 preview
 
-- artifact model 完全来自当前 ephemeral workspace snapshot，不建 artifacts 表、不新增事件。只有 strict successful write/edit projection 能解析出当前 `WorkspaceFileId`，且 projection 的相对身份与当前 snapshot exact 一致时，才标记 `agent artifact`；stale/invalid projection 不标记。
-- bash 创建/修改的文件及无法关联 strict write/edit projection 的条目只能叫 `workspace change`，不得推断为 agent artifact。artifact 来源标签不改变路径围栏或权限。
-- 卡片覆盖 file/report/image 安全投影：opaque id、escaped label、类型、bounded size/line/dimension/frame metadata 与 preview 状态。文本只在 bytes/lines 上限内预览；binary/unsupported/竞态显示 metadata-only。
-- image preview 只有在 decode **之前**可证明 encoded bytes、dimensions、frame count 与 decoded allocation 都受固定上限约束时才能启用；若 GPUI 现有 API 无法证明，Phase 1 固定 metadata-only + Open in。不得为图片 preview 引入新依赖。
+- artifact 完全来自 current ephemeral snapshot，不建表/事件。strict successful write/edit terminal 后立即 refresh；只有相对身份映射 current `WorkspaceFileId` 且 regular file `<=1 MiB`，才能计算 provenance。
+- provenance 固定为 `(dev, ino, size, mtime_ns)` + read safe prefix 后的 fixed `hash-object --no-filters -- <raw-path>` content identity。命令绝不带 `-w`。同一 generation 完成验证后才标 `agent artifact`；later generation 任一 identity/digest 改变立即降级 `workspace change`。
+- bash-created、invalid/stale projection、>1 MiB、无法证明 identity 的条目只能叫 `workspace change`。artifact 来源标签不改变 fence。
+- `ArtifactPreviewProjection` 文本/报告最多 1 MiB/10,000 lines/64 KiB line；超限/binary/unsupported/race metadata-only。Phase 1 image **一律 metadata-only + Open in**，不 decode、不引依赖。
 
-### C5 · Open in 是 fixed allowlist 用户交接
+### C5 · Open in 六套 exact argv 与 lifecycle
 
-- allowlist 精确为 VS Code、Cursor、Zed、Terminal、default app、Finder；custom/configurable app 延后 Phase 2。统一使用固定 `/usr/bin/open` + 固定 app name/argv，不搜索 PATH 中的 `code`/`cursor`/`zed`，不接受自定义 executable/arguments。
-- 用户点击前重新解析当前 `WorkspaceFileId`。目标路径任一 symlink segment、`.git` entry、实际 gitdir、special file 或 regular file `nlink > 1` 均保守拒绝；canonical target 必须在 canonical root 内且 identity 未变。
-- VS Code/Cursor/Zed/default/Finder 接收已围栏目标；Terminal 恒定只打开 canonical project root，绝不把 artifact path 当 cwd/argument。所有 path 参数都在 option terminator 后。
-- 失败/app 缺失/目标消失显示内联错误，不降级其他程序。测试用 injectable recorder/fake launcher；真实外部应用启动只接受人类实测证据。
+- allowlist 精确为以下六套 argv；canonical absolute target/root 不可能以 option 开头，禁止 `--args`，也不添加未验证的 standalone `--`：
 
-### C6 · commit assistance 冻结为两阶段 selected staging
+  ```text
+  /usr/bin/open -a "Visual Studio Code" <target>
+  /usr/bin/open -a Cursor <target>
+  /usr/bin/open -a Zed <target>
+  /usr/bin/open -a Terminal <canonical-root>
+  /usr/bin/open <target>
+  /usr/bin/open -R <target>
+  ```
 
-- trusted mutation 的 exact safe prefix 固定为 `/usr/bin/git --no-pager -c core.hooksPath=/dev/null -c core.fsmonitor=false -c color.ui=false`。commit message 是 bounded、非空、无 NUL 的 UTF-8 in-memory value；固定 commit argv 为该 prefix + `commit --no-gpg-sign --file=- --cleanup=verbatim`，message 经 child stdin 写入后关闭；**不创建 `/private/tmp` 或任何 message file**。hooks disabled 与 `--no-gpg-sign` 是 Phase 1 固定兼容限制，进入报告。
-- 所有 trusted mutation（stage/commit/switch）固定带 `-c core.hooksPath=/dev/null` 与 C2 安全配置；禁止 `--amend`、`--allow-empty`、`--no-verify`、push、force、reset、restore、stash、clean 或任意用户/模型 options。
-- **阶段一 Prepare**：面板完整展示 existing staged set（始终包含、不可取消）与用户从当前 snapshot 显式选择的 workspace paths。用户第一次确认后，复验 captured HEAD/index/status、conflict 与 selected ids；`git check-attr filter` 任一 selected path 非 unset/unspecified、任何 race/差异均 fail closed。随后只执行 C6 exact safe prefix + `add -A -- <trusted snapshot paths>`。
-- Prepare 后必须重新读取真实 HEAD/status/index，展示 exact final index 与 bounded patch；existing staged 必然仍在。若 final index 与“existing staged + selected staging”预期不一致、出现 filter/conflict/race 或 refresh 失败，则不进入 Commit；不得 reset/unstage/rollback，保留真实 Git 状态并要求用户处理/刷新。
-- **阶段二 Commit**：用户编辑/确认最终 message，并第二次显式确认 commit **entire displayed final index**。执行前再次复验 HEAD 与 exact index bytes；任何差异 fail closed。模型 draft、默认焦点、重复点击、窗口/项目/线程切换都不能隐式确认。
-- commit 无论 success/nonzero/timeout/cancel/ambiguous，都刷新真实 HEAD/status/index 后再呈现结果；只有 HEAD 改变且 committed tree/path set 与 displayed final index 一致才报告成功。不得因不确定结果自动重试。
-- 模型 draft 只能由用户点击请求，向现有 Provider 发送 bounded diff 摘要并明确提示；返回 tool call/越界/非法 UTF-8 视为失败。无 provider 时可手写；自动验收只用 MockProvider，模型永不能 stage/commit。
+- custom/configurable app 延后 Phase 2。点击前解析 current `WorkspaceFileId`；任一 symlink segment、`.git` entry、实际 gitdir、special file、regular `nlink>1`、root escape 或 identity race都拒绝。Terminal 恒 project root，其他五项使用围栏 target。
+- launcher 在独立 bounded worker；stdin/stdout/stderr 均 null；timeout 10s，wait/reap `/usr/bin/open`，结果只应用到 current request generation。成功返回后不杀已由 LaunchServices 启动的 app。
+- no click、stale/unknown id、fence/identity preflight failure = 0 invocation attempt；app missing、spawn error、nonzero、timeout = exactly 1 attempt且无 retry/fallback/alternate；success = exactly 1 attempt。
+- fake launcher 必须按 raw `OsString` 精确断言 space/tab/newline/leading-dash-looking component/non-UTF8 target 的六套 argv；escaped label 永不回流。
 
-### C7 · branch selector 受 active-state 与 clean-state 双门禁
+### C6 · cross-checked canonical IndexSnapshot + 两阶段 selected staging
 
-- 只列 `refs/heads/*` local refs，并同时捕获每项 OID；raw ref 留在 private service，UI 只持 opaque branch id + escaped label。拒绝 detached target、remote guess、create、unknown/stale id 或 captured OID 变化。
-- dirty/conflict（含 staged、unstaged、untracked、unmerged、merge/rebase/cherry-pick）一律拒绝。active agent run、pending permission、pending plan review、打开的 commit panel 任一存在也拒绝，不能在活动执行上下文切换 root。
-- 用户显式选择后，固定执行 C6 exact safe prefix + `switch --no-guess <validated-local-branch>`；禁止 remote guess/create/detach/force/stash/reset/clean/checkout。无论 exit success/failure/timeout，都刷新真实 HEAD/status/branch 后再显示结果，绝不按期望值伪造 UI。
+- private `IndexSnapshotId` 必须从同一 captured HEAD/request generation 下的 fixed `status --porcelain=v2 -z` 与 fixed `ls-files --stage -z` **交叉构造**；两次 bounded 输入共享 8 MiB/10,000 paths 上限。读取前后 HEAD/generation、raw path membership、tracked status 与 stage entry 任一变化/矛盾都拒绝，不能只信其中一个命令。
+- canonical codec bytes-first排序并绑定 captured HEAD、porcelain v2 status classification 与 logical stage entries `(mode, object_oid, raw_path)`。任何 tracked v2 record `XY=.A` 明确代表 intent-to-add，必须 fail closed；`ls-files` 的 stage0/nonzero OID不能推翻该判断。仍拒绝 unmerged stage>0、zero OID、unknown/corrupt record、重复冲突或 overflow。UI 只获 opaque id + bounded safe projection，绝不 hash/read raw `.git/index`。
+- 正常 staged empty file 是合法 positive：porcelain `XY=A.` 且 stage0 + repo-format nonzero empty-blob OID（默认 SHA-1 fixture 为 `e69de29...`）；不得把 empty blob误判为 intent-to-add。
+- selected `WorkspaceFileId` 展开 literal raw set：rename=old+new，delete=old，add/untracked=new，modify=current；bytes-first dedupe。任何 selected changed `.gitattributes` 直接拒绝。expanded set 经 exact `git check-attr --stdin -z filter`，任一非 `unspecified`/`unset` fail closed。
+- **Prepare**：初始 focus Cancel；Esc=Cancel；只有 Cmd+Enter 确认。面板完整展示 existing staged（始终包含、不可取消）+ selected paths。Prepare 前重新执行同一 status+ls-files cross-check codec，复验 HEAD/IndexSnapshot/conflict/filter 后，才用 mutation safe prefix执行 `add -A -- <expanded literal raw paths>`。
+- Prepare 后再次以同一 captured HEAD/new generation 的 status+ls-files cross-check codec刷新 exact final `IndexSnapshotId`/bounded cached patch；它必须等于 existing staged + selected staging 的 canonical logical预期，且无 `XY=.A`。任何差异不进入 Commit，不 reset/unstage/rollback，保留真实状态。
+- **Commit**：初始 focus Cancel；Esc=Cancel；message editor bare Enter 只换行；只有 Cmd+Enter 第二次确认 commit entire displayed final index。close panel/window/thread/project switch 是 first-wins cancel；重复 callback 不产生第二次 mutation。
+- message 是 non-empty/no-NUL/bounded 32 KiB typed UTF-8 `String`。模型仅由用户点击请求，provider summary最多 256 KiB并显式 truncated marker；模型 tool call/超限失败。message/diff-summary用 sentinel 验证不进 Debug/log/event/DB/error。
+- commit argv = mutation safe prefix + `commit --no-gpg-sign --file=- --cleanup=verbatim`；message 从内存 stdin 写入，writer/stdout/stderr并发，不建 message file。Commit 前第三次运行同一 status+ls-files cross-check codec并与 displayed final `IndexSnapshotId` exact compare；任何 `XY=.A`/差异均为 zero commit spawn。
+- 无论 success/nonzero/timeout/cancel/ambiguous 都刷新真实 HEAD/status/index。成功后 fixed `ls-tree -rz --full-tree HEAD` 解析同一 canonical `(mode, object_oid, raw_path)` codec，与 displayed final index exact compare；HEAD 改变且完全一致才成功，不自动重试。
 
-### C8 · UI、依赖与后置范围
+### C7 · branch target materialization preflight
 
-- Diff viewer 默认 unified，可切 side-by-side；文件数、+x/-y、untracked/binary/rename；逐文件折叠与 next/previous hunk。新增行 `success` 8% token 背景、删除行 `danger` 8%、行号 `text-tertiary`、`@@` hunk `code-bg`，无硬编码颜色/字号。
-- 语法高亮只复用现有 `vega_markdown`/tree-sitter 四语言；不激活/新增 `similar` 或其他 crate。S6 零新依赖、零 DDL、Cargo.lock 不因依赖变化而改。
-- Composer 本 Sprint 只补 A2-16 分支选择器。A2-12 `@引用`、A2-21 `/命令`、A2-14 模型选择器后置；`>8` 行独立 inner-scroll 留 S8。
+- 只列 `refs/heads/*` local refs并捕获 target OID及其bytes short branch name；raw ref/name留 private，UI只持 opaque id/escaped label。拒绝 empty/NUL/control/leading-`-` name、detached/remote guess/create/unknown/stale id/OID change；non-UTF8/ref label只展示 escaped串。
+- dirty/conflict（staged/unstaged/untracked/unmerged）或 merge/rebase/cherry-pick/revert/bisect/sequencer/`git am` operation marker一律拒绝。active agent run、pending permission、pending plan review、open commit panel 任一存在也拒绝。
+- current OID→captured target OID 固定执行 read safe prefix + `diff --name-status -z --diff-filter=ACMRT -M --no-ext-diff --no-textconv <current_oid> <target_oid>`，bounded bytes parser取得 materialized target path set（rename只取target/new path）；target deleted path不 materialize。若 changed set 含任意 `.gitattributes` 直接拒绝。
+- materialized target paths通过 stdin交 fixed `git check-attr --source=<target_oid> --stdin -z filter`；任一值非 `unspecified`/`unset`拒绝。`--source` capability self-test失败也拒绝。preflight后再次复验 target OID、clean/status/operation/active guards。
+- exact switch argv = mutation safe prefix + `switch --no-guess --no-overwrite-ignore --no-recurse-submodules <validated-local-branch-name>`。name 必须来自刚复验的 `refs/heads/*` enumeration；禁止 remote guess/create/detach/force/stash/reset/clean/checkout。
+- 无论 exit success/failure/timeout都刷新真实 HEAD/status/branch。filter-driver repository、ignored collision、submodule recurse、target smudge/process必须在 spawn switch 前 fail closed/zero side effect。
+
+### C8 · UI、依赖与测试 fixture
+
+- Diff viewer 默认 unified，可切 side-by-side；文件数、+x/-y、untracked/binary/rename；逐文件折叠、next/previous hunk。新增行 `success` 8% token背景、删除 `danger` 8%、行号 `text-tertiary`、`@@` hunk `code-bg`，无硬编码颜色/字号。
+- 语法高亮只复用现有 `vega_markdown`/tree-sitter；不激活/新增 `similar`。S6 零新依赖、零 DDL、Cargo.lock 不因依赖变化而改。
+- 所有 filesystem/Git 测试都使用 fresh `tempfile` repo、per-repo local `user.name/user.email`、显式测试 env，不依赖 global config/current Vega repo；只清理 fixture-owned path。真实 app/provider/key/network一律不调用。
+- Composer 本 Sprint 只补 A2-16。A2-12 `@引用`、A2-21 `/命令`、A2-14 模型选择器后置；`>8` 独立 inner-scroll留 S8。
 
 ---
 
 ## 卡依赖图
 
 ```text
-S6 SDD PR
-  └─▶ T30 snapshot/diff headless service
-          └─▶ T31 Diff UI + stats + hunk navigation
-                  └─▶ T32 artifact cards + Open in
-                          └─▶ T33 guarded branch selector
-                                  └─▶ T34 two-stage commit assistant
-                                          └─▶ T35 end-to-end acceptance + report
+S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
+          → T33 branch selector → T34 commit assistant → T35 acceptance/report
 ```
 
-> 工作流严格串行：每卡独立 sibling worktree 与 PR，squash merge 后才开下一卡。
+> 每卡独立 sibling worktree/PR，严格 squash merge 后再开下一卡。
 
-## T30 · Git snapshot/diff headless 服务（A5-01/A5-03）
+## T30 · Git snapshot/diff headless service（A5-01/A5-03）
 
-- **前置/参考**：S5 T29 + S6 SDD；C1-C3/C8；exec-guide §3/§4。
-- **范围**：`vega_conversation` private workspace service + safe shared view types；app 必要装配。不得改 UI/DDL/事件 enum，不注册 model tool。
-- **产出**：env-scrubbed fixed `/usr/bin/git` runner；concurrent bounded stdout/stderr drain + timeout/cancel kill/reap；canonical root；private raw path + shared opaque `WorkspaceFileId`；generation snapshot；tracked/staged/unstaged/untracked/deleted/rename/conflict/binary/non-UTF8 diff 与统计。
-- **验收**：temp repo 覆盖同路径 staged+unstaged、untracked、delete、rename、binary、space/tab/newline/non-UTF8、symlink/special、unborn/detached/non-git、损坏/超限/timeout/cancel/nonzero；恶意 Git env/config/pager/fsmonitor/external diff/textconv 均不生效；pipe flood 不死锁且 bounded；raw path/正文/stderr 不进 shared type/event/Debug/log；旧 generation 不覆盖新 snapshot。
-- **命令**：`cargo test -p vega_conversation git_workspace`；`cargo clippy -p vega_conversation --all-targets -- -D warnings`；`cargo tree -p vega_conversation`。
-- **commit**：`feat(A5-01): add private git workspace snapshots`（≤3 commits）。
-- **禁区/停止**：不执行 mutation，不新增 ConversationEvent/RuntimeEvent；std runner 无法闭合即 `[BLOCKED] S6-T30`。
+- **范围**：`vega_conversation` private runner/snapshot/projection types；不得改 UI/DDL/event enum或注册 model tool。
+- **产出/验收**：C1-C3/C8 全部；lazy patch、redacted projection、所有 exact bounds；literal `:(glob)**`/`:!safe`；恶意 env/pager/fsmonitor/external diff/textconv/lazy fetch；non-UTF8；stdout/stderr flood；PGID descendant/direct-child race/maintenance no-detach；setsid residual记录。
+- **命令**：
 
-## T31 · Diff UI + 统计 + hunk 导航（A5-02/A5-03）
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation git_workspace
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation projection_redaction
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega_conversation --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && ! cargo tree -p vega_conversation | rg 'gpui(_platform)? v'
+  git diff --check
+  ```
 
-- **前置/参考**：T30；ui-spec §2-§5；C3/C8。
-- **范围**：`vega_ui` diff panel/model/rows；只消费 opaque shared snapshot，不调用 Git/SQLite。
-- **产出**：unified 默认 + side-by-side；统计条；逐文件折叠；next/previous hunk；tracked/untracked/rename/binary/too-large/error 状态；四语言高亮降级。
-- **验收**：GPUI 覆盖混合 layer、opaque id、non-UTF8 label、折叠、hunk 首尾、view toggle、键盘与 refresh stable key；addition/deletion 8% token、line/hunk token、硬编码色值零新增；注入 snapshot 的交互 <100ms，无 render-path IO。
-- **命令**：`cargo test -p vega_ui diff`；`cargo clippy -p vega_ui --all-targets -- -D warnings`；色值 scan。
+- **commit**：`feat(A5-01): add bounded git workspace snapshots`（≤3 commits）。
+- **停止**：std process-group/NUL parser/bounds无法闭合即 `[BLOCKED] S6-T30`。
+
+## T31 · Diff UI + controller（A5-02/A5-03）
+
+- **范围**：`crates/vega_ui/src/diff_view.rs`、必要 UI exports、`crates/vega/src/main.rs` controller/wiring；订阅工具 terminal refresh、路由 current project/thread/generation；不在 UI/app执行 Git IO。
+- **产出/验收**：C1/C3/C8；unified/side-by-side、统计/折叠/hunk keyboard；lazy projection stale drop；exact extension map；app route可达；960×600约束；token/8% opacity。
+- **命令**：
+
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_ui diff_view
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega --bin vega diff_controller
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega_ui --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega --all-targets -- -D warnings
+  ! rg -n '#[0-9a-fA-F]{6}|rgba?\(' crates/vega_ui/src/diff_view.rs
+  git diff --check
+  ```
+
 - **commit**：`feat(A5-02): render navigable workspace diffs`；必要时 `feat(A5-03): add workspace change statistics`。
-- **禁区**：不做 inline comment/editor/LSP，不引 `similar`。
 
-## T32 · 可证明产物卡 + fixed Open in（A5-04/A5-05）
+## T32 · Provenance artifact + exact Open in（A5-04/A5-05）
 
-- **前置/参考**：T31；PRD v0.3.3 D5/A5；C1/C4/C5/C8。
-- **范围**：private artifact resolver/launcher safe view + `vega_ui` artifact card；无 DB/event/migration。
-- **产出**：strict write/edit + current snapshot 才标 agent artifact；bash-only 条目为 workspace change；file/report/image bounded metadata/preview；VS Code/Cursor/Zed/Terminal/default/Finder fixed `/usr/bin/open` handoff。
-- **验收**：strict/invalid/stale write-edit projection、bash-created、text/markdown/image、超限/binary、symlink segment/root escape/`.git`/gitdir/special/hardlink、identity race、opaque id expiry；fake launcher 精确断言 allowlist argv，Terminal 恒 project root，未点击/失败均零 spawn。若 decode 前无法证明 image 全上限，断言 metadata-only。
-- **命令**：`cargo test -p vega_conversation artifact`；`cargo test -p vega_ui artifact_card`；两个 crate clippy all-targets。
-- **commit**：`feat(A5-04): add bounded artifact cards`；必要时 `feat(A5-05): add fixed external app handoff`。
-- **禁区/停止**：不自动启动真实 app、不 custom executable、不为 image 加依赖；需新依赖即 `[BLOCKED] S6-T32`。
+- **范围**：conversation artifact/launcher service、`crates/vega_ui/src/artifact_card.rs`、`crates/vega/src/main.rs` request-generation controller/wiring与app tests；无 DB/event。
+- **产出/验收**：C4/C5/C8；tool terminal immediate identity/hash refresh；later downgrade；image metadata-only；六套 exact argv raw OsString awkward/non-UTF8；preflight=0 attempt，spawn/app/nonzero/timeout=1 attempt no fallback，success=1；open lifecycle/request stale drop。
+- **命令**：
 
-## T33 · Composer guarded branch selector（A2-16）
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation artifact
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_ui artifact_card
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega --bin vega artifact_controller
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega_conversation --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega_ui --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega --all-targets -- -D warnings
+  git diff --check
+  ```
 
-- **前置/参考**：T32；C1-C3/C7/C8。
-- **范围**：private local-ref/switch coordinator + `vega_ui` branch selector + app active-state wiring；零 DDL/event。
-- **产出**：local refs + captured OID；opaque branch id；dirty/conflict 与 run/permission/plan-review/commit-panel active guard；fixed hooks-disabled `switch --no-guess`；所有 exit 后真实 refresh。
-- **验收**：clean switch；dirty/staged/untracked/conflict/operation-in-progress；active 四状态；detached/remote/unknown/stale/OID race；success/nonzero/timeout/cancel 后均以真实 HEAD/status 为准；argv 无 create/detach/force/stash/reset/clean/checkout。
-- **命令**：`cargo test -p vega_conversation branch`；`cargo test -p vega_ui branch_selector`；两个 crate clippy all-targets。
-- **commit**：`feat(A2-16): add guarded branch selection`。
-- **禁区/停止**：不自动切换、不 remote guess；active-state 无法可靠获得则 `[BLOCKED] S6-T33`。
+- **commit**：`feat(A5-04): add provenance-bound artifact cards`；必要时 `feat(A5-05): add fixed external app handoff`。
+- **停止**：不为 image/custom app加依赖；需要即 `[BLOCKED] S6-T32`。
 
-## T34 · 两阶段 commit assistant（A5-06）
+## T33 · Guarded local branch selector（A2-16）
 
-- **前置/参考**：T33；tech-spec §4.4 trusted handoff；C1-C3/C6/C8。
-- **范围**：private trusted stage/commit coordinator、existing provider mockable draft、`vega_ui` commit panel；零 DDL/event/temp file。
-- **产出**：bounded draft；Prepare 显示 existing staged + selected paths并第一次确认；filter/conflict/race preflight；C6 exact safe prefix + `add -A -- <trusted snapshot paths>`；刷新 exact final index；第二次确认；bounded UTF-8 stdin + fixed `commit --no-gpg-sign --file=- --cleanup=verbatim`；所有结果 post-refresh。
-- **验收**：MockProvider draft/edit/cancel/error/tool-call；existing staged 必含、selected delete/rename/untracked/space/non-UTF8；filter/conflict/HEAD/index/status race；Prepare 后 unexpected index；两次确认/重复/关闭；stdin bound/NUL/invalid UTF-8；success/nonzero/timeout/cancel/ambiguous post-state；hooks/signing disabled；断言零 message file、零 rollback/push/network，模型永不 mutation。
-- **命令**：`cargo test -p vega_conversation trusted_git`；`cargo test -p vega_ui commit_panel`；两个 crate clippy all-targets。
-- **commit**：`feat(A5-06): add two-stage commit assistance`。
-- **禁区/停止**：不 amend/allow-empty/no-verify/reset/unstage；系统 Git 与固定 stdin 契约矛盾即 `[BLOCKED] S6-T34`。
+- **范围**：conversation branch preflight、`crates/vega_ui/src/branch_selector.rs`、`crates/vega/src/main.rs` active-state/controller wiring。
+- **产出/验收**：C2/C7/C8；captured OID/NUL path set/`.gitattributes` reject/target `check-attr --source`；exact switch；all operation+active guards；filter/smudge/process recorder zero spawn、ignored collision zero overwrite、submodule no recurse；literal `:(glob)**`/`:!safe`、non-UTF8/ref label；PGID descendants/maintenance no-detach lifecycle与所有 exit refresh。
+- **命令**：
 
-## T35 · S6 端到端验收 + 报告 + README（A5-02）
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation branch
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_ui branch_selector
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega --bin vega branch_controller
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega_conversation --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega_ui --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega --all-targets -- -D warnings
+  git diff --check
+  ```
 
-- **前置/参考**：T30-T34 均 squash merge；phase1-plan S6 DoD、exec-guide §3/§7、ui-spec §6、tech-spec §8。
-- **场景**：temp repo + mock agent 生成 tracked edit/rename/untracked text/binary；refresh → diff stats/review/hunk → strict artifact + fake Open in → guarded branch negative/positive → MockProvider draft → Prepare existing staged+selected → exact final index → second confirm → stdin commit → HEAD/tree/status postcondition。
-- **门禁**：fmt、workspace clippy all-targets、test all-features、build all-targets、diff-check；runtime/tools headless；共享类型/event enum、UI direct SQLite、production unwrap/expect、色值、六表/migration、key/正文/raw path/temp message file与危险 Git verb scans。
-- **报告**：`docs/vega-s6-report.md` + README；列出 SDD/T30-T35 PR/squash commit、原始门禁/精确测试数、S6 DoD、ui-spec §6、红线、偏离。明确真实 API/key/费用未执行；真实外部应用、Light/Dark/CJK/960×600/全键盘/竞品截图/ProMotion/P1-P8 未自动验证；fake/GPUI test 不冒充人工硬件实测。
+- **commit**：`feat(A2-16): add preflighted branch selection`。
+- **停止**：`--source`/active-state无法可靠获得即 `[BLOCKED] S6-T33`。
+
+## T34 · Canonical two-stage commit assistant（A5-06）
+
+- **范围**：conversation IndexSnapshot/trusted Git/provider draft、`crates/vega_ui/src/commit_panel.rs`、`crates/vega/src/main.rs` first-wins controller/wiring与app tests；零 DB/event/temp file。
+- **产出/验收**：C2/C6/C8；porcelain-v2 + stage-entry cross-checked IndexSnapshot/post-tree codec；`git add -N intent.txt` 的 `XY=.A` 必须 fail closed且 stage/commit spawn均为0，即使 `ls-files` 显示stage0+nonzero OID；正常 staged empty file `XY=A.` + nonzero empty-blob OID必须通过。另覆盖rename old+new/delete old、literal `:(glob)**`/`:!safe`、non-UTF8、changed `.gitattributes`/filter reject；Prepare前/后/Commit前都cross-check；两次Cancel focus/Esc/Cmd+Enter/bare Enter、duplicate/close/switch、empty/NUL/32KiB+1/Unicode boundary、full-duplex stdin/drain、PGID descendants/maintenance no-detach、message/summary redaction与零rollback/push/network/model mutation。
+- **命令**：
+
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation trusted_git
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation commit_redaction
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_ui commit_panel
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega --bin vega commit_controller
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega_conversation --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega_ui --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy -p vega --all-targets -- -D warnings
+  git diff --check
+  ```
+
+- **commit**：`feat(A5-06): add canonical two-stage commit assistance`。
+- **停止**：stdin/index/tree契约矛盾即 `[BLOCKED] S6-T34`，不得降级 raw index hash/temp file。
+
+## T35 · S6 end-to-end acceptance + report（A5-02）
+
+- **场景**：main temp repo 验证 agent edit/rename/untracked→diff→artifact/fake Open→dirty branch reject→Prepare→Commit→post-tree；positive branch switch使用独立 clean fixture或在commit后执行，绝不在dirty中伪造通过。
+- **报告**：`docs/vega-s6-report.md` + README。只列 SDD/T30-T34 已 merged PR/squash hashes；T35 只列自身 branch commits并明确 PR/squash pending，最终 Phase 1 milestone report再补 T35 squash hash。不得自报尚不存在的 evidence。
+- **精确门禁**：
+
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --all -- --check
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy --workspace --all-targets --all-features -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test --workspace --all-features
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo build --workspace --all-targets --all-features
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo xtask bench
+  git diff --check
+  export PATH="$HOME/.cargo/bin:$PATH" && ! cargo tree -p vega_runtime | rg 'gpui(_platform)? v'
+  export PATH="$HOME/.cargo/bin:$PATH" && ! cargo tree -p vega_tools | rg 'gpui(_platform)? v'
+  export PATH="$HOME/.cargo/bin:$PATH" && ! cargo tree -p vega_conversation | rg 'gpui(_platform)? v'
+  rg -n '\.(unwrap|expect)\(' crates --glob '*.rs'
+  ! rg -n '#[0-9a-fA-F]{6}|rgba?\(' crates/vega_ui/src/diff_view.rs crates/vega_ui/src/artifact_card.rs crates/vega_ui/src/branch_selector.rs crates/vega_ui/src/commit_panel.rs
+  ! rg -n 'rusqlite|Connection::' crates/vega_ui crates/vega/src/main.rs
+  test "$(rg -n '^CREATE TABLE' crates/vega_store/migrations | wc -l | tr -d ' ')" = "6"
+  git diff --exit-code origin/master -- crates/vega_store/migrations Cargo.toml 'crates/*/Cargo.toml' Cargo.lock
+  rg -n 'enum (ConversationEvent|RuntimeEvent)' crates --glob '*.rs'
+  rg -n '(/private/tmp|--force|--amend|--allow-empty|--no-verify|\b(push|reset|restore|stash|clean|checkout)\b)' crates/vega_conversation/src crates/vega_ui/src crates/vega/src/main.rs
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation projection_redaction
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation commit_redaction
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega_conversation --test s6_acceptance
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p vega --bin vega s6_controller
+  ```
+
+  `unwrap/expect`、event enum 与 forbidden Git verb scans 必须逐条分类：只允许测试段/既有安全值，且 Git/artifact 不新增 event variant或生产危险 argv；不能用 grep 零输出冒充。真实 key/app/UI/硬件未测项逐项标 ⚠️。
+
 - **commit**：`feat(A5-02): close Sprint 6 diff review acceptance`。
-- **禁区/停止**：只用 temp repo/MockProvider/fake launcher，不碰真实用户 repo、不启动真实 app/LLM；环境失败按 `[BLOCKED] S6-T35`。
+- **停止**：只用 owned temp repo/MockProvider/fake launcher；环境失败按 `[BLOCKED] S6-T35`。
 
 ---
 
 ## S6 完成定义（DoD）
 
-- [ ] PRD v0.3.3 与 phase1-plan S6 已闭合；SDD 先于代码；T30-T35 逐卡 squash merge；master 四门禁全绿。
-- [ ] phase1-plan S6 原文链路完整：agent 改代码 → diff 审阅 → Open in 外部应用 → 生成 commit message → 两阶段用户确认提交。
-- [ ] snapshot/diff 含 staged/unstaged/untracked、统计、高亮、hunk、折叠、unified/side-by-side；异常路径/content fail closed。
-- [ ] raw GitPath 只在 private service；UI 只持 opaque id/escaped label；无新增 ConversationEvent/RuntimeEvent，raw path/正文/stderr 不进 event/Debug/log/DB。
-- [ ] 只有 strict successful write/edit + current identity 标 agent artifact；bash-created 为 workspace change；image 无安全 decode 证明则 metadata-only。
-- [ ] Open in fixed allowlist、user click、fence/fixed argv；Terminal 恒 project root；custom handoff 后置。
-- [ ] branch local refs + captured OID；dirty/conflict/active run/permission/plan/commit panel 都拒绝；`switch --no-guess` 任意 exit 后真实 refresh。
-- [ ] Prepare 始终含 existing staged + selected paths；`git add -A` 后展示 exact final index；第二次确认 commit entire index。模型不能 mutation；无 rollback/push/network。
-- [ ] commit message bounded UTF-8 stdin，固定 `--no-gpg-sign --file=- --cleanup=verbatim`；不创建 temp message file；全部 mutation hooks disabled。
-- [ ] Git env scrub、并发 bounded drain、timeout/cancel kill/reap；`std::process` only、零新依赖/DDL，仍六表，runtime/tools headless，UI 不直连 SQLite。
-- [ ] ui-spec §6 分别记录自动化/人工/硬件证据；任一未测不得写 ✅；报告/README 无隐瞒。
+- [ ] PRD v0.3.3 与 phase1-plan S6 已闭合；T30-T35 串行 squash；master 精确门禁全绿。
+- [ ] bounded ephemeral projections 是唯一 UI 正文通道；raw path/root/stderr private；无 Serialize/body Debug/event/DB/log/error leak。
+- [ ] 16 KiB chunk、10s/120s、process group TERM→300ms→KILL→wait、500ms drain、maintenance disabled、literal path/lazy-fetch env与全部 inclusive cap实测。
+- [ ] metadata snapshot lazy patch含 staged/unstaged/untracked/binary/rename/non-UTF8；unified/side-by-side、统计、折叠、hunk、高亮 mapping完整。
+- [ ] write/edit provenance绑定 immediate `(dev,ino,size,mtime_ns)+hash-object`；later变化降级；bash-only workspace change；image metadata-only。
+- [ ] Open in六套 exact argv；hardlink/symlink/gitdir/special fence；0/1 attempt语义、10s lifecycle、stale request drop；Terminal恒root。
+- [ ] branch local OID/clean+active+operation guards；target `.gitattributes`/filter preflight；exact no-overwrite-ignore/no-recurse switch；任意 exit真实 refresh。
+- [ ] IndexSnapshot由同一 HEAD/generation 的 porcelain v2 + `ls-files --stage -z` 交叉构造；`XY=.A` intent-to-add在Prepare前/后/Commit前均拒绝且零stage/commit spawn，不能靠nonzero OID放行；`XY=A.` staged empty file正例通过；仍拒绝stage>0/zero OID/corrupt/overflow。rename/delete mapping、post `ls-tree` compare与两次确认/first-wins完整。
+- [ ] commit 32 KiB UTF-8 stdin、provider summary 256 KiB、hooks/signing disabled；模型不能 mutation；无 temp/rollback/push/network；payload redacted。
+- [ ] fresh temp fixture/local identity/no global/current repo；零新依赖/DDL，仍六表，headless/UI边界不回退。
+- [ ] S6 report只列可存在证据；ui-spec §6自动/人工/硬件分开，未测不写 ✅。
 
 ## ui-spec §6 Sprint 末检查矩阵
 
-| 检查项 | S6 自动化最低证据 | 必须诚实记录的人工/硬件边界 |
+| 检查项 | 自动化最低证据 | 人工/硬件边界 |
 |---|---|---|
-| 颜色/字体 token | diff/artifact/branch/commit token assertions + hardcoded scan | 真实窗口字体观感需人工 |
-| Light/Dark | 两套 theme component state tests | 真实窗口切换无闪烁需人工 |
-| CJK 混排 | CJK/emoji/escaped label 不 panic、不截坏 | fallback/豆腐块需真实窗口 |
-| 键盘全流程 | focus tests 覆盖 diff→Open in→Prepare→Commit | 建会话到提交真实链路需人工 |
-| 960×600 | layout constraint tests（能力允许时） | 像素级破裂需真实截图 |
-| P1-P8 | `xtask bench` 原始值/unsupported | ProMotion/首帧/RSS等留 S8，不虚称 |
-| Codex/ZCode 并排 | 无自动化替代 | 必须人工截图，未做即 ⚠️ |
+| token | component token/opacity tests + exact scan | 真实字体观感人工 |
+| Light/Dark | 双 theme state tests | 真实切换无闪烁人工 |
+| CJK | CJK/emoji/escaped non-UTF8 不 panic | fallback/豆腐块真实窗口 |
+| keyboard | diff→Open→Prepare→Commit focus tests | 完整真实窗口链路人工 |
+| 960×600 | layout constraints | 像素截图人工 |
+| P1-P8 | `xtask bench` 原始值/unsupported | ProMotion/首帧/RSS留 S8 |
+| competitor | 无自动化替代 | Codex/ZCode截图未做即 ⚠️ |
 
-## 已知偏离与后置（原样进入 Sprint 报告）
+## 已知偏离、兼容限制与 residual（原样进入报告）
 
-1. A2-12 `@引用`、A2-21 `/命令`、A2-14 模型选择器后置；S6 只交付 A2-16。
-2. Composer `>8` 仍是 caret-follow 8-row viewport，不是独立 wheel/vertical inner-scroll，ui-spec §4.4 部分满足，留 S8。
-3. hooks 与 commit signing 固定关闭；依赖 hook/signing 的仓库需离开 Vega 在终端提交，不宣称兼容。
-4. Open in v1 只有固定 VS Code/Cursor/Zed/Terminal/default/Finder；custom/configurable handoff、PR assistance、Diff v2/advanced polish 留 Phase 2。
-5. image 若无法在 decode 前证明 bytes/dimensions/frame/allocation 上限，Phase 1 metadata-only + Open in，不引新依赖。
-6. fake launcher/MockProvider 只证明边界；真实 app、LLM/key/费用与 dogfood 属人类活动。
-7. A5 Checkpoint/回退、PR 创建、行内评论均 Phase 2+；真实 UI/硬件/P1-P8 字面复测逐项留报告/S8。
+1. filter driver repository：selected staging或target materialization命中 filter一律拒绝；same-user 在preflight后改 attributes/config是已知 TOCTOU residual，不宣称原子隔离。
+2. 所有 Git child收拢 inherited PGID descendants；主动 `setsid` 逃逸是 residual。
+3. hooks 与 signing固定关闭；依赖它们的repo需在终端提交。
+4. Phase 1 image metadata-only；Open in仅六个fixed targets。custom/configurable handoff、PR assistance、Diff v2留 Phase 2。
+5. Composer @引用、/命令、模型选择器与 >8独立inner-scroll后置。
+6. T35 report无法包含自身尚未产生的 PR/squash hash；只列 branch commit + pending，Phase 1最终报告补 hash。
+7. fake launcher/MockProvider不等于真实 app/LLM/key/费用；真实 UI/CJK/960×600/竞品截图/ProMotion/P1-P8逐项留人类/S8。
 
 ## 未决阻塞检查
 
-- 当前无未决 spec 阻塞；PRD v0.3.3 已按 2026-08-30 人类裁决与 phase1-plan S6 对齐。
-- T30 先实测 env scrub/NUL parser/concurrent drain/kill-reap/non-UTF8；T34 先实测 `git commit --no-gpg-sign --file=- --cleanup=verbatim` stdin 与两阶段 index postcondition。若系统行为矛盾，立即上报，不降级 shell/lossy path/temp file/宽权限。
+- 当前无未决 spec/API blocker；review确认本机支持 `check-attr --source`、stdin commit与所需GPUI API。
+- T30/T33/T34 若实际系统行为与本 frozen contract矛盾，立即 `[BLOCKED]`，不得降级 shell/lossy path/temp file/宽权限。
 
 ## 变更记录
 
-- v0.1 (2026-08-30) S6 开工 SDD：T30-T34、headless Git boundary、diff/artifact/Open in/commit/branch 与报告边界初稿。
-- v0.2 (2026-08-30) 人类批准方案 A：PRD v0.3.3 对齐 phase1-plan；raw path 私有化、Git env/process lifecycle、artifact provenance、fixed Open in、active branch guard、两阶段 selected staging + in-memory stdin commit 定稿；重排 T30-T35。
+- v0.1 (2026-08-30) S6 初始 SDD：T30-T34 与基础安全边界。
+- v0.2 (2026-08-30) 人类批准 A：PRD v0.3.3、raw path private、artifact provenance、two-stage stdin commit，重排 T30-T35。
+- v0.3 (2026-08-30) 最终 executable hardening：bounded projections、literal pathspec、PGID/maintenance、exact caps/Open argv、target filter preflight、porcelain-v2 + stage-entry cross-checked logical IndexSnapshot（显式拒绝 `XY=.A` intent-to-add、允许 `XY=A.` staged empty file）、controller ownership、copyable gates与报告 evidence timing定稿。
