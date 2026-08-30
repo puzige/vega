@@ -4069,11 +4069,7 @@ exec /usr/bin/git "$@"
                 repo.path(),
                 workspace,
                 script,
-                if plan == "wait" {
-                    Duration::from_millis(500)
-                } else {
-                    Duration::from_secs(3)
-                },
+                Duration::from_secs(3),
             )
             .expect("trusted add fault");
             let checklist = trusted
@@ -4114,11 +4110,7 @@ exec /usr/bin/git "$@"
                 repo.path(),
                 workspace,
                 script,
-                if plan == "wait" {
-                    Duration::from_millis(500)
-                } else {
-                    Duration::from_secs(3)
-                },
+                Duration::from_secs(3),
             )
             .expect("trusted commit fault");
             let checklist = trusted
