@@ -1701,7 +1701,7 @@ mod tests {
             project_id: "p1".to_string(),
             title: title.to_string(),
             mode: vega_conversation::types::ThreadMode::Execute,
-            permission_mode: "confirm".to_string(),
+            permission_mode: vega_conversation::types::PermissionMode::Confirm,
             model: String::new(),
             status: vega_conversation::types::ThreadStatus::Active,
             pinned: false,

@@ -13,7 +13,8 @@ use vega_store::projects as store_projects;
 use vega_store::threads as store;
 
 use crate::types::{
-    ConversationError, CurrentProject, Thread, ThreadMode, ThreadStatus, ThreadUpdate,
+    ConversationError, CurrentProject, PermissionMode, Thread, ThreadMode, ThreadStatus,
+    ThreadUpdate,
 };
 
 /// Generates a fresh thread id (ulid).
@@ -77,9 +78,11 @@ pub fn create_thread(
     }
     let permission_mode = if permission_mode.is_empty() {
         // DDL 默认（config 缺失模板同值：confirm）。
-        "confirm"
+        PermissionMode::Confirm
     } else {
-        permission_mode
+        PermissionMode::parse(permission_mode).ok_or_else(|| {
+            ConversationError::CorruptRow(format!("permission_mode: {permission_mode}"))
+        })?
     };
     let now = now_ms();
     let thread = Thread {
@@ -87,7 +90,7 @@ pub fn create_thread(
         project_id: project_id.to_string(),
         title: String::new(),
         mode: ThreadMode::Execute,
-        permission_mode: permission_mode.to_string(),
+        permission_mode,
         model: model.to_string(),
         status: ThreadStatus::Active,
         pinned: false,
@@ -102,7 +105,7 @@ pub fn create_thread(
             project_id: &thread.project_id,
             title: &thread.title,
             mode: thread.mode.as_str(),
-            permission_mode: &thread.permission_mode,
+            permission_mode: thread.permission_mode.as_str(),
             model: &thread.model,
             status: thread.status.as_str(),
             pinned: thread.pinned,
@@ -235,12 +238,15 @@ fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, ConversationError> 
         .ok_or_else(|| ConversationError::CorruptRow(format!("mode: {}", row.mode)))?;
     let status = ThreadStatus::parse(&row.status)
         .ok_or_else(|| ConversationError::CorruptRow(format!("status: {}", row.status)))?;
+    let permission_mode = PermissionMode::parse(&row.permission_mode).ok_or_else(|| {
+        ConversationError::CorruptRow(format!("permission_mode: {}", row.permission_mode))
+    })?;
     Ok(Thread {
         id: row.id.clone(),
         project_id: row.project_id.clone(),
         title: row.title.clone(),
         mode,
-        permission_mode: row.permission_mode.clone(),
+        permission_mode,
         model: row.model.clone(),
         status,
         pinned: row.pinned,
@@ -256,7 +262,7 @@ mod tests {
         create_thread, current_project, delete_thread, list_threads, new_thread_id, open_thread,
         rename_thread, set_thread_pinned, set_thread_status, update_thread,
     };
-    use crate::types::{ConversationError, ThreadMode, ThreadStatus, ThreadUpdate};
+    use crate::types::{ConversationError, PermissionMode, ThreadMode, ThreadStatus, ThreadUpdate};
     use vega_store::Store;
     use vega_store::config::AppConfig;
 
@@ -302,7 +308,7 @@ mod tests {
         assert_eq!(thread.project_id, "p1");
         assert_eq!(thread.title, "");
         assert_eq!(thread.mode, ThreadMode::Execute);
-        assert_eq!(thread.permission_mode, "auto");
+        assert_eq!(thread.permission_mode, PermissionMode::Auto);
         assert_eq!(thread.model, "deepseek-chat");
         assert_eq!(thread.status, ThreadStatus::Active);
         assert!(!thread.pinned);
@@ -316,7 +322,7 @@ mod tests {
         let (store, _dir) = open_store();
         insert_project(&store, "p1", "alpha");
         let thread = create_thread(&store, "p1", "m", "").unwrap();
-        assert_eq!(thread.permission_mode, "confirm");
+        assert_eq!(thread.permission_mode, PermissionMode::Confirm);
     }
 
     #[test]
@@ -338,7 +344,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(thread.model, "");
-        assert_eq!(thread.permission_mode, "confirm");
+        assert_eq!(thread.permission_mode, PermissionMode::Confirm);
+    }
+
+    #[test]
+    fn create_and_load_unknown_permission_modes_fail_closed() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let create_error = create_thread(&store, "p1", "m", "yolo").unwrap_err();
+        assert!(matches!(create_error, ConversationError::CorruptRow(_)));
+
+        let thread = create_thread(&store, "p1", "m", "confirm").unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE threads SET permission_mode = 'yolo' WHERE id = ?1",
+                [&thread.id],
+            )
+            .unwrap();
+        let load_error = list_threads(&store, "p1", None).unwrap_err();
+        assert!(matches!(load_error, ConversationError::CorruptRow(_)));
     }
 
     #[test]

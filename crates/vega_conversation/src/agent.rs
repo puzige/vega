@@ -2099,7 +2099,7 @@ mod tests {
             (
                 "stale-pending_approval",
                 "rejected",
-                "deny",
+                vega_store::recovery::RECOVERY_DENIAL_APPROVAL_JSON,
                 ToolCallStatus::Rejected,
             ),
             (

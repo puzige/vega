@@ -42,6 +42,7 @@ pub mod git_detect;
 pub mod keystore;
 pub mod messages;
 pub mod paths;
+pub mod permissions;
 pub mod projects;
 pub mod recovery;
 // T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。

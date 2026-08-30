@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Deserializer, Serialize};
+
 /// Error surfaced by the vega_conversation orchestration layer.
 ///
 /// Thread-management storage failures remain display strings, while the live
@@ -48,6 +50,409 @@ pub enum PermissionMode {
     Confirm,
     /// Auto-approve except hard-blocked dangerous commands.
     Auto,
+}
+
+impl PermissionMode {
+    /// Exact DDL/config value for this mode.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "readonly",
+            Self::Confirm => "confirm",
+            Self::Auto => "auto",
+        }
+    }
+
+    /// Parses the exact `readonly|confirm|auto` vocabulary.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "readonly" => Some(Self::ReadOnly),
+            "confirm" => Some(Self::Confirm),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+}
+
+/// Content-free permission prompt shared with UI/store consumers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionRequest {
+    /// Provider call id.
+    pub call_id: CallId,
+    /// Exact mutating tool name.
+    pub tool: String,
+    /// Full bash command or normalized project-relative path.
+    pub display_target: String,
+    /// Stable danger rule id for a danger prompt.
+    pub danger_rule_id: Option<String>,
+    /// Stable danger reason for a danger prompt.
+    pub danger_reason: Option<String>,
+}
+
+/// UI decision returned to the runtime permission hook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PermissionDecision {
+    /// Allow this call once.
+    Once,
+    /// Allow and remember the exact signature.
+    Always,
+    /// Reject, optionally with a note.
+    Deny { note: Option<String> },
+    /// Permission wait expired or disappeared.
+    Timeout,
+}
+
+/// Source of a persisted approval audit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalSource {
+    /// Explicit danger-card response.
+    Danger,
+    /// Read-only permission mode.
+    ReadOnly,
+    /// Ask/Plan capability gate.
+    RunMode,
+    /// Exact persisted rule.
+    Rule,
+    /// Auto permission mode.
+    Auto,
+    /// Ordinary permission-card response.
+    User,
+    /// Permission timeout.
+    Timeout,
+    /// Invalid write/edit input.
+    Validation,
+    /// Read-only built-in tool.
+    ReadonlyTool,
+    /// Startup recovery.
+    Recovery,
+    /// Exact S4 bare value read through the legacy branch.
+    Legacy,
+}
+
+impl ApprovalSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Danger => "danger",
+            Self::ReadOnly => "readonly",
+            Self::RunMode => "run_mode",
+            Self::Rule => "rule",
+            Self::Auto => "auto",
+            Self::User => "user",
+            Self::Timeout => "timeout",
+            Self::Validation => "validation",
+            Self::ReadonlyTool => "readonly_tool",
+            Self::Recovery => "recovery",
+            Self::Legacy => "legacy",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "danger" => Some(Self::Danger),
+            "readonly" => Some(Self::ReadOnly),
+            "run_mode" => Some(Self::RunMode),
+            "rule" => Some(Self::Rule),
+            "auto" => Some(Self::Auto),
+            "user" => Some(Self::User),
+            "timeout" => Some(Self::Timeout),
+            "validation" => Some(Self::Validation),
+            "readonly_tool" => Some(Self::ReadonlyTool),
+            "recovery" => Some(Self::Recovery),
+            "legacy" => Some(Self::Legacy),
+            _ => None,
+        }
+    }
+}
+
+/// Nested danger decision retained when later policy also rejects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DangerAudit {
+    /// Stable danger rule id.
+    pub rule_id: String,
+    /// Danger-card decision.
+    pub decision: Approval,
+    /// Optional denial note.
+    pub note: Option<String>,
+}
+
+/// Strict four-field approval audit persisted in `tool_calls.approval`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalAudit {
+    /// Final decision.
+    pub decision: Approval,
+    /// Optional denial note.
+    pub note: Option<String>,
+    /// Decision source.
+    pub source: ApprovalSource,
+    /// Nested danger decision, if a danger card was shown.
+    pub danger: Option<DangerAudit>,
+}
+
+/// Strict approval codec failure. Callers must fail closed.
+#[derive(Debug, thiserror::Error)]
+pub enum ApprovalCodecError {
+    /// JSON shape or scalar type is invalid.
+    #[error("invalid approval audit shape")]
+    InvalidShape,
+    /// Decision/source vocabulary is unknown.
+    #[error("invalid approval audit vocabulary")]
+    InvalidVocabulary,
+    /// Fields form an impossible permission audit.
+    #[error("invalid approval audit semantics")]
+    InvalidSemantics,
+    /// Legacy audits are read-only and cannot be emitted by S5.
+    #[error("legacy approval audit cannot be encoded")]
+    LegacyWrite,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovalWireRead {
+    decision: String,
+    note: RequiredNullableString,
+    source: String,
+    danger: RequiredNullableDanger,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DangerWireRead {
+    rule_id: String,
+    decision: String,
+    note: RequiredNullableString,
+}
+
+struct RequiredNullableString(Option<String>);
+
+impl<'de> Deserialize<'de> for RequiredNullableString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<String>::deserialize(deserializer).map(Self)
+    }
+}
+
+struct RequiredNullableDanger(Option<DangerWireRead>);
+
+impl<'de> Deserialize<'de> for RequiredNullableDanger {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<DangerWireRead>::deserialize(deserializer).map(Self)
+    }
+}
+
+#[derive(Serialize)]
+struct ApprovalWireWrite<'a> {
+    decision: &'a str,
+    note: &'a Option<String>,
+    source: &'a str,
+    danger: Option<DangerWireWrite<'a>>,
+}
+
+#[derive(Serialize)]
+struct DangerWireWrite<'a> {
+    rule_id: &'a str,
+    decision: &'a str,
+    note: &'a Option<String>,
+}
+
+impl ApprovalAudit {
+    /// Decodes exact S5 JSON or the exact S4 bare `once|always|deny` values.
+    pub fn from_json(raw: &str) -> Result<Self, ApprovalCodecError> {
+        if let Some(decision) = Approval::parse(raw) {
+            return Ok(Self {
+                decision,
+                note: None,
+                source: ApprovalSource::Legacy,
+                danger: None,
+            });
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(raw).map_err(|_| ApprovalCodecError::InvalidShape)?;
+        require_exact_keys(&value, &["decision", "note", "source", "danger"])?;
+        if let Some(danger) = value.get("danger")
+            && !danger.is_null()
+        {
+            require_exact_keys(danger, &["rule_id", "decision", "note"])?;
+        }
+        let wire: ApprovalWireRead =
+            serde_json::from_str(raw).map_err(|_| ApprovalCodecError::InvalidShape)?;
+        let note = wire.note.0;
+        let decision =
+            Approval::parse(&wire.decision).ok_or(ApprovalCodecError::InvalidVocabulary)?;
+        let source =
+            ApprovalSource::parse(&wire.source).ok_or(ApprovalCodecError::InvalidVocabulary)?;
+        if source == ApprovalSource::Legacy {
+            return Err(ApprovalCodecError::InvalidSemantics);
+        }
+        let danger = wire
+            .danger
+            .0
+            .map(|danger| {
+                Ok(DangerAudit {
+                    rule_id: danger.rule_id,
+                    decision: Approval::parse(&danger.decision)
+                        .ok_or(ApprovalCodecError::InvalidVocabulary)?,
+                    note: danger.note.0,
+                })
+            })
+            .transpose()?;
+        let audit = Self {
+            decision,
+            note,
+            source,
+            danger,
+        };
+        audit.validate(false)?;
+        Ok(audit)
+    }
+
+    /// Encodes the canonical strict four-field S5 JSON shape.
+    pub fn to_json(&self) -> Result<String, ApprovalCodecError> {
+        if self.source == ApprovalSource::Legacy {
+            return Err(ApprovalCodecError::LegacyWrite);
+        }
+        self.validate(true)?;
+        serde_json::to_string(&ApprovalWireWrite {
+            decision: self.decision.as_str(),
+            note: &self.note,
+            source: self.source.as_str(),
+            danger: self.danger.as_ref().map(|danger| DangerWireWrite {
+                rule_id: &danger.rule_id,
+                decision: danger.decision.as_str(),
+                note: &danger.note,
+            }),
+        })
+        .map_err(|_| ApprovalCodecError::InvalidShape)
+    }
+
+    fn validate(&self, encoding: bool) -> Result<(), ApprovalCodecError> {
+        if self.source == ApprovalSource::Legacy {
+            return if encoding {
+                Err(ApprovalCodecError::LegacyWrite)
+            } else if self.note.is_none() && self.danger.is_none() {
+                Ok(())
+            } else {
+                Err(ApprovalCodecError::InvalidSemantics)
+            };
+        }
+        if self.note.is_some() && self.decision != Approval::Deny {
+            return Err(ApprovalCodecError::InvalidSemantics);
+        }
+        if let Some(danger) = &self.danger
+            && (danger.rule_id.is_empty()
+                || (danger.note.is_some() && danger.decision != Approval::Deny))
+        {
+            return Err(ApprovalCodecError::InvalidSemantics);
+        }
+        let valid = match self.source {
+            ApprovalSource::Danger => self
+                .danger
+                .as_ref()
+                .is_some_and(|danger| self.decision == danger.decision && self.note == danger.note),
+            ApprovalSource::ReadOnly => {
+                self.decision == Approval::Deny
+                    && self.note.is_none()
+                    && self.danger.as_ref().is_none_or(|danger| {
+                        matches!(danger.decision, Approval::Once | Approval::Always)
+                            && danger.note.is_none()
+                    })
+            }
+            ApprovalSource::RunMode | ApprovalSource::Validation | ApprovalSource::Recovery => {
+                self.decision == Approval::Deny && self.note.is_none() && self.danger.is_none()
+            }
+            ApprovalSource::Rule => {
+                self.decision == Approval::Always && self.note.is_none() && self.danger.is_none()
+            }
+            ApprovalSource::Auto => {
+                self.decision == Approval::Once && self.note.is_none() && self.danger.is_none()
+            }
+            ApprovalSource::User => self.danger.is_none(),
+            ApprovalSource::Timeout => {
+                self.decision == Approval::Deny
+                    && self.note.is_none()
+                    && self.danger.as_ref().is_none_or(|danger| {
+                        danger.decision == Approval::Deny && danger.note.is_none()
+                    })
+            }
+            ApprovalSource::ReadonlyTool => {
+                self.decision == Approval::Once && self.note.is_none() && self.danger.is_none()
+            }
+            ApprovalSource::Legacy => false,
+        };
+        valid
+            .then_some(())
+            .ok_or(ApprovalCodecError::InvalidSemantics)
+    }
+}
+
+fn require_exact_keys(
+    value: &serde_json::Value,
+    expected: &[&str],
+) -> Result<(), ApprovalCodecError> {
+    let object = value.as_object().ok_or(ApprovalCodecError::InvalidShape)?;
+    if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
+        return Err(ApprovalCodecError::InvalidShape);
+    }
+    Ok(())
+}
+
+/// Maps a runtime prompt into the shared content-free UI projection.
+pub fn permission_request_from_runtime(
+    prompt: &vega_runtime::RuntimePermissionPrompt,
+) -> PermissionRequest {
+    PermissionRequest {
+        call_id: prompt.target.call_id.clone(),
+        tool: prompt.target.tool.as_str().to_string(),
+        display_target: prompt.target.display_target.clone(),
+        danger_rule_id: prompt.danger.as_ref().map(|danger| danger.rule_id.clone()),
+        danger_reason: prompt.danger.as_ref().map(|danger| danger.reason.clone()),
+    }
+}
+
+/// Maps runtime-local audit facts into the shared strict audit type.
+pub fn approval_audit_from_runtime(audit: &vega_runtime::RuntimeApprovalAudit) -> ApprovalAudit {
+    ApprovalAudit {
+        decision: approval_from_runtime(audit.decision),
+        note: audit.note.clone(),
+        source: match audit.source {
+            vega_runtime::RuntimeApprovalSource::Danger => ApprovalSource::Danger,
+            vega_runtime::RuntimeApprovalSource::ReadOnly => ApprovalSource::ReadOnly,
+            vega_runtime::RuntimeApprovalSource::RunMode => ApprovalSource::RunMode,
+            vega_runtime::RuntimeApprovalSource::Rule => ApprovalSource::Rule,
+            vega_runtime::RuntimeApprovalSource::Auto => ApprovalSource::Auto,
+            vega_runtime::RuntimeApprovalSource::User => ApprovalSource::User,
+            vega_runtime::RuntimeApprovalSource::Timeout => ApprovalSource::Timeout,
+            vega_runtime::RuntimeApprovalSource::ReadonlyTool => ApprovalSource::ReadonlyTool,
+        },
+        danger: audit.danger.as_ref().map(|danger| DangerAudit {
+            rule_id: danger.rule_id.clone(),
+            decision: approval_from_runtime(danger.decision),
+            note: danger.note.clone(),
+        }),
+    }
+}
+
+fn approval_from_runtime(decision: vega_runtime::RuntimeApprovalDecision) -> Approval {
+    match decision {
+        vega_runtime::RuntimeApprovalDecision::Once => Approval::Once,
+        vega_runtime::RuntimeApprovalDecision::Always => Approval::Always,
+        vega_runtime::RuntimeApprovalDecision::Deny => Approval::Deny,
+    }
+}
+
+/// Maps a shared UI decision into the runtime-local decision vocabulary.
+pub fn permission_decision_to_runtime(
+    decision: PermissionDecision,
+) -> vega_runtime::RuntimeUserDecision {
+    match decision {
+        PermissionDecision::Once => vega_runtime::RuntimeUserDecision::Once,
+        PermissionDecision::Always => vega_runtime::RuntimeUserDecision::Always,
+        PermissionDecision::Deny { note } => vega_runtime::RuntimeUserDecision::Deny { note },
+        PermissionDecision::Timeout => vega_runtime::RuntimeUserDecision::Timeout,
+    }
 }
 
 /// `RunMode` name used by the tech spec; the persisted implementation was
@@ -91,6 +496,27 @@ pub enum Approval {
     Always,
     /// Denied.
     Deny,
+}
+
+impl Approval {
+    /// Exact approval vocabulary used by the strict codec.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Once => "once",
+            Self::Always => "always",
+            Self::Deny => "deny",
+        }
+    }
+
+    /// Parses only exact bare approval values.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "once" => Some(Self::Once),
+            "always" => Some(Self::Always),
+            "deny" => Some(Self::Deny),
+            _ => None,
+        }
+    }
 }
 
 /// Persisted tool-call lifecycle (tech-spec §3).
@@ -371,10 +797,8 @@ impl ThreadStatus {
 
 /// A conversation thread, aligned field-by-field with the `threads` DDL.
 ///
-/// `permission_mode` and `model` stay plain `String`s on purpose: the
-/// shared `PermissionMode` enum is part of the S3/S4 type surface and this
-/// card must not define it ahead of spec (the string vocabulary
-/// `readonly|confirm|auto` matches `vega_store::config::Defaults`).
+/// `permission_mode` is typed and fail-closed on create/load. `model` stays a
+/// raw provider id string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thread {
     /// Primary key (ulid, generated by this crate on creation).
@@ -386,7 +810,7 @@ pub struct Thread {
     /// Run mode (`ask|plan|execute`).
     pub mode: ThreadMode,
     /// Permission mode (`readonly|confirm|auto`).
-    pub permission_mode: String,
+    pub permission_mode: PermissionMode,
     /// Model id; empty string until a provider is configured (S4).
     pub model: String,
     /// Lifecycle status (`active|archived`).
@@ -561,5 +985,248 @@ mod tests {
             Some(ConversationEvent::Error { error, .. })
                 if matches!(error.as_ref(), vega_runtime::VegaError::Cancelled)
         ));
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::{
+        Approval, ApprovalAudit, ApprovalCodecError, ApprovalSource, DangerAudit,
+        PermissionDecision, PermissionMode, approval_audit_from_runtime,
+        permission_decision_to_runtime, permission_request_from_runtime,
+    };
+    use vega_runtime::{
+        RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeDangerAudit,
+        RuntimeDangerFacts, RuntimeMutatingTool, RuntimePermissionPrompt, RuntimePermissionTarget,
+        RuntimeUserDecision,
+    };
+
+    fn audit(
+        decision: Approval,
+        source: ApprovalSource,
+        danger: Option<DangerAudit>,
+    ) -> ApprovalAudit {
+        ApprovalAudit {
+            decision,
+            note: None,
+            source,
+            danger,
+        }
+    }
+
+    #[test]
+    fn permission_mode_round_trips_and_rejects_unknown_values() {
+        for (raw, mode) in [
+            ("readonly", PermissionMode::ReadOnly),
+            ("confirm", PermissionMode::Confirm),
+            ("auto", PermissionMode::Auto),
+        ] {
+            assert_eq!(PermissionMode::parse(raw), Some(mode));
+            assert_eq!(mode.as_str(), raw);
+        }
+        for raw in ["", "Auto", "yolo", " confirm"] {
+            assert_eq!(PermissionMode::parse(raw), None);
+        }
+    }
+
+    #[test]
+    fn every_legal_structured_audit_round_trips() {
+        let danger_once = DangerAudit {
+            rule_id: "danger-rule".into(),
+            decision: Approval::Once,
+            note: None,
+        };
+        let danger_always = DangerAudit {
+            rule_id: "danger-rule".into(),
+            decision: Approval::Always,
+            note: None,
+        };
+        let danger_deny = DangerAudit {
+            rule_id: "danger-rule".into(),
+            decision: Approval::Deny,
+            note: None,
+        };
+        let cases = [
+            audit(
+                Approval::Once,
+                ApprovalSource::Danger,
+                Some(danger_once.clone()),
+            ),
+            audit(
+                Approval::Always,
+                ApprovalSource::Danger,
+                Some(danger_always.clone()),
+            ),
+            audit(
+                Approval::Deny,
+                ApprovalSource::Danger,
+                Some(danger_deny.clone()),
+            ),
+            audit(Approval::Deny, ApprovalSource::ReadOnly, None),
+            audit(
+                Approval::Deny,
+                ApprovalSource::ReadOnly,
+                Some(danger_always),
+            ),
+            audit(Approval::Deny, ApprovalSource::RunMode, None),
+            audit(Approval::Always, ApprovalSource::Rule, None),
+            audit(Approval::Once, ApprovalSource::Auto, None),
+            audit(Approval::Once, ApprovalSource::User, None),
+            audit(Approval::Always, ApprovalSource::User, None),
+            ApprovalAudit {
+                decision: Approval::Deny,
+                note: Some("not now".into()),
+                source: ApprovalSource::User,
+                danger: None,
+            },
+            audit(Approval::Deny, ApprovalSource::Timeout, None),
+            audit(Approval::Deny, ApprovalSource::Timeout, Some(danger_deny)),
+            audit(Approval::Deny, ApprovalSource::Validation, None),
+            audit(Approval::Once, ApprovalSource::ReadonlyTool, None),
+            audit(Approval::Deny, ApprovalSource::Recovery, None),
+        ];
+        for expected in cases {
+            let json = expected.to_json().unwrap();
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(value.as_object().map(|object| object.len()), Some(4));
+            if let Some(danger) = value.get("danger").and_then(|value| value.as_object()) {
+                assert_eq!(danger.len(), 3);
+            }
+            assert_eq!(ApprovalAudit::from_json(&json).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn recovery_encoding_is_the_canonical_exact_value() {
+        let json = audit(Approval::Deny, ApprovalSource::Recovery, None)
+            .to_json()
+            .unwrap();
+        assert_eq!(json, vega_store::recovery::RECOVERY_DENIAL_APPROVAL_JSON);
+    }
+
+    #[test]
+    fn exact_field_sets_and_scalar_types_fail_closed() {
+        for raw in [
+            r#"{"decision":"once","note":null,"source":"user"}"#,
+            r#"{"decision":"once","note":null,"source":"user","danger":null,"extra":1}"#,
+            r#"{"decision":"once","decision":"deny","note":null,"source":"user","danger":null}"#,
+            r#"{"decision":"once","note":[],"source":"user","danger":null}"#,
+            r#"{"decision":"once","note":null,"source":"danger","danger":{"rule_id":"d","decision":"once"}}"#,
+            r#"{"decision":"once","note":null,"source":"danger","danger":{"rule_id":"d","decision":"once","note":null,"extra":1}}"#,
+            r#"{"decision":"once","note":null,"source":"danger","danger":{"rule_id":"d","decision":"once","decision":"deny","note":null}}"#,
+            r#"{"decision":"once","note":null,"source":"danger","danger":{"rule_id":"d","decision":"once","note":[]}}"#,
+            r#""once""#,
+            "[]",
+            "1",
+            "true",
+            "{",
+        ] {
+            assert!(ApprovalAudit::from_json(raw).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn unknown_and_semantically_impossible_values_fail_closed() {
+        for raw in [
+            r#"{"decision":"later","note":null,"source":"user","danger":null}"#,
+            r#"{"decision":"once","note":null,"source":"unknown","danger":null}"#,
+            r#"{"decision":"once","note":null,"source":"legacy","danger":null}"#,
+            r#"{"decision":"once","note":null,"source":"danger","danger":null}"#,
+            r#"{"decision":"once","note":null,"source":"rule","danger":null}"#,
+            r#"{"decision":"always","note":null,"source":"auto","danger":null}"#,
+            r#"{"decision":"once","note":"not valid","source":"user","danger":null}"#,
+            r#"{"decision":"deny","note":null,"source":"readonly_tool","danger":null}"#,
+            r#"{"decision":"once","note":null,"source":"danger","danger":{"rule_id":"","decision":"once","note":null}}"#,
+            r#"{"decision":"once","note":null,"source":"danger","danger":{"rule_id":"d","decision":"deny","note":null}}"#,
+            r#"{"decision":"deny","note":null,"source":"readonly","danger":{"rule_id":"d","decision":"deny","note":null}}"#,
+        ] {
+            assert!(ApprovalAudit::from_json(raw).is_err(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn legacy_bare_values_are_read_only_and_exact() {
+        for (raw, decision) in [
+            ("once", Approval::Once),
+            ("always", Approval::Always),
+            ("deny", Approval::Deny),
+        ] {
+            let decoded = ApprovalAudit::from_json(raw).unwrap();
+            assert_eq!(decoded.decision, decision);
+            assert_eq!(decoded.source, ApprovalSource::Legacy);
+            assert!(matches!(
+                decoded.to_json(),
+                Err(ApprovalCodecError::LegacyWrite)
+            ));
+        }
+        for raw in [" once", "once ", "Once", "DENY", "\nonce"] {
+            assert!(ApprovalAudit::from_json(raw).is_err(), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn runtime_prompt_and_audit_mapping_are_field_exact_and_content_free() {
+        let prompt = RuntimePermissionPrompt {
+            target: RuntimePermissionTarget {
+                call_id: "call-1".into(),
+                tool: RuntimeMutatingTool::Write,
+                exact_pattern: "src/lib.rs".into(),
+                display_target: "src/lib.rs".into(),
+            },
+            danger: Some(RuntimeDangerFacts {
+                rule_id: "rule-1".into(),
+                reason: "reason".into(),
+            }),
+        };
+        let request = permission_request_from_runtime(&prompt);
+        assert_eq!(request.call_id, "call-1");
+        assert_eq!(request.tool, "write");
+        assert_eq!(request.display_target, "src/lib.rs");
+        assert_eq!(request.danger_rule_id.as_deref(), Some("rule-1"));
+        assert_eq!(request.danger_reason.as_deref(), Some("reason"));
+        assert!(!request.display_target.contains("content"));
+
+        let runtime = RuntimeApprovalAudit {
+            decision: RuntimeApprovalDecision::Deny,
+            note: None,
+            source: RuntimeApprovalSource::ReadOnly,
+            danger: Some(RuntimeDangerAudit {
+                rule_id: "rule-1".into(),
+                decision: RuntimeApprovalDecision::Always,
+                note: None,
+            }),
+        };
+        let shared = approval_audit_from_runtime(&runtime);
+        assert_eq!(shared.decision, Approval::Deny);
+        assert_eq!(shared.source, ApprovalSource::ReadOnly);
+        assert_eq!(
+            shared.danger.as_ref().map(|danger| danger.decision),
+            Some(Approval::Always)
+        );
+        assert!(shared.to_json().is_ok());
+    }
+
+    #[test]
+    fn shared_ui_decisions_map_one_way_to_runtime() {
+        assert_eq!(
+            permission_decision_to_runtime(PermissionDecision::Once),
+            RuntimeUserDecision::Once
+        );
+        assert_eq!(
+            permission_decision_to_runtime(PermissionDecision::Always),
+            RuntimeUserDecision::Always
+        );
+        assert_eq!(
+            permission_decision_to_runtime(PermissionDecision::Deny {
+                note: Some("no".into())
+            }),
+            RuntimeUserDecision::Deny {
+                note: Some("no".into())
+            }
+        );
+        assert_eq!(
+            permission_decision_to_runtime(PermissionDecision::Timeout),
+            RuntimeUserDecision::Timeout
+        );
     }
 }
