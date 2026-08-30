@@ -7,5 +7,15 @@ edition.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 tracing.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "rt", "time"] }
+tokio-util.workspace = true
+vega_conversation.workspace = true
+vega_runtime.workspace = true
+vega_store.workspace = true
 vega_theme.workspace = true
+vega_tools.workspace = true
 vega_ui.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true

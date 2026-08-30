@@ -58,11 +58,11 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, MouseButton, MouseUpEvent, Render, Rgba, Window,
-    actions, div, px, uniform_list,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, FontWeight, MouseButton,
+    MouseUpEvent, Render, Rgba, Window, actions, div, px, uniform_list,
 };
 use vega_conversation::agent::PermissionQueue;
-use vega_conversation::types::{ConversationEvent, Thread};
+use vega_conversation::types::{ConversationEvent, PermissionMode, Plan, Thread, ThreadMode};
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
     RenderNode, StreamSnapshot, TableAlignment, TableBlock,
@@ -70,12 +70,16 @@ use vega_markdown::{
 use vega_theme::{ThemeColors, Typography, theme};
 
 use crate::permission_card::{PermissionCard, PermissionCardResolved};
+use crate::plan_card::{PlanCard, PlanReviewRequested};
 use crate::settings::SettingsOpen;
 use crate::sidebar::CONTENT_MIN_PADDING;
 use crate::text_input::TextInput;
 use crate::tool_card::ToolCard;
 
-actions!(vega_conversation_stream, [SendMessage]);
+actions!(
+    vega_conversation_stream,
+    [SendMessage, PreviousMessage, ActivateThreadSetting]
+);
 
 /// Uniform row height (logical px). A `uniform_list` requires one fixed item
 /// height for every row; 24px comfortably fits the 14px/1.6 message body line
@@ -93,7 +97,22 @@ const INJECT_RATE: usize = 500;
 
 /// Composer visible rows (T18 最小版固定 3 行；ui-spec §4.4 的 1~8 行自适应
 /// 高度后置，任务卡允许).
-const COMPOSER_ROWS: usize = 3;
+const COMPOSER_ROWS: usize = 1;
+
+/// Typed settings request emitted upward; persistence remains in conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadSettingsRequested {
+    pub thread_id: String,
+    pub mode: Option<ThreadMode>,
+    pub permission_mode: Option<PermissionMode>,
+}
+
+/// Composer submission routed to the application controller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerSubmitted {
+    pub thread_id: String,
+    pub content: String,
+}
 
 /// Monospace family for code rows (ui-spec §3 代码等宽档位；本机 macOS 以
 /// Menlo 承担，spike 探针同款).
@@ -875,6 +894,8 @@ pub(crate) enum StreamEntry {
     Tool { card: Entity<ToolCard> },
     /// Sole active permission request/response handoff card.
     Permission { card: Entity<PermissionCard> },
+    /// One durable Plan review card.
+    Plan { card: Entity<PlanCard> },
 }
 
 impl StreamEntry {
@@ -884,6 +905,7 @@ impl StreamEntry {
             StreamEntry::Assistant { model, .. } => model.row_count(),
             StreamEntry::Tool { card } => card.read(cx).row_count(),
             StreamEntry::Permission { card } => card.read(cx).row_count(),
+            StreamEntry::Plan { card } => card.read(cx).row_count(),
         }
     }
 }
@@ -956,6 +978,11 @@ pub(crate) fn build_entry_rows(
                     rows.extend(
                         (start..end)
                             .map(|row| PermissionCard::render_row(card.clone(), row, window, cx)),
+                    );
+                }
+                StreamEntry::Plan { card } => {
+                    rows.extend(
+                        (start..end).map(|row| PlanCard::render_row(card.clone(), row, window, cx)),
                     );
                 }
             }
@@ -1202,9 +1229,28 @@ pub struct ConversationStream {
     permission_queue: PermissionQueue,
     /// The sole visible prompt; the opaque call id is only a map association.
     active_permission: Option<Entity<PermissionCard>>,
+    /// Plan ids are opaque map keys; card content is a typed projection.
+    plan_cards: HashMap<String, Entity<PlanCard>>,
+    /// Exact active durable assistant id and its stream-entry index.
+    active_agent_message: Option<(String, usize)>,
+    /// Most recently finished assistant entry, retained until the typed Plan
+    /// projection can replace it in place.
+    last_finished_agent_message: Option<(String, usize)>,
+    /// Submitted drafts, scoped to this thread view.
+    composer_history: Vec<String>,
+    composer_submit_pending: bool,
+    history_cursor: Option<usize>,
+    history_draft: Option<String>,
+    approved_not_started: bool,
+    setting_focus: [FocusHandle; 6],
+    controller_error: Option<String>,
     /// Cancels the watch listener and drops its fail-closed guard with the view.
     _permission_listener_task: gpui::Task<()>,
 }
+
+impl EventEmitter<PlanReviewRequested> for ConversationStream {}
+impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
+impl EventEmitter<ComposerSubmitted> for ConversationStream {}
 
 struct InjectionState {
     /// Which assistant entry the replayer feeds.
@@ -1269,8 +1315,114 @@ impl ConversationStream {
             tool_cards: HashMap::new(),
             permission_queue,
             active_permission: None,
+            plan_cards: HashMap::new(),
+            active_agent_message: None,
+            last_finished_agent_message: None,
+            composer_history: Vec::new(),
+            composer_submit_pending: false,
+            history_cursor: None,
+            history_draft: None,
+            approved_not_started: false,
+            setting_focus: [
+                cx.focus_handle().tab_index(10).tab_stop(true),
+                cx.focus_handle().tab_index(11).tab_stop(true),
+                cx.focus_handle().tab_index(12).tab_stop(true),
+                cx.focus_handle().tab_index(13).tab_stop(true),
+                cx.focus_handle().tab_index(14).tab_stop(true),
+                cx.focus_handle().tab_index(15).tab_stop(true),
+            ],
+            controller_error: None,
             _permission_listener_task: permission_listener_task,
         }
+    }
+
+    /// Applies the authoritative persisted thread settings after a request.
+    pub fn apply_thread(&mut self, thread: Thread, cx: &mut Context<Self>) {
+        if thread.id == self.thread.id && thread.project_id == self.thread.project_id {
+            self.thread = thread;
+            self.controller_error = None;
+            cx.notify();
+        }
+    }
+
+    /// Seeds thread-scoped Composer history from the typed conversation
+    /// projection. This is called once when a stream entity is constructed.
+    pub fn apply_composer_history(
+        &mut self,
+        thread_id: &str,
+        history: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if thread_id != self.thread.id || self.composer_submit_pending {
+            return;
+        }
+        self.composer_history = history;
+        self.history_cursor = None;
+        self.history_draft = None;
+        cx.notify();
+    }
+
+    /// Displays a bounded controller failure without changing authoritative
+    /// selected state.
+    pub fn apply_controller_error(&mut self, cx: &mut Context<Self>) {
+        self.controller_error = Some("操作未保存，请重试".into());
+        cx.notify();
+    }
+
+    /// Displays a bounded provider/runner failure after durable preparation.
+    pub fn apply_agent_error(&mut self, cx: &mut Context<Self>) {
+        self.controller_error = Some("执行未完成，可安全重试".into());
+        cx.notify();
+    }
+
+    /// Shows a restart-safe, non-executing projection for a durable approved
+    /// instruction. Merely opening a thread must never read Keychain or start
+    /// a provider request.
+    pub fn apply_approved_not_started(&mut self, cx: &mut Context<Self>) {
+        self.approved_not_started = true;
+        self.controller_error = Some("已批准计划尚未执行；恢复入口待补充".into());
+        cx.notify();
+    }
+
+    /// Adds or refreshes a validated durable Plan without direct SQLite UI access.
+    pub fn apply_plan(&mut self, plan: Plan, cx: &mut Context<Self>) {
+        if plan.thread_id != self.thread.id {
+            return;
+        }
+        if let Some(card) = self.plan_cards.get(&plan.id) {
+            card.update(cx, |card, cx| card.apply_persisted(plan, cx));
+            return;
+        }
+        let id = plan.id.clone();
+        let card = cx.new(|cx| PlanCard::new(plan, cx));
+        cx.subscribe(&card, |this, _, event: &PlanReviewRequested, cx| {
+            cx.emit(event.clone());
+            this.rows_dirty = true;
+        })
+        .detach();
+        cx.observe(&card, |this, _, cx| {
+            this.rows_dirty = true;
+            cx.notify();
+        })
+        .detach();
+        let replace_index = self
+            .last_finished_agent_message
+            .as_ref()
+            .filter(|(message_id, _)| message_id == &id)
+            .map(|(_, entry_index)| *entry_index);
+        if let Some(entry_index) = replace_index {
+            self.last_finished_agent_message = None;
+            if let Some(entry) = self.entries.get_mut(entry_index) {
+                *entry = StreamEntry::Plan { card: card.clone() };
+            } else {
+                self.entries.push(StreamEntry::Plan { card: card.clone() });
+            }
+        } else {
+            self.entries.push(StreamEntry::Plan { card: card.clone() });
+        }
+        self.plan_cards.insert(id, card);
+        self.rows_dirty = true;
+        cx.notify();
     }
 
     /// Hook passed to the conversation runner for this visible stream.
@@ -1360,6 +1512,37 @@ impl ConversationStream {
     /// SQLite and never consumes runtime-local events.
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
         match event {
+            ConversationEvent::MessageStarted { message_id, .. } => {
+                if self.active_agent_message.is_some() {
+                    self.apply_controller_error(cx);
+                    return;
+                }
+                self.last_finished_agent_message = None;
+                let entry_index = self.entries.len();
+                self.entries.push(StreamEntry::Assistant {
+                    stream: Box::new(MarkdownStream::new()),
+                    model: StreamModel::default(),
+                });
+                self.active_agent_message = Some((message_id, entry_index));
+                self.rows_dirty = true;
+                cx.notify();
+            }
+            ConversationEvent::TextDelta { message_id, delta } => {
+                let Some((active_id, entry_index)) = self.active_agent_message.as_ref() else {
+                    return;
+                };
+                if active_id != &message_id {
+                    return;
+                }
+                if let Some(StreamEntry::Assistant { stream, .. }) =
+                    self.entries.get_mut(*entry_index)
+                {
+                    stream.append(&delta);
+                    self.rows_dirty = true;
+                    cx.notify();
+                }
+            }
+            ConversationEvent::ThinkingDelta { .. } | ConversationEvent::UsageUpdated { .. } => {}
             ConversationEvent::ToolCallProposed { call } => {
                 if let Some(existing) = self.tool_cards.get(&call.id) {
                     existing.update(cx, |card, cx| {
@@ -1415,14 +1598,34 @@ impl ConversationStream {
                     self.push_tool_card(call_id, card, cx);
                 }
             }
-            ConversationEvent::MessageStarted { .. }
-            | ConversationEvent::TextDelta { .. }
-            | ConversationEvent::ThinkingDelta { .. }
-            | ConversationEvent::UsageUpdated { .. } => {}
-            ConversationEvent::MessageFinished { .. }
-            | ConversationEvent::Error { .. }
-            | ConversationEvent::Interrupted { .. } => self.timeout_permission(cx),
+            ConversationEvent::MessageFinished { message_id, .. }
+            | ConversationEvent::Interrupted { message_id } => {
+                self.finish_agent_message(&message_id, cx);
+            }
+            ConversationEvent::Error { message_id, .. } => {
+                if let Some(message_id) = message_id {
+                    self.finish_agent_message(&message_id, cx);
+                } else {
+                    self.timeout_permission(cx);
+                }
+            }
         }
+    }
+
+    fn finish_agent_message(&mut self, message_id: &str, cx: &mut Context<Self>) {
+        let Some((active_id, entry_index)) = self.active_agent_message.as_ref() else {
+            return;
+        };
+        if active_id != message_id {
+            return;
+        }
+        if let Some(StreamEntry::Assistant { stream, .. }) = self.entries.get_mut(*entry_index) {
+            stream.finish();
+        }
+        self.last_finished_agent_message = self.active_agent_message.take();
+        self.timeout_permission(cx);
+        self.rows_dirty = true;
+        cx.notify();
     }
 
     fn push_corrupt_tool(&mut self, call_id: String, cx: &mut Context<Self>) {
@@ -1510,28 +1713,55 @@ impl ConversationStream {
         .detach();
     }
 
-    /// Submits the composer draft as a local user echo (本地回显，不接 LLM).
-    /// Shared by the [发送] button and the Cmd+Enter binding (T18 卡).
+    /// Requests a durable turn. Draft/history/user echo remain untouched until
+    /// the controller observes durable `MessageStarted` for this exact run.
     fn submit_message(&mut self, cx: &mut Context<Self>) {
-        let text = self.input.update(cx, |input, cx| {
-            let text = input.text().to_string();
-            if text.is_empty() {
-                None
-            } else {
-                input.clear(cx);
-                Some(text)
-            }
-        });
-        let Some(text) = text else {
+        if self.composer_submit_pending || self.approved_not_started {
             return;
-        };
+        }
+        let text = self.input.read(cx).text().to_string();
+        if text.is_empty() {
+            return;
+        }
+        self.composer_submit_pending = true;
+        cx.emit(ComposerSubmitted {
+            thread_id: self.thread.id.clone(),
+            content: text,
+        });
+        cx.notify();
+    }
+
+    /// Commits the local echo only after conversation persistence emitted the
+    /// matching durable assistant start. Edits made while waiting are kept as
+    /// the next draft rather than being cleared accidentally.
+    pub fn accept_composer_submission(&mut self, content: &str, cx: &mut Context<Self>) {
+        if !self.composer_submit_pending {
+            return;
+        }
+        self.composer_submit_pending = false;
+        if self.composer_history.last().map(String::as_str) != Some(content) {
+            self.composer_history.push(content.to_string());
+        }
+        self.history_cursor = None;
+        self.history_draft = None;
+        if self.input.read(cx).text() == content {
+            self.input.update(cx, TextInput::clear);
+        }
         let block_id = self.user_block_seq;
         self.user_block_seq += 1;
         self.entries.push(StreamEntry::User {
-            lines: user_message_lines(block_id, &text),
+            lines: user_message_lines(block_id, content),
         });
         self.rows_dirty = true;
         cx.notify();
+    }
+
+    /// Re-arms submit after preparation failed before any durable message.
+    pub fn reject_composer_submission(&mut self, cx: &mut Context<Self>) {
+        if self.composer_submit_pending {
+            self.composer_submit_pending = false;
+            cx.notify();
+        }
     }
 
     /// Cmd+Enter in the Composer context ([`SendMessage`] binding).
@@ -1542,6 +1772,119 @@ impl ConversationStream {
     /// [发送] button click — same submit path as Cmd+Enter.
     fn on_send_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.submit_message(cx);
+    }
+
+    /// Recalls older submitted drafts only from the first logical line; Up
+    /// inside a multi-line draft remains a caret/navigation concern.
+    fn on_previous_message(&mut self, _: &PreviousMessage, _: &mut Window, cx: &mut Context<Self>) {
+        if self.composer_history.is_empty()
+            || (self.history_cursor.is_none() && !self.input.read(cx).cursor_allows_history())
+        {
+            return;
+        }
+        let current = self.input.read(cx).text().to_string();
+        if let Some(index) = self.history_cursor
+            && self.composer_history.get(index) != Some(&current)
+        {
+            self.history_cursor = None;
+            self.history_draft = Some(current.clone());
+        }
+        let index = match self.history_cursor {
+            Some(index) => index.saturating_sub(1),
+            None => {
+                if self.history_draft.is_none() {
+                    self.history_draft = Some(current);
+                }
+                self.composer_history.len() - 1
+            }
+        };
+        self.history_cursor = Some(index);
+        let recalled = self.composer_history[index].clone();
+        self.input
+            .update(cx, |input, cx| input.set_text(&recalled, cx));
+    }
+
+    fn request_mode(&mut self, mode: ThreadMode, cx: &mut Context<Self>) {
+        if mode != self.thread.mode {
+            cx.emit(ThreadSettingsRequested {
+                thread_id: self.thread.id.clone(),
+                mode: Some(mode),
+                permission_mode: None,
+            });
+        }
+    }
+
+    fn select_ask(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.request_mode(ThreadMode::Ask, cx);
+    }
+
+    fn activate_ask(&mut self, _: &ActivateThreadSetting, _: &mut Window, cx: &mut Context<Self>) {
+        self.request_mode(ThreadMode::Ask, cx);
+    }
+
+    fn select_plan(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.request_mode(ThreadMode::Plan, cx);
+    }
+
+    fn activate_plan(&mut self, _: &ActivateThreadSetting, _: &mut Window, cx: &mut Context<Self>) {
+        self.request_mode(ThreadMode::Plan, cx);
+    }
+
+    fn select_execute(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.request_mode(ThreadMode::Execute, cx);
+    }
+
+    fn activate_execute(
+        &mut self,
+        _: &ActivateThreadSetting,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_mode(ThreadMode::Execute, cx);
+    }
+
+    fn request_permission_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
+        if mode != self.thread.permission_mode {
+            cx.emit(ThreadSettingsRequested {
+                thread_id: self.thread.id.clone(),
+                mode: None,
+                permission_mode: Some(mode),
+            });
+        }
+    }
+
+    fn select_readonly(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.request_permission_mode(PermissionMode::ReadOnly, cx);
+    }
+
+    fn activate_readonly(
+        &mut self,
+        _: &ActivateThreadSetting,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_permission_mode(PermissionMode::ReadOnly, cx);
+    }
+
+    fn select_confirm(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.request_permission_mode(PermissionMode::Confirm, cx);
+    }
+
+    fn activate_confirm(
+        &mut self,
+        _: &ActivateThreadSetting,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_permission_mode(PermissionMode::Confirm, cx);
+    }
+
+    fn select_auto(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.request_permission_mode(PermissionMode::Auto, cx);
+    }
+
+    fn activate_auto(&mut self, _: &ActivateThreadSetting, _: &mut Window, cx: &mut Context<Self>) {
+        self.request_permission_mode(PermissionMode::Auto, cx);
     }
 
     /// Scroll geometry snapshot: (distance to bottom, viewport height) in px.
@@ -1635,7 +1978,9 @@ impl ConversationStream {
     /// @引用/命令/模型选择器为 Composer 完全体范围，后置。
     fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let can_send = !self.input.read(cx).text().is_empty();
+        let can_send = !self.input.read(cx).text().is_empty()
+            && !self.composer_submit_pending
+            && !self.approved_not_started;
         div()
             .px(px(CONTENT_MIN_PADDING))
             .pt(px(8.))
@@ -1648,9 +1993,9 @@ impl ConversationStream {
                     // Cmd+Enter 的按键上下文（绑定见 vega_ui::init）。
                     .key_context("Composer")
                     .on_action(cx.listener(Self::on_send_action))
+                    .on_action(cx.listener(Self::on_previous_message))
                     .flex()
-                    .flex_row()
-                    .items_end()
+                    .flex_col()
                     .gap_2()
                     .bg(colors.bg_elevated)
                     .border_1()
@@ -1658,34 +2003,161 @@ impl ConversationStream {
                     .rounded_xl()
                     .p_2()
                     .overflow_hidden()
-                    .child(self.input.clone())
                     .child(
-                        // [发送]：与 Cmd+Enter 共用 submit_message（T18 卡）。
                         div()
-                            .flex_shrink_0()
-                            .px_3()
-                            .py_1()
-                            .rounded_md()
-                            .text_size(px(Typography::SIDEBAR))
-                            .when(can_send, |button| {
-                                button
-                                    // accent 主按钮（黑底白字/反色，ui-spec §2）。
-                                    .bg(colors.accent)
-                                    .text_color(colors.bg_base)
-                                    .cursor_pointer()
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::on_send_clicked),
-                                    )
-                            })
-                            .when(!can_send, |button| {
-                                button.bg(colors.bg_hover).text_color(colors.text_tertiary)
-                            })
-                            .child("发送"),
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(self.render_mode_controls(cx))
+                            .child(self.render_permission_controls(cx)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_end()
+                            .gap_2()
+                            .child(self.input.clone())
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .text_size(px(Typography::SIDEBAR))
+                                    .when(can_send, |button| {
+                                        button
+                                            .bg(colors.accent)
+                                            .text_color(colors.bg_base)
+                                            .cursor_pointer()
+                                            .on_mouse_up(
+                                                MouseButton::Left,
+                                                cx.listener(Self::on_send_clicked),
+                                            )
+                                    })
+                                    .when(!can_send, |button| {
+                                        button.bg(colors.bg_hover).text_color(colors.text_tertiary)
+                                    })
+                                    .child("发送"),
+                            ),
                     ),
+            )
+            .children(self.controller_error.clone().map(|error| {
+                div()
+                    .mt_1()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.danger)
+                    .child(error)
+            }))
+            .into_any_element()
+    }
+
+    fn render_mode_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        div()
+            .flex()
+            .flex_row()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border_subtle)
+            .child(
+                segment(
+                    "Ask",
+                    self.thread.mode == ThreadMode::Ask,
+                    colors,
+                    self.setting_focus[0].clone(),
+                )
+                .key_context("ThreadSettings")
+                .on_action(cx.listener(Self::activate_ask))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_ask)),
+            )
+            .child(
+                segment(
+                    "Plan",
+                    self.thread.mode == ThreadMode::Plan,
+                    colors,
+                    self.setting_focus[1].clone(),
+                )
+                .key_context("ThreadSettings")
+                .on_action(cx.listener(Self::activate_plan))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_plan)),
+            )
+            .child(
+                segment(
+                    "Execute",
+                    self.thread.mode == ThreadMode::Execute,
+                    colors,
+                    self.setting_focus[2].clone(),
+                )
+                .key_context("ThreadSettings")
+                .on_action(cx.listener(Self::activate_execute))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_execute)),
             )
             .into_any_element()
     }
+
+    fn render_permission_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        div()
+            .flex()
+            .flex_row()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border_subtle)
+            .child(
+                segment(
+                    "ReadOnly",
+                    self.thread.permission_mode == PermissionMode::ReadOnly,
+                    colors,
+                    self.setting_focus[3].clone(),
+                )
+                .key_context("ThreadSettings")
+                .on_action(cx.listener(Self::activate_readonly))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_readonly)),
+            )
+            .child(
+                segment(
+                    "Confirm",
+                    self.thread.permission_mode == PermissionMode::Confirm,
+                    colors,
+                    self.setting_focus[4].clone(),
+                )
+                .key_context("ThreadSettings")
+                .on_action(cx.listener(Self::activate_confirm))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_confirm)),
+            )
+            .child(
+                segment(
+                    "Auto",
+                    self.thread.permission_mode == PermissionMode::Auto,
+                    colors,
+                    self.setting_focus[5].clone(),
+                )
+                .key_context("ThreadSettings")
+                .on_action(cx.listener(Self::activate_auto))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_auto)),
+            )
+            .into_any_element()
+    }
+}
+
+fn segment(
+    label: &'static str,
+    selected: bool,
+    colors: ThemeColors,
+    focus: FocusHandle,
+) -> gpui::Div {
+    div()
+        .track_focus(&focus)
+        .px_2()
+        .py_1()
+        .text_size(px(Typography::SIDEBAR))
+        .cursor_pointer()
+        .when(selected, |item| {
+            item.bg(colors.bg_active).text_color(colors.text_primary)
+        })
+        .when(!selected, |item| item.text_color(colors.text_secondary))
+        .child(label)
 }
 
 impl Render for ConversationStream {
@@ -1780,14 +2252,15 @@ impl Render for ConversationStream {
 mod tests {
     use std::future::Future;
     use std::pin::Pin;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
-    use gpui::{TestAppContext, WindowHandle};
+    use gpui::{Focusable, TestAppContext, WindowHandle};
     use tokio_util::sync::CancellationToken;
     use vega_conversation::agent::PermissionHook;
     use vega_conversation::types::{
-        PermissionDecision, PermissionMode, PermissionRequest, ThreadMode, ThreadStatus, ToolCall,
-        ToolCallStatus, ToolResult,
+        PermissionDecision, PermissionMode, PermissionRequest, PlanStatus, ThreadMode,
+        ThreadStatus, ToolCall, ToolCallStatus, ToolResult,
     };
     use vega_markdown::split_deltas;
     use vega_markdown::{ListItem, TableCell};
@@ -1797,6 +2270,16 @@ mod tests {
     use anchor::{AnchorAction as Action, AnchorState as State};
 
     type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
+
+    struct StreamHarness {
+        stream: Entity<ConversationStream>,
+    }
+
+    impl Render for StreamHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.stream.clone()
+        }
+    }
 
     fn permission_thread() -> Thread {
         Thread {
@@ -1843,6 +2326,72 @@ mod tests {
         (window, queue)
     }
 
+    fn open_controller_stream(
+        cx: &mut TestAppContext,
+        thread_id: &str,
+    ) -> (
+        WindowHandle<StreamHarness>,
+        Entity<ConversationStream>,
+        Arc<Mutex<Vec<ThreadSettingsRequested>>>,
+    ) {
+        init_permission_test(cx);
+        let mut thread = permission_thread();
+        thread.id = thread_id.to_string();
+        let stream = cx.new(|cx| ConversationStream::new(thread, cx));
+        let root_stream = stream.clone();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, cx| {
+                cx.new(|cx| {
+                    cx.subscribe(
+                        &root_stream,
+                        move |_, _, event: &ThreadSettingsRequested, _| {
+                            if let Ok(mut events) = captured.lock() {
+                                events.push(event.clone());
+                            }
+                        },
+                    )
+                    .detach();
+                    StreamHarness {
+                        stream: root_stream,
+                    }
+                })
+            })
+            .expect("controller stream window")
+        });
+        cx.run_until_parked();
+        (window, stream, events)
+    }
+
+    fn focus_setting(
+        window: WindowHandle<StreamHarness>,
+        stream: &Entity<ConversationStream>,
+        index: usize,
+        cx: &mut TestAppContext,
+    ) {
+        window
+            .update(cx, |_, window, cx| {
+                let focus = stream.read(cx).setting_focus[index].clone();
+                window.focus(&focus, cx);
+            })
+            .expect("settings stream window");
+    }
+
+    fn focus_composer(
+        window: WindowHandle<StreamHarness>,
+        stream: &Entity<ConversationStream>,
+        cx: &mut TestAppContext,
+    ) {
+        window
+            .update(cx, |_, window, cx| {
+                let focus =
+                    stream.read_with(cx, |stream, cx| stream.input.read(cx).focus_handle(cx));
+                window.focus(&focus, cx);
+            })
+            .expect("composer stream window");
+    }
+
     fn bash_call(id: &str, command: &str) -> ToolCall {
         ToolCall {
             id: id.into(),
@@ -1871,6 +2420,277 @@ mod tests {
             CancellationToken::new(),
         );
         Box::pin(async move { future.await.unwrap_or(PermissionDecision::Timeout) })
+    }
+
+    #[gpui::test]
+    async fn settings_keyboard_emits_scoped_requests_without_optimistic_state(
+        cx: &mut TestAppContext,
+    ) {
+        let (window, stream, events) = open_controller_stream(cx, "settings-thread");
+        focus_setting(window, &stream, 1, cx);
+        cx.simulate_keystrokes(window.into(), "enter");
+        focus_setting(window, &stream, 5, cx);
+        cx.simulate_keystrokes(window.into(), "space");
+
+        let events = events.lock().expect("settings event capture");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].thread_id, "settings-thread");
+        assert_eq!(events[0].mode, Some(ThreadMode::Plan));
+        assert_eq!(events[0].permission_mode, None);
+        assert_eq!(events[1].thread_id, "settings-thread");
+        assert_eq!(events[1].mode, None);
+        assert_eq!(events[1].permission_mode, Some(PermissionMode::Auto));
+        drop(events);
+
+        let selected = stream.read_with(cx, |stream, _| {
+            (stream.thread.mode, stream.thread.permission_mode)
+        });
+        assert_eq!(selected, (ThreadMode::Execute, PermissionMode::Confirm));
+        stream.update(cx, ConversationStream::apply_controller_error);
+        let selected = stream.read_with(cx, |stream, _| {
+            (stream.thread.mode, stream.thread.permission_mode)
+        });
+        assert_eq!(selected, (ThreadMode::Execute, PermissionMode::Confirm));
+
+        let mut persisted = permission_thread();
+        persisted.id = "settings-thread".into();
+        persisted.mode = ThreadMode::Plan;
+        persisted.permission_mode = PermissionMode::Auto;
+        stream.update(cx, |stream, cx| stream.apply_thread(persisted, cx));
+        let selected = stream.read_with(cx, |stream, _| {
+            (stream.thread.mode, stream.thread.permission_mode)
+        });
+        assert_eq!(selected, (ThreadMode::Plan, PermissionMode::Auto));
+    }
+
+    #[gpui::test]
+    async fn multiline_history_continues_and_is_thread_scoped(cx: &mut TestAppContext) {
+        let (first_window, first, _) = open_controller_stream(cx, "history-a");
+        let (_second_window, second, _) = open_controller_stream(cx, "history-b");
+        first.update(cx, |stream, cx| {
+            stream.composer_history = vec!["older\nfirst".into(), "newer\nfirst".into()];
+            stream
+                .input
+                .update(cx, |input, cx| input.set_text("draft", cx));
+        });
+        second.update(cx, |stream, cx| {
+            stream.composer_history = vec!["only\nsecond".into()];
+            stream
+                .input
+                .update(cx, |input, cx| input.set_text("second draft", cx));
+        });
+        focus_composer(first_window, &first, cx);
+        cx.simulate_keystrokes(first_window.into(), "up");
+        assert_eq!(
+            first.read_with(cx, |stream, cx| stream.input.read(cx).text().to_string()),
+            "newer\nfirst"
+        );
+        cx.simulate_keystrokes(first_window.into(), "up");
+        assert_eq!(
+            first.read_with(cx, |stream, cx| stream.input.read(cx).text().to_string()),
+            "older\nfirst"
+        );
+        assert_eq!(
+            second.read_with(cx, |stream, cx| stream.input.read(cx).text().to_string()),
+            "second draft"
+        );
+    }
+
+    #[gpui::test]
+    async fn composer_echo_waits_for_durable_acceptance(cx: &mut TestAppContext) {
+        let (_window, stream, _) = open_controller_stream(cx, "durable-submit");
+        stream.update(cx, |stream, cx| {
+            stream
+                .input
+                .update(cx, |input, cx| input.set_text("keep this draft", cx));
+            stream.submit_message(cx);
+        });
+        let pending = stream.read_with(cx, |stream, cx| {
+            (
+                stream.composer_submit_pending,
+                stream.input.read(cx).text().to_string(),
+                stream.composer_history.len(),
+                stream.entries.len(),
+            )
+        });
+        assert_eq!(pending, (true, "keep this draft".into(), 0, 0));
+
+        stream.update(cx, ConversationStream::reject_composer_submission);
+        let rejected = stream.read_with(cx, |stream, cx| {
+            (
+                stream.composer_submit_pending,
+                stream.input.read(cx).text().to_string(),
+                stream.composer_history.len(),
+                stream.entries.len(),
+            )
+        });
+        assert_eq!(rejected, (false, "keep this draft".into(), 0, 0));
+
+        stream.update(cx, |stream, cx| {
+            stream.submit_message(cx);
+            stream.accept_composer_submission("keep this draft", cx);
+        });
+        let accepted = stream.read_with(cx, |stream, cx| {
+            (
+                stream.composer_submit_pending,
+                stream.input.read(cx).text().to_string(),
+                stream.composer_history.clone(),
+                stream.entries.len(),
+            )
+        });
+        assert_eq!(
+            accepted,
+            (false, String::new(), vec!["keep this draft".into()], 1)
+        );
+    }
+
+    #[gpui::test]
+    async fn approved_not_started_projection_preserves_and_blocks_new_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (_window, stream, _) = open_controller_stream(cx, "approved-recovery");
+        stream.update(cx, |stream, cx| {
+            stream
+                .input
+                .update(cx, |input, cx| input.set_text("do not lose", cx));
+            stream.apply_approved_not_started(cx);
+            stream.submit_message(cx);
+        });
+        let state = stream.read_with(cx, |stream, cx| {
+            (
+                stream.approved_not_started,
+                stream.composer_submit_pending,
+                stream.input.read(cx).text().to_string(),
+                stream.entries.len(),
+            )
+        });
+        assert_eq!(state, (true, false, "do not lose".into(), 0));
+    }
+
+    #[gpui::test]
+    async fn durable_assistant_events_require_exact_active_message(cx: &mut TestAppContext) {
+        let (_window, stream, _) = open_controller_stream(cx, "durable-events");
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "assistant".into(),
+                    seq: 2,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "foreign".into(),
+                    delta: "hidden".into(),
+                },
+                cx,
+            );
+        });
+        let foreign_ignored = stream.read_with(cx, |stream, _| {
+            let (_, index) = stream
+                .active_agent_message
+                .as_ref()
+                .expect("active message");
+            match &stream.entries[*index] {
+                StreamEntry::Assistant { stream, .. } => stream.snapshot().pending.is_none(),
+                _ => false,
+            }
+        });
+        assert!(foreign_ignored);
+
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "assistant".into(),
+                    delta: "visible".into(),
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::MessageFinished {
+                    message_id: "foreign".into(),
+                    stop_reason: vega_conversation::types::ConversationStopReason::End,
+                },
+                cx,
+            );
+        });
+        assert!(stream.read_with(cx, |stream, _| stream.active_agent_message.is_some()));
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::MessageFinished {
+                    message_id: "assistant".into(),
+                    stop_reason: vega_conversation::types::ConversationStopReason::End,
+                },
+                cx,
+            );
+        });
+        assert!(stream.read_with(cx, |stream, _| stream.active_agent_message.is_none()));
+    }
+
+    #[gpui::test]
+    async fn completed_plan_replaces_streaming_assistant_after_older_plan_refresh(
+        cx: &mut TestAppContext,
+    ) {
+        let (_window, stream, _) = open_controller_stream(cx, "plan-dedup");
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "plan-message".into(),
+                    seq: 2,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "plan-message".into(),
+                    delta: "1. inspect".into(),
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::MessageFinished {
+                    message_id: "plan-message".into(),
+                    stop_reason: vega_conversation::types::ConversationStopReason::End,
+                },
+                cx,
+            );
+            stream.apply_plan(
+                Plan {
+                    id: "older-plan".into(),
+                    thread_id: "plan-dedup".into(),
+                    content: "older".into(),
+                    status: PlanStatus::Abandoned,
+                    review_note: Some("superseded".into()),
+                    reviewed_at: Some(1),
+                },
+                cx,
+            );
+            stream.apply_plan(
+                Plan {
+                    id: "plan-message".into(),
+                    thread_id: "plan-dedup".into(),
+                    content: "1. inspect".into(),
+                    status: PlanStatus::Pending,
+                    review_note: None,
+                    reviewed_at: None,
+                },
+                cx,
+            );
+        });
+        let (plans, assistants, entries) = stream.read_with(cx, |stream, _| {
+            let plans = stream
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, StreamEntry::Plan { .. }))
+                .count();
+            let assistants = stream
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry, StreamEntry::Assistant { .. }))
+                .count();
+            (plans, assistants, stream.entries.len())
+        });
+        assert_eq!((plans, assistants, entries), (2, 0, 2));
     }
 
     fn has_active_permission(

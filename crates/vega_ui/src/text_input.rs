@@ -78,9 +78,10 @@ pub struct TextInput {
     /// Multi-line mode (S3-T18 Composer): Enter inserts `\n`, paste keeps
     /// line breaks, and the element paints `rows` stacked lines.
     multiline: bool,
-    /// Visible row count (1 for single-line inputs; the Composer uses a
-    /// fixed 3 — 自适应 1~8 行后置 per task card).
+    /// Visible row count, dynamically clamped to 1..=8 for the Composer.
     rows: usize,
+    /// First painted visual row when wrapped content exceeds eight rows.
+    first_visible_row: usize,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -103,6 +104,7 @@ impl TextInput {
             masked,
             multiline: false,
             rows: 1,
+            first_visible_row: 0,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -122,7 +124,7 @@ impl TextInput {
     ) -> Self {
         let mut input = Self::new(cx, placeholder, false);
         input.multiline = true;
-        input.rows = rows.max(1);
+        input.rows = rows.clamp(1, 8);
         input
     }
 
@@ -138,6 +140,8 @@ impl TextInput {
         self.selected_range = 0..0;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.rows = 1;
+        self.first_visible_row = 0;
         cx.notify();
     }
 
@@ -148,7 +152,57 @@ impl TextInput {
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
         self.marked_range = None;
+        self.update_logical_viewport();
         cx.notify();
+    }
+
+    /// Number of currently visible rows (always 1..=8).
+    pub fn visible_rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Whether Up should enter Composer history rather than move inside a
+    /// multi-line draft.
+    pub fn cursor_on_first_logical_line(&self) -> bool {
+        !self.content[..self.cursor_offset()].contains('\n')
+    }
+
+    /// Whether history recall may consume Up at the current visual caret.
+    pub fn cursor_allows_history(&self) -> bool {
+        if self.first_visible_row > 0 {
+            return false;
+        }
+        self.last_lines.first().map_or_else(
+            || self.cursor_on_first_logical_line(),
+            |line| self.cursor_offset() <= line.start + line.len,
+        )
+    }
+
+    fn update_logical_viewport(&mut self) {
+        if !self.multiline {
+            self.rows = 1;
+            self.first_visible_row = 0;
+            return;
+        }
+        let count = self.content.bytes().filter(|byte| *byte == b'\n').count() + 1;
+        // Before the first layout, logical rows are the best safe estimate.
+        // Afterwards the visual-wrap cache owns height until prepaint
+        // measures the edited glyphs and requests another layout frame.
+        if self.last_bounds.is_none() {
+            self.rows = count.clamp(1, 8);
+        }
+        let cursor_row = self.content[..self.cursor_offset()]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count();
+        if cursor_row < self.first_visible_row {
+            self.first_visible_row = cursor_row;
+        } else if cursor_row >= self.first_visible_row + 8 {
+            self.first_visible_row = cursor_row + 1 - 8;
+        }
+        if self.last_bounds.is_none() {
+            self.first_visible_row = self.first_visible_row.min(count.saturating_sub(self.rows));
+        }
     }
 
     /// Text as painted: the content itself, or one bullet per character.
@@ -556,6 +610,7 @@ impl EntityInputHandler for TextInput {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        self.update_logical_viewport();
         cx.notify();
     }
 
@@ -594,6 +649,8 @@ impl EntityInputHandler for TextInput {
             .map(|new_range| range.start + new_range.start..range.start + new_range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.selected_range = self.clamp_range(self.selected_range.clone());
+
+        self.update_logical_viewport();
 
         cx.notify();
     }
@@ -662,6 +719,8 @@ struct PrepaintState {
     line_height: Pixels,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
+    visible_rows: usize,
+    first_visible_row: usize,
 }
 
 impl IntoElement for TextElement {
@@ -735,62 +794,103 @@ impl Element for TextElement {
         let font_size = style.font_size.to_pixels(window.rem_size());
         let line_height = window.line_height();
 
-        // Per-line layout. Single-line keeps the historical mask-aware path;
-        // multi-line (unmasked by construction — masked fields are single
-        // -line only) lays out each `\n` segment independently.
+        // Per-visual-line layout. Multi-line content is shaped and split at
+        // the available pixel width, so Latin and CJK drafts both drive the
+        // 1..8 row viewport from actual glyph advances.
         let mut lines: Vec<LineLayout> = Vec::new();
         if input.multiline {
             let mut start = 0;
             for segment in display_text.split('\n') {
                 let len = segment.len();
-                let runs: Vec<TextRun> = match input.marked_range.as_ref() {
-                    // Runs must cover exactly this segment (not the whole
-                    // display text — shape_line slices the segment by lens).
-                    None => vec![TextRun { len, ..run.clone() }],
-                    Some(marked) => [
-                        TextRun {
-                            len: marked.start.saturating_sub(start).min(len),
-                            ..run.clone()
-                        },
-                        TextRun {
-                            len: marked.end.saturating_sub(start).min(len)
-                                - marked.start.saturating_sub(start).min(len),
-                            underline: Some(UnderlineStyle {
-                                color: Some(run.color),
-                                thickness: px(1.0),
-                                wavy: false,
-                            }),
-                            ..run.clone()
-                        },
-                        TextRun {
-                            len: len - marked.end.saturating_sub(start).min(len),
-                            ..run.clone()
-                        },
-                    ]
-                    .into_iter()
-                    .filter(|run| run.len > 0)
-                    .collect(),
-                };
-                // Empty segments (blank lines) shape with a zero-length run.
-                let runs = if runs.is_empty() {
-                    vec![TextRun {
-                        len: 0,
-                        ..run.clone()
-                    }]
-                } else {
-                    runs
-                };
-                let shaped = window.text_system().shape_line(
-                    SharedString::from(segment),
-                    font_size,
-                    &runs,
-                    None,
-                );
-                lines.push(LineLayout {
-                    start,
-                    len,
-                    line: shaped,
-                });
+                let mut local_start = 0;
+                loop {
+                    let remainder = &segment[local_start..];
+                    let global_start = start + local_start;
+                    let make_runs = |chunk_len: usize| -> Vec<TextRun> {
+                        let runs = match input.marked_range.as_ref() {
+                            None => vec![TextRun {
+                                len: chunk_len,
+                                ..run.clone()
+                            }],
+                            Some(marked) => {
+                                let marked_start =
+                                    marked.start.saturating_sub(global_start).min(chunk_len);
+                                let marked_end =
+                                    marked.end.saturating_sub(global_start).min(chunk_len);
+                                [
+                                    TextRun {
+                                        len: marked_start,
+                                        ..run.clone()
+                                    },
+                                    TextRun {
+                                        len: marked_end.saturating_sub(marked_start),
+                                        underline: Some(UnderlineStyle {
+                                            color: Some(run.color),
+                                            thickness: px(1.0),
+                                            wavy: false,
+                                        }),
+                                        ..run.clone()
+                                    },
+                                    TextRun {
+                                        len: chunk_len.saturating_sub(marked_end),
+                                        ..run.clone()
+                                    },
+                                ]
+                                .into_iter()
+                                .filter(|run| run.len > 0)
+                                .collect()
+                            }
+                        };
+                        if runs.is_empty() {
+                            vec![TextRun {
+                                len: 0,
+                                ..run.clone()
+                            }]
+                        } else {
+                            runs
+                        }
+                    };
+                    let initial_runs = make_runs(remainder.len());
+                    let initial = window.text_system().shape_line(
+                        SharedString::from(remainder),
+                        font_size,
+                        &initial_runs,
+                        None,
+                    );
+                    let cut = if initial.width() <= bounds.size.width || remainder.is_empty() {
+                        remainder.len()
+                    } else {
+                        let nearest = initial.closest_index_for_x(bounds.size.width);
+                        if nearest == 0 {
+                            remainder
+                                .char_indices()
+                                .nth(1)
+                                .map_or(remainder.len(), |(index, _)| index)
+                        } else {
+                            nearest.min(remainder.len())
+                        }
+                    };
+                    let shaped = if cut == remainder.len() {
+                        initial
+                    } else {
+                        let chunk = &remainder[..cut];
+                        window.text_system().shape_line(
+                            SharedString::from(chunk),
+                            font_size,
+                            &make_runs(chunk.len()),
+                            None,
+                        )
+                    };
+                    lines.push(LineLayout {
+                        start: global_start,
+                        len: cut,
+                        line: shaped,
+                    });
+                    local_start += cut;
+                    if local_start >= len {
+                        break;
+                    }
+                }
                 start += len + 1;
             }
         } else {
@@ -832,6 +932,25 @@ impl Element for TextElement {
                 line: shaped,
             });
         }
+
+        let (visible_rows, first_visible_row) = if input.multiline {
+            let total = lines.len().max(1);
+            let visible = total.clamp(1, 8);
+            let cursor_row = lines
+                .iter()
+                .rposition(|layout| cursor >= layout.start)
+                .unwrap_or_default();
+            let mut first = input.first_visible_row.min(total.saturating_sub(visible));
+            if cursor_row < first {
+                first = cursor_row;
+            } else if cursor_row >= first + visible {
+                first = cursor_row + 1 - visible;
+            }
+            lines = lines.into_iter().skip(first).take(visible).collect();
+            (visible, first)
+        } else {
+            (1, 0)
+        };
 
         // Selection: one quad per intersected line (multi-line selections
         // cover whole lines between the ends).
@@ -881,6 +1000,8 @@ impl Element for TextElement {
             line_height,
             cursor,
             selections,
+            visible_rows,
+            first_visible_row,
         }
     }
 
@@ -924,10 +1045,17 @@ impl Element for TextElement {
             window.paint_quad(cursor);
         }
 
-        self.input.update(cx, |input, _cx| {
+        self.input.update(cx, |input, cx| {
+            let layout_changed = input.rows != prepaint.visible_rows
+                || input.first_visible_row != prepaint.first_visible_row;
             input.last_lines = std::mem::take(&mut prepaint.lines);
             input.last_line_height = line_height;
             input.last_bounds = Some(bounds);
+            input.rows = prepaint.visible_rows;
+            input.first_visible_row = prepaint.first_visible_row;
+            if layout_changed {
+                cx.notify();
+            }
         });
     }
 }
@@ -979,5 +1107,72 @@ impl Render for TextInput {
             .line_height(relative(Typography::BODY_LINE_HEIGHT))
             .text_color(colors.text_primary)
             .child(TextElement { input: cx.entity() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Render, TestAppContext, WindowHandle};
+
+    struct Harness {
+        input: Entity<TextInput>,
+    }
+
+    impl Render for Harness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().w(px(120.)).child(self.input.clone())
+        }
+    }
+
+    fn open_input(cx: &mut TestAppContext) -> (WindowHandle<Harness>, Entity<TextInput>) {
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            crate::init(cx);
+        });
+        let input = cx.new(|cx| TextInput::new_multiline(cx, "draft", 1));
+        let root_input = input.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, cx| {
+                cx.new(|_| Harness { input: root_input })
+            })
+            .expect("text input test window")
+        });
+        cx.run_until_parked();
+        (window, input)
+    }
+
+    fn set_text(input: &Entity<TextInput>, text: &str, cx: &mut TestAppContext) {
+        input.update(cx, |input, cx| input.set_text(text, cx));
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn visual_wrap_grows_shrinks_and_caps_with_cursor_follow(cx: &mut TestAppContext) {
+        let (_window, input) = open_input(cx);
+
+        set_text(&input, &"latin".repeat(40), cx);
+        let latin_rows = input.read_with(cx, |input, _| input.visible_rows());
+        assert!((2..=8).contains(&latin_rows));
+
+        set_text(&input, "short", cx);
+        assert_eq!(input.read_with(cx, |input, _| input.visible_rows()), 1);
+
+        set_text(&input, &"中文".repeat(40), cx);
+        let cjk_rows = input.read_with(cx, |input, _| input.visible_rows());
+        assert!((2..=8).contains(&cjk_rows));
+
+        set_text(&input, &"wrapped".repeat(500), cx);
+        let (rows, first) = input.read_with(cx, |input, _| {
+            (input.visible_rows(), input.first_visible_row)
+        });
+        assert_eq!(rows, 8);
+        assert!(first > 0, "cursor-follow viewport must expose the tail");
+
+        set_text(&input, "head", cx);
+        let (rows, first) = input.read_with(cx, |input, _| {
+            (input.visible_rows(), input.first_visible_row)
+        });
+        assert_eq!((rows, first), (1, 0));
     }
 }

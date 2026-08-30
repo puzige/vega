@@ -3,18 +3,26 @@
 //! render_frame self-measurement probe (see
 //! [`vega_ui::conversation_stream::bench`]).
 
+use std::sync::mpsc;
+use std::time::Duration;
+
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Bounds, Entity, KeyBinding, TitlebarOptions, Window, WindowBounds,
     WindowOptions, actions, div, px, size,
 };
 use gpui_platform::application;
+use vega_conversation::types::{Plan, PlanReviewOutcome, Thread};
+use vega_store::Store;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
-use vega_ui::conversation_stream::{ConversationStream, bench as render_frame_bench};
+use vega_ui::conversation_stream::{
+    ComposerSubmitted, ConversationStream, ThreadSettingsRequested, bench as render_frame_bench,
+};
+use vega_ui::plan_card::PlanReviewRequested;
 use vega_ui::settings::{CloseSettings, OpenSettings, SettingsOpen, SettingsView};
 use vega_ui::sidebar::{
     AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, NewThread, OpenedThread,
-    PendingDeleteConfirm, Sidebar, SidebarCollapsed, ToggleSidebar, load_collapsed,
+    PendingDeleteConfirm, Sidebar, SidebarCollapsed, ToggleSidebar, VegaStore, load_collapsed,
     render_delete_confirm_overlay, toggle_persisted,
 };
 
@@ -27,6 +35,349 @@ const WINDOW_MIN_HEIGHT: f32 = 600.0;
 /// Quick-template placeholder labels for the empty state (ui-spec §4.6);
 /// intentionally inert until the template feature lands (A7-02).
 const EMPTY_STATE_TEMPLATES: [&str; 3] = ["快捷模板 1", "快捷模板 2", "快捷模板 3"];
+const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);
+const AGENT_EVENT_CAPACITY: usize = 256;
+const AGENT_EVENT_BATCH: usize = 128;
+const SYSTEM_PROMPT: &str =
+    "You are Vega, a careful coding agent working inside the selected project.";
+
+struct UnavailableProvider;
+
+impl vega_runtime::Provider for UnavailableProvider {
+    fn chat_stream(
+        &self,
+        _: vega_runtime::ChatRequest,
+        _: tokio_util::sync::CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<vega_runtime::EventStream, vega_runtime::VegaError>,
+                > + Send,
+        >,
+    > {
+        Box::pin(async {
+            Err(vega_runtime::VegaError::Provider {
+                status: None,
+                message: "provider unavailable".into(),
+                retryable: false,
+            })
+        })
+    }
+}
+
+enum PendingAgentRun {
+    UserMessage(String),
+    ApprovedPlan(String),
+}
+
+enum AgentUpdate {
+    Event(vega_conversation::types::ConversationEvent),
+    Finished(bool),
+}
+
+struct AgentBatch {
+    events: Vec<vega_conversation::types::ConversationEvent>,
+    finished: Option<bool>,
+}
+
+fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> AgentBatch {
+    let mut events = Vec::new();
+    let mut finished = None;
+    for _ in 0..AGENT_EVENT_BATCH {
+        match receiver.try_recv() {
+            Ok(AgentUpdate::Event(event)) => events.push(event),
+            Ok(AgentUpdate::Finished(success)) => {
+                finished = Some(success);
+                break;
+            }
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                finished = Some(false);
+                break;
+            }
+        }
+    }
+    AgentBatch { events, finished }
+}
+
+struct ActiveAgentRun {
+    generation: u64,
+    thread_id: String,
+    stream: Entity<ConversationStream>,
+    cancel: tokio_util::sync::CancellationToken,
+    pending_user_content: Option<String>,
+    pending_approved_instruction: Option<String>,
+}
+
+struct PendingPlanReview {
+    stream: Entity<ConversationStream>,
+    request: PlanReviewRequested,
+}
+
+#[derive(Default)]
+struct AppAgentController {
+    next_generation: u64,
+    active: Option<ActiveAgentRun>,
+    pending_review: Option<PendingPlanReview>,
+}
+
+impl AppAgentController {
+    fn request_active_cancel(&self) {
+        if let Some(active) = &self.active {
+            active.cancel.cancel();
+        }
+    }
+
+    fn queue_review(
+        &mut self,
+        stream: &Entity<ConversationStream>,
+        request: &PlanReviewRequested,
+    ) -> bool {
+        // The caller already proved `stream` and `request.thread_id` own the
+        // current cache. Any older active run may be cancelled first; the
+        // review is persisted only after that worker reaches Finished.
+        if self.active.is_none() || self.pending_review.is_some() {
+            return false;
+        }
+        self.pending_review = Some(PendingPlanReview {
+            stream: stream.clone(),
+            request: request.clone(),
+        });
+        self.request_active_cancel();
+        true
+    }
+
+    fn begin(
+        &mut self,
+        thread_id: String,
+        stream: Entity<ConversationStream>,
+        pending_user_content: Option<String>,
+        pending_approved_instruction: Option<String>,
+    ) -> (u64, tokio_util::sync::CancellationToken) {
+        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+        let generation = self.next_generation;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.active = Some(ActiveAgentRun {
+            generation,
+            thread_id,
+            stream,
+            cancel: cancel.clone(),
+            pending_user_content,
+            pending_approved_instruction,
+        });
+        (generation, cancel)
+    }
+
+    fn matches(
+        &self,
+        generation: u64,
+        thread_id: &str,
+        stream: &Entity<ConversationStream>,
+    ) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            active.generation == generation
+                && active.thread_id == thread_id
+                && active.stream == *stream
+        })
+    }
+
+    fn accept_durable_start(
+        &mut self,
+        generation: u64,
+        thread_id: &str,
+        stream: &Entity<ConversationStream>,
+    ) -> Option<String> {
+        if !self.matches(generation, thread_id, stream) {
+            return None;
+        }
+        let active = self.active.as_mut()?;
+        active.pending_approved_instruction = None;
+        active.pending_user_content.take()
+    }
+
+    fn finish(
+        &mut self,
+        generation: u64,
+        thread_id: &str,
+        stream: &Entity<ConversationStream>,
+    ) -> Option<ActiveAgentRun> {
+        if !self.matches(generation, thread_id, stream) {
+            return None;
+        }
+        self.active.take()
+    }
+}
+
+struct PlanReviewRefresh {
+    thread: Thread,
+    plans: Vec<Plan>,
+    approved_instruction_id: Option<String>,
+}
+
+struct ThreadStateRefresh {
+    thread: Thread,
+    plans: Vec<Plan>,
+    history: Vec<String>,
+    recoverable_approved_instruction: Option<String>,
+}
+
+/// Persists the first-wins review. Only the committed approval winner returns
+/// a durable instruction capability for the controller runner boundary.
+fn persist_review(
+    store: &Store,
+    request: &PlanReviewRequested,
+) -> Result<PlanReviewRefresh, String> {
+    let outcome = vega_conversation::plans::review_plan(
+        store,
+        &request.thread_id,
+        &request.plan_id,
+        request.action.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let approved_instruction_id = match outcome {
+        PlanReviewOutcome::Applied {
+            instruction_message_id: Some(instruction_message_id),
+        } => Some(instruction_message_id),
+        PlanReviewOutcome::Applied {
+            instruction_message_id: None,
+        }
+        | PlanReviewOutcome::Stale => None,
+    };
+    let thread = vega_conversation::threads::open_thread(store, &request.thread_id)
+        .map_err(|error| error.to_string())?;
+    let plans = vega_conversation::plans::list_plans(store, &request.thread_id)
+        .map_err(|error| error.to_string())?;
+    Ok(PlanReviewRefresh {
+        thread,
+        plans,
+        approved_instruction_id,
+    })
+}
+
+fn reload_thread_and_plans(store: &Store, thread_id: &str) -> Result<(Thread, Vec<Plan>), String> {
+    let thread = vega_conversation::threads::open_thread(store, thread_id)
+        .map_err(|error| error.to_string())?;
+    let plans = vega_conversation::plans::list_plans(store, thread_id)
+        .map_err(|error| error.to_string())?;
+    Ok((thread, plans))
+}
+
+fn reload_thread_state(store: &Store, thread_id: &str) -> Result<ThreadStateRefresh, String> {
+    let (thread, plans) = reload_thread_and_plans(store, thread_id)?;
+    let history = vega_conversation::threads::composer_history(store, thread_id)
+        .map_err(|error| error.to_string())?;
+    let recoverable = vega_conversation::plans::recoverable_approved_instruction(store, thread_id)
+        .map_err(|error| error.to_string())?;
+    Ok(ThreadStateRefresh {
+        thread,
+        plans,
+        history,
+        recoverable_approved_instruction: recoverable,
+    })
+}
+
+fn current_cache_matches(
+    opened_thread_id: Option<&str>,
+    cached_thread_id: Option<&str>,
+    finished_thread_id: &str,
+) -> bool {
+    opened_thread_id == Some(finished_thread_id) && cached_thread_id == Some(finished_thread_id)
+}
+
+fn unique_provider_for_model(
+    config: &vega_store::config::AppConfig,
+    model: &str,
+) -> Option<vega_store::config::ProviderConfig> {
+    let mut matches = config
+        .providers
+        .iter()
+        .filter(|provider| provider.models.iter().any(|candidate| candidate == model));
+    let provider = matches.next()?.clone();
+    if matches.next().is_some()
+        || provider.base_url.trim().is_empty()
+        || provider.key_ref.trim().is_empty()
+    {
+        return None;
+    }
+    Some(provider)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_agent_worker(
+    database_path: std::path::PathBuf,
+    project_path: std::path::PathBuf,
+    thread: Thread,
+    run: PendingAgentRun,
+    permission_queue: vega_conversation::agent::PermissionQueue,
+    cancel: tokio_util::sync::CancellationToken,
+    sender: mpsc::SyncSender<AgentUpdate>,
+) {
+    let success = (|| -> Result<(), ()> {
+        // Config and Keychain are touched only after an explicit user submit
+        // or committed Plan approval reaches this worker.
+        let tools = vega_tools::Tools::new(project_path).map_err(|_| ())?;
+        let store = Store::open(database_path).map_err(|_| ())?;
+        store.migrate().map_err(|_| ())?;
+        let provider: Box<dyn vega_runtime::Provider> = vega_store::config::load()
+            .ok()
+            .and_then(|config| unique_provider_for_model(&config, &thread.model))
+            .and_then(|provider| {
+                vega_store::keystore::get_key(&provider.key_ref)
+                    .ok()
+                    .filter(|key| !key.is_empty())
+                    .and_then(|key| vega_runtime::OpenAiProvider::new(provider.base_url, key).ok())
+            })
+            .map_or_else(
+                || Box::new(UnavailableProvider) as Box<dyn vega_runtime::Provider>,
+                |provider| Box::new(provider) as Box<dyn vega_runtime::Provider>,
+            );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| ())?;
+        let event_sender = sender.clone();
+        let event_sink = move |event: &vega_conversation::types::ConversationEvent| {
+            event_sender
+                .send(AgentUpdate::Event(event.clone()))
+                .map_err(|_| {
+                    vega_runtime::VegaError::Io(std::io::Error::other(
+                        "agent UI channel unavailable",
+                    ))
+                })
+        };
+        let result = match run {
+            PendingAgentRun::UserMessage(content) => runtime.block_on(
+                vega_conversation::agent::run_thread_task_with_permission_sink(
+                    &store,
+                    provider.as_ref(),
+                    &tools,
+                    &thread.id,
+                    &content,
+                    SYSTEM_PROMPT,
+                    cancel,
+                    &permission_queue,
+                    event_sink,
+                ),
+            ),
+            PendingAgentRun::ApprovedPlan(instruction_message_id) => runtime.block_on(
+                vega_conversation::agent::run_approved_plan_task_with_permission_sink(
+                    &store,
+                    provider.as_ref(),
+                    &tools,
+                    &thread.id,
+                    &instruction_message_id,
+                    SYSTEM_PROMPT,
+                    cancel,
+                    &permission_queue,
+                    event_sink,
+                ),
+            ),
+        };
+        result.map(|_| ()).map_err(|_| ())
+    })()
+    .is_ok();
+    let _ = sender.send(AgentUpdate::Finished(success));
+}
 
 /// Root view of the main window: the A1 layout shell — a sidebar (260px,
 /// collapsible) next to a content column (max 820px, centered) that hosts
@@ -43,6 +394,7 @@ struct VegaWindow {
     /// built lazily on first render of an opened thread; rebuilt when another
     /// thread is opened. The stream itself is memory-only (no persistence).
     stream_view: Option<(String, Entity<ConversationStream>)>,
+    agent_controller: AppAgentController,
 }
 
 impl VegaWindow {
@@ -51,7 +403,324 @@ impl VegaWindow {
             sidebar: cx.new(Sidebar::new),
             settings_view: None,
             stream_view: None,
+            agent_controller: AppAgentController::default(),
         }
+    }
+
+    fn owns_stream_request(
+        &self,
+        stream: &Entity<ConversationStream>,
+        thread_id: &str,
+        cx: &App,
+    ) -> bool {
+        let current_matches = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .is_some_and(|thread| thread.id == thread_id);
+        current_matches
+            && self
+                .stream_view
+                .as_ref()
+                .is_some_and(|(cached_id, cached)| cached_id == thread_id && cached == stream)
+    }
+
+    fn apply_refresh(
+        stream: &Entity<ConversationStream>,
+        thread: Thread,
+        plans: Vec<Plan>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.set_global(OpenedThread(Some(thread.clone())));
+        stream.update(cx, |stream, cx| {
+            stream.apply_thread(thread, cx);
+            for plan in plans {
+                stream.apply_plan(plan, cx);
+            }
+        });
+    }
+
+    fn apply_stream_state(
+        stream: &Entity<ConversationStream>,
+        thread: Thread,
+        plans: Vec<Plan>,
+        history: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let thread_id = thread.id.clone();
+        stream.update(cx, |stream, cx| {
+            stream.apply_thread(thread, cx);
+            for plan in plans {
+                stream.apply_plan(plan, cx);
+            }
+            stream.apply_composer_history(&thread_id, history, cx);
+        });
+    }
+
+    fn current_cached_stream_for_thread(
+        &self,
+        thread_id: &str,
+        cx: &App,
+    ) -> Option<Entity<ConversationStream>> {
+        let opened_id = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .map(|thread| thread.id.as_str());
+        let cached_id = self
+            .stream_view
+            .as_ref()
+            .map(|(cached_id, _)| cached_id.as_str());
+        if !current_cache_matches(opened_id, cached_id, thread_id) {
+            return None;
+        }
+        self.stream_view.as_ref().map(|(_, stream)| stream.clone())
+    }
+
+    fn cancel_active_agent(&mut self, cx: &mut Context<Self>) {
+        let pending_review = self.agent_controller.pending_review.take();
+        if let Some(active) = &self.agent_controller.active {
+            active.cancel.cancel();
+            active
+                .stream
+                .update(cx, |stream, cx| stream.timeout_permission(cx));
+        }
+        if let Some(pending) = pending_review
+            && self.owns_stream_request(&pending.stream, &pending.request.thread_id, cx)
+        {
+            let refresh = match &cx.global::<VegaStore>().0 {
+                Ok(store) => reload_thread_and_plans(store, &pending.request.thread_id),
+                Err(error) => Err(error.clone()),
+            };
+            if let Ok((thread, plans)) = refresh {
+                Self::apply_refresh(&pending.stream, thread, plans, cx);
+            } else {
+                pending
+                    .stream
+                    .update(cx, ConversationStream::apply_controller_error);
+            }
+        }
+    }
+
+    fn start_agent_run(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        thread_id: &str,
+        run: PendingAgentRun,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, thread_id, cx) {
+            return;
+        }
+        let pending_user_content = match &run {
+            PendingAgentRun::UserMessage(content) => Some(content.clone()),
+            PendingAgentRun::ApprovedPlan(_) => None,
+        };
+        let pending_approved_instruction = match &run {
+            PendingAgentRun::UserMessage(_) => None,
+            PendingAgentRun::ApprovedPlan(instruction_id) => Some(instruction_id.clone()),
+        };
+        if self.agent_controller.active.is_some() {
+            match run {
+                PendingAgentRun::UserMessage(_) => {
+                    stream.update(cx, ConversationStream::reject_composer_submission);
+                    stream.update(cx, ConversationStream::apply_agent_error);
+                }
+                PendingAgentRun::ApprovedPlan(_) => {
+                    stream.update(cx, ConversationStream::apply_agent_error);
+                }
+            }
+            return;
+        }
+        let prepared = match &cx.global::<VegaStore>().0 {
+            Ok(store) => (|| {
+                let database_path = store
+                    .database_path()
+                    .ok_or_else(|| "agent store is not file-backed".to_string())?
+                    .to_path_buf();
+                let thread = vega_conversation::threads::open_thread(store, thread_id)
+                    .map_err(|error| error.to_string())?;
+                let project = vega_store::projects::find(store.conn(), &thread.project_id)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "agent project is unavailable".to_string())?;
+                Ok((
+                    database_path,
+                    std::path::PathBuf::from(project.path),
+                    thread,
+                ))
+            })(),
+            Err(error) => Err(error.clone()),
+        };
+        let Ok((database_path, project_path, thread)) = prepared else {
+            if pending_user_content.is_some() {
+                stream.update(cx, ConversationStream::reject_composer_submission);
+            }
+            if pending_approved_instruction.is_some() {
+                stream.update(cx, ConversationStream::apply_approved_not_started);
+            } else {
+                stream.update(cx, ConversationStream::apply_agent_error);
+            }
+            return;
+        };
+
+        let permission_queue = stream.read(cx).permission_queue();
+        let (generation, cancel) = self.agent_controller.begin(
+            thread_id.to_string(),
+            stream.clone(),
+            pending_user_content,
+            pending_approved_instruction,
+        );
+        let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
+        let worker_sender = sender.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-agent".into())
+            .spawn(move || {
+                run_agent_worker(
+                    database_path,
+                    project_path,
+                    thread,
+                    run,
+                    permission_queue,
+                    cancel,
+                    worker_sender,
+                );
+            });
+        if worker.is_err() {
+            let failed_run = self.agent_controller.active.take();
+            if failed_run
+                .as_ref()
+                .is_some_and(|active| active.pending_user_content.is_some())
+            {
+                stream.update(cx, ConversationStream::reject_composer_submission);
+            }
+            stream.update(cx, |stream, cx| stream.timeout_permission(cx));
+            if failed_run.is_some_and(|active| active.pending_approved_instruction.is_some()) {
+                stream.update(cx, ConversationStream::apply_approved_not_started);
+            } else {
+                stream.update(cx, ConversationStream::apply_agent_error);
+            }
+            return;
+        }
+        drop(sender);
+
+        let thread_id = thread_id.to_string();
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AGENT_EVENT_POLL).await;
+                let AgentBatch { events, finished } = drain_agent_updates(&receiver);
+                let keep_running = this
+                    .update(cx, |this, cx| {
+                        if !this
+                            .agent_controller
+                            .matches(generation, &thread_id, &stream)
+                        {
+                            return false;
+                        }
+                        for event in events {
+                            if matches!(
+                                event,
+                                vega_conversation::types::ConversationEvent::MessageStarted { .. }
+                            ) && let Some(content) = this
+                                .agent_controller
+                                .accept_durable_start(generation, &thread_id, &stream)
+                            {
+                                stream.update(cx, |stream, cx| {
+                                    stream.accept_composer_submission(&content, cx)
+                                });
+                            }
+                            stream.update(cx, |stream, cx| stream.apply_event(event, cx));
+                        }
+                        let Some(success) = finished else {
+                            return true;
+                        };
+                        let Some(finished_run) = this
+                            .agent_controller
+                            .finish(generation, &thread_id, &stream)
+                        else {
+                            return false;
+                        };
+                        let ActiveAgentRun {
+                            pending_user_content: pending_user,
+                            pending_approved_instruction,
+                            ..
+                        } = finished_run;
+                        let approved_not_started = pending_approved_instruction.is_some();
+                        if pending_user.is_some() {
+                            stream.update(cx, ConversationStream::reject_composer_submission);
+                        }
+                        let pending_review = this.agent_controller.pending_review.take();
+                        let refresh = match &cx.global::<VegaStore>().0 {
+                            Ok(store) => reload_thread_state(store, &thread_id),
+                            Err(error) => Err(error.clone()),
+                        };
+                        let mut recovery_projected = approved_not_started;
+                        if let Ok(refresh) = refresh {
+                            let display_stream = if let Some(current_stream) =
+                                this.current_cached_stream_for_thread(&thread_id, cx)
+                            {
+                                cx.set_global(OpenedThread(Some(refresh.thread.clone())));
+                                Self::apply_stream_state(
+                                    &current_stream,
+                                    refresh.thread,
+                                    refresh.plans,
+                                    refresh.history,
+                                    cx,
+                                );
+                                current_stream
+                            } else {
+                                Self::apply_stream_state(
+                                    &stream,
+                                    refresh.thread,
+                                    refresh.plans,
+                                    refresh.history,
+                                    cx,
+                                );
+                                stream.clone()
+                            };
+                            recovery_projected |=
+                                refresh.recoverable_approved_instruction.is_some();
+                            if recovery_projected {
+                                display_stream
+                                    .update(cx, ConversationStream::apply_approved_not_started);
+                            }
+                        } else if approved_not_started {
+                            stream.update(cx, ConversationStream::apply_approved_not_started);
+                        } else {
+                            stream.update(cx, ConversationStream::apply_agent_error);
+                        }
+                        if !success && !recovery_projected {
+                            stream.update(cx, ConversationStream::apply_agent_error);
+                        }
+                        if let Some(pending) = pending_review {
+                            this.review_plan(pending.stream, &pending.request, cx);
+                        }
+                        false
+                    })
+                    .unwrap_or(false);
+                if !keep_running {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn submit_composer(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &ComposerSubmitted,
+        cx: &mut Context<Self>,
+    ) {
+        if request.content.is_empty() || !self.owns_stream_request(&stream, &request.thread_id, cx)
+        {
+            return;
+        }
+        self.start_agent_run(
+            stream,
+            &request.thread_id,
+            PendingAgentRun::UserMessage(request.content.clone()),
+            cx,
+        );
     }
 
     /// Whether the viewport is narrower than the auto-collapse threshold
@@ -66,6 +735,99 @@ impl VegaWindow {
     /// it (the sidebar [新建任务] button shares this handler).
     fn open_new_thread(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar.update(cx, Sidebar::create_thread);
+    }
+
+    fn persist_thread_settings(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &ThreadSettingsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        let thread_id = request.thread_id.clone();
+        let result = match &cx.global::<VegaStore>().0 {
+            Ok(store) => (|| {
+                if let Some(mode) = request.mode {
+                    vega_conversation::threads::set_thread_mode(store, &thread_id, mode)?;
+                }
+                if let Some(permission_mode) = request.permission_mode {
+                    vega_conversation::threads::set_thread_permission_mode(
+                        store,
+                        &thread_id,
+                        permission_mode,
+                    )?;
+                }
+                vega_conversation::threads::open_thread(store, &thread_id)
+            })()
+            .map_err(|error| error.to_string()),
+            Err(error) => Err(error.clone()),
+        };
+        match result {
+            Ok(thread) => {
+                cx.set_global(OpenedThread(Some(thread.clone())));
+                stream.update(cx, |stream, cx| stream.apply_thread(thread, cx));
+            }
+            Err(_) => stream.update(cx, ConversationStream::apply_controller_error),
+        }
+    }
+
+    fn review_plan(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &PlanReviewRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        if self.agent_controller.active.is_some() {
+            if self.agent_controller.queue_review(&stream, request) {
+                stream.update(cx, |stream, cx| stream.timeout_permission(cx));
+            } else {
+                stream.update(cx, ConversationStream::apply_controller_error);
+            }
+            return;
+        }
+        let result = match &cx.global::<VegaStore>().0 {
+            Ok(store) => persist_review(store, request),
+            Err(error) => Err(error.clone()),
+        };
+        match result {
+            Ok(refresh) => {
+                let approved_instruction_id = refresh.approved_instruction_id.clone();
+                Self::apply_refresh(&stream, refresh.thread, refresh.plans, cx);
+                if let Some(instruction_message_id) = approved_instruction_id {
+                    self.start_agent_run(
+                        stream,
+                        &request.thread_id,
+                        PendingAgentRun::ApprovedPlan(instruction_message_id),
+                        cx,
+                    );
+                }
+            }
+            Err(_) => {
+                // A SQLite error may be commit-ambiguous. Reload authoritative
+                // state before deciding whether the card may be re-armed.
+                let reload = match &cx.global::<VegaStore>().0 {
+                    Ok(store) => reload_thread_and_plans(store, &request.thread_id),
+                    Err(error) => Err(error.clone()),
+                };
+                if let Ok((thread, plans)) = reload {
+                    Self::apply_refresh(&stream, thread, plans, cx);
+                }
+                stream.update(cx, ConversationStream::apply_controller_error);
+            }
+        }
+    }
+}
+
+impl Drop for VegaWindow {
+    fn drop(&mut self) {
+        if let Some(active) = self.agent_controller.active.take() {
+            active.cancel.cancel();
+        }
     }
 }
 
@@ -84,6 +846,7 @@ impl Render for VegaWindow {
         // T08 view switching): the sidebar stays visible unless collapsed.
         // 路由收敛（T12 + T17）：内容区 = 设置 or 会话流 or §4.6 空态。
         let content: AnyElement = if cx.global::<SettingsOpen>().0 {
+            self.cancel_active_agent(cx);
             // 设置视图：缓存 Entity，避免主题刷新等重渲染时重建导致表单输入丢失。
             let settings = self
                 .settings_view
@@ -104,9 +867,53 @@ impl Render for VegaWindow {
                         Some(view) => view,
                         None => {
                             if let Some((_, previous)) = self.stream_view.take() {
+                                self.cancel_active_agent(cx);
                                 previous.update(cx, |stream, cx| stream.timeout_permission(cx));
                             }
                             let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+                            cx.subscribe(&view, |this, stream, request, cx| {
+                                this.persist_thread_settings(stream.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&view, |this, stream, request, cx| {
+                                this.review_plan(stream.clone(), request, cx);
+                            })
+                            .detach();
+                            cx.subscribe(&view, |this, stream, request, cx| {
+                                this.submit_composer(stream.clone(), request, cx);
+                            })
+                            .detach();
+                            let initial = match &cx.global::<VegaStore>().0 {
+                                Ok(store) => (|| {
+                                    let plans =
+                                        vega_conversation::plans::list_plans(store, &thread.id)?;
+                                    let history = vega_conversation::threads::composer_history(
+                                        store, &thread.id,
+                                    )?;
+                                    let recovery =
+                                        vega_conversation::plans::recoverable_approved_instruction(
+                                            store, &thread.id,
+                                        )?;
+                                    Ok((plans, history, recovery))
+                                })(),
+                                Err(error) => {
+                                    Err(vega_conversation::types::ConversationError::Store(
+                                        error.clone(),
+                                    ))
+                                }
+                            };
+                            view.update(cx, |stream, cx| match initial {
+                                Ok((plans, history, recovery)) => {
+                                    for plan in plans {
+                                        stream.apply_plan(plan, cx);
+                                    }
+                                    stream.apply_composer_history(&thread.id, history, cx);
+                                    if recovery.is_some() {
+                                        stream.apply_approved_not_started(cx);
+                                    }
+                                }
+                                Err(_) => stream.apply_controller_error(cx),
+                            });
                             self.stream_view = Some((thread.id.clone(), view.clone()));
                             view
                         }
@@ -115,6 +922,7 @@ impl Render for VegaWindow {
                 }
                 None => {
                     if let Some((_, previous)) = self.stream_view.take() {
+                        self.cancel_active_agent(cx);
                         previous.update(cx, |stream, cx| stream.timeout_permission(cx));
                     }
                     render_empty_state(colors)
@@ -308,4 +1116,378 @@ fn main() {
         })
         .detach();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vega_conversation::types::{PermissionMode, PlanReviewAction, PlanStatus, ThreadMode};
+    use vega_store::messages::{MessageRow, complete_plan, insert};
+
+    fn pending_plan() -> (Store, String) {
+        let store = Store::open(":memory:").expect("memory store");
+        store.migrate().expect("migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            "/tmp/vega-controller-plan-test",
+            "controller",
+            None,
+        )
+        .expect("project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("thread");
+        vega_conversation::threads::set_thread_mode(&store, &thread.id, ThreadMode::Plan)
+            .expect("plan mode");
+        insert(
+            store.conn(),
+            &MessageRow {
+                id: "plan".into(),
+                thread_id: thread.id.clone(),
+                seq: 1,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "streaming".into(),
+                created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .expect("streaming plan");
+        complete_plan(
+            store.conn(),
+            &thread.id,
+            "plan",
+            "1. inspect\n2. execute",
+            2,
+        )
+        .expect("complete plan");
+        (store, thread.id)
+    }
+
+    #[test]
+    fn approval_commit_returns_one_durable_runner_capability() {
+        let (store, thread_id) = pending_plan();
+        let request = PlanReviewRequested {
+            thread_id: thread_id.clone(),
+            plan_id: "plan".into(),
+            action: PlanReviewAction::Approve,
+        };
+        let refresh = persist_review(&store, &request).expect("approval refresh");
+        assert_eq!(refresh.thread.mode, ThreadMode::Execute);
+        assert_eq!(refresh.plans[0].status, PlanStatus::Approved);
+        let instruction_id = refresh
+            .approved_instruction_id
+            .expect("approval runner capability");
+        let instruction = vega_store::messages::find(store.conn(), &instruction_id)
+            .expect("instruction query")
+            .expect("durable instruction");
+        assert_eq!(instruction.thread_id, thread_id);
+        assert_eq!(instruction.role, "user");
+        assert_eq!(instruction.kind, "text");
+        assert_eq!(instruction.status, "done");
+
+        let replay = persist_review(&store, &request).expect("stale review reload");
+        assert_eq!(replay.approved_instruction_id, None);
+    }
+
+    #[test]
+    fn change_and_abandon_never_schedule_execute_turn() {
+        for action in [
+            PlanReviewAction::RequestChanges { note: None },
+            PlanReviewAction::Abandon { note: None },
+        ] {
+            let (store, thread_id) = pending_plan();
+            let request = PlanReviewRequested {
+                thread_id,
+                plan_id: "plan".into(),
+                action,
+            };
+            let refresh = persist_review(&store, &request).expect("non-approval refresh");
+            assert_eq!(refresh.approved_instruction_id, None);
+            assert_eq!(refresh.thread.mode, ThreadMode::Plan);
+        }
+    }
+
+    #[test]
+    fn provider_model_resolution_is_exact_and_unique() {
+        let provider = |name: &str, models: &[&str]| vega_store::config::ProviderConfig {
+            name: name.into(),
+            base_url: "https://provider.invalid/v1".into(),
+            models: models.iter().map(|model| (*model).to_string()).collect(),
+            key_ref: name.into(),
+        };
+        let mut config = vega_store::config::AppConfig {
+            providers: vec![provider("one", &["model"]), provider("two", &["other"])],
+            ..Default::default()
+        };
+        assert_eq!(
+            unique_provider_for_model(&config, "model").map(|provider| provider.name),
+            Some("one".into())
+        );
+        assert!(unique_provider_for_model(&config, "missing").is_none());
+        config.providers.push(provider("duplicate", &["model"]));
+        assert!(unique_provider_for_model(&config, "model").is_none());
+    }
+
+    #[test]
+    fn bounded_agent_channel_preserves_burst_order_and_terminal() {
+        let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
+        let producer = std::thread::spawn(move || {
+            for index in 0..(AGENT_EVENT_CAPACITY + AGENT_EVENT_BATCH + 17) {
+                sender
+                    .send(AgentUpdate::Event(
+                        vega_conversation::types::ConversationEvent::TextDelta {
+                            message_id: "message".into(),
+                            delta: index.to_string(),
+                        },
+                    ))
+                    .expect("bounded event send");
+            }
+            sender
+                .send(AgentUpdate::Finished(true))
+                .expect("terminal send");
+        });
+        let mut seen = Vec::new();
+        let finished = loop {
+            let batch = drain_agent_updates(&receiver);
+            assert!(batch.events.len() <= AGENT_EVENT_BATCH);
+            for event in batch.events {
+                if let vega_conversation::types::ConversationEvent::TextDelta { delta, .. } = event
+                {
+                    seen.push(delta.parse::<usize>().expect("ordered index"));
+                }
+            }
+            if let Some(finished) = batch.finished {
+                break finished;
+            }
+            std::thread::yield_now();
+        };
+        producer.join().expect("bounded producer");
+        assert!(finished);
+        assert_eq!(seen, (0..seen.len()).collect::<Vec<_>>());
+        assert_eq!(seen.len(), AGENT_EVENT_CAPACITY + AGENT_EVENT_BATCH + 17);
+        assert!(AGENT_EVENT_POLL < Duration::from_millis(16));
+    }
+
+    #[test]
+    fn same_batch_applies_events_before_terminal() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        sender
+            .send(AgentUpdate::Event(
+                vega_conversation::types::ConversationEvent::MessageStarted {
+                    message_id: "durable".into(),
+                    seq: 2,
+                },
+            ))
+            .expect("event send");
+        sender
+            .send(AgentUpdate::Finished(false))
+            .expect("terminal send");
+        let batch = drain_agent_updates(&receiver);
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.finished, Some(false));
+        assert!(matches!(
+            &batch.events[0],
+            vega_conversation::types::ConversationEvent::MessageStarted { message_id, .. }
+                if message_id == "durable"
+        ));
+    }
+
+    #[test]
+    fn finished_refresh_routes_only_to_matching_current_thread_cache() {
+        assert!(current_cache_matches(Some("a"), Some("a"), "a"));
+        assert!(
+            !current_cache_matches(Some("b"), Some("a"), "a"),
+            "A→B must not overwrite B's OpenedThread"
+        );
+        assert!(
+            !current_cache_matches(Some("a"), Some("b"), "a"),
+            "a stale cache cannot receive A's authoritative refresh"
+        );
+        assert!(
+            current_cache_matches(Some("a"), Some("a"), "a"),
+            "A→B→A must refresh the rebuilt A entity"
+        );
+    }
+
+    #[gpui::test]
+    async fn cancellation_keeps_active_until_durable_handshake_finishes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(Theme::light());
+            cx.set_global(SettingsOpen(false));
+            vega_ui::init(cx);
+        });
+        let (store, thread_id) = pending_plan();
+        let thread =
+            vega_conversation::threads::open_thread(&store, &thread_id).expect("thread projection");
+        let stream = cx.new(|cx| ConversationStream::new(thread, cx));
+        let mut controller = AppAgentController::default();
+        let (generation, cancel) = controller.begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("draft".into()),
+            None,
+        );
+        controller.request_active_cancel();
+        assert!(cancel.is_cancelled());
+        assert!(controller.active.is_some());
+        assert_eq!(
+            controller.accept_durable_start(generation + 1, &thread_id, &stream),
+            None
+        );
+        assert_eq!(
+            controller.accept_durable_start(generation, &thread_id, &stream),
+            Some("draft".into())
+        );
+        assert_eq!(
+            controller.accept_durable_start(generation, &thread_id, &stream),
+            None
+        );
+        assert!(
+            controller
+                .finish(generation + 1, &thread_id, &stream)
+                .is_none()
+        );
+        assert!(controller.active.is_some());
+        let finished = controller
+            .finish(generation, &thread_id, &stream)
+            .expect("exact terminal owns active run");
+        assert!(finished.pending_user_content.is_none());
+        assert!(controller.active.is_none());
+
+        let (next_generation, next_cancel) = controller.begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("second".into()),
+            None,
+        );
+        assert_eq!(
+            controller.accept_durable_start(next_generation, &thread_id, &stream),
+            Some("second".into())
+        );
+        controller.request_active_cancel();
+        assert!(next_cancel.is_cancelled());
+        assert!(
+            controller
+                .finish(next_generation, &thread_id, &stream)
+                .is_some()
+        );
+
+        let (prestart_generation, prestart_cancel) = controller.begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("retryable".into()),
+            None,
+        );
+        controller.request_active_cancel();
+        assert!(prestart_cancel.is_cancelled());
+        let prestart = controller
+            .finish(prestart_generation, &thread_id, &stream)
+            .expect("cancelled pre-start worker still reaches terminal");
+        assert_eq!(prestart.pending_user_content, Some("retryable".into()));
+
+        let (approved_generation, _) = controller.begin(
+            thread_id.clone(),
+            stream.clone(),
+            None,
+            Some("approved-instruction".into()),
+        );
+        let approved = controller
+            .finish(approved_generation, &thread_id, &stream)
+            .expect("approved pre-start failure reaches terminal");
+        assert_eq!(
+            approved.pending_approved_instruction.as_deref(),
+            Some("approved-instruction")
+        );
+    }
+
+    #[gpui::test]
+    async fn active_plan_review_is_deferred_and_cancels_exactly_once(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(Theme::light());
+            cx.set_global(SettingsOpen(false));
+            vega_ui::init(cx);
+        });
+        let (store, thread_id) = pending_plan();
+        let thread =
+            vega_conversation::threads::open_thread(&store, &thread_id).expect("thread projection");
+        let rebuilt_thread = thread.clone();
+        let stream = cx.new(|cx| ConversationStream::new(thread, cx));
+        let rebuilt_stream = cx.new(|cx| ConversationStream::new(rebuilt_thread, cx));
+        let mut controller = AppAgentController::default();
+        let (_, cancel) = controller.begin(thread_id.clone(), stream.clone(), None, None);
+        let request = PlanReviewRequested {
+            thread_id: thread_id.clone(),
+            plan_id: "plan".into(),
+            action: PlanReviewAction::Approve,
+        };
+        assert!(controller.queue_review(&rebuilt_stream, &request));
+        assert!(cancel.is_cancelled());
+        assert!(controller.active.is_some());
+        assert_eq!(
+            vega_conversation::plans::list_plans(&store, &thread_id)
+                .expect("plans before terminal")[0]
+                .status,
+            PlanStatus::Pending
+        );
+        assert_eq!(
+            controller
+                .pending_review
+                .as_ref()
+                .map(|pending| (pending.stream.clone(), pending.request.clone())),
+            Some((rebuilt_stream, request.clone()))
+        );
+        assert!(!controller.queue_review(&stream, &request));
+        controller.active = None;
+        let pending = controller.pending_review.take().expect("deferred review");
+        assert_eq!(pending.request, request);
+        assert!(controller.pending_review.is_none());
+        let refresh = persist_review(&store, &pending.request).expect("deferred review commit");
+        assert!(refresh.approved_instruction_id.is_some());
+        let replay = persist_review(&store, &pending.request).expect("stale replay");
+        assert!(replay.approved_instruction_id.is_none());
+    }
+
+    #[test]
+    fn completion_first_makes_deferred_old_review_stale() {
+        let (store, thread_id) = pending_plan();
+        insert(
+            store.conn(),
+            &MessageRow {
+                id: "new-plan".into(),
+                thread_id: thread_id.clone(),
+                seq: 2,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "streaming".into(),
+                created_at: 3,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .expect("new streaming plan");
+        complete_plan(store.conn(), &thread_id, "new-plan", "new", 4).expect("new completion wins");
+        let request = PlanReviewRequested {
+            thread_id,
+            plan_id: "plan".into(),
+            action: PlanReviewAction::Approve,
+        };
+        let refresh = persist_review(&store, &request).expect("stale deferred review");
+        assert!(refresh.approved_instruction_id.is_none());
+        assert_eq!(refresh.plans[0].status, PlanStatus::Abandoned);
+        assert_eq!(refresh.plans[1].status, PlanStatus::Pending);
+    }
 }

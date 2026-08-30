@@ -29,6 +29,9 @@ pub enum ConversationError {
     /// A row carries a value outside the DDL vocabulary (e.g. `mode`).
     #[error("corrupt thread row: {0}")]
     CorruptRow(String),
+    /// Execute selection was blocked until the current Plan is reviewed.
+    #[error("pending plan must be reviewed before execute mode")]
+    PendingPlan,
     /// Headless runtime/provider/persistence failure with its structured kind
     /// and fields preserved for callers.
     #[error("runtime error: {0}")]
@@ -1528,6 +1531,64 @@ pub struct ThreadUpdate {
     pub pinned: Option<bool>,
     /// New unread flag.
     pub unread: Option<bool>,
+}
+
+/// Persisted Plan review lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanStatus {
+    Pending,
+    Approved,
+    ChangesRequested,
+    Abandoned,
+}
+
+impl PlanStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::ChangesRequested => "changes_requested",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "approved" => Some(Self::Approved),
+            "changes_requested" => Some(Self::ChangesRequested),
+            "abandoned" => Some(Self::Abandoned),
+            _ => None,
+        }
+    }
+}
+
+/// Typed, fully validated Plan projection shared with the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    pub id: String,
+    pub thread_id: String,
+    pub content: String,
+    pub status: PlanStatus,
+    pub review_note: Option<String>,
+    pub reviewed_at: Option<i64>,
+}
+
+/// A first-wins review command from the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanReviewAction {
+    Approve,
+    RequestChanges { note: Option<String> },
+    Abandon { note: Option<String> },
+}
+
+/// Stable result of a conditional review transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanReviewOutcome {
+    Applied {
+        instruction_message_id: Option<String>,
+    },
+    Stale,
 }
 
 impl ThreadUpdate {

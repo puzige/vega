@@ -5,5 +5,6 @@
 //! land in S3/S4.
 
 pub mod agent;
+pub mod plans;
 pub mod threads;
 pub mod types;

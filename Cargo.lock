@@ -6394,8 +6394,15 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "gpui_platform",
+ "tempfile",
+ "tokio",
+ "tokio-util",
  "tracing",
+ "vega_conversation",
+ "vega_runtime",
+ "vega_store",
  "vega_theme",
+ "vega_tools",
  "vega_ui",
 ]
 

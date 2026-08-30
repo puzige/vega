@@ -115,6 +115,28 @@ pub fn list(conn: &Connection, sort: ProjectSort) -> Result<Vec<Project>, Projec
     Ok(projects)
 }
 
+/// Loads one project by its opaque id. App-level agent preparation uses this
+/// typed boundary to obtain the fenced project root without issuing raw SQL.
+pub fn find(conn: &Connection, id: &str) -> Result<Option<Project>, ProjectsError> {
+    conn.query_row(
+        "SELECT id, path, name, git_default_branch, created_at, last_opened_at \
+         FROM projects WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(Project {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                name: row.get(2)?,
+                git_default_branch: row.get(3)?,
+                created_at: row.get(4)?,
+                last_opened_at: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(ProjectsError::from)
+}
+
 /// Removes the project row with `id` and returns whether a row was deleted.
 ///
 /// Only the database row is removed; files on disk are never touched (S2

@@ -8,6 +8,7 @@
 
 pub mod conversation_stream;
 pub mod permission_card;
+pub mod plan_card;
 pub mod settings;
 pub mod sidebar;
 pub mod text_input;
@@ -48,6 +49,7 @@ pub fn init(cx: &mut App) {
             conversation_stream::SendMessage,
             Some("Composer"),
         ),
+        KeyBinding::new("up", conversation_stream::PreviousMessage, Some("Composer")),
         KeyBinding::new(
             "enter",
             permission_card::PermissionEnter,
@@ -77,6 +79,20 @@ pub fn init(cx: &mut App) {
             "space",
             permission_card::PermissionActivate,
             Some("PermissionCard"),
+        ),
+        KeyBinding::new("enter", plan_card::PlanActivate, Some("PlanCard")),
+        KeyBinding::new("space", plan_card::PlanActivate, Some("PlanCard")),
+        KeyBinding::new("tab", plan_card::PlanNext, Some("PlanCard")),
+        KeyBinding::new("shift-tab", plan_card::PlanPrevious, Some("PlanCard")),
+        KeyBinding::new(
+            "enter",
+            conversation_stream::ActivateThreadSetting,
+            Some("ThreadSettings"),
+        ),
+        KeyBinding::new(
+            "space",
+            conversation_stream::ActivateThreadSetting,
+            Some("ThreadSettings"),
         ),
     ]);
 }

@@ -9,6 +9,7 @@
 //! open. Storage failures surface as [`ConversationError`] values.
 
 use vega_store::Store;
+use vega_store::messages as store_messages;
 use vega_store::projects as store_projects;
 use vega_store::threads as store;
 
@@ -40,6 +41,21 @@ fn now_ms() -> i64 {
 /// `rusqlite` dependency (the SQL types stop at `vega_store`).
 fn store_error<E: std::fmt::Display>(error: E) -> ConversationError {
     ConversationError::Store(error.to_string())
+}
+
+/// Returns durable user submissions for Composer Up-history in sequence
+/// order. The synthetic approval instruction is a controller capability, not
+/// text the user typed, so it is deliberately excluded.
+pub fn composer_history(store: &Store, thread_id: &str) -> Result<Vec<String>, ConversationError> {
+    const HISTORY_WINDOW: usize = 200;
+    let rows =
+        store_messages::recent(store.conn(), thread_id, HISTORY_WINDOW).map_err(store_error)?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| row.role == "user" && row.kind == "text" && row.status == "done")
+        .filter(|row| row.content != crate::plans::APPROVAL_INSTRUCTION)
+        .map(|row| row.content)
+        .collect())
 }
 
 /// The project new threads attach to by default: the most recently opened
@@ -183,6 +199,48 @@ pub fn set_thread_pinned(
     Ok(())
 }
 
+/// Persists a typed Ask/Plan/Execute selection. Execute is rejected while a
+/// pending Plan exists; approval owns that transition.
+pub fn set_thread_mode(
+    store: &Store,
+    thread_id: &str,
+    mode: ThreadMode,
+) -> Result<Thread, ConversationError> {
+    let updated =
+        store::set_mode(store.conn(), thread_id, mode.as_str(), now_ms()).map_err(store_error)?;
+    if updated == 0 {
+        let current = get_thread(store, thread_id)?;
+        if mode == ThreadMode::Execute {
+            let plans =
+                store_messages::plans_for_thread(store.conn(), thread_id).map_err(store_error)?;
+            if plans
+                .iter()
+                .any(|plan| plan.plan_status.as_deref() == Some("pending"))
+            {
+                return Err(ConversationError::PendingPlan);
+            }
+            if current.mode != ThreadMode::Execute {
+                return Err(ConversationError::PendingPlan);
+            }
+        }
+    }
+    get_thread(store, thread_id)
+}
+
+/// Persists the typed permission mode independently from run mode.
+pub fn set_thread_permission_mode(
+    store: &Store,
+    thread_id: &str,
+    mode: PermissionMode,
+) -> Result<Thread, ConversationError> {
+    let updated = store::set_permission_mode(store.conn(), thread_id, mode.as_str(), now_ms())
+        .map_err(store_error)?;
+    if updated == 0 {
+        return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    get_thread(store, thread_id)
+}
+
 /// Deletes a thread (A1-05). The store layer removes the thread together
 /// with its `messages`/`tool_calls` rows in one transaction (no orphan rows;
 /// `token_usage` is kept for cost auditing).
@@ -259,8 +317,9 @@ fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, ConversationError> 
 #[cfg(test)]
 mod tests {
     use super::{
-        create_thread, current_project, delete_thread, list_threads, new_thread_id, open_thread,
-        rename_thread, set_thread_pinned, set_thread_status, update_thread,
+        composer_history, create_thread, current_project, delete_thread, list_threads,
+        new_thread_id, open_thread, rename_thread, set_thread_mode, set_thread_permission_mode,
+        set_thread_pinned, set_thread_status, update_thread,
     };
     use crate::types::{ConversationError, PermissionMode, ThreadMode, ThreadStatus, ThreadUpdate};
     use vega_store::Store;
@@ -688,5 +747,117 @@ mod tests {
         let project = current_project(&store).unwrap().unwrap();
         assert_eq!(project.id, "p2");
         assert_eq!(project.name, "beta");
+    }
+
+    #[test]
+    fn typed_modes_and_permissions_survive_restart() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let thread = create_thread(&store, "p1", "mock", "confirm").unwrap();
+        assert_eq!(
+            set_thread_mode(&store, &thread.id, ThreadMode::Ask)
+                .unwrap()
+                .mode,
+            ThreadMode::Ask
+        );
+        assert_eq!(
+            set_thread_permission_mode(&store, &thread.id, PermissionMode::ReadOnly)
+                .unwrap()
+                .permission_mode,
+            PermissionMode::ReadOnly
+        );
+        drop(store);
+        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        let loaded = open_thread(&reopened, &thread.id).unwrap();
+        assert_eq!(loaded.mode, ThreadMode::Ask);
+        assert_eq!(loaded.permission_mode, PermissionMode::ReadOnly);
+    }
+
+    #[test]
+    fn composer_history_is_durable_thread_scoped_and_excludes_approval_capability() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let thread = create_thread(&store, "p1", "mock", "confirm").unwrap();
+        let other = create_thread(&store, "p1", "mock", "confirm").unwrap();
+        for (id, owner, seq, content) in [
+            ("older", thread.id.as_str(), 1, "older\nmessage"),
+            ("other", other.id.as_str(), 1, "foreign"),
+            (
+                "approval",
+                thread.id.as_str(),
+                2,
+                crate::plans::APPROVAL_INSTRUCTION,
+            ),
+            ("newer", thread.id.as_str(), 3, "newer message"),
+        ] {
+            vega_store::messages::insert(
+                store.conn(),
+                &vega_store::messages::MessageRow {
+                    id: id.into(),
+                    thread_id: owner.into(),
+                    seq,
+                    role: "user".into(),
+                    kind: "text".into(),
+                    content: content.into(),
+                    status: "done".into(),
+                    created_at: seq,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .unwrap();
+        }
+        drop(store);
+        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        assert_eq!(
+            composer_history(&reopened, &thread.id).unwrap(),
+            vec!["older\nmessage".to_string(), "newer message".to_string()]
+        );
+        assert_eq!(
+            composer_history(&reopened, &other.id).unwrap(),
+            vec!["foreign".to_string()]
+        );
+    }
+
+    #[test]
+    fn execute_mode_rejects_pending_or_corrupt_plan_state() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let thread = create_thread(&store, "p1", "mock", "confirm").unwrap();
+        set_thread_mode(&store, &thread.id, ThreadMode::Plan).unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at,plan_status) \
+                 VALUES ('plan',?1,1,'assistant','plan','steps','done',0,'pending')",
+                [&thread.id],
+            )
+            .unwrap();
+        assert!(matches!(
+            set_thread_mode(&store, &thread.id, ThreadMode::Execute),
+            Err(ConversationError::PendingPlan)
+        ));
+        store
+            .conn()
+            .execute(
+                "UPDATE threads SET mode='execute' WHERE id=?1",
+                [&thread.id],
+            )
+            .unwrap();
+        assert!(matches!(
+            set_thread_mode(&store, &thread.id, ThreadMode::Execute),
+            Err(ConversationError::PendingPlan)
+        ));
+        store
+            .conn()
+            .execute(
+                "UPDATE messages SET plan_review_note='corrupt' WHERE id='plan'",
+                [],
+            )
+            .unwrap();
+        assert!(set_thread_mode(&store, &thread.id, ThreadMode::Execute).is_err());
     }
 }

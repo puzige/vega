@@ -7,7 +7,7 @@
 //! `vega_conversation::threads` owns the shared `Thread` struct, ulid id
 //! generation, and the enum ↔ DDL-string bridging.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 /// The `SELECT` column list shared by the row-loading queries.
 const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, \
@@ -164,6 +164,57 @@ pub fn set_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<usize, ru
     conn.execute(
         "UPDATE threads SET pinned = ?1 WHERE id = ?2",
         params![pinned, id],
+    )
+}
+
+/// Updates the persisted run mode. A pending Plan cannot be bypassed by an
+/// ordinary switch to Execute; only `messages::review_plan` may perform that
+/// transition after winning the approval CAS.
+pub fn set_mode(
+    conn: &Connection,
+    id: &str,
+    mode: &str,
+    now: i64,
+) -> Result<usize, rusqlite::Error> {
+    match mode {
+        "ask" | "plan" => conn.execute(
+            "UPDATE threads SET mode = ?1, updated_at = ?2 WHERE id = ?3",
+            params![mode, now, id],
+        ),
+        "execute" => {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+            let plans = crate::messages::plans_for_thread(&tx, id)?;
+            if plans
+                .iter()
+                .any(|plan| plan.plan_status.as_deref() == Some("pending"))
+            {
+                tx.rollback()?;
+                return Ok(0);
+            }
+            let updated = tx.execute(
+                "UPDATE threads SET mode = ?1, updated_at = ?2 WHERE id = ?3",
+                params![mode, now, id],
+            )?;
+            tx.commit()?;
+            Ok(updated)
+        }
+        _ => Ok(0),
+    }
+}
+
+/// Updates the independent permission mode using the exact DDL vocabulary.
+pub fn set_permission_mode(
+    conn: &Connection,
+    id: &str,
+    mode: &str,
+    now: i64,
+) -> Result<usize, rusqlite::Error> {
+    if !matches!(mode, "readonly" | "confirm" | "auto") {
+        return Ok(0);
+    }
+    conn.execute(
+        "UPDATE threads SET permission_mode = ?1, updated_at = ?2 WHERE id = ?3",
+        params![mode, now, id],
     )
 }
 
