@@ -1,18 +1,26 @@
-//! The read-only tool surface: one [`Tools`] instance bound to a canonical
-//! project root, shared by the agentic loop (T20).
+//! Tool surface: one [`Tools`] instance bound to a canonical project root.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::error::ToolError;
+use crate::checkpoint::MutationContext;
+use crate::codec::CheckpointIds;
+use crate::error::{MutationError, ToolError};
+use crate::fence::discover_git_dir;
 
-/// Read-only tools (read / glob / grep) bound to one project root.
+static TOOL_INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+/// Read and explicitly configured mutation tools bound to one project root.
 ///
 /// Every path argument is interpreted relative to the root and enforced by
 /// the path fence ([`crate::fence`], tech-spec §3 red line). Cheap to clone
 /// and share; the root is canonicalized once at construction.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Tools {
     pub(crate) root: PathBuf,
+    pub(crate) mutation: Option<MutationContext>,
+    pub(crate) instance_id: u64,
 }
 
 impl Tools {
@@ -30,12 +38,47 @@ impl Tools {
                 "project root must be a directory".to_string(),
             ));
         }
-        Ok(Self { root: canonical })
+        Ok(Self {
+            root: canonical,
+            mutation: None,
+            instance_id: TOOL_INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        })
+    }
+
+    /// Explicitly bind this tool instance to one checkpoint call. `Tools::new`
+    /// remains read-only; write/edit fail closed until this method succeeds.
+    pub fn with_mutation_context(
+        mut self,
+        checkpoint_root: impl Into<PathBuf>,
+        project_id: &str,
+        thread_id: &str,
+        call_id: &str,
+    ) -> Result<Self, ToolError> {
+        let git_dir = discover_git_dir(&self.root)
+            .map_err(|code| ToolError::from(MutationError::new(code)))?;
+        let ids = CheckpointIds::new(project_id, thread_id, call_id)?;
+        self.mutation = Some(MutationContext::new(
+            checkpoint_root.into(),
+            &self.root,
+            ids,
+            git_dir.as_deref(),
+        )?);
+        Ok(self)
     }
 
     /// The canonical project root all tool paths resolve against.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+}
+
+impl fmt::Debug for Tools {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Tools")
+            .field("root", &self.root)
+            .field("mutation", &self.mutation.as_ref().map(|_| "configured"))
+            .finish()
     }
 }
 
