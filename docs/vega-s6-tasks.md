@@ -1,6 +1,6 @@
 # ✦ Vega — S6 任务卡（Sprint 6 · Diff 审阅 & 产物 · W11-12）
 
-**版本** v0.5 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.8 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S6 目标**（phase1-plan §2）：git 工作区 diff 视图（高亮、hunk 导航）；产物卡片；Open in…（VS Code/Cursor/Zed/Terminal）；commit 辅助；补齐 Composer 分支选择器。
 
@@ -12,6 +12,13 @@
 >
 > **人类裁决（2026-08-30，T31 generation 契约）**：workspace refresh 的 latest request sequence 与 content generation 必须分离并在同一 mutex 下线性化。refresh 在途时保留 current；完整 private semantic identity（含 raw path、HEAD、filter/status/raw/numstat bytes、ordered private records 与 revalidated `FileIdentity`）byte-exact 不变才保留 generation/opaque IDs，真正变化或 latest refresh 失败后必须轮换且旧 ID fail closed；ABA 不得复活旧 ID。
 > committed private files 以 canonical path-byte-ordered `Vec` 为唯一 authority，`WorkspaceFileId.slot` O(1) 定位后仍须 exact id/seal复验。8 MiB metadata snapshot cap 按真实 committed representation 的 checked logical-retained size 计算：`ServiceState` fixed一次、identity payload一次、fixed identity/Arc allocation，以及 public/private Vec buffers + head/labels/raw current+previous path payload；candidate handles不重复计费。这是逻辑保留量门禁，不宣称 allocator high-water。
+>
+> **人类裁决（2026-08-30，T32 artifact 契约）**：artifact card 为 route-owned ephemeral state，以 `(route_epoch, call_id)` 唯一标识；只接受 strict `Success && !reused` 的 write/edit result，duplicate identical 幂等，duplicate conflict 返回 typed corrupt且不产生 artifact。failed/rejected/cancelled/reused/bash/read-only均不建卡。每 route 最多 inclusive 10,000 cards，第 10,001 张拒绝。
+> agent provenance 只能单向降级为 workspace change，ABA 不得升级；rename/delete/no-current-id仍保留安全 metadata label/source，但 preview/Open in 必须 stale-disabled。文本 preview 还须经过固定路径分类 allowlist、valid UTF-8、no NUL；extension 仅 ASCII case-insensitive exact `txt,md,markdown,rst,adoc,csv,tsv,json,jsonl,yaml,yml,toml,xml,html,htm,css,scss,sass,less,js,jsx,mjs,cjs,ts,tsx,rs,py,rb,go,java,kt,kts,swift,c,h,cc,cpp,cxx,hpp,hxx,m,mm,sh,bash,zsh,fish,sql,graphql,gql,proto,diff,patch,log`，basename exact `README,LICENSE,NOTICE,CHANGELOG,Makefile,Dockerfile,.gitignore,.gitattributes,.editorconfig`；其他（含 SVG、所有 image、unknown、`.env`/npmrc等潜在密钥文件）一律 metadata-only。
+>
+> **人类裁决（2026-08-30，T32 Open residual）**：exact `/usr/bin/open <path>` 接受 final recheck 到 LaunchServices resolve 之间的 same-user path-swap residual。实现仍必须在同一 trusted worker 内持有 root/parent/target FD，spawn 前最终重查 canonical root、parent 与 target identity，并尽可能在 spawn 后再次复验；报告不得宣称 race-free。工具 terminal 后 immediate refresh 与 Open request generation/latest-result drop 由 Stage B route controller 负责，Stage A 只提供可线性化调用的 trusted headless API。
+>
+> **人类裁决（2026-08-30，T32 trusted boundary）**：Vega workspace 内同进程 Rust crate caller 属 trusted boundary；public `ToolCall`/`ToolResult` DTO 可构造性不属于 provider/model 攻击面。artifact capture 仍须 strict consistency、route/project/thread/call checkpoint 与完整 input fingerprint 校验。Stage B 只能从真实 `AppAgentController` 的 `AgentBatch` proposal/terminal 配对接线并增加 integration test；禁止任何 renderer、model output 或其他旁路直接调用 capture。此边界在 Phase 1 最终集中 review 再核对。
 >
 > stage/commit、branch switch 与 Open in 都是当前窗口的显式用户动作，不是 `vega_tools` 工具、不注册 provider schema。模型只能生成 bounded commit 草稿，永远不能 Prepare、stage、commit、切分支或启动应用。
 >
@@ -77,8 +84,9 @@
 
 - artifact 完全来自 current ephemeral snapshot，不建表/事件。strict successful write/edit terminal 后立即 refresh；只有相对身份映射 current `WorkspaceFileId` 且 regular file `<=1 MiB`，才能计算 provenance。
 - provenance 固定为 `(dev, ino, size, mtime_ns)` + read safe prefix 后的 fixed `hash-object --no-filters -- <raw-path>` content identity。命令绝不带 `-w`。同一 generation 完成验证后才标 `agent artifact`；later generation 任一 identity/digest 改变立即降级 `workspace change`。
-- bash-created、invalid/stale projection、>1 MiB、无法证明 identity 的条目只能叫 `workspace change`。artifact 来源标签不改变 fence。
-- `ArtifactPreviewProjection` 文本/报告最多 1 MiB/10,000 lines/64 KiB line；超限/binary/unsupported/race metadata-only。Phase 1 image **一律 metadata-only + Open in**，不 decode、不引依赖。
+- `(route_epoch, call_id)` 每 route 唯一且上限 inclusive 10,000；service绑定 project/thread/route，只接受真实 `ToolCall` 的完整 `WriteEditAudit`（含 fixed 64hex `fingerprint_v1`）与 strict `Success && !reused` write/edit terminal，success checkpoint ref 必须与同一 project/thread/call exact匹配。duplicate canonical fingerprint identical 幂等；same-length不同正文 fingerprint或其他duplicate conflict typed corrupt/no artifact；failed/rejected/cancelled/reused/bash/read-only不建卡，不保留 raw terminal JSON。
+- bash-created、invalid/stale projection、>1 MiB、无法证明 identity 的条目只能叫 `workspace change`。agent→workspace 单向降级，ABA 不升级；rename/delete/no-current-id仍保留安全 metadata，但 preview/Open in stale-disabled。artifact 来源标签不改变 fence。
+- `ArtifactPreviewProjection` 文本/报告最多 1 MiB/10,000 lines/64 KiB line，并须通过上述 fixed extension/basename allowlist、valid UTF-8、no NUL；超限/binary/unsupported/race metadata-only。Phase 1 image（含 SVG）**一律 metadata-only + Open in**，不 decode、不引依赖；`.env`/npmrc等潜在密钥文件不进 allowlist。
 
 ### C5 · Open in 六套 exact argv 与 lifecycle
 
@@ -94,7 +102,7 @@
   ```
 
 - custom/configurable app 延后 Phase 2。点击前解析 current `WorkspaceFileId`；任一 symlink segment、`.git` entry、实际 gitdir、special file、regular `nlink>1`、root escape 或 identity race都拒绝。Terminal 恒 project root，其他五项使用围栏 target。
-- launcher 在独立 bounded worker；stdin/stdout/stderr 均 null；timeout 10s，wait/reap `/usr/bin/open`，结果只应用到 current request generation。成功返回后不杀已由 LaunchServices 启动的 app。
+- launcher 在独立 bounded worker；root/parent/target FD 从最终 preflight 持有到 spawn，spawn 前重查 canonical root/parent/target identity，尽可能在 spawn 后再复验。stdin/stdout/stderr 均 null；timeout 10s，wait/reap `/usr/bin/open`，结果只应用到 current request generation。成功返回后不杀已由 LaunchServices 启动的 app。exact path argv 接受 final recheck→LaunchServices resolve 的 same-user path-swap residual，报告不得宣称 race-free。
 - no click、stale/unknown id、fence/identity preflight failure = 0 invocation attempt；app missing、spawn error、nonzero、timeout = exactly 1 attempt且无 retry/fallback/alternate；success = exactly 1 attempt。
 - fake launcher 必须按 raw `OsString` 精确断言 space/tab/newline/leading-dash-looking component/non-UTF8 target 的六套 argv；escaped label 永不回流。
 
@@ -314,3 +322,6 @@ S6 SDD PR → T30 snapshot/diff service → T31 Diff UI → T32 artifact/Open in
 - v0.3 (2026-08-30) 最终 executable hardening：bounded projections、literal pathspec、PGID/maintenance、exact caps/Open argv、target filter preflight、porcelain-v2 + stage-entry cross-checked logical IndexSnapshot（显式拒绝 `XY=.A` intent-to-add、允许 `XY=A.` staged empty file）、controller ownership、copyable gates与报告 evidence timing定稿。
 - v0.4 (2026-08-30) 人类修订 filter 契约：所有 relevant `check-attr` 固定 `--all`，显式 attribute name=`filter` 无论 value 一律拒绝；same-user preflight TOCTOU保留为 residual。
 - v0.5 (2026-08-30) 人类冻结 T31 request/content generation 契约：mutex 线性化 latest-wins；unchanged private identity 保留 opaque IDs；change/failure/ABA fail-closed 轮换；8 MiB cap覆盖真实 committed metadata snapshot。
+- v0.6 (2026-08-30) 人类冻结 T32 artifact 契约：fixed text path allowlist；strict non-reused write/edit success；route/call幂等与 10,000 card cap；agent provenance单向降级、ABA不升级；rename/delete保留安全 metadata但禁用 preview/Open in。
+- v0.7 (2026-08-30) 人类接受 exact Open path 的 final-recheck→LaunchServices same-user swap residual；实现仍持 root/parent/target FD并在同一 worker内 spawn前后尽力复验；immediate refresh/open request generation明确移交 Stage B controller。
+- v0.8 (2026-08-30) 人类冻结 trusted in-process crate boundary：capture 仍做 strict route/checkpoint/fingerprint consistency；Stage B 仅允许从真实 AppAgentController AgentBatch proposal/terminal 接线并补 integration test，最终 Phase 1 集中复核。
