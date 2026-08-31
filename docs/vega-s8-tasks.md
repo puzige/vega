@@ -113,24 +113,63 @@
 
 ## T45 · 会话历史分页与重启水合（A11-03）
 
-- **前置**：T44。
-- **范围（一行）**：`messages.seq` cursor 分页查询 + batch tool_calls 关联 + typed 投影 + UI 异步水合/prepend，六表内、无 N+1、UI 零 SQLite。
-
-<!-- T45 正文待扩充 -->
+- **前置**：T44 合并。
+- **参考**：`vega_store` schema（`messages.seq`、`tool_calls.message_id`/`seq`——已核实支持 cursor 分页）；[vega-features.md](vega-features.md) A11-03；T42 冻结的 C7；S5/S7 recovery seam（`vega_store::recovery`）。
+- **范围**：
+  - `vega_store`：typed headless cursor/page 查询——`messages.seq` 有界 page（默认/硬上限 200）、batch 关联 `tool_calls`、单一一致读快照；含 interrupted/failed 行与 S7 summary 引用；排除 raw tool inputs/secrets（redaction 沿用既有 owner 测试，不重造）。
+  - `vega_conversation`：typed 投影组装（不做 N+1）；重启时 controller 重建后先 repair 再投影。
+  - `vega_ui`：异步水合/prepend——UI 只收 typed 投影，**零 SQLite 调用**；页边界保 anchor；A→B→A 路由切换丢弃晚到页。
+  - 恰好六表；无第七表、无新依赖。
+- **产出**：分页查询 + typed 投影 + 水合 UI；10k 行 seed fixture（含 tools/plans/interrupted/failed/S7 summaries）。
+- **验收**：
+  - E2E：seed 10k 行 → 重建 controller → 打开最新 200 → 无 gap/重复/N+1 连续翻页 → anchor 保持 → A→B→A 切换 → 拒绝晚到页；重启后 durable transcript（含成本/中断态/summary）完整可见。
+  - 窄测：page size 0/1/199/200/201 边界；seq boundary/overflow/corruption；快照一致性；每页 SQL 次数断言（≤常数）；redaction 断言。
+  - 性能：最新页打开 <100ms（记录 host provenance，报测量值不漂白）。
+- **禁区**：UI 线程同步查库；UI 读 SQLite/定价文件；第七表；为省查询丢 interrupted/failed 行；把 S7 聚合行重新展开成 raw 输入。
+- **命令**：同 T43 全量门禁；`rg -n "rusqlite" crates/vega_ui/src/`（须零命中）。
+- **commit**：`feat(A11-03): hydrate paged conversation history`（≤3）。
+- **Stop**：安全一致性要求新表、N+1 或 UI DB 访问。
+- **（S7 合并后复核冻结基线）**：summary 引用格式以 T40 合并后的真实落库形态为准。
 
 ## T46 · Stop / 启动修复 / 显式 Resume E2E 完整覆盖（A2-17/A3-10）
 
-- **前置**：T45。
-- **范围（一行）**：Composer Stop 可见可键盘可达、全链路取消、durable terminal p99 <1s；重启先修复后水合；显式 Resume = 一次性 auditable 新 run，禁 replay。
+- **前置**：T45 合并。
+- **参考**：[vega-features.md](vega-features.md) A2-17（Stop）/A3-10（恢复）；`vega_runtime`/`vega_conversation` 层级取消与 route/run/generation fence（S4-S5 已合并 seam）；`vega_store::recovery` 原子修复；T42 冻结的 C5。
+- **范围**：
+  - Composer Stop：可见、键盘可达、first-wins；生产链路取消 ownership 贯穿 provider 流、权限等待、tool future、自有进程组。
+  - Durable 行达 terminal（interrupted/cancelled/error）后 UI 呈现；startup repair（先于 transcript 投影）保部分文本可见且不可变。
+  - 显式 Resume：旧行全 terminal 后追加一条 auditable continuation 开新 run；禁 replay 已成功/拒绝/取消/完成未知的 mutating tool；crash-after-effect 残差显式标注（非 exactly-once，自动 replay 永远禁止）。
+  - 复用既有低层测试 seam；本卡新增的是**可见端到端旅程**与 restart hydration，不重造 S3-S7 owner 测试。
+- **产出**：Stop/repair/Resume 全链路实现补齐 + 100 例确定性延迟矩阵。
+- **验收**：
+  - E2E：delayed MockProvider 产出部分文本 + 权限等待 + 自有子进程 → 生产 Stop → 恰一条 terminal durable interruption + 清理 → controller 重启 → repair 先于水合 → 一次 Resume 开恰一个新 run 零 replay。
+  - 窄测：100 例延迟矩阵 p99 `<1s` terminal 化；duplicate Stop/Resume；并发 terminal；close/switch route；stale generation fence；crash-after-effect 的呈现。
+  - 全部旧 provider/tool 调用达 terminal；无 fabricated success。
+- **禁区**：把 Resume 做成自动续传/replay；吞掉第二例 Stop（非 first-wins）；crash 残差洗成 exactly-once；Stop 后仍允许旧回调上屏（fence 失守）。
+- **命令**：同 T43 全量门禁。
+- **commit**：`feat(A2-17): add recoverable task interruption`（同时覆盖 A3-10；≤3）。
+- **Stop**：安全 Resume 需要 replay，或进程组所有权达不到 p99 KPI。
+- **（S7 合并后复核冻结基线）**：中断行的 token/cost 呈现以 T38/T39 合并后的真实 usage/provisional 语义为准（无 usage 显 `—` 不冒充 0）。
 
-<!-- T46 正文待扩充 -->
+## T47 · Phase 1 P0 收口（A2-12/A2-14 等）
 
-## T47 · Phase 1 P0 收口（A1-05/A2-14/A2-12 等）
-
-- **前置**：T46；T42 批准的 P0 清单与 S7 真实 API。
-- **范围（一行）**：fresh provider/model/thinking 选择器、bounded `@file`、Composer >8 行内滚、全量 P0 审计闭环（>3 commits 则串行拆卡）。
-
-<!-- T47 正文待扩充 -->
+- **前置**：T46 合并；T42 批准的 P0 审计清单与 S7 真实 API。
+- **参考**：[vega-features.md](vega-features.md) A2-12（`@file`）/A2-14（provider/model/thinking 选择器）/A2-17；ui-spec §4 Composer 规格；[vega-prd.md](vega-prd.md) P0 行为定义。
+- **范围**：
+  - fresh provider/model/thinking 选择：全新 temp profile 精确选 fake provider/model/effort，重启后精确保持；选择器与 thinking 档位若有持久化需求，按 T42 的六表 migration 裁决执行（禁止未批准 DDL）。
+  - bounded `@file` 注入：确定性文件序、ignore 规则、repo root 边界、symlink、non-UTF8、数量/字节上限；escape/超限/未定价 model 时零 provider 请求。
+  - Composer >8 行内滚（inner scroll），键盘/焦点链不断。
+  - 全量 P0 审计闭环：T42 清单逐项 ✅（附证据）/ deferral（显式记录+理由），不许含糊。
+  - **超过 3 个 cohesive commits 必须先串行拆卡再实现，禁止部分关闭 P0 凑数。**
+- **产出**：上述 P0 功能实现 + 每项 owner E2E/窄测。
+- **验收**：
+  - E2E：fresh temp profile → 精确选择 → 注入一个有界 in-repo 文件 → >8 行 Composer 全控件可渲染可达 → 重启选择精确保持；unknown/unpriced/escape/oversize 全部零 provider 请求。
+  - 窄测：deterministic file order/ignore/root/symlink/non-UTF8/count/bytes；route/restart/late selection；keyboard/focus/inner scroll。
+  - 零真实 discovery/credential/请求。
+- **禁区**：未批准 migration；不安全上下文注入（越 repo root、超字节）；P0 留白不标 deferral；拆卡时顺手改无关功能。
+- **命令**：同 T43 全量门禁；`rg -n 'CREATE TABLE|ALTER TABLE' crates migrations` 逐条对照 T42 裁决。
+- **commit**：exact feature-ID Conventional Commit subjects（≤3）。
+- **Stop**：未批准 migration、不安全上下文、缺 fresh runnable path、或存在未 deferral 的开放 P0。
 
 ## T48 · memory_idle / 渲染 / UI 调优 + ui-spec 自动化收口（A2-04）
 
