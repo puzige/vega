@@ -8992,6 +8992,161 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn stop_resume_fences_drop_every_late_callback_per_c5_fence_class(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(Theme::light());
+            cx.set_global(SettingsOpen(false));
+            vega_ui::init(cx);
+        });
+        let (store, thread_id) = pending_plan();
+        let thread =
+            vega_conversation::threads::open_thread(&store, &thread_id).expect("thread projection");
+        let other_thread = vega_conversation::threads::create_thread(
+            &store,
+            &thread.project_id,
+            "mock",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("second thread for the run fence");
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let other_stream = cx.new(|cx| ConversationStream::new(other_thread.clone(), cx));
+        let mut controller = AppAgentController::default();
+        let (generation, cancel) = controller.begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("draft".into()),
+            None,
+        );
+
+        // Stop is visible first-wins: the token is cancelled, the run stays
+        // owned until the durable handshake, and every fenced lookup fails.
+        controller.request_active_cancel();
+        assert!(cancel.is_cancelled());
+
+        // 1) generation fence: a stale/foreign generation is refused.
+        assert_eq!(
+            controller.accept_durable_start(generation + 7, &thread_id, &stream),
+            None
+        );
+        controller.observe_terminal_message(
+            generation + 7,
+            &thread_id,
+            &stream,
+            &ConversationEvent::Interrupted {
+                message_id: "late-message".into(),
+            },
+        );
+        assert!(
+            controller
+                .active
+                .as_ref()
+                .expect("stale observe must not consume the run")
+                .terminal_message_id
+                .is_none(),
+            "stale-generation terminal observation is dropped"
+        );
+        assert!(
+            controller
+                .finish(generation + 7, &thread_id, &stream)
+                .is_none()
+        );
+
+        // 2) run fence: same generation, wrong thread id is refused.
+        assert_eq!(
+            controller.accept_durable_start(generation, &other_thread.id, &stream),
+            None
+        );
+        assert!(
+            controller
+                .finish(generation, &other_thread.id, &stream)
+                .is_none()
+        );
+
+        // 3) route fence: same generation+thread, wrong stream is refused.
+        assert_eq!(
+            controller.accept_durable_start(generation, &thread_id, &other_stream),
+            None
+        );
+        assert!(
+            controller
+                .finish(generation, &thread_id, &other_stream)
+                .is_none()
+        );
+
+        // The exact run consumes the durable start exactly once and owns the
+        // terminal observation.
+        assert_eq!(
+            controller.accept_durable_start(generation, &thread_id, &stream),
+            Some("draft".into())
+        );
+        assert_eq!(
+            controller.accept_durable_start(generation, &thread_id, &stream),
+            None
+        );
+        controller.observe_terminal_message(
+            generation,
+            &thread_id,
+            &stream,
+            &ConversationEvent::Interrupted {
+                message_id: "terminal-message".into(),
+            },
+        );
+        assert_eq!(
+            controller
+                .active
+                .as_ref()
+                .expect("owned run")
+                .terminal_message_id
+                .as_deref(),
+            Some("terminal-message")
+        );
+
+        // 4) terminal fence: after the exact finish, every late callback for
+        // the finished run is refused (no double consume, no late start).
+        let finished = controller
+            .finish(generation, &thread_id, &stream)
+            .expect("exact terminal owns the run");
+        assert!(finished.pending_user_content.is_none());
+        assert!(controller.active.is_none());
+        assert_eq!(
+            controller.accept_durable_start(generation, &thread_id, &stream),
+            None
+        );
+        assert!(controller.finish(generation, &thread_id, &stream).is_none());
+
+        // Resume: a new generation with a fresh token; the previous run's
+        // cancelled token stays cancelled and cannot bleed into the new run.
+        let (next_generation, next_cancel) = controller.begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("resumed".into()),
+            None,
+        );
+        assert_ne!(next_generation, generation);
+        assert!(cancel.is_cancelled());
+        assert!(!next_cancel.is_cancelled());
+        assert_eq!(
+            controller.accept_durable_start(next_generation, &thread_id, &stream),
+            Some("resumed".into())
+        );
+
+        // Window/route cache fence: a stale cache cannot receive another
+        // thread's authoritative refresh (A→B switch invalidates A).
+        assert!(!current_cache_matches(
+            Some(&other_thread.id),
+            Some(&thread_id),
+            &thread_id
+        ));
+        assert!(current_cache_matches(
+            Some(&thread_id),
+            Some(&thread_id),
+            &thread_id
+        ));
+    }
+
+    #[gpui::test]
     async fn active_plan_review_is_deferred_and_cancels_exactly_once(
         cx: &mut gpui::TestAppContext,
     ) {
