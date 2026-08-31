@@ -81,6 +81,35 @@ impl ToolCard {
         card
     }
 
+    /// Builds the durable hydrated card (S8-T45/C7). The typed projection
+    /// already passed the conversation redaction boundary: terminal rows keep
+    /// their safe input, result and bounded output rows; the conversation
+    /// layer reduces corrupt and non-terminal durable rows to the fixed
+    /// content-free shape before the UI ever sees them. Hydrated cards are
+    /// never permission-actionable (`permission_identity` stays `None` for
+    /// every hydrated status).
+    pub fn hydrated(
+        input: Option<ToolCardInputProjection>,
+        status: ToolCallStatus,
+        approval: Option<Approval>,
+        result: Option<ToolCardResultProjection>,
+    ) -> Self {
+        let mut card = Self {
+            output_rows: result
+                .as_ref()
+                .map(projection_output_rows)
+                .unwrap_or_default(),
+            input,
+            status,
+            approval,
+            result,
+            summary_rows: Vec::new(),
+            expanded: false,
+        };
+        card.refresh_summary_rows();
+        card
+    }
+
     /// Whether a duplicate proposal is semantically identical.
     pub fn matches_call(&self, call: &ToolCall) -> bool {
         self.status == ToolCallStatus::PendingApproval
