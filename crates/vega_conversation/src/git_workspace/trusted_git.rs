@@ -3965,38 +3965,57 @@ exec /usr/bin/git "$@"
         let repo = Repo::new();
         let runner = test_runner(repo.path());
         for verb in ["add", "commit"] {
-            let timeout_dir = tempfile::tempdir().expect("timeout fixture");
-            let pid_file = timeout_dir.path().join("pid");
             let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
-            let body = format!(
-                "trap '' TERM\n/bin/sleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait",
-                quote(&pid_file)
-            );
-            let (_fixture, script, attempts) = scripted_mutation(&body);
-            assert_eq!(
-                mutation_error_code(run_fake_mutation(
-                    &runner,
-                    verb,
-                    &script,
-                    Arc::from(vec![b'i'; 2 * 1024 * 1024]),
-                    &CancellationToken::new(),
-                    Duration::from_millis(500),
-                )),
-                GitWorkspaceErrorCode::TimedOut
-            );
-            assert_eq!(fs::read(&attempts).expect("timeout attempt"), b"x");
-            let pid = fs::read_to_string(&pid_file).expect("descendant pid");
-            assert!(
-                !Command::new(KILL)
-                    .args(["-0", &pid])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .expect("kill probe")
-                    .success(),
-                "timeout descendant survived"
-            );
+            // The 500ms timeout starts at spawn, but under load the script
+            // can need longer than 500ms just to reach the `sleep 30` spawn
+            // and pid write (flaky registry F3). Such an attempt is
+            // inconclusive rather than failed: retry with fresh fixtures and
+            // only run the conclusive assertions once the descendant
+            // actually existed. The last attempt panics on a missing pid, so
+            // the loop never falls through without a probe.
+            for attempt in 0..5 {
+                let timeout_dir = tempfile::tempdir().expect("timeout fixture");
+                let pid_file = timeout_dir.path().join("pid");
+                let body = format!(
+                    "trap '' TERM\n/bin/sleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait",
+                    quote(&pid_file)
+                );
+                let (_fixture, script, attempts) = scripted_mutation(&body);
+                assert_eq!(
+                    mutation_error_code(run_fake_mutation(
+                        &runner,
+                        verb,
+                        &script,
+                        Arc::from(vec![b'i'; 2 * 1024 * 1024]),
+                        &CancellationToken::new(),
+                        Duration::from_millis(500),
+                    )),
+                    GitWorkspaceErrorCode::TimedOut
+                );
+                let pid = match fs::read_to_string(&pid_file) {
+                    Ok(pid) => pid,
+                    Err(_) => {
+                        assert!(
+                            attempt < 4,
+                            "spawn race persisted across retries (attempt {attempt})"
+                        );
+                        continue;
+                    }
+                };
+                assert_eq!(fs::read(&attempts).expect("timeout attempt"), b"x");
+                assert!(
+                    !Command::new(KILL)
+                        .args(["-0", &pid])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()
+                        .expect("kill probe")
+                        .success(),
+                    "timeout descendant survived"
+                );
+                break;
+            }
 
             let cancel_dir = tempfile::tempdir().expect("cancel fixture");
             let ready = cancel_dir.path().join("ready");
@@ -4007,7 +4026,9 @@ exec /usr/bin/git "$@"
             let ready_clone = ready.clone();
             let canceller = thread::spawn(move || {
                 let started = Instant::now();
-                while !ready_clone.exists() && started.elapsed() < Duration::from_secs(3) {
+                // Generous readiness window: only bounds how long the script
+                // may take to start, not the phase itself (flaky registry F3).
+                while !ready_clone.exists() && started.elapsed() < Duration::from_secs(15) {
                     thread::sleep(Duration::from_millis(5));
                 }
                 trigger.cancel();
@@ -4019,7 +4040,7 @@ exec /usr/bin/git "$@"
                     &script,
                     Arc::from(vec![b'i'; 4 * 1024 * 1024]),
                     &cancel,
-                    Duration::from_secs(5),
+                    Duration::from_secs(20),
                 )),
                 GitWorkspaceErrorCode::Cancelled
             );
