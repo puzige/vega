@@ -1,6 +1,6 @@
 # ✦ Vega — S8 任务卡（Sprint 8 · 打磨 & 里程碑 · W15-16）
 
-**版本** v0.1（骨架）· 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.5 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S8 目标**（phase1-plan §2）：主题完善；中断/恢复；内存与渲染调优；dogfood。**里程碑**：自研 Runtime 在真实仓库完成任务（改码→diff→commit），成本全程可见；dogfood 一周。
 
@@ -173,31 +173,89 @@
 
 ## T48 · memory_idle / 渲染 / UI 调优 + ui-spec 自动化收口（A2-04）
 
-- **前置**：T43-T47 形状稳定。
-- **范围（一行）**：对 T43 冻结 schema profile+调优 memory_idle 至 P8 <100MB（历史数字 107MB 不可比），收口 P1-P8 自动化项与 ui-spec §6 可自动化部分。**（S7 合并后复核冻结基线）**
-
-<!-- T48 正文待扩充 -->
+- **前置**：T43-T47 合并（形状稳定）；T43 冻结的基线 schema 不得改动。
+- **参考**：T43 基线 JSON；ui-spec §5/§6 全表；[vega-s6-report.md](vega-s6-report.md) 历史数字（107MB 上下、MiB/MB 标签混淆——noncomparable，仅作方向参考）。
+- **范围（profile 先于调优，顺序固定）**：
+  1. 用 exact binary/scene 复现 C2 raw RSS，用既有/系统工具归因 retained 对象/缓存；
+  2. 仅在 ownership 证明不必要后移除 eager/stale view state（closed route/thread/project、过时 diff/artifact/summary/page、test-probe state）；
+  3. bound 队列/页/缓存，丢弃 superseded 投影——不弱化 durable audit/recovery/redaction/fence；
+  4. 同 provenance/scene 对比；保留失败尝试记录；**永不调单位/轮次/threshold**；
+  5. 跑 C2 20/40 gate + 非规范 idle soak 观察增长。
+- **收口清单**：P7（C1 20 进程）、P8（C2）、P1（变高 10k 滚动，60Hz=margin+hardware pending）、P2（5 分钟 1k/s soak p99 <16ms）、P3（冻结几何/remat 0）、P4（锚点 <1px）、P5（key/click p95 <100ms）、P6（只允许卡展开 150ms ease-out / 权限滑入 120ms，无装饰动画）；ui-spec §6 可自动化项：token 色扫描分类、Light/Dark render/state tests、CJK 不 panic、keyboard action/focus 链（含 Stop/Resume/diff/commit）、960×600 layout constraints。
+- **产出**：优化 commits + 全套基准 JSON（raw samples + provenance）+ ui-spec 自动化证据表。
+- **验收**：C1/P7 与 C2/P8 gate 通过（字面阈值，T42 冻结单位）；P2 soak 通过；扫描族逐条分类（硬编码色值、UI SQLite/定价 IO、GPUI 越界、第七表、`spawn_to_exit`/startup sleep/`rss_mb`/硬编码 60Hz/~500/s 残留、secret/生产 unwrap）。
+- **禁区**：以截断 transcript/tool audit、禁用检查、开非交互空壳、压制 theme/font 工作、把工作挪到首帧 milestone 之后来"达标"；改判据自证；掩盖失败尝试。
+- **命令**：同 T43 全量门禁 + `cargo xtask bench`（全套场景）；T43/T48 额外跑 exact release probes（temp HOME + `/tmp` 输出）。
+- **commit**：`perf(A2-04): meet Phase 1 performance gates` + 至多两个 exact-fix commits（≤3）。
+- **Stop**：任何绝对 gate 失败，或达标需要 stale/debug/定高二进制、改判据、丢 audit、放宽安全。
+- **（S7 合并后复核冻结基线）**：全部 P1-P8 数字以 T43 在合并后 master 重测的基线为对照。
 
 ## T49 · 确定性 Phase 1 验收 + s8-report 草稿（A3-10）
 
-- **前置**：T42-T48 全部 squash 合并。
-- **范围（一行）**：一条 E2E-first 全链路 fixture（改码→diff→commit→成本→中断→Resume）+ `docs/vega-s8-report.md` + README 真值化（engineering fixture，非 milestone passed）。
+- **前置**：T42-T48 全部 squash 合并；S7 T41 squash 已合并。
+- **参考**：[vega-s7-tasks.md](vega-s7-tasks.md) T41 report 结构与门禁写法；S4-S7 owner 证据（temp repo/diff/artifact/fake-launcher/两段式 commit/事件序/取消）；T42 冻结的 C8。
+- **范围**：
+  - 一条 E2E-first 全链路 fixture（fresh temp repo/HOME + MockProvider）：安全 edit/tool → provisional usage 校准到 exact durable priced rows/summary → diff/artifact/fake-open eligibility → dirty branch 拒绝 → 可信两段式 commit 到 exact tree → clean switch → 停掉 delayed 下一 run → 重建/水合 transcript/summary/cost/interrupted 态 → Resume 一次零 replay。零真实 provider/key/network、零 `/usr/bin/open`、零 developer repo/global Git config。
+  - 断言：provider/tool/permission/event 计数与顺序 exact；校准成本与模拟账单误差 0；commit parent/tree/ref/clean state；fake-launcher owner 证据；恰好六表/迁移清单；fence 生效；恰一次中断/Resume。
+  - `docs/vega-s8-report.md`：evidence cutoff、命令/exit、test/doctest/probe 计数分开（不重复计 doctest、不接受过滤后零测试命令）、已合并 PR/squash 表、branch commits + 自身 squash `PENDING`、release provenance/原始 JSON hash、P1-P8 逐项、ui-spec §6 矩阵（自动化/人工/硬件三分，不能自动化的不写 ✅）、P0 审计/deferral、schema/依赖/红线扫描分类、deviations/residuals。
+  - README 状态行真值化：S8 收口为 `engineering fixture passed`，非 `Phase 1 milestone passed`（后者仅 T50）。
+- **产出**：全链路 E2E + s8-report + README 更新。
+- **验收**：fixture 全断言绿；报告每节可追溯到命令/hash；门禁 discovery 与 execution 分开捕获：
 
-<!-- T49 正文待扩充 -->
+  ```sh
+  set -o pipefail
+  export PATH="$HOME/.cargo/bin:$PATH"
+  cargo test --workspace --all-features -- --list 2>&1 | tee /tmp/vega-s8-tests-list.log
+  cargo test --workspace --all-features -- --format terse 2>&1 | tee /tmp/vega-s8-tests-run.log
+  cargo fmt --all -- --check && git diff --check
+  ```
+- **禁区**：用 mock/硬件 pending 冒充 milestone；发明未来 hash；隐藏 deviation；为凑数把 ignored/platform-gated 测试计入 pass。
+- **commit**：`test(A3-10): cover Phase 1 milestone end to end` + `docs(A3-10): report Phase 1 engineering acceptance`（≤3）。
+- **Stop**：需要真实数据/key/launcher；把 mock 称为 dogfood；或只能靠虚构未来 squash 才能收口。
 
 ## T50 · 人类/硬件/dogfood 收口（HUMAN PENDING）
 
-- **前置**：T49 squash 合并；provider 授权。
-- **范围（一行）**：ProMotion 实测 120fps、真实账单 <5%、真实仓库任务、7 天独立 dated dogfood——**人类执行，缺硬件/账号/周期即 pending，不伪造**。
-
-<!-- T50 正文待扩充 -->
+- **前置**：T49 squash 合并；provider 账号授权。**本卡人类所有，不得指派给 executor**（executor 不索取 key、不发真实请求、不产生费用）。
+- **参考**：T49 报告的 pending 清单与操作模板（无 key 版）；T42 冻结的 C8；PRD/phase1-plan 里程碑验收行。
+- **范围（全部人类执行）**：
+  - **ProMotion 实测**（HARDWARE PENDING）：≥120Hz 真机跑 P1 10k 滚动，median ≥120fps 且任一秒窗 ≥100fps；60Hz 主机的 `hardware pending` 状态由本卡消除或维持。
+  - **真实账单**（BILLING PENDING）：授权的非秘密真实仓库任务（改码→diff→commit、成本全程可见）；nonzero billed cost 与匹配 provider/model/currency/time window，`abs(vega − invoice) / invoice × 100 < 5%`。
+  - **7 天 dogfood**：七个独立 dated dogfood 日/构建，逐日记录 task/result/failure/perf/UX。
+  - 报告/README 收口为 `Phase 1 milestone passed`（仅当全部真实/硬件/周期证据齐备）。
+- **验收（可自动复核部分）**：重算 billing 百分比/时间窗；校验七个日期独立；≥120Hz 下无任一秒 P1 样本 <100fps；hash/cutoff/T49 squash 一致；全部门禁与红线扫描仍绿。
+- **禁区**：未授权消费；零/不匹配账单充数；60Hz 冒充 ProMotion；<7 天；敏感证据入库；证据缺失时提前宣布 milestone passed。
+- **commit**：`docs(A3-10): close Phase 1 milestone evidence`（≤3），cutoff 处自身 squash 仍标 `PENDING`。
+- **Stop**：账号/硬件/周期任一缺失 → 状态保持 pending，不伪造、不算工程失败。
 
 ---
 
-## S8 完成定义（DoD 草案，T42 冻结）
+## S8 完成定义（DoD）
 
-<!-- 待扩充 -->
+- [ ] T42-T49 全部 squash merge；master 门禁全绿；`Cargo.lock` 与内部依赖接线一致；零新外部依赖、零第七表。
+- [ ] P7/P8/P1/P2 判据以 T42 冻结语义测量：首帧可交互 20 进程 p95 `<50ms`；release RSS raw-byte p95 `<100MB`（单位按 T42 裁决）；变高 10k 滚动 build/layout/paint 分布达标（60Hz 报 hardware pending）；5 分钟 1k/s 流 p99 `<16ms`、队列有界、零 UI 线程 IO。
+- [ ] 顶层会话零定高 24px 列表；残余 24px 命中全部归类 compact-subrow；冻结区 remat=0、锚点 <1px、无截断。
+- [ ] 分页/水合：六表内 cursor 分页无 gap/重复/N+1；UI 零 SQLite；重启 durable transcript 完整。
+- [ ] Stop/Resume：确定性矩阵 p99 `<1s` terminal；一次 Resume 一个新 run 零 replay；crash-after-effect 残差显式记录。
+- [ ] P0 审计闭环：每项 P0 有证据或显式 deferral；无未批准 DDL。
+- [ ] ui-spec §6：token 色/Light-Dark/CJK/keyboard/960×600 自动化证据齐；人工/硬件项如实标注。
+- [ ] `docs/vega-s8-report.md`：cutoff/命令/计数/PR 表/P1-P8/ui-spec/P0/扫描分类/偏离残差齐全，自身 squash 标 `PENDING`；README 标 `engineering fixture passed`。
+- [ ] 真实账单 <5%、ProMotion 120fps、真实仓库任务、7 天 dogfood 标 **human/hardware pending** → 由 T50 收口；零真实 key/请求/费用。
+
+## S7 合并后需复核的冻结基线清单
+
+T39/T40/T41 合并前，下列数字/API 不得当权威引用；各卡开工时以合并后 master 复核并冻结：
+
+1. **T43**：流式/meter controller 入口与事件链（T39/T40 可能新增路径）→ 基线 JSON 重测冻结。
+2. **T44**：meter/summary card UI 高度语义进变高 item → P1/P8 基线随变高渲染重测（旧 24px 数字 noncomparable）。
+3. **T45**：summary 引用落库形态（T40）→ 分页投影字段对齐。
+4. **T46**：中断行的 usage/provisional 呈现（T38/T39）→ 无 usage 显 `—`。
+5. **T48**：全部 P1-P8 对照基线 = T43 复核后的冻结数字。
+6. **T42 契约本身**：若 T41 报告更新了 ui-spec/phase1-plan normative 文本，C1-C8 引用行号/措辞同步勘误。
 
 ## 变更记录
 
+- v0.5 (2026-08-31) 定稿：T42-T50 全卡扩充（前置/参考/范围/产出/验收/禁区/命令/commit/Stop）；DoD 定稿；新增 S7 合并后复核基线清单。相对预检 v2 的修正见 v0.2/v0.3/v0.4。
+- v0.4 (2026-08-31) T48-T50 扩充：调优顺序固化（profile 先于删除）；ui-spec 自动化收口清单入 T48；T49 门禁 discovery/execution 分开；T50 明确人类所有与自动复核部分。
+- v0.3 (2026-08-31) T45-T47 扩充：分页边界值与性能验收量化；Stop/Resume 100 例矩阵；P0 收口加六表 migration 红线。
+- v0.2 (2026-08-31) T42-T44 扩充：C1-C8 契约落卡；xtask 路径勘误（仓库根 `xtask/src/`，非 `crates/xtask/`）；S7 进度更新（T36/T37/T38 已合并 #35/36/40/41，T39/T40/T41 未合并标复核点）。
 - v0.1 (2026-08-31) 骨架：Sprint 目标/DoD 草案、状态词汇、T42-T50 九卡编号/前置/一行范围。基于预检 `/tmp/vega-s8-sdd-preflight-v2.md` 并在 `b96fcef` 核实（spawn_to_exit、rss_mb MiB 标签混淆、ROW_HEIGHT=24.0、uniform_list 现状）；S7 T36/T37/T38 已合并，T39-T41 未合并故标复核点。
