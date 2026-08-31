@@ -170,9 +170,9 @@ diff→commit 真实 Git 链路由 S6-T34 两段式 commit E2E 与 T51 `commit_p
 | T46 P2-4 | pending 行 audit 括注 | **documented（本报告核销）** | E2E 断言为解析级（terminal 状态/审计列）；字节级由 recovery owner 单测覆盖 |
 | T51 P2-2 | 546 处 facade `#[allow(unused_imports)]` 待收敛 glob | **carried-to-final-opt** | 机械项，期末优化批顺手收敛 |
 | F2 | `branch_controller_close_during_preflight…` GPUI leaked-handles 偶发 | **carried-to-final-opt** | 本卡 HEAD 全量跑未触发（823/0/1 一次通过）；deflake 归期末批；在此之前 pre-push 偶发失败 kill 重试一次（决策 8） |
-| F3 | `trusted_mutation_runner…` 500ms spawn 竞态 | **resolved** | T51 commit `a165647` deflake：不确定超时重试至 5 次新 fixture；10/10 连续通过（T51 PR 记录） |
+| F3 | `trusted_mutation_runner…` 500ms spawn 竞态 | **resolved** | T51 deflake（内容在 squash `2f7a853`：`trusted_git/tests/runner_mutation.rs` 不确定超时重试至 5 次新 fixture）；10/10 连续通过（T51 PR 记录） |
 
-**汇总**：32 项——resolved 4（T38 P2-2、T38 P2-5、T42 P2-2、F3）、carried-to-final-opt 14、documented 14（其中 T38 五项与 T39/T40 大部分为 S7 已核销项的终态复认）。S7→S8 无一项被静默丢弃。
+**汇总**：32 项——resolved 4（T38 P2-2、T38 P2-5、T42 P2-2、F3）、carried-to-final-opt 16、documented 12（其中 T38 五项与 T39/T40 大部分为 S7 已核销项的终态复认）。S7→S8 无一项被静默丢弃。
 
 ## 9. 偏离专章（主人决策 6/7/9 + F2/F3 历史）
 
@@ -214,5 +214,5 @@ S8 收口为 **`engineering fixture passed`**（非 `Phase 1 milestone passed`�
 - **门禁**：fmt/clippy/test/build/tree/diff-check 全绿，**823 passed / 0 failed / 1 ignored**（S7 748 → 823）。
 - **性能如实**：P7/P8 `performance gate failed`（T43 冻结数字，不漂白），P2 短跑通过、P1 `hardware pending`——全部 `deferred-to-final-optimization`（主人决策 6），判定主体期末统一优化批；T44/T48 未执行如实记录。
 - **红线全过**：无 tiktoken、migration 恰 3 / 零 DDL、零 test-only 生产 seam、零真实 key/网络、API facade 冻结、零文件 >1000 行、零新依赖。
-- **carryforward 32 项逐条核销**（resolved 4 / carried-to-final-opt 14 / documented 14），无静默丢弃。
+- **carryforward 32 项逐条核销**（resolved 4 / carried-to-final-opt 16 / documented 12），无静默丢弃。
 - **T50 输入就绪**：P8 单位裁决 + ProMotion/真实账单/真实仓库任务/7 天 dogfood/真实窗口走查六项清单与不含 key 操作模板（§10）；全部齐备前状态词保持 pending，不漂白。
