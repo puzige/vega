@@ -1,6 +1,6 @@
 # ✦ Vega — S8 任务卡（Sprint 8 · 打磨 & 里程碑 · W15-16）
 
-**版本** v0.5 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.6 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S8 目标**（phase1-plan §2）：主题完善；中断/恢复；内存与渲染调优；dogfood。**里程碑**：自研 Runtime 在真实仓库完成任务（改码→diff→commit），成本全程可见；dogfood 一周。
 
@@ -50,6 +50,7 @@
   - **P0 审计**：复核 vega-features.md 全部 P0（重点 A2-12 `@file`、A2-14 provider/model/thinking 选择器、A2-17 Stop、A3-10 恢复、A11-03 分页），逐项映射 T44-T47 或显式 human deferral；若 model/thinking 持久化需在 S7 migration 后追加列，须显式六表 migration 裁决。
 - **产出**：本文档定稿；ui-spec/phase1-plan 必要勘误（docs）。
 - **验收**：T42-T50 每卡含前置/参考/范围/产出/验收/禁区/命令/commit；P1-P8 各有唯一 owner 卡；文档内链全部可解析；`git diff --check` 干净；依赖/六表扫描无变化。
+- **P1-P8 owner 映射**：P7/P2/P8 埋点与测量→T43；P1 变高实现→T44；P1-P8 全项收口 gate→T48；汇总与报告→T49；human/hardware 证据→T50。
 - **禁区**：改任何 .rs/Cargo.toml/migration；虚构 T39-T41 API；把预检报告当圣经照抄（数字/seam 以合并代码为准）。
 - **命令**：`export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --all -- --check && git diff --check`（docs-only 卡不跑全量测试）。
 - **commit**：`docs(A2-17): define Sprint 8 Phase 1 closure`（≤3）。
@@ -167,14 +168,14 @@
   - 窄测：deterministic file order/ignore/root/symlink/non-UTF8/count/bytes；route/restart/late selection；keyboard/focus/inner scroll。
   - 零真实 discovery/credential/请求。
 - **禁区**：未批准 migration；不安全上下文注入（越 repo root、超字节）；P0 留白不标 deferral；拆卡时顺手改无关功能。
-- **命令**：同 T43 全量门禁；`rg -n 'CREATE TABLE|ALTER TABLE' crates migrations` 逐条对照 T42 裁决。
+- **命令**：同 T43 全量门禁；`rg -n 'CREATE TABLE|ALTER TABLE' crates` 逐条对照 T42 裁决（migration DDL 在 `crates/vega_store/migrations/`）。
 - **commit**：exact feature-ID Conventional Commit subjects（≤3）。
 - **Stop**：未批准 migration、不安全上下文、缺 fresh runnable path、或存在未 deferral 的开放 P0。
 
 ## T48 · memory_idle / 渲染 / UI 调优 + ui-spec 自动化收口（A2-04）
 
 - **前置**：T43-T47 合并（形状稳定）；T43 冻结的基线 schema 不得改动。
-- **参考**：T43 基线 JSON；ui-spec §5/§6 全表；[vega-s6-report.md](vega-s6-report.md) 历史数字（107MB 上下、MiB/MB 标签混淆——noncomparable，仅作方向参考）。
+- **参考**：T43 基线 JSON；ui-spec §5/§6 全表；[vega-s6-report.md](vega-s6-report.md) 历史数字（108.7MB、MiB/MB 标签混淆——noncomparable，仅作方向参考）。
 - **范围（profile 先于调优，顺序固定）**：
   1. 用 exact binary/scene 复现 C2 raw RSS，用既有/系统工具归因 retained 对象/缓存；
   2. 仅在 ownership 证明不必要后移除 eager/stale view state（closed route/thread/project、过时 diff/artifact/summary/page、test-probe state）；
@@ -200,7 +201,8 @@
   - `docs/vega-s8-report.md`：evidence cutoff、命令/exit、test/doctest/probe 计数分开（不重复计 doctest、不接受过滤后零测试命令）、已合并 PR/squash 表、branch commits + 自身 squash `PENDING`、release provenance/原始 JSON hash、P1-P8 逐项、ui-spec §6 矩阵（自动化/人工/硬件三分，不能自动化的不写 ✅）、P0 审计/deferral、schema/依赖/红线扫描分类、deviations/residuals。
   - README 状态行真值化：S8 收口为 `engineering fixture passed`，非 `Phase 1 milestone passed`（后者仅 T50）。
 - **产出**：全链路 E2E + s8-report + README 更新。
-- **验收**：fixture 全断言绿；报告每节可追溯到命令/hash；门禁 discovery 与 execution 分开捕获：
+- **验收**：fixture 全断言绿；报告每节可追溯到命令/hash。
+- **命令**：门禁 discovery 与 execution 分开捕获：
 
   ```sh
   set -o pipefail
@@ -222,8 +224,17 @@
   - **真实账单**（BILLING PENDING）：授权的非秘密真实仓库任务（改码→diff→commit、成本全程可见）；nonzero billed cost 与匹配 provider/model/currency/time window，`abs(vega − invoice) / invoice × 100 < 5%`。
   - **7 天 dogfood**：七个独立 dated dogfood 日/构建，逐日记录 task/result/failure/perf/UX。
   - 报告/README 收口为 `Phase 1 milestone passed`（仅当全部真实/硬件/周期证据齐备）。
+- **产出**：milestone 证据收口报告（人类执行记录模板：ProMotion 实测/真实账单对照/7 天 dogfood）；缺失项如实标 PENDING，不伪造。
 - **验收（可自动复核部分）**：重算 billing 百分比/时间窗；校验七个日期独立；≥120Hz 下无任一秒 P1 样本 <100fps；hash/cutoff/T49 squash 一致；全部门禁与红线扫描仍绿。
 - **禁区**：未授权消费；零/不匹配账单充数；60Hz 冒充 ProMotion；<7 天；敏感证据入库；证据缺失时提前宣布 milestone passed。
+- **命令**：人类执行，无自动门禁；可自动复核部分跑 T43 同款全量门禁：
+
+  ```sh
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --all -- --check
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo clippy --all-targets -- -D warnings
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo test --workspace
+  export PATH="$HOME/.cargo/bin:$PATH" && cargo build --workspace
+  ```
 - **commit**：`docs(A3-10): close Phase 1 milestone evidence`（≤3），cutoff 处自身 squash 仍标 `PENDING`。
 - **Stop**：账号/硬件/周期任一缺失 → 状态保持 pending，不伪造、不算工程失败。
 
@@ -254,6 +265,7 @@ T39/T40/T41 合并前，下列数字/API 不得当权威引用；各卡开工时
 
 ## 变更记录
 
+- v0.6 (2026-08-31) review 修复：T50 补齐产出/命令两要素（八要素对齐 T42 验收）；T49 门禁块补独立「命令」标注；T47 migration 扫描路径修正为 `crates`（DDL 实际位于 `crates/vega_store/migrations/`）；T48 历史数字 107MB→108.7MB（对齐 s6-report L108/L161）；T42 补 P1-P8 owner 映射一行。
 - v0.5 (2026-08-31) 定稿：T42-T50 全卡扩充（前置/参考/范围/产出/验收/禁区/命令/commit/Stop）；DoD 定稿；新增 S7 合并后复核基线清单。相对预检 v2 的修正见 v0.2/v0.3/v0.4。
 - v0.4 (2026-08-31) T48-T50 扩充：调优顺序固化（profile 先于删除）；ui-spec 自动化收口清单入 T48；T49 门禁 discovery/execution 分开；T50 明确人类所有与自动复核部分。
 - v0.3 (2026-08-31) T45-T47 扩充：分页边界值与性能验收量化；Stop/Resume 100 例矩阵；P0 收口加六表 migration 红线。
