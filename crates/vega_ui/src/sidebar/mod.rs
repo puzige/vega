@@ -484,7 +484,7 @@ mod row_helpers;
 mod threads_block;
 
 pub use projects_block::{ProjectsBlock, ProjectsBlockEvent};
-pub(crate) use row_helpers::*;
+pub use row_helpers::*;
 pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};
 
 #[cfg(test)]
