@@ -276,6 +276,23 @@ pub fn find(conn: &Connection, id: &str) -> Result<Option<MessageRow>, rusqlite:
     .optional()
 }
 
+/// Returns the latest terminal assistant message of a thread, if any
+/// (S7-T40 per-task summary recovery scope; read-only projection).
+pub fn last_terminal_assistant(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Option<MessageRow>, rusqlite::Error> {
+    conn.query_row(
+        &format!(
+            "SELECT {COLUMNS} FROM messages WHERE thread_id = ?1 AND role = 'assistant' \
+             AND status IN ('done', 'interrupted', 'failed') ORDER BY seq DESC LIMIT 1"
+        ),
+        [thread_id],
+        row_from_query,
+    )
+    .optional()
+}
+
 pub fn plans_for_thread(
     conn: &Connection,
     thread_id: &str,

@@ -10,7 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
@@ -147,6 +147,14 @@ struct ActiveAgentRun {
     cancel: tokio_util::sync::CancellationToken,
     pending_user_content: Option<String>,
     pending_approved_instruction: Option<String>,
+    /// Live wall-clock measurement of this run (S7-T40). It exists only in
+    /// run memory: the summary card shows it while the run is alive and `—`
+    /// after a restart, because `messages` has no finished timestamp (C4).
+    started: Instant,
+    /// Assistant message id of the run's durable terminal event, if any
+    /// (S7-T40 summary projection key; `None` when the run failed before a
+    /// message ever started).
+    terminal_message_id: Option<String>,
 }
 
 enum AgentBatchIngress {
@@ -373,6 +381,8 @@ impl AppAgentController {
             cancel: cancel.clone(),
             pending_user_content,
             pending_approved_instruction,
+            started: Instant::now(),
+            terminal_message_id: None,
         });
         (generation, cancel)
     }
@@ -402,6 +412,33 @@ impl AppAgentController {
         let active = self.active.as_mut()?;
         active.pending_approved_instruction = None;
         active.pending_user_content.take()
+    }
+
+    /// Records the run's terminal assistant message id from the durable
+    /// terminal event (S7-T40 summary projection key). Duplicate or later
+    /// events overwrite in place; the id is only consumed at run finish.
+    fn observe_terminal_message(
+        &mut self,
+        generation: u64,
+        thread_id: &str,
+        stream: &Entity<ConversationStream>,
+        event: &ConversationEvent,
+    ) {
+        let message_id = match event {
+            ConversationEvent::MessageFinished { message_id, .. } => message_id,
+            ConversationEvent::Interrupted { message_id } => message_id,
+            ConversationEvent::Error {
+                message_id: Some(message_id),
+                ..
+            } => message_id,
+            _ => return,
+        };
+        if !self.matches(generation, thread_id, stream) {
+            return;
+        }
+        if let Some(active) = self.active.as_mut() {
+            active.terminal_message_id = Some(message_id.clone());
+        }
     }
 
     fn finish(
@@ -4145,6 +4182,8 @@ impl VegaWindow {
                     stream.accept_composer_submission(&content, cx)
                 });
             }
+            self.agent_controller
+                .observe_terminal_message(generation, thread_id, stream, &event);
             stream.update(cx, |stream, cx| stream.apply_event(event, cx));
         }
         let Some(success) = batch.finished else {
@@ -4154,6 +4193,27 @@ impl VegaWindow {
         let Some(run) = self.agent_controller.finish(generation, thread_id, stream) else {
             return AgentBatchIngress::Stale;
         };
+        // S7-T40/C4: the run's durable terminal message becomes a read-only
+        // per-task cost summary card. The projection reads only the persisted
+        // audits (a non-terminal/corrupt row fails closed → no card); the
+        // duration is the live in-memory wall-clock measurement and degrades
+        // to `—` after a restart.
+        if let Some(message_id) = &run.terminal_message_id {
+            let duration_ms = u64::try_from(run.started.elapsed().as_millis()).ok();
+            let projected = match &cx.global::<VegaStore>().0 {
+                Ok(store) => vega_conversation::summary::task_cost_summary(
+                    store,
+                    thread_id,
+                    message_id,
+                    duration_ms,
+                )
+                .ok(),
+                Err(_) => None,
+            };
+            if let Some(summary) = projected {
+                stream.update(cx, |stream, cx| stream.apply_task_summary(summary, cx));
+            }
+        }
         AgentBatchIngress::Finished { success, run }
     }
 
@@ -6005,7 +6065,14 @@ impl Render for VegaWindow {
                                     let usage = vega_conversation::threads::thread_usage_seed(
                                         store, &thread.id,
                                     )?;
-                                    Ok((plans, history, recovery, usage))
+                                    // S7-T40 restart recovery: token/cost/cache/
+                                    // tool count re-project from the durable
+                                    // audits; duration stays `—` (no finished
+                                    // timestamp in `messages`, C4).
+                                    let summary = vega_conversation::summary::latest_task_summary(
+                                        store, &thread.id, None,
+                                    )?;
+                                    Ok((plans, history, recovery, usage, summary))
                                 })(),
                                 Err(error) => {
                                     Err(vega_conversation::types::ConversationError::Store(
@@ -6014,11 +6081,14 @@ impl Render for VegaWindow {
                                 }
                             };
                             view.update(cx, |stream, cx| match initial {
-                                Ok((plans, history, recovery, usage)) => {
+                                Ok((plans, history, recovery, usage, summary)) => {
                                     for plan in plans {
                                         stream.apply_plan(plan, cx);
                                     }
                                     stream.apply_composer_history(&thread.id, history, cx);
+                                    if let Some(summary) = summary {
+                                        stream.apply_task_summary(summary, cx);
+                                    }
                                     if recovery.is_some() {
                                         stream.apply_approved_not_started(cx);
                                     }
