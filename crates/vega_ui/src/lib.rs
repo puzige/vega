@@ -15,6 +15,7 @@ pub mod permission_card;
 pub mod plan_card;
 pub mod settings;
 pub mod sidebar;
+pub mod summary_card;
 pub mod text_input;
 pub mod tool_card;
 

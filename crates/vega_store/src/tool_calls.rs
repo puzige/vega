@@ -148,6 +148,21 @@ pub fn next_seq(conn: &Connection, thread_id: &str) -> Result<i64, rusqlite::Err
     )
 }
 
+/// Counts the persisted tool-call audit rows of one assistant message
+/// (S7-T40 per-task summary; read-only aggregate over the existing audit).
+pub fn count_by_message(
+    conn: &Connection,
+    thread_id: &str,
+    message_id: &str,
+) -> Result<u64, rusqlite::Error> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tool_calls WHERE thread_id = ?1 AND message_id = ?2",
+        params![thread_id, message_id],
+        |row| row.get(0),
+    )?;
+    Ok(u64::try_from(count).unwrap_or(0))
+}
+
 /// Inserts a proposed tool call.
 pub fn insert(conn: &Connection, call: NewToolCall<'_>) -> Result<(), rusqlite::Error> {
     conn.execute(

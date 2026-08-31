@@ -64,7 +64,7 @@ use gpui::{
 use vega_conversation::agent::PermissionQueue;
 use vega_conversation::types::{
     ConversationEvent, ConversationMeter, MeterSnapshot, PermissionMode, Plan, RestoredUsage,
-    RunUsageEstimator, Thread, ThreadMode,
+    RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -79,6 +79,7 @@ use crate::permission_card::{PermissionCard, PermissionCardResolved};
 use crate::plan_card::{PlanCard, PlanReviewRequested};
 use crate::settings::SettingsOpen;
 use crate::sidebar::CONTENT_MIN_PADDING;
+use crate::summary_card::SummaryCard;
 use crate::text_input::TextInput;
 use crate::tool_card::ToolCard;
 
@@ -939,6 +940,9 @@ pub(crate) enum StreamEntry {
     Permission { card: Entity<PermissionCard> },
     /// One durable Plan review card.
     Plan { card: Entity<PlanCard> },
+    /// One read-only per-task cost summary card (S7-T40), projected by
+    /// `vega_conversation::summary` and applied by the app layer.
+    Summary { card: Entity<SummaryCard> },
 }
 
 impl StreamEntry {
@@ -950,6 +954,7 @@ impl StreamEntry {
             StreamEntry::Artifact { card } => card.read(cx).row_count(),
             StreamEntry::Permission { card } => card.read(cx).row_count(),
             StreamEntry::Plan { card } => card.read(cx).row_count(),
+            StreamEntry::Summary { card } => card.read(cx).row_count(),
         }
     }
 }
@@ -1033,6 +1038,11 @@ pub(crate) fn build_entry_rows(
                 StreamEntry::Plan { card } => {
                     rows.extend(
                         (start..end).map(|row| PlanCard::render_row(card.clone(), row, window, cx)),
+                    );
+                }
+                StreamEntry::Summary { card } => {
+                    rows.extend(
+                        (start..end).map(|row| SummaryCard::render_row(card.clone(), row, cx)),
                     );
                 }
             }
@@ -1287,6 +1297,9 @@ pub struct ConversationStream {
     active_permission: Option<Entity<PermissionCard>>,
     /// Plan ids are opaque map keys; card content is a typed projection.
     plan_cards: HashMap<String, Entity<PlanCard>>,
+    /// Sole applied per-task cost summary keyed by assistant message id
+    /// (S7-T40); duplicate/later stale applications are ignored.
+    summary_cards: HashMap<String, Entity<SummaryCard>>,
     /// Exact active durable assistant id and its stream-entry index.
     active_agent_message: Option<(String, usize)>,
     /// Most recently finished assistant entry, retained until the typed Plan
@@ -1387,6 +1400,7 @@ impl ConversationStream {
             permission_queue,
             active_permission: None,
             plan_cards: HashMap::new(),
+            summary_cards: HashMap::new(),
             active_agent_message: None,
             last_finished_agent_message: None,
             meter: ConversationMeter::default(),
@@ -1557,6 +1571,26 @@ impl ConversationStream {
             self.entries.push(StreamEntry::Plan { card: card.clone() });
         }
         self.plan_cards.insert(id, card);
+        self.rows_dirty = true;
+        cx.notify();
+    }
+
+    /// Appends the read-only per-task cost summary card of one finished
+    /// assistant message (S7-T40/C4). The typed projection arrives from the
+    /// app layer via `vega_conversation::summary`; the stream never queries
+    /// SQLite and never computes a cost formula. Applications are keyed by
+    /// the assistant message id and first-wins: duplicates and later stale
+    /// projections of the same task are ignored, and projections of foreign
+    /// threads are dropped.
+    pub fn apply_task_summary(&mut self, summary: TaskCostSummary, cx: &mut Context<Self>) {
+        if self.summary_cards.contains_key(&summary.message_id) {
+            return;
+        }
+        let message_id = summary.message_id.clone();
+        let card = cx.new(|_| SummaryCard::new(summary));
+        self.entries
+            .push(StreamEntry::Summary { card: card.clone() });
+        self.summary_cards.insert(message_id, card);
         self.rows_dirty = true;
         cx.notify();
     }
@@ -2589,8 +2623,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use vega_conversation::agent::PermissionHook;
     use vega_conversation::types::{
-        Microcents, PermissionDecision, PermissionMode, PermissionRequest, PlanStatus, ThreadMode,
-        ThreadStatus, ToolCall, ToolCallStatus, ToolResult,
+        Microcents, PermissionDecision, PermissionMode, PermissionRequest, PlanStatus,
+        TaskCostSummary, TaskSummaryOutcome, ThreadMode, ThreadStatus, ToolCall, ToolCallStatus,
+        ToolResult,
     };
     use vega_markdown::split_deltas;
     use vega_markdown::{ListItem, TableCell};
@@ -3021,6 +3056,50 @@ mod tests {
             (plans, assistants, stream.entries.len())
         });
         assert_eq!((plans, assistants, entries), (2, 0, 2));
+    }
+
+    #[gpui::test]
+    async fn task_summary_card_appends_once_and_ignores_duplicates(cx: &mut TestAppContext) {
+        let (_window, stream, _) = open_controller_stream(cx, "summary-card");
+        let summary = TaskCostSummary {
+            message_id: "assistant-summary".into(),
+            outcome: TaskSummaryOutcome::Completed,
+            usage: Some(vega_conversation::types::TokenUsage {
+                input: 150_000,
+                output: 15_000,
+                cache_read: 50_000,
+                cache_write: 0,
+            }),
+            cost: vega_conversation::types::SummaryCost::Priced(
+                vega_conversation::types::Microcents(135_000),
+            ),
+            duration_ms: Some(12_400),
+            tool_count: 2,
+            cache_hit_percent: Some(33),
+        };
+        stream.update(cx, |stream, cx| {
+            stream.apply_task_summary(summary.clone(), cx);
+            stream.apply_task_summary(summary, cx);
+        });
+        let (summaries, rows, text) = stream.read_with(cx, |stream, cx| {
+            let mut text = String::new();
+            let mut summaries = 0;
+            let mut rows = 0;
+            for entry in &stream.entries {
+                rows += entry.row_count(cx);
+                if let StreamEntry::Summary { card } = entry {
+                    summaries += 1;
+                    text = card.read(cx).visible_text();
+                }
+            }
+            (summaries, rows, text)
+        });
+        assert_eq!(summaries, 1, "duplicate/stale summaries are ignored");
+        assert_eq!(rows, 5, "the card contributes its five fixed rows");
+        assert!(text.contains("任务摘要 · 完成"));
+        assert!(text.contains("成本 US$0.135000"));
+        assert!(text.contains("耗时 12.4s"));
+        assert!(text.contains("工具 2 · 缓存命中 33%"));
     }
 
     fn has_active_permission(

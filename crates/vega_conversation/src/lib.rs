@@ -9,6 +9,7 @@ mod artifact;
 mod git_workspace;
 pub mod plans;
 mod pricing;
+pub mod summary;
 pub mod threads;
 pub mod types;
 
