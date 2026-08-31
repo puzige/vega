@@ -1,10 +1,10 @@
 # ✦ Vega — S8 任务卡（Sprint 8 · 打磨 & 里程碑 · W15-16）
 
-**版本** v0.6 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.7 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt；T42 产出的契约冻结见 [vega-s8-sdd.md](vega-s8-sdd.md)
 
 **S8 目标**（phase1-plan §2）：主题完善；中断/恢复；内存与渲染调优；dogfood。**里程碑**：自研 Runtime 在真实仓库完成任务（改码→diff→commit），成本全程可见；dogfood 一周。
 
-**Sprint DoD（草案，T42 冻结）**：确定性 mock 任务完整证明 Phase 1 全链路（变高虚拟化滚动、流式 <16ms、冷启动首帧 <50ms、空闲 RSS <100MB、中断/恢复、diff→commit、成本全程可见），`docs/vega-s8-report.md` 如实记录；真实仓库任务、真实账单 <5%、ProMotion 120fps、7 天 dogfood 明确标 **human/hardware pending**，由 T50 人类收口，executor 不索取 key、不发真实请求、不产生费用。
+**Sprint DoD（T42 冻结）**：确定性 mock 任务完整证明 Phase 1 全链路（变高虚拟化滚动、流式 <16ms、冷启动首帧 <50ms、空闲 RSS <100MB、中断/恢复、diff→commit、成本全程可见），`docs/vega-s8-report.md` 如实记录；真实仓库任务、真实账单 <5%、ProMotion 120fps、7 天 dogfood 明确标 **human/hardware pending**，由 T50 人类收口，executor 不索取 key、不发真实请求、不产生费用。判定语义冻结于 [vega-s8-sdd.md](vega-s8-sdd.md)（C1-C8；P8 阈值单位 OPEN(OWNER: human)，裁决前按 decimal MB 字面权威）。
 
 > **实现基线**：S8 规划基于 `master` `b96fcef`（S7 T36/T37/T38 已合并 #35/#36/#40/#41）。T39/T40/T41 尚未合并——凡依赖 S7 最终 API/基线数字的卡，开工前必须**（S7 合并后复核冻结基线）**，不得从预检报告虚构 T39-T41 seam。
 
@@ -48,7 +48,7 @@
     - **C7（分页）**：`messages.seq` typed headless cursor/page + batch 关联 `tool_calls` + 一致读快照 + 默认/硬上限 200；含 interrupted/failed 行与 S7 summary 引用，无 raw tool inputs/secrets；UI 收 typed 投影零 SQLite 调用；无第七表、无 N+1。
     - **C8（报告真值）**：状态词汇不可互换（见文首）；mock 账单误差 0 ≠ 真实账单；一周=七个独立 dated dogfood 日；报告有 evidence cutoff、列已合并 squash hash、自标本 PR/squash `PENDING`，禁未来 hash。
   - **P0 审计**：复核 vega-features.md 全部 P0（重点 A2-12 `@file`、A2-14 provider/model/thinking 选择器、A2-17 Stop、A3-10 恢复、A11-03 分页），逐项映射 T44-T47 或显式 human deferral；若 model/thinking 持久化需在 S7 migration 后追加列，须显式六表 migration 裁决。
-- **产出**：本文档定稿；ui-spec/phase1-plan 必要勘误（docs）。
+- **产出**：本文档定稿；[vega-s8-sdd.md](vega-s8-sdd.md)（C1-C8 冻结 + P0 审计 + owner 映射 + OPEN(OWNER: human)）；ui-spec/phase1-plan 必要勘误（docs）。
 - **验收**：T42-T50 每卡含前置/参考/范围/产出/验收/禁区/命令/commit；P1-P8 各有唯一 owner 卡；文档内链全部可解析；`git diff --check` 干净；依赖/六表扫描无变化。
 - **P1-P8 owner 映射**：P7/P2/P8 埋点与测量→T43；P1 变高实现→T44；P1-P8 全项收口 gate→T48；汇总与报告→T49；human/hardware 证据→T50。
 - **禁区**：改任何 .rs/Cargo.toml/migration；虚构 T39-T41 API；把预检报告当圣经照抄（数字/seam 以合并代码为准）。
@@ -265,6 +265,7 @@ T39/T40/T41 合并前，下列数字/API 不得当权威引用；各卡开工时
 
 ## 变更记录
 
+- v0.7 (2026-08-31) T42 执行：SDD 落地为 [vega-s8-sdd.md](vega-s8-sdd.md)（C1-C8 冻结、P0 审计 49 项映射、P1-P8 owner 映射、六表 migration 裁决零 DDL；P8 单位 OPEN(OWNER: human)，裁决前按 decimal MB）；Sprint DoD 标注冻结；ui-spec §5 P7/P8 行勘误指向冻结语义。
 - v0.6 (2026-08-31) review 修复：T50 补齐产出/命令两要素（八要素对齐 T42 验收）；T49 门禁块补独立「命令」标注；T47 migration 扫描路径修正为 `crates`（DDL 实际位于 `crates/vega_store/migrations/`）；T48 历史数字 107MB→108.7MB（对齐 s6-report L108/L161）；T42 补 P1-P8 owner 映射一行。
 - v0.5 (2026-08-31) 定稿：T42-T50 全卡扩充（前置/参考/范围/产出/验收/禁区/命令/commit/Stop）；DoD 定稿；新增 S7 合并后复核基线清单。相对预检 v2 的修正见 v0.2/v0.3/v0.4。
 - v0.4 (2026-08-31) T48-T50 扩充：调优顺序固化（profile 先于删除）；ui-spec 自动化收口清单入 T48；T49 门禁 discovery/execution 分开；T50 明确人类所有与自动复核部分。

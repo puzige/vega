@@ -154,21 +154,108 @@ Git HEAD + dirty 状态；release profile；绝对二进制路径 + size/mtime/S
 
 ## 11. P0 审计与 owner 映射
 
-（待扩：全量 49 项 P0 审计表 / P1-P8 owner 映射表 / 六表 migration 裁决。）
+### 11.1 全量 P0 审计（49 项，以 [vega-features.md](vega-features.md) `429cb2d` 版为准）
+
+本表冻结 T42 的逐项映射；T47 做「逐项 ✅（附证据）/ deferral」的证据级闭环，不许含糊。合并证据以各 Sprint 报告（[vega-s4-report.md](vega-s4-report.md)/[vega-s5-report.md](vega-s5-report.md)/[vega-s6-report.md](vega-s6-report.md)）与 merged PR 台账为准。**结果：41 项已合并、3 项部分交付、1 项带已接受偏离、4 项未收口（全有 owner 卡）——零 human deferral。**
+
+| P0 | 项 | 状态 | 证据 / owner |
+|---|---|---|---|
+| A1-01 | GPUI 窗口骨架 | ✅ 已合并 | S1 #1/#2 |
+| A1-02 | 侧边栏-新建任务 | ✅ 已合并 | S2 #11 |
+| A1-03 | 侧边栏-项目列表 | ✅ 已合并 | S2 #10 |
+| A1-04 | 项目下会话列表 | ✅ 已合并 | S2 #12 |
+| A1-09 | 主题系统 | ✅ 已合并 | S1 #7；Light/Dark 自动化收口归 T48 |
+| A1-10 | 设置-Provider 配置 | ✅ 已合并 | S1 #6/#8（Keychain 零明文） |
+| A2-01 | 消息流渲染 | ✅ 已合并 | S3 #18 |
+| A2-02 | 流式 markdown 增量渲染 | ✅ 已合并 | S3 #14（spike）/#15/#18 |
+| A2-03 | 代码块高亮 | ✅ 已合并 | S3 #17/#18 |
+| A2-04 | 虚拟化长滚动 | ⚠️ 部分交付 | S3 #16 等高 24px 虚拟化+锚定；按 C4 不得作为 P1 终证 → **owner T44**（变高迁移，旧 24px 数字 noncomparable） |
+| A2-05 | 工具调用卡片-通用 | ✅ 已合并 | S5 #28 |
+| A2-06 | bash 卡片 | ✅ 已合并 | S5 #28（bash 工具本体 #25） |
+| A2-07 | 文件变更卡片 | ✅ 已合并 | S5 #28（工具卡族） |
+| A2-08 | 权限确认卡片 | ✅ 已合并 | S5 #28 |
+| A2-09 | Ask/Plan/Execute 三模式 | ✅ 已合并 | S5 #29 |
+| A2-10 | Plan 产物审批 | ✅ 已合并 | S5 #29 |
+| A2-11 | Composer 输入 | ✅ 已合并 | S3 #18（history recall 已核实 `text_input.rs`） |
+| A2-12 | @文件引用 | ❌ 未实现 | **owner T47**（bounded 注入全矩阵） |
+| A2-14 | 模型选择器 | ❌ 未实现 | **owner T47**（fresh 选择+重启保持）；持久化裁定见 §11.3 |
+| A2-15 | 权限模式切换 | ✅ 已合并 | S5 #26/#29（`permission_mode` 会话级） |
+| A2-17 | 中断按钮 | ⚠️ 部分交付 | S4 #21 CancellationToken、S5 #25 bash 进程组取消；可见端到端 Stop + p99 矩阵 → **owner T46** |
+| A3-01 | Provider 抽象层 | ✅ 已合并 | S4 #19 |
+| A3-02 | OpenAI 兼容 provider | ✅ 已合并 | S4 #19（SSE 流式） |
+| A3-03 | Agentic 循环 | ✅ 已合并 | S4 #21/#22 |
+| A3-04 | 工具注册机制 | ✅ 已合并 | S4 #20/#21 |
+| A3-05 | bash 工具 | ✅ 已合并 | S5 #25（Seatbelt/进程组/有界输出） |
+| A3-06 | read 工具 | ✅ 已合并 | S4 #20 |
+| A3-07 | write/edit 工具 | ✅ 已合并 | S5 #24 |
+| A3-08 | glob/grep 工具 | ✅ 已合并 | S4 #20 |
+| A3-09 | 权限门禁引擎 | ✅ 已合并 | S5 #26（危险拦截 #25） |
+| A3-10 | 中断/恢复 | ⚠️ 部分交付 | S4 #21 取消、S5 #24/#27 落库恢复；显式 Resume/启动修复/可见旅程 → **owner T46** |
+| A3-11 | 上下文管理 v1 | ✅ 已合并 | S4 #21（组装/朴素截断） |
+| A3-12 | Trace 全量落库 | ✅ 已合并 | S5 #27 |
+| A5-01 | 工作区变更检测 | ✅ 已合并 | S6 #32 |
+| A5-02 | Diff viewer | ✅ 已合并 | S6 #33/#39 |
+| A5-03 | 变更统计条 | ✅ 已合并 | S6 #33（`diff_view.rs` 统计条已核实） |
+| A5-04 | 产物卡片 | ✅ 已合并 | S6 #34 |
+| A5-05 | Open in… | ✅ 已合并 | S6 #34（fake-launcher owner 证据） |
+| A10-01 | usage 精确回收 | ✅ 已合并 | S7 #41（priced 持久化）（T41 报告后同步勘误） |
+| A10-02 | 流式 token 预估 | ⚠️ 带已接受偏离 | S7 #43 字符近似（tiktoken-rs 白名单红线未引入，S7 偏离 #1；usage 校准权威）（T41 报告后同步勘误） |
+| A10-03 | 定价表 | ✅ 已合并 | S7 #36/#40 |
+| A10-04 | 成本引擎 | ✅ 已合并 | S7 #36/#41（integer microcents） |
+| A10-05 | 会话实时计数器 | ✅ 已合并 | S7 #43（校准替换） |
+| A10-06 | 任务成本汇总卡 | ❌ 未合并 | T40 实现进行中（`feat/s7-t40-task-cost-summary`）；T44 fixture 须含 summary card（T41 报告后同步勘误） |
+| A11-01 | SQLite schema v1 | ✅ 已合并 | S1 #5（0001-0003 全 add-only，六表现状已核实） |
+| A11-02 | 项目注册表 | ✅ 已合并 | S2 #10 |
+| A11-03 | 会话分页加载 | ❌ 未实现 | **owner T45**（C7） |
+| A11-04 | tool_calls 全量记录 | ✅ 已合并 | S5 #27 |
+| A11-05 | Keychain 密钥存储 | ✅ 已合并 | S1 #6 |
+
+### 11.2 P1-P8 唯一 owner 映射（冻结）
+
+| 准线 | 唯一 owner 卡 | 冻结契约 | 收口 gate | 人类/硬件 |
+|---|---|---|---|---|
+| P1 万行滚动 | T44 | C6/C4 | T48 | 字面 120fps → T50 |
+| P2 流式上屏 | T43 | C6 | T48 | — |
+| P3 零重排 | T44 | C4（冻结几何/remat 0） | T48 | 视觉走查 → T50 |
+| P4 滚动锚定 | T44 | C4（锚点 <1px） | T48 | 手感 → T50 |
+| P5 交互 <100ms | T48 | ui-spec §5 | T48 | 体感 → T50 |
+| P6 动效白名单 | T48 | ui-spec §5（150ms/120ms） | T48 | 动效质感 → T50 |
+| P7 首帧 | T43 | C1 | T48 | — |
+| P8 空闲内存 | T43 | C2 | T48 | 单位裁决 → 人类 |
+
+汇总与报告 → T49；human/hardware 证据（ProMotion/真实账单/真实仓库/7 天 dogfood）→ T50。
+
+### 11.3 六表 migration 裁决（T42 保守裁决：零 DDL）
+
+- 现状核实（`429cb2d`）：`threads.model TEXT NOT NULL` 已存在（`0001_init.sql`）；全库无 thinking/effort 持久化列；migrations `0001/0002/0003` 全部 add-only。
+- 需求：T47 验收要求 fresh profile 下 provider/model/effort 精确选择且**重启后精确保持**。
+- **裁决**：选择器默认与 thinking 档位持久化走既有 app 级配置文件 seam（与 T37 定价设置 `pricing.json` 同层，受 `vega_store::paths` 管控），**零 DDL、不动六表**；`threads.model` 维持 run-start immutable snapshot 语义（T37/T38 已冻结）不变。
+- 升级路径：若 T47 实现中证明必须 per-thread thinking 列，**停卡上报人类**，additive column 须经显式六表 migration 批准，禁止未批准 DDL。
+- 机械判定：T47 门禁 `rg -n 'CREATE TABLE|ALTER TABLE' crates` 相对 `429cb2d` 零新增。
 
 ## 12. T41 报告后同步勘误清单
 
-- （待扩：列出本文依赖 T40/T41 合并后事实的全部引用点。）
+本文以下引用点依赖 T40 squash 合并与 T41（S7 报告）定稿，届时同步勘误（数字/状态以合并后事实为准）：
+
+1. §0 S7 收口状态行（T40/T41 状态与合并事实）。
+2. §8 C7「S7 summary 引用格式」——以 T40 合并后的真实落库形态为准。
+3. §11.1 A10-01/A10-02/A10-03/A10-04/A10-05/A10-06 行——S7 最终偏离定稿、squash hash 与证据级（T41 报告为准）。
+4. ui-spec §5 勘误行中任何涉 S7 表述（当前无 S7 数字引用）。
 
 ## 13. 验收自查（T42 验收条目对照）
 
-- （待扩：八要素对照、内链可解析、依赖/六表扫描无变化。）
+- **八要素对照**：T42-T50 每卡含前置/参考/范围/产出/验收/禁区/命令/commit——已在 `429cb2d` 的 vega-s8-tasks.md v0.6 逐卡核对，全部具备（T50 于 v0.6 补齐产出/命令）。
+- **P1-P8 唯一 owner**：§11.2 表满足「每准线恰一 owner 卡」。
+- **文档内链可解析**：本文与勘误引用的 `docs/*.md` 全部存在；SDD 内无锚点断链。
+- **git diff --check**：净（本 PR 全量 docs-only）。
+- **依赖/六表扫描无变化**：本 PR 零 `Cargo.toml`/`Cargo.lock`/`migrations/` 改动（diff 仅 `docs/`）。
 
 ## 14. 勘误记录
 
-- （空：待 OPEN 项裁决后记入。）
+- （空：待 OPEN 项（P8 单位）裁决后记入，同时勘误 ui-spec §5 P8 行与 T43 schema。）
 
 ## 变更记录
 
 - v1.0 (2026-08-31) 骨架：章节与每契约一行结论占位。
 - v1.0 (2026-08-31) 扩充：状态词汇与 C1-C8 全量契约定义（P8 单位保持 OPEN(OWNER: human)）。
+- v1.0 (2026-08-31) 定稿：P0 审计 49 项逐项映射、P1-P8 owner 映射、六表 migration 裁决（零 DDL）、T41 后勘误清单、验收自查。
