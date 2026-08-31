@@ -9,7 +9,10 @@ pub use catalog::{
     WeeklyScheduleSpec, WeeklyWindowSpec,
 };
 pub use error::PricingError;
-pub use persistence::{CatalogLoad, load_catalog, load_or_seed_catalog, save_catalog_atomic};
+pub use persistence::{
+    CatalogLoad, CatalogSnapshot, load_catalog, load_catalog_snapshot, load_or_seed_catalog,
+    save_catalog_atomic,
+};
 
 #[cfg(test)]
 mod tests;

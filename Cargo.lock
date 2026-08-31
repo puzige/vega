@@ -6420,6 +6420,7 @@ dependencies = [
  "ulid",
  "vega_runtime",
  "vega_store",
+ "vega_token",
  "vega_tools",
 ]
 

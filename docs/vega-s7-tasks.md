@@ -1,12 +1,12 @@
 # ✦ Vega — S7 任务卡（Sprint 7 · Token 经济 v1 · W13-14）
 
-**版本** v0.2 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**版本** v0.4 · 2026-08-31 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S7 目标**（phase1-plan §2）：API usage 精确回收；流式期间实时估算；每次调用与每个任务的成本可见；数据目录 `pricing.json` 内置主流模型并支持用户自定义。
 
 **Sprint DoD**：确定性 mock 任务完整证明“流式近似 → API usage 校准 → `cost_microcents` 实算 → 六表内落库 → Composer/任务汇总可见”；真实任务与 API 账单误差 `<5%` 的最终证据由人类 dogfood 提供，executor 不索取 key、不发真实请求、不产生费用。
 
-> **并行基线**：本 SDD 分支从 `master` `7e57e6328487` 创建时，S6 T33-T35 尚在其他 worktree 串行实施。S7 本卡只新增本文档，不引用未合并代码。T36 纯 headless 可并行；T37-T41 开工前必须 rebase 到已合并 S6，并只适配届时真实 Settings/Composer/route seam；不得在本 SDD 卡预改 S6 代码。
+> **实现基线**：T37 开工基线为 `master` `90e5e35`，S6 T35 已合并；T37-T41 只适配该基线上的真实 Settings/Composer/route seam，不反向修改已冻结的 S6 契约。
 >
 > **白名单降级裁决**：phase1-plan §2/§3.3 与 features A10-02 写有 `tiktoken-rs`，但它不在 exec-guide §5 白名单。S7 不引入它或任何替代 tokenizer；v1 固定为“API usage 最终权威 + 流式期间按 Unicode scalar 字符数作有界近似”，并以 `≈` 明示估算。估算不写 `token_usage`，usage 到达后原位校准。未来引入 tokenizer 必须另行获批。
 >
@@ -36,6 +36,19 @@ T36 动态价格补充契约（v0.2）：
 - `models` / `windows` / `weekdays` 的 logical cap 在 serde sequence 边界执行：retain 到 exact limit 后只用零 `T` 构造的 ignored probe 判断 `+1`，不得先 deserialize 第 `limit+1` 个业务对象。ordinary save 对既有 target snapshot 的 exact bytes 必须在创建 temp 前走同一 strict decoder；损坏文件返回 typed codec/schema error、bytes 不变、零 temp/rename。missing target 的首次 seed 不受此限制。
 - optional 只表示 field absent：`max_standard_input_tokens` / `schedule` 缺失映射为 `None`，但字段显式出现为 JSON `null` 必须拒绝；所有 required field 的 `null` 同样拒绝，不做缺失或默认值归一。
 
+T37 Settings/authority 补充契约（v0.3）：
+
+- `pricing_v1` 不增加 `origin` 字段。built-in membership 每次从 `PricingCatalog::built_in()` 重建；持久化目录必须保留全部五个 built-in exact model id。built-in 不可删除，Reset 恢复完整 exact built-in spec；未来 built-in 变化不得静默合并进既有 v1 文件。
+- GPT built-in 只允许编辑四项 base rate，并锁定 exact `max_standard_input_tokens` 与无 schedule；Claude built-in 只允许编辑四项 base rate，并锁定 static metadata；DeepSeek built-in 显示并编辑四项 base rate + 四项 peak rate 共 **八项** string input，`schedule.kind` 与 windows 锁定为 built-in exact metadata；custom 只允许四项 static rate，`max_standard_input_tokens=None`、`schedule=None`。UI 不得提交 generic `ModelPricingSpec`；conversation policy 必须按 typed mutation 重建并复验完整 spec。
+- malformed/unsafe 既有 `pricing.json` 必须 byte-preserve；不得删除、截断、备份后覆盖、静默 seed 或强制保存。authority 进入 `Invalid(error_code)`，编辑/保存/任务启动全部阻断，仅允许显式 Reload。用户外部修复或删除后显式 Reload；只有 target 确实 missing 时才可重新 seed built-ins。
+- `vega_token` 提供 private-bytes `CatalogSnapshot` 给 headless service 做 byte-exact + semantic reconciliation；raw bytes、绝对路径与底层 codec error 不得越过 token/conversation 边界。ordinary save 只有安全 reload 与 desired canonical bytes/semantic 同时 exact 才发布新 authority。
+- app/controller 是唯一 pricing authority，状态 exact 为 `Loading | Ready(authority) | Saving | Reloading | Invalid(error_code)`。只有 `Ready` 可启动任务或开始 pricing mutation；Save/Reload single-flight、无队列、无自动 retry。Settings entity close 只 fence UI delivery，不取消 reconciliation；reopen 从 controller 重新投影。
+- locked-profile policy 必须在每个 authority ingress 执行：initial load、explicit Reload、ordinary save 后 reload、`SaveTargetChanged` winner 与 `CommittedDurabilityUnknown` reconciliation 都先复验五个 built-in exact membership/metadata 及 custom static-only；codec-valid 不等于 policy-valid，任一失败都不得发布 `Ready`。
+- `Saving` 开始后 desired catalog、operation generation、旧 Ready authority 与 dirty/conflict draft 均由 controller 持有，绝不寄存在 Settings entity。ordinary success、target race、durability unknown、pre-commit failure、worker spawn/channel failure都必须 exact first-wins 收到一个终态；Settings close during save 不丢 desired、不取消 worker、不提前回 Ready，也不得永久卡在 `Saving`。
+- `Ready` 若持有 pre-commit failure 或 external-winner conflict draft，普通 Add/Edit/Reset/Delete 一律 typed `Busy` 拒绝且不得替换或丢失 draft；UI 只提供 **Retry original plan**、**Discard and adopt current authority** 与 explicit Reload。Retry 复用 controller 持有的 exact original plan 并重新走一次普通 atomic save；若该次结果仍 ambiguous，仍只做一次安全 reconcile，禁止 blind retry。Discard 只丢 controller draft，不改文件，随后以当前 authority 投影。
+- `CommittedDurabilityUnknown` 禁止盲目再次保存；立即且仅一次 reload：exact desired → `Ready` + persistent warning，valid different winner → 采用 winner 且保留 dirty draft/conflict，reload failure → `Invalid(RecoveryRequired)`。pre-commit failure 保留旧 `Ready` authority 与 dirty draft；`SaveTargetChanged` reload 一次后采用 valid winner，否则进入 recovery-required。valid external winner 可给新 run 计价，但旧冲突 draft 仍保持 dirty。
+- same-user 外部编辑只有显式 Reload 或 restart 后才成为 authority；不加 watcher。两次安全捕获之间的 complete same-user path swap 属已接受 TOCTOU residual，报告必须如实记录，不得宣称 race-free。
+
 ### C2 · 整数成本与 cache 语义（A10-04）
 
 - OpenAI-compatible `input` 保持 API 的 total prompt token；计价时 `uncached_input = input - cache_read`，`cache_read > input` 拒绝为 invalid usage；`cache_write` 按独立字段另计，S4 OpenAI wire 当前无该字段时仍为 0。
@@ -48,6 +61,9 @@ T36 动态价格补充契约（v0.2）：
 - 每个 provider call 的 `TextDelta` 只形成内存 **visible-output-only** provisional estimate：累计 Unicode scalar 数后 `ceil(chars/4)`，全程 checked、有固定上限；UI 标 `≈`。Thinking/reasoning 与 tool JSON 不在可见输出估算内，因此不得将该值声称为完整 completion usage。它不修改 API usage、不落库、不写日志，下一轮从 0 开始。
 - 对应 `UsageUpdated` 到达时，清除该轮 provisional 值，并以 API 的 input/output/cache_read/cache_write 与实算 cost 更新累计值；若无 usage 便进入 tool round，在该轮首个 `ToolCallProposed` 边界清除 provisional，保证下一 provider call 从 0 开始。`MessageFinished`/error/interrupted 无 usage 时同样清除 provisional 且显示“usage unavailable”，绝不把近似写成权威值。
 - 重试未产生 usage 不写行；一次 provider call 只接受一个 terminal usage。重复/malformed/usage-after-terminal fail closed；测试必须覆盖多轮工具调用、重试、取消、迟到/重复 usage 与 overflow。
+- run preflight 在 durable Thread/Project load 后、`AppAgentController::begin`/artifact generation/channel/worker/config/Keychain/provider 前，从当前 `Ready` authority 按 durable `Thread.model` exact case-sensitive 选择 immutable pricing capability。失败时 begin/spawn/key/provider request 均为 0，并引导打开 Settings；不得用 config default、alias、prefix/glob 或 stale UI projection替代。
+- immutable selection 随 run ownership 移交并贯穿全部 agentic rounds；Settings 在 run 中保存/Reload 不得替换该 run selection，runtime/provider 不得逐调用重读 pricing file 或 controller current authority。
+- 每个 logical provider call 在第一次 `provider.chat_stream` 之前立即捕获 Unix UTC 秒；provider 内部 HTTP retry 复用该 timestamp，后续 tool/agentic round 捕获新 timestamp。该 call 的首个且唯一 authoritative Usage 必须用 frozen selection + frozen timestamp quote；quote 失败不得写 zero/partial usage row，事件链保持唯一。
 
 ### C4 · UI 投影与性能（A10-05/A10-06）
 
@@ -98,18 +114,18 @@ S7 SDD PR → T36 pricing catalog + integer engine → T37 pricing settings/cust
 ## T37 · Pricing settings + custom model persistence（A1-12/A10-03）
 
 - **前置**：T36 + 已合并 S6 最新 master · **参考**：C1/C4/C5；ui-spec §4.6/§6。
-- **范围**：现有 Settings route、app controller 与必要 conversation safe projection；UI 不直接读写文件。
-- **产出**：data-root `pricing.json` wiring；模型价格列表/新增/编辑/删除；四项 USD/1M string inputs；校验/损坏文件 typed inline error；真实 provider call 前 exact model pricing preflight。内置项与 custom 统一展示，保存后重新读取并 byte/semantic verify。
-- **验收**：临时 data root 下完整 CRUD + restart；duplicate/unknown/malformed/atomic-write failure 保留旧文件；键盘可达、960×600、Light/Dark/CJK；未定价 model 在 spawn/provider request 计数仍 0 时被拒绝。
-- **禁区**：不做模型在线拉价、汇率、provider/key 编辑重构、通配匹配；不触碰真实 data root/key。
+- **范围**：`vega_token::CatalogSnapshot` private-byte authority、conversation headless pricing policy/service、app-owned `PricingController`、现有 Settings route 的 safe projection/actions；UI 不直接读写 pricing file。T37 不接 runtime usage、不改 store schema/DDL。
+- **产出**：data-root `pricing.json` wiring；built-in/custom 统一列表与 typed 新增/编辑/删除/Reset；GPT/Claude 四项 USD/1M string input、DeepSeek base+peak 八项、custom 四项，所有 profile metadata 按 C1 锁定；malformed/unsafe typed inline error + explicit Reload；`Loading/Ready/Saving/Reloading/Invalid` durability state；真实 provider call 前 exact durable-thread model preflight。保存后必须 byte/semantic exact reload reconcile；durability-unknown 按 C1 单次 reload 且零自动 retry。
+- **验收（E2E-first）**：保留 T36 codec/process/atomic safety kernel；新增一个 owned temp data-root headless production journey，覆盖 missing seed → custom add/update/delete → restart → malformed `Invalid` byte-preserve → external repair + explicit Reload；新增一个 production Settings/app journey，覆盖未定价 model 的 begin/spawn/provider-request 均 0、close during save 后 controller 完成并 reopen 投影，以及配置成功后只用 `MockProvider` 越过 gate exact once。只保留无法由 E2E 稳定证明的窄测试：snapshot byte/semantic、built-in locked profile/DeepSeek 8-input、durability-unknown winner、generation first-wins、keyboard/960×600/theme/CJK；不得复制 T36 错误笛卡尔矩阵。证据按 exec-guide §7 写入仓库，raw log 仅放 fresh `/private/tmp`。
+- **禁区**：不做模型在线拉价、汇率、provider/key 编辑重构、通配匹配；不触碰真实 data root/key，不用真实 provider/key/network；不新增依赖、DDL 或事件 variant。
 - **commit**：`feat(A1-12): add custom pricing settings`（≤3 commits）。
 
 ## T38 · API usage calibration + runtime/store cost pipeline（A10-01/A10-04）
 
 - **前置**：T37 · **参考**：C2/C3/C5；tech-spec §4.2；现有 S4 cost hook与 `token_usage` insert。
-- **范围**：`vega_runtime` 纯计价接钩、`vega_conversation` 事件/持久化、`vega_store::token_usage` typed query，以及 C5 单一追加 migration；不改 UI。
-- **产出**：selected exact model price 安全注入 runtime；每次 `ProviderEvent::Usage` 实算 cost；既有双层事件映射与一行一调用持久化；`pricing_version` 区分 legacy/unpriced 与 priced zero；按 thread/message 的 checked aggregate查询，恢复后结果一致。
-- **验收**：MockProvider 单轮/多工具轮/zero/cache/maximum/invalid；DB 四 token 列 + 非零 cost exact；event/DB aggregate一致；duplicate/late/retry/cancel无双记；删除 thread 后 usage 审计仍可聚合；S4 TODO E2E 仅改期望成本 fixture且继续全绿。
+- **范围**：T37 immutable exact-model selection handoff、`vega_runtime` 纯计价接钩、`vega_conversation` 事件/持久化、`vega_store::token_usage` typed query，以及 C5 单一追加 migration；不改 UI、不读 pricing file/controller current authority。
+- **产出**：run-start selection 安全注入 runtime；每个 agentic round 在 logical provider call start 冻结 UTC 秒，provider internal retry 复用，后续 round 重新捕获；每次首个 authoritative `ProviderEvent::Usage` 用 frozen selection/time 实算 cost；既有双层事件映射与一行一调用持久化；`pricing_version` 区分 legacy/unpriced 与 priced zero；按 thread/message 的 checked aggregate查询，恢复后结果一致。
+- **验收（E2E-first）**：一个 headless production journey 用 `MockProvider` 运行两次 provider call + 一次 tool round，断言两个独立 call-start timestamp/profile、exact usage/cost/event、两行 DB 与 restart aggregate；Settings mid-run authority变化不影响 frozen run selection，provider internal retry不改变 call timestamp。仅保留 narrow unit/property 表覆盖 zero/cache/maximum/invalid、UTC profile boundary、duplicate/late/cancel/overflow与 checked aggregate；不复制 T36 pricing codec/atomic矩阵。删除 thread 后 usage 审计仍可聚合；S4 TODO E2E 仅改期望成本 fixture且继续全绿。全程只用 MockProvider/temp store，零真实 key/network/费用。
 - **命令**：
 
   ```sh
@@ -195,9 +211,11 @@ S7 SDD PR → T36 pricing catalog + integer engine → T37 pricing settings/cust
 2. ui-spec §4.4 的 `¥` 样例改为 `US$`，因为 `Microcents` 与内置官方价格均按 USD；Phase 1 不做 FX。
 3. 真实账单 `<5%`、真实 provider、key 与 dogfood 属人类活动；executor 只提供 mock E2E 与操作模板。
 4. A10-07 dashboard、A10-08预算、A10-09跨模型对比、A10-10优化、A10-11闲时联动、A10-12导出均不在 S7。
-5. S6 尚并行；只先并行无交叉的 T36 纯 headless 卡；T37-T41 只在 rebase 后按真实 Settings/Composer/diff/route seam 接入，不反向修改已冻结 S6 契约。
+5. T37 已从合并 S6 T35 的 `90e5e35` 基线开工；T37-T41 只按当前真实 Settings/Composer/diff/route seam 接入，不反向修改已冻结 S6 契约。
 
 ## 变更记录
 
+- v0.4 (2026-08-31) T37 authority review：冻结 dirty/conflict draft 的 controller ownership；draft 存在时普通 mutation fail closed，只允许 Retry original plan、Discard adopt authority 或 explicit Reload，且 ambiguous Retry 仍禁止 blind retry。
+- v0.3 (2026-08-31) T37/T38 implementation preflight：冻结 built-in/custom 编辑策略与 DeepSeek 八项输入/locked metadata，并要求所有 authority ingress 复验 policy；malformed external recovery、controller-owned Saving desired/generation/draft 与完整 durability 终态；run-start immutable exact-model selection、logical provider-call start UTC-second 计价及 Settings mid-run semantics；验收改为 E2E-first 并保持零 key/network/新依赖；实现基线更新为已合并 S6 T35 的 `90e5e35`。
 - v0.2 (2026-08-31) T36 官方价格核验后补齐 flat schema 缺口：冻结 strict UTC weekly schedule、显式 quote timestamp、OpenAI 272K standard 上限及 DeepSeek peak 半开窗口；Anthropic cache-write 限定为 5m standard profile；原子保存明确 rename commit point、post-commit durability-unknown 与保守 target preflight。
 - v0.1 (2026-08-31) S7 首版任务拆分与冻结契约。

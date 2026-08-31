@@ -41,6 +41,22 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-v", text_input::Paste, None),
         KeyBinding::new("cmd-c", text_input::Copy, None),
         KeyBinding::new("cmd-x", text_input::Cut, None),
+        KeyBinding::new(
+            "enter",
+            settings::ActivatePricingAction,
+            Some("PricingSettings"),
+        ),
+        KeyBinding::new(
+            "space",
+            settings::ActivatePricingAction,
+            Some("PricingSettings"),
+        ),
+        KeyBinding::new("tab", settings::NextPricingAction, Some("PricingSettings")),
+        KeyBinding::new(
+            "shift-tab",
+            settings::PreviousPricingAction,
+            Some("PricingSettings"),
+        ),
         // T13 行内重命名：Enter 提交（作用域 ThreadRename；Esc 取消通过
         // 重命名编辑器拦截全局 CloseSettings 动作实现，见 sidebar.rs）。
         KeyBinding::new("enter", sidebar::ConfirmRename, Some("ThreadRename")),

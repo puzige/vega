@@ -5,7 +5,8 @@ use tempfile::tempdir;
 
 use crate::{
     CatalogLoad, ModelPricingSpec, PricingCatalog, PricingError, PricingProfile, RateSpec,
-    UsageCounts, catalog, load_catalog, load_or_seed_catalog, persistence, save_catalog_atomic,
+    UsageCounts, catalog, load_catalog, load_catalog_snapshot, load_or_seed_catalog, persistence,
+    save_catalog_atomic,
 };
 
 fn static_spec(
@@ -142,13 +143,44 @@ fn missing_file_seeds_and_reopens_without_touching_global_data() {
     let path = directory.path().join("pricing.json");
     let first = load_or_seed_catalog(&path).unwrap();
     assert!(first.seeded);
+    assert!(!first.durability_unknown);
     assert_eq!(first.catalog.specs().len(), 5);
     let first_bytes = fs::read(&path).unwrap();
 
     let second = load_or_seed_catalog(&path).unwrap();
     assert!(!second.seeded);
+    assert!(!second.durability_unknown);
     assert_eq!(first.catalog, second.catalog);
     assert_eq!(fs::read(path).unwrap(), first_bytes);
+}
+
+#[test]
+fn ambiguous_initial_seed_reloads_once_without_blind_retry() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("pricing.json");
+    let loaded = persistence::load_or_seed_with_postcommit_failure(&path).unwrap();
+    assert!(loaded.seeded);
+    assert!(loaded.durability_unknown);
+    assert_eq!(loaded.catalog, load_catalog(&path).unwrap());
+}
+
+#[test]
+fn catalog_snapshot_requires_semantic_and_byte_exact_match() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("pricing.json");
+    let catalog = PricingCatalog::built_in().unwrap();
+    save_catalog_atomic(&path, &catalog).unwrap();
+    let snapshot = load_catalog_snapshot(&path).unwrap();
+    assert!(snapshot.exactly_matches(&catalog).unwrap());
+
+    let semantically_equal =
+        serde_json::to_vec(&serde_json::from_slice::<Value>(&catalog.encode().unwrap()).unwrap())
+            .unwrap();
+    fs::write(&path, semantically_equal).unwrap();
+    let snapshot = load_catalog_snapshot(&path).unwrap();
+    assert_eq!(snapshot.catalog(), &catalog);
+    assert!(!snapshot.exactly_matches(&catalog).unwrap());
+    assert!(!format!("{snapshot:?}").contains("gpt-5.6"));
 }
 
 #[test]
@@ -948,6 +980,7 @@ fn public_errors_and_catalog_debug_are_content_and_path_free() {
     let load = CatalogLoad {
         catalog: catalog.clone(),
         seeded: true,
+        durability_unknown: false,
     };
     let spec = catalog.specs().next().unwrap();
     let public_debug = format!("{load:?} {spec:?} {:?}", spec.rates);
