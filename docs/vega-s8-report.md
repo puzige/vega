@@ -103,17 +103,76 @@ S8 交付台账（`gh pr list --repo puzige/vega --state merged` 实时核对，
 
 diff→commit 真实 Git 链路由 S6-T34 两段式 commit E2E 与 T51 `commit_proof` 测试族覆盖（零 `/usr/bin/open`、零 developer repo/global Git config，owner 证据见 s6-report）。**上表为 `engineering fixture passed` 的证据边界**：mock 账单误差 0 ≠ 真实账单（§10）；"Phase 1 milestone passed" 状态词本报告不得使用（SDD §1 机械判定）。
 
-## 6. ui-spec §6 检查矩阵
+## 6. ui-spec §6 检查矩阵（SDD §1 状态词汇；T48 未执行，自动化项引各卡已有证据）
 
-（TBD-EXPAND）
+| 检查项 | 自动化证据 | 状态（未自动化项） |
+|---|---|---|
+| token 色扫描 | `rg '#[0-9a-fA-F]{6}' crates/vega_ui/src/` **0 命中**（本卡 HEAD 复跑）；卡片族全走 theme/Typography token（T39/T40/T47 GPUI tests） | `engineering fixture passed`；真实字体/金额对齐观感 `human pending` |
+| Light/Dark | 双 theme render/state tests（`vega_theme` 6 + `vega_ui` theme suites，本卡复跑全绿） | `engineering fixture passed`；真实切换无闪烁 `human pending` |
+| CJK | CJK/emoji 估算与布局不 panic（stream_estimate 14 例 / markdown 32 例 / T41 E2E 中文轮；本卡复跑全绿） | `engineering fixture passed`；fallback/豆腐块真实窗口 `human pending` |
+| keyboard | file_selector 键盘（T47）、Composer/Stop/Resume GPUI 窄测（T46/T47）、permission 卡焦点链（S5）——本卡复跑全绿 | `engineering fixture passed`；完整真实窗口链路（建会话→发消息→批准→diff→提交不碰鼠标）`human pending` |
+| 960×600 | layout constraints/compact formatter tests（本卡复跑全绿） | `engineering fixture passed`；像素截图 `human pending` |
+| P1 120fps | 60Hz 主机 frame-build margin p50=6.541µs/p99=25.833µs（T43 §6） | 变高迁移 + 120Hz 实测：`hardware pending`（T50）+ `deferred-to-final-optimization`（T44） |
+| P2 `<16ms` | p99=14,406µs 短跑（T43 §5，10s @1,000δ/s） | 短跑通过非终证；5 分钟 soak 终证 `deferred-to-final-optimization` |
+| P3/P4/P5/P6 | frozen remat=0（probe）；anchored prepend owner tests（T45） | P3/P4 现实现 `engineering fixture passed`、变高复测归期末批；P5/P6 `human pending`（T48 未执行，无证据不写 ✅） |
+| P7 `<50ms` | p95=1,027,906µs（T43 §3） | **`performance gate failed`** + `deferred-to-final-optimization` |
+| P8 `<100MB` | p95=109,084,672 B 双口径超阈（T43 §4） | **`performance gate failed`** + `deferred-to-final-optimization`；单位裁决 `human pending`（SDD §10） |
+| competitor 走查 | 无自动化替代 | Codex/ZCode 并排截图未做 `human pending` |
 
-## 7. 红线对照
+## 7. 红线对照（scan 逐条分类，非"零输出即完成"）
 
-（TBD-EXPAND）
+| redline | 结果与分类 |
+|---|---|
+| 无 tiktoken | `rg tiktoken Cargo.lock` **0 命中**（本卡 HEAD 复跑）。`rg tiktoken crates docs` 命中全部为文档对该白名单裁决本身的记载（phase1-plan/features/s7-tasks/s7-report 等）——`vega_token` 不含 tokenizer，流式为字符近似 + API usage 校准（主人决策 2，S7 偏离 #1） |
+| migration 恰 3 | `crates/vega_store/migrations/` 恰 `0001/0002/0003`（本卡复列）；`rg 'CREATE TABLE\|ALTER TABLE' crates`（非 tests）12 条语句与 S7 基线逐条相同，零新增（T45 PR 已作 DDL 对照，本卡复核 migrations 目录清单）；恰好六表 |
+| 无 test-only 生产 seam | T45 走 `vega_store::messages::page_before` + `restart_history_page` 生产查询；T46 测试-only（`vega/src/main.rs` 仅 `#[cfg(test)]` gpui fence 测试）；T47 主干 E2E 走生产 worker 提交链路；T43 只改 `xtask/`（工具 crate，非生产运行时） |
+| 无真实 key/网络 | S8 全部卡零真实 key、零真实请求、零费用；T43 bench 临时 HOME + provider=none/network=none 子进程 attestation（baseline §2） |
+| API 冻结（T51 facade） | T51 逐字节核验：types/agent/conversation_stream/sidebar/git_workspace re-export 路径不变、`actions!` 不动、visibility 扩张仅 `pub(crate)`；3 个抽检函数逐字节一致、197 条断言零漂移（T51 PR 记录） |
+| 非测试 unwrap/expect | S8 新增代码仅 T43 xtask `probe.rs:136` 一处 `expect`（T43 P2-7 accepted：工具 crate、方向安全）；生产 crates 无新增 |
+| 1000 行硬上限（决策 9） | `find crates xtask -name '*.rs'` **0 个文件 >1000 行**，最大 `vega_runtime/src/agent/tools_exec.rs` 996 行（本卡 HEAD 复跑；T51 自报 906 系精度 nit，如实更正） |
+| 色值/字号 token | `rg '#[0-9a-fA-F]{6}' crates/vega_ui` **0 命中** |
+| 零新外部依赖 | S8 七个 merged PR 均零新依赖；`cargo tree` 无版本冲突（§2）；T43 仅复用既有依赖边（xtask 内） |
 
 ## 8. carryforward 核销专章
 
-（TBD-EXPAND）
+输入：T38 五项（S7 已核销，本卡复认终态）、T39 三项、T40 三项、T41 两项、T42 三项、T43 五项（审阅清单 1-5）、T45 四项、T46 四项、T51 一项、F2/F3。逐项结论（resolved / carried-to-final-opt / documented）：
+
+| # | 项 | 结论 | 依据 |
+|---|---|---|---|
+| T38 P2-1 | mid-run authority / retry timestamp E2E 断言未显式测试 | **documented**（S7 §7 已核销） | 结构保证（catalog 按值拥有、timestamp 每 call 冻结）；T41 E2E 增补「run 后 catalog 变更不重定价」 |
+| T38 P2-2 | `usage_pricing_e2e.rs:169` 注释失实 | **resolved**（S7） | T41 分支 commit 改写为 by-construction 表述 |
+| T38 P2-3 | `unix_utc_seconds()` `unwrap_or_default` 回退 | **documented**（S7） | accepted：不可达、typed error 改造随期末批 |
+| T38 P2-4 | pub 化最小签名扩张 | **documented**（S7） | accepted：RejectPermissionHook 即真实生产默认 hook |
+| T38 P2-5 | 生产调用点未接计价 | **resolved**（S7/T39） | `main.rs` 生产 wiring + T41 E2E 同源验证 |
+| T39 P2-1 | `format_compact_tokens` 999,999→`1000.0k`（types/meter.rs） | **carried-to-final-opt** | 本卡核实现码仍 `<1_000_000` 判 k；修复涉 .rs，docs-only 不动 |
+| T39 P2-2 | meter fence 无条件放行 ToolCall* | **documented**（S7） | accepted：meter 镜像 stream 接受规则，in_run 门足够 |
+| T39 P2-3 | 重复 MessageStarted meter desync | **documented**（S7） | accepted：下一 fenced terminal 自愈，校准不受污染 |
+| T40 P2-1 | `summary_card.rs` compact_tokens 同款 k/M 边界 | **carried-to-final-opt** | 与 T39 P2-1 同根，期末批一并修（本卡核实仍现症） |
+| T40 P2-2 | t40-e2e 测试过滤写法欠精确 | **documented**（S7） | accepted：数字无误，证据文件为冻结记录不改写 |
+| T40 P2-3 | duration 含有界 poll 延迟 | **documented**（S7） | accepted：已登记偏离，重启落点 thread-open 投影 |
+| T41 P2-1 | s7-report §11 结转汇总计数错位（写 4/8，实际 3/9） | **carried-to-final-opt** | 报告为冻结证据不改写；随期末批 docs 勘误 |
+| T41 P2-2 | s7-report "604 行"实为 603 | **carried-to-final-opt** | 精度 nit，随期末批 docs 勘误 |
+| T42 P2-1 | ui-spec 头部版本行 v0.3 vs changelog v0.4 | **carried-to-final-opt** | 本卡核实 `docs/vega-ui-spec.md` 头部仍 v0.3；一行勘误归期末批 docs 勘误 |
+| T42 P2-2 | PR #45 body commit subject 失实 | **resolved**（S7） | 合并前已更正 |
+| T42 P2-3 | SDD §11.1 缺「T41 报告后同步勘误」标注 | **carried-to-final-opt** | §12 已覆盖，标注位置不齐，随期末批 docs 勘误 |
+| T43 P2-1 | xtask c2_gate 灰区扩展 `rounds==C2_ROUNDS` 恒 false | **carried-to-final-opt** | 失效方向保守（宁漏扩展不误扩展）；期末批随 P8 gate 重启用 |
+| T43 P2-2 | canonical JSON p2 块缺 run_completed/per_second 字段 | **carried-to-final-opt** | schema 勘误随期末批（T48 消费前） |
+| T43 P2-3 | baseline doc "40 轮"实为 20 轮 | **carried-to-final-opt** | 文档笔误，随期末批 docs 勘误 |
+| T43 P2-4 | report.rs 控制台 "performance gate passed" 不在七词表 | **carried-to-final-opt** | 仅 console 字符串（JSON 产物合规）；期末批统一改用词表 |
+| T43 P2-5 | render probe 以真实 HOME spawn，未核查 profile 触碰 | **carried-to-final-opt** | 期末批核查项（probe 只读渲染、无写入证据；T48 消费前核查） |
+| T45 P2-1 | prepend 未平移 demo `InjectionState.entry_index` | **carried-to-final-opt** | 本卡核实 `composer.rs` 注入 index 无 prepend 平移路径；demo 注入+在顶组合才触发，无数据损坏 |
+| T45 P2-2 | 一致快照测试缺页读/批读交错写入用例 | **carried-to-final-opt** | 结构保证（deferred 读事务）成立、证明缺失；决策 7 下不追认矩阵，归期末批 |
+| T45 P2-3 | CorruptRow 判定依赖 store 错误文案子串 | **documented** | accepted：fail-closed 不破；typed error chain 随期末批 |
+| T45 P2-4 | 为测试扩只读 production API（hydrated_entry_count 等） | **documented** | accepted：只读观察口，无行为面 |
+| T46 P2-1 | 分支基点滞后两点 diff 伪影 | **documented** | accepted：merge 无影响 |
+| T46 P2-2 | 100 例矩阵计时口径注释（"Stop→terminal"实为 run-start→terminal，更保守） | **documented（本报告核销）** | **T49 勘误**：矩阵实测口径为 run-start→terminal（Stop 于权限边界等待时触发），比卡面口径更保守，p99=189.7ms KPI 仍成立；测试内注释已注明与 T43 口径不可比 |
+| T46 P2-3 | `resume_refusal_on_stale_rows…` 测试名与行为不符（实为先修复再续跑） | **carried-to-final-opt** | 现名 `resume_refusal_on_stale_rows_happens_before_any_provider_round` 已可读但改名涉 .rs，归期末批 |
+| T46 P2-4 | pending 行 audit 括注 | **documented（本报告核销）** | E2E 断言为解析级（terminal 状态/审计列）；字节级由 recovery owner 单测覆盖 |
+| T51 P2-2 | 546 处 facade `#[allow(unused_imports)]` 待收敛 glob | **carried-to-final-opt** | 机械项，期末优化批顺手收敛 |
+| F2 | `branch_controller_close_during_preflight…` GPUI leaked-handles 偶发 | **carried-to-final-opt** | 本卡 HEAD 全量跑未触发（823/0/1 一次通过）；deflake 归期末批；在此之前 pre-push 偶发失败 kill 重试一次（决策 8） |
+| F3 | `trusted_mutation_runner…` 500ms spawn 竞态 | **resolved** | T51 commit `a165647` deflake：不确定超时重试至 5 次新 fixture；10/10 连续通过（T51 PR 记录） |
+
+**汇总**：32 项——resolved 4（T38 P2-2、T38 P2-5、T42 P2-2、F3）、carried-to-final-opt 14、documented 14（其中 T38 五项与 T39/T40 大部分为 S7 已核销项的终态复认）。S7→S8 无一项被静默丢弃。
 
 ## 9. 偏离专章（主人决策 6/7/9 + F2/F3）
 
