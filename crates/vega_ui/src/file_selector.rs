@@ -119,12 +119,12 @@ impl FileSelectorModel {
     }
 }
 
-/// Focus-capable rendering is owned by the conversation stream: it renders
-/// the dropdown rows from [`FileSelectorModel::candidates`] inside the
-/// composer card and registers the [`AcceptFile`]/[`NextFile`]/[`PreviousFile`]/[`CancelFile`]
-/// actions scoped to the `FileSelect` key context, so the model above stays
-/// the single source of truth and the selector adds no extra focus stops to
-/// the composer chain.
+// Focus-capable rendering is owned by the conversation stream: it renders
+// the dropdown rows from [`FileSelectorModel::candidates`] inside the
+// composer card and registers the [`AcceptFile`]/[`NextFile`]/[`PreviousFile`]/[`CancelFile`]
+// actions scoped to the `FileSelect` key context, so the model above stays
+// the single source of truth and the selector adds no extra focus stops to
+// the composer chain. (Tests for the model live below.)
 
 #[cfg(test)]
 mod tests {

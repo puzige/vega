@@ -61,7 +61,7 @@ pub struct ResolvedReference {
 /// (they cannot be addressed by a text token), sorts lexicographically, and
 /// truncates at `limit`.
 pub fn bounded_file_index(root: &Path, limit: usize) -> Result<Vec<String>, ToolError> {
-    let root = root.canonicalize().map_err(|error| ToolError::Io(error))?;
+    let root = root.canonicalize().map_err(ToolError::Io)?;
     let mut entries: Vec<String> = Vec::new();
     for entry in crate::tools::walker(&root) {
         let entry = entry.map_err(|error| ToolError::Traversal(error.to_string()))?;
@@ -144,10 +144,9 @@ fn reference_tokens(content: &str) -> Vec<String> {
             }
             if end > start
                 && let Ok(path) = std::str::from_utf8(&bytes[start..end])
+                && !tokens.iter().any(|token| token == path)
             {
-                if !tokens.iter().any(|token| token == path) {
-                    tokens.push(path.to_string());
-                }
+                tokens.push(path.to_string());
             }
             index = end;
         } else {
@@ -168,7 +167,7 @@ pub fn resolve_bounded_references(
     max_file_bytes: u64,
     max_total_bytes: u64,
 ) -> Result<Vec<ResolvedReference>, ToolError> {
-    let root = root.canonicalize().map_err(|error| ToolError::Io(error))?;
+    let root = root.canonicalize().map_err(ToolError::Io)?;
     let tokens = reference_tokens(content);
     if tokens.len() > max_files {
         return Err(ToolError::TooManyResults { limit: max_files });
