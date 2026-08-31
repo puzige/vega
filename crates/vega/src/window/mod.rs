@@ -83,6 +83,7 @@ mod agent;
 mod artifact;
 mod branch;
 mod commit;
+mod commit_reconcile;
 mod diff;
 mod pricing;
 mod render;
