@@ -4578,8 +4578,14 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+        // The writer's open() blocks until the tool opens the FIFO for reading.
+        // Signal that rendezvous and cancel only afterwards: cancelling on
+        // approval alone could win the race under load and leave the writer
+        // blocked in open() forever.
+        let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
         let writer = std::thread::spawn(move || {
             let mut pipe = fs::OpenOptions::new().write(true).open(slow_path).unwrap();
+            let _ = connected_tx.send(());
             pipe.write_all(b"auditable output\n").unwrap();
             std::thread::sleep(Duration::from_millis(50));
         });
@@ -4601,7 +4607,7 @@ mod tests {
         ])]);
         let cancel = CancellationToken::new();
         let trigger = cancel.clone();
-        let mut cancellation_scheduled = false;
+        let mut connected_slot = Some(connected_rx);
 
         let run = run_thread_task_with_sink(
             &store,
@@ -4612,12 +4618,14 @@ mod tests {
             "System",
             cancel,
             |event| {
-                if !cancellation_scheduled
-                    && matches!(event, ConversationEvent::ToolCallApproved { .. })
+                if matches!(event, ConversationEvent::ToolCallApproved { .. })
+                    && let Some(connected) = connected_slot.take()
                 {
-                    cancellation_scheduled = true;
                     let trigger = trigger.clone();
                     tokio::spawn(async move {
+                        // Bounds the wait so a tool that never starts fails
+                        // the test visibly instead of hanging silently.
+                        let _ = tokio::time::timeout(Duration::from_secs(10), connected).await;
                         tokio::time::sleep(Duration::from_millis(5)).await;
                         trigger.cancel();
                     });
