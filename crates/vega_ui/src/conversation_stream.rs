@@ -59,9 +59,10 @@ use std::time::{Duration, Instant};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, FontWeight, MouseButton,
-    MouseUpEvent, Render, Rgba, Window, actions, div, px, uniform_list,
+    MouseUpEvent, Pixels, Render, Rgba, Window, actions, div, point, px, uniform_list,
 };
 use vega_conversation::agent::PermissionQueue;
+use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
     ConversationEvent, ConversationMeter, MeterSnapshot, PermissionMode, Plan, RestoredUsage,
     RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
@@ -156,6 +157,27 @@ pub struct WorkspaceToolTerminal {
     pub project_id: String,
 }
 
+/// Scroll-up hydration request (S8-T45/C7): the viewport reached the top of
+/// the list while older durable history may exist. `before` is the keyset
+/// cursor (the oldest loaded `seq`); the app layer reads the page off the UI
+/// thread and hands back the typed projection. The stream carries no SQLite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryPageRequested {
+    pub thread_id: String,
+    pub before: i64,
+}
+
+/// Scroll-up hydration bookkeeping. `older_cursor` is `Some(oldest loaded
+/// seq)` while older pages may exist and `None` at the durable beginning of
+/// the thread (or before any page arrived). One page is in flight at a time;
+/// a failed load pauses auto-retry until the viewport leaves the top edge.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct HistoryHydration {
+    older_cursor: Option<i64>,
+    loading: bool,
+    paused: bool,
+}
+
 /// Monospace family for code rows (ui-spec §3 代码等宽档位；本机 macOS 以
 /// Menlo 承担，spike 探针同款).
 pub(crate) const MONOFONT: &str = "Menlo";
@@ -247,6 +269,24 @@ pub(crate) mod anchor {
             }
         }
     }
+}
+
+/// Scroll offset that keeps the viewport anchored at the page boundary after
+/// prepending `prepended_rows` uniform-height rows above the visible content
+/// (S8-T45/C7 页边界保 anchor). The offset grows more negative while
+/// scrolling down, so the exact prepend height is subtracted.
+pub(crate) fn anchored_prepend_offset(current: Pixels, prepended_rows: usize) -> Pixels {
+    current - px(prepended_rows as f32 * ROW_HEIGHT)
+}
+
+/// Pure scroll-up hydration request gate (S8-T45/C7): a page may be requested
+/// only when the viewport is at the top edge, older history exists, no page
+/// is in flight, and no failure pause is armed.
+fn hydration_request(hydration: HistoryHydration, at_top: bool) -> Option<i64> {
+    if !at_top || hydration.loading || hydration.paused {
+        return None;
+    }
+    hydration.older_cursor
 }
 
 // ─── render instructions: RenderNode → StreamLine mapping (§5.3) ─────────────
@@ -1300,6 +1340,10 @@ pub struct ConversationStream {
     /// Sole applied per-task cost summary keyed by assistant message id
     /// (S7-T40); duplicate/later stale applications are ignored.
     summary_cards: HashMap<String, Entity<SummaryCard>>,
+    /// Scroll-up hydration state (S8-T45/C7): keyset cursor of the oldest
+    /// loaded page, in-flight flag, and the failure pause. The stream itself
+    /// never queries SQLite — pages arrive as typed projections.
+    hydration: HistoryHydration,
     /// Exact active durable assistant id and its stream-entry index.
     active_agent_message: Option<(String, usize)>,
     /// Most recently finished assistant entry, retained until the typed Plan
@@ -1328,6 +1372,7 @@ impl EventEmitter<ComposerSubmitted> for ConversationStream {}
 impl EventEmitter<OpenWorkspaceDiffRequested> for ConversationStream {}
 impl EventEmitter<OpenCommitPanelRequested> for ConversationStream {}
 impl EventEmitter<WorkspaceToolTerminal> for ConversationStream {}
+impl EventEmitter<HistoryPageRequested> for ConversationStream {}
 
 struct InjectionState {
     /// Which assistant entry the replayer feeds.
@@ -1401,6 +1446,7 @@ impl ConversationStream {
             active_permission: None,
             plan_cards: HashMap::new(),
             summary_cards: HashMap::new(),
+            hydration: HistoryHydration::default(),
             active_agent_message: None,
             last_finished_agent_message: None,
             meter: ConversationMeter::default(),
@@ -1595,6 +1641,157 @@ impl ConversationStream {
         cx.notify();
     }
 
+    /// Applies one typed history page (S8-T45/C7). The first page fills the
+    /// empty route-open stream; later pages PREPEND above the loaded history
+    /// when the user scrolls up. Pages are converted through the typed
+    /// projections only — no SQLite ever runs in this crate — and duplicate
+    /// durable cards (summary/plan/tool) reconcile first-wins. Prepends keep
+    /// the viewport anchored at the page boundary (uniform row heights make
+    /// the pixel adjustment exact), and in-flight entry indices shift so a
+    /// streaming run keeps writing into its own turn.
+    pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        let mut hydrated: Vec<StreamEntry> = Vec::new();
+        for entry in page.entries {
+            match entry {
+                HistoryEntry::UserText { content, .. } => {
+                    let block_id = self.user_block_seq;
+                    self.user_block_seq += 1;
+                    hydrated.push(StreamEntry::User {
+                        lines: user_message_lines(block_id, &content),
+                    });
+                }
+                HistoryEntry::AssistantText { content, .. } => {
+                    // Durable markdown is complete; one append + finish is the
+                    // whole turn. Empty (killed-before-first-delta) turns
+                    // materialize zero rows, like an empty live stream. The
+                    // model syncs immediately so the prepend anchor uses the
+                    // real row height, not a pre-materialization zero.
+                    let mut stream = MarkdownStream::new();
+                    stream.append(&content);
+                    stream.finish();
+                    let mut model = StreamModel::default();
+                    model.sync(&stream.snapshot(), &self.counters);
+                    hydrated.push(StreamEntry::Assistant {
+                        stream: Box::new(stream),
+                        model,
+                    });
+                }
+                HistoryEntry::Plan { plan, .. } => {
+                    // Same foreign-thread fence as the live `apply_plan` path;
+                    // duplicate durable plans reconcile first-wins.
+                    if plan.thread_id != self.thread.id || self.plan_cards.contains_key(&plan.id) {
+                        continue;
+                    }
+                    let id = plan.id.clone();
+                    let card = cx.new(|cx| PlanCard::new(plan, cx));
+                    cx.subscribe(&card, |_, _, event: &PlanReviewRequested, cx| {
+                        cx.emit(event.clone());
+                    })
+                    .detach();
+                    cx.observe(&card, |this, _, cx| {
+                        this.rows_dirty = true;
+                        cx.notify();
+                    })
+                    .detach();
+                    self.plan_cards.insert(id, card.clone());
+                    hydrated.push(StreamEntry::Plan { card });
+                }
+                HistoryEntry::Summary { summary, .. } => {
+                    if self.summary_cards.contains_key(&summary.message_id) {
+                        continue;
+                    }
+                    let message_id = summary.message_id.clone();
+                    let card = cx.new(|_| SummaryCard::new(summary));
+                    self.summary_cards.insert(message_id, card.clone());
+                    hydrated.push(StreamEntry::Summary { card });
+                }
+                HistoryEntry::Tool {
+                    call_id,
+                    input,
+                    status,
+                    approval,
+                    result,
+                    ..
+                } => {
+                    if self.tool_cards.contains_key(&call_id) {
+                        continue;
+                    }
+                    let card = cx.new(|_| ToolCard::hydrated(input, status, approval, result));
+                    cx.observe(&card, |this, _, cx| {
+                        this.rows_dirty = true;
+                        cx.notify();
+                    })
+                    .detach();
+                    self.tool_cards.insert(call_id, card.clone());
+                    hydrated.push(StreamEntry::Tool { card });
+                }
+            }
+        }
+        let prepended_entries = hydrated.len();
+        let prepended_rows: usize = hydrated
+            .iter()
+            .map(|entry| entry.row_count(cx))
+            .sum::<usize>();
+        let mut entries = hydrated;
+        entries.append(&mut self.entries);
+        self.entries = entries;
+        if prepended_entries > 0 {
+            // Entry indices booked before the prepend must follow their turns.
+            if let Some((_, index)) = &mut self.active_agent_message {
+                *index += prepended_entries;
+            }
+            if let Some((_, index)) = &mut self.last_finished_agent_message {
+                *index += prepended_entries;
+            }
+        }
+        self.hydration.older_cursor = page.older_cursor;
+        self.hydration.loading = false;
+        self.hydration.paused = false;
+        // Page-boundary anchor: while detached from the tail, shift the
+        // viewport down by exactly the prepended pixel height so the content
+        // the user was reading stays put. While pinned to the tail the
+        // anchor state machine re-sticks to the bottom on this frame.
+        if self.anchor == anchor::AnchorState::Detached && prepended_rows > 0 {
+            let state = self.scroll.0.borrow();
+            let base = &state.base_handle;
+            let offset = base.offset();
+            base.set_offset(point(
+                offset.x,
+                anchored_prepend_offset(offset.y, prepended_rows),
+            ));
+        }
+        self.rows_dirty = true;
+        cx.notify();
+    }
+
+    /// Releases the in-flight page slot after a failed load. Auto-retry waits
+    /// until the viewport leaves the top edge again (failure pause), so a
+    /// persistently broken store cannot turn a pinned scroll into a spin loop.
+    pub fn apply_history_load_failed(&mut self, cx: &mut Context<Self>) {
+        self.hydration.loading = false;
+        self.hydration.paused = true;
+        cx.notify();
+    }
+
+    /// The cursor to request for scroll-up hydration, or `None` when no page
+    /// may be requested: exhausted history, a page already in flight, a
+    /// paused failure, or the viewport away from the top edge.
+    fn history_page_request(&self, at_top: bool) -> Option<i64> {
+        hydration_request(self.hydration, at_top)
+    }
+
+    /// Whether the list is scrolled to (within epsilon of) its top edge.
+    fn scroll_at_top(&self) -> bool {
+        let state = self.scroll.0.borrow();
+        f32::from(state.base_handle.offset().y) >= -ANCHOR_EPSILON_PX
+    }
+
+    /// Whether the failure pause is still armed; leaving the top edge
+    /// re-arms scroll-up hydration.
+    fn hydration_pause_is_stale(&self, at_top: bool) -> bool {
+        self.hydration.paused && !at_top
+    }
+
     /// Hook passed to the conversation runner for this visible stream.
     pub fn permission_queue(&self) -> PermissionQueue {
         self.permission_queue.clone()
@@ -1611,6 +1808,31 @@ impl ConversationStream {
     /// Content-free app-controller guards for trusted workspace actions.
     pub fn has_active_agent(&self) -> bool {
         self.active_agent_message.is_some()
+    }
+
+    /// Number of hydrated durable entries the stream currently carries
+    /// (S8-T45/C7 observability for the app-layer fence tests; the row
+    /// layout itself stays crate-private).
+    pub fn hydrated_entry_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    StreamEntry::User { .. }
+                        | StreamEntry::Assistant { .. }
+                        | StreamEntry::Tool { .. }
+                        | StreamEntry::Plan { .. }
+                        | StreamEntry::Summary { .. }
+                )
+            })
+            .count()
+    }
+
+    /// Whether a hydration page may still be requested for scroll-up
+    /// (exposes the pure gate to the app layer's fence tests).
+    pub fn hydration_cursor(&self) -> Option<i64> {
+        self.hydration.older_cursor
     }
 
     pub fn has_pending_permission(&self) -> bool {
@@ -2545,6 +2767,21 @@ impl Render for ConversationStream {
             self.scroll.scroll_to_bottom();
         }
 
+        // 3) 顶部水合请求（S8-T45/C7）：视口到达顶部且仍存在更早历史时，
+        //    向 app 层请求上一页（typed 投影返回后 prepend）。本 crate 零
+        //    SQLite；一页在飞，失败暂停直到离开顶部，不产生请求风暴。
+        let at_top = self.scroll_at_top();
+        if self.hydration_pause_is_stale(at_top) {
+            self.hydration.paused = false;
+        }
+        if let Some(before) = self.history_page_request(at_top) {
+            self.hydration.loading = true;
+            cx.emit(HistoryPageRequested {
+                thread_id: self.thread.id.clone(),
+                before,
+            });
+        }
+
         let rows = self.total_rows(cx);
         let body: AnyElement = if rows == 0 {
             // §4.6 空态：内存态会话从演示注入或 Composer 开始。
@@ -3398,6 +3635,271 @@ mod tests {
             step(State::Following, 500.0, 0.0, true),
             (State::Following, Action::StickToBottom)
         );
+    }
+
+    // ---------- S8-T45/C7 顶部水合（分页 + 锚定 + 去重） ----------
+
+    fn hydration_state(older_cursor: Option<i64>, loading: bool, paused: bool) -> HistoryHydration {
+        HistoryHydration {
+            older_cursor,
+            loading,
+            paused,
+        }
+    }
+
+    #[test]
+    fn hydration_request_gates_on_top_loading_pause_and_exhaustion() {
+        // 顶部 + 有更早历史：请求该 cursor。
+        assert_eq!(
+            hydration_request(hydration_state(Some(101), false, false), true),
+            Some(101)
+        );
+        // 未到顶部：不请求（用户正在阅读中间内容）。
+        assert_eq!(
+            hydration_request(hydration_state(Some(101), false, false), false),
+            None
+        );
+        // 一页在飞：不重复请求。
+        assert_eq!(
+            hydration_request(hydration_state(Some(101), true, false), true),
+            None
+        );
+        // 失败暂停：不再自动请求。
+        assert_eq!(
+            hydration_request(hydration_state(Some(101), false, true), true),
+            None
+        );
+        // 历史耗尽（含整页末尾的证明性空读之后）：不再请求。
+        assert_eq!(
+            hydration_request(hydration_state(None, false, false), true),
+            None
+        );
+    }
+
+    #[test]
+    fn anchored_prepend_offset_subtracts_exactly_the_prepended_height() {
+        let base = px(-480.0);
+        assert_eq!(
+            anchored_prepend_offset(base, 200),
+            px(-480.0 - 200.0 * ROW_HEIGHT),
+            "uniform rows make the page-boundary anchor exact"
+        );
+        assert_eq!(anchored_prepend_offset(px(0.0), 0), px(0.0));
+    }
+
+    fn hydration_user(seq: i64, content: &str) -> HistoryEntry {
+        HistoryEntry::UserText {
+            seq,
+            content: content.into(),
+        }
+    }
+
+    fn hydration_assistant(seq: i64, content: &str) -> HistoryEntry {
+        HistoryEntry::AssistantText {
+            seq,
+            message_id: format!("assistant-{seq}"),
+            content: content.into(),
+            status: vega_conversation::history::AssistantStatus::Done,
+        }
+    }
+
+    fn hydration_summary(message_id: &str) -> HistoryEntry {
+        HistoryEntry::Summary {
+            seq: 2,
+            summary: TaskCostSummary {
+                message_id: message_id.into(),
+                outcome: TaskSummaryOutcome::Completed,
+                usage: None,
+                cost: vega_conversation::types::SummaryCost::Unavailable,
+                duration_ms: None,
+                tool_count: 0,
+                cache_hit_percent: None,
+            },
+        }
+    }
+
+    fn hydration_page(entries: Vec<HistoryEntry>, older_cursor: Option<i64>) -> HistoryPage {
+        HistoryPage {
+            entries,
+            older_cursor,
+            newest_seq: None,
+        }
+    }
+
+    fn hydrated_entry_kinds(stream: &ConversationStream) -> Vec<&'static str> {
+        stream
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                StreamEntry::User { .. } => "user",
+                StreamEntry::Assistant { .. } => "assistant",
+                StreamEntry::Tool { .. } => "tool",
+                StreamEntry::Artifact { .. } => "artifact",
+                StreamEntry::Permission { .. } => "permission",
+                StreamEntry::Plan { .. } => "plan",
+                StreamEntry::Summary { .. } => "summary",
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    async fn hydrated_page_fills_durable_entries_in_sequence_position(cx: &mut TestAppContext) {
+        let (_window, stream, _) = open_controller_stream(cx, "hydration-thread");
+        stream.update(cx, |stream, cx| {
+            stream.apply_history_page(
+                hydration_page(
+                    vec![
+                        hydration_user(1, "第一问 · CJK"),
+                        hydration_assistant(2, "第一答 **markdown**"),
+                        hydration_user(3, "第二问"),
+                        hydration_assistant(4, "第二答"),
+                    ],
+                    None,
+                ),
+                cx,
+            );
+        });
+        let (kinds, exhausted, rows) = stream.read_with(cx, |stream, cx| {
+            let rows: usize = stream.entries.iter().map(|e| e.row_count(cx)).sum();
+            (
+                hydrated_entry_kinds(stream),
+                stream.hydration.older_cursor,
+                rows,
+            )
+        });
+        assert_eq!(
+            kinds,
+            vec!["user", "assistant", "user", "assistant"],
+            "durable rows hydrate in seq position"
+        );
+        assert_eq!(exhausted, None, "older_cursor None marks thread head");
+        // Assistant turns materialize at apply time, so the page-boundary
+        // anchor sees the real prepended height (not a pre-sync zero).
+        let assistant_rows: usize = stream.read_with(cx, |stream, _| {
+            stream
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    StreamEntry::Assistant { model, .. } => Some(model.row_count()),
+                    _ => None,
+                })
+                .sum()
+        });
+        assert!(assistant_rows > 0, "hydrated turns materialize eagerly");
+        let user_rows: usize = rows - assistant_rows;
+        assert_eq!(
+            user_rows, 6,
+            "each user echo is label + 1 card line + spacer (CJK included)"
+        );
+    }
+
+    #[gpui::test]
+    async fn scroll_up_page_prepends_and_keeps_streaming_turn_on_target(cx: &mut TestAppContext) {
+        let (_window, stream, _) = open_controller_stream(cx, "hydration-prepend");
+        // A live agent turn is streaming when the user scrolls up.
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "live-turn".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "live-turn".into(),
+                    delta: "直播中".into(),
+                },
+                cx,
+            );
+        });
+        stream.update(cx, |stream, cx| {
+            stream.apply_history_page(
+                hydration_page(
+                    vec![
+                        hydration_user(1, "更早的历史"),
+                        hydration_assistant(2, "更早的回答"),
+                    ],
+                    Some(1),
+                ),
+                cx,
+            );
+            // The live turn keeps receiving deltas after the prepend.
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "live-turn".into(),
+                    delta: "继续".into(),
+                },
+                cx,
+            );
+        });
+        let (kinds, live_text, cursor) = stream.read_with(cx, |stream, cx| {
+            let kinds = hydrated_entry_kinds(stream);
+            let live_text = stream
+                .entries
+                .last()
+                .map(|entry| match entry {
+                    StreamEntry::Assistant { model, .. } => model
+                        .rows_in(0..model.row_count(), &vega_theme::theme(cx).colors)
+                        .len(),
+                    _ => 0,
+                })
+                .unwrap_or(0);
+            (kinds, live_text, stream.hydration.older_cursor)
+        });
+        assert_eq!(
+            kinds,
+            vec!["user", "assistant", "assistant"],
+            "the page prepends above the live turn"
+        );
+        assert!(live_text > 0, "the live turn still materializes rows");
+        assert_eq!(cursor, Some(1));
+    }
+
+    #[gpui::test]
+    async fn hydrated_durable_cards_reconcile_first_wins(cx: &mut TestAppContext) {
+        let (_window, stream, _) = open_controller_stream(cx, "hydration-dedup");
+        let page_entries = vec![
+            hydration_user(1, "问题"),
+            hydration_assistant(2, "回答"),
+            hydration_summary("assistant-2"),
+        ];
+        stream.update(cx, |stream, cx| {
+            stream.apply_history_page(hydration_page(page_entries.clone(), None), cx);
+            // A repeated page (stale re-delivery) must not duplicate cards.
+            stream.apply_history_page(hydration_page(page_entries, None), cx);
+        });
+        let (kinds, summaries) = stream.read_with(cx, |stream, _| {
+            (hydrated_entry_kinds(stream), stream.summary_cards.len())
+        });
+        // Production never re-delivers a page to the same stream (single
+        // in-flight request + route fence); the registry dedup matters for
+        // typed cards that can also arrive through the live path
+        // (`apply_task_summary` after the page carried the same reference).
+        // The repeated page prepends its rows; its already-registered summary
+        // card is skipped and stays at its original sequence position.
+        assert_eq!(
+            kinds,
+            vec!["user", "assistant", "user", "assistant", "summary"],
+        );
+        assert_eq!(summaries, 1, "the summary card stays first-wins unique");
+    }
+
+    #[gpui::test]
+    async fn foreign_thread_summary_is_dropped_and_failure_pauses(cx: &mut TestAppContext) {
+        let (_window, stream, _) = open_controller_stream(cx, "hydration-fence");
+        // Failure: the in-flight slot releases, auto-retry pauses.
+        stream.update(cx, |stream, cx| {
+            stream.apply_history_load_failed(cx);
+        });
+        let (request_at_top, cursor) = stream.read_with(cx, |stream, _| {
+            (
+                stream.history_page_request(true),
+                stream.hydration.older_cursor,
+            )
+        });
+        assert_eq!(request_at_top, None, "a failed load pauses auto-retry");
+        assert_eq!(cursor, None);
     }
 
     // ---------- RenderNode → 行映射（§5.3 关键分支） ----------

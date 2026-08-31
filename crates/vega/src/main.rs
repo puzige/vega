@@ -18,6 +18,7 @@ use gpui::{
     WindowOptions, actions, div, px, size,
 };
 use gpui_platform::application;
+use vega_conversation::history::HistoryPage;
 use vega_conversation::types::{
     ArtifactCard as ArtifactProjection, ArtifactCardId, ArtifactPreviewProjection, BranchId,
     BranchSnapshot, BranchSwitchCompletion, BranchSwitchOutcome, CommitChecklist, CommitCompletion,
@@ -45,8 +46,9 @@ use vega_ui::commit_panel::{
     CommitPrepareRequested, CommitRequested,
 };
 use vega_ui::conversation_stream::{
-    ComposerSubmitted, ConversationStream, OpenCommitPanelRequested, OpenWorkspaceDiffRequested,
-    ThreadSettingsRequested, WorkspaceToolTerminal, bench as render_frame_bench,
+    ComposerSubmitted, ConversationStream, HistoryPageRequested, OpenCommitPanelRequested,
+    OpenWorkspaceDiffRequested, ThreadSettingsRequested, WorkspaceToolTerminal,
+    bench as render_frame_bench,
 };
 use vega_ui::diff_view::{
     DIFF_REFRESH_INTERVAL, DiffClosed, DiffProjectionRequested, DiffRetryRequested, DiffView,
@@ -1882,6 +1884,54 @@ fn current_cache_matches(
     finished_thread_id: &str,
 ) -> bool {
     opened_thread_id == Some(finished_thread_id) && cached_thread_id == Some(finished_thread_id)
+}
+
+/// Outcome of one off-thread hydration page read (S8-T45/C7).
+type HistoryPageOutcome = Result<HistoryPage, HistoryPageFailure>;
+
+/// Typed hydration failure: the read failed closed with a store/IO reason.
+/// Reaching the UI as a bare string keeps the stream free of SQLite types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HistoryPageFailure {
+    Store(String),
+}
+
+impl std::fmt::Display for HistoryPageFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HistoryPageFailure::Store(reason) => write!(formatter, "store error: {reason}"),
+        }
+    }
+}
+
+impl From<vega_conversation::types::ConversationError> for HistoryPageFailure {
+    fn from(error: vega_conversation::types::ConversationError) -> Self {
+        HistoryPageFailure::Store(error.to_string())
+    }
+}
+
+/// Scroll-up hydration worker (S8-T45/C7): reads one keyset page below
+/// `request.before` off the UI thread. The database connection is owned by
+/// the store global on the main thread, so each request opens a short-lived
+/// read connection to the same file; the store crate owns all SQLite and the
+/// UI stays on typed projections only.
+fn run_history_page_worker(
+    database_path: std::path::PathBuf,
+    request: HistoryPageRequested,
+    sender: std::sync::mpsc::SyncSender<(HistoryPageRequested, HistoryPageOutcome)>,
+) {
+    let outcome = (|| {
+        let store = Store::open(&database_path)
+            .map_err(|error| HistoryPageFailure::Store(error.to_string()))?;
+        vega_conversation::history::history_page_before(
+            &store,
+            &request.thread_id,
+            vega_store::messages::PageCursor::Before(request.before),
+            vega_store::messages::PAGE_LIMIT,
+        )
+        .map_err(HistoryPageFailure::from)
+    })();
+    let _ = sender.send((request, outcome));
 }
 
 fn unique_provider_for_model(
@@ -5408,6 +5458,76 @@ impl VegaWindow {
                 .is_some_and(|(cached_id, cached)| cached_id == thread_id && cached == stream)
     }
 
+    /// Scroll-up hydration (S8-T45/C7): one page read per request on a
+    /// worker thread; the store global itself stays on the main thread. The
+    /// route fence is checked before spawning so a request from a stale
+    /// view never reaches the store, and again on completion so a page that
+    /// finished after a route switch is dropped (A→B→A 晚到页丢弃).
+    fn request_history_page(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &HistoryPageRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        let database_path = match &cx.global::<VegaStore>().0 {
+            Ok(store) => match store.database_path() {
+                Some(path) => path.to_path_buf(),
+                None => return,
+            },
+            Err(_) => return,
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker_request = request.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-history-page".into())
+            .spawn(move || run_history_page_worker(database_path, worker_request, sender));
+        if worker.is_err() {
+            stream.update(cx, |stream, cx| stream.apply_history_load_failed(cx));
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let outcome = match receiver.try_recv() {
+                    Ok((_, outcome)) => outcome,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Err(HistoryPageFailure::Store("history page worker lost".into()))
+                    }
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.finish_history_page(stream.clone(), outcome, cx)
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// Applies a finished hydration page to its requesting stream, gated by
+    /// the same route fence as the request: only the currently open thread's
+    /// cached stream may take a page.
+    fn finish_history_page(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        outcome: HistoryPageOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(opened) = cx.global::<OpenedThread>().0.clone() else {
+            return;
+        };
+        if !self.owns_stream_request(&stream, &opened.id, cx) {
+            return;
+        }
+        stream.update(cx, |stream, cx| match outcome {
+            Ok(page) => stream.apply_history_page(page, cx),
+            Err(_) => stream.apply_history_load_failed(cx),
+        });
+    }
+
     fn apply_refresh(
         stream: &Entity<ConversationStream>,
         thread: Thread,
@@ -6017,6 +6137,10 @@ impl Render for VegaWindow {
                                 this.workspace_tool_terminal(stream.clone(), request, cx);
                             })
                             .detach();
+                            cx.subscribe(&view, |this, stream, request, cx| {
+                                this.request_history_page(stream.clone(), request, cx);
+                            })
+                            .detach();
                             let branch_selector = view.read(cx).branch_selector();
                             cx.subscribe(&branch_selector, |this, selector, request, cx| {
                                 this.request_branch_list(selector.clone(), request, cx);
@@ -6049,6 +6173,16 @@ impl Render for VegaWindow {
                             .detach();
                             let initial = match &cx.global::<VegaStore>().0 {
                                 Ok(store) => (|| {
+                                    // S8-T45/C7: the controller is rebuilt first,
+                                    // one repair pass normalizes rows the killed
+                                    // process left incomplete, and only then is
+                                    // the newest durable page projected.
+                                    let hydration =
+                                        vega_conversation::history::restart_history_page(
+                                            store,
+                                            &thread.id,
+                                            vega_store::messages::PAGE_LIMIT,
+                                        )?;
                                     let plans =
                                         vega_conversation::plans::list_plans(store, &thread.id)?;
                                     let history = vega_conversation::threads::composer_history(
@@ -6068,11 +6202,13 @@ impl Render for VegaWindow {
                                     // S7-T40 restart recovery: token/cost/cache/
                                     // tool count re-project from the durable
                                     // audits; duration stays `—` (no finished
-                                    // timestamp in `messages`, C4).
+                                    // timestamp in `messages`, C4). The hydrated
+                                    // page carries the same summary reference and
+                                    // first-wins dedup keeps exactly one card.
                                     let summary = vega_conversation::summary::latest_task_summary(
                                         store, &thread.id, None,
                                     )?;
-                                    Ok((plans, history, recovery, usage, summary))
+                                    Ok((hydration, plans, history, recovery, usage, summary))
                                 })(),
                                 Err(error) => {
                                     Err(vega_conversation::types::ConversationError::Store(
@@ -6081,7 +6217,10 @@ impl Render for VegaWindow {
                                 }
                             };
                             view.update(cx, |stream, cx| match initial {
-                                Ok((plans, history, recovery, usage, summary)) => {
+                                Ok((hydration, plans, history, recovery, usage, summary)) => {
+                                    // Hydrated history lands first so route-open
+                                    // plan cards keep their position after it.
+                                    stream.apply_history_page(hydration, cx);
                                     for plan in plans {
                                         stream.apply_plan(plan, cx);
                                     }
@@ -10912,5 +11051,148 @@ mod tests {
             DiffProjectionDisposition::Drop
         );
         assert_eq!(DIFF_REFRESH_INTERVAL, Duration::from_millis(750));
+    }
+
+    // ---------- S8-T45/C7 顶部水合：worker + 路由 fence ----------
+
+    /// Seeds `count` user/assistant exchanges (2 rows per step) plus a
+    /// project/thread fixture, returning the store, its thread, and the root
+    /// temp directory.
+    fn seed_hydration_thread(count: usize) -> (Store, Thread, TempDir) {
+        let dir = tempfile::tempdir().expect("hydration data root");
+        let store = Store::open(dir.path().join("vega.db")).expect("hydration store");
+        store.migrate().expect("hydration migrations");
+        let project =
+            vega_store::projects::create(store.conn(), "/tmp/hydration-fixture", "hydration", None)
+                .expect("hydration project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock",
+            PermissionMode::Auto.as_str(),
+        )
+        .expect("hydration thread");
+        for step in 0..count {
+            insert(
+                store.conn(),
+                &MessageRow {
+                    id: format!("user-{step}"),
+                    thread_id: thread.id.clone(),
+                    seq: (2 * step + 1) as i64,
+                    role: "user".into(),
+                    kind: "text".into(),
+                    content: format!("第 {step} 问"),
+                    status: "done".into(),
+                    created_at: 1,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .expect("seed user row");
+            insert(
+                store.conn(),
+                &MessageRow {
+                    id: format!("assistant-{step}"),
+                    thread_id: thread.id.clone(),
+                    seq: (2 * step + 2) as i64,
+                    role: "assistant".into(),
+                    kind: "text".into(),
+                    content: format!("第 {step} 答"),
+                    status: "done".into(),
+                    created_at: 1,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .expect("seed assistant row");
+        }
+        (store, thread, dir)
+    }
+
+    #[test]
+    fn history_page_worker_reads_one_keyset_page_off_thread() {
+        let (store, thread, _dir) = seed_hydration_thread(150); // 300 rows
+        let database_path = store
+            .database_path()
+            .expect("durable database path")
+            .to_path_buf();
+        drop(store);
+        let request = HistoryPageRequested {
+            thread_id: thread.id.clone(),
+            before: 301,
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        run_history_page_worker(database_path, request.clone(), sender);
+        let (delivered, outcome) = receiver.recv().expect("worker result");
+        assert_eq!(delivered, request, "the request round-trips for fencing");
+        let page = outcome.expect("one page below the cursor");
+        // The newest 200 durable rows below seq 301 (seqs 101..=300). A pure
+        // scroll-up page re-projects no summary reference — it belongs to the
+        // newest page (C7: S7 summary 引用只在最新页).
+        assert_eq!(page.entries.len(), 200);
+        assert_eq!(page.older_cursor, Some(101));
+        let heads: Vec<i64> = page
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                vega_conversation::history::HistoryEntry::UserText { seq, .. } => Some(*seq),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heads.first(), Some(&101), "page starts at the oldest seq");
+        assert_eq!(heads.last(), Some(&299), "page ends below the cursor");
+        assert_eq!(heads.len(), 100);
+    }
+
+    #[gpui::test]
+    async fn late_hydration_page_is_dropped_after_route_replacement(cx: &mut gpui::TestAppContext) {
+        let (store, thread, _dir) = seed_hydration_thread(150);
+        // Read the typed page while the seed store is alive, then hand the
+        // store to the route globals (the app never re-reads it here).
+        let page = vega_conversation::history::history_page_before(
+            &store,
+            &thread.id,
+            vega_store::messages::PageCursor::Before(201),
+            vega_store::messages::PAGE_LIMIT,
+        )
+        .expect("hydration page");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+
+        // Route A open: stream A is the cached view of the opened thread.
+        let stream_a = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let root = cx.new(VegaWindow::new);
+        root.update(cx, |root, _| {
+            root.stream_view = Some((thread.id.clone(), stream_a.clone()));
+        });
+        root.update(cx, |root, cx| {
+            root.finish_history_page(stream_a.clone(), Ok(page.clone()), cx);
+        });
+        let applied = stream_a.read_with(cx, |stream, _| stream.hydrated_entry_count());
+        assert!(applied > 0, "the live route applies its own page");
+        assert_eq!(
+            stream_a.read_with(cx, |stream, _| stream.hydration_cursor()),
+            page.older_cursor,
+        );
+
+        // Route switch A→B: the cached view is replaced; the late page for A
+        // must be dropped (A→B→A 晚到页丢弃).
+        let mut thread_b = thread.clone();
+        thread_b.id = "hydration-thread-b".into();
+        let stream_b = cx.new(|cx| ConversationStream::new(thread_b.clone(), cx));
+        root.update(cx, |root, _| {
+            root.stream_view = Some((thread_b.id.clone(), stream_b.clone()));
+        });
+        root.update(cx, |root, cx| {
+            root.finish_history_page(stream_a.clone(), Ok(page), cx);
+        });
+        let after_switch = stream_a.read_with(cx, |stream, _| stream.hydrated_entry_count());
+        assert_eq!(
+            applied, after_switch,
+            "a late page never mutates a replaced route's stream"
+        );
+        let b_entries = stream_b.read_with(cx, |stream, _| stream.hydrated_entry_count());
+        assert_eq!(b_entries, 0, "the late page never reaches the new route");
     }
 }
