@@ -48,6 +48,7 @@ mod grep;
 mod mutation;
 mod output;
 mod read;
+pub mod reference;
 mod sandbox;
 mod sha256;
 mod tools;

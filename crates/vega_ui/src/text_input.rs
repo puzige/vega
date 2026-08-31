@@ -178,6 +178,43 @@ impl TextInput {
         )
     }
 
+    /// Byte range + body of a trailing `@token` at the caret (A2-12): the
+    /// token starts after an `@` that sits at text start or right after
+    /// whitespace, extends to the caret, and contains no whitespace.
+    /// `None` when the caret is not completing an `@` token.
+    pub fn trailing_at_query(&self) -> Option<(Range<usize>, String)> {
+        let cursor = self.cursor_offset();
+        let prefix = self.content.get(..cursor)?;
+        let at = prefix.rfind('@')?;
+        if at > 0 && !prefix[..at].ends_with(|ch: char| ch.is_whitespace()) {
+            return None;
+        }
+        let query = &prefix[at + 1..];
+        if query.chars().any(|ch: char| ch.is_whitespace()) {
+            return None;
+        }
+        Some((at + 1..cursor, query.to_string()))
+    }
+
+    /// Completes the trailing `@token` with `path`: the token body is
+    /// replaced with `@path ` (the trailing space terminates the token so
+    /// the selector closes deterministically). No-op without a trailing
+    /// token (A2-12 completion seam).
+    pub fn complete_at_query(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some((range, _)) = self.trailing_at_query() else {
+            return;
+        };
+        let replacement = format!("@{path} ");
+        self.content =
+            (self.content[..range.start].to_owned() + &replacement + &self.content[range.end..])
+                .into();
+        let end = range.start + replacement.len();
+        self.selected_range = end..end;
+        self.selection_reversed = false;
+        self.update_logical_viewport();
+        cx.notify();
+    }
+
     fn update_logical_viewport(&mut self) {
         if !self.multiline {
             self.rows = 1;

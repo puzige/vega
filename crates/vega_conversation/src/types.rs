@@ -2419,6 +2419,27 @@ pub struct BranchSnapshot {
     pub branches: Vec<BranchItem>,
 }
 
+/// Bounded `@file` candidate projection (A2-12, S8-T47): project-relative
+/// file paths for the composer reference selector. Produced by the app
+/// layer from a gitignore-aware bounded walk (deterministic lexicographic
+/// order, hard entry cap), handed to the IO-free selector as a typed
+/// snapshot. No filesystem access happens behind this type.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileIndexSnapshot {
+    pub entries: Vec<String>,
+}
+
+/// Provider/model/thinking selection state for the composer selector
+/// (A2-14, S8-T47). Persisted at the app-level config seam; the run-start
+/// model snapshot semantics of `threads.model` are untouched.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ComposerDefaults {
+    /// Selected model id (empty = no explicit selection yet).
+    pub model: String,
+    /// Thinking level (`off|low|medium|high`).
+    pub thinking: String,
+}
+
 /// Content-free outcome of an attempted branch switch. The accompanying
 /// snapshot, when present, is authoritative for every exit path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

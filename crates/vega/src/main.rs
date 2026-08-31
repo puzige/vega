@@ -46,9 +46,9 @@ use vega_ui::commit_panel::{
     CommitPrepareRequested, CommitRequested,
 };
 use vega_ui::conversation_stream::{
-    ComposerSubmitted, ConversationStream, HistoryPageRequested, OpenCommitPanelRequested,
-    OpenWorkspaceDiffRequested, ThreadSettingsRequested, WorkspaceToolTerminal,
-    bench as render_frame_bench,
+    ComposerDefaultsRequested, ComposerSubmitted, ConversationStream, HistoryPageRequested,
+    OpenCommitPanelRequested, OpenWorkspaceDiffRequested, ThreadSettingsRequested,
+    WorkspaceToolTerminal, bench as render_frame_bench,
 };
 use vega_ui::diff_view::{
     DIFF_REFRESH_INTERVAL, DiffClosed, DiffProjectionRequested, DiffRetryRequested, DiffView,
@@ -56,7 +56,7 @@ use vega_ui::diff_view::{
 use vega_ui::plan_card::PlanReviewRequested;
 use vega_ui::settings::{
     CloseSettings, OpenSettings, PricingDiscardRequested, PricingMutationRequested,
-    PricingReloadRequested, PricingRetryRequested, SettingsOpen, SettingsView,
+    PricingReloadRequested, PricingRetryRequested, SettingsOpen, SettingsView, all_models,
 };
 use vega_ui::sidebar::{
     AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, NewThread, OpenedThread,
@@ -5882,6 +5882,27 @@ impl VegaWindow {
         self.sidebar.update(cx, Sidebar::create_thread);
     }
 
+    /// A2-14: persists the composer's model selection as the app-level
+    /// default model (config file, no DDL, no thread-row write).
+    fn persist_composer_defaults(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        let model = request.defaults.model.clone();
+        let _ = vega_store::config::load().map(|mut config| {
+            config.defaults.model = model;
+            let _ = config.save();
+        });
+        stream.update(cx, |stream, cx| {
+            stream.apply_composer_defaults(request.defaults.clone(), cx)
+        });
+    }
+
     fn persist_thread_settings(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -6113,6 +6134,30 @@ impl Render for VegaWindow {
                                 previous.update(cx, |stream, cx| stream.timeout_permission(cx));
                             }
                             let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+                            // A2-14: seed the composer model selector from the
+                            // configured providers (zero IO from the view) and
+                            // reflect the thread's current model if present.
+                            {
+                                let model_catalog = vega_store::config::load()
+                                    .map_or(Vec::new(), |config| all_models(&config.providers));
+                                let thread_model = thread.model.clone();
+                                view.update(cx, |stream, cx| {
+                                    if !thread_model.is_empty() {
+                                        stream.apply_composer_defaults(
+                                            vega_conversation::types::ComposerDefaults {
+                                                model: thread_model,
+                                                thinking: String::new(),
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                    stream.apply_model_options(model_catalog, cx);
+                                });
+                            }
+                            cx.subscribe(&view, |this, stream, request, cx| {
+                                this.persist_composer_defaults(stream.clone(), request, cx);
+                            })
+                            .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.persist_thread_settings(stream.clone(), request, cx);
                             })
