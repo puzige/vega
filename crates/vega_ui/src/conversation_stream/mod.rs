@@ -208,6 +208,7 @@ mod content;
 mod core;
 mod model;
 mod render;
+mod render_rows;
 
 #[cfg(test)]
 mod tests;
@@ -218,3 +219,4 @@ pub use core::ConversationStream;
 pub(crate) use core::*;
 pub(crate) use model::*;
 pub(crate) use render::*;
+pub(crate) use render_rows::*;
