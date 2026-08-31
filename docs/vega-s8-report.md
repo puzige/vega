@@ -174,14 +174,45 @@ diff→commit 真实 Git 链路由 S6-T34 两段式 commit E2E 与 T51 `commit_p
 
 **汇总**：32 项——resolved 4（T38 P2-2、T38 P2-5、T42 P2-2、F3）、carried-to-final-opt 14、documented 14（其中 T38 五项与 T39/T40 大部分为 S7 已核销项的终态复认）。S7→S8 无一项被静默丢弃。
 
-## 9. 偏离专章（主人决策 6/7/9 + F2/F3）
+## 9. 偏离专章（主人决策 6/7/9 + F2/F3 历史）
 
-（TBD-EXPAND）
+本卡与原 T42-T49 卡面的全部差异，均源于主人 2026-08-31 三项长期决策（[/tmp/vega-project-decisions.md](/tmp/vega-project-decisions.md)，登记于项目层）——**如实记录，不冒充按原卡纪律执行**：
 
-## 10. human / 硬件项清单（T50 输入，不含 key 操作模板）
+1. **决策 6（性能统一推迟）**：T44（变高虚拟化）与 T48（调优）未逐卡执行，无 PR。原 T49 要求的"性能 gate 收口"改为引用 T43 冻结基线：P7 `performance gate failed`（p95 1,027,906µs）、P8 `performance gate failed`（109,084,672 B 双口径超阈）、P2 短跑通过（非 soak 终证）、P1 `hardware pending`。各卡 DoD 表（§3）中所有 "deferred" 项的判定主体为**期末统一优化批**；T44/T48 卡面语义（C4 变高迁移、C2 gate、ui-spec §6 全收口）并入该批，不丢失。
+2. **决策 7（测试从简）**：S8 各卡测试覆盖即实际合并状态，本卡不追认覆盖矩阵；确定性 mock E2E 不再新写（§5 引用既有四族 E2E 为 Phase 1 主干证据）；GPUI 窄测试仅保留既有最小集。红线不放松部分（fail-closed、无真实 key/网络、无未批准 DDL、非测试 unwrap）照常执行（§7）。
+3. **决策 9（1000 行硬上限）**：T51 作为原卡面之外的增卡并入 S8（原 T51a/T51b agent 按主人指示撤回，标准改写后重开）；交付为**零行为变更**的机械重构 + F3 deflake。附带精度 nit：T51 自报最大文件 906 行，实际 996 行（本卡 §7 复核更正）。
+4. **T47 卡内偏离**（PR #50 自报）：A2-14 thinking 档位会话内生效但不持久化（`Defaults` 无 thinking 字段，加字段超卡面）；`@file` 注入失败降级为原始消息不阻塞 run。
+5. **F2/F3 flake 历史**：F1（S7-T38 修复）、F3（T51 修复，10/10）已结；F2（branch_controller leaked-handles）**未 deflake**，归期末批——本卡门禁一次通过未触发；此前协议（决策 8）：pre-push 偶发失败 kill 重试一次。`/tmp/vega-flaky-tests.md` 登记与本报告一致（F2 条目以本报告为最终状态）。
+6. **合并序列**：#47（T46）先于 #48（T45）合并（T45 rebase 至组合树复跑全部门禁，PR 记录在案）——SDD 契约未因此漂移（T45 消费 C7、T46 消费 C5，互不引用实现）。
 
-（TBD-EXPAND）
+## 10. human / 硬件项清单（T50 输入）
+
+以下全部 `human`/`hardware`/`real provider/billing pending`，**T49/T50-executor 均不执行**（不索取 key、不发真实请求、不产生费用）。另有一项人类裁决（非执行）：
+
+| # | 项 | 状态词 | 操作模板（不含 key） |
+|---|---|---|---|
+| 0 | **P8 阈值单位裁决**（SDD §10 OPEN） | `human pending`（裁决，非执行） | 阅读 SDD §3.1 利弊表，答复候选 A（decimal MB，当前字面权威）或 B（100 MiB）；裁决后 docs 勘误 ui-spec §5 P8 行 + phase1-plan E4（如需），schema 常量随期末批落定，测后永不换 |
+| 1 | ProMotion 120fps 实测 | `hardware pending` | ≥120Hz 真机 → `cargo xtask bench`（P1 场景）→ 断言 median ≥120fps 且任一秒窗 ≥100fps；记录 CPU/GPU/显示器 provenance |
+| 2 | 真实账单 <5% | `real provider/billing pending` | ① App Settings 经 Keychain 配置真实 provider key（不入仓库/环境变量存档）；② 确认 model 在定价列表且价格与账单同源；③ 运行真实任务若干轮（含工具轮），读 task summary cost 或导出 `token_usage` aggregate；④ provider 控制台导出同一 UTC 窗口 usage；⑤ 计算 `abs(vega−invoice)/invoice×100 < 5%` 且 nonzero billed cost |
+| 3 | 真实仓库任务（里程碑主体） | `real provider/billing pending` | 授权真实 repo → 发起改码任务 → diff 审阅 → 两段式 commit → 成本全程可见；记录 task/diff/commit hash/cost |
+| 4 | 7 天 dogfood | `human pending` | 七个**独立 dated** 日逐日记录 task/result/failure/perf/UX；不足七天不得宣称完成（SDD C8） |
+| 5 | 真实窗口走查（ui-spec §6 人工项） | `human pending` | Light/Dark 切换无闪烁、CJK/emoji 豆腐块检查、键盘全链路（建会话→发消息→批准→diff→提交不碰鼠标）、960×600 最小窗无破裂、动效质感（150ms/120ms 白名单）、Codex/ZCode 并排对比 |
+
+记录模板（每行一次 dogfood / 账单对照）：
+
+| 日期 | provider/model | UTC 窗口 | invoice (USD) | vega cost (USD) | error % | 备注 |
+|---|---|---|---|---|---|---|
+| | | | | | | |
+
+全部四项真实证据齐备后，T50 方可将状态收口为 `Phase 1 milestone passed`（SDD §1 机械判定；在此之前任何报告/README 使用该词即违规）。
 
 ## 11. 结论
 
-（TBD-EXPAND）
+S8 收口为 **`engineering fixture passed`**（非 `Phase 1 milestone passed`）：
+
+- **交付**：7 个 PR squash 合并（#42/#45/#47/#48/#49/#50/#51）——契约冻结（T42）、性能埋点真值化 + 冻结基线（T43）、分页水合（T45）、Stop/Resume E2E（T46）、P0 收口（T47）、1000 行重构 + F3 deflake（T51）、本报告（T49）。
+- **门禁**：fmt/clippy/test/build/tree/diff-check 全绿，**823 passed / 0 failed / 1 ignored**（S7 748 → 823）。
+- **性能如实**：P7/P8 `performance gate failed`（T43 冻结数字，不漂白），P2 短跑通过、P1 `hardware pending`——全部 `deferred-to-final-optimization`（主人决策 6），判定主体期末统一优化批；T44/T48 未执行如实记录。
+- **红线全过**：无 tiktoken、migration 恰 3 / 零 DDL、零 test-only 生产 seam、零真实 key/网络、API facade 冻结、零文件 >1000 行、零新依赖。
+- **carryforward 32 项逐条核销**（resolved 4 / carried-to-final-opt 14 / documented 14），无静默丢弃。
+- **T50 输入就绪**：P8 单位裁决 + ProMotion/真实账单/真实仓库任务/7 天 dogfood/真实窗口走查六项清单与不含 key 操作模板（§10）；全部齐备前状态词保持 pending，不漂白。
