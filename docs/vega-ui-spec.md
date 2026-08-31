@@ -116,8 +116,8 @@
 | P4 | 滚动锚定：贴底时自动跟随；用户上翻>1 屏后不再自动跳转，回到底部恢复 | 走查 |
 | P5 | 所有交互反馈 <100ms（点击、折叠、切换会话） | 走查 |
 | P6 | 动效仅用于：卡片展开/收起（150ms ease-out）、权限卡片滑入（120ms）。禁止装饰性动画 | 走查 |
-| P7 | 冷启动到首屏可交互 <50ms（KPI） | bench |
-| P8 | 空闲内存 <100MB（无任务、单窗口） | bench |
+| P7 | 冷启动到首屏可交互 <50ms（KPI）——测量语义冻结于 [vega-s8-sdd.md](vega-s8-sdd.md) §2/C1：`process_start_to_first_rendered_interactive`，20 进程 nearest-rank p95 <50.000ms，next-frame 语义（≠ 物理 present） | bench（C1 协议） |
+| P8 | 空闲内存 <100MB（无任务、单窗口）——测量语义冻结于 [vega-s8-sdd.md](vega-s8-sdd.md) §3/C2：release RSS raw bytes（`proc_pidinfo pti_resident_size`），20 进程 +5/+10/+15s median 的 nearest-rank p95；阈值单位 OPEN(OWNER: human)，裁决前字面权威 100,000,000 bytes（decimal MB），裁决后测后永不换 | bench（C2 协议） |
 
 ## 6. 验收 Checklist（每个 Sprint 末过一遍）
 
@@ -136,3 +136,4 @@
 - v0.1 (2026-08-28) 初版定稿。
 - v0.2 (2026-08-30) S5 安全裁决回写：§4.2 补 invalid write/edit 的脱敏 rejected card；§4.3 区分普通/危险权限卡默认焦点与 Enter 语义，危险卡补 Tab/Shift+Tab 焦点循环、Space 激活焦点，并固定 bare Enter 在任意焦点均拒绝；两类卡保留 Cmd+Enter/Esc 及重复提交、超时与视图销毁的 fail-closed 行为。
 - v0.3 (2026-08-30) 人类批准 S5 wire schema 回写：§4.2 固定 write/edit 工具卡只消费 strict 安全成功/失败投影，隐藏 checkpoint ref，并对损坏 shape fail closed。
+- v0.4 (2026-08-31) S8-T42 契约冻结回写：§5 P7/P8 测量语义指向 [vega-s8-sdd.md](vega-s8-sdd.md) C1/C2；P8 阈值单位为 OPEN(OWNER: human)（裁决前按 decimal MB 字面权威，见 SDD §3.1/§10）。
