@@ -17,8 +17,9 @@
 //! S3-T18 Composer extension: `new_multiline` builds a fixed-`rows` input
 //! (Enter inserts `\n` via the [`InsertNewline`] action — 架构师裁定
 //! Enter=换行、Cmd+Enter=发送; paste preserves line breaks). Multi-line
-//! display paints one shaped line per `\n` segment stacked top-down; the
-//! 1~8 行自适应高度 is deferred per task card (fixed rows, overflow clipped).
+//! display paints one shaped visual line per `\n` segment (plus soft wraps)
+//! stacked top-down: 1~8 行自适应高度 + 超出 8 行后按光标跟随的内滚视口
+//! (visual-wrap viewport, cursor-follow), each verified by a GPUI test.
 
 use std::ops::Range;
 
