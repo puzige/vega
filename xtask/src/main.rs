@@ -1,15 +1,42 @@
 //! Development tasks for the Vega workspace (bench, run, package).
+//!
+//! S8-T43 (A2-04): the S3-T17 measurement pipeline was rewritten to the
+//! frozen T42 contracts — C1 first-rendered-interactive (next-frame
+//! milestone subprocess), C2 release RSS (raw bytes, 20 processes,
+//! +5/+10/+15 s medians, gray-zone extension), C6 P2 streaming (production
+//! controller entry, 10 s @ 1,000 deltas/s) and real refresh-rate detection
+//! for the P1 margin verdict. The legacy `spawn_to_exit` / MiB-as-MB /
+//! hardcoded-60Hz / ~500δ/s measurements are gone (SDD §0 verified at
+//! `429cb2d`; historical S6 numbers are noncomparable).
+
+mod contract;
+mod probe;
+mod protocol;
+mod provenance;
+mod render;
+mod report;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
+
+use contract::{
+    C1_ROUNDS, C1_THRESHOLD_P95_US, C2_EXTENSION_ROUNDS, C2_ROUNDS, C6_THRESHOLD_P99_US,
+    P2_WATCHDOG, P8_THRESHOLD_BYTES, STATUS_HARDWARE_PENDING, STATUS_PERFORMANCE_GATE_FAILED,
+};
+use protocol::{Isolation, Round};
+use provenance::{Provenance, ReleaseBuild};
 
 fn main() {
+    let _ = probe::STARTED.set(Instant::now());
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Hidden probe subcommand: the re-executed release binary running as the
+    // isolated measurement subprocess (see probe::run).
+    if let Some(mode) = probe::parse_args(&args) {
+        probe::run(mode);
+        return;
+    }
     if let Err(error) = dispatch(&args) {
         eprintln!("xtask error: {error:#}");
         std::process::exit(1);
@@ -19,398 +46,413 @@ fn main() {
 fn dispatch(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("bench") => bench(),
+        Some("bench-p7") => bench_c1c2_only(),
+        Some("bench-p2") => bench_p2_only(),
         other => {
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
             }
-            eprintln!("usage: cargo xtask bench");
+            eprintln!("usage: cargo xtask bench [or bench-p7 | bench-p2]");
             std::process::exit(2);
         }
     }
 }
 
+// ─── bench scenarios ─────────────────────────────────────────────────────────
+
+/// Full run: C1+C2 spawn rounds, C6 P2 stream, C6 P1 render margin.
 fn bench() -> Result<()> {
+    let started = Instant::now();
     let workspace = workspace_root()?;
-    let binary = ensure_vega_binary(&workspace)?;
+    let build = provenance::rebuild_release(&workspace)?;
+    let prov = provenance::collect(&workspace, &build)?;
 
-    println!("vega bench — S3-T17 measurement pipeline");
     println!(
-        "cold_start is still spawn-to-exit (first-frame instrumentation is a separate card); \
-         render_frame runs the --vega-bench-render probe\n"
+        "\nvega bench — S8-T43 frozen contracts (C1/C2/C6; SDD v1.0). \
+         Historical S6 numbers are noncomparable.\n"
     );
 
-    let cold_start = measure_cold_start(&binary)?;
-    let memory_idle = measure_memory_idle(&binary)?;
-    println!("building release vega for the render_frame probe (first run takes a while) ...");
-    let release_binary = ensure_vega_binary_with_profile(&workspace, true)?;
-    println!(
-        "measuring render_frame via the --vega-bench-render probe (~25s, a window will open) ..."
-    );
-    let render_frame = measure_render_frame(&release_binary)?;
+    let c1c2 = bench_c1_c2(&build, &prov, C2_ROUNDS)?;
+    let mut report = report::BenchReport::new(&prov, c1c2.clone(), provenance::cutoff()?);
+    match bench_p2_with(&build, &prov) {
+        Ok(p2) => {
+            let p2 = Some(p2);
+            let p1 = render::measure_render_margin(&workspace, &build, &prov)?;
+            let p1 = Some(p1);
+            report.p2 = p2.clone();
+            report.p1_margin = p1.clone();
+            let path = report::write(&report)?;
+            print_summary(&c1c2, &p2, &p1, &path, started.elapsed());
+            Ok(())
+        }
+        Err(error) => {
+            // C1/C2 evidence survives a P2 harness failure; recorded as
+            // not-run rather than fabricated.
+            eprintln!("P2 probe failed (recorded NOT RUN): {error:#}");
+            report.p2 = None;
+            let path = report::write(&report)?;
+            print_summary(&c1c2, &None, &None, &path, started.elapsed());
+            Err(error)
+        }
+    }
+}
 
-    print_table(&cold_start, &memory_idle, &render_frame);
-
-    let report = BenchReport {
-        timestamp: unix_ms()?,
-        meta: BenchMeta {
-            stage: "s3-t17",
-            note: "render_frame measured by `vega --vega-bench-render` (probe-binary mode): \
-                   #[gpui::test] was evaluated first but this gpui rev runs tests on \
-                   NoopTextSystem with no real frame cadence, so the probe reuses the T14 \
-                   spike method (render counter + 1s sampling + frame-build percentiles on a \
-                   real window). fps is vsync-capped by the 60Hz display; judge P1 by the \
-                   frame-build margin per tech-spec §5.2",
-        },
-        cold_start,
-        memory_idle,
-        render_frame,
-    };
-    let path = write_report(&workspace, &report)?;
-    println!("\njson report: {}", path.display());
+/// C1+C2 only (P7/P8 evidence).
+fn bench_c1c2_only() -> Result<()> {
+    let started = Instant::now();
+    let workspace = workspace_root()?;
+    let build = provenance::rebuild_release(&workspace)?;
+    let prov = provenance::collect(&workspace, &build)?;
+    let c1c2 = bench_c1_c2(&build, &prov, C2_ROUNDS)?;
+    let report = report::BenchReport::new(&prov, c1c2.clone(), provenance::cutoff()?);
+    let path = report::write(&report)?;
+    print_summary(&c1c2, &None, &None, &path, started.elapsed());
     Ok(())
 }
 
-// ─── benchmarks ──────────────────────────────────────────────────────────────
+/// C6 P2 only (stream latency evidence).
+fn bench_p2_only() -> Result<()> {
+    let started = Instant::now();
+    let workspace = workspace_root()?;
+    let build = provenance::rebuild_release(&workspace)?;
+    let prov = provenance::collect(&workspace, &build)?;
+    let p2 = bench_p2_with(&build, &prov)?;
+    let mut report =
+        report::BenchReport::new(&prov, report::C1C2Result::empty(), provenance::cutoff()?);
+    report.p2 = Some(p2.clone());
+    let path = report::write(&report)?;
+    print_summary(
+        &report::C1C2Result::empty(),
+        &Some(p2),
+        &None,
+        &path,
+        started.elapsed(),
+    );
+    Ok(())
+}
 
-/// Spawning the GUI flashes one Vega window per round; the measurement itself
-/// closes each instance right after the startup grace period.
-const COLD_START_ROUNDS: u64 = 5;
-const STARTUP_GRACE: Duration = Duration::from_secs(2);
-const IDLE_SAMPLE_AFTER: Duration = Duration::from_secs(5);
+/// The C1+C2 protocol over the isolated temp HOME (SDD §2 + §3), including
+/// the gray-zone extension rounds when the p95 lands in the band.
+fn bench_c1_c2(
+    build: &ReleaseBuild,
+    prov: &Provenance,
+    rounds: usize,
+) -> Result<report::C1C2Result> {
+    let _ = prov;
+    let temp = make_sandbox()?;
+    let isolation = Isolation {
+        home: temp.home.clone(),
+    };
+    preseed_profile(&isolation.home)?;
 
-fn measure_cold_start(binary: &Path) -> Result<ColdStart> {
-    let mut rounds_ms = Vec::new();
-    for round in 1..=COLD_START_ROUNDS {
-        let start = Instant::now();
-        let mut child = Command::new(binary)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .with_context(|| format!("failed to spawn {} (round {round})", binary.display()))?;
-        // TODO(S3): replace the fixed grace period with first-frame instrumentation.
-        thread::sleep(STARTUP_GRACE);
-        // An already-exited child fails kill(); that is fine, wait() reaps either way.
-        child.kill().ok();
-        child.wait()?;
-        rounds_ms.push(start.elapsed().as_millis() as u64);
+    println!(
+        "C1 {name} × {C1_ROUNDS} fresh release processes (p95 < {C1_THRESHOLD_P95_US} µs, \
+         next-frame milestone; NOT spawn-to-exit)",
+        name = contract::PROCESS_START_TO_FIRST_RENDERED_INTERACTIVE
+    );
+    let mut all = protocol::run_c1_c2(&build.xtask_bin, &isolation, rounds)?;
+    // Frozen-contract guard: never silently proceed with fewer rounds than
+    // the schema froze (SDD §3 step 3).
+    protocol::assert_round_count(&all, rounds)?;
+    let (samples, p95, gate) = protocol::c1_gate(&all);
+    println!(
+        "C1 p95 = {p95} µs over {} samples → gate {gate}",
+        samples.len()
+    );
+
+    println!(
+        "C2 P8 RSS (raw bytes, +5/+10/+15 s medians, threshold < {P8_THRESHOLD_BYTES} B \
+         [OPEN unit ruling: decimal MB])"
+    );
+    let (mut c2_p95, mut c2_gate, mut drift_rounds) = protocol::c2_gate(&all);
+    let mut extended = false;
+    if rounds == C2_ROUNDS && contract::in_gray_zone(c2_p95) {
+        println!(
+            "C2 p95 {c2_p95} B is in the gray zone [98,000,000, 102,000,000) → \
+             extending with {C2_EXTENSION_ROUNDS} rounds and recomputing (same math)"
+        );
+        let more = protocol::run_c1_c2(&build.xtask_bin, &isolation, C2_EXTENSION_ROUNDS)?;
+        all.extend(more);
+        let (new_p95, new_gate, new_drift) = protocol::c2_gate(&all);
+        c2_p95 = new_p95;
+        c2_gate = new_gate;
+        drift_rounds = new_drift;
+        extended = true;
     }
-    rounds_ms.sort_unstable();
-    let (p50_ms, p99_ms) = (percentile(&rounds_ms, 50), percentile(&rounds_ms, 99));
-    Ok(ColdStart {
-        method: "spawn_to_exit",
-        rounds_ms,
-        p50_ms,
-        p99_ms,
-        todo: "measure to first frame once startup instrumentation exists (S3)",
+    println!(
+        "C2 p95 = {c2_p95} B ({} MB / {} MiB) → gate {c2_gate}, drifting rounds {drift_rounds}{}",
+        contract::bytes_as_decimal_mb(c2_p95),
+        contract::bytes_as_mib(c2_p95),
+        if extended {
+            ", extended (gray zone)"
+        } else {
+            ""
+        }
+    );
+
+    let failed: Vec<String> = all
+        .iter()
+        .filter_map(|round| {
+            round
+                .fail
+                .map(|fail| format!("round {}: {fail}", round.round))
+        })
+        .collect();
+    Ok(report::C1C2Result {
+        rounds: all.iter().map(round_json).collect(),
+        c1_samples_us: samples.clone(),
+        c1_p50_us: contract::percentile(&samples, 50),
+        c1_p95_us: p95,
+        c1_p99_us: contract::percentile(&samples, 99),
+        c1_max_us: samples.last().copied().unwrap_or(0),
+        c1_gate_passed: gate,
+        c2_medians_bytes: protocol::c2_medians(&all),
+        c2_p95_bytes: c2_p95,
+        c2_gate_passed: c2_gate,
+        c2_drifting_rounds: drift_rounds,
+        c2_extended: extended,
+        fail_conditions: failed,
+        sandbox_root: temp.root.display().to_string(),
     })
 }
 
-fn measure_memory_idle(binary: &Path) -> Result<MemoryIdle> {
-    let mut child = Command::new(binary)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to spawn vega for the idle-memory sample")?;
-    thread::sleep(IDLE_SAMPLE_AFTER);
-    let pid = child.id();
-    let rss_bytes =
-        rss_resident_bytes(pid).with_context(|| format!("failed to read RSS of vega pid {pid}"))?;
-    child.kill().ok();
-    child.wait()?;
-    Ok(MemoryIdle {
-        method: "proc_pidinfo(PROC_PIDTASKINFO) resident size",
-        sample_after_secs: IDLE_SAMPLE_AFTER.as_secs(),
-        rss_bytes,
-        rss_mb: (rss_bytes as f64 / (1024.0 * 1024.0) * 10.0).round() / 10.0,
-    })
-}
-
-/// Nearest-rank percentile over a sorted slice.
-fn percentile(sorted: &[u64], pct: u64) -> u64 {
-    if sorted.is_empty() {
-        return 0;
-    }
-    let rank = (pct * sorted.len() as u64).div_ceil(100);
-    let rank = (rank.max(1) as usize).min(sorted.len());
-    sorted[rank - 1]
-}
-
-// ─── render_frame probe (S3-T17) ─────────────────────────────────────────────
-
-/// Upper bound for one probe run (~25s expected: 8s scroll + 12s stream +
-/// startup + report write).
-const RENDER_FRAME_TIMEOUT: Duration = Duration::from_secs(120);
-/// CPU sampling interval during the probe (spike run.sh 方法).
-const CPU_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
-
-/// Runs `vega --vega-bench-render <tmp.json>` to completion and returns the
-/// probe's measured JSON (the `render_frame` report value), enriched with the
-/// externally sampled CPU usage (spike run.sh 方法：ps -o %cpu).
-fn measure_render_frame(binary: &Path) -> Result<serde_json::Value> {
-    let report_path = std::env::temp_dir().join(format!("vega-render-frame-{}.json", unix_ms()?));
-    let mut child = spawn_with_idle_assertion(binary, &report_path)
-        .context("failed to spawn the --vega-bench-render probe")?;
-
-    let start = Instant::now();
-    let mut cpu_samples: Vec<f64> = Vec::new();
+/// The C6 P2 short run (10 s @ 1,000 deltas/s; daily-PR feedback, NOT the
+/// 5-minute terminal soak — SDD §7).
+fn bench_p2_with(build: &ReleaseBuild, prov: &Provenance) -> Result<report::P2Result> {
+    let _ = prov;
+    let temp = make_sandbox()?;
+    let isolation = Isolation {
+        home: temp.home.clone(),
+    };
+    preseed_profile(&isolation.home)?;
+    println!(
+        "C6 P2 stream: 10 s @ 1,000 deltas/s through ConversationStream::apply_event \
+         (daily-PR feedback; 5-minute soak is T48/T49)"
+    );
+    let out = temp.root.join("p2-report.json");
+    let seconds = contract::C6_STREAM_SECONDS.to_string();
+    let rate = contract::C6_INJECT_RATE_PER_S.to_string();
+    let mut child = isolation.command(
+        &build.xtask_bin,
+        &[
+            "__probe",
+            "p2",
+            "--out",
+            out.to_str().context("non-UTF8 temp path")?,
+            "--seconds",
+            &seconds,
+            "--rate",
+            &rate,
+        ],
+    );
+    child.stdout(std::process::Stdio::inherit());
+    let mut child = child.spawn().context("failed to spawn the p2 probe")?;
+    // Watchdog: the p2 child must exit on its own well inside this window
+    // (10 s stream + boot). A timeout kill is a FAIL, never success
+    // (SDD §2 判失败 semantics extended to every probe phase).
+    let watchdog_deadline = Instant::now() + P2_WATCHDOG;
     let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= watchdog_deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    bail!(
+                        "the p2 probe exceeded the {}s watchdog; killed (a timeout is a \
+                         FAIL, never counted as success)",
+                        P2_WATCHDOG.as_secs()
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(error) => return Err(error).context("failed to wait for the p2 probe"),
         }
-        if let Some(pct) = cpu_percent(child.id()) {
-            cpu_samples.push(pct);
-        }
-        if start.elapsed() > RENDER_FRAME_TIMEOUT {
-            child.kill().ok();
-            bail!(
-                "the --vega-bench-render probe exceeded {}s; killed",
-                RENDER_FRAME_TIMEOUT.as_secs()
-            );
-        }
-        thread::sleep(CPU_SAMPLE_INTERVAL);
     };
     if !status.success() {
-        bail!("the --vega-bench-render probe exited with {status}");
+        bail!("the p2 probe exited with {status}");
     }
+    let raw = std::fs::read_to_string(&out)
+        .with_context(|| format!("failed to read {}", out.display()))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).context("the p2 probe report is not valid JSON")?;
+    let latencies: Vec<u64> = value["batches"]
+        .as_array()
+        .map(|records| {
+            records
+                .iter()
+                .filter_map(|record| record["latency_us"].as_u64())
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut sorted = latencies.clone();
+    sorted.sort_unstable();
+    let p99 = contract::percentile(&sorted, 99);
+    let p50 = contract::percentile(&sorted, 50);
+    let run_completed = value["run_completed"].as_bool().unwrap_or(false);
+    let gate = p99 < C6_THRESHOLD_P99_US && !sorted.is_empty() && run_completed;
+    println!(
+        "P2 p50 = {p50} µs, p99 = {p99} µs over {} batches (run_completed={run_completed}) → \
+         gate {gate} (< {C6_THRESHOLD_P99_US} µs)",
+        sorted.len()
+    );
+    Ok(report::P2Result {
+        seconds: value["seconds"].as_u64().unwrap_or_default(),
+        rate_per_s: value["rate_per_s"].as_u64().unwrap_or_default(),
+        events_total: value["events_total"].as_u64().unwrap_or_default(),
+        deltas_total: value["deltas_total"].as_u64().unwrap_or_default(),
+        frames: value["frames"].as_u64().unwrap_or_default(),
+        queue_max_depth: value["queue_max_depth"].as_u64().unwrap_or_default(),
+        batch_latencies_us: latencies,
+        p50_us: p50,
+        p99_us: p99,
+        gate_passed: gate,
+        schema: value["schema"].as_str().unwrap_or_default().to_string(),
+        sandbox_root: temp.root.display().to_string(),
+    })
+}
 
-    let raw = std::fs::read_to_string(&report_path)
-        .with_context(|| format!("failed to read {}", report_path.display()))?;
-    let mut value: serde_json::Value =
-        serde_json::from_str(&raw).context("the probe report is not valid JSON")?;
-    if !cpu_samples.is_empty() {
-        let average = cpu_samples.iter().sum::<f64>() / cpu_samples.len() as f64;
-        let max = cpu_samples.iter().cloned().fold(0.0_f64, f64::max);
-        value["cpu_avg_pct"] = serde_json::json!((average * 10.0).round() / 10.0);
-        value["cpu_max_pct"] = serde_json::json!((max * 10.0).round() / 10.0);
-        value["cpu_samples"] = serde_json::json!(cpu_samples.len());
+// ─── sandbox (C3 isolation) ──────────────────────────────────────────────────
+
+struct Sandbox {
+    root: PathBuf,
+    home: PathBuf,
+}
+
+/// Creates the isolated temp sandbox: fresh `HOME`, `/tmp` logs and reports,
+/// nothing inside the repo (C3 isolation MUSTs).
+fn make_sandbox() -> Result<Sandbox> {
+    let root = std::env::temp_dir().join(format!("vega-t43-{}", unix_ms()));
+    let home = root.join("home");
+    std::fs::create_dir_all(&home)
+        .with_context(|| format!("failed to create the sandbox HOME at {}", home.display()))?;
+    std::fs::create_dir_all(root.join("logs"))?;
+    Ok(Sandbox { root, home })
+}
+
+/// Preseeds the isolated profile (C3): a project row AND one active thread
+/// exist before the probe boots so the real route (Sidebar → routed
+/// ConversationStream with its empty Composer) opens without any
+/// provider/key interaction.
+fn preseed_profile(home: &Path) -> Result<()> {
+    let data_dir = vega_store::paths::data_dir_from(None, home);
+    std::fs::create_dir_all(&data_dir)?;
+    let store = vega_store::Store::open(data_dir.join("vega.db"))?;
+    store.migrate()?;
+    let project =
+        vega_store::projects::create(store.conn(), "/tmp/vega-bench-repo", "vega-bench", None)?;
+    let now_ms = unix_ms() as i64;
+    vega_store::threads::create(
+        store.conn(),
+        vega_store::threads::NewThread {
+            id: "vega-bench-fixture-thread",
+            project_id: &project.id,
+            title: "vega bench fixture",
+            mode: "execute",
+            permission_mode: "confirm",
+            model: "vega-bench-mock",
+            status: "active",
+            pinned: false,
+            unread: false,
+            created_at: now_ms,
+            updated_at: now_ms,
+        },
+    )?;
+    Ok(())
+}
+
+fn round_json(round: &Round) -> serde_json::Value {
+    serde_json::json!({
+        "round": round.round,
+        "c1_parent_latency_us": round.parent_latency_us,
+        "c1_child_elapsed_us": round.child_elapsed_us,
+        "c2_rss_bytes_5s_10s_15s": round.rss_bytes,
+        "c2_median_bytes": round.rss_median(),
+        "exit_kind": round.exit_kind,
+        "exit_code": round.exit_code,
+        "fail": round.fail,
+        "stdout_lines": round.stdout_lines,
+    })
+}
+
+fn unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn print_summary(
+    c1c2: &report::C1C2Result,
+    p2: &Option<report::P2Result>,
+    p1: &Option<render::RenderMargin>,
+    path: &Path,
+    elapsed: Duration,
+) {
+    println!("\n{:<16} frozen-contract result", "metric");
+    if c1c2.has_data() {
+        println!(
+            "{:<16} p50={}µs p95={}µs p99={}µs max={}µs / threshold {}µs → {}",
+            "P7 (C1)",
+            c1c2.c1_p50_us,
+            c1c2.c1_p95_us,
+            c1c2.c1_p99_us,
+            c1c2.c1_max_us,
+            C1_THRESHOLD_P95_US,
+            verdict(c1c2.c1_gate_passed)
+        );
+        println!(
+            "{:<16} p95={}B ({} MB / {} MiB) / threshold {P8_THRESHOLD_BYTES}B [OPEN unit: \
+             decimal MB] → {} (drifting rounds {}{})",
+            "P8 (C2)",
+            c1c2.c2_p95_bytes,
+            contract::bytes_as_decimal_mb(c1c2.c2_p95_bytes),
+            contract::bytes_as_mib(c1c2.c2_p95_bytes),
+            verdict(c1c2.c2_gate_passed),
+            c1c2.c2_drifting_rounds,
+            if c1c2.c2_extended { ", extended" } else { "" }
+        );
     }
-    Ok(value)
+    if let Some(p2) = p2 {
+        println!(
+            "{:<16} p99={}µs / threshold {}µs → {}",
+            "P2 (C6)",
+            p2.p99_us,
+            C6_THRESHOLD_P99_US,
+            verdict(p2.gate_passed)
+        );
+    }
+    if let Some(p1) = p1 {
+        println!(
+            "{:<16} frame_build p50={}µs p99={}µs / budget {}µs @ {} → {}",
+            "P1 margin (C6)",
+            p1.frame_build_p50_us,
+            p1.frame_build_p99_us,
+            contract::C6_FRAME_BUDGET_120HZ_US,
+            p1.refresh_hz
+                .map(|hz| format!("{hz:.0}Hz"))
+                .unwrap_or_else(|| "unknown".into()),
+            p1.verdict
+        );
+    }
+    println!(
+        "\njson report: {} (bench ran {:.1}s)",
+        path.display(),
+        elapsed.as_secs_f32()
+    );
+    println!(
+        "frozen status vocabulary: `{}` / `{}` (SDD §1)",
+        STATUS_PERFORMANCE_GATE_FAILED, STATUS_HARDWARE_PENDING
+    );
 }
 
-/// Spawns the probe binary, wrapped in `caffeinate -i` on macOS so App Nap
-/// cannot throttle the measurement window (spike run.sh 同款前提).
-fn spawn_with_idle_assertion(binary: &Path, report_path: &Path) -> Result<std::process::Child> {
-    let caffeinate = Path::new("/usr/bin/caffeinate");
-    let mut command = if caffeinate.exists() {
-        let mut command = Command::new(caffeinate);
-        command.arg("-i").arg(binary);
-        command
-    } else {
-        Command::new(binary)
-    };
-    command
-        .arg("--vega-bench-render")
-        .arg(report_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    Ok(command.spawn()?)
+fn verdict(passed: bool) -> &'static str {
+    report::status_word(passed)
 }
-
-/// One process-CPU sample in percent via `ps -o %cpu=` (None = unavailable).
-fn cpu_percent(pid: u32) -> Option<f64> {
-    let output = Command::new("ps")
-        .arg("-o")
-        .arg("%cpu=")
-        .arg("-p")
-        .arg(pid.to_string())
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.trim().parse::<f64>().ok()
-}
-
-// ─── vega process helpers ────────────────────────────────────────────────────
 
 fn workspace_root() -> Result<PathBuf> {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map(Path::to_path_buf)
         .context("failed to locate the workspace root from xtask's manifest dir")
-}
-
-fn ensure_vega_binary(workspace: &Path) -> Result<PathBuf> {
-    ensure_vega_binary_with_profile(workspace, false)
-}
-
-/// Locates (building when missing) the vega binary. `release = true` builds
-/// `--release` — the render_frame probe measures on an optimized binary so the
-/// numbers are comparable with the T14 spike (which ran a release probe).
-fn ensure_vega_binary_with_profile(workspace: &Path, release: bool) -> Result<PathBuf> {
-    let profile_dir = if release { "release" } else { "debug" };
-    let binary = workspace.join(format!("target/{profile_dir}/vega"));
-    if !binary.exists() {
-        println!(
-            "building vega (target/{profile_dir}/vega not found) ... (release builds take a while)"
-        );
-        let mut command = cargo_command();
-        command.arg("build").arg("-p").arg("vega");
-        if release {
-            command.arg("--release");
-        }
-        if !command.status()?.success() {
-            bail!("cargo build -p vega failed");
-        }
-    }
-    if !binary.exists() {
-        bail!("vega binary not found at {} after build", binary.display());
-    }
-    Ok(binary)
-}
-
-fn cargo_command() -> Command {
-    // Prefer the rustup proxy so rust-toolchain.toml is honored even when
-    // Homebrew's cargo shadows it in PATH (same fix as .githooks).
-    let mut cargo = PathBuf::from("cargo");
-    if let Ok(home) = std::env::var("HOME") {
-        let proxy = Path::new(&home).join(".cargo/bin/cargo");
-        if proxy.exists() {
-            cargo = proxy;
-        }
-    }
-    Command::new(cargo)
-}
-
-// ─── macOS RSS probe (libproc, zero third-party deps) ───────────────────────
-
-const PROC_PIDTASKINFO: i32 = 4;
-
-/// Mirrors Darwin's `struct proc_taskinfo` layout (libproc.h); only
-/// `pti_resident_size` is read, the rest exists to keep the ABI faithful.
-#[allow(dead_code)]
-#[derive(Default)]
-#[repr(C)]
-struct ProcTaskInfo {
-    pti_virtual_size: u64,
-    pti_resident_size: u64,
-    pti_total_user: u64,
-    pti_total_system: u64,
-    pti_threads_user: u64,
-    pti_threads_system: u64,
-    pti_policy: i32,
-    pti_faults: i32,
-    pti_pageins: i32,
-    pti_cow_faults: i32,
-    pti_messages_sent: i32,
-    pti_messages_received: i32,
-    pti_syscalls_mach: i32,
-    pti_syscalls_bsd: i32,
-    pti_csw: i32,
-    pti_threadnum: i32,
-    pti_numrunning: i32,
-    pti_priority: i32,
-}
-
-// proc_pidinfo is re-exported by libSystem, no explicit link attribute needed.
-unsafe extern "C" {
-    fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut ProcTaskInfo, size: i32) -> i32;
-}
-
-fn rss_resident_bytes(pid: u32) -> Result<u64> {
-    let mut info = ProcTaskInfo::default();
-    let size = std::mem::size_of::<ProcTaskInfo>() as i32;
-    let written = unsafe { proc_pidinfo(pid as i32, PROC_PIDTASKINFO, 0, &mut info, size) };
-    if written < size {
-        bail!("proc_pidinfo returned {written} bytes, expected {size} (pid may have exited)");
-    }
-    Ok(info.pti_resident_size)
-}
-
-// ─── output ──────────────────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-struct BenchReport {
-    timestamp: u64,
-    meta: BenchMeta,
-    cold_start: ColdStart,
-    memory_idle: MemoryIdle,
-    render_frame: serde_json::Value,
-}
-
-#[derive(Serialize)]
-struct BenchMeta {
-    stage: &'static str,
-    note: &'static str,
-}
-
-#[derive(Serialize)]
-struct ColdStart {
-    method: &'static str,
-    rounds_ms: Vec<u64>,
-    p50_ms: u64,
-    p99_ms: u64,
-    todo: &'static str,
-}
-
-#[derive(Serialize)]
-struct MemoryIdle {
-    method: &'static str,
-    sample_after_secs: u64,
-    rss_bytes: u64,
-    rss_mb: f64,
-}
-
-fn print_table(cold_start: &ColdStart, memory_idle: &MemoryIdle, render_frame: &serde_json::Value) {
-    println!("{:<14} {:<26} note", "metric", "value");
-    println!(
-        "{:<14} {:<26} spawn-to-exit placeholder",
-        "cold_start",
-        format!("p50={}ms p99={}ms", cold_start.p50_ms, cold_start.p99_ms)
-    );
-    println!(
-        "{:<14} {:<26} RSS after {} s",
-        "memory_idle",
-        format!("{:.1} MB", memory_idle.rss_mb),
-        memory_idle.sample_after_secs
-    );
-    let fps = render_frame
-        .get("scroll")
-        .and_then(|scroll| scroll.get("fps_median"))
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    let stream_fps = render_frame
-        .get("stream")
-        .and_then(|stream| stream.get("fps_median"))
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    let build_p50 = render_frame
-        .get("stream")
-        .and_then(|stream| stream.get("frame_build_p50_us"))
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    let build_p99 = render_frame
-        .get("stream")
-        .and_then(|stream| stream.get("frame_build_p99_us"))
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    let frozen_remat = render_frame
-        .get("frozen_rematerializations")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(u64::MAX);
-    let mode = render_frame
-        .get("mode")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
-    println!(
-        "{:<14} {:<26} mode={mode} (scroll fps; 60Hz vsync cap)",
-        "render_frame",
-        format!("fps={fps}")
-    );
-    println!(
-        "{:<14} {:<26} stream ~500δ/s: frozen_remat={frozen_remat} (P3, 0 required)",
-        "stream_phase",
-        format!("fps={stream_fps} build p50={build_p50:.0}µs p99={build_p99:.0}µs")
-    );
-}
-
-fn write_report(workspace: &Path, report: &BenchReport) -> Result<PathBuf> {
-    let dir = workspace.join("bench/results");
-    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
-    let path = dir.join(format!("{}.json", report.timestamp));
-    let json = serde_json::to_string_pretty(report)?;
-    std::fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(path)
-}
-
-fn unix_ms() -> Result<u64> {
-    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64)
 }

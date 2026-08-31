@@ -7410,8 +7410,14 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "gpui",
+ "gpui_platform",
  "serde",
  "serde_json",
+ "vega_conversation",
+ "vega_store",
+ "vega_theme",
+ "vega_ui",
 ]
 
 [[package]]

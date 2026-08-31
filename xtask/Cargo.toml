@@ -9,3 +9,19 @@ edition.workspace = true
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+# S8-T43 (A2-04) bench rework — references to EXISTING whitelisted workspace
+# dependencies only (no new third-party crate enters the graph; Cargo.lock
+# package set is unchanged). Required by the T43 card's normative E2E:
+# the C1 milestone must be flushed from a pinned GPUI next-frame callback
+# inside an isolated release subprocess (SDD §2/C1), which is impossible
+# without naming gpui/gpui_platform; the real root view (Sidebar + routed
+# ConversationStream + enabled Composer) is composed from the production
+# vega_ui/vega_theme crates; the preseeded isolated profile (SDD §3/C2/C3)
+# is seeded through the public vega_store/vega_conversation APIs. Production
+# code under crates/ is NOT touched by this card.
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
+vega_store = { workspace = true }
+vega_conversation = { workspace = true }
+vega_theme = { workspace = true }
+vega_ui = { workspace = true }
