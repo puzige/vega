@@ -1230,6 +1230,23 @@ pub enum ToolCallStatus {
     Cancelled,
 }
 
+impl ToolCallStatus {
+    /// Parses the exact persisted `tool_calls.status` DDL vocabulary
+    /// (S8-T45 hydration reads durable rows; unknown values fail closed).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending_approval" => Some(Self::PendingApproval),
+            "approved" => Some(Self::Approved),
+            "rejected" => Some(Self::Rejected),
+            "running" => Some(Self::Running),
+            "success" => Some(Self::Success),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+}
+
 /// A display chunk from a tool.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ToolOutputChunk(pub String);

@@ -7,6 +7,7 @@
 pub mod agent;
 mod artifact;
 mod git_workspace;
+pub mod history;
 pub mod plans;
 mod pricing;
 pub mod summary;
