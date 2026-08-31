@@ -46,9 +46,9 @@ use vega_ui::commit_panel::{
     CommitPrepareRequested, CommitRequested,
 };
 use vega_ui::conversation_stream::{
-    ComposerSubmitted, ConversationStream, HistoryPageRequested, OpenCommitPanelRequested,
-    OpenWorkspaceDiffRequested, ThreadSettingsRequested, WorkspaceToolTerminal,
-    bench as render_frame_bench,
+    ComposerDefaultsRequested, ComposerSubmitted, ConversationStream, HistoryPageRequested,
+    OpenCommitPanelRequested, OpenWorkspaceDiffRequested, ThreadSettingsRequested,
+    WorkspaceToolTerminal, bench as render_frame_bench,
 };
 use vega_ui::diff_view::{
     DIFF_REFRESH_INTERVAL, DiffClosed, DiffProjectionRequested, DiffRetryRequested, DiffView,
@@ -56,7 +56,7 @@ use vega_ui::diff_view::{
 use vega_ui::plan_card::PlanReviewRequested;
 use vega_ui::settings::{
     CloseSettings, OpenSettings, PricingDiscardRequested, PricingMutationRequested,
-    PricingReloadRequested, PricingRetryRequested, SettingsOpen, SettingsView,
+    PricingReloadRequested, PricingRetryRequested, SettingsOpen, SettingsView, all_models,
 };
 use vega_ui::sidebar::{
     AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, NewThread, OpenedThread,
@@ -1996,7 +1996,7 @@ fn run_agent_worker(
     let success = (|| -> Result<(), ()> {
         // Config and Keychain are touched only after an explicit user submit
         // or committed Plan approval reaches this worker.
-        let tools = vega_tools::Tools::new(project_path).map_err(|_| ())?;
+        let tools = vega_tools::Tools::new(&project_path).map_err(|_| ())?;
         let store = Store::open(database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
         #[cfg(test)]
@@ -2031,6 +2031,30 @@ fn run_agent_worker(
         };
         let result = match run {
             PendingAgentRun::UserMessage(content) => {
+                // A2-12: resolve `@path` tokens against the project root and
+                // inject the referenced file contents ahead of the user text
+                // (bounded: 8 files, 16 KiB each, 48 KiB total). Any
+                // resolution failure degrades to the raw message — injection
+                // never blocks or fails a run.
+                let content = vega_tools::reference::resolve_bounded_references(
+                    &project_path,
+                    &content,
+                    vega_tools::reference::REFERENCE_MAX_FILES,
+                    vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
+                    vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,
+                )
+                .map(|refs| {
+                    if refs.is_empty() {
+                        content.clone()
+                    } else {
+                        format!(
+                            "{}\n\n{}",
+                            vega_tools::reference::render_reference_block(&refs),
+                            content
+                        )
+                    }
+                })
+                .unwrap_or(content);
                 runtime.block_on(vega_conversation::agent::run_thread_task_with_pricing(
                     &store,
                     provider.as_ref(),
@@ -5882,6 +5906,27 @@ impl VegaWindow {
         self.sidebar.update(cx, Sidebar::create_thread);
     }
 
+    /// A2-14: persists the composer's model selection as the app-level
+    /// default model (config file, no DDL, no thread-row write).
+    fn persist_composer_defaults(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &ComposerDefaultsRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        let model = request.defaults.model.clone();
+        let _ = vega_store::config::load().map(|mut config| {
+            config.defaults.model = model;
+            let _ = config.save();
+        });
+        stream.update(cx, |stream, cx| {
+            stream.apply_composer_defaults(request.defaults.clone(), cx)
+        });
+    }
+
     fn persist_thread_settings(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -6113,6 +6158,30 @@ impl Render for VegaWindow {
                                 previous.update(cx, |stream, cx| stream.timeout_permission(cx));
                             }
                             let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+                            // A2-14: seed the composer model selector from the
+                            // configured providers (zero IO from the view) and
+                            // reflect the thread's current model if present.
+                            {
+                                let model_catalog = vega_store::config::load()
+                                    .map_or(Vec::new(), |config| all_models(&config.providers));
+                                let thread_model = thread.model.clone();
+                                view.update(cx, |stream, cx| {
+                                    if !thread_model.is_empty() {
+                                        stream.apply_composer_defaults(
+                                            vega_conversation::types::ComposerDefaults {
+                                                model: thread_model,
+                                                thinking: String::new(),
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                    stream.apply_model_options(model_catalog, cx);
+                                });
+                            }
+                            cx.subscribe(&view, |this, stream, request, cx| {
+                                this.persist_composer_defaults(stream.clone(), request, cx);
+                            })
+                            .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.persist_thread_settings(stream.clone(), request, cx);
                             })
@@ -11194,5 +11263,76 @@ mod tests {
         );
         let b_entries = stream_b.read_with(cx, |stream, _| stream.hydrated_entry_count());
         assert_eq!(b_entries, 0, "the late page never reaches the new route");
+    }
+
+    #[test]
+    fn at_reference_injection_persists_across_reopen() {
+        // S8-T47 E2E (A2-12 主干, headless): fresh thread → user submits an
+        // `@file` token → the worker injects the bounded reference block →
+        // the persisted user row keeps the injection after a store reopen
+        // (重启保持). MockProvider at the provider boundary only; no keys,
+        // no network.
+        let workspace = tempfile::tempdir().expect("workspace root");
+        std::fs::write(workspace.path().join("notes.txt"), "LOREM_REFERENCE_MARKER")
+            .expect("write referenced file");
+        let data = tempfile::tempdir().expect("data root");
+        let database_path = data.path().join("vega.db");
+        let store = Store::open(&database_path).expect("reference store");
+        store.migrate().expect("reference migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            workspace.path().to_str().expect("UTF-8 workspace"),
+            "reference-e2e",
+            None,
+        )
+        .expect("reference project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "mock-reference",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("reference thread");
+        drop(store);
+
+        let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+            vega_runtime::ScriptStep::events(vec![
+                vega_runtime::ProviderEvent::TextDelta("ok".into()),
+                vega_runtime::ProviderEvent::Done {
+                    stop_reason: vega_runtime::StopReason::End,
+                },
+            ]),
+        ]));
+        let (sender, receiver) = mpsc::sync_channel::<AgentUpdate>(AGENT_EVENT_CAPACITY);
+        run_agent_worker(
+            database_path.clone(),
+            workspace.path().to_path_buf(),
+            thread.clone(),
+            PendingAgentRun::UserMessage("@notes.txt 总结这个文件".into()),
+            vega_conversation::agent::PermissionQueue::new(),
+            tokio_util::sync::CancellationToken::new(),
+            sender,
+            None,
+            #[cfg(test)]
+            Some(provider),
+        );
+        while receiver.try_recv().is_ok() {}
+
+        let reopened = Store::open(&database_path).expect("reopen store after restart");
+        let rows = vega_store::messages::recent(reopened.conn(), &thread.id, 16)
+            .expect("messages after restart");
+        let user = rows
+            .iter()
+            .find(|row| row.role == "user")
+            .expect("persisted user row");
+        assert!(
+            user.content.starts_with("[@notes.txt]"),
+            "injected reference block leads the persisted message"
+        );
+        assert!(user.content.contains("LOREM_REFERENCE_MARKER"));
+        assert!(
+            user.content.contains("总结这个文件"),
+            "original user text preserved after the injected block"
+        );
     }
 }

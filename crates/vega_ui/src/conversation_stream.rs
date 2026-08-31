@@ -64,8 +64,8 @@ use gpui::{
 use vega_conversation::agent::PermissionQueue;
 use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
-    ConversationEvent, ConversationMeter, MeterSnapshot, PermissionMode, Plan, RestoredUsage,
-    RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
+    ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, MeterSnapshot,
+    PermissionMode, Plan, RestoredUsage, RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -76,6 +76,9 @@ use vega_theme::{ThemeColors, Typography, theme};
 use crate::artifact_card::ArtifactCard;
 use crate::branch_selector::BranchSelector;
 use crate::commit_panel::CommitPanel;
+use crate::file_selector::{
+    AcceptFile, CancelFile, FILE_SUGGESTION_LIMIT, FileSelectorModel, NextFile, PreviousFile,
+};
 use crate::permission_card::{PermissionCard, PermissionCardResolved};
 use crate::plan_card::{PlanCard, PlanReviewRequested};
 use crate::settings::SettingsOpen;
@@ -90,7 +93,12 @@ actions!(
         SendMessage,
         PreviousMessage,
         ActivateThreadSetting,
-        OpenWorkspaceDiff
+        OpenWorkspaceDiff,
+        ActivateModel,
+        PreviousModel,
+        NextModel,
+        CloseModel,
+        CycleThinking
     ]
 );
 
@@ -140,6 +148,15 @@ pub struct OpenCommitPanelRequested {
     pub project_id: String,
 }
 
+/// Bounded `@file` index request (A2-12): the composer selector opened and
+/// needs a fresh bounded walk of the project root. The app layer walks on a
+/// worker thread and hands back the typed [`FileIndexSnapshot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileIndexRequested {
+    pub thread_id: String,
+    pub project_id: String,
+}
+
 impl std::fmt::Debug for OpenCommitPanelRequested {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -165,6 +182,21 @@ pub struct WorkspaceToolTerminal {
 pub struct HistoryPageRequested {
     pub thread_id: String,
     pub before: i64,
+}
+
+/// Composer `@file` suggestion dropdown open/close/bookkeeping is UI-local;
+/// only the accepted completion flows out of the selector model.
+///
+/// Bounded `@file` selector state (A2-12): pure model + bounded snapshot,
+/// driven by the app layer's typed index projection.
+///
+/// Default provider/model/thinking choice for new threads (A2-14). Emitted
+/// on selector activation; the app persists it at the config seam and
+/// reflects it back through [`ConversationStream::apply_composer_defaults`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposerDefaultsRequested {
+    pub thread_id: String,
+    pub defaults: ComposerDefaults,
 }
 
 /// Scroll-up hydration bookkeeping. `older_cursor` is `Some(oldest loaded
@@ -1360,8 +1392,28 @@ pub struct ConversationStream {
     history_draft: Option<String>,
     approved_not_started: bool,
     trusted_action_busy: bool,
-    setting_focus: [FocusHandle; 6],
+    setting_focus: [FocusHandle; 7],
     controller_error: Option<String>,
+    /// Bounded `@file` selector model (A2-12). Pure UI state over the typed
+    /// [`FileIndexSnapshot`]; the app layer owns the filesystem walk.
+    file_selector: FileSelectorModel,
+    /// The latest bounded candidate projection for this thread's project.
+    file_snapshot: FileIndexSnapshot,
+    /// One bounded walk in flight / completed bookkeeping (one request per
+    /// stream lifetime; later opens re-filter the projection locally).
+    file_index_loading: bool,
+    file_index_loaded: bool,
+    /// Provider/model/thinking composer defaults (A2-14). Display state for
+    /// the selector; authority is the app-level config seam.
+    composer_defaults: ComposerDefaults,
+    /// Priced model options for the selector (from the T36 pricing catalog
+    /// via the app layer's typed projection; zero file IO here).
+    model_options: Vec<String>,
+    /// Model selector popover state (open/closed + highlight row).
+    model_selector_open: bool,
+    model_selector_highlight: usize,
+    /// Keyboard focus stop for the model selector trigger (A2-14).
+    model_focus: FocusHandle,
     /// Cancels the watch listener and drops its fail-closed guard with the view.
     _permission_listener_task: gpui::Task<()>,
 }
@@ -1373,6 +1425,8 @@ impl EventEmitter<OpenWorkspaceDiffRequested> for ConversationStream {}
 impl EventEmitter<OpenCommitPanelRequested> for ConversationStream {}
 impl EventEmitter<WorkspaceToolTerminal> for ConversationStream {}
 impl EventEmitter<HistoryPageRequested> for ConversationStream {}
+impl EventEmitter<FileIndexRequested> for ConversationStream {}
+impl EventEmitter<ComposerDefaultsRequested> for ConversationStream {}
 
 struct InjectionState {
     /// Which assistant entry the replayer feeds.
@@ -1406,8 +1460,10 @@ impl ConversationStream {
             cx.new(|cx| BranchSelector::new(thread.id.clone(), thread.project_id.clone(), cx));
         let commit_panel =
             cx.new(|cx| CommitPanel::new(thread.id.clone(), thread.project_id.clone(), cx));
-        // 空输入禁用发送：输入内容变化即重渲染 Composer。
-        cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        // 空输入禁用发送 + `@` 触发的文件选择跟随输入内容变化：输入内容
+        // 变化即重渲染 Composer。
+        cx.observe(&input, |this, input, cx| this.sync_at_query(&input, cx))
+            .detach();
         let mut listener = permission_queue.subscribe();
         let permission_listener_task = cx.spawn(async move |this, cx| {
             while listener.changed().await {
@@ -1463,8 +1519,19 @@ impl ConversationStream {
                 cx.focus_handle().tab_index(13).tab_stop(true),
                 cx.focus_handle().tab_index(14).tab_stop(true),
                 cx.focus_handle().tab_index(15).tab_stop(true),
+                // Thinking-level chip (A2-14): its own keyboard stop.
+                cx.focus_handle().tab_index(17).tab_stop(true),
             ],
             controller_error: None,
+            file_selector: FileSelectorModel::default(),
+            file_snapshot: FileIndexSnapshot::default(),
+            file_index_loading: false,
+            file_index_loaded: false,
+            composer_defaults: ComposerDefaults::default(),
+            model_options: Vec::new(),
+            model_selector_open: false,
+            model_selector_highlight: 0,
+            model_focus: cx.focus_handle().tab_index(16).tab_stop(true),
             _permission_listener_task: permission_listener_task,
         }
     }
@@ -1499,6 +1566,192 @@ impl ConversationStream {
     /// selected state.
     pub fn apply_controller_error(&mut self, cx: &mut Context<Self>) {
         self.controller_error = Some("操作未保存，请重试".into());
+        cx.notify();
+    }
+
+    /// Applies the bounded `@file` candidate projection (A2-12) handed back
+    /// by the app layer's worker. The open selector re-filters; a failed
+    /// walk leaves the selector with whatever is already loaded (empty on
+    /// first failure — the selector simply offers nothing, never guesses).
+    pub fn apply_file_index(&mut self, snapshot: FileIndexSnapshot, cx: &mut Context<Self>) {
+        self.file_index_loading = false;
+        self.file_index_loaded = true;
+        let query = self
+            .input
+            .read(cx)
+            .trailing_at_query()
+            .map(|(_, query)| query)
+            .unwrap_or_default();
+        if query.is_empty() && !self.file_selector.is_open() {
+            self.file_snapshot = snapshot;
+            cx.notify();
+            return;
+        }
+        self.file_snapshot = snapshot;
+        self.file_selector.open_for(&self.file_snapshot, &query);
+        cx.notify();
+    }
+
+    /// Reflects the authoritative provider/model/thinking composer defaults
+    /// (A2-14) after the app persisted a selection at the config seam.
+    pub fn apply_composer_defaults(&mut self, defaults: ComposerDefaults, cx: &mut Context<Self>) {
+        self.composer_defaults = defaults;
+        self.model_selector_open = false;
+        cx.notify();
+    }
+
+    /// Installs the priced model options for the composer selector (A2-14):
+    /// the app layer projects the T36 pricing catalog's model list; the
+    /// stream never reads pricing files.
+    pub fn apply_model_options(&mut self, options: Vec<String>, cx: &mut Context<Self>) {
+        self.model_options = options;
+        self.model_selector_highlight = self
+            .model_options
+            .iter()
+            .position(|model| *model == self.composer_defaults.model)
+            .unwrap_or(0);
+        cx.notify();
+    }
+
+    /// Follows the caret into/out of an `@token` (A2-12). The first `@` in a
+    /// session triggers exactly one bounded index request (first-wins; later
+    /// opens re-filter the cached projection). No token → selector closed.
+    fn sync_at_query(&mut self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
+        let query = input.read(cx).trailing_at_query().map(|(_, query)| query);
+        match query {
+            None => {
+                if self.file_selector.close() {
+                    cx.notify();
+                }
+            }
+            Some(query) => {
+                if !self.file_index_loaded && !self.file_index_loading {
+                    self.file_index_loading = true;
+                    cx.emit(FileIndexRequested {
+                        thread_id: self.thread.id.clone(),
+                        project_id: self.thread.project_id.clone(),
+                    });
+                }
+                self.file_selector.open_for(&self.file_snapshot, &query);
+                cx.notify();
+            }
+        }
+    }
+
+    /// `up` in an open selector moves the highlight instead of history
+    /// recall (ui-spec §6 键盘可达；选择器打开时按键先到选择器).
+    fn on_selector_previous(&mut self, _: &PreviousFile, _: &mut Window, cx: &mut Context<Self>) {
+        self.file_selector.move_highlight(-1);
+        cx.notify();
+    }
+
+    fn on_selector_next(&mut self, _: &NextFile, _: &mut Window, cx: &mut Context<Self>) {
+        self.file_selector.move_highlight(1);
+        cx.notify();
+    }
+
+    fn on_selector_cancel(&mut self, _: &CancelFile, _: &mut Window, cx: &mut Context<Self>) {
+        self.file_selector.close();
+        cx.notify();
+    }
+
+    /// Enter/Tab in an open selector accepts first-wins and completes the
+    /// `@token` in the composer input; the send binding never fires through
+    /// this path (the selector context shadows it while open).
+    fn on_selector_accept(&mut self, _: &AcceptFile, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(path) = self.file_selector.accept() {
+            self.input
+                .update(cx, |input, cx| input.complete_at_query(&path, cx));
+        }
+        cx.notify();
+    }
+
+    /// Enter/Space on the focused model selector trigger (A2-14): closed →
+    /// open; open → accept the highlighted model (first-wins default when
+    /// nothing was highlighted).
+    fn on_activate_model(&mut self, _: &ActivateModel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.model_options.is_empty() {
+            return;
+        }
+        if !self.model_selector_open {
+            self.model_selector_open = true;
+            self.model_selector_highlight = self
+                .model_options
+                .iter()
+                .position(|model| *model == self.composer_defaults.model)
+                .unwrap_or(0);
+            cx.notify();
+            return;
+        }
+        if let Some(model) = self
+            .model_options
+            .get(self.model_selector_highlight)
+            .cloned()
+        {
+            self.composer_defaults.model = model;
+            self.model_selector_open = false;
+            cx.emit(ComposerDefaultsRequested {
+                thread_id: self.thread.id.clone(),
+                defaults: self.composer_defaults.clone(),
+            });
+        }
+        cx.notify();
+    }
+
+    fn on_model_previous(&mut self, _: &PreviousModel, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.model_selector_open || self.model_options.is_empty() {
+            return;
+        }
+        self.model_selector_highlight = self.model_selector_highlight.saturating_sub(1);
+        cx.notify();
+    }
+
+    fn on_model_next(&mut self, _: &NextModel, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.model_selector_open {
+            return;
+        }
+        if self.model_selector_highlight + 1 < self.model_options.len() {
+            self.model_selector_highlight += 1;
+        }
+        cx.notify();
+    }
+
+    fn on_model_close(&mut self, _: &CloseModel, _: &mut Window, cx: &mut Context<Self>) {
+        self.model_selector_open = false;
+        cx.notify();
+    }
+
+    fn select_model_option(&mut self, model: &str, cx: &mut Context<Self>) {
+        self.composer_defaults.model = model.to_string();
+        self.model_selector_open = false;
+        cx.emit(ComposerDefaultsRequested {
+            thread_id: self.thread.id.clone(),
+            defaults: self.composer_defaults.clone(),
+        });
+        cx.notify();
+    }
+
+    fn cycle_thinking_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_thinking(cx);
+    }
+
+    fn on_cycle_thinking(&mut self, _: &CycleThinking, _: &mut Window, cx: &mut Context<Self>) {
+        self.cycle_thinking(cx);
+    }
+
+    /// Rotates off → low → medium → high → off and persists through the
+    /// app-level config seam (A2-14 thinking 档位).
+    fn cycle_thinking(&mut self, cx: &mut Context<Self>) {
+        let levels = ["off", "low", "medium", "high"];
+        let next = levels
+            .iter()
+            .position(|level| *level == self.composer_defaults.thinking)
+            .map_or(0, |index| (index + 1) % levels.len());
+        self.composer_defaults.thinking = levels[next].to_string();
+        cx.emit(ComposerDefaultsRequested {
+            thread_id: self.thread.id.clone(),
+            defaults: self.composer_defaults.clone(),
+        });
         cx.notify();
     }
 
@@ -2222,6 +2475,8 @@ impl ConversationStream {
         if self.composer_submit_pending || self.approved_not_started || self.trusted_action_busy {
             return;
         }
+        // 提交即收起 `@file` 建议下拉（不拦截发送路径）。
+        self.file_selector.close();
         let text = self.input.read(cx).text().to_string();
         if text.is_empty() {
             return;
@@ -2539,10 +2794,11 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    /// Renders the Composer (T18 最小版，ui-spec §4.4 最小集 + §1 Composer 行
-    /// 规格)：底部固定、圆角 12px（rounded_xl）、1px border_subtle、
-    /// bg_elevated；固定 3 行多行输入 + [发送] 按钮（空输入禁用）。
-    /// @引用/命令/模型选择器为 Composer 完全体范围，后置。
+    /// Renders the Composer (ui-spec §4.4)：底部固定、圆角 12px
+    /// （rounded_xl）、1px border_subtle、bg_elevated；1~8 行自适应多行输入
+    /// （超出内滚，S8-T47 P0-3 已由 [`TextInput`] 自适应视口承担）+
+    /// [发送] 按钮（空输入禁用）+ `@file` 选择器（A2-12）+ 模型选择器与
+    /// thinking 档位（A2-14）。命令面板仍为 Composer 完全体后续范围。
     fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let can_send = !self.input.read(cx).text().is_empty()
@@ -2562,6 +2818,15 @@ impl ConversationStream {
                     .key_context("Composer")
                     .on_action(cx.listener(Self::on_send_action))
                     .on_action(cx.listener(Self::on_previous_message))
+                    .on_action(cx.listener(Self::on_selector_previous))
+                    .on_action(cx.listener(Self::on_selector_next))
+                    .on_action(cx.listener(Self::on_selector_cancel))
+                    .on_action(cx.listener(Self::on_selector_accept))
+                    .on_action(cx.listener(Self::on_activate_model))
+                    .on_action(cx.listener(Self::on_model_previous))
+                    .on_action(cx.listener(Self::on_model_next))
+                    .on_action(cx.listener(Self::on_model_close))
+                    .on_action(cx.listener(Self::on_cycle_thinking))
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -2578,14 +2843,25 @@ impl ConversationStream {
                             .gap_2()
                             .child(self.render_mode_controls(cx))
                             .child(self.render_permission_controls(cx))
-                            .child(self.branch_selector.clone()),
+                            .child(self.branch_selector.clone())
+                            .child(self.render_model_selector(cx))
+                            .child(self.render_thinking_control(cx)),
                     )
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .flex_row()
                             .items_end()
                             .gap_2()
+                            // 选择器打开时的按键作用域（A2-12）：仅当下拉
+                            // 打开才挂 FileSelect 上下文，Up/Down/Enter/Tab/
+                            // Esc 先到选择器（first-wins），关闭时回落到
+                            // Composer 既有绑定（Enter=换行、Up=历史召回）。
+                            .when(self.file_selector.is_open(), |row| {
+                                row.key_context("FileSelect")
+                            })
+                            .child(self.render_file_dropdown(cx))
                             .child(self.input.clone())
                             .child(
                                 div()
@@ -2719,6 +2995,175 @@ impl ConversationStream {
                 .on_action(cx.listener(Self::activate_auto))
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::select_auto)),
             )
+            .into_any_element()
+    }
+
+    /// The `@file` suggestion dropdown (A2-12): rendered above the input row
+    /// while an `@token` is being completed. Bounded candidate list, mouse
+    /// and keyboard parity; zero filesystem access from this view.
+    fn render_file_dropdown(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        if !self.file_selector.is_open() {
+            return div().into_any_element();
+        }
+        let highlighted = self.file_selector.highlighted();
+        div()
+            .absolute()
+            .bottom(px(0.))
+            .left_0()
+            .w(px(360.))
+            .max_w_full()
+            .flex()
+            .flex_col()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_elevated)
+            .text_color(colors.text_primary)
+            .shadow_md()
+            .children(
+                self.file_selector
+                    .candidates()
+                    .iter()
+                    .take(FILE_SUGGESTION_LIMIT)
+                    .enumerate()
+                    .map(|(index, entry)| {
+                        let selected = index == highlighted;
+                        let entry = entry.clone();
+                        div()
+                            .px_2()
+                            .py_1()
+                            .text_size(px(Typography::SIDEBAR))
+                            .truncate()
+                            .when(selected, |row| row.bg(colors.bg_active))
+                            .text_color(if selected {
+                                colors.text_primary
+                            } else {
+                                colors.text_secondary
+                            })
+                            .child(entry)
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// The model selector (A2-14): trigger shows the current selection;
+    /// options are the priced catalog projection installed by the app layer
+    /// (zero file IO). Keyboard: Enter/Space open, Up/Down move, Enter
+    /// accept (first-wins), Esc close.
+    fn render_model_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        let current = if self.composer_defaults.model.is_empty() {
+            "模型"
+        } else {
+            self.composer_defaults.model.as_str()
+        };
+        div()
+            .relative()
+            .child(
+                div()
+                    .track_focus(&self.model_focus)
+                    .key_context("ModelSelector")
+                    .on_action(cx.listener(Self::on_activate_model))
+                    .on_action(cx.listener(Self::on_model_previous))
+                    .on_action(cx.listener(Self::on_model_next))
+                    .on_action(cx.listener(Self::on_model_close))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_secondary)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(colors.bg_hover))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                            this.on_activate_model(&ActivateModel, window, cx);
+                        }),
+                    )
+                    .child(format!("{current} ▾")),
+            )
+            .when(self.model_selector_open, |root| {
+                root.child(
+                    div()
+                        .absolute()
+                        .bottom(px(28.))
+                        .left_0()
+                        .w(px(320.))
+                        .max_w_full()
+                        .flex()
+                        .flex_col()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(colors.border_subtle)
+                        .bg(colors.bg_elevated)
+                        .text_color(colors.text_primary)
+                        .shadow_md()
+                        .children(self.model_options.iter().enumerate().map(|(index, model)| {
+                            let selected = index == self.model_selector_highlight;
+                            let current_model = *model == self.composer_defaults.model;
+                            let model = model.clone();
+                            let label = model.clone();
+                            div()
+                                .px_2()
+                                .py_1()
+                                .text_size(px(Typography::SIDEBAR))
+                                .truncate()
+                                .when(selected, |row| row.bg(colors.bg_active))
+                                .text_color(if current_model {
+                                    colors.success
+                                } else if selected {
+                                    colors.text_primary
+                                } else {
+                                    colors.text_secondary
+                                })
+                                .cursor_pointer()
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        move |this, _: &MouseUpEvent, _: &mut Window, cx| {
+                                            this.select_model_option(&model, cx);
+                                        },
+                                    ),
+                                )
+                                .child(label)
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The thinking-level control (A2-14): one segmented chip cycling
+    /// off → low → medium → high on click/Enter (mouse + keyboard parity,
+    /// ui-spec §6).
+    fn render_thinking_control(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        let level = if self.composer_defaults.thinking.is_empty() {
+            "off"
+        } else {
+            self.composer_defaults.thinking.as_str()
+        };
+        div()
+            .key_context("ThinkingLevel")
+            .on_action(cx.listener(Self::on_cycle_thinking))
+            .track_focus(&self.setting_focus[6].clone())
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border_subtle)
+            .text_size(px(Typography::SIDEBAR))
+            .text_color(if level == "off" {
+                colors.text_tertiary
+            } else {
+                colors.success
+            })
+            .cursor_pointer()
+            .hover(move |style| style.bg(colors.bg_hover))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::cycle_thinking_clicked))
+            .child(format!("思考:{level}"))
             .into_any_element()
     }
 }

@@ -17,8 +17,9 @@
 //! S3-T18 Composer extension: `new_multiline` builds a fixed-`rows` input
 //! (Enter inserts `\n` via the [`InsertNewline`] action — 架构师裁定
 //! Enter=换行、Cmd+Enter=发送; paste preserves line breaks). Multi-line
-//! display paints one shaped line per `\n` segment stacked top-down; the
-//! 1~8 行自适应高度 is deferred per task card (fixed rows, overflow clipped).
+//! display paints one shaped visual line per `\n` segment (plus soft wraps)
+//! stacked top-down: 1~8 行自适应高度 + 超出 8 行后按光标跟随的内滚视口
+//! (visual-wrap viewport, cursor-follow), each verified by a GPUI test.
 
 use std::ops::Range;
 
@@ -176,6 +177,43 @@ impl TextInput {
             || self.cursor_on_first_logical_line(),
             |line| self.cursor_offset() <= line.start + line.len,
         )
+    }
+
+    /// Byte range + body of a trailing `@token` at the caret (A2-12): the
+    /// token starts after an `@` that sits at text start or right after
+    /// whitespace, extends to the caret, and contains no whitespace.
+    /// `None` when the caret is not completing an `@` token.
+    pub fn trailing_at_query(&self) -> Option<(Range<usize>, String)> {
+        let cursor = self.cursor_offset();
+        let prefix = self.content.get(..cursor)?;
+        let at = prefix.rfind('@')?;
+        if at > 0 && !prefix[..at].ends_with(|ch: char| ch.is_whitespace()) {
+            return None;
+        }
+        let query = &prefix[at + 1..];
+        if query.chars().any(|ch: char| ch.is_whitespace()) {
+            return None;
+        }
+        Some((at + 1..cursor, query.to_string()))
+    }
+
+    /// Completes the trailing `@token` with `path`: the token body is
+    /// replaced with `@path ` (the trailing space terminates the token so
+    /// the selector closes deterministically). No-op without a trailing
+    /// token (A2-12 completion seam).
+    pub fn complete_at_query(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some((range, _)) = self.trailing_at_query() else {
+            return;
+        };
+        let replacement = format!("@{path} ");
+        self.content =
+            (self.content[..range.start].to_owned() + &replacement + &self.content[range.end..])
+                .into();
+        let end = range.start + replacement.len();
+        self.selected_range = end..end;
+        self.selection_reversed = false;
+        self.update_logical_viewport();
+        cx.notify();
     }
 
     fn update_logical_viewport(&mut self) {

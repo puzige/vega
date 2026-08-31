@@ -1267,7 +1267,7 @@ fn set_default_model(config: &mut AppConfig, model: &str) {
 }
 
 /// Union of every provider's models in first-seen order, deduplicated.
-fn all_models(providers: &[ProviderConfig]) -> Vec<String> {
+pub fn all_models(providers: &[ProviderConfig]) -> Vec<String> {
     let mut models = Vec::new();
     for provider in providers {
         for model in &provider.models {
