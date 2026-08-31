@@ -62,7 +62,10 @@ use gpui::{
     MouseUpEvent, Render, Rgba, Window, actions, div, px, uniform_list,
 };
 use vega_conversation::agent::PermissionQueue;
-use vega_conversation::types::{ConversationEvent, PermissionMode, Plan, Thread, ThreadMode};
+use vega_conversation::types::{
+    ConversationEvent, ConversationMeter, MeterSnapshot, PermissionMode, Plan, RestoredUsage,
+    RunUsageEstimator, Thread, ThreadMode,
+};
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
     RenderNode, StreamSnapshot, TableAlignment, TableBlock,
@@ -1289,6 +1292,10 @@ pub struct ConversationStream {
     /// Most recently finished assistant entry, retained until the typed Plan
     /// projection can replace it in place.
     last_finished_agent_message: Option<(String, usize)>,
+    /// Bounded token/cost meter projection (S7-T39/C3/C4). Pure shared
+    /// `vega_conversation::types` state: no IO, no persistence; the Composer
+    /// renders its snapshot and every update is checked arithmetic only.
+    meter: ConversationMeter,
     /// Submitted drafts, scoped to this thread view.
     composer_history: Vec<String>,
     composer_submit_pending: bool,
@@ -1382,6 +1389,7 @@ impl ConversationStream {
             plan_cards: HashMap::new(),
             active_agent_message: None,
             last_finished_agent_message: None,
+            meter: ConversationMeter::default(),
             composer_history: Vec::new(),
             composer_submit_pending: false,
             history_cursor: None,
@@ -1437,7 +1445,70 @@ impl ConversationStream {
     /// Displays a bounded provider/runner failure after durable preparation.
     pub fn apply_agent_error(&mut self, cx: &mut Context<Self>) {
         self.controller_error = Some("执行未完成，可安全重试".into());
+        // S7-T39: run-scoped estimate state never survives a failure path.
+        self.meter.end_run();
         cx.notify();
+    }
+
+    /// Installs the frozen per-run provisional estimator (S7-T39/C3 run
+    /// ownership). Called by the app exactly once per agent run, immediately
+    /// after `agent_controller.begin`.
+    pub fn install_meter_estimator(
+        &mut self,
+        estimator: Option<RunUsageEstimator>,
+        cx: &mut Context<Self>,
+    ) {
+        self.meter.install_run_estimator(estimator);
+        cx.notify();
+    }
+
+    /// Restores the calibrated counter baseline from the durable checked
+    /// aggregate (S7-T39/C4 restart recovery). Called once when a stream
+    /// entity is constructed for a thread with priced usage history.
+    pub fn restore_meter(&mut self, usage: RestoredUsage, cx: &mut Context<Self>) {
+        self.meter.restore(usage);
+        cx.notify();
+    }
+
+    /// Current counter projection (C4): the Composer renders exactly this.
+    pub fn meter_snapshot(&self) -> MeterSnapshot {
+        self.meter.snapshot()
+    }
+
+    /// Feeds one conversation event through the meter projection, fenced by
+    /// the same acceptance rules the stream applies (S7-T39 thread/run fence:
+    /// late or stale-message events never calibrate or estimate).
+    fn feed_meter(&mut self, event: &ConversationEvent, cx: &mut Context<Self>) {
+        let accepted = match event {
+            ConversationEvent::MessageStarted { .. } => self.active_agent_message.is_none(),
+            ConversationEvent::TextDelta { message_id, .. }
+            | ConversationEvent::UsageUpdated { message_id, .. } => self
+                .active_agent_message
+                .as_ref()
+                .is_some_and(|(active_id, _)| active_id == message_id),
+            ConversationEvent::MessageFinished { message_id, .. }
+            | ConversationEvent::Interrupted { message_id } => self
+                .active_agent_message
+                .as_ref()
+                .is_some_and(|(active_id, _)| active_id == message_id),
+            ConversationEvent::Error { message_id, .. } => match message_id {
+                Some(message_id) => self
+                    .active_agent_message
+                    .as_ref()
+                    .is_some_and(|(active_id, _)| active_id == message_id),
+                None => true,
+            },
+            // Tool proposals/results carry no assistant id; the meter gates
+            // them on its own run state. Thinking is never visible output.
+            ConversationEvent::ToolCallProposed { .. }
+            | ConversationEvent::ToolCallApproved { .. }
+            | ConversationEvent::ToolCallOutput { .. }
+            | ConversationEvent::ToolCallFinished { .. } => true,
+            ConversationEvent::ThinkingDelta { .. } => false,
+        };
+        if accepted && self.meter.apply(event) {
+            cx.notify();
+        }
     }
 
     /// Shows a restart-safe, non-executing projection for a durable approved
@@ -1609,6 +1680,9 @@ impl ConversationStream {
     /// Applies an already-durable shared lifecycle event. The UI never reads
     /// SQLite and never consumes runtime-local events.
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
+        // S7-T39: the bounded meter projection consumes the same accepted
+        // events (fence below) before ownership moves into the render path.
+        self.feed_meter(&event, cx);
         match event {
             ConversationEvent::MessageStarted { message_id, .. } => {
                 if self.active_agent_message.is_some() {
@@ -2279,6 +2353,19 @@ impl ConversationStream {
                                     })
                                     .child("发送"),
                             ),
+                    )
+                    // ui-spec §4.4 token 计数器：右下角常驻 compact counter
+                    // （S7-T39/C4）。数据只来自 conversation meter 投影；
+                    // 更新路径零 IO（checked 整数运算），数字宽度变化只影响
+                    // 本行文本，不触碰已冻结会话区（P3 不回退）。
+                    .child(
+                        div()
+                            .flex()
+                            .w_full()
+                            .justify_end()
+                            .text_size(px(Typography::SIDEBAR))
+                            .text_color(colors.text_tertiary)
+                            .child(self.meter.snapshot().display()),
                     ),
             )
             .children(self.controller_error.clone().map(|error| {
@@ -2502,7 +2589,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use vega_conversation::agent::PermissionHook;
     use vega_conversation::types::{
-        PermissionDecision, PermissionMode, PermissionRequest, PlanStatus, ThreadMode,
+        Microcents, PermissionDecision, PermissionMode, PermissionRequest, PlanStatus, ThreadMode,
         ThreadStatus, ToolCall, ToolCallStatus, ToolResult,
     };
     use vega_markdown::split_deltas;
@@ -3575,5 +3662,144 @@ mod tests {
             counters.frozen_rematerializations.load(Ordering::Relaxed),
             0
         );
+    }
+
+    // ---------- Composer token counter（S7-T39/A10-05） ----------
+
+    #[gpui::test]
+    async fn composer_counter_projects_estimate_calibration_and_fences(cx: &mut TestAppContext) {
+        let (_window, stream, _) = open_controller_stream(cx, "meter-thread");
+        // Unpriced start: the counter is visible (not noise) and shows `—`.
+        let initial = stream.read_with(cx, |stream, _| stream.meter_snapshot());
+        assert_eq!(initial.display(), "0 tok · —");
+
+        stream.update(cx, |stream, cx| {
+            stream.install_meter_estimator(
+                // `RunUsageEstimator::new` is already `Option`: an unpriced
+                // model yields `None` and the counter shows `—`.
+                RunUsageEstimator::new(
+                    "meter-model",
+                    vega_conversation::PricingCatalog::from_specs(vec![
+                        vega_conversation::ModelPricingSpec {
+                            model: "meter-model".into(),
+                            rates: vega_conversation::RateSpec {
+                                input_usd_per_million: "1".into(),
+                                output_usd_per_million: "2".into(),
+                                cache_read_usd_per_million: "0.1".into(),
+                                cache_write_usd_per_million: "0".into(),
+                            },
+                            max_standard_input_tokens: None,
+                            schedule: None,
+                        },
+                    ])
+                    .expect("catalog"),
+                ),
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "assistant".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "assistant".into(),
+                    delta: "中文🦀".into(),
+                },
+                cx,
+            );
+        });
+        let streaming = stream.read_with(cx, |stream, _| stream.meter_snapshot());
+        assert_eq!(streaming.tokens, 1, "3 unicode scalars ceil-divided by 4");
+        assert!(streaming.provisional);
+        assert_eq!(streaming.display(), "≈1 tok · ≈US$0.000002");
+
+        // Calibration replaces the estimate in place; late duplicate usage on
+        // the finished message cannot re-add.
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::UsageUpdated {
+                    message_id: "assistant".into(),
+                    usage: vega_conversation::types::TokenUsage {
+                        input: 100,
+                        output: 10,
+                        cache_read: 0,
+                        cache_write: 0,
+                    },
+                    cost: Microcents(120),
+                    pricing: Some(vega_conversation::types::UsagePricing {
+                        version: "pricing_v1".into(),
+                        profile: "base".into(),
+                        call_started_at: 1_700_000_000,
+                    }),
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::MessageFinished {
+                    message_id: "assistant".into(),
+                    stop_reason: vega_conversation::types::ConversationStopReason::End,
+                },
+                cx,
+            );
+        });
+        let calibrated = stream.read_with(cx, |stream, _| stream.meter_snapshot());
+        assert_eq!(calibrated.display(), "110 tok · US$0.00012");
+
+        // Route fence: a late text delta for the finished message must not
+        // resurrect the provisional counter.
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "assistant".into(),
+                    delta: "late arrival".into(),
+                },
+                cx,
+            );
+        });
+        let fenced = stream.read_with(cx, |stream, _| stream.meter_snapshot());
+        assert_eq!(fenced.display(), "110 tok · US$0.00012");
+
+        // Restart recovery: the restored aggregate becomes the new baseline.
+        stream.update(cx, |stream, cx| {
+            stream.restore_meter(
+                RestoredUsage {
+                    tokens: 1_234_567,
+                    cost: Some(Microcents(180_000)),
+                },
+                cx,
+            );
+        });
+        let restored = stream.read_with(cx, |stream, _| stream.meter_snapshot());
+        assert_eq!(restored.display(), "1.2M tok · US$0.18");
+    }
+
+    #[gpui::test]
+    async fn composer_counter_error_path_clears_provisional(cx: &mut TestAppContext) {
+        let (_window, stream, _) = open_controller_stream(cx, "meter-error-thread");
+        stream.update(cx, |stream, cx| {
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "assistant".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "assistant".into(),
+                    delta: "abcd".into(),
+                },
+                cx,
+            );
+        });
+        assert!(stream.read_with(cx, |stream, _| stream.meter_snapshot().provisional));
+        // Controller failure (spawn error etc.) clears run-scoped state.
+        stream.update(cx, ConversationStream::apply_agent_error);
+        let cleared = stream.read_with(cx, |stream, _| stream.meter_snapshot());
+        assert!(!cleared.provisional);
+        assert_eq!(cleared.display(), "0 tok · —");
     }
 }

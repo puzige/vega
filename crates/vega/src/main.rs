@@ -1898,6 +1898,10 @@ fn run_agent_worker(
     permission_queue: vega_conversation::agent::PermissionQueue,
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<AgentUpdate>,
+    // S7-T39/C3: frozen run-start pricing selection handed off with run
+    // ownership; the worker never re-reads pricing files or the live
+    // authority mid-run.
+    pricing_catalog: Option<vega_conversation::PricingCatalog>,
     #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
 ) {
     #[cfg(test)]
@@ -1939,8 +1943,8 @@ fn run_agent_worker(
                 })
         };
         let result = match run {
-            PendingAgentRun::UserMessage(content) => runtime.block_on(
-                vega_conversation::agent::run_thread_task_with_permission_sink(
+            PendingAgentRun::UserMessage(content) => {
+                runtime.block_on(vega_conversation::agent::run_thread_task_with_pricing(
                     &store,
                     provider.as_ref(),
                     &tools,
@@ -1950,10 +1954,13 @@ fn run_agent_worker(
                     cancel,
                     &permission_queue,
                     event_sink,
-                ),
-            ),
+                    vega_conversation::agent::PersistenceActorConfig::default(),
+                    None,
+                    pricing_catalog,
+                ))
+            }
             PendingAgentRun::ApprovedPlan(instruction_message_id) => runtime.block_on(
-                vega_conversation::agent::run_approved_plan_task_with_permission_sink(
+                vega_conversation::agent::run_approved_plan_task_with_pricing(
                     &store,
                     provider.as_ref(),
                     &tools,
@@ -1963,6 +1970,7 @@ fn run_agent_worker(
                     cancel,
                     &permission_queue,
                     event_sink,
+                    pricing_catalog,
                 ),
             ),
         };
@@ -5488,10 +5496,11 @@ impl VegaWindow {
 
         // T37 gate: durable Thread.model must resolve against the app-owned
         // Ready authority before begin, channel/worker spawn, config,
-        // Keychain, or provider construction. T38 will carry the returned
-        // immutable capability into runtime; T37 only establishes the gate.
-        let _pricing_selection = match self.pricing_controller.select_exact(&thread.model) {
-            Ok(selection) => selection,
+        // Keychain, or provider construction. T39 carries the returned
+        // immutable capability into the runtime run (exact pricing for every
+        // provider call) and into the Composer meter's provisional estimator.
+        let pricing_catalog = match self.pricing_controller.select_exact(&thread.model) {
+            Ok(selection) => selection.catalog(),
             Err(code) => {
                 if let PricingControllerState::Ready {
                     authority,
@@ -5533,6 +5542,15 @@ impl VegaWindow {
             pending_approved_instruction,
         );
         self.begin_artifact_agent_generation(generation, &stream);
+        // S7-T39/C3: the provisional estimator freezes the run-start
+        // selection; it never re-reads pricing files or the live authority.
+        let meter_estimator = vega_conversation::types::RunUsageEstimator::new(
+            &thread.model,
+            pricing_catalog.clone(),
+        );
+        stream.update(cx, |stream, cx| {
+            stream.install_meter_estimator(meter_estimator, cx)
+        });
         let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
         let worker_sender = sender.clone();
         #[cfg(test)]
@@ -5548,6 +5566,7 @@ impl VegaWindow {
                     permission_queue,
                     cancel,
                     worker_sender,
+                    Some(pricing_catalog),
                     #[cfg(test)]
                     provider_override,
                 );
@@ -5979,7 +5998,14 @@ impl Render for VegaWindow {
                                         vega_conversation::plans::recoverable_approved_instruction(
                                             store, &thread.id,
                                         )?;
-                                    Ok((plans, history, recovery))
+                                    // S7-T39/C4: the calibrated counter baseline
+                                    // comes from the conversation checked aggregate
+                                    // query exactly once per route open; the meter
+                                    // itself never touches SQLite afterwards.
+                                    let usage = vega_conversation::threads::thread_usage_seed(
+                                        store, &thread.id,
+                                    )?;
+                                    Ok((plans, history, recovery, usage))
                                 })(),
                                 Err(error) => {
                                     Err(vega_conversation::types::ConversationError::Store(
@@ -5988,7 +6014,7 @@ impl Render for VegaWindow {
                                 }
                             };
                             view.update(cx, |stream, cx| match initial {
-                                Ok((plans, history, recovery)) => {
+                                Ok((plans, history, recovery, usage)) => {
                                     for plan in plans {
                                         stream.apply_plan(plan, cx);
                                     }
@@ -5996,6 +6022,7 @@ impl Render for VegaWindow {
                                     if recovery.is_some() {
                                         stream.apply_approved_not_started(cx);
                                     }
+                                    stream.restore_meter(usage, cx);
                                 }
                                 Err(_) => stream.apply_controller_error(cx),
                             });

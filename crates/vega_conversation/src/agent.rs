@@ -906,6 +906,44 @@ where
     .await
 }
 
+/// Runs an approved Plan task with a frozen pricing capability (S7-T39/C3
+/// app wiring): identical to
+/// [`run_approved_plan_task_with_permission_sink`] except the immutable
+/// run-start selection rides into every agentic round, so each provider call
+/// is priced exactly once with the frozen model and UTC timestamp.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_approved_plan_task_with_pricing<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    instruction_message_id: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    event_sink: F,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_permission_config(
+        store,
+        provider,
+        tools,
+        thread_id,
+        crate::plans::APPROVAL_INSTRUCTION,
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        PersistenceActorConfig::default(),
+        Some(instruction_message_id.to_string()),
+        pricing_catalog,
+    )
+    .await
+}
+
 /// Runs a thread task while forwarding each shared event at the actual
 /// runtime boundary. Critical persistence completes before `event_sink` is
 /// invoked; returning an error from the sink stops the task.
