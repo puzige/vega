@@ -12,10 +12,11 @@ use vega_store::Store;
 use vega_store::messages as store_messages;
 use vega_store::projects as store_projects;
 use vega_store::threads as store;
+use vega_store::token_usage;
 
 use crate::types::{
-    ConversationError, CurrentProject, PermissionMode, Thread, ThreadMode, ThreadStatus,
-    ThreadUpdate,
+    ConversationError, CurrentProject, Microcents, PermissionMode, RestoredUsage, Thread,
+    ThreadMode, ThreadStatus, ThreadUpdate,
 };
 
 /// Generates a fresh thread id (ulid).
@@ -41,6 +42,32 @@ fn now_ms() -> i64 {
 /// `rusqlite` dependency (the SQL types stop at `vega_store`).
 fn store_error<E: std::fmt::Display>(error: E) -> ConversationError {
     ConversationError::Store(error.to_string())
+}
+
+/// Restores the calibrated Composer counter baseline for one thread from the
+/// durable, checked `token_usage` aggregate (S7-T39/C4). Corrupt rows,
+/// checked-overflow aggregates, and legacy/unpriced mixes fail closed: the
+/// former surfaces as [`ConversationError`], the latter restores
+/// `cost: None` so the counter shows `—` instead of a partial total.
+pub fn thread_usage_seed(
+    store: &Store,
+    thread_id: &str,
+) -> Result<RestoredUsage, ConversationError> {
+    let aggregate =
+        token_usage::aggregate_by_thread(store.conn(), thread_id).map_err(store_error)?;
+    let tokens = aggregate
+        .input_tokens
+        .checked_add(aggregate.output_tokens)
+        .and_then(|total| total.checked_add(aggregate.cache_read_tokens))
+        .and_then(|total| total.checked_add(aggregate.cache_write_tokens))
+        .ok_or_else(|| ConversationError::Store("token usage aggregate overflow".to_string()))?;
+    Ok(RestoredUsage {
+        tokens,
+        cost: match aggregate.cost {
+            token_usage::AggregateCost::Priced(cost) => Some(Microcents(cost)),
+            token_usage::AggregateCost::Unavailable => None,
+        },
+    })
 }
 
 /// Returns durable user submissions for Composer Up-history in sequence

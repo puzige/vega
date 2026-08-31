@@ -33,6 +33,13 @@ impl PricingAuthority {
         self.catalog.specs().any(|spec| spec.model == model)
     }
 
+    /// Clones the frozen catalog for run-start ownership handoff (S7-T39/C3):
+    /// the app copies the immutable selection into the run and the meter's
+    /// provisional estimator instead of letting later reads touch files.
+    pub fn catalog(&self) -> PricingCatalog {
+        (*self.catalog).clone()
+    }
+
     /// Builds a safe controller projection without exposing catalog bytes.
     pub fn project(
         &self,
