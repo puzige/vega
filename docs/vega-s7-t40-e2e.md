@@ -4,7 +4,8 @@
 - Branch: `feat/s7-t40-task-cost-summary`
 - Base commit at execution: `b96fcefa5909e604f0093f093fd202ee3cd75e06` (S7-T38 squash, = `origin/master` when this card started)
 - Evidence time: 2026-08-31 (implementation continued from an interrupted 29-minute prior session whose uncommitted work was inventoried and kept, not rewritten)
-- Final tracked implementation diff SHA-256 (working tree vs base commit, excluding this evidence file): `4b5775af55c81b7b129e31da8fd27d058c2647974c052793d9aff46ad95606d0`
+- Implementation commit: `8ca43cf840c71864bdfa8e1fae91e051545d814c` (single commit; rebased once onto `origin/master` `429cb2d7860742226d7e1f38429ded97c5f1e526` after S7-T39 #43 merged — two conservative conflict resolutions kept both T39 and T40 semantics; full gate suite re-run green post-rebase: **747 passed / 0 failed / 1 ignored**)
+- Implementation diff SHA-256 vs the T38 base commit `b96fcef` (excluding this evidence file, measured pre-rebase): `4b5775af55c81b7b129e31da8fd27d058c2647974c052793d9aff46ad95606d0`; post-rebase vs the same base (T40 content + conservative conflict merges): `84cc33b62025b91366a4dcdb1e6bf18e0d94e077c94baec14741c8b3906a1504`
 - Raw command log: `/private/tmp/vega-s7-t40-gates.log` (ephemeral; this file is the durable summary)
 
 Recompute the implementation hash:
@@ -78,7 +79,7 @@ git diff --check
 rg -n '#[0-9a-fA-F]{6}' crates/vega_ui
 ```
 
-Result: **ALL PASS.** `cargo test --workspace`: **731 passed / 0 failed / 1 ignored** (the explicitly ignored real-Keychain test). `cargo clippy --all-targets -- -D warnings`, formatting, workspace build, and `git diff --check` clean. Hard-coded-hex scan over `crates/vega_ui`: 0 matches. Non-test `unwrap`/`expect` added by this card: none.
+Result: **ALL PASS.** `cargo test --workspace`: **747 passed / 0 failed / 1 ignored** (the explicitly ignored real-Keychain test; final post-rebase run including S7-T39's merged tests — the pre-rebase run was 731 passed / 0 failed / 1 ignored). `cargo clippy --all-targets -- -D warnings`, formatting, workspace build, and `git diff --check` clean. Hard-coded-hex scan over `crates/vega_ui`: 0 matches. Non-test `unwrap`/`expect` added by this card: none.
 
 ## Red-line review
 
