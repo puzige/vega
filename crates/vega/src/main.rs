@@ -22,12 +22,14 @@ use vega_conversation::types::{
     ArtifactCard as ArtifactProjection, ArtifactCardId, ArtifactPreviewProjection, BranchId,
     BranchSnapshot, BranchSwitchCompletion, BranchSwitchOutcome, CommitChecklist, CommitCompletion,
     CommitErrorCode, CommitOutcome, CommitPrepareCompletion, ConversationEvent, DiffTextProjection,
-    GitWorkspaceErrorCode, OpenInOutcome, OpenInTarget, Plan, PlanReviewOutcome, Thread, ToolCall,
-    WorkspaceFileId, WorkspaceSnapshot,
+    GitWorkspaceErrorCode, OpenInOutcome, OpenInTarget, Plan, PlanReviewOutcome,
+    PricingDraftReason, PricingNotice, PricingSettingsErrorCode, PricingSettingsProjection, Thread,
+    ToolCall, WorkspaceFileId, WorkspaceSnapshot,
 };
 use vega_conversation::{
     ArtifactCaptureCandidate, ArtifactService, BranchSwitchPermit, BranchWorkspaceService,
-    GitWorkspaceService, TrustedGitService,
+    GitWorkspaceService, PricingAuthority, PricingLoadOutcome, PricingSaveOutcome, PricingSavePlan,
+    PricingSettingsService, TrustedGitService,
 };
 use vega_store::Store;
 use vega_theme::{Theme, ThemeColors, Typography, theme};
@@ -50,7 +52,10 @@ use vega_ui::diff_view::{
     DIFF_REFRESH_INTERVAL, DiffClosed, DiffProjectionRequested, DiffRetryRequested, DiffView,
 };
 use vega_ui::plan_card::PlanReviewRequested;
-use vega_ui::settings::{CloseSettings, OpenSettings, SettingsOpen, SettingsView};
+use vega_ui::settings::{
+    CloseSettings, OpenSettings, PricingDiscardRequested, PricingMutationRequested,
+    PricingReloadRequested, PricingRetryRequested, SettingsOpen, SettingsView,
+};
 use vega_ui::sidebar::{
     AUTO_COLLAPSE_WIDTH, CONTENT_MAX_WIDTH, CONTENT_MIN_PADDING, NewThread, OpenedThread,
     PendingDeleteConfirm, Sidebar, SidebarCollapsed, ToggleSidebar, VegaStore, load_collapsed,
@@ -70,6 +75,9 @@ const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);
 const AGENT_EVENT_CAPACITY: usize = 256;
 const AGENT_EVENT_BATCH: usize = 128;
 const DIFF_RESULT_POLL: Duration = Duration::from_millis(4);
+const PRICING_RESULT_POLL: Duration = Duration::from_millis(4);
+#[cfg(test)]
+static AGENT_WORKER_STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const SYSTEM_PROMPT: &str =
     "You are Vega, a careful coding agent working inside the selected project.";
 
@@ -150,6 +158,169 @@ enum AgentBatchIngress {
 struct PendingPlanReview {
     stream: Entity<ConversationStream>,
     request: PlanReviewRequested,
+}
+
+enum PricingControllerState {
+    Loading,
+    Ready {
+        authority: PricingAuthority,
+        generation: u64,
+        notice: Option<PricingNotice>,
+        draft: Option<PricingSavePlan>,
+        draft_reason: Option<PricingDraftReason>,
+        error: Option<PricingSettingsErrorCode>,
+    },
+    Saving {
+        previous: PricingAuthority,
+        previous_notice: Option<PricingNotice>,
+        generation: u64,
+        plan: PricingSavePlan,
+    },
+    Reloading,
+    Invalid(PricingSettingsErrorCode),
+}
+
+fn pricing_retry_ready(
+    authority: PricingAuthority,
+    generation: u64,
+    notice: Option<PricingNotice>,
+    plan: PricingSavePlan,
+    code: PricingSettingsErrorCode,
+) -> PricingControllerState {
+    PricingControllerState::Ready {
+        authority,
+        generation,
+        notice,
+        draft: Some(plan),
+        draft_reason: Some(PricingDraftReason::RetryPending),
+        error: Some(code),
+    }
+}
+
+fn discard_pricing_draft(state: &mut PricingControllerState, generation: u64) -> bool {
+    let PricingControllerState::Ready {
+        generation: current,
+        draft,
+        draft_reason,
+        error,
+        ..
+    } = state
+    else {
+        return false;
+    };
+    if *current != generation || draft.is_none() {
+        return false;
+    }
+    *draft = None;
+    *draft_reason = None;
+    *error = None;
+    true
+}
+
+struct PricingController {
+    service: Option<Arc<PricingSettingsService>>,
+    state: PricingControllerState,
+    last_generation: u64,
+    next_operation: u64,
+    active_operation: Option<u64>,
+}
+
+impl PricingController {
+    fn new(service: Option<Arc<PricingSettingsService>>) -> Self {
+        let state = if service.is_some() {
+            PricingControllerState::Loading
+        } else {
+            PricingControllerState::Invalid(PricingSettingsErrorCode::Io)
+        };
+        Self {
+            service,
+            state,
+            last_generation: 0,
+            next_operation: 0,
+            active_operation: None,
+        }
+    }
+
+    fn begin_operation(&mut self) -> Option<u64> {
+        if self.active_operation.is_some() {
+            return None;
+        }
+        let operation = self.next_operation.checked_add(1)?;
+        self.next_operation = operation;
+        self.active_operation = Some(operation);
+        Some(operation)
+    }
+
+    fn claim_completion(&mut self, operation: u64) -> bool {
+        if self.active_operation != Some(operation) {
+            return false;
+        }
+        self.active_operation = None;
+        true
+    }
+
+    fn next_generation(&mut self) -> Option<u64> {
+        let generation = self.last_generation.checked_add(1)?;
+        self.last_generation = generation;
+        Some(generation)
+    }
+
+    fn projection(&self) -> PricingSettingsProjection {
+        match &self.state {
+            PricingControllerState::Loading => PricingSettingsProjection::Loading,
+            PricingControllerState::Ready {
+                authority,
+                generation,
+                notice,
+                draft,
+                draft_reason,
+                error,
+            } => match draft {
+                Some(plan) => PricingSettingsProjection::Ready {
+                    generation: *generation,
+                    entries: plan.entries(),
+                    notice: *notice,
+                    draft_reason: *draft_reason,
+                    error: *error,
+                },
+                None => authority.project(*generation, *notice, None, *error),
+            },
+            PricingControllerState::Saving {
+                generation, plan, ..
+            } => PricingSettingsProjection::Saving {
+                generation: *generation,
+                entries: plan.entries(),
+            },
+            PricingControllerState::Reloading => PricingSettingsProjection::Reloading,
+            PricingControllerState::Invalid(code) => PricingSettingsProjection::Invalid(*code),
+        }
+    }
+
+    fn select_exact(&self, model: &str) -> Result<PricingAuthority, PricingSettingsErrorCode> {
+        let PricingControllerState::Ready { authority, .. } = &self.state else {
+            return Err(match self.state {
+                PricingControllerState::Invalid(code) => code,
+                _ => PricingSettingsErrorCode::Busy,
+            });
+        };
+        if authority.contains_exact_model(model) {
+            Ok(authority.clone())
+        } else {
+            Err(PricingSettingsErrorCode::ModelNotPriced)
+        }
+    }
+}
+
+enum PricingWorkerResult {
+    Authority(Result<PricingLoadOutcome, PricingSettingsErrorCode>),
+    Save(PricingSaveOutcome),
+}
+
+#[derive(Clone, Copy)]
+enum PricingWorkerKind {
+    Authority,
+    Save,
+    Recovery,
 }
 
 #[derive(Default)]
@@ -1727,14 +1898,20 @@ fn run_agent_worker(
     permission_queue: vega_conversation::agent::PermissionQueue,
     cancel: tokio_util::sync::CancellationToken,
     sender: mpsc::SyncSender<AgentUpdate>,
+    #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
 ) {
+    #[cfg(test)]
+    AGENT_WORKER_STARTS.fetch_add(1, Ordering::SeqCst);
     let success = (|| -> Result<(), ()> {
         // Config and Keychain are touched only after an explicit user submit
         // or committed Plan approval reaches this worker.
         let tools = vega_tools::Tools::new(project_path).map_err(|_| ())?;
         let store = Store::open(database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
-        let provider: Box<dyn vega_runtime::Provider> = vega_store::config::load()
+        #[cfg(test)]
+        let provider = provider_override.unwrap_or_else(|| Arc::new(UnavailableProvider));
+        #[cfg(not(test))]
+        let provider: Arc<dyn vega_runtime::Provider> = vega_store::config::load()
             .ok()
             .and_then(|config| unique_provider_for_model(&config, &thread.model))
             .and_then(|provider| {
@@ -1744,8 +1921,8 @@ fn run_agent_worker(
                     .and_then(|key| vega_runtime::OpenAiProvider::new(provider.base_url, key).ok())
             })
             .map_or_else(
-                || Box::new(UnavailableProvider) as Box<dyn vega_runtime::Provider>,
-                |provider| Box::new(provider) as Box<dyn vega_runtime::Provider>,
+                || Arc::new(UnavailableProvider) as Arc<dyn vega_runtime::Provider>,
+                |provider| Arc::new(provider) as Arc<dyn vega_runtime::Provider>,
             );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1806,6 +1983,7 @@ struct VegaWindow {
     /// (e.g. the theme toggle) never rebuild the form mid-typing; dropped when
     /// settings closes so the next open reloads the config from disk.
     settings_view: Option<Entity<SettingsView>>,
+    pricing_controller: PricingController,
     /// Cached conversation stream for the open thread (id, view). S3-T17:
     /// built lazily on first render of an opened thread; rebuilt when another
     /// thread is opened. The stream itself is memory-only (no persistence).
@@ -1820,7 +1998,13 @@ struct VegaWindow {
     #[cfg(test)]
     commit_provider_override: Option<Arc<dyn vega_runtime::Provider>>,
     #[cfg(test)]
+    agent_provider_override: Option<Arc<dyn vega_runtime::Provider>>,
+    #[cfg(test)]
     commit_test_probe: Option<Arc<CommitTestProbe>>,
+    #[cfg(test)]
+    pricing_drop_next_worker_result: bool,
+    #[cfg(test)]
+    pricing_next_worker_gate: Option<Arc<std::sync::Barrier>>,
 }
 
 impl VegaWindow {
@@ -1866,9 +2050,18 @@ impl VegaWindow {
             this.close_commit_if_route_stale(cx);
         })
         .detach();
-        Self {
+        let pricing_service = cx
+            .global::<VegaStore>()
+            .0
+            .as_ref()
+            .ok()
+            .and_then(|store| store.database_path())
+            .and_then(|path| path.parent())
+            .map(|root| Arc::new(PricingSettingsService::new(root.join("pricing.json"))));
+        let mut window = Self {
             sidebar: cx.new(Sidebar::new),
             settings_view: None,
+            pricing_controller: PricingController::new(pricing_service),
             stream_view: None,
             agent_controller: AppAgentController::default(),
             diff_controller: DiffController::default(),
@@ -1880,8 +2073,449 @@ impl VegaWindow {
             #[cfg(test)]
             commit_provider_override: None,
             #[cfg(test)]
+            agent_provider_override: None,
+            #[cfg(test)]
             commit_test_probe: None,
+            #[cfg(test)]
+            pricing_drop_next_worker_result: false,
+            #[cfg(test)]
+            pricing_next_worker_gate: None,
+        };
+        window.start_pricing_load(cx);
+        window
+    }
+
+    fn start_pricing_load(&mut self, cx: &mut Context<Self>) {
+        let Some(service) = self.pricing_controller.service.clone() else {
+            return;
+        };
+        let Some(operation) = self.pricing_controller.begin_operation() else {
+            self.pricing_controller.state =
+                PricingControllerState::Invalid(PricingSettingsErrorCode::LimitExceeded);
+            return;
+        };
+        self.pricing_controller.state = PricingControllerState::Loading;
+        self.spawn_pricing_worker(
+            operation,
+            PricingWorkerKind::Authority,
+            move || PricingWorkerResult::Authority(service.load_or_seed()),
+            cx,
+        );
+    }
+
+    fn request_pricing_reload(&mut self, view: Entity<SettingsView>, cx: &mut Context<Self>) {
+        if !cx.global::<SettingsOpen>().0
+            || self.settings_view.as_ref() != Some(&view)
+            || self.pricing_controller.active_operation.is_some()
+        {
+            return;
         }
+        let Some(service) = self.pricing_controller.service.clone() else {
+            self.pricing_controller.state =
+                PricingControllerState::Invalid(PricingSettingsErrorCode::Io);
+            self.push_pricing_projection(cx);
+            return;
+        };
+        let Some(operation) = self.pricing_controller.begin_operation() else {
+            self.pricing_controller.state =
+                PricingControllerState::Invalid(PricingSettingsErrorCode::LimitExceeded);
+            self.push_pricing_projection(cx);
+            return;
+        };
+        self.pricing_controller.state = PricingControllerState::Reloading;
+        self.push_pricing_projection(cx);
+        self.spawn_pricing_worker(
+            operation,
+            PricingWorkerKind::Authority,
+            move || PricingWorkerResult::Authority(service.reload()),
+            cx,
+        );
+    }
+
+    fn request_pricing_mutation(
+        &mut self,
+        view: Entity<SettingsView>,
+        request: &PricingMutationRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !cx.global::<SettingsOpen>().0
+            || self.settings_view.as_ref() != Some(&view)
+            || self.pricing_controller.active_operation.is_some()
+        {
+            return;
+        }
+        let (previous, generation, notice, draft, draft_reason) =
+            match &self.pricing_controller.state {
+                PricingControllerState::Ready {
+                    authority,
+                    generation,
+                    notice,
+                    draft,
+                    draft_reason,
+                    ..
+                } => (
+                    authority.clone(),
+                    *generation,
+                    *notice,
+                    draft.clone(),
+                    *draft_reason,
+                ),
+                _ => return,
+            };
+        if generation != request.generation {
+            return;
+        }
+        if draft.is_some() {
+            self.pricing_controller.state = PricingControllerState::Ready {
+                authority: previous,
+                generation,
+                notice,
+                draft,
+                draft_reason,
+                error: Some(PricingSettingsErrorCode::Busy),
+            };
+            self.push_pricing_projection(cx);
+            return;
+        }
+        let mutation = match &request.mutation {
+            Ok(mutation) => mutation.clone(),
+            Err(code) => {
+                self.pricing_controller.state = PricingControllerState::Ready {
+                    authority: previous,
+                    generation,
+                    notice,
+                    draft: None,
+                    draft_reason: None,
+                    error: Some(*code),
+                };
+                self.push_pricing_projection(cx);
+                return;
+            }
+        };
+        let Some(service) = self.pricing_controller.service.clone() else {
+            return;
+        };
+        let plan = match service.prepare_save(&previous, mutation) {
+            Ok(plan) => plan,
+            Err(code) => {
+                self.pricing_controller.state = PricingControllerState::Ready {
+                    authority: previous,
+                    generation,
+                    notice,
+                    draft: None,
+                    draft_reason: None,
+                    error: Some(code),
+                };
+                self.push_pricing_projection(cx);
+                return;
+            }
+        };
+        self.begin_pricing_save(previous, notice, generation, plan, service, cx);
+    }
+
+    fn begin_pricing_save(
+        &mut self,
+        previous: PricingAuthority,
+        previous_notice: Option<PricingNotice>,
+        generation: u64,
+        plan: PricingSavePlan,
+        service: Arc<PricingSettingsService>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(operation) = self.pricing_controller.begin_operation() else {
+            self.pricing_controller.state = pricing_retry_ready(
+                previous,
+                generation,
+                previous_notice,
+                plan,
+                PricingSettingsErrorCode::LimitExceeded,
+            );
+            self.push_pricing_projection(cx);
+            return;
+        };
+        self.pricing_controller.state = PricingControllerState::Saving {
+            previous,
+            previous_notice,
+            generation,
+            plan: plan.clone(),
+        };
+        self.push_pricing_projection(cx);
+        self.spawn_pricing_worker(
+            operation,
+            PricingWorkerKind::Save,
+            move || PricingWorkerResult::Save(service.save(&plan)),
+            cx,
+        );
+    }
+
+    fn request_pricing_retry(
+        &mut self,
+        view: Entity<SettingsView>,
+        request: &PricingRetryRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !cx.global::<SettingsOpen>().0
+            || self.settings_view.as_ref() != Some(&view)
+            || self.pricing_controller.active_operation.is_some()
+        {
+            return;
+        }
+        let (authority, notice, generation, plan) = match &self.pricing_controller.state {
+            PricingControllerState::Ready {
+                authority,
+                notice,
+                generation,
+                draft: Some(plan),
+                ..
+            } if *generation == request.generation => {
+                (authority.clone(), *notice, *generation, plan.clone())
+            }
+            _ => return,
+        };
+        let Some(service) = self.pricing_controller.service.clone() else {
+            return;
+        };
+        self.begin_pricing_save(authority, notice, generation, plan, service, cx);
+    }
+
+    fn request_pricing_discard(
+        &mut self,
+        view: Entity<SettingsView>,
+        request: &PricingDiscardRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !cx.global::<SettingsOpen>().0
+            || self.settings_view.as_ref() != Some(&view)
+            || self.pricing_controller.active_operation.is_some()
+        {
+            return;
+        }
+        if !discard_pricing_draft(&mut self.pricing_controller.state, request.generation) {
+            return;
+        }
+        self.push_pricing_projection(cx);
+    }
+
+    fn spawn_pricing_worker(
+        &mut self,
+        operation: u64,
+        kind: PricingWorkerKind,
+        worker: impl FnOnce() -> PricingWorkerResult + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        #[cfg(test)]
+        let drop_result = std::mem::replace(&mut self.pricing_drop_next_worker_result, false);
+        #[cfg(test)]
+        let worker_gate = self.pricing_next_worker_gate.take();
+        #[cfg(not(test))]
+        let drop_result = false;
+        let spawned = std::thread::Builder::new()
+            .name("vega-pricing".to_string())
+            .spawn(move || {
+                #[cfg(test)]
+                if let Some(gate) = worker_gate {
+                    gate.wait();
+                }
+                let result = worker();
+                if !drop_result {
+                    let _ = sender.send(result);
+                }
+            });
+        if spawned.is_err() {
+            self.apply_pricing_worker_not_started(operation, kind, cx);
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                match receiver.try_recv() {
+                    Ok(result) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.apply_pricing_worker_result(operation, result, cx);
+                        });
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {
+                        cx.background_executor().timer(PRICING_RESULT_POLL).await;
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.apply_pricing_worker_disconnected(operation, kind, cx);
+                        });
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn apply_pricing_worker_result(
+        &mut self,
+        operation: u64,
+        result: PricingWorkerResult,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.pricing_controller.claim_completion(operation) {
+            return;
+        }
+        match result {
+            PricingWorkerResult::Authority(Ok(outcome)) => {
+                let Some(generation) = self.pricing_controller.next_generation() else {
+                    self.pricing_controller.state =
+                        PricingControllerState::Invalid(PricingSettingsErrorCode::LimitExceeded);
+                    self.push_pricing_projection(cx);
+                    return;
+                };
+                self.pricing_controller.state = PricingControllerState::Ready {
+                    authority: outcome.authority,
+                    generation,
+                    notice: outcome.notice,
+                    draft: None,
+                    draft_reason: None,
+                    error: None,
+                };
+            }
+            PricingWorkerResult::Authority(Err(code)) => {
+                self.pricing_controller.state = PricingControllerState::Invalid(code);
+            }
+            PricingWorkerResult::Save(outcome) => {
+                let old = std::mem::replace(
+                    &mut self.pricing_controller.state,
+                    PricingControllerState::Invalid(PricingSettingsErrorCode::Io),
+                );
+                let PricingControllerState::Saving {
+                    previous,
+                    previous_notice,
+                    generation,
+                    plan,
+                } = old
+                else {
+                    return;
+                };
+                match outcome {
+                    PricingSaveOutcome::Ready {
+                        authority,
+                        notice,
+                        dirty_conflict,
+                    } => {
+                        let Some(new_generation) = self.pricing_controller.next_generation() else {
+                            self.pricing_controller.state = PricingControllerState::Invalid(
+                                PricingSettingsErrorCode::LimitExceeded,
+                            );
+                            self.push_pricing_projection(cx);
+                            return;
+                        };
+                        self.pricing_controller.state = PricingControllerState::Ready {
+                            authority,
+                            generation: new_generation,
+                            notice,
+                            draft: dirty_conflict.then_some(plan),
+                            draft_reason: dirty_conflict
+                                .then_some(PricingDraftReason::ExternalConflict),
+                            error: None,
+                        };
+                    }
+                    PricingSaveOutcome::PreCommitFailure(code) => {
+                        self.pricing_controller.state =
+                            pricing_retry_ready(previous, generation, previous_notice, plan, code);
+                    }
+                    PricingSaveOutcome::RecoveryRequired => {
+                        self.pricing_controller.state = PricingControllerState::Invalid(
+                            PricingSettingsErrorCode::RecoveryRequired,
+                        );
+                    }
+                }
+            }
+        }
+        self.push_pricing_projection(cx);
+    }
+
+    fn apply_pricing_worker_not_started(
+        &mut self,
+        operation: u64,
+        kind: PricingWorkerKind,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.pricing_controller.claim_completion(operation) {
+            return;
+        }
+        let code = match kind {
+            PricingWorkerKind::Recovery => PricingSettingsErrorCode::RecoveryRequired,
+            PricingWorkerKind::Authority | PricingWorkerKind::Save => PricingSettingsErrorCode::Io,
+        };
+        let old = std::mem::replace(
+            &mut self.pricing_controller.state,
+            PricingControllerState::Invalid(code),
+        );
+        if matches!(kind, PricingWorkerKind::Save)
+            && let PricingControllerState::Saving {
+                previous,
+                previous_notice,
+                generation,
+                plan,
+            } = old
+        {
+            self.pricing_controller.state =
+                pricing_retry_ready(previous, generation, previous_notice, plan, code);
+        }
+        self.push_pricing_projection(cx);
+    }
+
+    fn apply_pricing_worker_disconnected(
+        &mut self,
+        operation: u64,
+        kind: PricingWorkerKind,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.pricing_controller.claim_completion(operation) {
+            return;
+        }
+        if !matches!(kind, PricingWorkerKind::Save) {
+            self.pricing_controller.state = PricingControllerState::Invalid(match kind {
+                PricingWorkerKind::Recovery => PricingSettingsErrorCode::RecoveryRequired,
+                PricingWorkerKind::Authority | PricingWorkerKind::Save => {
+                    PricingSettingsErrorCode::Io
+                }
+            });
+            self.push_pricing_projection(cx);
+            return;
+        }
+        let PricingControllerState::Saving { plan, .. } = &self.pricing_controller.state else {
+            self.pricing_controller.state =
+                PricingControllerState::Invalid(PricingSettingsErrorCode::RecoveryRequired);
+            self.push_pricing_projection(cx);
+            return;
+        };
+        let plan = plan.clone();
+        let Some(service) = self.pricing_controller.service.clone() else {
+            self.pricing_controller.state =
+                PricingControllerState::Invalid(PricingSettingsErrorCode::RecoveryRequired);
+            self.push_pricing_projection(cx);
+            return;
+        };
+        let Some(recovery_operation) = self.pricing_controller.begin_operation() else {
+            self.pricing_controller.state =
+                PricingControllerState::Invalid(PricingSettingsErrorCode::RecoveryRequired);
+            self.push_pricing_projection(cx);
+            return;
+        };
+        self.spawn_pricing_worker(
+            recovery_operation,
+            PricingWorkerKind::Recovery,
+            move || PricingWorkerResult::Save(service.recover_started_save(&plan)),
+            cx,
+        );
+    }
+
+    fn push_pricing_projection(&mut self, cx: &mut Context<Self>) {
+        if let Some(view) = &self.settings_view {
+            let projection = self.pricing_controller.projection();
+            view.update(cx, |view, cx| {
+                view.apply_pricing_projection(projection, cx);
+            });
+        }
+        cx.notify();
     }
 
     fn window_terminal_cleanup(&mut self) {
@@ -4852,6 +5486,45 @@ impl VegaWindow {
             return;
         };
 
+        // T37 gate: durable Thread.model must resolve against the app-owned
+        // Ready authority before begin, channel/worker spawn, config,
+        // Keychain, or provider construction. T38 will carry the returned
+        // immutable capability into runtime; T37 only establishes the gate.
+        let _pricing_selection = match self.pricing_controller.select_exact(&thread.model) {
+            Ok(selection) => selection,
+            Err(code) => {
+                if let PricingControllerState::Ready {
+                    authority,
+                    generation,
+                    notice,
+                    draft,
+                    draft_reason,
+                    ..
+                } = &self.pricing_controller.state
+                {
+                    self.pricing_controller.state = PricingControllerState::Ready {
+                        authority: authority.clone(),
+                        generation: *generation,
+                        notice: *notice,
+                        draft: draft.clone(),
+                        draft_reason: *draft_reason,
+                        error: Some(code),
+                    };
+                }
+                if pending_user_content.is_some() {
+                    stream.update(cx, ConversationStream::reject_composer_submission);
+                }
+                if pending_approved_instruction.is_some() {
+                    stream.update(cx, ConversationStream::apply_approved_not_started);
+                } else {
+                    stream.update(cx, ConversationStream::apply_agent_error);
+                }
+                cx.set_global(SettingsOpen(true));
+                self.push_pricing_projection(cx);
+                return;
+            }
+        };
+
         let permission_queue = stream.read(cx).permission_queue();
         let (generation, cancel) = self.agent_controller.begin(
             thread_id.to_string(),
@@ -4862,6 +5535,8 @@ impl VegaWindow {
         self.begin_artifact_agent_generation(generation, &stream);
         let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
         let worker_sender = sender.clone();
+        #[cfg(test)]
+        let provider_override = self.agent_provider_override.clone();
         let worker = std::thread::Builder::new()
             .name("vega-agent".into())
             .spawn(move || {
@@ -4873,6 +5548,8 @@ impl VegaWindow {
                     permission_queue,
                     cancel,
                     worker_sender,
+                    #[cfg(test)]
+                    provider_override,
                 );
             });
         if worker.is_err() {
@@ -5148,10 +5825,43 @@ impl Render for VegaWindow {
         let content: AnyElement = if settings_open {
             self.cancel_active_agent(cx);
             // 设置视图：缓存 Entity，避免主题刷新等重渲染时重建导致表单输入丢失。
-            let settings = self
-                .settings_view
-                .get_or_insert_with(|| cx.new(SettingsView::new));
-            settings.clone().into_any_element()
+            if self.settings_view.is_none() {
+                let settings = cx.new(SettingsView::new);
+                cx.subscribe(
+                    &settings,
+                    |this, view, request: &PricingMutationRequested, cx| {
+                        this.request_pricing_mutation(view.clone(), request, cx);
+                    },
+                )
+                .detach();
+                cx.subscribe(&settings, |this, view, _: &PricingReloadRequested, cx| {
+                    this.request_pricing_reload(view.clone(), cx);
+                })
+                .detach();
+                cx.subscribe(
+                    &settings,
+                    |this, view, request: &PricingRetryRequested, cx| {
+                        this.request_pricing_retry(view.clone(), request, cx);
+                    },
+                )
+                .detach();
+                cx.subscribe(
+                    &settings,
+                    |this, view, request: &PricingDiscardRequested, cx| {
+                        this.request_pricing_discard(view.clone(), request, cx);
+                    },
+                )
+                .detach();
+                let projection = self.pricing_controller.projection();
+                settings.update(cx, |settings, cx| {
+                    settings.apply_pricing_projection(projection, cx);
+                });
+                self.settings_view = Some(settings);
+            }
+            match &self.settings_view {
+                Some(settings) => settings.clone().into_any_element(),
+                None => div().size_full().bg(colors.bg_base).into_any_element(),
+            }
         } else {
             // 设置已关闭：丢弃缓存，下次打开时重新构造并载入最新配置。
             self.settings_view = None;
@@ -5525,6 +6235,68 @@ mod tests {
         assert_eq!(commit_retry_policy().max_retries, 0);
     }
 
+    #[test]
+    fn pricing_precommit_failure_keeps_persistent_notice_and_exact_draft() {
+        let data = tempfile::tempdir().expect("pricing state root");
+        let service = PricingSettingsService::new(data.path().join("pricing.json"));
+        let authority = service.load_or_seed().expect("pricing authority").authority;
+        let plan = service
+            .prepare_save(
+                &authority,
+                vega_conversation::types::PricingMutation::AddCustom {
+                    model: "custom/retry".into(),
+                    rates: vega_conversation::types::PricingRateInputs {
+                        input_usd_per_million: "1".into(),
+                        output_usd_per_million: "1".into(),
+                        cache_read_usd_per_million: "1".into(),
+                        cache_write_usd_per_million: "1".into(),
+                    },
+                },
+            )
+            .expect("pricing plan");
+        let mut state = pricing_retry_ready(
+            authority,
+            9,
+            Some(PricingNotice::DurabilityUnknownReconciled),
+            plan,
+            PricingSettingsErrorCode::Io,
+        );
+        assert!(matches!(
+            &state,
+            PricingControllerState::Ready {
+                generation: 9,
+                notice: Some(PricingNotice::DurabilityUnknownReconciled),
+                draft: Some(_),
+                draft_reason: Some(PricingDraftReason::RetryPending),
+                error: Some(PricingSettingsErrorCode::Io),
+                ..
+            }
+        ));
+        assert!(discard_pricing_draft(&mut state, 9));
+        assert!(matches!(
+            state,
+            PricingControllerState::Ready {
+                draft: None,
+                draft_reason: None,
+                error: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn pricing_controller_operation_claim_is_single_flight_and_stale_safe() {
+        let mut controller = PricingController::new(None);
+        let first = controller
+            .begin_operation()
+            .expect("first pricing operation");
+        assert!(controller.begin_operation().is_none());
+        assert!(!controller.claim_completion(first + 1));
+        assert_eq!(controller.active_operation, Some(first));
+        assert!(controller.claim_completion(first));
+        assert!(controller.active_operation.is_none());
+    }
+
     struct CommitPanelHarness {
         panel: Entity<CommitPanel>,
     }
@@ -5533,6 +6305,217 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div().size_full().child(self.panel.clone())
         }
+    }
+
+    struct PricingWindowHarness {
+        root: Entity<VegaWindow>,
+    }
+
+    impl Render for PricingWindowHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.root.clone()
+        }
+    }
+
+    #[gpui::test]
+    async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui::TestAppContext) {
+        let repo = diff_controller_repo();
+        let data = tempfile::tempdir().expect("pricing data root");
+        let store = Store::open(data.path().join("vega.db")).expect("pricing file store");
+        store.migrate().expect("pricing migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("UTF-8 pricing repo"),
+            "pricing-e2e",
+            None,
+        )
+        .expect("pricing project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "custom/gated",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("pricing thread");
+        cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+            vega_runtime::ScriptStep::events(vec![
+                vega_runtime::ProviderEvent::TextDelta("ok".into()),
+                vega_runtime::ProviderEvent::Done {
+                    stop_reason: vega_runtime::StopReason::End,
+                },
+            ]),
+        ]));
+        let root = cx.new(VegaWindow::new);
+        root.update(cx, |root, _| {
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            root.agent_provider_override = Some(provider.clone());
+        });
+        let window_root = root.clone();
+        let _window: gpui::WindowHandle<PricingWindowHarness> = cx
+            .update(|cx| {
+                cx.open_window(Default::default(), move |_, cx| {
+                    cx.new(|_| PricingWindowHarness { root: window_root })
+                })
+            })
+            .expect("pricing window");
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                matches!(
+                    root.pricing_controller.state,
+                    PricingControllerState::Ready { .. }
+                )
+            })
+        });
+
+        root.update(cx, |root, _| {
+            let _ = root.artifact_controller.close();
+        });
+
+        let starts = AGENT_WORKER_STARTS.load(Ordering::SeqCst);
+        let (agent_generation, artifact_epoch, artifact_active) = root.read_with(cx, |root, _| {
+            (
+                root.agent_controller.next_generation,
+                root.artifact_controller.next_route_epoch,
+                root.artifact_controller.active.is_some(),
+            )
+        });
+        root.update(cx, |root, cx| {
+            root.start_agent_run(
+                stream.clone(),
+                &thread.id,
+                PendingAgentRun::UserMessage("blocked before pricing".into()),
+                cx,
+            );
+        });
+        assert_eq!(AGENT_WORKER_STARTS.load(Ordering::SeqCst), starts);
+        assert!(provider.requests().is_empty());
+        root.read_with(cx, |root, _| {
+            assert!(root.agent_controller.active.is_none());
+            assert_eq!(root.agent_controller.next_generation, agent_generation);
+            assert_eq!(root.artifact_controller.next_route_epoch, artifact_epoch);
+            assert_eq!(root.artifact_controller.active.is_some(), artifact_active);
+        });
+        assert!(cx.update(|cx| cx.global::<SettingsOpen>().0));
+        root.update(cx, |root, cx| {
+            root.start_agent_run(
+                stream.clone(),
+                &thread.id,
+                PendingAgentRun::ApprovedPlan("not-started-without-pricing".into()),
+                cx,
+            );
+        });
+        assert_eq!(AGENT_WORKER_STARTS.load(Ordering::SeqCst), starts);
+        assert!(provider.requests().is_empty());
+        root.read_with(cx, |root, _| {
+            assert!(root.agent_controller.active.is_none());
+            assert_eq!(root.agent_controller.next_generation, agent_generation);
+        });
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| root.settings_view.is_some())
+        });
+        let settings = root
+            .read_with(cx, |root, _| root.settings_view.clone())
+            .expect("production settings entity");
+        let generation = root.read_with(cx, |root, _| match &root.pricing_controller.state {
+            PricingControllerState::Ready { generation, .. } => *generation,
+            _ => 0,
+        });
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        root.update(cx, |root, cx| {
+            root.pricing_drop_next_worker_result = true;
+            root.pricing_next_worker_gate = Some(gate.clone());
+            root.request_pricing_mutation(
+                settings.clone(),
+                &PricingMutationRequested {
+                    generation,
+                    mutation: Ok(vega_conversation::types::PricingMutation::AddCustom {
+                        model: "custom/gated".into(),
+                        rates: vega_conversation::types::PricingRateInputs {
+                            input_usd_per_million: "1".into(),
+                            output_usd_per_million: "1".into(),
+                            cache_read_usd_per_million: "1".into(),
+                            cache_write_usd_per_million: "1".into(),
+                        },
+                    }),
+                },
+                cx,
+            );
+            assert!(matches!(
+                root.pricing_controller.state,
+                PricingControllerState::Saving { .. }
+            ));
+            cx.set_global(SettingsOpen(false));
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        root.read_with(cx, |root, _| {
+            assert!(root.settings_view.is_none());
+            assert!(matches!(
+                root.pricing_controller.state,
+                PricingControllerState::Saving { .. }
+            ));
+        });
+        gate.wait();
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                matches!(
+                    &root.pricing_controller.state,
+                    PricingControllerState::Ready {
+                        authority,
+                        draft: None,
+                        notice: Some(PricingNotice::DurabilityUnknownReconciled),
+                        ..
+                    } if authority.contains_exact_model("custom/gated")
+                )
+            })
+        });
+        assert!(data.path().join("pricing.json").is_file());
+
+        cx.update(|cx| {
+            cx.set_global(SettingsOpen(true));
+            cx.refresh_windows();
+        });
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                root.settings_view
+                    .as_ref()
+                    .is_some_and(|view| view != &settings)
+            })
+        });
+        root.read_with(cx, |root, _| {
+            assert!(matches!(
+                &root.pricing_controller.state,
+                PricingControllerState::Ready {
+                    authority,
+                    notice: Some(PricingNotice::DurabilityUnknownReconciled),
+                    ..
+                } if authority.contains_exact_model("custom/gated")
+            ));
+        });
+        cx.update(|cx| {
+            cx.set_global(SettingsOpen(false));
+            cx.refresh_windows();
+        });
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| root.settings_view.is_none())
+        });
+
+        root.update(cx, |root, cx| {
+            root.start_agent_run(
+                stream.clone(),
+                &thread.id,
+                PendingAgentRun::UserMessage("priced run".into()),
+                cx,
+            );
+        });
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+                && provider.requests().len() == 1
+        });
+        assert_eq!(AGENT_WORKER_STARTS.load(Ordering::SeqCst), starts + 1);
+        assert_eq!(provider.requests().len(), 1);
     }
 
     #[derive(Clone)]

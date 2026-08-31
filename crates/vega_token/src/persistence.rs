@@ -13,6 +13,46 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct CatalogLoad {
     pub catalog: PricingCatalog,
     pub seeded: bool,
+    /// The seed rename committed but the parent directory sync was unknown.
+    pub durability_unknown: bool,
+}
+
+/// A validated catalog paired with the exact bytes captured from its file.
+///
+/// Exact bytes remain private so callers can reconcile a save without
+/// exposing pricing-file contents above the headless token boundary.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CatalogSnapshot {
+    catalog: PricingCatalog,
+    exact_bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for CatalogSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CatalogSnapshot")
+            .field("model_count", &self.catalog.specs().len())
+            .field("byte_count", &self.exact_bytes.len())
+            .finish()
+    }
+}
+
+impl CatalogSnapshot {
+    /// Returns the validated catalog captured by this snapshot.
+    pub fn catalog(&self) -> &PricingCatalog {
+        &self.catalog
+    }
+
+    /// Consumes the snapshot and returns its validated catalog.
+    pub fn into_catalog(self) -> PricingCatalog {
+        self.catalog
+    }
+
+    /// Requires both semantic equality and exact canonical bytes.
+    pub fn exactly_matches(&self, desired: &PricingCatalog) -> Result<bool, PricingError> {
+        let desired_bytes = desired.encode()?;
+        Ok(self.catalog == *desired && self.exact_bytes == desired_bytes)
+    }
 }
 
 impl std::fmt::Debug for CatalogLoad {
@@ -20,6 +60,7 @@ impl std::fmt::Debug for CatalogLoad {
         formatter
             .debug_struct("CatalogLoad")
             .field("seeded", &self.seeded)
+            .field("durability_unknown", &self.durability_unknown)
             .field("model_count", &self.catalog.specs().len())
             .finish()
     }
@@ -27,35 +68,69 @@ impl std::fmt::Debug for CatalogLoad {
 
 /// Loads and validates a catalog from one explicit path.
 pub fn load_catalog(path: &Path) -> Result<PricingCatalog, PricingError> {
+    load_catalog_snapshot(path).map(CatalogSnapshot::into_catalog)
+}
+
+/// Loads one catalog through the existing single-handle bounded snapshot.
+pub fn load_catalog_snapshot(path: &Path) -> Result<CatalogSnapshot, PricingError> {
     match snapshot_target(path)? {
-        TargetSnapshot::Existing { bytes, .. } => PricingCatalog::decode(&bytes),
+        TargetSnapshot::Existing { bytes, .. } => Ok(CatalogSnapshot {
+            catalog: PricingCatalog::decode(&bytes)?,
+            exact_bytes: bytes,
+        }),
         TargetSnapshot::Missing => Err(PricingError::io("open")),
     }
 }
 
 /// Loads an existing catalog or atomically seeds the built-in five-model catalog.
 pub fn load_or_seed_catalog(path: &Path) -> Result<CatalogLoad, PricingError> {
+    load_or_seed_catalog_inner(path, SaveFault::None)
+}
+
+fn load_or_seed_catalog_inner(
+    path: &Path,
+    seed_fault: SaveFault,
+) -> Result<CatalogLoad, PricingError> {
     match fs::symlink_metadata(path) {
         Ok(_) => load_catalog(path).map(|catalog| CatalogLoad {
             catalog,
             seeded: false,
+            durability_unknown: false,
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let catalog = PricingCatalog::built_in()?;
-            match save_catalog_atomic(path, &catalog) {
+            match save_catalog_atomic_inner(path, &catalog, seed_fault) {
                 Ok(()) => Ok(CatalogLoad {
                     catalog: load_catalog(path)?,
                     seeded: true,
+                    durability_unknown: false,
                 }),
                 Err(PricingError::SaveTargetChanged) => Ok(CatalogLoad {
                     catalog: load_catalog(path)?,
                     seeded: false,
+                    durability_unknown: false,
                 }),
+                Err(PricingError::CommittedDurabilityUnknown) => {
+                    // Rename may already be the commit point. Never seed again:
+                    // exactly one safe reload decides whether usable authority exists.
+                    Ok(CatalogLoad {
+                        catalog: load_catalog(path)?,
+                        seeded: true,
+                        durability_unknown: true,
+                    })
+                }
                 Err(error) => Err(error),
             }
         }
         Err(_) => Err(PricingError::io("open")),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn load_or_seed_with_postcommit_failure(
+    path: &Path,
+) -> Result<CatalogLoad, PricingError> {
+    load_or_seed_catalog_inner(path, SaveFault::AfterRename)
 }
 
 /// Atomically replaces one explicit pricing file after complete validation.
