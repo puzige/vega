@@ -287,7 +287,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(user_version, 2);
+        // S7-T38 appended migration 0003 (token_usage pricing columns): user_version
+        // advances 2 → 3; the table set must stay exactly six either way.
+        assert_eq!(user_version, 3);
         assert_eq!(table_count, 6);
     }
 }
