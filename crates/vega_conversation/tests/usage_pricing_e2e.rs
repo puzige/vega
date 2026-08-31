@@ -166,7 +166,8 @@ async fn two_provider_calls_persist_priced_rows_with_restart_consistency()
         assert!(call_started_at > 1_700_000_000, "unix UTC seconds");
     }
     // Per-call capture (monotonic; same-second runs are legitimate for fast
-    // local mock providers — provider-retry reuse is covered by unit tests).
+    // local mock providers — provider-internal retry reuses the frozen call
+    // start by construction: the timestamp is captured once per logical call).
     assert!(
         rows[0].7.unwrap() <= rows[1].7.unwrap(),
         "call starts are monotonic"
