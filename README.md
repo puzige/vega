@@ -18,7 +18,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 ## 状态
 
-📋 **S1（脚手架）、S2（侧边栏 & 项目模型）、S3（流式会话渲染）、S4（Runtime 核心）、S5（写工具、权限门禁与三模式）已完成并验收；S6（Diff 审阅 & 产物）已完成自动化/Mock 验收，收尾 PR 与 squash 待完成**。真实 API/dogfood、人工 UI 与未达性能项边界见各 Sprint 验收报告。全部设计文档在 [`docs/`](docs/)：
+📋 **S1（脚手架）、S2（侧边栏 & 项目模型）、S3（流式会话渲染）、S4（Runtime 核心）、S5（写工具、权限门禁与三模式）、S6（Diff 审阅 & 产物）已完成并验收；S7（Token 经济：定价目录、API 校准、流式计数与任务成本汇总）已完成自动化/Mock 验收（mock 账单零误差；真实账单 dogfood 为 `real provider/billing pending`）**。真实 API/dogfood、人工 UI 与未达性能项边界见各 Sprint 验收报告。全部设计文档在 [`docs/`](docs/)：
 
 | 文档 | 内容 |
 |---|---|
@@ -39,6 +39,10 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-s5-report.md](docs/vega-s5-report.md) | S5 验收报告（mock E2E、DoD、UI/性能边界与偏离） |
 | [vega-s6-tasks.md](docs/vega-s6-tasks.md) | S6 任务卡 T30-T35（Diff 审阅、产物、Open in、分支与 commit，SDD 已定稿） |
 | [vega-s6-report.md](docs/vega-s6-report.md) | S6 验收报告（production E2E、DoD、红线与人工/硬件边界） |
+| [vega-s7-tasks.md](docs/vega-s7-tasks.md) | S7 任务卡 T36-T41（Token 经济：定价、校准、流式计数与任务汇总，已完成） |
+| [vega-s7-report.md](docs/vega-s7-report.md) | S7 验收报告（mock 账单零误差 E2E、DoD、carryforward 核销与真实账单 KPI 边界） |
+| [vega-s8-tasks.md](docs/vega-s8-tasks.md) | S8 任务卡 T43-T50（性能调优、硬件实测与 Phase 1 收口，SDD 已冻结） |
+| [vega-s8-sdd.md](docs/vega-s8-sdd.md) | S8 验收 SDD（C1-C8 冻结契约、七状态词表与证据基线） |
 
 ## 关键决策（详见 PRD）
 
