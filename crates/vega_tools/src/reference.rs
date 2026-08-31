@@ -58,8 +58,8 @@ pub struct ResolvedReference {
 /// Walks the project root into a deterministic, bounded candidate index of
 /// project-relative file paths. Ignores `.gitignore`/`.ignore`/hidden rules
 /// via the shared walker, never follows symlinks, skips non-UTF-8 names
-/// (they cannot be addressed by a text token), sorts lexicographically, and
-/// truncates at `limit`.
+/// (they cannot be addressed by a text token). Truncation happens in walker
+/// order at `limit` entries; the kept set is then sorted lexicographically.
 pub fn bounded_file_index(root: &Path, limit: usize) -> Result<Vec<String>, ToolError> {
     let root = root.canonicalize().map_err(ToolError::Io)?;
     let mut entries: Vec<String> = Vec::new();
@@ -180,12 +180,7 @@ pub fn resolve_bounded_references(
         if canonical.is_dir() {
             return Err(ToolError::InvalidInput(format!("{token} is a directory")));
         }
-        let bytes = read_bounded(&canonical)?;
-        if bytes.len() as u64 > max_file_bytes {
-            return Err(ToolError::TooManyResults {
-                limit: max_file_bytes as usize,
-            });
-        }
+        let bytes = read_bounded(&canonical, max_file_bytes)?;
         total = total.saturating_add(bytes.len() as u64);
         if total > max_total_bytes {
             return Err(ToolError::TooManyResults {
@@ -225,7 +220,10 @@ fn reject_symlink_target(root: &Path, token: &str, canonical: &Path) -> Result<(
 
 /// Reads a referenced file with the read tool's normative semantics: a NUL
 /// probe over the head rejects binary files; other text degrades lossily.
-fn read_bounded(canonical: &PathBuf) -> Result<Vec<u8>, ToolError> {
+/// The per-file byte cap is enforced while reading (reads at most
+/// `max_file_bytes + 1` past the probe, so an oversized file is rejected
+/// before it can be fully buffered).
+fn read_bounded(canonical: &PathBuf, max_file_bytes: u64) -> Result<Vec<u8>, ToolError> {
     let mut file = File::open(canonical)?;
     let mut head = Vec::new();
     file.by_ref()
@@ -237,8 +235,15 @@ fn read_bounded(canonical: &PathBuf) -> Result<Vec<u8>, ToolError> {
         ));
     }
     let mut rest = Vec::new();
-    file.read_to_end(&mut rest)?;
+    file.by_ref()
+        .take(max_file_bytes + 1)
+        .read_to_end(&mut rest)?;
     head.extend_from_slice(&rest);
+    if head.len() as u64 > max_file_bytes {
+        return Err(ToolError::TooManyResults {
+            limit: max_file_bytes as usize,
+        });
+    }
     Ok(head)
 }
 
@@ -378,5 +383,35 @@ mod tests {
         let block = render_reference_block(&refs);
         assert!(block.starts_with("[@lib.rs]\nfn main()"));
         assert!(block.contains("[/sub/inner.txt]"));
+    }
+
+    #[test]
+    fn oversized_file_is_rejected_before_full_read() {
+        // P1-1: the per-file cap must fire while reading (bounded take),
+        // not after the whole file is buffered. A few-KB file plus a small
+        // cap proves the read-time bound without allocating a huge file.
+        let dir = tempdir().expect("oversize fixture");
+        std::fs::write(dir.path().join("big.log"), "x".repeat(4 * 1024)).expect("write big.log");
+        assert!(matches!(
+            resolve_bounded_references(
+                dir.path(),
+                "@big.log",
+                REFERENCE_MAX_FILES,
+                1024,
+                REFERENCE_MAX_TOTAL_BYTES,
+            ),
+            Err(ToolError::TooManyResults { .. })
+        ));
+        // Under the cap the same file resolves normally.
+        let refs = resolve_bounded_references(
+            dir.path(),
+            "@big.log",
+            REFERENCE_MAX_FILES,
+            8 * 1024,
+            REFERENCE_MAX_TOTAL_BYTES,
+        )
+        .expect("bounded refs");
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].content.len(), 4 * 1024);
     }
 }
