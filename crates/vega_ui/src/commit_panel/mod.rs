@@ -35,9 +35,11 @@ mod panel;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use model::{COMMIT_PATH_LIMIT, checklist_count_is_bounded};
+
 pub(crate) use model::{
-    COMMIT_PATH_LIMIT, COMMIT_ROW_HEIGHT, checklist_count_is_bounded, commit_row_is_focusable,
-    commit_row_key, commit_row_status,
+    COMMIT_ROW_HEIGHT, commit_row_is_focusable, commit_row_key, commit_row_status,
 };
 pub use model::{
     CommitChecklistRequested, CommitDraftRequested, CommitOperationId, CommitPanelClosed,

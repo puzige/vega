@@ -39,7 +39,7 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 static ARTIFACT_SERVICE_NONCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, PartialEq, Eq)]
-enum TerminalFingerprint {
+pub(crate) enum TerminalFingerprint {
     Write {
         path: String,
         input_fingerprint: String,
@@ -108,7 +108,7 @@ fn validate_candidate_retained(
     Ok(())
 }
 
-struct ArtifactRecord {
+pub(crate) struct ArtifactRecord {
     id: ArtifactCardId,
     fingerprint: TerminalFingerprint,
     path: OsString,
@@ -134,7 +134,7 @@ impl ArtifactRecord {
 }
 
 #[derive(Default)]
-struct ArtifactState {
+pub(crate) struct ArtifactState {
     by_call_id: HashMap<String, usize>,
     cards: Vec<ArtifactRecord>,
 }

@@ -4,12 +4,10 @@ use super::*;
 ///
 /// It is deliberately not serializable and cannot be constructed outside the
 /// conversation crate. A card id is meaningful only to the service that
-
 /// Opaque route-owned identifier for one ephemeral artifact card.
 ///
 /// It is deliberately not serializable and cannot be constructed outside the
 /// conversation crate. A card id is meaningful only to the service that
-
 /// issued it for the current route epoch.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ArtifactCardId {

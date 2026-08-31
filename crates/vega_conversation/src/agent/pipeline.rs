@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_run(
     database_path: PathBuf,
     thread_id: String,

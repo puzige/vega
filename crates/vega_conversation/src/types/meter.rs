@@ -1,9 +1,7 @@
 use super::*;
 
 /// Integer millionths of one US dollar.
-
 /// Integer millionths of one US dollar.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Microcents(pub i64);
 

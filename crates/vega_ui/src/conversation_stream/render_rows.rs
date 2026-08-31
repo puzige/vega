@@ -2,7 +2,6 @@ use super::*;
 
 /// Materializes a user echo block (T18 消息块结构): 「你」 label row, one card
 /// line per source line (first/last flagged for rounding/border edges), and a
-
 /// trailing spacer row separating it from the next message.
 pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     let mut lines = vec![StreamLine::new(block_id, LineKind::UserLabel)];

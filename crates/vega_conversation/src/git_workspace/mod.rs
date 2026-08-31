@@ -91,13 +91,13 @@ const PREFIX: &[&str] = &[
 ];
 
 #[derive(Clone, Copy)]
-struct RootIdentity {
+pub(crate) struct RootIdentity {
     dev: u64,
     ino: u64,
 }
 
 #[derive(Clone)]
-struct PrivateFile {
+pub(crate) struct PrivateFile {
     id: WorkspaceFileId,
     path: OsString,
     previous_path: Option<OsString>,
@@ -192,7 +192,7 @@ impl ArtifactOpenGuard {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct FileIdentity {
+pub(crate) struct FileIdentity {
     dev: u64,
     ino: u64,
     kind: u8,
@@ -205,7 +205,7 @@ struct FileIdentity {
 }
 
 #[derive(PartialEq, Eq)]
-struct SnapshotIdentity {
+pub(crate) struct SnapshotIdentity {
     filter_paths: Arc<[u8]>,
     filter_attrs: Vec<u8>,
     status: Vec<u8>,
@@ -216,7 +216,7 @@ struct SnapshotIdentity {
 }
 
 #[derive(Default)]
-struct ServiceState {
+pub(crate) struct ServiceState {
     next_request: u64,
     latest_request: u64,
     next_generation: u64,

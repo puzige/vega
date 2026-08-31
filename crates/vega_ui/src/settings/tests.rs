@@ -6,6 +6,7 @@ use gpui::{
 };
 
 use super::*;
+use crate::settings::state::PRICING_INPUT_BYTES_LIMIT;
 
 struct SettingsHarness {
     view: Entity<SettingsView>,

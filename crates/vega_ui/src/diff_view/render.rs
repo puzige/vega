@@ -277,7 +277,7 @@ pub(crate) fn render_prepared_row(
 }
 
 #[derive(Clone, Copy)]
-enum LineSide {
+pub(crate) enum LineSide {
     Unified,
     Old,
     New,

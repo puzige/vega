@@ -59,7 +59,7 @@ const MASK_CHAR: char = '•';
 /// One laid-out display line: its start offset in the content, the segment
 /// length (excluding the separating `\n`), and the shaped line. Single-line
 /// inputs keep exactly one entry (start 0).
-struct LineLayout {
+pub(crate) struct LineLayout {
     start: usize,
     len: usize,
     line: ShapedLine,

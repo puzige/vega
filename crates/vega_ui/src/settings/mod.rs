@@ -58,7 +58,7 @@ pub struct PricingDiscardRequested {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PricingEditorKind {
+pub(crate) enum PricingEditorKind {
     AddCustom,
     UpdateCustom,
     UpdateBuiltinBase,
@@ -66,13 +66,13 @@ enum PricingEditorKind {
 }
 
 #[derive(Clone)]
-struct PricingEditor {
+pub(crate) struct PricingEditor {
     kind: PricingEditorKind,
     model: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-enum PricingFocusTarget {
+pub(crate) enum PricingFocusTarget {
     Reload,
     Add,
     Edit(usize),
@@ -109,6 +109,4 @@ mod tests;
 
 pub use helpers::all_models;
 pub(crate) use helpers::*;
-pub(crate) use render_impl::*;
 pub use state::SettingsView;
-pub(crate) use state::*;

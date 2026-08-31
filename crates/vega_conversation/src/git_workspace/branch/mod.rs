@@ -23,7 +23,7 @@ const OPERATION_MARKERS: &[&str] = &[
 ];
 
 #[derive(Clone, PartialEq, Eq)]
-struct PrivateBranch {
+pub(crate) struct PrivateBranch {
     id: BranchId,
     short: OsString,
     full: Vec<u8>,
@@ -32,7 +32,7 @@ struct PrivateBranch {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct BranchIdentity {
+pub(crate) struct BranchIdentity {
     filter_paths: Arc<[u8]>,
     filter_attrs: Vec<u8>,
     status: Vec<u8>,
@@ -41,7 +41,7 @@ struct BranchIdentity {
 }
 
 #[derive(PartialEq, Eq)]
-struct SwitchAuthority {
+pub(crate) struct SwitchAuthority {
     acmrt_raw: Vec<u8>,
     delete_raw: Vec<u8>,
     materialized_paths: Vec<Vec<u8>>,
@@ -49,13 +49,13 @@ struct SwitchAuthority {
     attrs: Vec<u8>,
 }
 
-struct ParsedTargetPaths {
+pub(crate) struct ParsedTargetPaths {
     materialized: Vec<Vec<u8>>,
     authority: Vec<Vec<u8>>,
 }
 
 #[derive(Default)]
-struct BranchState {
+pub(crate) struct BranchState {
     next_request: u64,
     latest_request: u64,
     next_generation: u64,
@@ -515,7 +515,6 @@ mod parsing;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use parsing::reject_operation_markers;
 pub(crate) use parsing::*;
 
 #[cfg(test)]

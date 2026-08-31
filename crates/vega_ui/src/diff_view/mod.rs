@@ -66,7 +66,7 @@ pub struct DiffClosed {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct PreparedLine {
+pub(crate) struct PreparedLine {
     kind: DiffRowKind,
     old_line: Option<u32>,
     new_line: Option<u32>,
@@ -74,19 +74,19 @@ struct PreparedLine {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct PreparedSpan {
+pub(crate) struct PreparedSpan {
     text: String,
     kind: Option<HighlightKind>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct SidePair {
+pub(crate) struct SidePair {
     left: Option<PreparedLine>,
     right: Option<PreparedLine>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
-enum PreparedRow {
+pub(crate) enum PreparedRow {
     File {
         id: WorkspaceFileId,
         label: String,
@@ -111,17 +111,17 @@ enum PreparedRow {
     },
 }
 
-struct PreparedProjection {
+pub(crate) struct PreparedProjection {
     file_id: WorkspaceFileId,
     sections: Vec<PreparedSection>,
 }
 
-struct PreparedSection {
+pub(crate) struct PreparedSection {
     label: &'static str,
     hunks: Vec<PreparedHunk>,
 }
 
-struct PreparedHunk {
+pub(crate) struct PreparedHunk {
     label: String,
     lines: Vec<PreparedLine>,
     missing_trailing_newline: bool,

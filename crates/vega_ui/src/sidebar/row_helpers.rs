@@ -2,7 +2,6 @@ use super::*;
 
 /// A single hover action button on a session row (compact text label, token
 /// colors only). The listener runs on the block entity, so button clicks do
-
 /// not bubble into the row's clickable body (sibling nodes, T10 经验).
 pub(crate) fn row_action_button(
     label: &'static str,

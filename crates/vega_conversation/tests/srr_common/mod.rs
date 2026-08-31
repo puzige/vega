@@ -19,7 +19,6 @@
 
 pub use std::error::Error;
 pub use std::fs;
-pub use std::io::Write;
 pub use std::path::{Path, PathBuf};
 pub use std::process::{Command, Stdio};
 pub use std::sync::{Arc, Mutex};
@@ -28,9 +27,7 @@ pub use std::time::{Duration, Instant};
 pub use futures::future::BoxFuture;
 pub use tempfile::{TempDir, tempdir};
 pub use tokio_util::sync::CancellationToken;
-pub use vega_conversation::agent::{
-    PermissionHook, PermissionQueue, run_thread_task_with_permission_sink,
-};
+pub use vega_conversation::agent::{PermissionHook, run_thread_task_with_permission_sink};
 pub use vega_conversation::types::{
     Approval, ApprovalAudit, ApprovalSource, ConversationEvent, PermissionDecision,
 };
@@ -56,6 +53,7 @@ pub fn interrupted_event_count(events: &[ConversationEvent]) -> usize {
         .count()
 }
 
+#[allow(dead_code)]
 pub fn durable_text(events: &[ConversationEvent]) -> String {
     events
         .iter()
@@ -99,6 +97,7 @@ pub fn usage(input: u64, output: u64) -> ProviderEvent {
     }
 }
 
+#[allow(dead_code)]
 pub struct Fixture {
     pub _root: TempDir,
     pub db_path: PathBuf,
@@ -192,6 +191,7 @@ pub fn tool_row(store: &Store, call_id: &str) -> Result<Option<ToolRow>, Box<dyn
     Ok(rows.next().transpose()?)
 }
 
+#[allow(dead_code)]
 pub fn tool_row_count(store: &Store) -> Result<i64, Box<dyn Error>> {
     Ok(store.conn().query_row(
         "SELECT COUNT(*) FROM tool_calls WHERE thread_id = ?1",
@@ -213,6 +213,7 @@ pub fn assert_message_terminal(
     assert_eq!(rows[1].3, status);
 }
 
+#[allow(dead_code)]
 pub fn process_is_gone(pid: u32) -> bool {
     !Command::new("/bin/kill")
         .args(["-0", &pid.to_string()])

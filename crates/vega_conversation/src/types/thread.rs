@@ -3,11 +3,9 @@ use super::*;
 /// Run mode of a thread (tech-spec §3 `RunMode`, A2-09): ask | plan | execute.
 ///
 /// Stored as the lowercase DDL string in `threads.mode`
-
 /// Run mode of a thread (tech-spec §3 `RunMode`, A2-09): ask | plan | execute.
 ///
 /// Stored as the lowercase DDL string in `threads.mode`
-
 /// (`TEXT NOT NULL DEFAULT 'execute'`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadMode {

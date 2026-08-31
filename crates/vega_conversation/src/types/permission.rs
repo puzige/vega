@@ -5,13 +5,11 @@ use super::*;
 /// Thread-management storage failures remain display strings, while the live
 /// agent pipeline preserves the shared [`vega_runtime::VegaError`] kind and
 /// fields for UI decisions. Send + Sync by construction (owned data only).
-
 /// Error surfaced by the vega_conversation orchestration layer.
 ///
 /// Thread-management storage failures remain display strings, while the live
 /// agent pipeline preserves the shared [`vega_runtime::VegaError`] kind and
 /// fields for UI decisions. Send + Sync by construction (owned data only).
-
 #[derive(Debug, thiserror::Error)]
 pub enum ConversationError {
     /// A store/IO failure, reported with the underlying error message.

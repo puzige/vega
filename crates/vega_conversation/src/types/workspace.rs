@@ -4,12 +4,10 @@ use super::*;
 ///
 /// The identifier is deliberately not serializable and cannot be constructed
 /// outside this crate. It is only meaningful while its snapshot generation is
-
 /// Opaque identifier for one file in one workspace snapshot.
 ///
 /// The identifier is deliberately not serializable and cannot be constructed
 /// outside this crate. It is only meaningful while its snapshot generation is
-
 /// current.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WorkspaceFileId {

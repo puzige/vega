@@ -22,7 +22,7 @@ const SYSTEM_PROMPT: &str = "Generate one concise Git commit message for the exa
 const USER_PREFIX: &str = "Generate the commit message for the staged diff below.\ntruncated=";
 
 #[derive(Clone, PartialEq, Eq)]
-struct HeadAuthority {
+pub(crate) struct HeadAuthority {
     unborn: bool,
     oid: Vec<u8>,
     short: Vec<u8>,
@@ -30,14 +30,14 @@ struct HeadAuthority {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct StageEntry {
+pub(crate) struct StageEntry {
     mode: Vec<u8>,
     oid: Vec<u8>,
     path: Vec<u8>,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct TreeEntry {
+pub(crate) struct TreeEntry {
     mode: Vec<u8>,
     object_type: Vec<u8>,
     oid: Vec<u8>,
@@ -45,7 +45,7 @@ struct TreeEntry {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum StatusShape {
+pub(crate) enum StatusShape {
     Ordinary,
     Rename,
     Copy,
@@ -53,7 +53,7 @@ enum StatusShape {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct StatusRecord {
+pub(crate) struct StatusRecord {
     shape: StatusShape,
     x: u8,
     y: u8,
@@ -68,7 +68,7 @@ struct StatusRecord {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct IndexAuthority {
+pub(crate) struct IndexAuthority {
     head: HeadAuthority,
     status_raw: Vec<u8>,
     stage_raw: Vec<u8>,
@@ -80,7 +80,7 @@ struct IndexAuthority {
 }
 
 #[derive(Clone)]
-struct ChecklistRow {
+pub(crate) struct ChecklistRow {
     public: CommitSelection,
     closure: Vec<Vec<u8>>,
     record: StatusRecord,
@@ -89,13 +89,13 @@ struct ChecklistRow {
 }
 
 #[derive(Clone)]
-struct StoredChecklist {
+pub(crate) struct StoredChecklist {
     id: IndexSnapshotId,
     authority: IndexAuthority,
     optional: Vec<ChecklistRow>,
 }
 
-struct StoredPrepared {
+pub(crate) struct StoredPrepared {
     id: PreparedCommitId,
     authority: IndexAuthority,
     summary: String,
@@ -103,7 +103,7 @@ struct StoredPrepared {
 }
 
 #[derive(Default)]
-struct CommitState {
+pub(crate) struct CommitState {
     next_generation: u64,
     next_slot: u64,
     checklist: Option<StoredChecklist>,

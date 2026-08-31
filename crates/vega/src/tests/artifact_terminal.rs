@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use super::*;
 
 pub(crate) fn artifact_controller_repo() -> TempDir {

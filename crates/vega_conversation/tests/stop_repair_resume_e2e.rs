@@ -1,6 +1,8 @@
 mod srr_common;
 
 use srr_common::*;
+use std::io::Write as _;
+use vega_conversation::agent::PermissionQueue;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_first_wins_reaches_exactly_one_terminal_and_cleans_up_under_one_second()
