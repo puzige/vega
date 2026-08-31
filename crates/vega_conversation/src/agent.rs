@@ -486,7 +486,7 @@ fn valid_permission_request(request: &PermissionRequest) -> bool {
     }
 }
 
-struct RejectPermissionHook;
+pub struct RejectPermissionHook;
 
 impl PermissionHook for RejectPermissionHook {
     fn request(
@@ -516,7 +516,7 @@ impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
 }
 
 #[derive(Clone, Default)]
-struct PersistenceActorConfig {
+pub struct PersistenceActorConfig {
     #[cfg(test)]
     snapshot_writes: Option<Arc<AtomicUsize>>,
     #[cfg(test)]
@@ -901,6 +901,7 @@ where
         event_sink,
         PersistenceActorConfig::default(),
         Some(instruction_message_id.to_string()),
+        None,
     )
     .await
 }
@@ -964,6 +965,50 @@ where
         event_sink,
         PersistenceActorConfig::default(),
         None,
+        None,
+    )
+    .await
+}
+
+/// Runs a thread task with a frozen pricing capability (S7-T38/C3): the run
+/// preflight resolves the durable `Thread.model` against the injected catalog
+/// before any provider request; the selection is immutable for the whole run
+/// (Settings changes mid-run never swap it).
+///
+/// `pricing_catalog: None` keeps legacy unpriced rows (zero cost, NULL
+/// provenance columns). A model missing from the catalog is not an error:
+/// per C3 the run proceeds unpriced so the user can be guided to Settings.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_thread_task_with_pricing<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    user_content: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    event_sink: F,
+    actor_config: PersistenceActorConfig,
+    persisted_user_message_id: Option<String>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_permission_config(
+        store,
+        provider,
+        tools,
+        thread_id,
+        user_content,
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        actor_config,
+        persisted_user_message_id,
+        pricing_catalog,
     )
     .await
 }
@@ -996,6 +1041,7 @@ where
         event_sink,
         actor_config,
         None,
+        None,
     )
     .await
 }
@@ -1013,6 +1059,7 @@ async fn run_thread_task_with_permission_config<F>(
     mut event_sink: F,
     actor_config: PersistenceActorConfig,
     persisted_user_message_id: Option<String>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
 ) -> Result<ConversationRun, ConversationError>
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
@@ -1041,6 +1088,7 @@ where
     let preparation_assistant_id = assistant_message_id.clone();
     let preparation_config = actor_config.clone();
     let preparation_uses_existing_user = persisted_user_message_id.is_some();
+    let preparation_pricing = pricing_catalog;
     let prepared = match tokio::task::spawn_blocking(move || {
         prepare_run(
             preparation_path,
@@ -1051,6 +1099,7 @@ where
             preparation_assistant_id,
             preparation_config,
             preparation_uses_existing_user,
+            preparation_pricing,
         )
     })
     .await
@@ -1215,6 +1264,7 @@ fn prepare_run(
     assistant_message_id: String,
     config: PersistenceActorConfig,
     uses_existing_user: bool,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
 ) -> Result<PreparedRun, ConversationError> {
     #[cfg(not(test))]
     let _ = &config;
@@ -1455,6 +1505,7 @@ fn prepare_run(
             history,
             max_tokens: None,
             completed_tool_results,
+            pricing_catalog,
             tool_config: RuntimeToolConfig::new(
                 match run_mode {
                     ThreadMode::Ask => RuntimeRunMode::Ask,
@@ -2241,7 +2292,18 @@ fn persist_runtime_event(
         RuntimeEvent::UsageUpdated {
             usage,
             cost_microcents,
+            pricing,
         } => {
+            // C5: priced rows carry exact provenance; legacy/unpriced rows
+            // keep NULL columns so zero-cost stays distinguishable.
+            let (pricing_version, pricing_profile, call_started_at) = match pricing {
+                Some(pricing) => (
+                    Some(pricing.version.as_str()),
+                    Some(pricing.profile.as_str()),
+                    Some(pricing.call_started_at),
+                ),
+                None => (None, None, None),
+            };
             token_usage::insert(
                 store.conn(),
                 token_usage::NewTokenUsage {
@@ -2254,6 +2316,9 @@ fn persist_runtime_event(
                     cache_write_tokens: usage.cache_write,
                     cost_microcents: *cost_microcents,
                     created_at: now_ms(),
+                    pricing_version,
+                    pricing_profile,
+                    call_started_at,
                 },
             )?;
         }

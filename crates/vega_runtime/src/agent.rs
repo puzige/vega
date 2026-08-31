@@ -12,6 +12,8 @@ use futures::{FutureExt, StreamExt};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
+use vega_token::{PricingCatalog, PricingProfile};
+
 use crate::error::VegaError;
 use crate::provider::{
     ChatMessage, ChatRequest, ChatRole, ChatToolCall, Provider, ProviderEvent, StopReason,
@@ -184,6 +186,11 @@ pub struct AgentRequest {
     pub completed_tool_results: HashMap<String, CompletedToolCall>,
     /// Tool capability, permission, checkpoint, and exact-rule facts.
     pub tool_config: RuntimeToolConfig,
+    /// Immutable pricing capability frozen at run preflight (S7-T38/C3).
+    ///
+    /// `None` keeps the S4 legacy/unpriced semantics: usage rows persist with
+    /// `cost_microcents = 0` and NULL pricing columns.
+    pub pricing_catalog: Option<PricingCatalog>,
 }
 
 impl fmt::Debug for AgentRequest {
@@ -234,6 +241,25 @@ pub enum RuntimeFinishReason {
     Length,
     /// The task reached [`TOOL_CALL_LIMIT`].
     ToolLimit,
+}
+
+/// Exact pricing provenance stamped by the runtime for one provider call
+/// (S7-T38/C3). Conversation persists these onto the `token_usage` row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeUsagePricing {
+    /// Exact engine version that produced the quote (e.g. `pricing_v1`).
+    pub version: String,
+    /// Rate profile selected by the frozen UTC timestamp.
+    pub profile: String,
+    /// Unix UTC seconds captured at the logical provider call start.
+    pub call_started_at: i64,
+}
+
+fn unix_utc_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 /// Runtime-local token accounting. Conversation converts this into its
@@ -372,12 +398,15 @@ pub enum RuntimeEvent {
     },
     /// Terminal tool result.
     ToolCallFinished(RuntimeToolResult),
-    /// Provider usage with the S4 cost hook fixed at zero.
+    /// Provider usage priced by the frozen run-start catalog (S7-T38).
     UsageUpdated {
         /// Token counts from the provider.
         usage: RuntimeTokenUsage,
-        /// Cost hook placeholder; S7 replaces this with pricing.
+        /// Checked integer cost from the frozen catalog quote (0 for priced
+        /// zero; 0 with no pricing provenance keeps the S4 legacy placeholder).
         cost_microcents: i64,
+        /// Exact pricing provenance; `None` keeps S4 legacy/unpriced rows.
+        pricing: Option<RuntimeUsagePricing>,
     },
     /// Natural/length/limit convergence.
     Finished(RuntimeFinishReason),
@@ -437,10 +466,12 @@ impl fmt::Debug for RuntimeEvent {
             Self::UsageUpdated {
                 usage,
                 cost_microcents,
+                pricing,
             } => formatter
                 .debug_struct("UsageUpdated")
                 .field("usage", usage)
                 .field("cost_microcents", cost_microcents)
+                .field("priced", &pricing.is_some())
                 .finish(),
             Self::Finished(reason) => formatter.debug_tuple("Finished").field(reason).finish(),
             Self::Interrupted => formatter.write_str("Interrupted"),
@@ -576,6 +607,11 @@ where
             ));
         }
 
+        // C3: the logical provider call start is frozen immediately before
+        // the first `chat_stream`; provider-internal HTTP retries reuse this
+        // exact timestamp, later rounds capture a fresh one.
+        let call_started_utc_seconds = unix_utc_seconds();
+        let mut usage_seen = false;
         let chat_request = ChatRequest {
             model: request.model.clone(),
             messages: messages.clone(),
@@ -657,17 +693,121 @@ where
                     cache_read,
                     cache_write,
                 }) => {
+                    // C3: exactly one terminal usage per provider call;
+                    // duplicates and usage-after-terminal fail closed.
+                    if stop_reason.is_some() {
+                        emit!(
+                            events,
+                            sink,
+                            RuntimeEvent::Error(Arc::new(VegaError::Provider {
+                                status: None,
+                                message: "usage event after terminal done".to_string(),
+                                retryable: false,
+                            }))
+                        );
+                        return Ok(outcome(
+                            events,
+                            messages,
+                            final_text,
+                            tool_call_count,
+                            executed_tool_call_count,
+                            false,
+                            true,
+                        ));
+                    }
+                    if usage_seen {
+                        emit!(
+                            events,
+                            sink,
+                            RuntimeEvent::Error(Arc::new(VegaError::Provider {
+                                status: None,
+                                message: "duplicate usage event in one provider call".to_string(),
+                                retryable: false,
+                            }))
+                        );
+                        return Ok(outcome(
+                            events,
+                            messages,
+                            final_text,
+                            tool_call_count,
+                            executed_tool_call_count,
+                            false,
+                            true,
+                        ));
+                    }
+                    usage_seen = true;
+                    let usage = RuntimeTokenUsage {
+                        input,
+                        output,
+                        cache_read,
+                        cache_write,
+                    };
+                    let (cost_microcents, pricing) = match request.pricing_catalog.as_ref() {
+                        Some(catalog) => {
+                            let quote = catalog.quote(
+                                &request.model,
+                                vega_token::UsageCounts {
+                                    input: usage.input,
+                                    output: usage.output,
+                                    cache_read: usage.cache_read,
+                                    cache_write: usage.cache_write,
+                                },
+                                call_started_utc_seconds,
+                            );
+                            match quote {
+                                Ok(quote) => (
+                                    quote.cost_microcents,
+                                    Some(RuntimeUsagePricing {
+                                        version: quote.pricing_version.to_string(),
+                                        profile: match quote.profile {
+                                            PricingProfile::Base => "base".to_string(),
+                                            PricingProfile::PeakUtcWeekly => {
+                                                "peak_utc_weekly".to_string()
+                                            }
+                                        },
+                                        call_started_at: call_started_utc_seconds,
+                                    }),
+                                ),
+                                Err(vega_token::PricingError::ModelNotFound { .. }) => {
+                                    // C3 run preflight: an unpriced model keeps
+                                    // legacy zero-cost semantics (guides the
+                                    // user to Settings) instead of failing the
+                                    // run.
+                                    (0, None)
+                                }
+                                Err(error) => {
+                                    // Invalid usage / overflow fails closed: no
+                                    // zero or partial usage row may be written.
+                                    emit!(
+                                        events,
+                                        sink,
+                                        RuntimeEvent::Error(Arc::new(VegaError::Provider {
+                                            status: None,
+                                            message: format!("usage pricing failed: {error}"),
+                                            retryable: false,
+                                        }))
+                                    );
+                                    return Ok(outcome(
+                                        events,
+                                        messages,
+                                        final_text,
+                                        tool_call_count,
+                                        executed_tool_call_count,
+                                        false,
+                                        true,
+                                    ));
+                                }
+                            }
+                        }
+                        None => (0, None),
+                    };
                     emit!(
                         events,
                         sink,
                         RuntimeEvent::UsageUpdated {
-                            usage: RuntimeTokenUsage {
-                                input,
-                                output,
-                                cache_read,
-                                cache_write,
-                            },
-                            cost_microcents: 0,
+                            usage,
+                            cost_microcents,
+                            pricing,
                         }
                     );
                 }
@@ -2069,6 +2209,7 @@ mod tests {
             max_tokens: None,
             completed_tool_results: HashMap::new(),
             tool_config: RuntimeToolConfig::default(),
+            pricing_catalog: None,
         }
     }
 
@@ -3042,7 +3183,7 @@ mod tests {
             RuntimeEvent::TextDelta(first),
             RuntimeEvent::ThinkingDelta(thinking),
             RuntimeEvent::TextDelta(second),
-            RuntimeEvent::UsageUpdated { usage: RuntimeTokenUsage { input: 5, output: 2, cache_read: 1, cache_write: 0 }, cost_microcents: 0 },
+            RuntimeEvent::UsageUpdated { usage: RuntimeTokenUsage { input: 5, output: 2, cache_read: 1, cache_write: 0 }, cost_microcents: 0, pricing: None },
             RuntimeEvent::Finished(RuntimeFinishReason::End),
         ] if first == "a" && thinking == "reason" && second == "b"));
     }
@@ -3682,5 +3823,206 @@ mod tests {
             outcome.events.last(),
             Some(RuntimeEvent::Finished(RuntimeFinishReason::ToolLimit))
         ));
+    }
+
+    // ─── S7-T38 pricing pipeline ────────────────────────────────────────
+
+    fn priced_catalog() -> PricingCatalog {
+        PricingCatalog::from_specs(vec![vega_token::ModelPricingSpec {
+            model: "quote-model".to_string(),
+            rates: vega_token::RateSpec {
+                input_usd_per_million: "1".to_string(),
+                output_usd_per_million: "2".to_string(),
+                cache_read_usd_per_million: "0.1".to_string(),
+                cache_write_usd_per_million: "0".to_string(),
+            },
+            max_standard_input_tokens: Some(2_000_000),
+            schedule: None,
+        }])
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn priced_usage_carries_exact_quote_provenance() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "fn main() {}\n").unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("answer".into()),
+            ProviderEvent::Usage {
+                input: 200_000,
+                output: 100_000,
+                cache_read: 20_000,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]]);
+        let mut req = request(Vec::new());
+        req.model = "quote-model".to_string();
+        req.pricing_catalog = Some(priced_catalog());
+        let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(!outcome.failed);
+        // $1/1M input, $2/1M output, $0.1/1M cache-read. Rate unit is
+        // micro-cents per 1M tokens ("1" ⇒ 1_000_000 µ¢/1M). Integer engine:
+        // numerator = 180_000*1_000_000 + 100_000*2_000_000 + 20_000*100_000
+        // = 382e9, half-up /1M ⇒ 382_000 µ¢ = $0.382.
+        let expected = 382_000;
+        let matched = outcome.events.iter().any(|event| {
+            matches!(
+                event,
+                RuntimeEvent::UsageUpdated {
+                    usage: RuntimeTokenUsage {
+                        input: 200_000,
+                        output: 100_000,
+                        cache_read: 20_000,
+                        cache_write: 0,
+                    },
+                    cost_microcents,
+                    pricing: Some(RuntimeUsagePricing { version, profile, .. }),
+                } if *cost_microcents == expected
+                    && version == "pricing_v1"
+                    && profile == "base"
+            )
+        });
+        assert!(matched, "priced usage event with exact quote missing");
+    }
+
+    #[tokio::test]
+    async fn duplicate_usage_fails_closed() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "fn main() {}\n").unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![
+            ProviderEvent::Usage {
+                input: 10,
+                output: 2,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Usage {
+                input: 10,
+                output: 2,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]]);
+        let outcome = run_agent(
+            &provider,
+            &tools,
+            request(Vec::new()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(outcome.failed);
+        assert!(
+            outcome
+                .events
+                .iter()
+                .any(|event| matches!(event, RuntimeEvent::Error(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_after_terminal_fails_closed() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "fn main() {}\n").unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+            ProviderEvent::Usage {
+                input: 10,
+                output: 2,
+                cache_read: 0,
+                cache_write: 0,
+            },
+        ])]]);
+        let outcome = run_agent(
+            &provider,
+            &tools,
+            request(Vec::new()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(outcome.failed);
+    }
+
+    #[tokio::test]
+    async fn unpriced_model_keeps_zero_cost_legacy_row() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "fn main() {}\n").unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![
+            ProviderEvent::Usage {
+                input: 40,
+                output: 8,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]]);
+        let mut req = request(Vec::new());
+        req.pricing_catalog = Some(priced_catalog()); // "mock" is not listed
+        let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(!outcome.failed);
+        assert!(outcome.events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::UsageUpdated {
+                cost_microcents: 0,
+                pricing: None,
+                ..
+            }
+        )));
+    }
+
+    #[tokio::test]
+    async fn over_input_limit_fails_closed_without_pricing() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("lib.rs"), "fn main() {}\n").unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![
+            ProviderEvent::Usage {
+                input: 500,
+                output: 2,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]]);
+        let small_cap_catalog = PricingCatalog::from_specs(vec![vega_token::ModelPricingSpec {
+            model: "quote-model".to_string(),
+            rates: vega_token::RateSpec {
+                input_usd_per_million: "1".to_string(),
+                output_usd_per_million: "2".to_string(),
+                cache_read_usd_per_million: "0.1".to_string(),
+                cache_write_usd_per_million: "0".to_string(),
+            },
+            max_standard_input_tokens: Some(200),
+            schedule: None,
+        }])
+        .unwrap();
+        let mut req = request(Vec::new());
+        req.model = "quote-model".to_string(); // small-cap catalog caps at 200
+        req.pricing_catalog = Some(small_cap_catalog);
+        let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(outcome.failed);
     }
 }

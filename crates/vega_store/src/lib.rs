@@ -61,6 +61,7 @@ use rusqlite::{Connection, Transaction, TransactionBehavior};
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_plan_review.sql"),
+    include_str!("../migrations/0003_token_usage_pricing.sql"),
 ];
 
 /// Single-connection SQLite store for the six-table Vega schema.
@@ -200,14 +201,27 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_2() {
+    fn migrated_store_is_wal_at_user_version_3() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 2);
+        assert_eq!(user_version(&store), 3);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .unwrap();
         assert_eq!(journal_mode, "wal");
+        // T38 (C5)：追加列存在且旧行读回 NULL（legacy/unpriced 语义）。
+        let legacy: (Option<String>, Option<String>, Option<i64>) = store
+            .conn()
+            .query_row(
+                "INSERT INTO token_usage (thread_id, model, input_tokens, output_tokens, \
+                        cost_microcents, created_at) \
+                 VALUES ('t', 'm', 1, 2, 0, 3) \
+                 RETURNING pricing_version, pricing_profile, call_started_at",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(legacy, (None, None, None));
     }
 
     #[test]
@@ -216,7 +230,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 2);
+        assert_eq!(user_version(&store), 3);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -252,7 +266,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 2);
+        assert_eq!(user_version(&store), 3);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
