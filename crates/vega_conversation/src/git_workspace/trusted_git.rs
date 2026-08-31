@@ -6042,6 +6042,7 @@ exec /usr/bin/git "$@"
                     pattern: SENTINEL.into(),
                 }],
             ),
+            pricing_catalog: None,
         };
         let agent_outcome = vega_runtime::AgentOutcome {
             events: vec![runtime_event.clone()],

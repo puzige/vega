@@ -684,6 +684,19 @@ pub type RunMode = ThreadMode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Microcents(pub i64);
 
+/// Exact pricing provenance attached to a priced usage event (S7-T38/C3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsagePricing {
+    /// Engine version that priced the row (e.g. `pricing_v1`).
+    pub version: String,
+    /// Rate profile chosen by the frozen UTC timestamp (`base` or
+    /// `peak_utc_weekly`).
+    pub profile: String,
+    /// Unix UTC seconds of the logical provider call start used for the
+    /// quote.
+    pub call_started_at: i64,
+}
+
 /// Provider token counts attached to one API call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TokenUsage {
@@ -1390,8 +1403,12 @@ pub enum ConversationEvent {
         message_id: MessageId,
         /// Provider token counts.
         usage: TokenUsage,
-        /// Integer cost (zero in S4).
+        /// Integer cost (`0` in S4; priced-zero rows keep `0` with
+        /// provenance).
         cost: Microcents,
+        /// Exact pricing provenance (S7-T38); `None` keeps the S4
+        /// legacy/unpriced semantics.
+        pricing: Option<UsagePricing>,
     },
     /// Assistant message converged.
     MessageFinished {
@@ -1455,11 +1472,13 @@ impl std::fmt::Debug for ConversationEvent {
                 message_id,
                 usage,
                 cost,
+                pricing,
             } => formatter
                 .debug_struct("UsageUpdated")
                 .field("message_id_bytes", &message_id.len())
                 .field("usage", usage)
                 .field("cost", cost)
+                .field("priced", &pricing.is_some())
                 .finish(),
             Self::MessageFinished {
                 message_id,
@@ -1566,6 +1585,7 @@ pub(crate) fn from_runtime_event(
         RuntimeEvent::UsageUpdated {
             usage,
             cost_microcents,
+            pricing,
         } => Some(ConversationEvent::UsageUpdated {
             message_id: message_id.to_string(),
             usage: TokenUsage {
@@ -1575,6 +1595,11 @@ pub(crate) fn from_runtime_event(
                 cache_write: usage.cache_write,
             },
             cost: Microcents(*cost_microcents),
+            pricing: pricing.as_ref().map(|pricing| UsagePricing {
+                version: pricing.version.clone(),
+                profile: pricing.profile.clone(),
+                call_started_at: pricing.call_started_at,
+            }),
         }),
         RuntimeEvent::Finished(reason) => Some(ConversationEvent::MessageFinished {
             message_id: message_id.to_string(),
@@ -2648,7 +2673,8 @@ mod tests {
                 message_id,
                 &vega_runtime::RuntimeEvent::UsageUpdated {
                     usage,
-                    cost_microcents: 0
+                    cost_microcents: 0,
+                    pricing: None
                 }
             ),
             Some(ConversationEvent::UsageUpdated {
