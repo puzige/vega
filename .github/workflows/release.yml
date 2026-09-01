@@ -61,8 +61,8 @@ permissions:
 
 jobs:
   release:
-    name: build & publish (macos-14, arm64)
-    runs-on: macos-14 # arm64 — matches the product (Apple Silicon only)
+    name: build & publish (macos-latest, arm64)
+    runs-on: macos-latest # arm64, auto-follows GitHub image updates (owner decision)
     timeout-minutes: 60
     steps:
       - name: Checkout the tag
