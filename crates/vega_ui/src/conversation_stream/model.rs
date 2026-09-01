@@ -11,102 +11,16 @@ pub(crate) struct HistoryHydration {
 /// Menlo 承担，spike 探针同款).
 pub(crate) const MONOFONT: &str = "Menlo";
 
-// ─── anchor state machine (P4, pure & unit-tested) ───────────────────────────
-
-/// Pure anchor state machine (P4): 贴底自动跟随；上翻 >1 屏后不再自动跳转；
-/// 回到底部恢复。
-pub(crate) mod anchor {
-    use super::ANCHOR_EPSILON_PX;
-
-    /// Whether the view currently follows the stream tail.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum AnchorState {
-        /// Pinned to the bottom: new content triggers a jump to the bottom.
-        Following,
-        /// Detached by the user scrolling up more than one viewport: no more
-        /// auto-jumps until the user returns to the bottom.
-        Detached,
-    }
-
-    /// What the view should do this frame.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum AnchorAction {
-        /// Leave the scroll offset alone.
-        StayPut,
-        /// Jump to the bottom (this frame's deferred scroll-to-bottom).
-        StickToBottom,
-    }
-
-    /// Outcome of one anchor step: the (possibly updated) state and action.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct AnchorDecision {
-        pub state: AnchorState,
-        pub action: AnchorAction,
-    }
-
-    /// Initial state: an opened stream starts pinned to the bottom.
-    pub(crate) const INITIAL: AnchorState = AnchorState::Following;
-
-    /// Advances the anchor state machine by one frame.
-    ///
-    /// - `distance_from_bottom_px`: current scroll distance to the document
-    ///   bottom (0 = pinned), from the scroll handle geometry.
-    /// - `viewport_height_px`: visible list height — the "one screen" P4
-    ///   threshold. Non-positive values (layout not run yet) disable the
-    ///   detach rule.
-    /// - `content_grew`: whether new content arrived since the last frame.
-    pub(crate) fn step(
-        state: AnchorState,
-        distance_from_bottom_px: f32,
-        viewport_height_px: f32,
-        content_grew: bool,
-    ) -> AnchorDecision {
-        let at_bottom = distance_from_bottom_px <= ANCHOR_EPSILON_PX;
-        match state {
-            AnchorState::Detached => {
-                if at_bottom {
-                    // 回到底部恢复（P4）。
-                    AnchorDecision {
-                        state: AnchorState::Following,
-                        action: AnchorAction::StickToBottom,
-                    }
-                } else {
-                    AnchorDecision {
-                        state: AnchorState::Detached,
-                        action: AnchorAction::StayPut,
-                    }
-                }
-            }
-            AnchorState::Following => {
-                if viewport_height_px > 0.0 && distance_from_bottom_px > viewport_height_px {
-                    // 上翻超过 1 屏：停止自动跳转（P4）。
-                    AnchorDecision {
-                        state: AnchorState::Detached,
-                        action: AnchorAction::StayPut,
-                    }
-                } else if content_grew {
-                    AnchorDecision {
-                        state: AnchorState::Following,
-                        action: AnchorAction::StickToBottom,
-                    }
-                } else {
-                    AnchorDecision {
-                        state: AnchorState::Following,
-                        action: AnchorAction::StayPut,
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Scroll offset that keeps the viewport anchored at the page boundary after
-/// prepending `prepended_rows` uniform-height rows above the visible content
-/// (S8-T45/C7 页边界保 anchor). The offset grows more negative while
-/// scrolling down, so the exact prepend height is subtracted.
-pub(crate) fn anchored_prepend_offset(current: Pixels, prepended_rows: usize) -> Pixels {
-    current - px(prepended_rows as f32 * ROW_HEIGHT)
-}
+// ─── top-level anchoring (P4, S8-T44) ────────────────────────────────────────
+//
+// The anchor semantics (贴底跟随 / 上翻 detach / 回底 resume) are carried by
+// the pinned GPUI variable-height list itself: `ListState::set_follow_mode
+// (FollowMode::Tail)` auto-scrolls to the end while following, any upward
+// scroll event detaches, and layout re-engages once the viewport returns to
+// within 1px of the bottom — the same epsilon the old pure state machine
+// used (`ANCHOR_EPSILON_PX`). `ConversationStream` only reads
+// `ListState::is_following_tail()` for the header indicator and re-engages
+// explicitly (Tail mode) when a permission prompt must be visible.
 
 /// Pure scroll-up hydration request gate (S8-T45/C7): a page may be requested
 /// only when the viewport is at the top edge, older history exists, no page
@@ -598,7 +512,7 @@ pub(crate) struct StreamCounters {
     pub frames: AtomicU64,
     /// Per-frame element-tree build times, ns (render 回调耗时，spike 口径).
     pub render_ns: Mutex<Vec<u128>>,
-    /// Per-frame visible-row build times, ns (uniform_list range 回调).
+    /// Per-frame visible-row build times, ns (变高 list 的 render_item 回调).
     pub row_build_ns: Mutex<Vec<u128>>,
     /// Committed blocks materialized for the first time.
     pub committed_materializations: AtomicU64,
@@ -639,23 +553,6 @@ impl StreamModel {
     /// Total row count (committed + pending).
     pub(crate) fn row_count(&self) -> usize {
         self.committed_lines.len() + self.pending_lines.len()
-    }
-
-    /// Renders the rows in `range` (per-frame: clone cached lines only, P3).
-    pub(crate) fn rows_in(&self, range: Range<usize>, colors: &ThemeColors) -> Vec<AnyElement> {
-        range
-            .filter_map(|index| self.row(index).map(|line| render_row(line, colors)))
-            .collect()
-    }
-
-    /// Row accessor for `uniform_list`'s range callback.
-    pub(crate) fn row(&self, index: usize) -> Option<&StreamLine> {
-        let committed = self.committed_lines.len();
-        if index < committed {
-            self.committed_lines.get(index)
-        } else {
-            self.pending_lines.get(index - committed)
-        }
     }
 
     /// Reconciles one snapshot: appends new committed blocks, re-materializes

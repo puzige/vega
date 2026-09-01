@@ -1,16 +1,6 @@
 use super::*;
 
 impl ConversationStream {
-    /// Scroll geometry snapshot: (distance to bottom, viewport height) in px.
-    fn scroll_geometry(&self) -> (f32, f32) {
-        let state = self.scroll.0.borrow();
-        let base = &state.base_handle;
-        let max_offset = f32::from(base.max_offset().y);
-        let offset = f32::from(base.offset().y);
-        let viewport = f32::from(base.bounds().size.height);
-        ((max_offset + offset).max(0.0), viewport)
-    }
-
     fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
         cx.emit(OpenWorkspaceDiffRequested {
             thread_id: self.thread.id.clone(),
@@ -44,7 +34,7 @@ impl ConversationStream {
         } else {
             self.thread.title.clone()
         };
-        let following = self.anchor == anchor::AnchorState::Following;
+        let following = self.following_tail();
         let (injected, total) = self
             .injecting
             .as_ref()
@@ -549,28 +539,21 @@ impl Render for ConversationStream {
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
 
-        // 1) 差量同步：每个 assistant 段只有新/失效块被物化（P3）；user 回显
-        //    的行数变化经 rows_dirty 参与锚定判定。
-        let mut content_grew = self.rows_dirty;
-        self.rows_dirty = false;
-        for entry in &mut self.entries {
-            if let StreamEntry::Assistant { stream, model } = entry {
-                let snapshot = stream.snapshot();
-                content_grew |= model.sync(&snapshot, &self.counters);
-            }
+        // 1) 差量同步：仅 mutable tail（流式中的 assistant 段）参与快照
+        //    diff —— 冻结段内容在终结后不再变化，永不重物化（P3/C4 白名
+        //    单）；尾项高度可能随内容变化 → 显式失效重测。user 回显等行数
+        //    变化在各自的 apply 路径上已登记。
+        if let Some((_, index)) = self.active_agent_message.as_ref()
+            && let Some(StreamEntry::Assistant { stream, model }) = self.entries.get_mut(*index)
+        {
+            let snapshot = stream.snapshot();
+            model.sync(&snapshot, &self.counters);
+            self.invalidate_item(Some(*index));
         }
 
-        // 2) 锚定跟随（P4）：贴底自动跟随，上翻 >1 屏停止，回底恢复。
-        let (distance, viewport) = self.scroll_geometry();
-        let decision = anchor::step(self.anchor, distance, viewport, content_grew);
-        self.anchor = decision.state;
-        if decision.action == anchor::AnchorAction::StickToBottom {
-            self.scroll.scroll_to_bottom();
-        }
-
-        // 3) 顶部水合请求（S8-T45/C7）：视口到达顶部且仍存在更早历史时，
-        //    向 app 层请求上一页（typed 投影返回后 prepend）。本 crate 零
-        //    SQLite；一页在飞，失败暂停直到离开顶部，不产生请求风暴。
+        // 2) 顶部水合请求（S8-T45/C7）：视口到达顶部且仍存在更早历史时，
+        //    向 app 层请求上一页（typed 投影返回后 splice 前插，页边界保
+        //    anchor）。本 crate 零 SQLite；一页在飞，失败暂停直到离开顶部。
         let at_top = self.scroll_at_top();
         if self.hydration_pause_is_stale(at_top) {
             self.hydration.paused = false;
@@ -583,8 +566,7 @@ impl Render for ConversationStream {
             });
         }
 
-        let rows = self.total_rows(cx);
-        let body: AnyElement = if rows == 0 {
+        let body: AnyElement = if self.entries.is_empty() {
             // §4.6 空态：内存态会话从演示注入或 Composer 开始。
             div()
                 .size_full()
@@ -601,19 +583,25 @@ impl Render for ConversationStream {
                 .size_full()
                 .overflow_hidden()
                 .child(
-                    uniform_list(
-                        "conversation-stream",
-                        rows,
+                    list(
+                        self.list.clone(),
                         cx.processor(
-                            move |this: &mut ConversationStream,
-                                  range: Range<usize>,
-                                  window,
-                                  cx| {
-                                build_entry_rows(&this.entries, range, &this.counters, window, cx)
+                            move |this: &mut ConversationStream, index: usize, window, cx| {
+                                let entry = this.entries.get(index);
+                                match entry {
+                                    Some(entry) => {
+                                        let row_t0 = Instant::now();
+                                        let item = render_entry(entry, &this.counters, window, cx);
+                                        if let Ok(mut samples) = this.counters.row_build_ns.lock() {
+                                            samples.push(row_t0.elapsed().as_nanos());
+                                        }
+                                        item
+                                    }
+                                    None => div().into_any_element(),
+                                }
                             },
                         ),
                     )
-                    .track_scroll(&self.scroll)
                     .h_full()
                     .w_full(),
                 )

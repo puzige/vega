@@ -37,15 +37,18 @@ impl ConversationStream {
         ) {
             return false;
         }
-        cx.observe(&card, |this, _, cx| {
-            this.rows_dirty = true;
+        cx.observe(&card, |this, card, cx| {
+            let index = this.entry_index_where(
+                |entry| matches!(entry, StreamEntry::Artifact { card: owned } if owned == &card),
+            );
+            this.invalidate_item(index);
             cx.notify();
         })
         .detach();
         self.entries
             .insert(index + 1, StreamEntry::Artifact { card: card.clone() });
+        self.list_insert(index + 1);
         self.artifact_cards.insert(call_id.to_owned(), card);
-        self.rows_dirty = true;
         cx.notify();
         true
     }
@@ -91,6 +94,7 @@ impl ConversationStream {
             stream: Box::new(MarkdownStream::new()),
             model: StreamModel::default(),
         });
+        self.list_append(entry_index);
         self.injecting = Some(InjectionState {
             entry_index,
             replay: MockReplay::new(&sample_document(200), INJECT_RATE, 0x5EED),
@@ -175,10 +179,11 @@ impl ConversationStream {
         }
         let block_id = self.user_block_seq;
         self.user_block_seq += 1;
+        let index = self.entries.len();
         self.entries.push(StreamEntry::User {
             lines: user_message_lines(block_id, content),
         });
-        self.rows_dirty = true;
+        self.list_append(index);
         cx.notify();
     }
 

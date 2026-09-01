@@ -1,8 +1,10 @@
-//! Virtualized conversation stream (S3-T18): message-block UI over a
-//! [`vega_markdown::MarkdownStream`] — a `uniform_list` of uniform-height
-//! rows with anchored tail-following, a Composer (multi-line input + send)
-//! for local user echoes, and the S3 demo injection driven by the public
-//! mock replayer ([`vega_markdown::MockReplay`]).
+//! Virtualized conversation stream (S3-T18 → S8-T44): message-block UI over
+//! a [`vega_markdown::MarkdownStream`] — a variable-height `list` of
+//! semantic items (one item = one user/assistant/tool/permission/plan/
+//! artifact/summary entry at natural height) with native tail-following, a
+//! Composer (multi-line input + send) for local user echoes, and the S3 demo
+//! injection driven by the public mock replayer
+//! ([`vega_markdown::MockReplay`]).
 //!
 //! Layering (tech-spec §5.1/§5.3 — the self-built parts of this card):
 //!
@@ -17,8 +19,9 @@
 //!     │                                              highlight via T16)
 //!     └─ pending tail block                        ─▶ light re-flatten,
 //!                                                    plain monospace
-//! uniform_list(range) ─▶ per-frame rows built by cloning StreamLines
-//!                        (frozen rows never re-materialize — P3)
+//! list(item_ix) ─▶ per-item natural-height elements built by cloning cached
+//!                  StreamLines (frozen items never re-materialize — P3;
+//!                  the mutable tail re-measures via explicit invalidation)
 //! ```
 //!
 //! - **消息块结构 (T18)**: the stream is a list of [`StreamEntry`]s — user
@@ -42,8 +45,12 @@
 //!   disables send. A send appends a user entry (local echo, no LLM).
 //! - **动效禁令 (tech-spec §5.4)**: streaming nodes get NO entrance
 //!   animation — none is introduced anywhere in this pipeline.
-//! - Rows are single logical lines at a fixed height (the `uniform_list`
-//!   contract); long lines truncate. Block types map per ui-spec §3 tokens.
+//! - **变高虚拟化 (S8-T44/C4)**: the top-level conversation is a GPUI
+//!   variable-height `list`; one item per semantic entry at natural height.
+//!   Text wraps (CJK/emoji/inline code included) — no content is ever
+//!   truncated to force a height. 24px remains only inside cards' compact
+//!   subrows (diff lines, card lines, C4 rule 1). The P4 anchor is the
+//!   list's native Tail follow (贴底跟随 / 上翻 detach / 回底 resume).
 //!
 //! The stream is memory-only (S3 has no message persistence): opening a
 //! thread constructs empty entries; restarting clears the conversation.
@@ -51,15 +58,15 @@
 pub mod bench;
 
 use std::collections::HashMap;
-use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, FontWeight, MouseButton,
-    MouseUpEvent, Pixels, Render, Rgba, Window, actions, div, point, px, uniform_list,
+    AbsoluteLength, AnyElement, App, Context, DefiniteLength, Entity, EventEmitter, FocusHandle,
+    FontStyle, FontWeight, MouseButton, MouseUpEvent, Pixels, Render, Rgba, StrikethroughStyle,
+    StyledText, TextRun, TextStyle, UnderlineStyle, Window, actions, div, list, px,
 };
 use vega_conversation::agent::PermissionQueue;
 use vega_conversation::history::{HistoryEntry, HistoryPage};
@@ -102,14 +109,15 @@ actions!(
     ]
 );
 
-/// Uniform row height (logical px). A `uniform_list` requires one fixed item
-/// height for every row; 24px comfortably fits the 14px/1.6 message body line
-/// (22.4px) and the 12.5px code line mandated by ui-spec §3.
-pub(crate) const ROW_HEIGHT: f32 = 24.0;
-
 /// Distance from the bottom (px) below which the view still counts as pinned
-/// (absorbs sub-pixel wheel residue).
+/// (native tail-follow resume tolerance; mirrors the list's own 1px bottom
+/// test and the old anchor machine's epsilon).
 pub(crate) const ANCHOR_EPSILON_PX: f32 = 1.0;
+
+/// Compact-subrow height (logical px, C4 rule 1): diff lines, card-internal
+/// lines and other genuinely uniform secondary rows. The top-level
+/// conversation list is variable-height and never uses this value.
+pub(crate) const ROW_HEIGHT: f32 = 24.0;
 
 /// Demo injection pacing: the 16ms tick polls; the injected count follows
 /// `INJECT_RATE × elapsed` (≈500 δ/s 任务卡口径，自校正抵消主线程抖动).

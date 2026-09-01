@@ -1,7 +1,8 @@
-//! Self-measurement mode for `xtask bench render_frame` (S3-T17): the hidden
-//! `--vega-bench-render <out.json>` flag boots a real GPUI window running the
-//! conversation-stream machinery against a ~10k-row synthetic document, then
-//! writes the measured JSON report and quits.
+//! Self-measurement mode for `xtask bench render_frame` (S3-T17 → S8-T44):
+//! the hidden `--vega-bench-render <out.json>` flag boots a real GPUI window
+//! running the conversation-stream machinery against a ~10k-item variable-
+//! height semantic document (markdown / wrapped CJK / emoji / code / all
+//! card kinds), then writes the measured JSON report and quits.
 //!
 //! Mechanism note (task-card decision): `#[gpui::test]` frame timing was
 //! evaluated first, but at this gpui rev tests run on `TestPlatform` with
@@ -14,11 +15,12 @@
 //! Phases:
 //!   SCROLL (8s): programmatic scroll at 720 px/s → P1 fps (vsync-capped).
 //!   STREAM (12s): ~500 δ/s injection at the tail, viewport parked on frozen
-//!                 rows → frozen re-materializations must stay 0 (P3).
+//!                 items → frozen re-materializations must stay 0 (P3).
 //!
 //! Everything runs through the production path ([`super`]) — the same
-//! [`MarkdownStream`] pipeline, [`StreamModel`] diffing, and row rendering the
-//! app uses.
+//! variable-height `list`, [`StreamModel`] diffing, and semantic item
+//! rendering the app uses. Old 24px uniform-list numbers are noncomparable
+//! (SDD §5: the P1 baseline follows the variable-height semantics).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,20 +28,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
-use gpui::{
-    App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, div, point, px, uniform_list,
+use gpui::{App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, div, px};
+use vega_conversation::types::{
+    Plan, PlanStatus, ReadOnlyToolKind, SummaryCost, TaskCostSummary, TaskSummaryOutcome,
+    ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
 };
 use vega_markdown::{MarkdownStream, split_deltas};
-use vega_theme::Theme;
 
-use super::{INJECT_TICK, StreamCounters, StreamModel, build_rows, sample_document};
+use super::{INJECT_TICK, StreamCounters, StreamEntry, StreamModel, render_entry};
+
+use crate::plan_card::PlanCard;
+use crate::summary_card::SummaryCard;
+use crate::tool_card::ToolCard;
 
 /// Probe phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     /// Programmatic scroll over the fully-built document.
     Scroll,
-    /// Tail injection with the viewport parked on frozen rows.
+    /// Tail injection with the viewport parked on frozen items.
     Stream,
     /// Measurement finished; report written, app quitting.
     Done,
@@ -48,10 +55,12 @@ enum Phase {
 const SCROLL_SECONDS: u64 = 8;
 const STREAM_SECONDS: u64 = 12;
 const SCROLL_SPEED_PX_S: f32 = 720.0;
-/// Where the viewport parks for the STREAM phase (row ~41; tail ~10k rows away).
+/// Where the viewport parks for the STREAM phase (~1000px into the document;
+/// the streaming tail stays far away among the frozen items).
 const PARK_OFFSET_Y: f32 = 1000.0;
-/// ~450 rows per 200-block sample copy → 24 copies ≈ 10.8k rows.
-const DOC_SAMPLE_COPIES: usize = 24;
+/// C6 scenario size: 10k mixed semantic items (markdown/wrapped CJK/emoji/
+/// code/all card kinds), one GPUI `list` item per [`StreamEntry`].
+const ITEM_COUNT: usize = 10_000;
 /// Injection target rate during STREAM (δ/s，与演示注入同口径).
 const INJECT_RATE: usize = 500;
 
@@ -67,8 +76,8 @@ pub fn output_path_from_args() -> Option<PathBuf> {
 /// window, and starts the phase drivers. Called by the `vega` binary (which
 /// owns the `application().run` boot) instead of the normal app startup.
 pub fn start(output: PathBuf, cx: &mut App) {
-    // Bench 模式不经过主应用启动路径：单独注册 light 主题供行渲染取 token。
-    cx.set_global(Theme::light());
+    // Bench 模式不经过主应用启动路径：单独注册 light 主题供 item 渲染取 token。
+    cx.set_global(vega_theme::Theme::light());
     let bounds = Bounds::centered(None, gpui::size(px(1200.0), px(800.0)), cx);
     let window = cx.open_window(
         WindowOptions {
@@ -93,7 +102,7 @@ pub fn start(output: PathBuf, cx: &mut App) {
 #[derive(Default)]
 struct PhaseMeasurements {
     render_ns: Vec<u128>,
-    row_ns: Vec<u128>,
+    item_ns: Vec<u128>,
     fps: Vec<u64>,
     frames: u64,
 }
@@ -128,19 +137,18 @@ impl PhaseMeasurements {
             "frames": self.frames,
             "frame_build_p50_us": percentile_us(&self.render_ns, 50),
             "frame_build_p99_us": percentile_us(&self.render_ns, 99),
-            "row_build_p50_us": percentile_us(&self.row_ns, 50),
-            "row_build_p99_us": percentile_us(&self.row_ns, 99),
+            "item_build_p50_us": percentile_us(&self.item_ns, 50),
+            "item_build_p99_us": percentile_us(&self.item_ns, 99),
         })
     }
 }
 
-/// The probe root view: the same stream/model/row machinery as
+/// The probe root view: the same entries/list/item machinery as
 /// [`super::ConversationStream`], driven by programmatic scroll + injection.
 struct BenchStreamView {
-    stream: MarkdownStream,
-    model: StreamModel,
+    entries: Vec<StreamEntry>,
     counters: Arc<StreamCounters>,
-    scroll: gpui::UniformListScrollHandle,
+    list: gpui::ListState,
     phase: Phase,
     started: Instant,
     /// When the STREAM phase began (injection-rate baseline).
@@ -151,9 +159,9 @@ struct BenchStreamView {
     deltas: Vec<String>,
     cursor: usize,
     deltas_injected: AtomicU64,
-    /// Whether the stream received deltas since the last sync (renders skip
-    /// the snapshot diff while clean — the SCROLL phase stays allocation-free).
-    dirty: bool,
+    /// Whether the tail received deltas since the last sync (renders skip the
+    /// snapshot diff while clean — the SCROLL phase stays allocation-free).
+    tail_dirty: bool,
     scroll_stats: PhaseMeasurements,
     stream_stats: PhaseMeasurements,
     /// Per-second counter deltas for the report's `per_second` array.
@@ -161,40 +169,183 @@ struct BenchStreamView {
     output: PathBuf,
 }
 
+/// One mixed markdown turn (paragraphs with CJK/emoji/inline styles, a list).
+fn markdown_turn(index: usize) -> String {
+    let emoji = ["✅", "🚀", "📌", "🌊"][index % 4];
+    format!(
+        "## 转次 {index}：混排流式 {emoji}\n\n\
+         段落 {index} 带 **加粗**、*斜体*、`行内代码` 与 CJK 混排；\
+         中文与 English 交错换行时应自然折行，{emoji} 计入显示宽度。\n\n\
+         - 任务甲 {index}\n- [x] 已完成项 {emoji}\n  - 嵌套项 `code`\n\n"
+    )
+}
+
+/// One code turn (a fenced rust block; committed blocks highlight via T16).
+fn code_turn(index: usize) -> String {
+    format!(
+        "```rust\nfn bench_{index}() -> u64 {{\n    let value = {index} * 42;\n    // 中文注释 {index}\n    value\n}}\n```\n\n"
+    )
+}
+
+/// One table turn (CJK-width-padded GFM table).
+fn table_turn(index: usize) -> String {
+    format!(
+        "| 列 A {index} | 列 B | 列 C |\n|:--|:-:|--:|\n| 1 | 中文数据 {index} | 3 |\n| 4 | 🚀 | 6 |\n\n"
+    )
+}
+
+/// One long wrapped-CJK paragraph turn (exercises natural item reflow; the
+/// content must appear in full — C4 禁截断).
+fn wrapped_cjk_turn(index: usize) -> String {
+    format!(
+        "长段落 {index}：这一段用于验证变高 item 在窗口宽度变化时的自然折行。\
+         中文与 English 混排需要保持稳定，CJK 计两列宽；内容完整呈现，\
+         不允许以截断凑高度（C4）。变高几何下每一行都应完整出现在 item 内，\
+         且滚动锚点漂移小于 1px。段落编号 {index} 结束。"
+    )
+}
+
+fn user_echo(index: usize) -> String {
+    format!("帮我看看第 {index} 段的输出 ✅")
+}
+
+fn user_echo_entry(index: usize, seq: u64) -> StreamEntry {
+    let block_id = u64::MAX - (1 << 32) + seq;
+    StreamEntry::User {
+        lines: super::user_message_lines(block_id, &user_echo(index)),
+    }
+}
+
+fn finished_assistant(doc: &str, counters: &StreamCounters) -> StreamEntry {
+    let mut stream = MarkdownStream::new();
+    stream.append(doc);
+    stream.finish();
+    let mut model = StreamModel::default();
+    model.sync(&stream.snapshot(), counters);
+    StreamEntry::Assistant {
+        stream: Box::new(stream),
+        model,
+    }
+}
+
+/// Builds the 10k mixed semantic fixture: markdown turns (CJK/emoji/inline
+/// styles), code turns, table turns, wrapped-CJK turns, user echoes, tool
+/// cards, plan cards, and summary cards. Every assistant model syncs eagerly
+/// so the first frame renders full natural heights (S8-T45 hydration 同语义).
+fn build_mixed_entries(count: usize, cx: &mut Context<BenchStreamView>) -> Vec<StreamEntry> {
+    let counters = StreamCounters::default();
+    let mut entries: Vec<StreamEntry> = Vec::with_capacity(count + 1);
+    let mut user_seq = 0u64;
+    for index in 0..count {
+        match index % 25 {
+            0..=8 => entries.push(finished_assistant(&markdown_turn(index), &counters)),
+            9..=11 => entries.push(finished_assistant(&code_turn(index), &counters)),
+            12..=14 => entries.push(finished_assistant(&table_turn(index), &counters)),
+            15..=17 => entries.push(finished_assistant(&wrapped_cjk_turn(index), &counters)),
+            18..=19 => {
+                entries.push(user_echo_entry(index, user_seq));
+                user_seq += 1;
+            }
+            // Tool card: terminal read-only projection with bounded output.
+            20 => {
+                let card = cx.new(|_| {
+                    ToolCard::hydrated(
+                        Some(ToolCardInputProjection::ReadOnly {
+                            tool: ReadOnlyToolKind::Read,
+                        }),
+                        ToolCallStatus::Success,
+                        None,
+                        Some(ToolCardResultProjection::ReadOnly {
+                            status: ToolCallStatus::Success,
+                            output: format!("tool output {index}\nline two ✅\nline three"),
+                            reused: false,
+                        }),
+                    )
+                });
+                entries.push(StreamEntry::Tool { card });
+            }
+            // Plan card every 100 items; user echo otherwise.
+            21 if index % 100 == 21 => {
+                let card = cx.new(|cx| {
+                    PlanCard::new(
+                        Plan {
+                            id: format!("bench-plan-{index}"),
+                            thread_id: "bench".into(),
+                            content: markdown_turn(index),
+                            status: PlanStatus::Approved,
+                            review_note: None,
+                            reviewed_at: Some(1),
+                        },
+                        cx,
+                    )
+                });
+                entries.push(StreamEntry::Plan { card });
+            }
+            21 => {
+                entries.push(user_echo_entry(index, user_seq));
+                user_seq += 1;
+            }
+            // Summary card every 100 items; user echo otherwise.
+            22 if index % 100 == 22 => {
+                let card = cx.new(|_| {
+                    SummaryCard::new(TaskCostSummary {
+                        message_id: format!("bench-summary-{index}"),
+                        outcome: TaskSummaryOutcome::Completed,
+                        usage: None,
+                        cost: SummaryCost::Unavailable,
+                        duration_ms: Some(1_200),
+                        tool_count: 1,
+                        cache_hit_percent: None,
+                    })
+                });
+                entries.push(StreamEntry::Summary { card });
+            }
+            22 => {
+                entries.push(user_echo_entry(index, user_seq));
+                user_seq += 1;
+            }
+            _ => entries.push(finished_assistant(&wrapped_cjk_turn(index), &counters)),
+        }
+    }
+    entries
+}
+
 impl BenchStreamView {
     fn new(output: PathBuf, cx: &mut Context<Self>) -> Self {
+        // 预构建 10k 混合语义项：每项经真实 MarkdownStream + StreamModel
+        // 管线物化（C6 场景：markdown/wrapped CJK/emoji/代码/全卡型）。
+        // 末尾再追加一条专门的 streaming tail assistant turn。
+        let mut entries = build_mixed_entries(ITEM_COUNT, cx);
+        entries.push(finished_assistant(
+            &markdown_turn(ITEM_COUNT),
+            &StreamCounters::default(),
+        ));
+        let deltas = split_deltas(&markdown_turn(ITEM_COUNT + 1), 0x5EED);
+
+        let list = gpui::ListState::new(entries.len(), gpui::ListAlignment::Top, px(600.0))
+            .with_uniform_item_height(px(48.0));
+        // SCROLL 阶段为纯程序化滚动：关闭原生 tail follow，防止首帧吸附到
+        // 底部；STREAM 阶段视口停在冻结区，注入由显式失效驱动。
+        list.set_follow_mode(gpui::FollowMode::Normal);
+
         let mut view = Self {
-            stream: MarkdownStream::new(),
-            model: StreamModel::default(),
+            entries,
             counters: Arc::new(StreamCounters::default()),
-            scroll: gpui::UniformListScrollHandle::new(),
+            list,
             phase: Phase::Scroll,
             started: Instant::now(),
             stream_started: None,
             last_tick: Instant::now(),
             scroll_y: 0.0,
-            deltas: Vec::new(),
+            deltas,
             cursor: 0,
             deltas_injected: AtomicU64::new(0),
-            dirty: true,
+            tail_dirty: false,
             scroll_stats: PhaseMeasurements::default(),
             stream_stats: PhaseMeasurements::default(),
             samples: Vec::new(),
             output,
         };
-
-        // 预构建 ~10k 行文档：同步喂入真实 MarkdownStream 管线（spike 方法）。
-        // 同一份文档再切一份 delta 作为 STREAM 阶段的注入载荷（500 δ/s × 12s
-        // 需 6000 δ，~277KB 文档足够覆盖）。
-        let sample = sample_document(200);
-        let mut doc = String::with_capacity(sample.len() * DOC_SAMPLE_COPIES);
-        for _ in 0..DOC_SAMPLE_COPIES {
-            doc.push_str(&sample);
-        }
-        for delta in split_deltas(&doc, 0x5EED) {
-            view.stream.append(&delta);
-        }
-        view.deltas = split_deltas(&doc, 0x5EED);
         view.deltas.shrink_to_fit();
 
         // 帧驱动：滚动步进 + 阶段切换（1ms tick，spike 同款）。
@@ -242,6 +393,8 @@ impl BenchStreamView {
 
         // 尾部注入：仅 STREAM 阶段，目标 ~500 δ/s。定时器节拍受主线程帧循环
         // 影响会抖动，这里按「应注入目标数 = 速率 × 已流时间」自校正补齐。
+        // 注入直接写入最后一个 assistant item 自己的 MarkdownStream（生产
+        // 语义：TextDelta → stream.append）。
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(INJECT_TICK).await;
@@ -257,13 +410,20 @@ impl BenchStreamView {
                         let target = (elapsed * INJECT_RATE as f64) as usize;
                         let target = target.min(this.deltas.len());
                         if this.cursor < target {
-                            for delta in &this.deltas[this.cursor..target] {
-                                this.stream.append(delta);
+                            {
+                                let Some(StreamEntry::Assistant { stream, .. }) =
+                                    this.entries.last_mut()
+                                else {
+                                    return false;
+                                };
+                                for delta in &this.deltas[this.cursor..target] {
+                                    stream.append(delta);
+                                }
                             }
                             let added = (target - this.cursor) as u64;
                             this.cursor = target;
                             this.deltas_injected.fetch_add(added, Ordering::Relaxed);
-                            this.dirty = true;
+                            this.tail_dirty = true;
                             cx.notify();
                         }
                         true
@@ -309,7 +469,7 @@ impl BenchStreamView {
                         previous = (frames, frozen, pending, deltas);
                         let done = this.phase == Phase::Done;
                         if done {
-                            this.write_report();
+                            this.write_report(cx);
                             cx.quit();
                         }
                         done
@@ -325,22 +485,44 @@ impl BenchStreamView {
         view
     }
 
-    fn set_scroll_y(&self, y: f32) {
-        self.scroll
-            .0
-            .borrow()
-            .base_handle
-            .set_offset(point(px(y), px(0.0)));
+    /// Programmatic scroll to an absolute pixel offset via the list's own
+    /// scroll API (unmeasured items keep their height hint until first paint;
+    /// measured heights take over as items render).
+    fn set_scroll_y(&mut self, y: f32) {
+        let current = -f32::from(self.list.scroll_px_offset_for_scrollbar().y);
+        let distance = y - current;
+        if distance != 0.0 {
+            self.list.scroll_by(px(distance));
+        }
     }
 
-    fn write_report(&self) {
+    /// 差量同步：仅 mutable tail（最后一个 assistant item）参与快照 diff
+    /// （P3/C4 白名单）；冻结段永不重物化。
+    fn sync_tail(&mut self) {
+        if !self.tail_dirty {
+            return;
+        }
+        let index = self.entries.len().saturating_sub(1);
+        let Some(StreamEntry::Assistant { stream, model }) = self.entries.last_mut() else {
+            return;
+        };
+        let snapshot = stream.snapshot();
+        model.sync(&snapshot, &self.counters);
+        self.list.remeasure_items(index..index + 1);
+        self.tail_dirty = false;
+    }
+
+    fn write_report(&self, cx: &App) {
+        let subrow_count: usize = self.entries.iter().map(|entry| entry.row_count(cx)).sum();
         let report = serde_json::json!({
             "timestamp": unix_ms(),
             "mode": "probe_binary",
             "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
             "vsync_capped": true,
-            "row_count": self.model.row_count(),
-            "committed_blocks": self.stream.snapshot().blocks.len(),
+            "row_count": self.entries.len(),
+            "item_count": self.entries.len(),
+            "subrow_count": subrow_count,
+            "committed_blocks": self.committed_blocks(),
             "deltas_injected": self.deltas_injected.load(Ordering::Relaxed),
             "committed_materializations": self
                 .counters
@@ -370,6 +552,16 @@ impl BenchStreamView {
                 "vega --vega-bench-render: failed to write report");
         }
     }
+
+    fn committed_blocks(&self) -> usize {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                StreamEntry::Assistant { stream, .. } => Some(stream.snapshot().blocks.len()),
+                _ => None,
+            })
+            .sum()
+    }
 }
 
 impl Render for BenchStreamView {
@@ -378,14 +570,10 @@ impl Render for BenchStreamView {
         let colors = vega_theme::theme(cx).colors;
 
         // 差量同步：仅在收到新 delta 时执行（SCROLL 阶段保持零分配帧）；
-        // STREAM 阶段每次注入只物化 pending 尾块（P3）。
-        if self.dirty {
-            let snapshot = self.stream.snapshot();
-            self.model.sync(&snapshot, &self.counters);
-            self.dirty = false;
-        }
+        // STREAM 阶段每次注入只物化 mutable tail 的新块（P3/C4 白名单）。
+        self.sync_tail();
 
-        let rows = self.model.row_count();
+        let list = self.list.clone();
         let element = div()
             .size_full()
             .bg(colors.bg_base)
@@ -396,32 +584,22 @@ impl Render for BenchStreamView {
                     .size_full()
                     .overflow_hidden()
                     .child(
-                        uniform_list(
-                            "bench-stream",
-                            rows,
+                        gpui::list(
+                            list,
                             cx.processor(
-                                move |this: &mut BenchStreamView,
-                                      range: std::ops::Range<usize>,
-                                      _window,
-                                      cx| {
-                                    let row_t0 = Instant::now();
-                                    let rows = build_rows(&this.model, range, &this.counters, cx);
-                                    match this.phase {
-                                        Phase::Scroll => this
-                                            .scroll_stats
-                                            .row_ns
-                                            .push(row_t0.elapsed().as_nanos()),
-                                        Phase::Stream => this
-                                            .stream_stats
-                                            .row_ns
-                                            .push(row_t0.elapsed().as_nanos()),
-                                        Phase::Done => {}
-                                    }
-                                    rows
+                                move |this: &mut BenchStreamView, index: usize, window, cx| {
+                                    let item_t0 = Instant::now();
+                                    let item = match this.entries.get(index) {
+                                        Some(entry) => {
+                                            render_entry(entry, &this.counters, window, cx)
+                                        }
+                                        None => div().into_any_element(),
+                                    };
+                                    this.record_item_build(item_t0);
+                                    item
                                 },
                             ),
                         )
-                        .track_scroll(&self.scroll)
                         .h_full()
                         .w_full(),
                     ),
@@ -447,6 +625,17 @@ impl Render for BenchStreamView {
             Phase::Done => {}
         }
         element
+    }
+}
+
+impl BenchStreamView {
+    fn record_item_build(&mut self, started: Instant) {
+        let elapsed = started.elapsed().as_nanos();
+        match self.phase {
+            Phase::Scroll => self.scroll_stats.item_ns.push(elapsed),
+            Phase::Stream => self.stream_stats.item_ns.push(elapsed),
+            Phase::Done => {}
+        }
     }
 }
 

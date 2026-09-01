@@ -310,3 +310,75 @@ async fn task_summary_card_appends_once_and_ignores_duplicates(cx: &mut TestAppC
     assert!(text.contains("耗时 12.4s"));
     assert!(text.contains("工具 2 · 缓存命中 33%"));
 }
+
+#[gpui::test]
+async fn batch_finished_flush_materializes_the_final_committed_tail(cx: &mut TestAppContext) {
+    // S8-T44 review P1-1: a batched ingress tail [TextDelta…, MessageFinished]
+    // must materialize the frozen committed tail in finish_agent_message
+    // itself — render's sync only covers the *active* turn, which is already
+    // taken by the time the next frame runs.
+    let (_window, stream, _) = open_controller_stream(cx, "batch-finish");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "assistant".into(),
+                seq: 2,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: "assistant".into(),
+                delta: "```rust\nfn tail() {}\n```".into(),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::MessageFinished {
+                message_id: "assistant".into(),
+                stop_reason: vega_conversation::types::ConversationStopReason::End,
+            },
+            cx,
+        );
+    });
+    let (frozen, committed, last_text, tail_kind) = stream.read_with(cx, |stream, _| {
+        let index = match stream.active_agent_message.as_ref() {
+            Some((_, index)) => *index,
+            None => stream
+                .last_finished_agent_message
+                .as_ref()
+                .map(|(_, index)| *index)
+                .expect("the finished turn stays booked"),
+        };
+        match &stream.entries[index] {
+            StreamEntry::Assistant { model, .. } => {
+                let lines = &model.committed_lines;
+                (
+                    stream
+                        .counters
+                        .frozen_rematerializations
+                        .load(Ordering::Relaxed),
+                    stream
+                        .counters
+                        .committed_materializations
+                        .load(Ordering::Relaxed),
+                    lines
+                        .last()
+                        .map(|line| {
+                            line.spans
+                                .iter()
+                                .map(|span| span.text.as_str())
+                                .collect::<String>()
+                        })
+                        .unwrap_or_default(),
+                    lines.last().map(|line| line.kind),
+                )
+            }
+            _ => panic!("the finished entry is an assistant turn"),
+        }
+    });
+    assert_eq!(frozen, 0, "finish materialization is not a frozen remat");
+    assert!(committed >= 1, "the final tail block was materialized");
+    assert_eq!(tail_kind, Some(LineKind::Code), "the tail block froze");
+    assert_eq!(last_text, "fn tail() {}", "the closing fence line survives");
+}

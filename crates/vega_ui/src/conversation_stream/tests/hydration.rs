@@ -91,15 +91,13 @@ async fn scroll_up_page_prepends_and_keeps_streaming_turn_on_target(cx: &mut Tes
             cx,
         );
     });
-    let (kinds, live_text, cursor) = stream.read_with(cx, |stream, cx| {
+    let (kinds, live_text, cursor) = stream.read_with(cx, |stream, _| {
         let kinds = hydrated_entry_kinds(stream);
         let live_text = stream
             .entries
             .last()
             .map(|entry| match entry {
-                StreamEntry::Assistant { model, .. } => model
-                    .rows_in(0..model.row_count(), &vega_theme::theme(cx).colors)
-                    .len(),
+                StreamEntry::Assistant { model, .. } => model.row_count(),
                 _ => 0,
             })
             .unwrap_or(0);
