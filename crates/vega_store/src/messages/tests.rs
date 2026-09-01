@@ -675,7 +675,7 @@ fn page_read_issues_constant_statements_regardless_of_row_count() {
 }
 
 #[test]
-fn page_and_tool_batch_observe_one_snapshot() {
+fn page_and_tool_batch_read_on_one_fresh_snapshot() {
     // A second connection writes between the page read and its tool batch;
     // the page API must never surface the mixed state, so the newest page
     // cannot gain tool rows that its own snapshot did not contain.

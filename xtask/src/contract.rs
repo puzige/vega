@@ -127,6 +127,10 @@ pub const C6_LITERAL_120FPS_MIN_HZ: f64 = 120.0;
 
 pub const STATUS_PERFORMANCE_GATE_FAILED: &str = "performance gate failed";
 pub const STATUS_HARDWARE_PENDING: &str = "hardware pending";
+/// The only §1 pass-shaped word allowed in the bench context: the xtask
+/// short runs measure a deterministic mock/temp-home fixture, so a passing
+/// gate is a fixture pass — never terminal evidence (T48/T49 own the soak).
+pub const STATUS_ENGINEERING_FIXTURE_PASSED: &str = "engineering fixture passed";
 
 // ─── frozen math ─────────────────────────────────────────────────────────────
 

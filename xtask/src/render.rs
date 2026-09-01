@@ -67,8 +67,21 @@ pub fn measure_render_margin(
     prov: &crate::provenance::Provenance,
 ) -> Result<RenderMargin> {
     let _ = workspace;
+    // C3 isolation: the probe runs under a throwaway temp HOME exactly like
+    // the C1/P2 probes (`protocol::Isolation`). The vega bench path itself
+    // opens no store and reads no config (main.rs dispatches straight to
+    // `bench::start`), but the temp HOME keeps that invariant enforced
+    // instead of assumed — the same GPUI boot is already proven to work
+    // under a temp HOME by the C1 rounds.
+    let temp_home = std::env::temp_dir().join(format!("vega-render-home-{}", unix_ms()));
+    std::fs::create_dir_all(&temp_home).with_context(|| {
+        format!(
+            "failed to create the render-probe temp HOME at {}",
+            temp_home.display()
+        )
+    })?;
     let report_path = std::env::temp_dir().join(format!("vega-render-frame-{}.json", unix_ms()));
-    let mut child = spawn_with_idle_assertion(&build.vega_bin, &report_path)
+    let mut child = spawn_with_idle_assertion(&build.vega_bin, &report_path, &temp_home)
         .context("failed to spawn the --vega-bench-render probe")?;
 
     let start = Instant::now();
@@ -166,8 +179,14 @@ pub fn measure_render_margin(
 }
 
 /// Spawns the probe binary, wrapped in `caffeinate -i` on macOS so App Nap
-/// cannot throttle the measurement window (spike run.sh 前提).
-fn spawn_with_idle_assertion(binary: &Path, report_path: &Path) -> Result<std::process::Child> {
+/// cannot throttle the measurement window (spike run.sh 前提). The probe
+/// runs under a temp `HOME` (C3) with XDG overrides stripped — see
+/// `measure_render_margin`.
+fn spawn_with_idle_assertion(
+    binary: &Path,
+    report_path: &Path,
+    home: &Path,
+) -> Result<std::process::Child> {
     let caffeinate = Path::new("/usr/bin/caffeinate");
     let mut command = if caffeinate.exists() {
         let mut command = Command::new(caffeinate);
@@ -179,6 +198,9 @@ fn spawn_with_idle_assertion(binary: &Path, report_path: &Path) -> Result<std::p
     command
         .arg("--vega-bench-render")
         .arg(report_path)
+        .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     Ok(command.spawn()?)

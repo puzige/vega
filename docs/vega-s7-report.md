@@ -26,7 +26,7 @@ S7 交付台账（`gh pr list --repo puzige/vega --state merged` 实时核对，
 
 ## 2. T41 收口 E2E（`engineering fixture passed`）
 
-`crates/vega_conversation/tests/s7_acceptance_e2e.rs`（604 行，1 例）：
+`crates/vega_conversation/tests/s7_acceptance_e2e.rs`（603 行，1 例）：
 `two_call_tool_journey_matches_synthetic_invoice_with_zero_error` — 全程真实生产链路
 `run_thread_task_with_pricing`（与 `main.rs:1984` 生产调用点同入口）→ runtime/provider 事件 →
 meter/summary 投影 → durable `token_usage`/`tool_calls`/`messages`，目录来自 owned temp data root
@@ -177,4 +177,4 @@ S7 过程中新登记（已在 §7 核销）：四字段 token 显示把 cache_r
 
 ## 11. 结论
 
-S7 六卡（T36–T41）全部交付：T36-T40 squash merge、T41 E2E `engineering fixture passed`（模拟账单零误差 + restart 一致 + schema 冻结）、四门禁 748/0/1 全绿、红线全过、carryforward 16 项逐条核销（resolved 4、carried-to-S8 2、carried-to-T43 2、documented 8）。S8 开工条件（T42 契约冻结 + 本报告）就绪；真实账单/硬件/首帧项按 §5/§9 保持 pending 状态词，不漂白。
+S7 六卡（T36–T41）全部交付：T36-T40 squash merge、T41 E2E `engineering fixture passed`（模拟账单零误差 + restart 一致 + schema 冻结）、四门禁 748/0/1 全绿、红线全过、carryforward 16 项逐条核销（resolved 3、carried-to-S8 2、carried-to-T43 2、documented 9）。S8 开工条件（T42 契约冻结 + 本报告）就绪；真实账单/硬件/首帧项按 §5/§9 保持 pending 状态词，不漂白。
