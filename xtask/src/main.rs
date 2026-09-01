@@ -299,11 +299,13 @@ fn bench_p2_with(build: &ReleaseBuild, prov: &Provenance) -> Result<report::P2Re
     Ok(report::P2Result {
         seconds: value["seconds"].as_u64().unwrap_or_default(),
         rate_per_s: value["rate_per_s"].as_u64().unwrap_or_default(),
+        run_completed,
         events_total: value["events_total"].as_u64().unwrap_or_default(),
         deltas_total: value["deltas_total"].as_u64().unwrap_or_default(),
         frames: value["frames"].as_u64().unwrap_or_default(),
         queue_max_depth: value["queue_max_depth"].as_u64().unwrap_or_default(),
         batch_latencies_us: latencies,
+        per_second: value["per_second"].as_array().cloned().unwrap_or_default(),
         p50_us: p50,
         p99_us: p99,
         gate_passed: gate,

@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::contract::{STATUS_HARDWARE_PENDING, STATUS_PERFORMANCE_GATE_FAILED};
+use crate::contract::{
+    STATUS_ENGINEERING_FIXTURE_PASSED, STATUS_HARDWARE_PENDING, STATUS_PERFORMANCE_GATE_FAILED,
+};
 use crate::provenance::{Cutoff, Provenance, sha256_hex};
 
 /// C1+C2 aggregate result (both gates share the same spawn rounds per SDD:
@@ -68,12 +70,19 @@ impl C1C2Result {
 pub struct P2Result {
     pub seconds: u64,
     pub rate_per_s: u64,
+    /// The probe's own completion verdict (producer finished AND every
+    /// applied batch reached its first containing frame); the parent gate
+    /// ANDs it in (schema erratum: promoted into the canonical report).
+    pub run_completed: bool,
     pub events_total: u64,
     pub deltas_total: u64,
     pub frames: u64,
     pub queue_max_depth: u64,
     /// All batch latencies (integer µs; frozen unit).
     pub batch_latencies_us: Vec<u64>,
+    /// Per-second sampling windows, raw passthrough from the probe report
+    /// (schema erratum: promoted into the canonical report).
+    pub per_second: Vec<serde_json::Value>,
     pub p50_us: u64,
     pub p99_us: u64,
     pub gate_passed: bool,
@@ -130,9 +139,11 @@ pub fn write(report: &BenchReport) -> Result<PathBuf> {
 /// Status-vocabulary reminder used by callers when printing verdicts.
 pub fn status_word(passed: bool) -> &'static str {
     if passed {
-        // Only the P-gates get PASS-shaped words; every non-pass state uses
-        // the frozen vocabulary verbatim (never "almost passed").
-        "performance gate passed (P7/P8/P2 frozen math)"
+        // The xtask runs are deterministic mock/temp-HOME fixtures, so a
+        // passing gate is the §1 `engineering fixture passed` state — never
+        // terminal evidence (the 5-minute soak is T48/T49), and never a
+        // PASS-shaped word outside the frozen vocabulary.
+        STATUS_ENGINEERING_FIXTURE_PASSED
     } else {
         STATUS_PERFORMANCE_GATE_FAILED
     }
@@ -157,8 +168,33 @@ mod tests {
     #[test]
     fn status_words_are_frozen_vocabulary() {
         assert_eq!(status_word(false), "performance gate failed");
-        assert!(status_word(true).starts_with("performance gate passed"));
+        // A passing short-run gate is the §1 fixture word, never a hint of
+        // terminal evidence.
+        assert_eq!(status_word(true), "engineering fixture passed");
         assert_eq!(STATUS_HARDWARE_PENDING, "hardware pending");
+    }
+
+    #[test]
+    fn p2_result_carries_the_schema_erratum_fields() {
+        let p2 = P2Result {
+            seconds: 10,
+            rate_per_s: 1_000,
+            run_completed: true,
+            events_total: 10_001,
+            deltas_total: 10_000,
+            frames: 598,
+            queue_max_depth: 0,
+            batch_latencies_us: vec![1_000, 2_000],
+            per_second: vec![serde_json::json!({"t": 1, "frames": 60})],
+            p50_us: 6_822,
+            p99_us: 14_406,
+            gate_passed: true,
+            schema: "vega-c6-stream.v1".into(),
+            sandbox_root: "/tmp/x".into(),
+        };
+        let json = serde_json::to_string(&p2).unwrap();
+        assert!(json.contains(r#""run_completed":true"#));
+        assert!(json.contains(r#""per_second":[{"t":1,"frames":60}]"#));
     }
 
     #[test]

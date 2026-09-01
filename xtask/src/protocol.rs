@@ -391,7 +391,9 @@ pub fn c2_medians(rounds: &[Round]) -> Vec<u64> {
 }
 
 /// C2 gate: nearest-rank p95 of the per-process medians against the frozen
-/// threshold, plus the stability verdict (SDD §3 steps 3-4). Returns
+/// threshold, plus the stability verdict (SDD §3 steps 3-5). The gray-zone
+/// extension (step 5) merges 40 rounds into the same gate math, so the
+/// frozen count is a floor on the round set, not an equality. Returns
 /// `(p95_bytes, gate_passed, drifting_rounds)`.
 pub fn c2_gate(rounds: &[Round]) -> (u64, bool, usize) {
     let medians = c2_medians(rounds);
@@ -405,7 +407,10 @@ pub fn c2_gate(rounds: &[Round]) -> (u64, bool, usize) {
         })
         .count();
     let stable = drift_rounds <= contract::C2_STABILITY_MAX_DRIFTING_ROUNDS;
-    let complete = rounds.len() == C2_ROUNDS && rounds.iter().all(Round::passed);
+    // Effective rounds ≥ C2_ROUNDS (extension rounds count toward the gate)
+    // AND every round that ran must pass. Conservative direction preserved:
+    // a shorter set, a failed round, or a skipped round can never fake a pass.
+    let complete = rounds.len() >= C2_ROUNDS && rounds.iter().all(Round::passed);
     (
         p95,
         stable && complete && p95 < contract::P8_THRESHOLD_BYTES,
@@ -634,6 +639,24 @@ mod tests {
         let (_, gate, drift) = c2_gate(&unstable);
         assert!(!gate);
         assert!(drift > contract::C2_STABILITY_MAX_DRIFTING_ROUNDS);
+        // Gray-zone extension: 40 merged rounds (C2_ROUNDS + extension) keep
+        // the gate judgeable — the frozen count is a floor, not an equality.
+        let extended: Vec<Round> = (0..C2_ROUNDS + crate::contract::C2_EXTENSION_ROUNDS)
+            .map(|_| round([90_000_000, 90_100_000, 90_200_000]))
+            .collect();
+        let (_, gate, _) = c2_gate(&extended);
+        assert!(gate, "40 merged rounds must still be able to pass");
+        // A failed round inside the merged set voids the gate.
+        let mut one_failed: Vec<Round> = (0..C2_ROUNDS + crate::contract::C2_EXTENSION_ROUNDS)
+            .map(|_| round([90_000_000, 90_100_000, 90_200_000]))
+            .collect();
+        one_failed[7].fail = Some(C1Fail::EarlyExit);
+        assert!(!c2_gate(&one_failed).1);
+        // Fewer than the frozen count can never pass.
+        let short: Vec<Round> = (0..C2_ROUNDS - 1)
+            .map(|_| round([90_000_000, 90_100_000, 90_200_000]))
+            .collect();
+        assert!(!c2_gate(&short).1);
     }
 
     #[test]
