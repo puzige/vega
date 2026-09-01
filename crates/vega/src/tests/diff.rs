@@ -1,4 +1,3 @@
-#[allow(unused_imports)]
 use super::*;
 
 pub(crate) fn scrub_fixture_git_environment(command: &mut Command) {
