@@ -6,8 +6,11 @@
 # ONLY on `v*` tags and manual dispatch — never on pushes/PRs — so cost stays
 # per-release, not per-commit. Keep it that way.
 #
-# ── Design notes (actionlint-clean: quoted expressions, no untrusted input
-#    reaching run: — `${{ github.ref_name }}` is admin-controlled) ────────────
+# ── Design notes ─────────────────────────────────────────────────────────────
+# - Tag-derived values reach `run:` only via `env:` indirection, never inline
+#   `${{ }}` interpolation: tag names legally contain `$()`, quotes, `;`, and
+#   pushing a tag needs only write access — inline interpolation into `run:`
+#   would be shell injection.
 # - Tests deliberately do NOT run here: the full workspace suite gates every
 #   PR locally (repo AGENTS.md hooks) and will gate in CI; a tag build rebuilds
 #   everything already verified, so re-running ~30 min of tests on a 10x-cost
@@ -76,20 +79,19 @@ jobs:
         with:
           # Cache per tag so a re-run (workflow_dispatch) reuses the tag's
           # artifacts; different tags never pollute each other.
+          # (Default workspace scope = root workspace, which already includes
+          # the xtask member — no separate workspaces entry.)
           key: v-${{ github.ref_name }}
-          workspaces: |
-            .
-            xtask
-
-      - name: Strip `v` from the tag → package version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build the bundle (cargo xtask package)
         # Runs `cargo build --release` internally, then assembles dist/Vega.app,
         # ad-hoc signs it and zips dist/Vega-macos-arm64.zip.
         # The version override path is: --version > VEGA_RELEASE_VERSION > Cargo.toml.
-        run: cargo xtask package --version "${{ steps.version.outputs.version }}"
+        # Tag → env indirection (never inline ${{ }}): see the design notes —
+        # a tag name may contain shell metacharacters.
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: cargo xtask package --version "${RELEASE_VERSION#v}"
 
       - name: Attach the artifact
         uses: actions/upload-artifact@v4
@@ -104,8 +106,9 @@ jobs:
         # single-asset pipeline, kept simple).
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
+          gh release create "$TAG" \
+            --title "$TAG" \
             --generate-notes \
             dist/Vega-macos-arm64.zip
