@@ -10,6 +10,7 @@
 //! `429cb2d`; historical S6 numbers are noncomparable).
 
 mod contract;
+mod package;
 mod probe;
 mod protocol;
 mod provenance;
@@ -48,11 +49,12 @@ fn dispatch(args: &[String]) -> Result<()> {
         Some("bench") => bench(),
         Some("bench-p7") => bench_c1c2_only(),
         Some("bench-p2") => bench_p2_only(),
+        Some("package") => package::run(),
         other => {
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
             }
-            eprintln!("usage: cargo xtask bench [or bench-p7 | bench-p2]");
+            eprintln!("usage: cargo xtask bench [or bench-p7 | bench-p2 | package]");
             std::process::exit(2);
         }
     }

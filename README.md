@@ -44,6 +44,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-s8-tasks.md](docs/vega-s8-tasks.md) | S8 任务卡 T42-T50（性能调优、硬件实测与 Phase 1 收口，SDD 已冻结） |
 | [vega-s8-sdd.md](docs/vega-s8-sdd.md) | S8 验收 SDD（C1-C8 冻结契约、七状态词表与证据基线） |
 | [vega-s8-report.md](docs/vega-s8-report.md) | S8 验收报告（T43 冻结性能基线、逐卡 DoD、carryforward 核销与期末优化批偏离） |
+| [vega-packaging.md](docs/vega-packaging.md) | macOS 打包与分发（`cargo xtask package`、.app 结构、其他 Mac 安装与 Gatekeeper、公证 HUMAN 模板） |
 
 ## 关键决策（详见 PRD）
 

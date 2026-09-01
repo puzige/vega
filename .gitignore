@@ -5,3 +5,6 @@ target/
 bench/results/
 # agent working data (sync reports etc.)
 .workbuddy/
+# xtask package artifacts (dist app bundle + zip never enter the repo; the
+# .icns is reproducible from the committed assets/logo SVG)
+dist/
