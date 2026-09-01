@@ -25,7 +25,7 @@ cargo xtask bench          # 全量：C1+C2 20 进程 → C6 P2 10s@1000δ/s →
 - **provenance（JSON 原样）**：git HEAD `aa2d52d694043cb27f6b5f2a23a7857e5c14ecaf`（git_dirty=false）；release profile；构建命令 `cargo build --release -p xtask -p vega` exit 0；`rustc 1.98.0 (88d9e12ae 2026-08-18)`；OS macOS 27.0；CPU/GPU Apple M4；**显示器 60.0 Hz（CoreGraphics 实测，非硬编码）**；arch arm64。
 - **被测二进制**：`target/release/vega` 26,715,776 B，SHA-256 `947310f000d2bf7697ba59c0c121e42ae9cab3573937ce42a4bfa57c0d0294df`；探针子进程 `target/release/xtask` SHA-256 `8f6ff530e67b162c629137f20366496cdea347ef4bed8e5a3222a5ce228a8396`。
 - **隔离（C3）**：每轮全新临时 `HOME`（macOS 数据根 `$HOME/Library/Application Support/ai.vega` 随之隔离），预 seed 项目+线程行；子进程 attestation 由父进程机械校验（temp HOME/data_root/provider=none/network=none/keychain=not-exercised/first_frame_source=gpui_next_frame_callback）；零真实 profile/Keychain/provider/network。
-- **原始 JSON**（repo-external，不入库）：`/private/tmp/vega-s8-t43-baseline.json`（canonical 40 轮报告快照，SHA-256 `459ebb2dee38a38c7b8178e41bd2d8e2e78378487cd843f9e7fc6561905fce11`）；运行时原生输出目录 `$(TMPDIR)/vega-t43-reports/`（本轮 `1788179736199-baseline.json`，同 hash）。
+- **原始 JSON**（repo-external，不入库）：`/private/tmp/vega-s8-t43-baseline.json`（canonical 20 轮报告快照，SHA-256 `459ebb2dee38a38c7b8178e41bd2d8e2e78378487cd843f9e7fc6561905fce11`）；运行时原生输出目录 `$(TMPDIR)/vega-t43-reports/`（本轮 `1788179736199-baseline.json`，同 hash）。
 
 ## 3. P7（C1）首帧可交互 —— `performance gate failed`
 
@@ -98,5 +98,5 @@ cargo xtask bench          # 全量：C1+C2 20 进程 → C6 P2 10s@1000δ/s →
 1. **探针子进程 = release `xtask` 二进制（`__probe` re-exec），非 `vega` 主二进制**：生产 `vega` 无 milestone seam，本卡红线禁止改 crates/。子进程以生产 boot path 组合真实 `vega_ui`/`vega_theme` 组件（非空壳、非 test-only 视图），`VegaWindow` 外壳（agent/commit/branch controllers）不在空闲首帧场景内。消除该偏离需要上游 seam（T48+ 事项）。
 2. **P2 短跑（10s）非 5 分钟 soak 终证**：契约允许的日常 PR 反馈口径；终证归 T48/T49。
 3. **P1 场景沿用 S3-T17 行模型 fixture**（11,451 行等高列表）：C6 要求的 10k 语义项变高场景归 T44；本卡交付的是真实刷新率检测 + margin/hardware-pending 判定框架。
-4. **首轮长尾干扰记录**：bench-p7 试运行（cutoff `2026-08-31T11:46:07Z`，report SHA-256 `8bd328106b4ec392bee09dfb019cc187e2d1bd139db338005f57995b9ccfb921`）曾出现单轮 1,693,149 µs 长尾；canonical 40 轮报告为本文 §3-§6 数字。两次运行方向一致（P7/P8 FAIL、P2 PASS），门禁判据不受影响。
+4. **首轮长尾干扰记录**：bench-p7 试运行（cutoff `2026-08-31T11:46:07Z`，report SHA-256 `8bd328106b4ec392bee09dfb019cc187e2d1bd139db338005f57995b9ccfb921`）曾出现单轮 1,693,149 µs 长尾；canonical 20 轮报告为本文 §3-§6 数字。两次运行方向一致（P7/P8 FAIL、P2 PASS），门禁判据不受影响。
 5. **P2 计数器加固**（`run_completed` 字段 + producer 先计数后发送 + 饱和队列深）：首次实现存在 produced/drained 计数口径差（TextDelta vs 全事件）导致 queue depth 下溢；已修复并以 `run_completed=true` 短跑复核。该字段为 schema 一部分，T48 只消费。

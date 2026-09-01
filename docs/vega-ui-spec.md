@@ -1,6 +1,6 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.3 · 2026-08-30 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.4 · 2026-08-31 · 关联：[vega-features.md](vega-features.md)
 
 > **设计基线决策**：UI 风格对齐 **Codex Desktop / ZCode 默认风格**——极简、留白充足、浅灰层次、无重边框、内容居中。不发明新设计语言，把精力放在渲染性能和工具卡片信息密度上。
 > 本文件是验收准线：每条都可检查、可测量。S 级 Sprint 验收时逐条过。
