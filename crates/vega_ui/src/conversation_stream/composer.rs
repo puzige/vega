@@ -42,7 +42,6 @@ impl ConversationStream {
                 |entry| matches!(entry, StreamEntry::Artifact { card: owned } if owned == &card),
             );
             this.invalidate_item(index);
-            this.rows_dirty = true;
             cx.notify();
         })
         .detach();
@@ -50,7 +49,6 @@ impl ConversationStream {
             .insert(index + 1, StreamEntry::Artifact { card: card.clone() });
         self.list_insert(index + 1);
         self.artifact_cards.insert(call_id.to_owned(), card);
-        self.rows_dirty = true;
         cx.notify();
         true
     }
@@ -186,7 +184,6 @@ impl ConversationStream {
             lines: user_message_lines(block_id, content),
         });
         self.list_append(index);
-        self.rows_dirty = true;
         cx.notify();
     }
 

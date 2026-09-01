@@ -19,9 +19,6 @@ pub struct ConversationStream {
     pub(crate) input: Entity<TextInput>,
     /// Synthetic block-id counter for user echo rows (diagnostics only).
     pub(crate) user_block_seq: u64,
-    /// Rows changed outside the assistant sync path (user send) — feeds the
-    /// anchor's `content_grew` on the next frame.
-    pub(crate) rows_dirty: bool,
     /// Opaque provider call ids are retained only as non-rendered map keys.
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
     /// Exact call id to its sole inline artifact card.
@@ -165,7 +162,6 @@ impl ConversationStream {
             injecting: None,
             input,
             user_block_seq: USER_BLOCK_BASE,
-            rows_dirty: false,
             tool_cards: HashMap::new(),
             artifact_cards: HashMap::new(),
             branch_selector,

@@ -21,9 +21,8 @@ impl ConversationStream {
         }
         let id = plan.id.clone();
         let card = cx.new(|cx| PlanCard::new(plan, cx));
-        cx.subscribe(&card, |this, _, event: &PlanReviewRequested, cx| {
+        cx.subscribe(&card, |_, _, event: &PlanReviewRequested, cx| {
             cx.emit(event.clone());
-            this.rows_dirty = true;
         })
         .detach();
         cx.observe(&card, |this, card, cx| {
@@ -31,7 +30,6 @@ impl ConversationStream {
                 |entry| matches!(entry, StreamEntry::Plan { card: owned } if owned == &card),
             );
             this.invalidate_item(index);
-            this.rows_dirty = true;
             cx.notify();
         })
         .detach();
@@ -58,7 +56,6 @@ impl ConversationStream {
             self.list_append(index);
         }
         self.plan_cards.insert(id, card);
-        self.rows_dirty = true;
         cx.notify();
     }
 
@@ -80,7 +77,6 @@ impl ConversationStream {
             .push(StreamEntry::Summary { card: card.clone() });
         self.list_append(index);
         self.summary_cards.insert(message_id, card);
-        self.rows_dirty = true;
         cx.notify();
     }
 
@@ -135,7 +131,6 @@ impl ConversationStream {
                         let index = this
                             .entry_index_where(|entry| matches!(entry, StreamEntry::Plan { card: owned } if owned == &card));
                         this.invalidate_item(index);
-                        this.rows_dirty = true;
                         cx.notify();
                     })
                     .detach();
@@ -168,7 +163,6 @@ impl ConversationStream {
                             |entry| matches!(entry, StreamEntry::Tool { card: owned } if owned == &card),
                         );
                         this.invalidate_item(index);
-                        this.rows_dirty = true;
                         cx.notify();
                     })
                     .detach();
@@ -199,7 +193,6 @@ impl ConversationStream {
         // offset into the scroll-top item, so while detached the content the
         // user was reading stays put (<1px by construction). While pinned to
         // the tail, native Tail follow keeps the viewport at the bottom.
-        self.rows_dirty = true;
         cx.notify();
     }
 
@@ -358,7 +351,6 @@ impl ConversationStream {
         // The prompt must be visible immediately: re-engage native tail
         // follow (which also scrolls to the end on the next layout).
         self.list.set_follow_mode(gpui::FollowMode::Tail);
-        self.rows_dirty = true;
         cx.notify();
     }
 
@@ -374,7 +366,6 @@ impl ConversationStream {
             self.entries.remove(index);
             self.list_remove(index);
         }
-        self.rows_dirty = true;
         cx.notify();
     }
 
@@ -403,7 +394,6 @@ impl ConversationStream {
                 });
                 self.list_append(entry_index);
                 self.active_agent_message = Some((message_id, entry_index));
-                self.rows_dirty = true;
                 cx.notify();
             }
             ConversationEvent::TextDelta { message_id, delta } => {
@@ -417,7 +407,6 @@ impl ConversationStream {
                     self.entries.get_mut(*entry_index)
                 {
                     stream.append(&delta);
-                    self.rows_dirty = true;
                     cx.notify();
                 }
             }
@@ -437,7 +426,6 @@ impl ConversationStream {
                     let index = this
                         .entry_index_where(|entry| matches!(entry, StreamEntry::Tool { card: owned } if owned == &card));
                     this.invalidate_item(index);
-                    this.rows_dirty = true;
                     cx.notify();
                 })
                 .detach();
@@ -445,7 +433,6 @@ impl ConversationStream {
                 self.entries.push(StreamEntry::Tool { card: card.clone() });
                 self.list_append(index);
                 self.tool_cards.insert(call_id, card);
-                self.rows_dirty = true;
                 cx.notify();
             }
             ConversationEvent::ToolCallApproved { call_id, approval } => {
@@ -511,12 +498,18 @@ impl ConversationStream {
         if active_id != message_id {
             return;
         }
-        if let Some(StreamEntry::Assistant { stream, .. }) = self.entries.get_mut(*entry_index) {
+        // finish() 丢弃 pending 并把尾块冻结为 committed（version bump）：
+        // 这是从 mutable tail 摘除前的最后一次显式失效（C4 白名单），必须
+        // 在本帧内完成最终物化——否则批量 ingress 末批 [delta…, Finished]
+        // 的尾部 delta 永不上屏、终块永无 committed 高亮。
+        if let Some(StreamEntry::Assistant { stream, model }) = self.entries.get_mut(*entry_index) {
             stream.finish();
+            let snapshot = stream.snapshot();
+            model.sync(&snapshot, &self.counters);
         }
+        self.invalidate_item(Some(*entry_index));
         self.last_finished_agent_message = self.active_agent_message.take();
         self.timeout_permission(cx);
-        self.rows_dirty = true;
         cx.notify();
     }
 
@@ -549,7 +542,6 @@ impl ConversationStream {
                 |entry| matches!(entry, StreamEntry::Tool { card: owned } if owned == &card),
             );
             this.invalidate_item(index);
-            this.rows_dirty = true;
             cx.notify();
         })
         .detach();
@@ -557,7 +549,6 @@ impl ConversationStream {
         self.entries.push(StreamEntry::Tool { card: card.clone() });
         self.list_append(index);
         self.tool_cards.insert(call_id, card);
-        self.rows_dirty = true;
         cx.notify();
     }
 }
