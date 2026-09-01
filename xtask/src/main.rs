@@ -49,7 +49,7 @@ fn dispatch(args: &[String]) -> Result<()> {
         Some("bench") => bench(),
         Some("bench-p7") => bench_c1c2_only(),
         Some("bench-p2") => bench_p2_only(),
-        Some("package") => package::run(),
+        Some("package") => package::run(&args[1..]),
         other => {
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");

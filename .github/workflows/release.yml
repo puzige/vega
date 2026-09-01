@@ -1,0 +1,114 @@
+# Tag-triggered release pipeline for Vega (macOS arm64 app bundle).
+#
+# ── Cost warning ─────────────────────────────────────────────────────────────
+# This repo is PRIVATE: macOS runners are billed at 10x the Linux minute rate
+# (a 30-minute build consumes 300 billed minutes of quota). This pipeline runs
+# ONLY on `v*` tags and manual dispatch — never on pushes/PRs — so cost stays
+# per-release, not per-commit. Keep it that way.
+#
+# ── Design notes ─────────────────────────────────────────────────────────────
+# - Tag-derived values reach `run:` only via `env:` indirection, never inline
+#   `${{ }}` interpolation: tag names legally contain `$()`, quotes, `;`, and
+#   pushing a tag needs only write access — inline interpolation into `run:`
+#   would be shell injection.
+# - Tests deliberately do NOT run here: the full workspace suite gates every
+#   PR locally (repo AGENTS.md hooks) and will gate in CI; a tag build rebuilds
+#   everything already verified, so re-running ~30 min of tests on a 10x-cost
+#   runner only adds cost without adding verification.
+# - Structure learned from zed-industries/zed (xtask-driven bundling,
+#   concurrency cancel for duplicate tags) and BurntSushi/ripgrep (tag→version
+#   extraction, gh release create/upload) — simplified per the "simplest
+#   option" ruling: official actions + rust-cache + gh-release only.
+# - `permissions` is job-scoped and minimal: `contents: write` is required to
+#   create a Release and upload assets; nothing else.
+#
+# ── Signing / notarization (HUMAN PENDING — see docs/vega-release.md) ───────
+# The bundle is currently ad-hoc signed (codesign -), so installers need the
+# Gatekeeper right-click-open step (INSTALL.txt inside the zip). Once the
+# owner holds a Developer ID Application certificate, add repo secrets and
+# uncomment the steps below:
+#   APPLE_CERTIFICATE_P12      base64 of the exported .p12
+#   APPLE_CERTIFICATE_PASSWORD .p12 password
+#   KEYCHAIN_PASSWORD          any strong random value for the CI keychain
+#   APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD  (notarytool)
+# Unlock template (adapted from docs/vega-packaging.md HUMAN PENDING):
+#   1. `echo "$APPLE_CERTIFICATE_P12" | base64 --decode > cert.p12`
+#   2. `security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain`
+#      `security import cert.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign`
+#      `security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" build.keychain`
+#      `security list-keychains -d user -s build.keychain`
+#   3. Re-sign with hardened runtime + timestamp:
+#      `codesign --force --deep --options runtime --timestamp --sign "Developer ID Application: <名> (<TEAM_ID>)" dist/Vega.app`
+#      (re-zip with `ditto -c -k --keepParent --sequesterRsrc` instead of `zip`)
+#   4. Notarize before the release upload step:
+#      `xcrun notarytool submit dist/Vega-macos-arm64.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait`
+#      `xcrun stapler staple dist/Vega.app` (then re-zip once more)
+# All of the above runs in the `package` job between "Build the bundle" and
+# "Attach the artifact"; nothing else in this file needs to change.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {} # manual re-run to recover a failed release build
+
+# Cancel a superseded run for the same ref (e.g. re-pushed tag).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # create the Release and upload assets — nothing more
+
+jobs:
+  release:
+    name: build & publish (macos-latest, arm64)
+    runs-on: macos-latest # arm64, auto-follows GitHub image updates (owner decision)
+    timeout-minutes: 60
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain (rust-toolchain.toml = 1.98.0)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build (keyed per tag)
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Cache per tag so a re-run (workflow_dispatch) reuses the tag's
+          # artifacts; different tags never pollute each other.
+          # (Default workspace scope = root workspace, which already includes
+          # the xtask member — no separate workspaces entry.)
+          key: v-${{ github.ref_name }}
+
+      - name: Build the bundle (cargo xtask package)
+        # Runs `cargo build --release` internally, then assembles dist/Vega.app,
+        # ad-hoc signs it and zips dist/Vega-macos-arm64.zip.
+        # The version override path is: --version > VEGA_RELEASE_VERSION > Cargo.toml.
+        # Tag → env indirection (never inline ${{ }}): see the design notes —
+        # a tag name may contain shell metacharacters.
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: cargo xtask package --version "${RELEASE_VERSION#v}"
+
+      - name: Attach the artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vega-macos-arm64
+          path: dist/Vega-macos-arm64.zip
+          if-no-files-found: error
+
+      - name: Create the GitHub Release
+        # --generate-notes derives the changelog from commits since the
+        # previous tag; the release is published immediately (no draft step —
+        # single-asset pipeline, kept simple).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            dist/Vega-macos-arm64.zip

@@ -8,6 +8,15 @@
 //! Zero new dependencies: every step shells out to macOS built-ins
 //! (`qlmanage`, `sips`, `iconutil`, `codesign`, `zip`).
 //!
+//! Version source (stamped into `CFBundleShortVersionString`/`CFBundleVersion`
+//! and INSTALL.txt), highest priority first:
+//! 1. `--version <x.y.z>` CLI flag (or `--version=x.y.z`);
+//! 2. `VEGA_RELEASE_VERSION` environment variable — the CI release path (the
+//!    tag-triggered workflow passes the pushed tag with the leading `v`
+//!    stripped);
+//! 3. the workspace version from Cargo.toml (unchanged default for local
+//!    `cargo xtask package` runs).
+//!
 //! Icon source decision (recorded per the card): the app icon is rendered
 //! from `assets/logo/vega-icon-f1-light.svg` (F1, 浅色主标). Rationale —
 //! LOGO.md designates F1 as the primary Dock icon; the F1/F3 raster
@@ -44,8 +53,13 @@ const ICON_FILE: &str = "Vega";
 /// than the zed-rev floor of 10.15.7 anyway, so 11.0 is the honest floor).
 const MIN_MACOS: &str = "11.0";
 const CATEGORY: &str = "public.app-category.developer-tools";
-/// Workspace version (`[workspace.package] version`, inherited by xtask).
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Workspace version (`[workspace.package] version`, inherited by xtask) —
+/// the fallback when neither `--version` nor `VEGA_RELEASE_VERSION` is set.
+const WORKSPACE_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// CLI flag overriding the packaged version (release path).
+const VERSION_FLAG: &str = "--version";
+/// Environment variable overriding the packaged version (CI release path).
+const VERSION_ENV: &str = "VEGA_RELEASE_VERSION";
 
 /// (pixel size, iconset filename) — Apple's standard macOS app icon set:
 /// 16/32/128/256/512 at @1x plus their @2x variants (up to 1024 px), the
@@ -68,7 +82,11 @@ const PKG_INFO: &str = "APPL????";
 const APP_BUNDLE: &str = "Vega.app";
 
 /// Entry point of `cargo xtask package`.
-pub fn run() -> Result<()> {
+///
+/// `args` are the subcommand arguments after `package` (see `main::dispatch`),
+/// currently only the optional `--version <x.y.z>` override.
+pub fn run(args: &[String]) -> Result<()> {
+    let version = resolve_version(args)?;
     let workspace = crate::workspace_root()?;
     let build = provenance::rebuild_release(&workspace)?;
 
@@ -98,7 +116,8 @@ pub fn run() -> Result<()> {
     render_icon(&workspace, &icon_path)?;
 
     // Metadata.
-    fs::write(contents.join("Info.plist"), info_plist()).context("failed to write Info.plist")?;
+    fs::write(contents.join("Info.plist"), info_plist(&version))
+        .context("failed to write Info.plist")?;
     fs::write(contents.join("PkgInfo"), PKG_INFO).context("failed to write PkgInfo")?;
 
     // Ad-hoc signature + verification (no identity required; other Macs
@@ -120,7 +139,8 @@ pub fn run() -> Result<()> {
     )?;
 
     // Distributable zip: bundle + install instructions.
-    fs::write(dist.join("INSTALL.txt"), install_txt()).context("failed to write INSTALL.txt")?;
+    fs::write(dist.join("INSTALL.txt"), install_txt(&version))
+        .context("failed to write INSTALL.txt")?;
     let zip = "Vega-macos-arm64.zip";
     run_tool(
         "zip",
@@ -132,7 +152,7 @@ pub fn run() -> Result<()> {
     print_tree(&app)?;
     println!(
         "\npackaged {} (icon {}) →\n  {}/{}\n  {}",
-        VERSION,
+        version,
         icon_path
             .file_name()
             .map(|name| name.to_string_lossy())
@@ -216,9 +236,59 @@ fn render_icon(workspace: &Path, target: &Path) -> Result<std::path::PathBuf> {
     Ok(target.to_path_buf())
 }
 
+/// Resolves the packaged version (see the module docs for the priority
+/// chain): `--version` flag > `VEGA_RELEASE_VERSION` env > Cargo.toml.
+fn resolve_version(args: &[String]) -> Result<String> {
+    let from_env = std::env::var(VERSION_ENV).ok();
+    resolve_version_from(args, from_env.as_deref())
+}
+
+/// Pure core of [`resolve_version`] (the env value is passed in so tests can
+/// cover the precedence chain without mutating process-global state).
+fn resolve_version_from(args: &[String], env_value: Option<&str>) -> Result<String> {
+    let mut flag_value: Option<&str> = None;
+    let mut remaining = args.iter().map(String::as_str);
+    while let Some(arg) = remaining.next() {
+        if arg == VERSION_FLAG {
+            flag_value = Some(remaining.next().context("--version requires a value")?);
+        } else if let Some(inline) = arg.strip_prefix("--version=") {
+            flag_value = Some(inline);
+        }
+    }
+    // An explicitly given flag value is validated as-is (empty → error); an
+    // empty env value is treated as unset so a stray `VEGA_RELEASE_VERSION=`
+    // cannot silently produce a broken plist.
+    let version = match flag_value {
+        Some(value) => value,
+        None => match env_value {
+            Some(value) if !value.is_empty() => value,
+            _ => WORKSPACE_VERSION,
+        },
+    };
+    validate_version(version)
+}
+
+/// Guards against a malformed override reaching `Info.plist` (XML string
+/// interpolation), the INSTALL.txt text and the distribution zip name.
+/// Accepts semver-shaped strings (digits/letters, `. - + _` separators).
+fn validate_version(version: &str) -> Result<String> {
+    let well_formed = !version.is_empty()
+        && version.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'));
+    if !well_formed {
+        bail!(
+            "invalid version {version:?}: expected semver-shaped text \
+             (alphanumeric, separated by `. - + _`)"
+        );
+    }
+    Ok(version.to_string())
+}
+
 /// The Info.plist contents. All values are compile-time constants without
 /// XML special characters, so plain interpolation is safe.
-fn info_plist() -> String {
+fn info_plist(version: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -231,9 +301,9 @@ fn info_plist() -> String {
 	<key>CFBundleIdentifier</key>
 	<string>{BUNDLE_ID}</string>
 	<key>CFBundleVersion</key>
-	<string>{VERSION}</string>
+	<string>{version}</string>
 	<key>CFBundleShortVersionString</key>
-	<string>{VERSION}</string>
+	<string>{version}</string>
 	<key>CFBundleExecutable</key>
 	<string>{EXECUTABLE_NAME}</string>
 	<key>CFBundleIconFile</key>
@@ -255,7 +325,7 @@ fn info_plist() -> String {
 }
 
 /// INSTALL.txt shipped inside the distribution zip (Gatekeeper guidance).
-fn install_txt() -> String {
+fn install_txt(version: &str) -> String {
     format!(
         "Vega — macOS (Apple Silicon)\n\
          ============================\n\n\
@@ -270,7 +340,7 @@ fn install_txt() -> String {
          数据位置：\n\
          - 配置：~/.config/vega/config.toml\n\
          - 数据：~/Library/Application Support/ai.vega（bundle id ai.vega，\n\
-         与 Keychain 服务同名；版本 {VERSION}）\n\n\
+         与 Keychain 服务同名；版本 {version}）\n\n\
          未公证说明：正式分发请走 Developer ID 签名 + 公证（见\n\
          docs/vega-packaging.md 的 HUMAN PENDING 模板）。\n"
     )
@@ -334,11 +404,14 @@ fn walk_tree(dir: &Path, prefix: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUNDLE_ID, CATEGORY, EXECUTABLE_NAME, ICONSET_ENTRIES, MIN_MACOS, info_plist};
+    use super::{
+        BUNDLE_ID, CATEGORY, EXECUTABLE_NAME, ICONSET_ENTRIES, MIN_MACOS, WORKSPACE_VERSION,
+        info_plist, resolve_version_from,
+    };
 
     #[test]
     fn info_plist_contains_all_required_keys() {
-        let plist = info_plist();
+        let plist = info_plist(WORKSPACE_VERSION);
         let required = [
             ("CFBundleName", "Vega"),
             ("CFBundleDisplayName", "Vega"),
@@ -379,6 +452,65 @@ mod tests {
             assert!(
                 *size <= 1024,
                 "iconset size {size} exceeds the source canvas"
+            );
+        }
+    }
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn version_precedence_flag_beats_env_beats_workspace() {
+        // Cargo.toml fallback (no flag, no env).
+        assert_eq!(
+            resolve_version_from(&[], None).expect("workspace fallback"),
+            WORKSPACE_VERSION
+        );
+        // Env override (the CI release path).
+        assert_eq!(
+            resolve_version_from(&[], Some("0.2.0")).expect("env override"),
+            "0.2.0"
+        );
+        // Flag beats env (manual re-package of an already-tagged build).
+        assert_eq!(
+            resolve_version_from(&args(&["--version", "9.9.9"]), Some("0.2.0"))
+                .expect("flag over env"),
+            "9.9.9"
+        );
+        // Inline `--version=x.y.z` form is equivalent.
+        assert_eq!(
+            resolve_version_from(&args(&["--version=3.1.4"]), None).expect("inline flag"),
+            "3.1.4"
+        );
+    }
+
+    #[test]
+    fn version_overrides_are_validated() {
+        // XML/plist-hostile values are rejected instead of stamped.
+        for bad in ["1.0<script>", "v1;rm -rf", "-1.0", "0.1.0\n"] {
+            assert!(
+                resolve_version_from(&args(&["--version", bad]), None).is_err(),
+                "version {bad:?} must be rejected"
+            );
+            assert!(
+                resolve_version_from(&[], Some(bad)).is_err(),
+                "env version {bad:?} must be rejected"
+            );
+        }
+        // An empty --version value is an explicit mistake → rejected…
+        assert!(resolve_version_from(&args(&["--version", ""]), None).is_err());
+        // …whereas an empty env value is treated as unset → workspace fallback.
+        assert_eq!(
+            resolve_version_from(&[], Some("")).expect("empty env treated as unset"),
+            WORKSPACE_VERSION
+        );
+        // Pre-release / build metadata and tag-style values are fine.
+        for good in ["0.1.0", "0.1.0-rc.1", "0.1.0+build.7", "1a2b"] {
+            assert!(
+                resolve_version_from(&args(&["--version", good]), None)
+                    .is_ok_and(|version| version == good),
+                "version {good:?} must be accepted"
             );
         }
     }
