@@ -9,8 +9,10 @@ pub struct ConversationStream {
     /// 消息块列表（T18）：user 回显与 assistant 流交替，顺序即会话顺序。
     pub(crate) entries: Vec<StreamEntry>,
     pub(crate) counters: Arc<StreamCounters>,
-    pub(crate) scroll: gpui::UniformListScrollHandle,
-    pub(crate) anchor: anchor::AnchorState,
+    /// Variable-height list state (S8-T44/C4): one item per semantic entry,
+    /// natural heights. The same state owns the scroll position and the P4
+    /// tail-follow semantics (`FollowMode::Tail`).
+    pub(crate) list: gpui::ListState,
     /// Active demo injection (`None` = idle/finished).
     pub(crate) injecting: Option<InjectionState>,
     /// Composer 输入状态（独立 `TextInput` Entity，固定 3 行多行）。
@@ -149,12 +151,17 @@ impl ConversationStream {
             }
         })
         .detach();
+        // One item per semantic entry at natural height; Tail follow is the
+        // P4 anchor (贴底跟随 / 上翻 detach / 回底 resume)，由列表原生承担
+        // （任何上滚事件 detach，回到距底 1px 内恢复——容差与旧锚定状态机
+        // 一致）。600px overdraw 保证滚动方向切换时前后各一屏已测量。
+        let list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(600.0));
+        list.set_follow_mode(gpui::FollowMode::Tail);
         Self {
             thread,
             entries: Vec::new(),
             counters: Arc::new(StreamCounters::default()),
-            scroll: gpui::UniformListScrollHandle::new(),
-            anchor: anchor::INITIAL,
+            list,
             injecting: None,
             input,
             user_block_seq: USER_BLOCK_BASE,
@@ -199,6 +206,68 @@ impl ConversationStream {
             model_focus: cx.focus_handle().tab_index(16).tab_stop(true),
             _permission_listener_task: permission_listener_task,
         }
+    }
+
+    // ── variable-height list maintenance (S8-T44/C4) ────────────────────────
+    //
+    // One list item per semantic entry. Structural entry mutations notify the
+    // list through `splice`; content mutations through `remeasure_items`
+    // (Absolute scroll anchor: the pixel offset into the scroll-top item is
+    // preserved, keeping anchor drift <1px). Frozen items are never touched.
+
+    /// Registers `entries.len() - previous_len` appended items with the list.
+    pub(crate) fn list_append(&mut self, previous_len: usize) {
+        let count = self.entries.len();
+        debug_assert!(count >= previous_len);
+        if count > previous_len {
+            self.list
+                .splice(previous_len..previous_len, count - previous_len);
+        }
+    }
+
+    /// Registers one item inserted at `index` (e.g. an inline artifact after
+    /// its exact tool).
+    pub(crate) fn list_insert(&mut self, index: usize) {
+        self.list.splice(index..index, 1);
+    }
+
+    /// Registers `count` items prepended above the loaded history
+    /// (S8-T45/C7). `splice` shifts `logical_scroll_top` by the insert
+    /// count while keeping the pixel offset into the scroll-top item, so
+    /// the page-boundary anchor is exact (drift <1px by construction).
+    pub(crate) fn list_prepend(&mut self, count: usize) {
+        if count > 0 {
+            self.list.splice(0..0, count);
+        }
+    }
+
+    /// Registers the removal of the item at `index` (permission resolution).
+    pub(crate) fn list_remove(&mut self, index: usize) {
+        self.list.splice(index..index + 1, 0);
+    }
+
+    /// Marks the item at `index` for height re-measurement (mutable tail or
+    /// explicitly invalidated item; the C4 rematerialize whitelist).
+    pub(crate) fn invalidate_item(&mut self, index: Option<usize>) {
+        if let Some(index) = index
+            && index < self.list.item_count()
+        {
+            self.list.remeasure_items(index..index + 1);
+        }
+    }
+
+    /// Entry index matching `predicate`, for in-place card invalidation.
+    pub(crate) fn entry_index_where(
+        &self,
+        predicate: impl Fn(&StreamEntry) -> bool,
+    ) -> Option<usize> {
+        self.entries.iter().position(predicate)
+    }
+
+    /// Whether the list is currently following the tail (the P4 anchor
+    /// state, read by the header indicator).
+    pub(crate) fn following_tail(&self) -> bool {
+        self.list.is_following_tail()
     }
 
     /// Applies the authoritative persisted thread settings after a request.

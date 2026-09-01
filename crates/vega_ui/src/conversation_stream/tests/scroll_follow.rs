@@ -1,94 +1,23 @@
 use super::*;
 
+// S8-T44: the P4 anchor semantics (贴底跟随 / 上翻 detach / 回底 resume) are
+// delegated to the pinned GPUI variable-height list's native Tail follow.
+// The pure state machine is gone; these tests pin the delegation constants
+// and the pure hydration gate that still lives on the model.
+
 #[test]
-fn following_at_bottom_sticks_on_new_content() {
-    assert_eq!(
-        step(State::Following, 0.0, 600.0, true),
-        (State::Following, Action::StickToBottom)
-    );
+fn bottom_epsilon_matches_the_native_follow_resume_tolerance() {
+    // The list re-engages tail-follow within 1px of the bottom; our top-edge
+    // hydration gate mirrors the same epsilon.
+    assert_eq!(ANCHOR_EPSILON_PX, 1.0);
 }
 
 #[test]
-fn following_at_bottom_without_content_stays() {
-    assert_eq!(
-        step(State::Following, 0.0, 600.0, false),
-        (State::Following, Action::StayPut)
-    );
-}
-
-#[test]
-fn following_within_one_screen_still_jumps_on_content() {
-    // 上翻半屏：仍贴底跟随（超过 1 屏才解除跟随）。
-    assert_eq!(
-        step(State::Following, 300.0, 600.0, true),
-        (State::Following, Action::StickToBottom)
-    );
-}
-
-#[test]
-fn following_beyond_one_screen_detaches_and_stays() {
-    assert_eq!(
-        step(State::Following, 700.0, 600.0, true),
-        (State::Detached, Action::StayPut)
-    );
-    assert_eq!(
-        step(State::Following, 700.0, 600.0, false),
-        (State::Detached, Action::StayPut)
-    );
-}
-
-#[test]
-fn detach_boundary_is_strictly_more_than_one_viewport() {
-    assert_eq!(
-        step(State::Following, 600.0, 600.0, true),
-        (State::Following, Action::StickToBottom)
-    );
-    assert_eq!(
-        step(State::Following, 600.5, 600.0, true),
-        (State::Detached, Action::StayPut)
-    );
-}
-
-#[test]
-fn detached_view_never_jumps_on_new_content() {
-    // 脱离后新内容把距离越推越远，仍不跳。
-    assert_eq!(
-        step(State::Detached, 700.0, 600.0, true),
-        (State::Detached, Action::StayPut)
-    );
-    assert_eq!(
-        step(State::Detached, 1200.0, 600.0, true),
-        (State::Detached, Action::StayPut)
-    );
-}
-
-#[test]
-fn detached_resumes_when_back_at_bottom() {
-    assert_eq!(
-        step(State::Detached, 0.0, 600.0, false),
-        (State::Following, Action::StickToBottom)
-    );
-}
-
-#[test]
-fn epsilon_counts_as_bottom() {
-    assert_eq!(
-        step(State::Detached, 0.9, 600.0, false),
-        (State::Following, Action::StickToBottom)
-    );
-    assert_eq!(
-        step(State::Following, 1.0, 600.0, true),
-        (State::Following, Action::StickToBottom)
-    );
-}
-
-#[test]
-fn zero_viewport_disables_detach_rule() {
-    // 首帧布局前 viewport=0：只跟随，不误判脱离。
-    assert_eq!(
-        step(State::Following, 500.0, 0.0, true),
-        (State::Following, Action::StickToBottom)
-    );
+fn compact_subrow_height_is_preserved_for_cards_only() {
+    // C4 rule 1: 24px survives only as the compact-subrow rule (diff lines,
+    // card-internal rows). It must never apply to the top-level variable
+    // height list (no top-level consumer besides card subrows).
+    assert_eq!(ROW_HEIGHT, 24.0);
 }
 
 #[test]
