@@ -152,9 +152,12 @@ fn footer_line(tool_count: u64, cache_hit_percent: Option<u8>) -> String {
     format!("工具 {tool_count} · 缓存命中 {cache}")
 }
 
-/// k/M compact token format (C4); values below 1,000 stay exact.
+/// k/M compact token format (C4); values below 1,000 stay exact. The k tier
+/// owns values whose one-decimal reading stays below `1000.0k`; at 999,950
+/// the rounded k reading would carry to "1000.0k", so the M tier takes over
+/// and 999,999 reads "1.0M".
 fn compact_tokens(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
+    if tokens >= 999_950 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)
     } else if tokens >= 1_000 {
         format!("{:.1}k", tokens as f64 / 1_000.0)
@@ -203,6 +206,10 @@ mod tests {
         assert_eq!(compact_tokens(999), "999");
         assert_eq!(compact_tokens(1_000), "1.0k");
         assert_eq!(compact_tokens(12_400), "12.4k");
+        // k/M carry boundary: the last k reading and the first M reading.
+        assert_eq!(compact_tokens(999_949), "999.9k");
+        assert_eq!(compact_tokens(999_950), "1.0M");
+        assert_eq!(compact_tokens(999_999), "1.0M");
         assert_eq!(compact_tokens(1_000_000), "1.0M");
         assert_eq!(format_usd(Microcents(150_000)), "US$0.150000");
         assert_eq!(format_usd(Microcents(1_000_001)), "US$1.000001");

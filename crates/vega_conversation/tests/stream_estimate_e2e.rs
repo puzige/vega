@@ -474,6 +474,10 @@ fn counter_display_covers_compact_tokens_and_microcent_precision() {
         format(12_400_000, Some(1_000_000), false),
         "12.4M tok · US$1"
     );
+    // k/M carry boundary: 999,999 reads "1.0M", never a rounded "1000.0k".
+    assert_eq!(format(999_949, None, false), "999.9k tok · —");
+    assert_eq!(format(999_950, None, false), "1.0M tok · —");
+    assert_eq!(format(999_999, None, false), "1.0M tok · —");
     // Non-zero microcents stay distinguishable; trailing zeros trimmed.
     assert_eq!(format(8, Some(16), true), "≈8 tok · ≈US$0.000016");
     assert_eq!(

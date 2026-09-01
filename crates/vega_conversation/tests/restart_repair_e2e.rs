@@ -163,7 +163,7 @@ async fn restart_repair_normalizes_stale_rows_and_keeps_partial_text_immutable()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_refusal_on_stale_rows_happens_before_any_provider_round()
+async fn resume_repairs_stale_rows_then_runs_exactly_one_provider_round()
 -> Result<(), Box<dyn Error>> {
     let fixture = fixture()?;
     let project_id = seed_project(&fixture.store, &fixture.repo)?;

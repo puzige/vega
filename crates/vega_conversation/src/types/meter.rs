@@ -118,10 +118,13 @@ impl MeterSnapshot {
     }
 }
 
+/// k/M compact token format (C4). The k tier owns values whose one-decimal
+/// reading stays below `1000.0k`; at 999,950 the rounded k reading would
+/// carry to "1000.0k", so the M tier takes over and 999,999 reads "1.0M".
 pub(crate) fn format_compact_tokens(tokens: u64) -> String {
     if tokens < 1_000 {
         format!("{tokens}")
-    } else if tokens < 1_000_000 {
+    } else if tokens < 999_950 {
         format!("{:.1}k", tokens as f64 / 1_000.0)
     } else {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)
