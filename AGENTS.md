@@ -314,3 +314,10 @@ R68 就踩了：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-hei
 - API key 只存配置根下独立的 owner-only 明文凭据文件（R10），不写 config.toml/项目文件/日志；不访问旧 Keychain
 - 非测试代码禁止 `unwrap()`/`expect()`
 - schema 只增不删，走 `migrations/` 递增文件
+
+## 行为技能
+
+- [karpathy-guidelines](.agents/skills/karpathy-guidelines/SKILL.md)：写/审/重构代码时的
+  行为准则（最小改动、表面化假设、可验证成功判据）。**冲突时以本文件与 exec-guide 为准**，
+  适配边界见该 SKILL.md 的「Vega 适配」一节。canonical 在 `.agents/skills/`，
+  `.claude/skills/` 为软链；新增 agent 入口时按同样方式链接。
