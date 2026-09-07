@@ -268,6 +268,26 @@ pub fn set_thread_permission_mode(
     get_thread(store, thread_id)
 }
 
+/// Persists the thread's durable model (A2-14/R1: an in-session selection
+/// applies to the current thread's next run) and returns the authoritative
+/// thread row. Unknown threads and empty models fail closed with
+/// [`ConversationError::NotFound`].
+pub fn set_thread_model(
+    store: &Store,
+    thread_id: &str,
+    model: &str,
+) -> Result<Thread, ConversationError> {
+    if model.is_empty() {
+        return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    let updated =
+        store::set_model(store.conn(), thread_id, model, now_ms()).map_err(store_error)?;
+    if updated == 0 {
+        return Err(ConversationError::NotFound(thread_id.to_string()));
+    }
+    get_thread(store, thread_id)
+}
+
 /// Deletes a thread (A1-05). The store layer removes the thread together
 /// with its `messages`/`tool_calls` rows in one transaction (no orphan rows;
 /// `token_usage` is kept for cost auditing).
@@ -316,9 +336,35 @@ pub fn open_thread(store: &Store, thread_id: &str) -> Result<Thread, Conversatio
     thread_from_row(&row)
 }
 
+/// Records a genuine user visit: touches task/project timestamps and clears unread
+/// atomically. Metadata refreshes must continue to use `open_thread`.
+pub fn visit_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
+    let row = store::visit_thread(store.conn(), thread_id, now_ms())
+        .map_err(store_error)?
+        .ok_or_else(|| ConversationError::NotFound(thread_id.to_string()))?;
+    thread_from_row(&row)
+}
+
+/// Resolves only an existing task's registered, existing project directory.
+/// Call from a worker because directory validation performs filesystem IO.
+pub fn task_project_path(
+    store: &Store,
+    thread_id: &str,
+) -> Result<std::path::PathBuf, ConversationError> {
+    let thread = get_thread(store, thread_id)?;
+    let project = store_projects::find(store.conn(), &thread.project_id)
+        .map_err(store_error)?
+        .ok_or(ConversationError::NoProject)?;
+    let path = std::path::PathBuf::from(project.path);
+    if path.as_os_str().is_empty() || !path.is_absolute() || !path.is_dir() {
+        return Err(ConversationError::NoProject);
+    }
+    Ok(path)
+}
+
 /// Converts a raw store row into the shared [`Thread`], validating the
 /// `mode`/`status` vocabulary.
-fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, ConversationError> {
+pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, ConversationError> {
     let mode = ThreadMode::parse(&row.mode)
         .ok_or_else(|| ConversationError::CorruptRow(format!("mode: {}", row.mode)))?;
     let status = ThreadStatus::parse(&row.status)
@@ -372,6 +418,86 @@ mod tests {
                 [id, path.as_str(), name],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn genuine_visit_clears_unread_durably_but_metadata_open_does_not() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let thread = create_thread(&store, "p1", "model", "confirm").unwrap();
+        update_thread(
+            &store,
+            &thread.id,
+            &ThreadUpdate {
+                unread: Some(true),
+                ..ThreadUpdate::default()
+            },
+        )
+        .unwrap();
+        assert!(open_thread(&store, &thread.id).unwrap().unread);
+        let visited = super::visit_thread(&store, &thread.id).unwrap();
+        assert!(!visited.unread);
+        assert_eq!(visited.model, "model");
+        drop(store);
+        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        assert!(!open_thread(&reopened, &thread.id).unwrap().unread);
+        assert!(matches!(
+            super::visit_thread(&reopened, "missing"),
+            Err(ConversationError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn genuine_visit_rolls_back_unread_and_timestamp_when_project_touch_fails() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let thread = create_thread(&store, "p1", "model", "confirm").unwrap();
+        update_thread(
+            &store,
+            &thread.id,
+            &ThreadUpdate {
+                unread: Some(true),
+                ..ThreadUpdate::default()
+            },
+        )
+        .unwrap();
+        store.conn().execute_batch("UPDATE threads SET updated_at = 1; CREATE TRIGGER reject_touch BEFORE UPDATE ON projects BEGIN SELECT RAISE(ABORT, 'owned failure'); END;").unwrap();
+        assert!(super::visit_thread(&store, &thread.id).is_err());
+        let row = super::get_thread(&store, &thread.id).unwrap();
+        assert!(row.unread);
+        assert_eq!(row.updated_at, 1);
+    }
+
+    #[test]
+    fn task_project_path_uses_registration_and_rejects_missing_directory_or_task() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        store
+            .conn()
+            .execute(
+                "UPDATE projects SET path = ?1",
+                [dir.path().to_str().unwrap()],
+            )
+            .unwrap();
+        let thread = create_thread(&store, "p1", "model", "confirm").unwrap();
+        assert_eq!(
+            super::task_project_path(&store, &thread.id).unwrap(),
+            dir.path()
+        );
+        assert!(super::task_project_path(&store, "missing").is_err());
+        store
+            .conn()
+            .execute("UPDATE projects SET path = ''", [])
+            .unwrap();
+        assert!(super::task_project_path(&store, &thread.id).is_err());
+        store
+            .conn()
+            .execute(
+                "UPDATE projects SET path = ?1",
+                [dir.path().join("missing").to_str().unwrap()],
+            )
+            .unwrap();
+        assert!(super::task_project_path(&store, &thread.id).is_err());
     }
 
     #[test]

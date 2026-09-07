@@ -70,7 +70,8 @@ mod retry;
 
 pub use agent::{
     AgentOutcome, AgentRequest, CALL_ID_CONFLICT_OUTPUT, CANCELLED_BEFORE_EXECUTION_OUTPUT,
-    CompletedToolCall, PERMISSION_TIMEOUT, RuntimeEvent, RuntimeExactRule, RuntimeFinishReason,
+    CompletedToolCall, PERMISSION_TIMEOUT, REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES,
+    REASONING_TURN_MAX_BYTES, RuntimeEvent, RuntimeExactRule, RuntimeFinishReason,
     RuntimePermissionHook, RuntimeTokenUsage, RuntimeToolCall, RuntimeToolConfig,
     RuntimeToolResult, RuntimeToolStatus, TOOL_CALL_LIMIT, run_agent,
     run_agent_with_permission_sink, run_agent_with_sink,
@@ -86,7 +87,10 @@ pub use permission::{
     RuntimeUserDecision, decide_capability, decide_execute_permission,
 };
 pub use provider::{
-    ChatMessage, ChatRequest, ChatRole, ChatToolCall, EventStream, Provider, ProviderEvent,
+    ChatMessage, ChatRequest, ChatRole, ChatToolCall, EventStream, FrozenReasoning, Provider,
+    ProviderEvent, ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol,
     StopReason, ToolDefinition,
 };
 pub use retry::RetryPolicy;
+
+pub mod provider_check;

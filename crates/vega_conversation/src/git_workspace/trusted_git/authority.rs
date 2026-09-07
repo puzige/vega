@@ -19,6 +19,9 @@ pub(crate) fn map_workspace_error(error: GitWorkspaceError) -> CommitErrorCode {
     match error.code() {
         GitWorkspaceErrorCode::InvalidRoot => CommitErrorCode::InvalidRoot,
         GitWorkspaceErrorCode::NotRepository => CommitErrorCode::NotRepository,
+        GitWorkspaceErrorCode::GitUnavailable => CommitErrorCode::GitUnavailable,
+        GitWorkspaceErrorCode::GitUnsupported => CommitErrorCode::GitUnsupported,
+        GitWorkspaceErrorCode::GitExecutableChanged => CommitErrorCode::GitExecutableChanged,
         GitWorkspaceErrorCode::SpawnFailed => CommitErrorCode::SpawnFailed,
         GitWorkspaceErrorCode::TimedOut => CommitErrorCode::TimedOut,
         GitWorkspaceErrorCode::Cancelled => CommitErrorCode::Cancelled,

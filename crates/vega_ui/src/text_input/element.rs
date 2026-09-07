@@ -44,8 +44,8 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        // One text line per row: single-line inputs are one row tall; the
-        // multi-line Composer input is a fixed row count (task card, T18).
+        // One text line per row: single-line inputs are one row tall; a
+        // multi-line input uses its bounded visible-row viewport.
         let rows = self.input.read(cx).rows as f32;
         style.size.height = (window.line_height() * rows).into();
         (window.request_layout(style, [], cx), ())
@@ -227,7 +227,7 @@ impl Element for TextElement {
 
         let (visible_rows, first_visible_row) = if input.multiline {
             let total = lines.len().max(1);
-            let visible = total.clamp(1, 8);
+            let visible = total.clamp(input.min_rows, input.max_rows);
             let cursor_row = lines
                 .iter()
                 .rposition(|layout| cursor >= layout.start)
@@ -347,6 +347,11 @@ impl Element for TextElement {
             input.first_visible_row = prepaint.first_visible_row;
             if layout_changed {
                 cx.notify();
+                // Rows are learned from shaped visual lines during prepaint.
+                // Explicitly request the next frame so the parent composer
+                // re-runs layout immediately after a paste/IME update rather
+                // than waiting for another keyboard event.
+                window.request_animation_frame();
             }
         });
     }

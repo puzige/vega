@@ -11,6 +11,8 @@ impl TextInput {
             masked,
             multiline: false,
             rows: 1,
+            min_rows: 1,
+            max_rows: 1,
             first_visible_row: 0,
             selected_range: 0..0,
             selection_reversed: false,
@@ -32,7 +34,29 @@ impl TextInput {
         let mut input = Self::new(cx, placeholder, false);
         input.multiline = true;
         input.rows = rows.clamp(1, 8);
+        input.max_rows = 8;
         input
+    }
+
+    /// Sets the minimum and maximum visible rows for a multi-line field.
+    ///
+    /// The default range for [`Self::new_multiline`] is 1..=8, matching the
+    /// Composer. A bounded form can reserve a minimum number of complete rows
+    /// and cap its viewport without changing input, paste, or keyboard
+    /// semantics.
+    pub fn with_row_bounds(mut self, min_rows: usize, max_rows: usize) -> Self {
+        let max_rows = max_rows.clamp(1, 8);
+        let min_rows = min_rows.clamp(1, max_rows);
+        self.min_rows = min_rows;
+        self.max_rows = max_rows;
+        self.rows = self.rows.clamp(min_rows, max_rows);
+        self
+    }
+
+    /// Marks this input as reachable by the window's Tab traversal.
+    pub fn with_tab_stop(mut self, tab_stop: bool) -> Self {
+        self.focus_handle = self.focus_handle.tab_stop(tab_stop);
+        self
     }
 
     /// The current content. Masked fields expose it only here (callers must
@@ -47,7 +71,7 @@ impl TextInput {
         self.selected_range = 0..0;
         self.selection_reversed = false;
         self.marked_range = None;
-        self.rows = 1;
+        self.rows = self.min_rows;
         self.first_visible_row = 0;
         cx.notify();
     }
@@ -63,9 +87,20 @@ impl TextInput {
         cx.notify();
     }
 
-    /// Number of currently visible rows (always 1..=8).
+    /// Whether a platform IME composition is still active.
+    pub fn is_composing(&self) -> bool {
+        self.marked_range.is_some()
+    }
+
+    /// Number of currently visible rows (always within the configured range).
     pub fn visible_rows(&self) -> usize {
         self.rows
+    }
+
+    /// First visual row in the bounded multi-line viewport.
+    #[cfg(test)]
+    pub(crate) fn first_visible_row(&self) -> usize {
+        self.first_visible_row
     }
 
     /// Whether Up should enter Composer history rather than move inside a
@@ -104,14 +139,14 @@ impl TextInput {
     }
 
     /// Completes the trailing `@token` with `path`: the token body is
-    /// replaced with `@path ` (the trailing space terminates the token so
-    /// the selector closes deterministically). No-op without a trailing
-    /// token (A2-12 completion seam).
+    /// replaced with `path ` (the existing `@` stays in place; the trailing
+    /// space terminates the token so the selector closes deterministically).
+    /// No-op without a trailing token (A2-12 completion seam).
     pub fn complete_at_query(&mut self, path: &str, cx: &mut Context<Self>) {
         let Some((range, _)) = self.trailing_at_query() else {
             return;
         };
-        let replacement = format!("@{path} ");
+        let replacement = format!("{path} ");
         self.content =
             (self.content[..range.start].to_owned() + &replacement + &self.content[range.end..])
                 .into();
@@ -129,11 +164,17 @@ impl TextInput {
             return;
         }
         let count = self.content.bytes().filter(|byte| *byte == b'\n').count() + 1;
-        // Before the first layout, logical rows are the best safe estimate.
-        // Afterwards the visual-wrap cache owns height until prepaint
-        // measures the edited glyphs and requests another layout frame.
+        let logical_rows = count.clamp(self.min_rows, self.max_rows);
+        // Keep new explicit lines visible to the very next request-layout
+        // pass. Once the input has been measured, retain the measured visual
+        // viewport until prepaint can refine it; assigning `logical_rows`
+        // unconditionally would briefly collapse a soft-wrapped draft on
+        // every edit. An empty edit still shrinks immediately via `clear`,
+        // while ordinary deletion is refined by the next prepaint pass.
         if self.last_bounds.is_none() {
-            self.rows = count.clamp(1, 8);
+            self.rows = logical_rows;
+        } else {
+            self.rows = self.rows.max(logical_rows).min(8);
         }
         let cursor_row = self.content[..self.cursor_offset()]
             .bytes()
@@ -141,8 +182,8 @@ impl TextInput {
             .count();
         if cursor_row < self.first_visible_row {
             self.first_visible_row = cursor_row;
-        } else if cursor_row >= self.first_visible_row + 8 {
-            self.first_visible_row = cursor_row + 1 - 8;
+        } else if cursor_row >= self.first_visible_row + self.max_rows {
+            self.first_visible_row = cursor_row + 1 - self.max_rows;
         }
         if self.last_bounds.is_none() {
             self.first_visible_row = self.first_visible_row.min(count.saturating_sub(self.rows));

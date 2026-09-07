@@ -1,5 +1,8 @@
 # ✦ Vega — S8 验收报告（打磨 & 里程碑 · 确定性 Phase 1 验收）
 
+> **2026-09-05 review 勘误（保留下文历史记录）**：最新状态以 [当前本地交付状态](vega-review-current-status.md) 为准。下文 T47 的“thinking 档位会话内生效”只证明 UI 状态，未进入实际 ChatRequest，不能算请求语义已实现；R2 正在准备修复。`@file` helper 的安全测试不证明应用选择器接线，且 app 对解析错误降级原文继续请求，违反 T47 零 provider 请求契约；R5 正在修复完整链路。F3 的 historical resolved/10次通过不证明当前全量稳定：本轮 R0a 全量仍出现 F3 spawn race，连同另两项进程时序失败保留待归因。性能测试已由用户明确延期；原始日志、历史数字与 PR 结论不回写为新结果。
+
+
 **版本** v1.0 · 2026-08-31 · 状态词表遵循 [vega-s8-sdd.md](vega-s8-sdd.md) §1（七状态词，不可互换）
 **本卡**：S8-T49（docs-only + README；本报告自身 squash 标 **PENDING**）
 **主人决策框架**：本 Sprint 执行中，主人于 2026-08-31 作出三项长期决策（性能统一推迟 / 测试从简 / 1000 行重构并入 S8），T44/T48 两张性能卡未逐卡执行，性能 gate 全部按 T43 冻结基线如实呈现并标注 **deferred-to-final-optimization**。详见 §9 偏离专章——本报告不冒充按原卡纪律执行。

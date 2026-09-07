@@ -1,4 +1,12 @@
 use super::*;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
+use vega_conversation::{
+    ProjectBranchService,
+    types::{ProjectBranchCompletion, ProjectBranchState, ProjectBranchTarget},
+};
 
 /// Events emitted by the projects block; the sidebar orchestrator reacts.
 pub enum ProjectsBlockEvent {
@@ -6,6 +14,8 @@ pub enum ProjectsBlockEvent {
     Selected(String),
     /// A project row was removed.
     Removed(String),
+    /// Folder registration and its organization reveal have durably committed.
+    Registered(String),
 }
 
 impl EventEmitter<ProjectsBlockEvent> for ProjectsBlock {}
@@ -24,6 +34,19 @@ pub struct ProjectsBlock {
     pub(crate) sort: ProjectSort,
     /// Inline error message (ui-spec §4.6); empty until a failure occurs.
     pub(crate) error: Option<String>,
+    branches: HashMap<String, (String, ProjectBranchState)>,
+    branch_service: Option<ProjectBranchService>,
+    branch_generation: u64,
+    branch_cursor: usize,
+    next_branch_refresh: Instant,
+    branch_probe: bool,
+    branch_rendered: bool,
+    branch_pending: bool,
+    branch_started: Option<Instant>,
+    branch_selection: Option<String>,
+    branch_completion: Option<ProjectBranchCompletion>,
+    pub(super) organization_mode: bool,
+    registration_pending: bool,
 }
 
 impl ProjectsBlock {
@@ -34,13 +57,38 @@ impl ProjectsBlock {
             // 侧边栏默认「最近打开」：与初始选中项目（latest_project 语义）一致。
             sort: ProjectSort::RecentlyOpened,
             error: None,
+            branches: HashMap::new(),
+            branch_service: ProjectBranchService::new().ok(),
+            branch_generation: 0,
+            branch_cursor: 0,
+            next_branch_refresh: Instant::now(),
+            branch_probe: false,
+            branch_rendered: false,
+            branch_pending: false,
+            branch_started: None,
+            branch_selection: None,
+            branch_completion: None,
+            organization_mode: false,
+            registration_pending: false,
         };
         view.reload(cx);
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                if this.update(cx, |this, cx| this.poll_branches(cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         view
     }
 
     /// Re-reads the project list in the current sort order.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.invalidate_branches();
         let sort = self.sort;
         match with_store(cx, |store| {
             projects::list(store.conn(), sort).map_err(|error| format!("项目列表加载失败：{error}"))
@@ -54,9 +102,157 @@ impl ProjectsBlock {
         cx.notify();
     }
 
+    fn invalidate_branches(&mut self) {
+        self.branches.clear();
+        if let Some(generation) = self.branch_generation.checked_add(1) {
+            self.branch_generation = generation;
+        } else {
+            self.branch_service = None;
+        }
+        if let Some(service) = &self.branch_service {
+            service.invalidate(self.branch_generation);
+        }
+        self.branch_pending = false;
+        self.branch_started = None;
+        self.branch_completion = None;
+        self.branch_probe = false;
+        self.branch_cursor = 0;
+        self.next_branch_refresh = Instant::now();
+    }
+
+    pub(super) fn organization_branch(&mut self, project_id: &str) -> Option<String> {
+        if self.branch_probe {
+            self.branch_rendered = true;
+        }
+        self.projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .and_then(|project| self.branch_suffix(project))
+            .map(str::to_owned)
+    }
+
+    fn branch_suffix(&self, project: &Project) -> Option<&str> {
+        self.branches
+            .get(&project.id)
+            .filter(|(path, _)| path == &project.path)
+            .and_then(|(_, state)| state.suffix())
+    }
+
+    fn poll_branches(&mut self, cx: &mut Context<Self>) {
+        let selection = cx
+            .try_global::<SelectedProject>()
+            .and_then(|value| value.0.clone());
+        if selection != self.branch_selection {
+            self.branch_selection = selection;
+            self.invalidate_branches();
+        }
+        let visible = (self.organization_mode
+            || !cx.try_global::<ProjectsCollapsed>().is_some_and(|v| v.0))
+            && !cx.try_global::<SidebarCollapsed>().is_some_and(|v| v.0)
+            && !cx
+                .try_global::<crate::settings::SettingsOpen>()
+                .is_some_and(|v| v.0);
+        if !visible || self.error.is_some() {
+            if self.branch_pending || !self.branches.is_empty() {
+                self.invalidate_branches();
+            }
+            self.branch_probe = false;
+            self.branch_rendered = false;
+            return;
+        }
+        if self
+            .branch_started
+            .is_some_and(|start| start.elapsed() >= Duration::from_secs(1))
+        {
+            // A stalled filesystem cannot keep a previously displayed branch indefinitely.
+            self.invalidate_branches();
+            self.next_branch_refresh = Instant::now() + Duration::from_secs(2);
+            cx.notify();
+            return;
+        }
+        if let Some(completion) = self
+            .branch_service
+            .as_ref()
+            .and_then(|s| s.take_completion())
+            && completion.generation == self.branch_generation
+        {
+            self.branch_completion = Some(completion);
+            self.branch_probe = true;
+            self.branch_rendered = false;
+            cx.notify();
+            return;
+        }
+        if self.branch_probe {
+            self.branch_probe = false;
+            if !self.branch_rendered {
+                if self.branch_pending || !self.branches.is_empty() {
+                    self.invalidate_branches();
+                }
+                self.next_branch_refresh = Instant::now() + Duration::from_secs(2);
+                return;
+            }
+            if let Some(completion) = self.branch_completion.take() {
+                self.branch_pending = false;
+                self.branch_started = None;
+                if completion.generation == self.branch_generation {
+                    for row in completion.rows {
+                        if self.projects.iter().any(|project| {
+                            project.id == row.target.project_id
+                                && project.path == row.target.registered_path
+                        }) {
+                            self.branches.insert(
+                                row.target.project_id,
+                                (row.target.registered_path, row.state),
+                            );
+                        }
+                    }
+                    cx.notify();
+                }
+            } else {
+                self.start_branch_refresh();
+            }
+        } else if !self.branch_pending && Instant::now() >= self.next_branch_refresh {
+            // Probe actual mounted visibility; render only records a flag, never IO.
+            self.branch_rendered = false;
+            self.branch_probe = true;
+            cx.notify();
+        }
+    }
+
+    fn start_branch_refresh(&mut self) {
+        self.next_branch_refresh = Instant::now() + Duration::from_secs(2);
+        let Some(generation) = self.branch_generation.checked_add(1) else {
+            self.branches.clear();
+            self.branch_service = None;
+            return;
+        };
+        self.branch_generation = generation;
+        if self.projects.is_empty() {
+            return;
+        }
+        let targets = self
+            .projects
+            .iter()
+            .cycle()
+            .skip(self.branch_cursor)
+            .take(self.projects.len().min(128))
+            .map(|project| ProjectBranchTarget {
+                project_id: project.id.clone(),
+                registered_path: project.path.clone(),
+            })
+            .collect();
+        self.branch_cursor =
+            (self.branch_cursor + self.projects.len().min(128)) % self.projects.len();
+        if let Some(service) = &self.branch_service {
+            service.request(generation, targets);
+            self.branch_pending = true;
+            self.branch_started = Some(Instant::now());
+        }
+    }
+
     /// Click = select: touch `last_opened_at`, cache the selection in the
     /// global, then let the orchestrator resync the session block.
-    fn select_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
+    pub(super) fn select_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         let result = with_store(cx, |store| {
             projects::touch_last_opened(store.conn(), project_id)
                 .map_err(|error| format!("项目状态更新失败：{error}"))
@@ -77,7 +273,7 @@ impl ProjectsBlock {
 
     /// Removes the project row (database only; files on disk are never
     /// touched — S2 ruling: no confirmation layer).
-    fn remove_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
+    pub(super) fn remove_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         let result = with_store(cx, |store| {
             projects::remove(store.conn(), project_id)
                 .map_err(|error| format!("项目移除失败：{error}"))
@@ -99,7 +295,7 @@ impl ProjectsBlock {
     /// (T10 logic, relocated). The picker answers asynchronously (oneshot);
     /// the future runs on the foreground executor, so every store access
     /// stays on the main thread.
-    fn on_add_clicked(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_picker(&mut self, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -131,32 +327,111 @@ impl ProjectsBlock {
         .detach();
     }
 
-    /// Registers `path` as a project: detects the git branch (zero-dependency
-    /// `.git`/HEAD parsing) and inserts a row; the folder's own file name is
-    /// the display name. Re-registering an already-registered path surfaces
-    /// as the inline danger bar.
-    fn register_path(&mut self, path: &Path, cx: &mut Context<Self>) {
-        // 项目名取文件夹名；无名可用（如文件系统根）时退回完整路径。
-        let name = match path.file_name().and_then(|name| name.to_str()) {
-            Some(name) => name.to_string(),
-            None => path.to_string_lossy().into_owned(),
-        };
-        let path_text = path.to_string_lossy().into_owned();
-        let branch = git_detect::detect_git(path);
-        let result = with_store(cx, |store| {
-            match projects::create(store.conn(), &path_text, &name, branch.as_deref()) {
-                Ok(_) => Ok(()),
-                Err(vega_store::projects::ProjectsError::PathAlreadyRegistered(registered)) => {
-                    Err(format!("该文件夹已注册过项目：{registered}"))
-                }
-                Err(error) => Err(format!("项目注册失败：{error}")),
-            }
-        });
-        match result {
-            Ok(()) => self.error = None,
-            Err(message) => self.error = Some(message),
+    fn on_add_clicked(&mut self, _: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open_picker(cx);
+    }
+
+    /// Register and reveal through the durable service on the background executor.
+    pub(super) fn register_path(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if self.registration_pending
+            || cx
+                .try_global::<crate::navigation::TaskMutationState>()
+                .is_some_and(|state| state.pending > 0)
+        {
+            self.error = Some("项目正在保存，请稍后重新打开文件夹".into());
+            cx.notify();
+            return;
         }
-        self.reload(cx);
+        if !crate::navigation::allow_task_navigation(None, cx) {
+            return;
+        }
+        let database = with_store(cx, |store| {
+            store
+                .database_path()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| "项目存储需要文件数据库".to_string())
+        });
+        let Ok(database) = database else {
+            self.error = database.err();
+            cx.notify();
+            return;
+        };
+        let origin = (
+            cx.global::<SelectedProject>().0.clone(),
+            cx.try_global::<OpenedThread>()
+                .and_then(|v| v.0.as_ref().map(|t| t.id.clone())),
+            cx.try_global::<crate::settings::SettingsOpen>()
+                .is_some_and(|v| v.0),
+        );
+        self.registration_pending = true;
+        crate::navigation::begin_task_mutation(cx);
+        let epoch = cx.global::<crate::navigation::TaskMutationState>().epoch;
+        let owner_database = database.clone();
+        let sort = self.sort;
+        let path = path.to_path_buf();
+        let worker = cx.background_executor().spawn(async move {
+            let branch = git_detect::detect_git(&path);
+            let store = Store::open(database).map_err(|e| e.to_string())?;
+            let (id, _) = vega_conversation::sidebar_organization::register_and_reveal_project(
+                &store,
+                &path,
+                branch.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
+            let rows = projects::list(store.conn(), sort).map_err(|e| e.to_string())?;
+            Ok::<_, String>((id, rows))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            let owner_matches = cx.update(|cx| {
+                let database_matches =
+                    with_store(cx, |store| Ok(store.database_path().map(Path::to_path_buf)))
+                        .ok()
+                        .flatten()
+                        .as_ref()
+                        == Some(&owner_database);
+                let matches = database_matches
+                    && cx.global::<crate::navigation::TaskMutationState>().epoch == epoch;
+                if database_matches {
+                    crate::navigation::finish_task_mutation(cx);
+                }
+                matches
+            });
+            this.update(cx, |this, cx| {
+                this.registration_pending = false;
+                if !owner_matches {
+                    cx.notify();
+                    return;
+                }
+                let current = (
+                    cx.global::<SelectedProject>().0.clone(),
+                    cx.try_global::<OpenedThread>()
+                        .and_then(|v| v.0.as_ref().map(|t| t.id.clone())),
+                    cx.try_global::<crate::settings::SettingsOpen>()
+                        .is_some_and(|v| v.0),
+                );
+                match result {
+                    Ok((id, rows)) => {
+                        this.projects = rows;
+                        this.invalidate_branches();
+                        this.error = None;
+                        if owner_matches && origin == current {
+                            cx.set_global(SelectedProject(Some(id.clone())));
+                            cx.set_global(crate::settings::SettingsOpen(false));
+                            show_persisted(cx);
+                            cx.emit(ProjectsBlockEvent::Registered(id));
+                        }
+                    }
+                    Err(error) => {
+                        this.error = Some(format!("打开文件夹失败，请重新打开重试：{error}"))
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
     }
 
     /// Block header: collapsible title (chevron shows the state) + [+].
@@ -232,7 +507,7 @@ impl ProjectsBlock {
                 let remove_id = project.id.clone();
                 let is_selected = selected.as_deref() == Some(project.id.as_str());
                 // 分支后缀：仅 git 目录显示（T12 卡：非 git 不显示）。
-                let branch = project.git_default_branch.clone();
+                let branch = self.branch_suffix(project).map(str::to_owned);
                 div()
                     .flex()
                     .items_center()
@@ -344,6 +619,9 @@ impl Render for ProjectsBlock {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         let collapsed = cx.global::<ProjectsCollapsed>().0;
+        if self.branch_probe && !collapsed {
+            self.branch_rendered = true;
+        }
         div()
             .flex()
             .flex_col()
@@ -360,3 +638,6 @@ impl Render for ProjectsBlock {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests;

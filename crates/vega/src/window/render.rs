@@ -1,16 +1,23 @@
 use super::*;
 
-/// Quick-template placeholder labels for the empty state (ui-spec §4.6);
-/// intentionally inert until the template feature lands (A7-02).
-pub(crate) const EMPTY_STATE_TEMPLATES: [&str; 3] = ["快捷模板 1", "快捷模板 2", "快捷模板 3"];
-
 impl Render for VegaWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_navigation(cx);
+        if self.appearance_subscription.is_none() {
+            self.appearance_subscription =
+                Some(cx.observe_window_appearance(window, |_, _, cx| {
+                    if theme(cx).follow_system {
+                        cx.set_global(Theme::system(cx));
+                        cx.notify();
+                    }
+                }));
+        }
         // Palette comes from the global theme so Cmd+Shift+L repaints instantly.
         let colors = theme(cx).colors;
         // Effective visibility: the user preference (Cmd+B, persisted) AND the
         // viewport auto-collapse rule (ui-spec §1).
-        let sidebar_visible = !cx.global::<SidebarCollapsed>().0 && !self.auto_collapsed(window);
+        let sidebar_visible =
+            !cx.global::<SidebarCollapsed>().0 && !self.auto_collapsed(window, cx);
         // T13 delete confirmation overlay: rendered above everything (window
         // root, absolute) while a delete is pending (裁决②).
         let pending_delete = cx.global::<PendingDeleteConfirm>().0.clone();
@@ -44,11 +51,28 @@ impl Render for VegaWindow {
         {
             self.close_branch_route(GitWorkspaceErrorCode::StaleGeneration, cx);
         }
+        self.sync_workspace_route(cx);
+        if !settings_open
+            && self.diff_controller.active.is_none()
+            && self
+                .workspace
+                .tabs
+                .iter()
+                .any(|(key, _)| *key == workspace::TabKey::Diff)
+        {
+            self.workspace_restore_review(cx);
+        }
+        self.sync_palette(window, cx);
+        self.sync_navigation(cx);
+        let settings_open = cx.global::<SettingsOpen>().0;
         let content: AnyElement = if settings_open {
             self.cancel_active_agent(cx);
+            self.start_model_catalog_load(cx);
             // 设置视图：缓存 Entity，避免主题刷新等重渲染时重建导致表单输入丢失。
             if self.settings_view.is_none() {
-                let settings = cx.new(SettingsView::new);
+                let config_path = self.composer_config_path();
+                let settings = cx.new(|cx| SettingsView::from_path(config_path, cx));
+                crate::app_usage::bind(&settings, cx);
                 cx.subscribe(
                     &settings,
                     |this, view, request: &PricingMutationRequested, cx| {
@@ -74,10 +98,29 @@ impl Render for VegaWindow {
                     },
                 )
                 .detach();
+                cx.subscribe(&settings, |this, _, _: &SettingsSaved, cx| {
+                    this.on_settings_saved(cx);
+                })
+                .detach();
+                cx.subscribe(
+                    &settings,
+                    |this, view, request: &ReasoningProfileSaveRequested, cx| {
+                        this.request_reasoning_profile_save(view.clone(), request, cx);
+                    },
+                )
+                .detach();
+                cx.subscribe(&settings, |this, view, _: &ReasoningReloadRequested, cx| {
+                    this.request_reasoning_reload(view.clone(), cx);
+                })
+                .detach();
                 let projection = self.pricing_controller.projection();
+                let reasoning_projection = self.reasoning_settings_projection();
                 settings.update(cx, |settings, cx| {
                     settings.apply_pricing_projection(projection, cx);
+                    settings.apply_reasoning_projection(reasoning_projection, cx);
                 });
+                let focus = settings.read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
                 self.settings_view = Some(settings);
             }
             match &self.settings_view {
@@ -86,42 +129,9 @@ impl Render for VegaWindow {
             }
         } else {
             // 设置已关闭：丢弃缓存，下次打开时重新构造并载入最新配置。
-            self.settings_view = None;
+            let returning_from_settings = self.settings_view.take().is_some();
             match cx.global::<OpenedThread>().0.clone() {
                 Some(thread) => {
-                    if let Some(diff_view) = self.diff_controller.visible_view(&thread) {
-                        let should_focus = self
-                            .diff_controller
-                            .active
-                            .as_ref()
-                            .is_some_and(|active| active.focus_pending);
-                        if should_focus {
-                            let focus = diff_view.read(cx).focus_handle(cx);
-                            window.focus(&focus, cx);
-                            if let Some(active) = self.diff_controller.active.as_mut() {
-                                active.focus_pending = false;
-                            }
-                        }
-                        return div()
-                            .size_full()
-                            .flex()
-                            .flex_row()
-                            .relative()
-                            .bg(colors.bg_base)
-                            .text_color(colors.text_primary)
-                            .when(sidebar_visible, |row| row.child(self.sidebar.clone()))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .h_full()
-                                    .overflow_hidden()
-                                    .child(diff_view),
-                            )
-                            .children(pending_delete.map(|thread| {
-                                render_delete_confirm_overlay(&thread, self.sidebar.clone(), colors)
-                            }));
-                    }
                     // S3-T17：会话流视图（每线程一个实体，切换会话时重建；
                     // MarkdownStream 内存态构造，不落库）。
                     let cached = match &self.stream_view {
@@ -136,26 +146,25 @@ impl Render for VegaWindow {
                                 previous.update(cx, |stream, cx| stream.timeout_permission(cx));
                             }
                             let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
-                            // A2-14: seed the composer model selector from the
-                            // configured providers (zero IO from the view) and
-                            // reflect the thread's current model if present.
+                            if let Some(label) =
+                                self.sidebar.read(cx).project_label(&thread.project_id, cx)
                             {
-                                let model_catalog = vega_store::config::load()
-                                    .map_or(Vec::new(), |config| all_models(&config.providers));
-                                let thread_model = thread.model.clone();
-                                view.update(cx, |stream, cx| {
-                                    if !thread_model.is_empty() {
-                                        stream.apply_composer_defaults(
-                                            vega_conversation::types::ComposerDefaults {
-                                                model: thread_model,
-                                                thinking: String::new(),
-                                            },
-                                            cx,
-                                        );
-                                    }
-                                    stream.apply_model_options(model_catalog, cx);
-                                });
+                                view.update(cx, |stream, cx| stream.set_project_label(label, cx));
                             }
+                            // A2-14/R1: this frame only projects the durable
+                            // thread and the already loaded in-memory model
+                            // catalog. Config IO is scheduled below on a
+                            // worker, so render never reads config.toml.
+                            let model_options = self.model_options_for_pricing();
+                            view.update(cx, |stream, cx| {
+                                stream.apply_thread(thread.clone(), cx);
+                                stream.apply_model_options(model_options, cx);
+                            });
+                            self.apply_reasoning_profile_to_stream(&view, &thread.model, cx);
+                            cx.subscribe(&view, |this, stream, request, cx| {
+                                this.apply_thread_model_selection(stream.clone(), request, cx);
+                            })
+                            .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.persist_composer_defaults(stream.clone(), request, cx);
                             })
@@ -171,6 +180,34 @@ impl Render for VegaWindow {
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.submit_composer(stream.clone(), request, cx);
                             })
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &ComposerStopRequested, cx| {
+                                    this.stop_composer(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &FileIndexRequested, cx| {
+                                    this.request_file_index(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &FileIndexCancelled, cx| {
+                                    this.cancel_file_index(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &FileIndexRetryRequested, cx| {
+                                    this.retry_file_index(stream.clone(), request, cx);
+                                },
+                            )
                             .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.open_workspace_diff(stream.clone(), request, cx);
@@ -282,10 +319,18 @@ impl Render for VegaWindow {
                                 }
                                 Err(_) => stream.apply_controller_error(cx),
                             });
+                            self.restore_navigation_draft(&thread.id, &view, cx);
                             self.stream_view = Some((thread.id.clone(), view.clone()));
+                            self.sync_navigation(cx);
+                            self.start_model_catalog_load(cx);
                             view
                         }
                     };
+                    // Settings close invalidates the catalog even when this
+                    // thread entity remains cached; restart the worker on
+                    // the next visible frame so newly saved providers/models
+                    // become selectable without rebuilding the session.
+                    self.start_model_catalog_load(cx);
                     self.ensure_artifact_route(&thread, stream.clone(), cx);
                     self.ensure_branch_route(&thread, stream.clone(), cx);
                     let commit_focus = self
@@ -300,6 +345,9 @@ impl Render for VegaWindow {
                             active.focus_pending = false;
                         }
                     }
+                    if returning_from_settings {
+                        stream.update(cx, |stream, cx| stream.focus_composer(window, cx));
+                    }
                     stream.into_any_element()
                 }
                 None => {
@@ -307,29 +355,76 @@ impl Render for VegaWindow {
                         self.cancel_active_agent(cx);
                         previous.update(cx, |stream, cx| stream.timeout_permission(cx));
                     }
-                    render_empty_state(colors)
+                    self.render_empty_state(!sidebar_visible, colors, cx)
                 }
             }
         };
 
+        let content = if settings_open {
+            content
+        } else {
+            self.render_workspace(content, window, cx)
+        };
+
+        if let Some(palette) = &self.palette.view {
+            let focus = palette.read(cx).focus_handle(cx);
+            if !focus.is_focused(window) {
+                window.focus(&focus, cx);
+            }
+        }
+        self.sync_navigation(cx);
         div()
+            .key_context("VegaWindow")
+            .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::open_palette))
+            .on_action(cx.listener(Self::palette_open_workspace))
+            .on_action(cx.listener(Self::palette_toggle_terminal))
             .size_full()
             .flex()
             .flex_row()
             .relative()
-            .bg(colors.bg_base)
+            .bg(colors.bg_sidebar)
             .text_color(colors.text_primary)
-            .when(sidebar_visible, |row| row.child(self.sidebar.clone()))
+            .when(sidebar_visible && !cx.global::<SettingsOpen>().0, |row| {
+                row.child(self.sidebar.clone())
+            })
             .child(
                 // Content column host: settings brings its own 820px column,
                 // the empty state is centered by its own layout.
                 div()
                     .flex_1()
                     .min_w_0()
-                    .h_full()
+                    .my(px(4.))
+                    .mr(px(4.))
+                    .rounded(px(vega_theme::Layout::PANEL_RADIUS))
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .bg(colors.bg_base)
                     .overflow_hidden()
-                    .child(content),
+                    .flex()
+                    .flex_col()
+                    .when(!sidebar_visible || settings_open, |column| {
+                        column.child(
+                            div()
+                                .pl(px(Layout::TITLEBAR_LEADING_INSET))
+                                .child(vega_ui::navigation::controls(cx, sidebar_visible)),
+                        )
+                    })
+                    .children(
+                        cx.try_global::<vega_ui::navigation::NavigationState>()
+                            .and_then(|state| state.error)
+                            .map(|error| {
+                                div()
+                                    .px_3()
+                                    .py_1()
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(colors.text_secondary)
+                                    .child(error)
+                            }),
+                    )
+                    .child(div().flex_1().min_h_0().child(content)),
             )
+            .children(self.palette.view.clone())
             // T13 删除确认弹层：最后绘制以覆盖全窗口；遮罩点击 / Esc 取消。
             .children(
                 pending_delete.map(|thread| {
@@ -339,55 +434,159 @@ impl Render for VegaWindow {
     }
 }
 
-/// The content-area empty state (ui-spec §4.6): centered guidance with inert
-/// quick-template placeholder buttons, inside the 820px content column —
-/// no large logo illustration. The temporary T10/T11 entry buttons were
-/// retired in T12 (projects/sessions now live in the sidebar).
-pub(crate) fn render_empty_state(colors: ThemeColors) -> AnyElement {
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .child(
+impl VegaWindow {
+    fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        if self.auto_collapsed(window, cx) {
+            vega_ui::sidebar::show_persisted(cx);
+        } else {
+            vega_ui::sidebar::toggle_persisted(cx);
+        }
+    }
+
+    fn empty_new_thread_clicked(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_new_thread(window, cx);
+    }
+
+    fn empty_add_project_clicked(
+        &mut self,
+        _: &MouseUpEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar.update(cx, Sidebar::open_project_picker);
+    }
+
+    fn empty_show_sidebar_clicked(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.dispatch_action(Box::new(ToggleSidebar), cx);
+    }
+
+    /// The content-area empty state (ui-spec §4.6): a quiet prompt with the
+    /// real route actions needed to start. Existing-project and no-project
+    /// states intentionally use different copy, while the action handlers
+    /// stay on Sidebar/VegaWindow's production paths.
+    fn render_empty_state(
+        &mut self,
+        sidebar_hidden: bool,
+        colors: ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let has_project = cx.global::<SelectedProject>().0.is_some();
+        let title = if has_project {
+            "今天想做些什么？"
+        } else {
+            "先添加一个项目"
+        };
+        let description = if has_project {
+            "选择新建任务即可开始；也可以从侧栏切换项目。"
+        } else {
+            "添加一个文件夹后，就可以创建任务并开始工作。"
+        };
+        let start_action = if has_project {
             div()
                 .w_full()
-                .max_w(px(CONTENT_MAX_WIDTH))
-                .px(px(CONTENT_MIN_PADDING))
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .text_size(px(Typography::HEADING_PAGE))
-                        .font_weight(Typography::HEADING_PAGE_WEIGHT)
-                        .child("✦ Vega"),
+                .h(px(106.))
+                .p_3()
+                .rounded(px(Layout::COMPOSER_RADIUS))
+                .border_1()
+                .border_color(colors.border_subtle)
+                .shadow_sm()
+                .bg(colors.bg_elevated)
+                .text_color(colors.text_secondary)
+                .text_size(px(Typography::SIDEBAR))
+                .cursor_pointer()
+                .hover(move |style| style.bg(colors.bg_hover))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(Self::empty_new_thread_clicked),
                 )
-                .child(
-                    div()
-                        .text_size(px(Typography::BODY))
-                        .text_color(colors.text_secondary)
-                        .child("开始一个新会话"),
+                .child("新建任务并开始输入…")
+                .into_any_element()
+        } else {
+            div()
+                .w_full()
+                .h(px(106.))
+                .p_3()
+                .rounded(px(Layout::COMPOSER_RADIUS))
+                .border_1()
+                .border_color(colors.border_subtle)
+                .shadow_sm()
+                .bg(colors.bg_elevated)
+                .text_color(colors.text_secondary)
+                .text_size(px(Typography::SIDEBAR))
+                .cursor_pointer()
+                .hover(move |style| style.bg(colors.bg_hover))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(Self::empty_add_project_clicked),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .children(EMPTY_STATE_TEMPLATES.map(|label| {
-                            div()
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(colors.border_subtle)
-                                .bg(colors.bg_elevated)
-                                .text_size(px(Typography::SIDEBAR))
-                                .text_color(colors.text_secondary)
-                                .child(label)
-                        })),
-                ),
-        )
-        .into_any_element()
+                .child("添加项目文件夹以开始…")
+                .into_any_element()
+        };
+        let show_sidebar = (!has_project && sidebar_hidden).then(|| {
+            div()
+                .px_3()
+                .py_1()
+                .rounded_md()
+                .text_size(px(Typography::SIDEBAR))
+                .text_color(colors.text_secondary)
+                .cursor_pointer()
+                .hover(move |style| style.bg(colors.bg_hover))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(Self::empty_show_sidebar_clicked),
+                )
+                .child("显示侧栏")
+                .into_any_element()
+        });
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                    .px(px(Layout::CONTENT_PADDING))
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(32.))
+                    .child(
+                        div()
+                            .text_size(px(Typography::EMPTY_STATE_TITLE))
+                            .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
+                            .text_color(colors.text_primary)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_secondary)
+                            .child(description),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .gap_2()
+                            .child(start_action)
+                            .children(show_sidebar),
+                    ),
+            )
+            .into_any_element()
+    }
 }

@@ -13,6 +13,8 @@ mod pricing;
 pub mod summary;
 pub mod threads;
 pub mod types;
+mod usage_dashboard;
+pub use usage_dashboard::UsageDashboardController;
 
 pub use artifact::{ArtifactCaptureCandidate, ArtifactService};
 pub use git_workspace::{
@@ -25,3 +27,15 @@ pub use pricing::{
     PricingSettingsService,
 };
 pub use vega_token::{ModelPricingSpec, PricingCatalog, RateSpec, UsageCounts};
+
+pub mod navigation;
+pub mod palette;
+pub mod terminal;
+
+mod project_branch;
+pub use project_branch::ProjectBranchService;
+
+pub mod sidebar_organization;
+
+mod provider_settings;
+pub use provider_settings::ProviderSettingsService;

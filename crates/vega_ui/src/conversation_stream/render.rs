@@ -26,7 +26,20 @@ impl ConversationStream {
         });
     }
 
-    /// Renders the thread header: title + anchor status + demo button.
+    fn on_resume_tail(&mut self, _: &ResumeTail, _: &mut Window, cx: &mut Context<Self>) {
+        self.resume_tail(cx);
+    }
+
+    fn on_resume_tail_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.resume_tail(cx);
+    }
+
+    /// Renders the thread header: title plus lightweight trusted actions.
+    ///
+    /// Benchmark/demo injection remains a public harness entry point, but is
+    /// intentionally absent from the ordinary task surface. Tail-follow state
+    /// is only surfaced when detached, where a direct return action keeps the
+    /// existing scroll contract discoverable.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let title = if self.thread.title.is_empty() {
@@ -35,139 +48,184 @@ impl ConversationStream {
             self.thread.title.clone()
         };
         let following = self.following_tail();
-        let (injected, total) = self
-            .injecting
-            .as_ref()
-            .map(|injection| (injection.replay.injected(), injection.replay.total()))
-            .unwrap_or((0, 0));
         div()
-            .px(px(CONTENT_MIN_PADDING))
+            .px(px(Layout::CONTENT_PADDING))
             .py(px(12.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
+            .flex_shrink_0()
             .border_b_1()
             .border_color(colors.border_subtle)
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(Typography::HEADING_PAGE))
-                    .font_weight(Typography::HEADING_PAGE_WEIGHT)
-                    .child(title),
-            )
-            .child(
-                // 锚定状态指示（P4 走查辅助）。
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_tertiary)
-                    .child(if following {
-                        "跟随中"
-                    } else {
-                        "已脱离 · 回到底部恢复"
-                    }),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_tertiary)
-                    .child("S3 演示"),
-            )
-            .child(
-                // 演示注入按钮（驱动 vega_markdown::MockReplay 公共回放器）。
-                div()
-                    .flex_shrink_0()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_elevated)
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_secondary)
-                    .when(!self.trusted_action_busy, |button| button.cursor_pointer())
-                    .hover(move |style| style.bg(colors.bg_hover))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::start_demo_injection))
-                    .child(if injected > 0 {
-                        format!("演示注入中 {injected}/{total} δ")
-                    } else {
-                        "演示注入".to_string()
-                    }),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_elevated)
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_secondary)
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(colors.bg_hover))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::open_diff_clicked))
-                    .child("Diff"),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_elevated)
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(if self.trusted_action_busy {
-                        colors.text_tertiary
-                    } else {
-                        colors.text_secondary
+                    .w_full()
+                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                    .mx_auto()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(Typography::HEADING_PAGE))
+                            .font_weight(Typography::HEADING_PAGE_WEIGHT)
+                            .text_color(colors.text_primary)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_secondary)
+                            .child(
+                                div()
+                                    .max_w(px(90.))
+                                    .truncate()
+                                    .child(self.project_label.clone()),
+                            )
+                            .child(self.branch_selector.clone()),
+                    )
+                    .when(!following, |row| {
+                        row.child(
+                            div()
+                                .track_focus(&self.resume_tail_focus)
+                                .key_context("ResumeTailButton")
+                                .on_action(cx.listener(Self::on_resume_tail))
+                                .flex_shrink_0()
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_secondary)
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(colors.bg_hover))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(Self::on_resume_tail_clicked),
+                                )
+                                .child("回到底部"),
+                        )
                     })
-                    .when(!self.trusted_action_busy, |button| {
-                        button
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(colors.bg_hover))
-                    })
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::open_commit_clicked))
-                    .child("Commit"),
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_row()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(colors.text_secondary)
+                                    .cursor_pointer()
+                                    .hover(move |style| style.bg(colors.bg_hover))
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::open_diff_clicked),
+                                    )
+                                    .child("更改"),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(if self.trusted_action_busy {
+                                        colors.text_tertiary
+                                    } else {
+                                        colors.text_secondary
+                                    })
+                                    .when(!self.trusted_action_busy, |button| {
+                                        button
+                                            .cursor_pointer()
+                                            .hover(move |style| style.bg(colors.bg_hover))
+                                    })
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::open_commit_clicked),
+                                    )
+                                    .child("提交"),
+                            ),
+                    ),
             )
             .into_any_element()
     }
 
-    /// Renders the Composer (ui-spec §4.4)：底部固定、圆角 12px
-    /// （rounded_xl）、1px border_subtle、bg_elevated；1~8 行自适应多行输入
-    /// （超出内滚，S8-T47 P0-3 已由 [`TextInput`] 自适应视口承担）+
-    /// [发送] 按钮（空输入禁用）+ `@file` 选择器（A2-12）+ 模型选择器与
-    /// thinking 档位（A2-14）。命令面板仍为 Composer 完全体后续范围。
+    /// Renders the Composer (R4 visual revision): input first, a single
+    /// mode/model/thinking/send row, then a lightweight branch/permission/
+    /// meter row. The existing input, selector and send guards remain wired
+    /// through their original handlers.
     fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let can_send = !self.input.read(cx).text().is_empty()
+        let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
+        let file_selector_active =
+            self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
+        let can_send = !self.actions.running
+            && self.actions.pending_mode.is_none()
+            && !self.input.read(cx).text().is_empty()
             && !self.composer_submit_pending
             && !self.approved_not_started
-            && !self.trusted_action_busy;
+            && !self.trusted_action_busy
+            && self.model_selection_pending.is_none();
         div()
-            .px(px(CONTENT_MIN_PADDING))
-            .pt(px(8.))
-            .pb(px(12.))
-            .border_t_1()
-            .border_color(colors.border_subtle)
+            .px(px(Layout::CONTENT_PADDING))
+            .pt(px(12.))
+            .pb(px(16.))
+            .flex_shrink_0()
+            .when(self.entries.is_empty(), |root| {
+                root.child(
+                    div()
+                        .w_full()
+                        .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                        .mx_auto()
+                        .h(px(36.))
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .rounded_t(px(Layout::PANEL_RADIUS))
+                        .bg(colors.bg_sidebar)
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_secondary)
+                        .child(crate::icons::icon(
+                            crate::icons::Icon::Folder,
+                            colors.text_secondary,
+                        ))
+                        .child(self.project_label.clone())
+                        .child(self.branch_selector.clone()),
+                )
+            })
             .child(
                 div()
                     .w_full()
+                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                    .mx_auto()
                     // Cmd+Enter 的按键上下文（绑定见 vega_ui::init）。
                     .key_context("Composer")
+                    .on_action(cx.listener(Self::next_composer_control))
+                    .on_action(cx.listener(Self::previous_composer_control))
+                    .on_action(cx.listener(Self::previous_composer_action))
+                    .on_action(cx.listener(Self::next_composer_action))
+                    .on_action(cx.listener(Self::accept_composer_action))
+                    .on_action(cx.listener(Self::close_composer_actions))
                     .on_action(cx.listener(Self::on_send_action))
                     .on_action(cx.listener(Self::on_previous_message))
                     .on_action(cx.listener(Self::on_selector_previous))
                     .on_action(cx.listener(Self::on_selector_next))
                     .on_action(cx.listener(Self::on_selector_cancel))
                     .on_action(cx.listener(Self::on_selector_accept))
+                    .when(file_retry_visible, |row| {
+                        row.key_context("FileSelectRetry")
+                            .on_action(cx.listener(Self::on_selector_retry_action))
+                            .on_action(cx.listener(Self::on_selector_retry_focus))
+                            .on_action(cx.listener(Self::on_selector_retry_focus_previous))
+                    })
                     .on_action(cx.listener(Self::on_activate_model))
                     .on_action(cx.listener(Self::on_model_previous))
                     .on_action(cx.listener(Self::on_model_next))
@@ -179,85 +237,239 @@ impl ConversationStream {
                     .bg(colors.bg_elevated)
                     .border_1()
                     .border_color(colors.border_subtle)
-                    .rounded_xl()
-                    .p_2()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(self.render_mode_controls(cx))
-                            .child(self.render_permission_controls(cx))
-                            .child(self.branch_selector.clone())
-                            .child(self.render_model_selector(cx))
-                            .child(self.render_thinking_control(cx)),
-                    )
+                    .rounded(px(Layout::COMPOSER_RADIUS))
+                    .shadow_sm()
+                    .p_3()
                     .child(
                         div()
                             .relative()
-                            .flex()
-                            .flex_row()
-                            .items_end()
-                            .gap_2()
-                            // 选择器打开时的按键作用域（A2-12）：仅当下拉
-                            // 打开才挂 FileSelect 上下文，Up/Down/Enter/Tab/
-                            // Esc 先到选择器（first-wins），关闭时回落到
-                            // Composer 既有绑定（Enter=换行、Up=历史召回）。
-                            .when(self.file_selector.is_open(), |row| {
+                            .w_full()
+                            // 选择器打开时的按键作用域（A2-12）：Failed
+                            // 使用独立 Retry 上下文，避免隐藏后仍吞掉
+                            // Composer 的按键；其余可见状态由 FileSelect
+                            // 先处理 Up/Down/Enter/Tab/Esc。
+                            .when(file_selector_active && !file_retry_visible, |row| {
                                 row.key_context("FileSelect")
                             })
+                            .when(self.actions.visible(), |row| {
+                                row.key_context("ComposerActions")
+                            })
+                            .child(self.render_composer_actions(cx))
                             .child(self.render_file_dropdown(cx))
-                            .child(self.input.clone())
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_size(px(Typography::SIDEBAR))
-                                    .when(can_send, |button| {
-                                        button
-                                            .bg(colors.accent)
-                                            .text_color(colors.bg_base)
-                                            .cursor_pointer()
-                                            .on_mouse_up(
-                                                MouseButton::Left,
-                                                cx.listener(Self::on_send_clicked),
-                                            )
-                                    })
-                                    .when(!can_send, |button| {
-                                        button.bg(colors.bg_hover).text_color(colors.text_tertiary)
-                                    })
-                                    .child("发送"),
-                            ),
+                            .min_h(px(48.))
+                            .child(self.input.clone()),
                     )
-                    // ui-spec §4.4 token 计数器：右下角常驻 compact counter
-                    // （S7-T39/C4）。数据只来自 conversation meter 投影；
-                    // 更新路径零 IO（checked 整数运算），数字宽度变化只影响
-                    // 本行文本，不触碰已冻结会话区（P3 不回退）。
                     .child(
                         div()
                             .flex()
-                            .w_full()
-                            .justify_end()
-                            .text_size(px(Typography::SIDEBAR))
-                            .text_color(colors.text_tertiary)
-                            .child(self.meter.snapshot().display()),
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .when(!self.compact_workspace, |row| row.flex_wrap())
+                            .when(self.compact_workspace, |row| row.gap_1())
+                            .child(
+                                crate::icons::icon_button(
+                                    crate::icons::Icon::Plus,
+                                    "添加上下文或切换模式",
+                                    colors,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.open_composer_actions(window, cx)
+                                    }),
+                                )
+                                .track_focus(&self.action_focus[0])
+                                .debug_selector(|| "composer-add".into()),
+                            )
+                            .child(self.render_compact_settings(false, cx))
+                            .child(self.render_compact_settings(true, cx))
+                            .child(div().flex_1())
+                            .child(self.render_model_selector(cx))
+                            .child(self.render_thinking_control(cx))
+                            .when(
+                                self.actions.running || self.composer_submit_pending,
+                                |row| row.child(self.render_composer_stop(cx)),
+                            )
+                            .when(
+                                !self.actions.running && !self.composer_submit_pending,
+                                |row| {
+                                    row.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .px_3()
+                                            .py_1()
+                                            .rounded_md()
+                                            .text_size(px(Typography::SIDEBAR))
+                                            .when(can_send, |button| {
+                                                button
+                                                    .bg(colors.accent)
+                                                    .text_color(colors.bg_base)
+                                                    .cursor_pointer()
+                                                    .on_mouse_up(
+                                                        MouseButton::Left,
+                                                        cx.listener(Self::on_send_clicked),
+                                                    )
+                                            })
+                                            .when(!can_send, |button| {
+                                                button
+                                                    .bg(colors.bg_hover)
+                                                    .text_color(colors.text_tertiary)
+                                            })
+                                            .child(crate::icons::icon(
+                                                crate::icons::Icon::ArrowUp,
+                                                if can_send {
+                                                    colors.bg_base
+                                                } else {
+                                                    colors.text_tertiary
+                                                },
+                                            )),
+                                    )
+                                },
+                            ),
                     ),
             )
+            .child(self.render_composer_run_status(cx))
+            .when(self.composer_submit_pending, |composer| {
+                composer.child(
+                    div()
+                        .id("composer-preparing-request")
+                        .w_full()
+                        .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                        .mx_auto()
+                        .mt_2()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_secondary)
+                        .child("正在准备请求…"),
+                )
+            })
             .children(self.controller_error.clone().map(|error| {
                 div()
+                    .debug_selector(|| "conversation-controller-error".to_string())
+                    .w_full()
+                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                    .mx_auto()
                     .mt_1()
-                    .text_size(px(Typography::SIDEBAR))
+                    .text_size(px(Typography::METADATA))
                     .text_color(colors.danger)
                     .child(error)
             }))
             .into_any_element()
     }
 
+    fn render_compact_settings(&self, permissions: bool, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        let (label, open, index) = if permissions {
+            (
+                match self.thread.permission_mode {
+                    PermissionMode::ReadOnly => "只读",
+                    PermissionMode::Confirm => "确认",
+                    PermissionMode::Auto => "自动",
+                },
+                self.permission_menu_open,
+                1,
+            )
+        } else {
+            (
+                match self.thread.mode {
+                    ThreadMode::Ask => "Ask",
+                    ThreadMode::Plan => "Plan",
+                    ThreadMode::Execute => "Execute",
+                },
+                self.mode_menu_open,
+                0,
+            )
+        };
+        div()
+            .relative()
+            .child(
+                div()
+                    .id(("composer-settings", index))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .track_focus(&self.compact_focus[index])
+                    .tab_stop(true)
+                    .px_1()
+                    .py_1()
+                    .rounded_md()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(if permissions {
+                        colors.warning
+                    } else {
+                        colors.text_secondary
+                    })
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(colors.bg_hover))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.compact_focus[index].focus(window, cx);
+                            if permissions {
+                                this.mode_menu_open = false;
+                                this.permission_menu_open = !this.permission_menu_open;
+                            } else {
+                                this.permission_menu_open = false;
+                                this.mode_menu_open = !this.mode_menu_open;
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            if permissions {
+                                this.mode_menu_open = false;
+                                this.permission_menu_open = !this.permission_menu_open;
+                            } else {
+                                this.permission_menu_open = false;
+                                this.mode_menu_open = !this.mode_menu_open;
+                            }
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    }))
+                    .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
+                    .when(self.compact_workspace, |trigger| {
+                        trigger
+                            .size(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(crate::icons::icon(
+                                if permissions {
+                                    crate::icons::Icon::Shield
+                                } else {
+                                    crate::icons::Icon::Mode
+                                },
+                                colors.text_secondary,
+                            ))
+                    })
+                    .when(!self.compact_workspace, |trigger| {
+                        trigger.child(format!("{label} ▾"))
+                    }),
+            )
+            .when(open, |root| {
+                root.child(
+                    div()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .absolute()
+                        .bottom(px(32.))
+                        .left_0()
+                        .p_1()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(colors.border_subtle)
+                        .bg(colors.bg_elevated)
+                        .shadow_sm()
+                        .child(if permissions {
+                            self.render_permission_controls(cx)
+                        } else {
+                            self.render_mode_controls(cx)
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+
     fn render_mode_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let enabled = self.model_selection_pending.is_none();
         div()
             .flex()
             .flex_row()
@@ -270,10 +482,14 @@ impl ConversationStream {
                     self.thread.mode == ThreadMode::Ask,
                     colors,
                     self.setting_focus[0].clone(),
+                    enabled,
                 )
                 .key_context("ThreadSettings")
-                .on_action(cx.listener(Self::activate_ask))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_ask)),
+                .when(enabled, |segment| {
+                    segment
+                        .on_action(cx.listener(Self::activate_ask))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_ask))
+                }),
             )
             .child(
                 segment(
@@ -281,10 +497,14 @@ impl ConversationStream {
                     self.thread.mode == ThreadMode::Plan,
                     colors,
                     self.setting_focus[1].clone(),
+                    enabled,
                 )
                 .key_context("ThreadSettings")
-                .on_action(cx.listener(Self::activate_plan))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_plan)),
+                .when(enabled, |segment| {
+                    segment
+                        .on_action(cx.listener(Self::activate_plan))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_plan))
+                }),
             )
             .child(
                 segment(
@@ -292,54 +512,72 @@ impl ConversationStream {
                     self.thread.mode == ThreadMode::Execute,
                     colors,
                     self.setting_focus[2].clone(),
+                    enabled,
                 )
                 .key_context("ThreadSettings")
-                .on_action(cx.listener(Self::activate_execute))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_execute)),
+                .when(enabled, |segment| {
+                    segment
+                        .on_action(cx.listener(Self::activate_execute))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_execute))
+                }),
             )
             .into_any_element()
     }
 
     fn render_permission_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let enabled = self.model_selection_pending.is_none();
         div()
             .flex()
             .flex_row()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
             .child(
                 segment(
-                    "ReadOnly",
+                    "只读",
                     self.thread.permission_mode == PermissionMode::ReadOnly,
                     colors,
                     self.setting_focus[3].clone(),
+                    enabled,
                 )
                 .key_context("ThreadSettings")
-                .on_action(cx.listener(Self::activate_readonly))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_readonly)),
+                .when(enabled, |segment| {
+                    segment
+                        .on_action(cx.listener(Self::activate_readonly))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_readonly))
+                }),
             )
             .child(
                 segment(
-                    "Confirm",
+                    "确认",
                     self.thread.permission_mode == PermissionMode::Confirm,
                     colors,
                     self.setting_focus[4].clone(),
+                    enabled,
                 )
                 .key_context("ThreadSettings")
-                .on_action(cx.listener(Self::activate_confirm))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_confirm)),
+                .when(enabled, |segment| {
+                    segment
+                        .on_action(cx.listener(Self::activate_confirm))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_confirm))
+                }),
             )
             .child(
                 segment(
-                    "Auto",
+                    "自动",
                     self.thread.permission_mode == PermissionMode::Auto,
                     colors,
                     self.setting_focus[5].clone(),
+                    enabled,
+                )
+                .when(
+                    self.thread.permission_mode == PermissionMode::Auto,
+                    |item| item.text_color(colors.warning),
                 )
                 .key_context("ThreadSettings")
-                .on_action(cx.listener(Self::activate_auto))
-                .on_mouse_up(MouseButton::Left, cx.listener(Self::select_auto)),
+                .when(enabled, |segment| {
+                    segment
+                        .on_action(cx.listener(Self::activate_auto))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_auto))
+                }),
             )
             .into_any_element()
     }
@@ -349,48 +587,126 @@ impl ConversationStream {
     /// and keyboard parity; zero filesystem access from this view.
     fn render_file_dropdown(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        if !self.file_selector.is_open() {
+        if !self.file_selector.is_open() && !self.file_selector_wanted && !self.file_index_loading {
             return div().into_any_element();
         }
         let highlighted = self.file_selector.highlighted();
-        div()
-            .absolute()
-            .bottom(px(0.))
-            .left_0()
-            .w(px(360.))
-            .max_w_full()
-            .flex()
-            .flex_col()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .text_color(colors.text_primary)
-            .shadow_md()
-            .children(
-                self.file_selector
-                    .candidates()
-                    .iter()
-                    .take(FILE_SUGGESTION_LIMIT)
-                    .enumerate()
-                    .map(|(index, entry)| {
-                        let selected = index == highlighted;
-                        let entry = entry.clone();
-                        div()
-                            .px_2()
-                            .py_1()
-                            .text_size(px(Typography::SIDEBAR))
-                            .truncate()
-                            .when(selected, |row| row.bg(colors.bg_active))
-                            .text_color(if selected {
-                                colors.text_primary
-                            } else {
-                                colors.text_secondary
-                            })
-                            .child(entry)
-                    }),
-            )
-            .into_any_element()
+        let content = if self.file_index_loading {
+            div()
+                .px_2()
+                .py_2()
+                .text_size(px(Typography::SIDEBAR))
+                .text_color(colors.text_secondary)
+                .child("正在索引文件…")
+                .into_any_element()
+        } else if let Some(code) = self.file_index_failure {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .px_2()
+                .py_2()
+                .text_size(px(Typography::SIDEBAR))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(colors.text_secondary)
+                        .child(code.message()),
+                )
+                .child(
+                    div()
+                        .id("file-index-retry")
+                        .flex_shrink_0()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .text_color(colors.text_primary)
+                        .bg(colors.bg_hover)
+                        .aria_label("重试文件索引")
+                        .focusable()
+                        .track_focus(&self.file_retry_focus)
+                        .tab_stop(true)
+                        .focus_visible(|style| {
+                            style.bg(colors.bg_active).text_color(colors.text_primary)
+                        })
+                        .cursor_pointer()
+                        .key_context("FileSelectRetryButton")
+                        .on_action(cx.listener(Self::on_selector_retry_action))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::on_selector_retry))
+                        .child("重试"),
+                )
+                .into_any_element()
+        } else if !self.file_selector.is_open() {
+            div()
+                .px_2()
+                .py_2()
+                .text_size(px(Typography::SIDEBAR))
+                .text_color(colors.text_secondary)
+                .child("没有匹配文件")
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .children(
+                    self.file_selector
+                        .candidates()
+                        .iter()
+                        .take(FILE_SUGGESTION_LIMIT)
+                        .enumerate()
+                        .map(|(index, entry)| {
+                            let selected = index == highlighted;
+                            let entry = entry.clone();
+                            div()
+                                .px_2()
+                                .py_1()
+                                .text_size(px(Typography::SIDEBAR))
+                                .truncate()
+                                .cursor_pointer()
+                                .when(selected, |row| row.bg(colors.bg_active))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                                        this.on_selector_click(index, cx)
+                                    }),
+                                )
+                                .text_color(if selected {
+                                    colors.text_primary
+                                } else {
+                                    colors.text_secondary
+                                })
+                                .child(entry)
+                        }),
+                )
+                .into_any_element()
+        };
+        // The containing block is the whole input row. Anchor the popup's
+        // bottom to its top, rather than covering the draft at bottom: 0.
+        // Defer paint/hit-testing so the transcript cannot cover candidates.
+        gpui::deferred(
+            div()
+                .absolute()
+                .bottom(gpui::relative(1.0))
+                .mb_2()
+                .left_0()
+                .w(px(360.))
+                .max_w_full()
+                .occlude()
+                .flex()
+                .flex_col()
+                .rounded_md()
+                .border_1()
+                .border_color(colors.border_subtle)
+                .bg(colors.bg_elevated)
+                .text_color(colors.text_primary)
+                .shadow_md()
+                .child(content),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 
     /// The model selector (A2-14): trigger shows the current selection;
@@ -399,7 +715,14 @@ impl ConversationStream {
     /// accept (first-wins), Esc close.
     fn render_model_selector(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let current = if self.composer_defaults.model.is_empty() {
+        let enabled = !self.trusted_action_busy
+            && !self.model_selection_save_busy()
+            && self.model_selection_pending.is_none();
+        // R1: while the durable save is in flight the chip shows a bounded
+        // pending state instead of claiming the new selection already.
+        let current = if self.model_selection_pending.is_some() {
+            "保存中…"
+        } else if self.composer_defaults.model.is_empty() {
             "模型"
         } else {
             self.composer_defaults.model.as_str()
@@ -414,15 +737,27 @@ impl ConversationStream {
                     .on_action(cx.listener(Self::on_model_previous))
                     .on_action(cx.listener(Self::on_model_next))
                     .on_action(cx.listener(Self::on_model_close))
+                    .min_w_0()
+                    .max_w(px(if self.compact_workspace { 98. } else { 150. }))
+                    .flex_shrink_0()
+                    // Keep the trigger on one line with an ellipsis. The
+                    // max-width alone leaves the text node's intrinsic width
+                    // in the flex measure and can crowd the send action.
+                    .truncate()
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_subtle)
                     .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_secondary)
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(colors.bg_hover))
+                    .text_color(if enabled {
+                        colors.text_secondary
+                    } else {
+                        colors.text_tertiary
+                    })
+                    .when(enabled, |trigger| {
+                        trigger
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(colors.bg_hover))
+                    })
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseUpEvent, window, cx| {
@@ -481,27 +816,30 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    /// The thinking-level control (A2-14): one segmented chip cycling
-    /// off → low → medium → high on click/Enter (mouse + keyboard parity,
-    /// ui-spec §6).
+    /// The thinking-level control (R2): one chip cycling only through the
+    /// exact choices declared by the current provider/model profile.
     fn render_thinking_control(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let level = if self.composer_defaults.thinking.is_empty() {
-            "off"
+            "provider_default"
         } else {
             self.composer_defaults.thinking.as_str()
         };
+        let label = match level {
+            "provider_default" => "提供方默认",
+            "disabled" => "关闭",
+            effort => effort,
+        };
         div()
+            .id("thinking-control")
             .key_context("ThinkingLevel")
             .on_action(cx.listener(Self::on_cycle_thinking))
             .track_focus(&self.setting_focus[6].clone())
             .px_2()
             .py_1()
             .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
             .text_size(px(Typography::SIDEBAR))
-            .text_color(if level == "off" {
+            .text_color(if matches!(level, "provider_default" | "disabled") {
                 colors.text_tertiary
             } else {
                 colors.success
@@ -509,7 +847,19 @@ impl ConversationStream {
             .cursor_pointer()
             .hover(move |style| style.bg(colors.bg_hover))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::cycle_thinking_clicked))
-            .child(format!("思考:{level}"))
+            .tooltip({
+                let label = format!("推理深度：{label}");
+                move |_, cx| crate::icons::tooltip(label.clone(), cx)
+            })
+            .when(self.compact_workspace, |trigger| {
+                trigger.px_1().child(crate::icons::icon(
+                    crate::icons::Icon::Thinking,
+                    colors.text_secondary,
+                ))
+            })
+            .when(!self.compact_workspace, |trigger| {
+                trigger.child(format!("{label} ▾"))
+            })
             .into_any_element()
     }
 }
@@ -519,23 +869,34 @@ fn segment(
     selected: bool,
     colors: ThemeColors,
     focus: FocusHandle,
+    enabled: bool,
 ) -> gpui::Div {
     div()
         .track_focus(&focus)
         .px_2()
         .py_1()
         .text_size(px(Typography::SIDEBAR))
-        .cursor_pointer()
+        .when(enabled, |item| item.cursor_pointer())
         .when(selected, |item| {
             item.bg(colors.bg_active).text_color(colors.text_primary)
         })
-        .when(!selected, |item| item.text_color(colors.text_secondary))
+        .when(!selected && enabled, |item| {
+            item.text_color(colors.text_secondary)
+        })
+        .when(!enabled, |item| item.text_color(colors.text_tertiary))
         .child(label)
 }
 
 impl Render for ConversationStream {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.actions.restore_focus {
+            self.actions.restore_focus = false;
+            self.focus_composer(window, cx);
+        }
         let render_t0 = Instant::now();
+        self.branch_selector.update(cx, |selector, _| {
+            selector.set_menu_below(!self.entries.is_empty())
+        });
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
 
@@ -567,15 +928,20 @@ impl Render for ConversationStream {
         }
 
         let body: AnyElement = if self.entries.is_empty() {
-            // §4.6 空态：内存态会话从演示注入或 Composer 开始。
             div()
-                .size_full()
+                .w_full()
+                .h(px(40.))
                 .flex()
+                .flex_col()
                 .items_center()
-                .justify_center()
-                .text_color(colors.text_tertiary)
-                .text_size(px(Typography::BODY))
-                .child("会话内容为空：点右上「演示注入」以 ~500 δ/s 流式生成，或在下方输入后发送（S3 内存态）")
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(Typography::EMPTY_STATE_TITLE))
+                        .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
+                        .text_color(colors.text_primary)
+                        .child("今天想做些什么？"),
+                )
                 .into_any_element()
         } else {
             div()
@@ -618,17 +984,47 @@ impl Render for ConversationStream {
             .bg(colors.bg_base)
             .text_color(colors.text_primary)
             .key_context("ConversationStream")
+            .when(self.mode_menu_open || self.permission_menu_open, |root| {
+                root.key_context("CompactComposerSettings")
+            })
+            .on_action(cx.listener(Self::close_compact_settings))
+            .on_key_down(cx.listener(Self::on_settings_menu_key))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.mode_menu_open || this.permission_menu_open {
+                        this.mode_menu_open = false;
+                        this.permission_menu_open = false;
+                        cx.notify();
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::open_diff_action))
             // tech-spec §5.4 动效禁令：流式期间节点无任何入场 opacity/动画
             // （本管线自 T17 起即不引入入场动画，T18 维持）。
-            .child(self.render_header(cx))
+            .when(!self.entries.is_empty(), |root| {
+                root.child(self.render_header(cx))
+            })
+            .when(self.entries.is_empty(), |root| root.justify_center())
             .child(
                 div()
-                    .flex_1()
-                    .min_h_0()
                     .w_full()
-                    .overflow_hidden()
-                    .child(body),
+                    .min_h_0()
+                    .when(!self.entries.is_empty(), |body| {
+                        body.flex_1().overflow_hidden()
+                    })
+                    .when(self.entries.is_empty(), |body| body.h(px(40.)).mb(px(32.)))
+                    .px(px(Layout::CONTENT_PADDING))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .h_full()
+                            .w_full()
+                            .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                            .mx_auto()
+                            .overflow_hidden()
+                            .child(body),
+                    ),
             )
             .child(self.render_composer(cx))
             .child(self.commit_panel.clone())

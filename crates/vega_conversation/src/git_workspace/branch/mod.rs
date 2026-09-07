@@ -225,12 +225,13 @@ impl BranchWorkspaceService {
         let executable = self.executable.clone();
         let cancel_for_check = cancel.clone();
         let authority = tokio::task::spawn_blocking(move || {
-            let runner = Runner::new(
+            let runner = runner_for_parts(
                 root,
                 root_identity,
+                &cancel_for_check,
                 #[cfg(test)]
                 executable,
-            );
+            )?;
             validate_target_changes(
                 &runner,
                 &current_oid,
@@ -318,12 +319,13 @@ impl BranchWorkspaceService {
                     match current_oid {
                         Err(failure) => Err(failure),
                         Ok(current_oid) => tokio::task::spawn_blocking(move || {
-                            let runner = Runner::new(
+                            let runner = runner_for_parts(
                                 root,
                                 root_identity,
+                                &mutation_cancel,
                                 #[cfg(test)]
                                 executable,
-                            );
+                            )?;
                             let authority = validate_target_changes(
                                 &runner,
                                 &current_oid,
@@ -447,15 +449,14 @@ impl BranchWorkspaceService {
         #[cfg(test)]
         let executable = self.executable.clone();
         tokio::task::spawn_blocking(move || {
-            build_branch_identity(
-                &Runner::new(
-                    root,
-                    identity,
-                    #[cfg(test)]
-                    executable,
-                ),
+            let runner = runner_for_parts(
+                root,
+                identity,
                 &cancel,
-            )
+                #[cfg(test)]
+                executable,
+            )?;
+            build_branch_identity(&runner, &cancel)
         })
         .await
         .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))?

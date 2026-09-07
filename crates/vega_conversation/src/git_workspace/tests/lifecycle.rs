@@ -56,12 +56,12 @@ async fn git_workspace_latest_refresh_wins_without_stale_overwrite() {
     let release = gate.path().join("first.release");
     fs::write(
             &script,
-            format!(
+            production_git_script(format!(
                 "#!/bin/sh\nif mkdir '{}' 2>/dev/null; then : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; fi\nexec /usr/bin/git \"$@\"\n",
                 lock.display(),
                 ready.display(),
                 release.display()
-            ),
+            )),
         )
         .unwrap();
     let mut permissions = fs::metadata(&script).unwrap().permissions();
@@ -113,13 +113,13 @@ async fn git_workspace_owner_finalize_fences_pre_registered_poll_completion() {
     let release = fixture.path().join("poll.release");
     fs::write(
             &script,
-            format!(
+            production_git_script(format!(
                 "#!/bin/sh\nset -eu\nis_status=0\nfor arg in \"$@\"; do [ \"$arg\" = status ] && is_status=1 || true; done\nif [ \"$is_status\" = 1 ] && [ -e '{}' ] && mkdir '{}' 2>/dev/null; then : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; fi\nexec /usr/bin/git \"$@\"\n",
                 arm.display(),
                 lock.display(),
                 ready.display(),
                 release.display(),
-            ),
+            )),
         )
         .unwrap();
     let mut permissions = fs::metadata(&script).unwrap().permissions();
@@ -165,12 +165,12 @@ async fn git_workspace_obsolete_failure_does_not_invalidate_newer_snapshot() {
     let release = gate.path().join("first.release");
     fs::write(
             &script,
-            format!(
+            production_git_script(format!(
                 "#!/bin/sh\nif mkdir '{}' 2>/dev/null; then : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; exit 91; fi\nexec /usr/bin/git \"$@\"\n",
                 lock.display(),
                 ready.display(),
                 release.display()
-            ),
+            )),
         )
         .unwrap();
     let mut permissions = fs::metadata(&script).unwrap().permissions();

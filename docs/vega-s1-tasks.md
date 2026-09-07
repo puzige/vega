@@ -100,16 +100,16 @@ unwrap/expect 禁止出现在非测试代码；验收命令全绿才算完成。
 - **验收**：`cargo test -p vega_store` 全绿
 - **禁区**：不改 DDL 任何字段（spec 定稿）；不引入 sqlx/diesel
 
-## T06 · 配置与 Keychain（A1-10 / A11-05）
+## T06 · 配置与本地凭据（R10 更新）（A1-10 / A11-05）
 
 - **前置**：T01 · **参考**：tech-spec §6
 - **产出**：
   - `crates/vega_store/src/config.rs`：
     - `AppConfig { providers: Vec<ProviderConfig>, defaults: Defaults, ui: UiPrefs }`（serde，TOML）
     - `ProviderConfig { name, base_url, models: Vec<String>, key_ref: String }`（**key_ref 只是引用名，不是 key**）
-    - `load()/save()`：路径 `~/.vega/config.toml`，不存在则生成默认模板
-  - `crates/vega_store/src/keystore.rs`：`set_key(ref_name, secret)` / `get_key(ref_name)` / `delete_key(ref_name)`，用 `keyring` crate（service = `ai.vega`）
-  - 测试：config round-trip；keychain 测试用 `keyring` 的 mock keystore feature
+    - `load()/save()`：路径 `${XDG_CONFIG_HOME:-~/.config}/vega/config.toml`，不存在则生成默认模板
+  - `crates/vega_store/src/keystore.rs`：`set_key(root, ref_name, secret)` / `get_key(root, ref_name)` / `delete_key(root, ref_name)`，独立 owner-only 明文文件，详见 R10
+  - 测试：config round-trip；凭据测试使用 owned temp filesystem（CRUD、损坏、权限、链接、同根 Settings/runtime）
 - **验收**：`cargo test -p vega_store` 全绿；`rg "api_key|secret" crates/vega_store/src/config.rs` 无明文字段（只有 key_ref）
 - **禁区**：key 永不进 config 文件/日志/错误消息
 

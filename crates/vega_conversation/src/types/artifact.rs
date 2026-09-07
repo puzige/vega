@@ -103,6 +103,9 @@ pub struct OpenInOutcome {
 pub enum GitWorkspaceErrorCode {
     InvalidRoot,
     NotRepository,
+    GitUnavailable,
+    GitUnsupported,
+    GitExecutableChanged,
     SpawnFailed,
     GitFailed,
     TimedOut,
@@ -129,6 +132,9 @@ impl GitWorkspaceErrorCode {
         match self {
             Self::InvalidRoot => "invalid_root",
             Self::NotRepository => "not_repository",
+            Self::GitUnavailable => "git_unavailable",
+            Self::GitUnsupported => "git_unsupported",
+            Self::GitExecutableChanged => "git_executable_changed",
             Self::SpawnFailed => "spawn_failed",
             Self::GitFailed => "git_failed",
             Self::TimedOut => "timed_out",

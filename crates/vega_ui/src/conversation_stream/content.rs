@@ -272,14 +272,61 @@ impl ConversationStream {
         self.permission_queue.has_pending()
     }
 
+    /// Content-free presence check for the production app-entry acceptance
+    /// harness. A queue latch may be pending before its matching proposal is
+    /// ingressed, so callers that need to prove a visible card must check this
+    /// separately.
+    #[doc(hidden)]
+    pub fn has_active_permission_card(&self) -> bool {
+        self.active_permission.is_some()
+    }
+
     pub fn has_pending_plan_review(&self, cx: &App) -> bool {
         self.plan_cards
             .values()
             .any(|card| card.read(cx).status() == vega_conversation::types::PlanStatus::Pending)
     }
 
+    /// Returns whether a model-selection request would race another
+    /// thread-owned operation. The caller supplies the app context so the
+    /// durable plan-card projection can be checked without touching SQLite.
+    pub fn model_selection_blocked(&self, cx: &App) -> bool {
+        self.actions.running
+            || self.composer_submit_pending
+            || self.approved_not_started
+            || self.trusted_action_busy
+            || self.active_permission.is_some()
+            || self.permission_queue.has_pending()
+            || self.has_pending_plan_review(cx)
+    }
+
+    /// Returns whether the exact-owner model-selection save is still pending.
+    pub fn has_pending_model_selection(&self) -> bool {
+        self.model_selection_pending.is_some()
+    }
+
+    /// Whether a callback still belongs to this stream's exact selection
+    /// owner. This is intentionally separate from the route fence in the app
+    /// window: stale streams still need to clear their own pending state.
+    pub fn owns_model_selection_request(&self, request_id: u64) -> bool {
+        self.model_selection_pending
+            .as_ref()
+            .is_some_and(|(owner_id, _)| *owner_id == request_id)
+    }
+
+    /// Whether this stream has already installed the exact app-level busy
+    /// owner for its pending model request. Generic trusted-action busy is
+    /// intentionally excluded, so duplicate delivery is distinguishable from
+    /// a model request rejected behind another trusted action.
+    pub fn model_selection_save_busy(&self) -> bool {
+        self.model_selection_save_owner.is_some()
+    }
+
     pub fn set_trusted_action_busy(&mut self, busy: bool, cx: &mut Context<Self>) {
         self.trusted_action_busy = busy;
+        if busy {
+            self.model_selector_open = false;
+        }
         self.branch_selector
             .update(cx, |selector, cx| selector.set_disabled(busy, cx));
         self.commit_panel.update(cx, |panel, cx| {
@@ -292,41 +339,49 @@ impl ConversationStream {
     /// or window teardown hides the card.
     pub fn timeout_permission(&mut self, cx: &mut Context<Self>) {
         self.permission_queue.timeout_active();
+        drop(self.deferred_permission.take());
         self.remove_active_permission(cx);
     }
 
     pub(crate) fn install_pending_permission(&mut self, cx: &mut Context<Self>) {
-        let Some(pending) = self.permission_queue.take_pending() else {
-            return;
-        };
         if cx
             .try_global::<SettingsOpen>()
             .is_some_and(|settings| settings.0)
         {
-            drop(pending);
+            self.timeout_permission(cx);
             return;
         }
+        if self
+            .deferred_permission
+            .as_ref()
+            .is_some_and(PendingPermission::is_resolved)
+        {
+            drop(self.deferred_permission.take());
+        }
+        let Some(pending) = self
+            .deferred_permission
+            .take()
+            .or_else(|| self.permission_queue.take_pending())
+        else {
+            return;
+        };
         let Some(request) = pending.request() else {
             drop(pending);
             return;
         };
         let call_id = request.call_id.clone();
-        let identity_matches = self.tool_cards.get(&call_id).is_some_and(|card| {
-            card.read(cx)
-                .permission_identity()
-                .is_some_and(|(tool, target)| {
-                    tool == request.tool && target == request.display_target
-                })
-        });
+        let Some(card) = self.tool_cards.get(&call_id).cloned() else {
+            self.deferred_permission = Some(pending);
+            return;
+        };
+        let identity_matches = card
+            .read(cx)
+            .permission_identity()
+            .is_some_and(|(tool, target)| tool == request.tool && target == request.display_target);
         if !identity_matches {
             drop(pending);
-            if let Some(card) = self.tool_cards.get(&call_id) {
-                let card = card.clone();
-                card.update(cx, ToolCard::fail_corrupt);
-                self.invalidate_tool_card(&card);
-            } else {
-                self.push_corrupt_tool(call_id, cx);
-            }
+            card.update(cx, ToolCard::fail_corrupt);
+            self.invalidate_tool_card(&card);
             return;
         }
         self.remove_active_permission(cx);
@@ -348,6 +403,7 @@ impl ConversationStream {
             .push(StreamEntry::Permission { card: card.clone() });
         self.list_append(self.entries.len() - 1);
         self.active_permission = Some(card);
+        self.active_permission_call_id = Some(request.call_id);
         // The prompt must be visible immediately: re-engage native tail
         // follow (which also scrolls to the end on the next layout).
         self.list.set_follow_mode(gpui::FollowMode::Tail);
@@ -355,6 +411,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn remove_active_permission(&mut self, cx: &mut Context<Self>) {
+        self.active_permission_call_id = None;
         let Some(active) = self.active_permission.take() else {
             return;
         };
@@ -418,6 +475,7 @@ impl ConversationStream {
                             card.fail_corrupt(cx);
                         }
                     });
+                    self.install_pending_permission(cx);
                     return;
                 }
                 let call_id = call.id.clone();
@@ -433,6 +491,7 @@ impl ConversationStream {
                 self.entries.push(StreamEntry::Tool { card: card.clone() });
                 self.list_append(index);
                 self.tool_cards.insert(call_id, card);
+                self.install_pending_permission(cx);
                 cx.notify();
             }
             ConversationEvent::ToolCallApproved { call_id, approval } => {
@@ -454,9 +513,7 @@ impl ConversationStream {
                 // and terminal projection is the sole card decode boundary.
             }
             ConversationEvent::ToolCallFinished { call_id, result } => {
-                if self.active_permission.is_some() {
-                    self.timeout_permission(cx);
-                }
+                self.timeout_permission_for_call(&call_id, cx);
                 if let Some(card) = self.tool_cards.get(&call_id) {
                     let card = card.clone();
                     card.update(cx, |card, cx| {
@@ -477,12 +534,17 @@ impl ConversationStream {
                     project_id: self.thread.project_id.clone(),
                 });
             }
-            ConversationEvent::MessageFinished { message_id, .. }
-            | ConversationEvent::Interrupted { message_id } => {
+            ConversationEvent::MessageFinished { message_id, .. } => {
+                self.record_composer_terminal(&message_id, false);
+                self.finish_agent_message(&message_id, cx);
+            }
+            ConversationEvent::Interrupted { message_id } => {
+                self.record_composer_terminal(&message_id, true);
                 self.finish_agent_message(&message_id, cx);
             }
             ConversationEvent::Error { message_id, .. } => {
                 if let Some(message_id) = message_id {
+                    self.record_composer_terminal(&message_id, false);
                     self.finish_agent_message(&message_id, cx);
                 } else {
                     self.timeout_permission(cx);
@@ -511,6 +573,26 @@ impl ConversationStream {
         self.last_finished_agent_message = self.active_agent_message.take();
         self.timeout_permission(cx);
         cx.notify();
+    }
+
+    /// Fails only the permission request bound to this terminal call. A late
+    /// or unrelated terminal event must not consume another call's pending
+    /// latch or remove its visible card.
+    fn timeout_permission_for_call(&mut self, call_id: &str, cx: &mut Context<Self>) {
+        let deferred_matches = self
+            .deferred_permission
+            .as_ref()
+            .and_then(PendingPermission::request)
+            .is_some_and(|request| request.call_id == call_id);
+        if deferred_matches {
+            drop(self.deferred_permission.take());
+        }
+        if self.active_permission_call_id.as_deref() == Some(call_id) {
+            if let Some(active) = self.active_permission.clone() {
+                active.update(cx, PermissionCard::timeout);
+            }
+            self.remove_active_permission(cx);
+        }
     }
 
     pub(crate) fn push_corrupt_tool(&mut self, call_id: String, cx: &mut Context<Self>) {

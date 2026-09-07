@@ -1,0 +1,398 @@
+use super::*;
+use gpui::{
+    Bounds, TestAppContext, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, size,
+};
+use std::io::{Read, Write};
+
+struct Harness(Entity<SettingsView>);
+impl Render for Harness {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.0.clone())
+    }
+}
+fn click(cx: &mut TestAppContext, window: WindowHandle<Harness>, selector: &'static str) {
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let bounds = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    visual.simulate_click(bounds.center(), Default::default());
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+async fn pointer_settings_uses_real_service_config_and_loopback_transport(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.toml");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut verbs = Vec::new();
+        for response in [
+            r#"{"data":[{"id":"owned-model"}]}"#,
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+        ] {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 2048];
+            loop {
+                let n = socket.read(&mut buffer).unwrap();
+                bytes.extend_from_slice(&buffer[..n]);
+                if bytes.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&bytes);
+            verbs.push(request.lines().next().unwrap().to_string());
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer owned-ui-secret")
+            );
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .unwrap();
+        }
+        verbs
+    });
+    let a = ProviderConfig {
+        name: "Owned A".into(),
+        enabled: true,
+        base_url: format!("http://{address}/v1"),
+        models: vec![],
+        key_ref: "owned-a".into(),
+    };
+    let b = ProviderConfig {
+        name: "Owned B".into(),
+        enabled: true,
+        base_url: "https://owned.invalid/v1".into(),
+        models: vec!["other-model".into()],
+        key_ref: "owned-b".into(),
+    };
+    let config = AppConfig {
+        providers: vec![a, b],
+        ..Default::default()
+    };
+    config.save_to(&path).unwrap();
+    keystore::set_key(root.path(), "owned-a", "owned-ui-secret").unwrap();
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(|cx| SettingsView::from_path(Some(path.clone()), cx));
+    let window = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1280.), px(750.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|_| Harness(view.clone())),
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    click(cx, window, "provider-down");
+    let saved = config::read_from(&path).unwrap();
+    assert_eq!(
+        saved
+            .providers
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Owned B", "Owned A"]
+    );
+    click(cx, window, "provider-enabled");
+    assert!(!config::read_from(&path).unwrap().providers[1].enabled);
+    click(cx, window, "provider-enabled");
+    assert!(config::read_from(&path).unwrap().providers[1].enabled);
+    click(cx, window, "provider-discover");
+    assert!(view.read_with(cx, |view, _| {
+        view.provider_management
+            .candidates
+            .as_ref()
+            .is_some_and(|models| models == &["owned-model"])
+    }));
+    assert!(
+        config::read_from(&path).unwrap().providers[1]
+            .models
+            .is_empty()
+    );
+    click(cx, window, "candidate-0");
+    click(cx, window, "provider-import");
+    assert_eq!(
+        config::read_from(&path).unwrap().providers[1].models,
+        ["owned-model"]
+    );
+    click(cx, window, "model-test-0");
+    assert!(view.read_with(cx, |view, _| {
+        view.provider_management
+            .statuses
+            .get("owned-model")
+            .is_some_and(|s| s == "连接成功")
+    }));
+    assert_eq!(
+        server.join().unwrap(),
+        [
+            "GET /v1/models HTTP/1.1",
+            "POST /v1/chat/completions HTTP/1.1"
+        ]
+    );
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::dark());
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    click(cx, window, "provider-add-model");
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let cancel = visual.debug_bounds("model-cancel").unwrap();
+    visual.simulate_click(cancel.center(), Default::default());
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| {
+        view.provider_management.model_editor.is_none()
+    }));
+    assert!(
+        !std::fs::read_to_string(path)
+            .unwrap()
+            .contains("owned-ui-secret")
+    );
+}
+
+#[gpui::test]
+async fn pointer_credential_recovery_patch_and_reload_clear_obsolete_network_results(
+    cx: &mut TestAppContext,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.toml");
+    let provider = ProviderConfig {
+        name: "Owned".into(),
+        enabled: true,
+        base_url: "https://owned.invalid/v1".into(),
+        models: vec!["owned-model".into()],
+        key_ref: "Owned".into(),
+    };
+    AppConfig {
+        providers: vec![provider],
+        ..Default::default()
+    }
+    .save_to(&path)
+    .unwrap();
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(|cx| SettingsView::from_path(Some(path.clone()), cx));
+    let window = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1280.), px(750.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|_| Harness(view.clone())),
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    click(cx, window, "model-test-0");
+    assert!(view.read_with(cx, |view, _| {
+        view.provider_management
+            .message
+            .as_ref()
+            .is_some_and(|message| message.contains("本地凭据"))
+    }));
+    click(cx, window, "provider-edit");
+    window
+        .update(cx, |_, window, cx| {
+            view.read(cx)
+                .key_input
+                .read(cx)
+                .focus_handle(cx)
+                .focus(window, cx)
+        })
+        .unwrap();
+    cx.simulate_input(window.into(), "owned-recovery-secret");
+    cx.simulate_keystrokes(window.into(), "cmd-enter");
+    cx.run_until_parked();
+    assert_eq!(
+        keystore::get_key(root.path(), "Owned").unwrap(),
+        "owned-recovery-secret"
+    );
+    assert!(
+        view.read_with(cx, |view, _| view.provider_management.message.is_none()
+            && view.provider_management.statuses.is_empty()
+            && view.available_key_refs.contains(&"Owned".into()))
+    );
+    // A successful config patch clears earlier failures without claiming a new test.
+    keystore::delete_key(root.path(), "Owned").unwrap();
+    click(cx, window, "model-test-0");
+    assert!(view.read_with(cx, |view, _| !view.provider_management.statuses.is_empty()));
+    click(cx, window, "provider-enabled");
+    assert!(
+        view.read_with(cx, |view, _| view.provider_management.message.is_none()
+            && view.provider_management.statuses.is_empty())
+    );
+    click(cx, window, "provider-enabled");
+    click(cx, window, "model-test-0");
+    assert!(view.read_with(cx, |view, _| !view.provider_management.statuses.is_empty()));
+    click(cx, window, "provider-reload");
+    assert!(
+        view.read_with(cx, |view, _| view.provider_management.message.is_none()
+            && view.provider_management.statuses.is_empty())
+    );
+}
+
+#[gpui::test]
+async fn small_provider_detail_retains_url_height_with_multiple_models(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.toml");
+    AppConfig {
+        providers: vec![ProviderConfig {
+            name: "Owned".into(),
+            enabled: true,
+            base_url: "https://owned.invalid/v1".into(),
+            models: vec![
+                "owned-model".into(),
+                format!("vendor/{}", "long-id-".repeat(20)),
+                "third-model".into(),
+            ],
+            key_ref: "Owned".into(),
+        }],
+        ..Default::default()
+    }
+    .save_to(&path)
+    .unwrap();
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(|cx| SettingsView::from_path(Some(path), cx));
+    // Seed a rendered error projection; transport behavior is tested separately above.
+    view.update(cx, |view, _| {
+        view.provider_management.message = Some("本地凭据不存在，请重新保存 API Key".into());
+        view.provider_management
+            .statuses
+            .insert("owned-model".into(), "本地凭据不存在".into());
+    });
+    let window = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(960.), px(600.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|_| Harness(view.clone())),
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    for dark in [false, true] {
+        cx.update(|cx| {
+            cx.set_global(if dark {
+                vega_theme::Theme::dark()
+            } else {
+                vega_theme::Theme::light()
+            });
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let url = visual.debug_bounds("provider-base-url").unwrap();
+        let viewport = visual.debug_bounds("provider-detail-viewport").unwrap();
+        assert!(
+            url.size.height >= px((Typography::BODY * Typography::BODY_LINE_HEIGHT).floor()),
+            "URL text must retain a complete line, got {:?}",
+            url.size
+        );
+        assert!(url.origin.y >= viewport.origin.y && url.bottom() <= viewport.bottom());
+        assert!(url.size.width > px(0.) && url.right() <= viewport.right());
+        let flow = visual.debug_bounds("provider-detail-flow").unwrap();
+        let message = visual.debug_bounds("provider-network-message").unwrap();
+        assert!(
+            flow.size.height > viewport.size.height,
+            "overflow must expand the scrollable flow"
+        );
+        assert!(
+            message.size.height >= px((Typography::BODY * Typography::BODY_LINE_HEIGHT).floor())
+        );
+        assert!(message.bottom() <= flow.bottom());
+    }
+}
+
+#[gpui::test]
+async fn pointer_stop_clears_pending_connection_projection(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let provider = ProviderConfig {
+        name: "Owned".into(),
+        enabled: true,
+        base_url: "https://owned.invalid/v1".into(),
+        models: vec!["owned-model".into()],
+        key_ref: "Owned".into(),
+    };
+    let view = cx.new(|cx| {
+        SettingsView::from_config(
+            AppConfig {
+                providers: vec![provider],
+                ..Default::default()
+            },
+            None,
+            cx,
+        )
+    });
+    let token = CancellationToken::new();
+    // Seed only an in-flight UI projection: real transport cancellation has D/root evidence.
+    view.update(cx, |view, _| {
+        view.provider_management.cancel = Some(token.clone());
+        view.provider_management.message = Some("正在连接…".into());
+        view.provider_management
+            .statuses
+            .insert("owned-model".into(), "正在测试…".into());
+    });
+    let window = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1280.), px(750.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|_| Harness(view.clone())),
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    click(cx, window, "provider-cancel");
+    assert!(token.is_cancelled());
+    assert!(
+        view.read_with(cx, |view, _| view.provider_management.message.is_none()
+            && view.provider_management.statuses.is_empty()
+            && view.provider_management.cancel.is_none())
+    );
+}

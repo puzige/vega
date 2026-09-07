@@ -156,6 +156,44 @@ where
     .await
 }
 
+/// Runs an approved Plan task with both the frozen pricing capability and the
+/// frozen provider/model reasoning selection.  The selection is passed once
+/// into run preparation and is then reused by every runtime round.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_approved_plan_task_with_pricing_and_reasoning<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    instruction_message_id: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    event_sink: F,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_permission_config_and_reasoning(
+        store,
+        provider,
+        tools,
+        thread_id,
+        crate::plans::APPROVAL_INSTRUCTION,
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        PersistenceActorConfig::default(),
+        Some(instruction_message_id.to_string()),
+        pricing_catalog,
+        reasoning,
+    )
+    .await
+}
+
 /// Runs a thread task while forwarding each shared event at the actual
 /// runtime boundary. Critical persistence completes before `event_sink` is
 /// invoked; returning an error from the sink stops the task.
@@ -263,6 +301,46 @@ where
     .await
 }
 
+/// Runs a thread task with frozen pricing and reasoning capabilities.  This
+/// is the production entry point used by the app worker after it has resolved
+/// the exact provider/model profile at run start.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_thread_task_with_pricing_and_reasoning<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    user_content: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    event_sink: F,
+    actor_config: PersistenceActorConfig,
+    persisted_user_message_id: Option<String>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_permission_config_and_reasoning(
+        store,
+        provider,
+        tools,
+        thread_id,
+        user_content,
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        actor_config,
+        persisted_user_message_id,
+        pricing_catalog,
+        reasoning,
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub(crate) async fn run_thread_task_with_sink_config<F>(
@@ -306,10 +384,47 @@ pub(crate) async fn run_thread_task_with_permission_config<F>(
     system_prompt: &str,
     cancel: CancellationToken,
     permission_hook: &dyn PermissionHook,
+    event_sink: F,
+    actor_config: PersistenceActorConfig,
+    persisted_user_message_id: Option<String>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_permission_config_and_reasoning(
+        store,
+        provider,
+        tools,
+        thread_id,
+        user_content,
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        actor_config,
+        persisted_user_message_id,
+        pricing_catalog,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_thread_task_with_permission_config_and_reasoning<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    user_content: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
     mut event_sink: F,
     actor_config: PersistenceActorConfig,
     persisted_user_message_id: Option<String>,
     pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
 ) -> Result<ConversationRun, ConversationError>
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
@@ -339,8 +454,9 @@ where
     let preparation_config = actor_config.clone();
     let preparation_uses_existing_user = persisted_user_message_id.is_some();
     let preparation_pricing = pricing_catalog;
+    let preparation_reasoning = reasoning;
     let prepared = match tokio::task::spawn_blocking(move || {
-        prepare_run(
+        prepare_run_with_reasoning(
             preparation_path,
             preparation_thread_id,
             preparation_user_content,
@@ -350,6 +466,7 @@ where
             preparation_config,
             preparation_uses_existing_user,
             preparation_pricing,
+            preparation_reasoning,
         )
     })
     .await

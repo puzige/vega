@@ -1,11 +1,14 @@
 //! IO-free local branch selector backed only by safe, bounded projections.
 
 use std::ops::Range;
+mod current_head;
+use current_head::CurrentHead;
 
 use gpui::prelude::*;
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, MouseButton, Render, ScrollStrategy,
-    UniformListScrollHandle, Window, actions, div, px, uniform_list,
+    Anchor, AnchoredPositionMode, App, Context, EventEmitter, FocusHandle, Focusable, MouseButton,
+    Render, ScrollStrategy, UniformListScrollHandle, Window, actions, anchored, div, point, px,
+    uniform_list,
 };
 use vega_conversation::types::{BranchId, BranchItem, BranchSnapshot, GitWorkspaceErrorCode};
 use vega_theme::{Typography, theme};
@@ -316,10 +319,12 @@ impl BranchSelectorModel {
 }
 
 pub struct BranchSelector {
+    current_head: CurrentHead,
     thread_id: String,
     project_id: String,
     model: BranchSelectorModel,
     disabled: bool,
+    menu_below: bool,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
 }
@@ -336,14 +341,35 @@ impl Focusable for BranchSelector {
 
 impl BranchSelector {
     pub fn new(thread_id: String, project_id: String, cx: &mut Context<Self>) -> Self {
+        cx.spawn(async move |this, cx| {
+            loop {
+                if this
+                    .update(cx, |this, cx| this.poll_current_head(cx))
+                    .is_err()
+                {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+            }
+        })
+        .detach();
         Self {
+            current_head: CurrentHead::new(),
             thread_id,
             project_id,
             model: BranchSelectorModel::default(),
             disabled: false,
+            menu_below: false,
             focus: cx.focus_handle().tab_stop(true),
             scroll: UniformListScrollHandle::new(),
         }
+    }
+
+    /// Places the popup below a header trigger, or above a composer trigger.
+    pub fn set_menu_below(&mut self, below: bool) {
+        self.menu_below = below;
     }
 
     pub fn route(&self) -> (&str, &str) {
@@ -424,6 +450,7 @@ impl BranchSelector {
     ) -> Option<BranchOperationId> {
         let operation = self.model.begin_switch(generation, id);
         if operation.is_some() {
+            self.current_head.invalidate();
             cx.notify();
         }
         operation
@@ -518,6 +545,7 @@ impl BranchSelector {
             return;
         };
         if let Some(operation_id) = self.model.begin_switch(generation, id) {
+            self.current_head.invalidate();
             cx.emit(BranchSwitchRequested {
                 thread_id: self.thread_id.clone(),
                 project_id: self.project_id.clone(),
@@ -582,20 +610,31 @@ impl BranchSelector {
 }
 
 impl Render for BranchSelector {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         let open = self.model.is_open();
         let pending = self.model.is_pending();
         let disabled = self.disabled || pending;
-        let label = self.model.current_label().unwrap_or("Branch").to_string();
+        let label = self.current_head_label().to_string();
+        let non_git = matches!(
+            self.current_head.state,
+            Some(vega_conversation::types::ProjectBranchState::NonGit)
+        );
         let row_count = self
             .model
             .snapshot
             .as_ref()
             .map_or(0, |snapshot| snapshot.branches.len());
         let view = cx.entity().clone();
+        let banner_rows =
+            usize::from(row_count > 0 && matches!(self.model.status, SelectorStatus::Failed(_)));
+        let popup_width = px(320.0).min((window.viewport_size().width - px(16.0)).max(px(1.0)));
+        let popup_height = px((row_count.max(1) + banner_rows) as f32 * BRANCH_ROW_HEIGHT + 2.0)
+            .min(px(240.0))
+            .min((window.viewport_size().height - px(16.0)).max(px(1.0)));
 
         div()
+            .when(non_git, |root| root.hidden())
             .relative()
             .min_w_0()
             .track_focus(&self.focus)
@@ -607,6 +646,10 @@ impl Render for BranchSelector {
             .child(
                 div()
                     .id("branch-selector-trigger")
+                    .debug_selector({
+                        let label = label.clone();
+                        move || format!("branch-current-{label}")
+                    })
                     .h(px(BRANCH_ROW_HEIGHT))
                     .max_w(px(180.0))
                     .min_w_0()
@@ -628,85 +671,102 @@ impl Render for BranchSelector {
                     .child(label),
             )
             .when(open, |root| {
-                root.child(
-                    div()
-                        .absolute()
-                        .bottom(px(BRANCH_ROW_HEIGHT + 4.0))
-                        .left_0()
-                        .w(px(320.0))
-                        .max_w_full()
-                        .h(px(240.0))
-                        .overflow_hidden()
-                        .flex()
-                        .flex_col()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .bg(colors.bg_elevated)
-                        .text_color(colors.text_primary)
-                        .when_some(
-                            match self.model.status {
-                                SelectorStatus::Failed(code) if row_count > 0 => Some(code),
-                                _ => None,
-                            },
-                            |body, code| {
-                                body.child(
-                                    div()
-                                        .h(px(BRANCH_ROW_HEIGHT))
-                                        .flex_shrink_0()
-                                        .px_2()
-                                        .flex()
-                                        .items_center()
-                                        .text_size(px(Typography::SIDEBAR))
-                                        .text_color(colors.danger)
-                                        .child(branch_error_label(code)),
-                                )
-                            },
-                        )
-                        .when(row_count > 0, |body| {
+                let popup = div()
+                    .w(popup_width)
+                    .flex_shrink_0()
+                    .h(popup_height)
+                    .occlude()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .bg(colors.bg_elevated)
+                    .text_color(colors.text_primary)
+                    .when_some(
+                        match self.model.status {
+                            SelectorStatus::Failed(code) if row_count > 0 => Some(code),
+                            _ => None,
+                        },
+                        |body, code| {
                             body.child(
-                                uniform_list(
-                                    "branch-selector-rows",
-                                    row_count,
-                                    cx.processor(move |this: &mut BranchSelector, range, _, _| {
-                                        this.model
-                                            .visible_rows(range)
-                                            .into_iter()
-                                            .map(|(index, branch)| {
-                                                render_branch_row(
-                                                    index,
-                                                    branch,
-                                                    this.model.focused(),
-                                                    disabled,
-                                                    colors,
-                                                    view.clone(),
-                                                )
-                                            })
-                                            .collect()
-                                    }),
-                                )
-                                .track_scroll(&self.scroll)
-                                .flex_1()
-                                .min_h_0()
-                                .w_full(),
-                            )
-                        })
-                        .when(row_count == 0, |body| {
-                            let text = match self.model.status {
-                                SelectorStatus::Loading => "Loading branches…",
-                                SelectorStatus::Empty => "No local branches",
-                                SelectorStatus::Failed(code) => branch_error_label(code),
-                                SelectorStatus::Closed | SelectorStatus::Ready => {
-                                    "No local branches"
-                                }
-                            };
-                            body.flex().items_center().justify_center().child(
                                 div()
+                                    .h(px(BRANCH_ROW_HEIGHT))
+                                    .flex_shrink_0()
+                                    .px_2()
+                                    .flex()
+                                    .items_center()
                                     .text_size(px(Typography::SIDEBAR))
-                                    .text_color(colors.text_tertiary)
-                                    .child(text),
+                                    .text_color(colors.danger)
+                                    .child(branch_error_label(code)),
                             )
-                        }),
+                        },
+                    )
+                    .when(row_count > 0, |body| {
+                        body.child(
+                            uniform_list(
+                                "branch-selector-rows",
+                                row_count,
+                                cx.processor(move |this: &mut BranchSelector, range, _, _| {
+                                    this.model
+                                        .visible_rows(range)
+                                        .into_iter()
+                                        .map(|(index, branch)| {
+                                            render_branch_row(
+                                                index,
+                                                branch,
+                                                this.model.focused(),
+                                                disabled,
+                                                colors,
+                                                view.clone(),
+                                            )
+                                        })
+                                        .collect()
+                                }),
+                            )
+                            .track_scroll(&self.scroll)
+                            .flex_1()
+                            .min_h_0()
+                            .w_full(),
+                        )
+                    })
+                    .when(row_count == 0, |body| {
+                        let text = match self.model.status {
+                            SelectorStatus::Loading => "Loading branches…",
+                            SelectorStatus::Empty => "No local branches",
+                            SelectorStatus::Failed(code) => branch_error_label(code),
+                            SelectorStatus::Closed | SelectorStatus::Ready => "No local branches",
+                        };
+                        body.flex().items_center().justify_center().child(
+                            div()
+                                .text_size(px(Typography::SIDEBAR))
+                                .text_color(colors.text_tertiary)
+                                .child(text),
+                        )
+                    });
+                root.child(
+                    div().absolute().top_0().left_0().size_full().child(
+                        div().relative().size_full().child(
+                            anchored()
+                                .anchor(if self.menu_below {
+                                    Anchor::TopLeft
+                                } else {
+                                    Anchor::BottomLeft
+                                })
+                                .position_mode(AnchoredPositionMode::Local)
+                                .position(point(
+                                    px(0.0),
+                                    px(if self.menu_below {
+                                        BRANCH_ROW_HEIGHT + 4.0
+                                    } else {
+                                        -4.0
+                                    }),
+                                ))
+                                .snap_to_window_with_margin(px(8.0))
+                                .child(gpui::deferred(popup).with_priority(2)),
+                        ),
+                    ),
                 )
             })
     }
@@ -770,6 +830,13 @@ fn branch_error_label(code: GitWorkspaceErrorCode) -> &'static str {
         GitWorkspaceErrorCode::BranchUnborn => "Repository has no initial commit",
         GitWorkspaceErrorCode::BranchUnsafeFilter => "Branch contains filtered files",
         GitWorkspaceErrorCode::BranchAlreadyCurrent => "Branch is already current",
+        GitWorkspaceErrorCode::GitUnavailable => {
+            "Git 2.40+ was not found; install Homebrew Git and retry"
+        }
+        GitWorkspaceErrorCode::GitUnsupported => "Git 2.40+ is required; upgrade Git and retry",
+        GitWorkspaceErrorCode::GitExecutableChanged => {
+            "Git changed while Vega was running; restart Vega and retry"
+        }
         GitWorkspaceErrorCode::TimedOut => "Branch operation timed out",
         GitWorkspaceErrorCode::Cancelled => "Branch operation cancelled",
         GitWorkspaceErrorCode::OutputTooLarge | GitWorkspaceErrorCode::ArtifactLimit => {

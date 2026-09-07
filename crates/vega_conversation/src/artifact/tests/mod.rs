@@ -239,9 +239,58 @@ async fn captured_artifact_at(
 
 fn launcher_script(root: &Path, body: &str) -> PathBuf {
     let script = root.join("fake-open");
-    fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nif [ \"${{1-}}\" = '{FIXTURE_READINESS_ARG}' ]; then exit 0; fi\n{body}\n"
+        ),
+    )
+    .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    run_fixture_readiness(&script);
     script
+}
+
+const FIXTURE_READINESS_ARG: &str = "--vega-test-readiness";
+const FIXTURE_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn run_fixture_readiness(script: &Path) {
+    let started = Instant::now();
+    let mut child = Command::new(script)
+        .arg(FIXTURE_READINESS_ARG)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap_or_else(|error| panic!("fixture readiness spawn failed: {error}"));
+    let pgid = child.id();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(
+                    status.success(),
+                    "fixture readiness exited with {:?}",
+                    status.code()
+                );
+                return;
+            }
+            Ok(None) if started.elapsed() < FIXTURE_READINESS_TIMEOUT => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) => {
+                let cleanup_failed = terminate_group(&mut child, pgid).is_err();
+                panic!(
+                    "fixture readiness timed out after {:?}; cleanup_failed={cleanup_failed}",
+                    FIXTURE_READINESS_TIMEOUT
+                );
+            }
+            Err(error) => {
+                let cleanup_failed = terminate_group(&mut child, pgid).is_err();
+                panic!("fixture readiness wait failed: {error}; cleanup_failed={cleanup_failed}");
+            }
+        }
+    }
 }
 
 fn raw_argv(path: &Path) -> Vec<Vec<u8>> {

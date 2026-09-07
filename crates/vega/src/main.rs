@@ -18,6 +18,8 @@ const WINDOW_MIN_WIDTH: f32 = 960.0;
 const WINDOW_MIN_HEIGHT: f32 = 600.0;
 
 mod app_agent;
+mod app_palette;
+mod app_usage;
 mod artifact_controller;
 mod branch_controller;
 mod commit_controller;
@@ -43,7 +45,14 @@ fn main() {
     application().run(|cx: &mut App| {
         // Seed the global theme from the macOS appearance; components read it
         // via `vega_theme::theme(cx)`.
-        let theme = Theme::system(cx);
+        let theme = match vega_store::config::load()
+            .map(|config| config.ui.theme)
+            .as_deref()
+        {
+            Ok("light") => Theme::light(),
+            Ok("dark") => Theme::dark(),
+            _ => Theme::system(cx),
+        };
         cx.set_global(theme);
 
         // Sidebar collapse preference, restored from config.toml before the
@@ -53,6 +62,19 @@ fn main() {
         // Settings view starts closed; the window render reads this global.
         cx.set_global(SettingsOpen(false));
 
+        // Keep Escape at the window context depth. An unscoped binding is
+        // ranked at the deepest focus context and steals component actions.
+        cx.bind_keys([
+            KeyBinding::new("cmd-q", Quit, None),
+            // Temporary verification binding for the theme token mechanism.
+            KeyBinding::new("cmd-shift-l", ToggleTheme, None),
+            // Settings view switching (T08).
+            KeyBinding::new("cmd-,", OpenSettings, None),
+            KeyBinding::new("escape", CloseSettings, Some("VegaWindow")),
+            KeyBinding::new("escape", CloseSettings, Some("WorkspaceMenu")),
+            // Sidebar collapse toggle (T09).
+            KeyBinding::new("cmd-b", ToggleSidebar, None),
+        ]);
         // Key bindings for the vega_ui text input components.
         vega_ui::init(cx);
 
@@ -69,6 +91,7 @@ fn main() {
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some("Vega".into()),
+                    appears_transparent: true,
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -88,19 +111,10 @@ fn main() {
             }
         };
 
+        if let Ok(root) = window.update(cx, |_, _, cx| cx.entity().downgrade()) {
+            app_palette::bind_shortcuts(window.into(), root, cx);
+        }
         cx.activate(true);
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            // Temporary verification binding for the theme token mechanism.
-            KeyBinding::new("cmd-shift-l", ToggleTheme, None),
-            // Settings view switching (T08).
-            KeyBinding::new("cmd-,", OpenSettings, None),
-            KeyBinding::new("escape", CloseSettings, None),
-            // Sidebar collapse toggle (T09).
-            KeyBinding::new("cmd-b", ToggleSidebar, None),
-            // Thread creation (T11→T12): button and Cmd+N share one handler.
-            KeyBinding::new("cmd-n", NewThread, None),
-        ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &ToggleTheme, cx| {
             cx.global_mut::<Theme>().toggle();
@@ -110,24 +124,6 @@ fn main() {
         cx.on_action(|_: &OpenSettings, cx| {
             cx.set_global(SettingsOpen(true));
             cx.refresh_windows();
-        });
-        cx.on_action(|_: &CloseSettings, cx| {
-            // T13 裁决②：删除确认弹层存在时优先消费 Esc（弹层关闭后设置
-            // 视图保持不变），行内重命名的 Esc 由其编辑器在更内层拦截。
-            let overlay_open = cx
-                .try_global::<PendingDeleteConfirm>()
-                .is_some_and(|pending| pending.0.is_some());
-            if overlay_open {
-                cx.set_global(PendingDeleteConfirm(None));
-            } else {
-                cx.set_global(SettingsOpen(false));
-            }
-            cx.refresh_windows();
-        });
-        cx.on_action(move |_: &NewThread, cx| {
-            if let Err(error) = window.update(cx, VegaWindow::open_new_thread) {
-                tracing::error!(%error, "failed to handle Cmd+N in the main window");
-            }
         });
         cx.on_action(|_: &ToggleSidebar, cx| toggle_persisted(cx));
         // Quit once the last window is closed so the process does not linger.

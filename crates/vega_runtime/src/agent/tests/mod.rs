@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use tempfile::tempdir;
 
+use super::loop_::reasoning_budget_violation;
 use super::*;
-use crate::{MockProvider, ScriptStep};
+use crate::{MockProvider, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol, ScriptStep};
 
 mod loop_tools;
 mod permission_flow;
@@ -88,6 +89,7 @@ fn request(history: Vec<ChatMessage>) -> AgentRequest {
         completed_tool_results: HashMap::new(),
         tool_config: RuntimeToolConfig::default(),
         pricing_catalog: None,
+        reasoning: None,
     }
 }
 
@@ -159,4 +161,159 @@ fn priced_catalog() -> PricingCatalog {
         schedule: None,
     }])
     .unwrap()
+}
+
+async fn assert_reasoning_follow_up(
+    reasoning: FrozenReasoning,
+    expected_reasoning_content: Option<&str>,
+) {
+    let project = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    fs::write(project.path().join("source.txt"), "source").unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ThinkingDelta("private chain".into()),
+            ProviderEvent::ToolUse {
+                id: "read-1".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"source.txt"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("done".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+    ]);
+    let mut req = request(Vec::new());
+    req.reasoning = Some(reasoning.clone());
+    req.tool_config = RuntimeToolConfig::new(
+        RuntimeRunMode::Ask,
+        RuntimePermissionMode::ReadOnly,
+        "project-1".into(),
+        "thread-1".into(),
+        data.path().join("checkpoints"),
+        Vec::new(),
+    );
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!outcome.failed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].reasoning, Some(reasoning.clone()));
+    assert_eq!(requests[1].reasoning, Some(reasoning));
+    let assistant = requests[1]
+        .messages
+        .iter()
+        .find(|message| !message.tool_calls.is_empty())
+        .expect("tool round assistant message");
+    assert_eq!(
+        assistant.reasoning_content.as_deref(),
+        expected_reasoning_content
+    );
+}
+
+#[tokio::test]
+async fn non_preserving_reasoning_is_omitted_from_tool_round() {
+    assert_reasoning_follow_up(
+        FrozenReasoning {
+            provider: "openai".into(),
+            model: "mock".into(),
+            protocol: ReasoningProtocol::OpenAiChatCompletions,
+            choice: ReasoningChoice::Effort("low".into()),
+            supports_disabled: false,
+            preserve_reasoning_content: false,
+            disabled_wire: None,
+            declared_efforts: vec!["low".into()],
+        },
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn preserving_reasoning_is_replayed_in_tool_round_memory_only() {
+    assert_reasoning_follow_up(
+        FrozenReasoning {
+            provider: "zhipu".into(),
+            model: "mock".into(),
+            protocol: ReasoningProtocol::ZhipuChatCompletions,
+            choice: ReasoningChoice::Effort("low".into()),
+            supports_disabled: false,
+            preserve_reasoning_content: true,
+            disabled_wire: None,
+            declared_efforts: vec!["low".into()],
+        },
+        Some("private chain"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn unknown_reasoning_protocol_is_provider_default_and_omits_replay() {
+    assert_reasoning_follow_up(FrozenReasoning::unknown("custom", "mock"), None).await;
+}
+
+#[tokio::test]
+async fn unknown_reasoning_replay_claim_fails_before_provider_call() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new(vec![]);
+    let mut req = request(Vec::new());
+    let mut reasoning = FrozenReasoning::unknown("custom", "mock");
+    reasoning.preserve_reasoning_content = true;
+    req.reasoning = Some(reasoning);
+    let result = run_agent(&provider, &tools, req, CancellationToken::new()).await;
+    assert!(matches!(
+        result,
+        Err(VegaError::ReasoningSelectionInvalid { .. })
+    ));
+    assert!(provider.requests().is_empty());
+}
+
+#[tokio::test]
+async fn mismatched_disabled_wire_fails_before_provider_call() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new(vec![]);
+    let mut req = request(Vec::new());
+    req.reasoning = Some(FrozenReasoning {
+        provider: "openai".into(),
+        model: "mock".into(),
+        protocol: ReasoningProtocol::OpenAiChatCompletions,
+        choice: ReasoningChoice::ProviderDefault,
+        supports_disabled: true,
+        preserve_reasoning_content: false,
+        disabled_wire: Some(ReasoningDisabledWire::ThinkingTypeDisabled),
+        declared_efforts: vec!["low".into()],
+    });
+    let result = run_agent(&provider, &tools, req, CancellationToken::new()).await;
+    assert!(matches!(
+        result,
+        Err(VegaError::ReasoningSelectionInvalid { .. })
+    ));
+    assert!(provider.requests().is_empty());
+}
+
+#[test]
+fn reasoning_budget_boundaries_are_byte_exact() {
+    assert!(reasoning_budget_violation(REASONING_DELTA_MAX_BYTES, 0, 0).is_none());
+    assert!(matches!(
+        reasoning_budget_violation(REASONING_DELTA_MAX_BYTES + 1, 0, 0),
+        Some((ReasoningBudgetScope::Delta, observed)) if observed == REASONING_DELTA_MAX_BYTES + 1
+    ));
+    assert!(matches!(
+        reasoning_budget_violation(1, REASONING_TURN_MAX_BYTES, 0),
+        Some((ReasoningBudgetScope::Turn, observed)) if observed == REASONING_TURN_MAX_BYTES + 1
+    ));
+    assert!(matches!(
+        reasoning_budget_violation(1, 0, REASONING_RUN_MAX_BYTES),
+        Some((ReasoningBudgetScope::Run, observed)) if observed == REASONING_RUN_MAX_BYTES + 1
+    ));
 }

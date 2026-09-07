@@ -1,4 +1,6 @@
 use super::*;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[test]
 fn git_workspace_hunk_suffix_no_newline_and_line_cap_are_preserved() {
@@ -90,6 +92,10 @@ fn git_workspace_environment_scrub_is_exact() {
     command
         .env("GIT_DIR", "/private/leak")
         .env("GIT_CONFIG_COUNT", "9")
+        .env("DEVELOPER_DIR", "/private/leak-xcode")
+        .env("TOOLCHAINS", "private-toolchain")
+        .env("DYLD_INSERT_LIBRARIES", "/private/leak.dylib")
+        .env("LD_PRELOAD", "/private/leak.so")
         .env("VEGA_KEEP", "yes");
     scrub_git_environment(&mut command);
     let env: HashMap<_, _> = command
@@ -98,6 +104,18 @@ fn git_workspace_environment_scrub_is_exact() {
         .collect();
     assert_eq!(env.get(OsStr::new("GIT_DIR")), Some(&None));
     assert_eq!(env.get(OsStr::new("GIT_CONFIG_COUNT")), Some(&None));
+    for key in [
+        "DEVELOPER_DIR",
+        "TOOLCHAINS",
+        "DYLD_INSERT_LIBRARIES",
+        "LD_PRELOAD",
+    ] {
+        assert_eq!(
+            env.get(OsStr::new(key)),
+            Some(&None),
+            "{key} survived scrub"
+        );
+    }
     assert_eq!(
         env.get(OsStr::new("GIT_LITERAL_PATHSPECS"))
             .and_then(|value| value.as_deref()),
@@ -470,9 +488,9 @@ fn commit_summary_deferred_overflow_never_eof_uses_bounded_timeout() {
     let overflow_reached = fixture.path().join("overflow-reached");
     let descendant_pid = fixture.path().join("descendant-pid");
     fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nset -eu\npython3 -c 'import sys; sys.stdout.buffer.write(b\"x\" * 262145); sys.stdout.flush()'\n: > '{}'\nsleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait\n",
+        &script,
+        format!(
+                "#!/bin/sh\nif [ \"${{1-}}\" = '{FIXTURE_READINESS_ARG}' ]; then exit 0; fi\nset -eu\npython3 -c 'import sys; sys.stdout.buffer.write(b\"x\" * 262145); sys.stdout.flush()'\n: > '{}'\nsleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait\n",
                 overflow_reached.display(),
                 descendant_pid.display(),
             ),
@@ -481,6 +499,7 @@ fn commit_summary_deferred_overflow_never_eof_uses_bounded_timeout() {
     let mut permissions = fs::metadata(&script).unwrap().permissions();
     permissions.set_mode(0o700);
     fs::set_permissions(&script, permissions).unwrap();
+    run_fixture_readiness(&script);
     let service = GitWorkspaceService::new_for_test(repo.path(), script.clone()).unwrap();
     let runner = Runner::new(service.root.clone(), service.identity, Some(script));
     let started = Instant::now();
@@ -508,4 +527,48 @@ fn commit_summary_deferred_overflow_never_eof_uses_bounded_timeout() {
             .success(),
         "summary timeout descendant survived cleanup"
     );
+}
+
+const FIXTURE_READINESS_ARG: &str = "--vega-test-readiness";
+const FIXTURE_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn run_fixture_readiness(script: &Path) {
+    let started = Instant::now();
+    let mut child = Command::new(script)
+        .arg(FIXTURE_READINESS_ARG)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap_or_else(|error| panic!("fixture readiness spawn failed: {error}"));
+    let pgid = child.id();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(
+                    status.success(),
+                    "fixture readiness exited with {:?}",
+                    status.code()
+                );
+                return;
+            }
+            Ok(None) if started.elapsed() < FIXTURE_READINESS_TIMEOUT => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) => {
+                let cleanup_failed =
+                    crate::git_workspace::terminate_group(&mut child, pgid).is_err();
+                panic!(
+                    "fixture readiness timed out after {:?}; cleanup_failed={cleanup_failed}",
+                    FIXTURE_READINESS_TIMEOUT
+                );
+            }
+            Err(error) => {
+                let cleanup_failed =
+                    crate::git_workspace::terminate_group(&mut child, pgid).is_err();
+                panic!("fixture readiness wait failed: {error}; cleanup_failed={cleanup_failed}");
+            }
+        }
+    }
 }

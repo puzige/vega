@@ -11,7 +11,7 @@ use gpui::{
 use vega_conversation::types::{
     DiffLanguage, DiffLayer, DiffRowKind, DiffTextProjection, GitWorkspaceErrorCode,
     WorkspaceChangeKind, WorkspaceFile, WorkspaceFileId, WorkspaceHead, WorkspaceLineCount,
-    WorkspaceSnapshot,
+    WorkspaceSnapshot, WorkspaceStats,
 };
 use vega_markdown::HighlightKind;
 use vega_theme::{ThemeColors, Typography, theme};
@@ -139,6 +139,7 @@ pub struct DiffView {
     refresh_error: Option<GitWorkspaceErrorCode>,
     projection_error: Option<(WorkspaceFileId, GitWorkspaceErrorCode)>,
     refreshing: bool,
+    show_refresh_progress: bool,
     rows: Vec<PreparedRow>,
     hunk_indexes: Vec<usize>,
     current_hunk: Option<usize>,

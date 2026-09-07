@@ -187,11 +187,11 @@ async fn branch_controller_guard_change_after_preflight_starts_zero_execute(
     let (prepare_sender, prepare_receiver) = mpsc::sync_channel(1);
     run_branch_prepare_worker(
         service,
-        prepare_fence.clone(),
+        prepare_fence.branch_id,
         tokio_util::sync::CancellationToken::new(),
         prepare_sender,
     );
-    let (_, permit) = prepare_receiver.recv().expect("preflight output");
+    let permit = prepare_receiver.recv().expect("preflight output");
     let permit = permit.expect("valid preflight permit");
     root.update(cx, |root, cx| {
         let competing = root
@@ -336,8 +336,8 @@ async fn branch_controller_close_during_preflight_clears_exact_pending_then_reop
     });
 
     let (prepare_sender, prepare_receiver) = mpsc::sync_channel(1);
-    run_branch_prepare_worker(service, fence.clone(), cancel, prepare_sender);
-    let (_, result) = prepare_receiver.recv().expect("close preflight terminal");
+    run_branch_prepare_worker(service, fence.branch_id, cancel, prepare_sender);
+    let result = prepare_receiver.recv().expect("close preflight terminal");
     root.update(cx, |root, cx| root.finish_branch_prepare(fence, result, cx));
     assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
     let (fresh_sender, fresh_receiver) = mpsc::sync_channel(1);
@@ -465,14 +465,13 @@ async fn branch_controller_close_cancels_owner_but_releases_only_after_cleanup(
     let (prepare_sender, prepare_receiver) = mpsc::sync_channel(1);
     run_branch_prepare_worker(
         service.clone(),
-        prepare_fence,
+        prepare_fence.branch_id,
         tokio_util::sync::CancellationToken::new(),
         prepare_sender,
     );
     let permit = prepare_receiver
         .recv()
         .expect("prepare output")
-        .1
         .expect("prepare permit");
     let cancel = tokio_util::sync::CancellationToken::new();
     let fence = root.update(cx, |root, cx| {
@@ -671,14 +670,13 @@ async fn branch_controller_s6_controller_owner_success_applies_authority_then_re
     let (prepare_sender, prepare_receiver) = mpsc::sync_channel(1);
     run_branch_prepare_worker(
         service.clone(),
-        prepare_fence,
+        prepare_fence.branch_id,
         tokio_util::sync::CancellationToken::new(),
         prepare_sender,
     );
     let permit = prepare_receiver
         .recv()
         .expect("success prepare output")
-        .1
         .expect("success permit");
     let fence = root.update(cx, |root, cx| {
         let lease = root
@@ -972,4 +970,99 @@ async fn branch_selector_real_projection_keyboard_first_wins_and_visible_range(
         };
         assert!(!selector.apply_snapshot(too_large, cx));
     });
+}
+
+#[gpui::test]
+async fn branch_prepare_worker_held_after_route_close_does_not_retain_ui(
+    cx: &mut gpui::TestAppContext,
+) {
+    let repo = artifact_controller_repo();
+    run_fixture_git(repo.path(), &["branch", "held-preflight-target"]);
+    let store = Store::open(":memory:").expect("held preflight store");
+    store.migrate().expect("held preflight migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        repo.path().to_str().expect("UTF-8 root"),
+        "branch",
+        None,
+    )
+    .expect("held preflight project");
+    let thread = vega_conversation::threads::create_thread(
+        &store,
+        &project.id,
+        "mock",
+        PermissionMode::Confirm.as_str(),
+    )
+    .expect("held preflight thread");
+    cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+    let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+    let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+    let weak_stream = stream.downgrade();
+    let weak_selector = selector.downgrade();
+    let root = cx.new(VegaWindow::new);
+    let (service, cancel) = root.update(cx, |root, cx| {
+        root.stream_view = Some((thread.id.clone(), stream.clone()));
+        root.ensure_branch_route(&thread, stream.clone(), cx);
+        let active = root.branch_controller.active.as_ref().expect("held route");
+        (active.service.clone(), active.cancel.child_token())
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("real branch service runtime");
+    let snapshot = runtime
+        .block_on(service.refresh(tokio_util::sync::CancellationToken::new()))
+        .expect("real branch snapshot");
+    let branch_id = snapshot
+        .branches
+        .iter()
+        .find(|branch| branch.label == "held-preflight-target")
+        .expect("held target")
+        .id;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let (entered_sender, entered_receiver) = mpsc::sync_channel(1);
+    let (release_sender, release_receiver) = mpsc::sync_channel(1);
+    // Hold the actual production worker boundary across UI teardown. The worker
+    // and its result channel can carry only service/data state, never a UI fence.
+    let worker = std::thread::spawn(move || {
+        entered_sender.send(()).expect("worker entered");
+        release_receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("bounded worker hold released");
+        run_branch_prepare_worker(service, branch_id, cancel, sender);
+    });
+    entered_receiver
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("worker held before teardown");
+    root.update(cx, |root, cx| {
+        root.close_branch_route(GitWorkspaceErrorCode::Cancelled, cx)
+    });
+    drop(root);
+    drop(stream);
+    drop(selector);
+    // GPUI releases nested entity ownership at the end of an app update.
+    cx.update(|_| {});
+    cx.run_until_parked();
+    let stream_released_while_worker_held = weak_stream.upgrade().is_none();
+    let selector_released_while_worker_held = weak_selector.upgrade().is_none();
+    release_sender.send(()).expect("release real worker");
+    worker.join().expect("real preflight worker completes");
+    let result = receiver.recv().expect("real preflight result");
+    assert!(
+        stream_released_while_worker_held,
+        "held preflight must not own the stream"
+    );
+    assert!(
+        selector_released_while_worker_held,
+        "held preflight must not own the selector"
+    );
+    assert!(matches!(result, Err(GitWorkspaceErrorCode::Cancelled)));
+    let unchanged = fixture_git_command(repo.path(), &["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .expect("read actual branch");
+    assert!(unchanged.status.success());
+    assert_ne!(
+        String::from_utf8_lossy(&unchanged.stdout).trim(),
+        "held-preflight-target"
+    );
 }

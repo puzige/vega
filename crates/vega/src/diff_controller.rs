@@ -57,7 +57,13 @@ pub(crate) struct ActiveDiffRoute {
     pub(crate) cancel: tokio_util::sync::CancellationToken,
     pub(crate) refresh_request_seq: u64,
     pub(crate) refresh_in_flight: Option<u64>,
+    /// Whether the active refresh has a user-visible Initial/Retry intent.
+    /// Background polls must not turn this on by themselves.
+    pub(crate) refresh_in_flight_progress: bool,
     pub(crate) queued_refresh_seq: Option<u64>,
+    /// Coalescing keeps explicit progress visible if a Background request
+    /// arrives after Initial or Retry but before the worker completes.
+    pub(crate) queued_refresh_progress: bool,
     pub(crate) snapshot_generation: Option<u64>,
     pub(crate) file_request_seq: u64,
     pub(crate) requested_file: Option<WorkspaceFileId>,
@@ -68,15 +74,24 @@ pub(crate) struct ActiveDiffRoute {
 
 impl ActiveDiffRoute {
     pub(crate) fn request_refresh(&mut self) -> DiffRefreshDecision {
+        self.request_refresh_with_progress(false)
+    }
+
+    pub(crate) fn request_refresh_with_progress(
+        &mut self,
+        show_progress: bool,
+    ) -> DiffRefreshDecision {
         let Some(next) = self.refresh_request_seq.checked_add(1) else {
             return DiffRefreshDecision::Overflow;
         };
         self.refresh_request_seq = next;
         if self.refresh_in_flight.is_some() {
             self.queued_refresh_seq = Some(next);
+            self.queued_refresh_progress |= show_progress || self.refresh_in_flight_progress;
             return DiffRefreshDecision::Coalesced;
         }
         self.refresh_in_flight = Some(next);
+        self.refresh_in_flight_progress = show_progress;
         DiffRefreshDecision::Start(next)
     }
 
@@ -87,10 +102,17 @@ impl ActiveDiffRoute {
         self.refresh_in_flight = None;
         let queued = self.queued_refresh_seq.take();
         if request_seq == self.refresh_request_seq {
+            self.refresh_in_flight_progress = false;
+            self.queued_refresh_progress = false;
             Some(DiffRefreshCompletion::Latest)
         } else {
             if let Some(next) = queued {
                 self.refresh_in_flight = Some(next);
+                self.refresh_in_flight_progress = self.queued_refresh_progress;
+                self.queued_refresh_progress = false;
+            } else {
+                self.refresh_in_flight_progress = false;
+                self.queued_refresh_progress = false;
             }
             Some(DiffRefreshCompletion::Superseded(queued))
         }
@@ -163,7 +185,9 @@ impl DiffController {
             cancel: tokio_util::sync::CancellationToken::new(),
             refresh_request_seq: 0,
             refresh_in_flight: None,
+            refresh_in_flight_progress: false,
             queued_refresh_seq: None,
+            queued_refresh_progress: false,
             snapshot_generation: None,
             file_request_seq: 0,
             requested_file: None,

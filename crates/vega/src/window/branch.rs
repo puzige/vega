@@ -185,6 +185,7 @@ impl VegaWindow {
             && !self.commit_controller.is_open()
             && self.agent_controller.active.is_none()
             && !stream.read(cx).has_active_agent()
+            && !stream.read(cx).has_pending_model_selection()
             && !stream.read(cx).has_pending_permission()
             && !stream.read(cx).has_pending_plan_review(cx)
     }
@@ -267,10 +268,10 @@ impl VegaWindow {
             (fence, active.service.clone(), cancel)
         };
         let (sender, receiver) = mpsc::sync_channel(1);
-        let worker_fence = fence.clone();
+        let branch_id = fence.branch_id;
         let worker = std::thread::Builder::new()
             .name("vega-branch-preflight".into())
-            .spawn(move || run_branch_prepare_worker(service, worker_fence, cancel, sender));
+            .spawn(move || run_branch_prepare_worker(service, branch_id, cancel, sender));
         if worker.is_err() {
             self.finish_branch_prepare(fence, Err(GitWorkspaceErrorCode::SpawnFailed), cx);
             return;
@@ -278,11 +279,11 @@ impl VegaWindow {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(DIFF_RESULT_POLL).await;
-                let (fence, result) = match receiver.try_recv() {
+                let result = match receiver.try_recv() {
                     Ok(output) => output,
                     Err(mpsc::TryRecvError::Empty) => continue,
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        (fence, Err(GitWorkspaceErrorCode::SpawnFailed))
+                        Err(GitWorkspaceErrorCode::SpawnFailed)
                     }
                 };
                 let _ = this.update(cx, |this, cx| this.finish_branch_prepare(fence, result, cx));

@@ -14,12 +14,13 @@
 //!   character and never paints the real value; cut/copy are refused on
 //!   masked fields so credentials cannot leave the app through the clipboard.
 //!
-//! S3-T18 Composer extension: `new_multiline` builds a fixed-`rows` input
-//! (Enter inserts `\n` via the [`InsertNewline`] action — 架构师裁定
+//! S3-T18 Composer extension: `new_multiline` builds a bounded multi-line
+//! input (Enter inserts `\n` via the [`InsertNewline`] action — 架构师裁定
 //! Enter=换行、Cmd+Enter=发送; paste preserves line breaks). Multi-line
 //! display paints one shaped visual line per `\n` segment (plus soft wraps)
-//! stacked top-down: 1~8 行自适应高度 + 超出 8 行后按光标跟随的内滚视口
-//! (visual-wrap viewport, cursor-follow), each verified by a GPUI test.
+//! stacked top-down: the default is 1~8 行自适应高度 + 超出 8 行后按光标
+//! 跟随的内滚视口 (visual-wrap viewport, cursor-follow), while callers can
+//! select a narrower minimum/maximum row range for a bounded form field.
 
 use std::ops::Range;
 
@@ -79,9 +80,13 @@ pub struct TextInput {
     /// Multi-line mode (S3-T18 Composer): Enter inserts `\n`, paste keeps
     /// line breaks, and the element paints `rows` stacked lines.
     multiline: bool,
-    /// Visible row count, dynamically clamped to 1..=8 for the Composer.
+    /// Visible row count, dynamically clamped to the configured row range.
     rows: usize,
-    /// First painted visual row when wrapped content exceeds eight rows.
+    /// Minimum visible rows for this input's layout viewport.
+    min_rows: usize,
+    /// Maximum visible rows for this input's layout viewport.
+    max_rows: usize,
+    /// First painted visual row when wrapped content exceeds the viewport.
     first_visible_row: usize,
     selected_range: Range<usize>,
     selection_reversed: bool,

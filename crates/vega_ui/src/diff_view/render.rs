@@ -1,4 +1,5 @@
 use super::*;
+use crate::icons::{Icon, icon_button};
 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -20,56 +21,166 @@ impl Render for DiffView {
             DiffLayout::Unified => "Unified",
             DiffLayout::SideBySide => "Side by side",
         };
+        let has_snapshot = self.snapshot.is_some();
+        let show_initial_loading = self.refreshing && self.show_refresh_progress && !has_snapshot;
 
-        let body: AnyElement = if let Some(code) = self.refresh_error {
-            div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_3()
-                .text_color(colors.danger)
-                .child(error_label(code))
-                .child(
-                    diff_button("Retry", colors.warning)
-                        .when(!self.refreshing, |button| button.cursor_pointer())
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::retry_clicked)),
-                )
-                .into_any_element()
-        } else if row_count == 0 {
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(colors.text_tertiary)
-                .child(if self.refreshing {
-                    "Refreshing workspace diff…"
-                } else {
-                    "No workspace changes"
-                })
-                .into_any_element()
-        } else {
-            div()
-                .id("workspace-diff-scroll")
-                .size_full()
-                .overflow_hidden()
-                .child(
-                    uniform_list(
-                        "workspace-diff-rows",
-                        row_count,
-                        cx.processor(move |this: &mut DiffView, range: Range<usize>, _, _cx| {
-                            range
-                                .filter_map(|index| this.rows.get(index).cloned())
-                                .map(|row| render_prepared_row(row, &colors, view.clone()))
-                                .collect()
-                        }),
+        let body: AnyElement = if !has_snapshot {
+            if let Some(code) = self.refresh_error {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .text_color(colors.danger)
+                    .child(error_label(code))
+                    .when(self.refreshing && self.show_refresh_progress, |body| {
+                        body.child(
+                            div()
+                                .text_color(colors.text_secondary)
+                                .child("Retrying workspace diff…"),
+                        )
+                    })
+                    .child(
+                        diff_button("Retry", colors.warning, colors)
+                            .when(!self.refreshing, |button| button.cursor_pointer())
+                            .on_mouse_up(MouseButton::Left, cx.listener(Self::retry_clicked)),
                     )
-                    .track_scroll(&self.scroll)
-                    .size_full(),
-                )
-                .into_any_element()
+                    .into_any_element()
+            } else if show_initial_loading {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(colors.text_tertiary)
+                    .child("Loading workspace diff…")
+                    .into_any_element()
+            } else if row_count == 0 {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(colors.text_tertiary)
+                    .flex_col()
+                    .gap_3()
+                    .child(crate::icons::icon(Icon::Document, colors.text_tertiary))
+                    .child("当前没有工作区变更")
+                    .child(
+                        div()
+                            .text_size(px(Typography::METADATA))
+                            .child("修改文件后，变更会显示在这里。"),
+                    )
+                    .into_any_element()
+            } else {
+                let list_view = view.clone();
+                div()
+                    .id("workspace-diff-scroll")
+                    .size_full()
+                    .overflow_hidden()
+                    .child(
+                        uniform_list(
+                            "workspace-diff-rows",
+                            row_count,
+                            cx.processor(
+                                move |this: &mut DiffView, range: Range<usize>, _, _cx| {
+                                    range
+                                        .filter_map(|index| this.rows.get(index).cloned())
+                                        .map(|row| {
+                                            render_prepared_row(row, &colors, list_view.clone())
+                                        })
+                                        .collect()
+                                },
+                            ),
+                        )
+                        .track_scroll(&self.scroll)
+                        .size_full(),
+                    )
+                    .into_any_element()
+            }
+        } else {
+            let content: AnyElement = if row_count == 0 {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(colors.text_tertiary)
+                    .flex_col()
+                    .gap_3()
+                    .child(crate::icons::icon(Icon::Document, colors.text_tertiary))
+                    .child("当前没有工作区变更")
+                    .child(
+                        div()
+                            .text_size(px(Typography::METADATA))
+                            .child("修改文件后，变更会显示在这里。"),
+                    )
+                    .into_any_element()
+            } else {
+                let list_view = view.clone();
+                div()
+                    .id("workspace-diff-scroll")
+                    .size_full()
+                    .overflow_hidden()
+                    .child(
+                        uniform_list(
+                            "workspace-diff-rows",
+                            row_count,
+                            cx.processor(
+                                move |this: &mut DiffView, range: Range<usize>, _, _cx| {
+                                    range
+                                        .filter_map(|index| this.rows.get(index).cloned())
+                                        .map(|row| {
+                                            render_prepared_row(row, &colors, list_view.clone())
+                                        })
+                                        .collect()
+                                },
+                            ),
+                        )
+                        .track_scroll(&self.scroll)
+                        .size_full(),
+                    )
+                    .into_any_element()
+            };
+            if let Some(code) = self.refresh_error {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .border_b_1()
+                            .border_color(colors.border_subtle)
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .text_color(colors.danger)
+                                    .child(error_label(code)),
+                            )
+                            .child(
+                                diff_button("Retry", colors.warning, colors)
+                                    .when(!self.refreshing, |button| button.cursor_pointer())
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::retry_clicked),
+                                    ),
+                            ),
+                    )
+                    .child(div().min_h_0().flex_1().child(content))
+                    .into_any_element()
+            } else {
+                content
+            }
         };
 
         div()
@@ -93,15 +204,10 @@ impl Render for DiffView {
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .px_3()
+                    .gap_1()
+                    .px_2()
                     .border_b_1()
                     .border_color(colors.border_subtle)
-                    .child(
-                        diff_button("← Back", colors.text_secondary)
-                            .cursor_pointer()
-                            .on_mouse_up(MouseButton::Left, cx.listener(Self::back_clicked)),
-                    )
                     .child(
                         div()
                             .min_w_0()
@@ -113,56 +219,51 @@ impl Render for DiffView {
                                 column
                                     .child(
                                         div()
-                                            .overflow_hidden()
+                                            .truncate()
                                             .font_weight(Typography::HEADING_CARD_WEIGHT)
                                             .child(head),
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(Typography::SIDEBAR))
+                                            .truncate()
+                                            .text_size(px(Typography::METADATA))
                                             .text_color(colors.text_secondary)
                                             .child(stats),
                                     )
                             }),
                     )
-                    .when(self.refreshing, |header| {
-                        header.child(
-                            div()
-                                .text_size(px(Typography::SIDEBAR))
-                                .text_color(colors.text_tertiary)
-                                .child("Refreshing…"),
-                        )
-                    })
-                    .child(
-                        diff_button(layout_label, colors.accent)
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.toggle_layout(cx);
-                                }),
-                            ),
-                    )
-                    .child(
-                        diff_button("↑ [", colors.text_secondary)
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.previous_hunk(cx);
-                                }),
-                            ),
-                    )
-                    .child(
-                        diff_button("↓ ]", colors.text_secondary)
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _, _, cx| {
-                                    this.next_hunk(cx);
-                                }),
-                            ),
-                    ),
+                    .child(icon_button(
+                        Icon::Refresh,
+                        "刷新工作区变更",
+                        colors,
+                        cx.listener(|this, _, _, cx| {
+                            this.retry(cx);
+                        }),
+                    ))
+                    .child(icon_button(
+                        Icon::Split,
+                        layout_label,
+                        colors,
+                        cx.listener(|this, _, _, cx| {
+                            this.toggle_layout(cx);
+                        }),
+                    ))
+                    .child(icon_button(
+                        Icon::ArrowUp,
+                        "上一个变更 [",
+                        colors,
+                        cx.listener(|this, _, _, cx| {
+                            this.previous_hunk(cx);
+                        }),
+                    ))
+                    .child(icon_button(
+                        Icon::ArrowDown,
+                        "下一个变更 ]",
+                        colors,
+                        cx.listener(|this, _, _, cx| {
+                            this.next_hunk(cx);
+                        }),
+                    )),
             )
             .child(
                 div()
@@ -175,15 +276,18 @@ impl Render for DiffView {
     }
 }
 
-pub(crate) fn diff_button(label: &'static str, color: gpui::Rgba) -> gpui::Div {
+pub(crate) fn diff_button(
+    label: &'static str,
+    color: gpui::Rgba,
+    colors: ThemeColors,
+) -> gpui::Div {
     div()
         .px_2()
         .py_1()
         .rounded_md()
-        .border_1()
-        .border_color(color)
         .text_color(color)
         .text_size(px(Typography::SIDEBAR))
+        .hover(move |style| style.bg(colors.bg_hover))
         .child(label)
 }
 
@@ -218,10 +322,11 @@ pub(crate) fn render_prepared_row(
             .border_b_1()
             .border_color(colors.border_subtle)
             .child(if expanded { "▾" } else { "▸" })
-            .child(div().min_w_0().flex_1().overflow_hidden().child(label))
+            .child(div().min_w_0().flex_1().truncate().child(label))
             .child(
                 div()
-                    .flex_shrink_0()
+                    .max_w(px(110.))
+                    .truncate()
                     .font_family(MONOFONT.to_string())
                     .text_size(px(Typography::CODE))
                     .text_color(colors.text_secondary)
@@ -257,7 +362,7 @@ pub(crate) fn render_prepared_row(
             .text_color(colors.danger)
             .child(div().min_w_0().flex_1().overflow_hidden().child(text))
             .child(
-                diff_button("Retry", colors.warning)
+                diff_button("Retry", colors.warning, *colors)
                     .cursor_pointer()
                     .on_mouse_up(MouseButton::Left, move |_, _, cx| {
                         view.update(cx, |this, cx| this.retry_projection(id, cx));
@@ -633,6 +738,13 @@ pub(crate) fn error_label(code: GitWorkspaceErrorCode) -> &'static str {
     match code {
         GitWorkspaceErrorCode::InvalidRoot => "Project root is unavailable.",
         GitWorkspaceErrorCode::NotRepository => "This project is not a Git repository.",
+        GitWorkspaceErrorCode::GitUnavailable => {
+            "Git 2.40+ was not found. Install Homebrew Git and retry."
+        }
+        GitWorkspaceErrorCode::GitUnsupported => "Git 2.40+ is required. Upgrade Git and retry.",
+        GitWorkspaceErrorCode::GitExecutableChanged => {
+            "Git changed while Vega was running. Restart Vega and retry."
+        }
         GitWorkspaceErrorCode::TimedOut => "Git diff timed out. Retry when the repository is idle.",
         GitWorkspaceErrorCode::Cancelled => "Git diff refresh was cancelled.",
         GitWorkspaceErrorCode::OutputTooLarge => "Diff exceeds the safe display limit.",

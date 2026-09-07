@@ -2,6 +2,8 @@
 //! provider call (S4-T19) plus the S7-T38 (C5) price-audit columns and the
 //! checked thread/message aggregates.
 
+pub mod dashboard;
+
 use rusqlite::{Connection, params};
 
 /// Exact pricing version stamped on rows priced by the S7 integer engine.

@@ -337,6 +337,9 @@ pub(crate) fn map_commit_workspace_error(code: GitWorkspaceErrorCode) -> CommitE
     match code {
         GitWorkspaceErrorCode::InvalidRoot => CommitErrorCode::InvalidRoot,
         GitWorkspaceErrorCode::NotRepository => CommitErrorCode::NotRepository,
+        GitWorkspaceErrorCode::GitUnavailable => CommitErrorCode::GitUnavailable,
+        GitWorkspaceErrorCode::GitUnsupported => CommitErrorCode::GitUnsupported,
+        GitWorkspaceErrorCode::GitExecutableChanged => CommitErrorCode::GitExecutableChanged,
         GitWorkspaceErrorCode::SpawnFailed => CommitErrorCode::SpawnFailed,
         GitWorkspaceErrorCode::TimedOut => CommitErrorCode::TimedOut,
         GitWorkspaceErrorCode::Cancelled => CommitErrorCode::Cancelled,
@@ -351,6 +354,9 @@ pub(crate) fn map_commit_reconcile_error(code: CommitErrorCode) -> GitWorkspaceE
     match code {
         CommitErrorCode::InvalidRoot => GitWorkspaceErrorCode::InvalidRoot,
         CommitErrorCode::NotRepository => GitWorkspaceErrorCode::NotRepository,
+        CommitErrorCode::GitUnavailable => GitWorkspaceErrorCode::GitUnavailable,
+        CommitErrorCode::GitUnsupported => GitWorkspaceErrorCode::GitUnsupported,
+        CommitErrorCode::GitExecutableChanged => GitWorkspaceErrorCode::GitExecutableChanged,
         CommitErrorCode::SpawnFailed => GitWorkspaceErrorCode::SpawnFailed,
         CommitErrorCode::TimedOut => GitWorkspaceErrorCode::TimedOut,
         CommitErrorCode::Cancelled => GitWorkspaceErrorCode::Cancelled,
@@ -501,7 +507,9 @@ pub(crate) fn run_commit_prepare_worker(
     CommitWorkerResult::Prepare(completion, reconciled)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_commit_draft_worker(
+    config_path: Option<std::path::PathBuf>,
     service: Arc<TrustedGitService>,
     prepared_id: vega_conversation::types::PreparedCommitId,
     thread: Thread,
@@ -513,7 +521,13 @@ pub(crate) fn run_commit_draft_worker(
     if let Some(probe) = &probe {
         probe.draft_workers.fetch_add(1, Ordering::SeqCst);
     }
-    let provider = provider_override.unwrap_or_else(|| commit_provider(&thread));
+    let provider = match provider_override
+        .map(Ok)
+        .unwrap_or_else(|| commit_provider(&thread, config_path.as_deref()))
+    {
+        Ok(provider) => provider,
+        Err(()) => return CommitWorkerResult::Draft(Err(CommitErrorCode::DraftFailed)),
+    };
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

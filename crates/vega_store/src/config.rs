@@ -4,10 +4,13 @@
 //!
 //! The config file never contains credential values: each provider carries
 //! a `key_ref`, which is the reference name of the credential kept in the
-//! system Keychain (see [`crate::keystore`]).
+//! local credential file (see [`crate::keystore`]).
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
+
+static EDIT_LOCK: Mutex<()> = Mutex::new(());
 
 use serde::{Deserialize, Serialize};
 
@@ -27,19 +30,50 @@ pub enum ConfigError {
 
 /// One OpenAI-compatible provider entry.
 ///
-/// `key_ref` is only a reference name into the Keychain; the credential
+/// `key_ref` is only a reference name into the local credential store; the credential
 /// value itself never appears in this file (see [`crate::keystore`]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderConfig {
+    /// Whether this provider is available for new runs.
+    #[serde(default = "provider_enabled_default")]
+    pub enabled: bool,
     /// Provider identifier, e.g. `"deepseek"`.
     pub name: String,
     /// OpenAI-compatible endpoint base URL.
     pub base_url: String,
     /// Model IDs offered by this provider.
     pub models: Vec<String>,
-    /// Keychain reference name for this provider's credential; by
+    /// local credential store reference name for this provider's credential; by
     /// convention the provider name.
     pub key_ref: String,
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("enabled", &self.enabled)
+            .field("name", &self.name)
+            .field("base_url", &"<redacted>")
+            .field("models", &self.models)
+            .field("key_ref", &self.key_ref)
+            .finish()
+    }
+}
+
+fn provider_enabled_default() -> bool {
+    true
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            name: String::new(),
+            base_url: String::new(),
+            models: Vec::new(),
+            key_ref: String::new(),
+        }
+    }
 }
 
 /// Default choices for new conversations.
@@ -113,11 +147,11 @@ const FILE_HEADER: &str = "\
 # Vega configuration file.
 #
 # [[providers]]: one block per OpenAI-compatible provider.
-#   name     - provider identifier, also used as the Keychain reference
+#   name     - provider identifier, also used as the local credential store reference
 #   base_url - OpenAI-compatible endpoint base URL
 #   models   - model IDs offered by this provider
 #   key_ref  - reference name under which the provider's credential is
-#              stored in the system Keychain (vega_store::keystore);
+#              stored in the local credential file (vega_store::keystore);
 #              the credential value itself is never written to this file
 #
 # [defaults]
@@ -149,18 +183,73 @@ pub fn load() -> Result<AppConfig, ConfigError> {
     load_from(&config_path()?)
 }
 
-/// Path-parameterized variant of [`load`]; also used by tests to stay off
-/// `$HOME`.
-fn load_from(path: &Path) -> Result<AppConfig, ConfigError> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => toml::from_str(&text).map_err(ConfigError::Parse),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            let config = AppConfig::default();
-            config.save_to(path)?;
-            Ok(config)
-        }
-        Err(err) => Err(ConfigError::Io(err)),
+/// Path-parameterized variant of [`load`]; also used by tests and the R1
+/// model-selection worker (owned config file path, no env dependency).
+pub fn load_from(path: &Path) -> Result<AppConfig, ConfigError> {
+    let edit = begin_edit(path)?;
+    if !path.exists() {
+        edit.save()?;
     }
+    Ok(edit.config.clone())
+}
+
+/// Reads an existing config file without creating or modifying anything.
+/// Worker-side validation paths use this variant so a selection request is
+/// strictly read-only until its durable thread update begins.
+pub fn read_from(path: &Path) -> Result<AppConfig, ConfigError> {
+    let text = std::fs::read_to_string(path)?;
+    toml::from_str(&text).map_err(ConfigError::Parse)
+}
+
+/// A serialized read/edit/save transaction for the single application config file.
+/// Keep this guard alive across any credential rollback. Use `save`, never
+/// `AppConfig::save_to`, while holding the guard (the latter acquires the same lock).
+pub struct ConfigEdit {
+    /// Latest disk state; mutate only fields owned by the requested operation.
+    pub config: AppConfig,
+    path: PathBuf,
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl ConfigEdit {
+    /// Atomically publish the edited state while retaining the transaction lock.
+    pub fn save(&self) -> Result<(), ConfigError> {
+        self.config.save_to_unlocked(&self.path)
+    }
+}
+
+/// Read the current config under the common writer lock; a missing file starts
+/// with defaults and is not created until the caller explicitly saves.
+pub fn begin_edit(path: &Path) -> Result<ConfigEdit, ConfigError> {
+    let guard = EDIT_LOCK
+        .lock()
+        .map_err(|_| io::Error::other("config edit lock unavailable"))?;
+    let config = match std::fs::read_to_string(path) {
+        Ok(text) => toml::from_str(&text).map_err(ConfigError::Parse)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => AppConfig::default(),
+        Err(error) => return Err(ConfigError::Io(error)),
+    };
+    Ok(ConfigEdit {
+        config,
+        path: path.to_path_buf(),
+        _guard: guard,
+    })
+}
+
+/// Merge a narrow field mutation onto current disk state and atomically save it.
+pub fn update_from(
+    path: &Path,
+    mutate: impl FnOnce(&mut AppConfig),
+) -> Result<AppConfig, ConfigError> {
+    let mut edit = begin_edit(path)?;
+    mutate(&mut edit.config);
+    edit.save()?;
+    Ok(edit.config.clone())
+}
+
+/// Merge a narrow field mutation at the resolved global config path.
+pub fn update(mutate: impl FnOnce(&mut AppConfig)) -> Result<AppConfig, ConfigError> {
+    update_from(&config_path()?, mutate)
 }
 
 impl AppConfig {
@@ -174,7 +263,14 @@ impl AppConfig {
     ///
     /// Writes a sibling `.tmp` file first, then renames it over `path`, so
     /// readers never observe a partially written file.
-    fn save_to(&self, path: &Path) -> Result<(), ConfigError> {
+    pub fn save_to(&self, path: &Path) -> Result<(), ConfigError> {
+        let _guard = EDIT_LOCK
+            .lock()
+            .map_err(|_| io::Error::other("config edit lock unavailable"))?;
+        self.save_to_unlocked(path)
+    }
+
+    fn save_to_unlocked(&self, path: &Path) -> Result<(), ConfigError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -210,6 +306,7 @@ mod tests {
     fn sample_config() -> AppConfig {
         AppConfig {
             providers: vec![ProviderConfig {
+                enabled: true,
                 name: "deepseek".to_string(),
                 base_url: "https://api.deepseek.com".to_string(),
                 models: vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()],
@@ -352,7 +449,7 @@ mod tests {
     fn key_ref_is_a_reference_name_only() {
         let config = sample_config();
         let provider = &config.providers[0];
-        // key_ref is a reference into the Keychain, by convention the
+        // key_ref is a reference into the local credential store, by convention the
         // provider name; it carries no credential value.
         assert_eq!(provider.key_ref, provider.name);
         let body = toml::to_string_pretty(&config).unwrap();

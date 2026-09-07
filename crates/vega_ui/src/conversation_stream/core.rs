@@ -1,9 +1,8 @@
 use super::*;
 
-/// The opened-thread content view: thread header (title + anchor status +
-/// demo-inject button), the virtualized message stream, and the fixed-bottom
-/// Composer. One entity per open thread; rebuilt by the window root when
-/// another thread opens.
+/// The opened-thread content view: thread header (title and trusted actions),
+/// the virtualized message stream, and the fixed-bottom Composer. One entity
+/// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
     pub(crate) thread: Thread,
     /// 消息块列表（T18）：user 回显与 assistant 流交替，顺序即会话顺序。
@@ -15,7 +14,7 @@ pub struct ConversationStream {
     pub(crate) list: gpui::ListState,
     /// Active demo injection (`None` = idle/finished).
     pub(crate) injecting: Option<InjectionState>,
-    /// Composer 输入状态（独立 `TextInput` Entity，固定 3 行多行）。
+    /// Composer 输入状态（独立 `TextInput` Entity，1–8 行自适应多行）。
     pub(crate) input: Entity<TextInput>,
     /// Synthetic block-id counter for user echo rows (diagnostics only).
     pub(crate) user_block_seq: u64,
@@ -29,8 +28,14 @@ pub struct ConversationStream {
     pub(crate) commit_panel: Entity<CommitPanel>,
     /// Concrete runtime permission hook shared by the owning conversation.
     pub(crate) permission_queue: PermissionQueue,
+    /// Request retained after the queue listener wakes before its durable
+    /// ToolCallProposed event reaches this stream.
+    pub(crate) deferred_permission: Option<PendingPermission>,
     /// The sole visible prompt; the opaque call id is only a map association.
     pub(crate) active_permission: Option<Entity<PermissionCard>>,
+    /// Opaque call id paired with `active_permission` for exact terminal
+    /// cleanup. PermissionCard deliberately stores no provider call id.
+    pub(crate) active_permission_call_id: Option<String>,
     /// Plan ids are opaque map keys; card content is a typed projection.
     pub(crate) plan_cards: HashMap<String, Entity<PlanCard>>,
     /// Sole applied per-task cost summary keyed by assistant message id
@@ -52,6 +57,8 @@ pub struct ConversationStream {
     /// Submitted drafts, scoped to this thread view.
     pub(crate) composer_history: Vec<String>,
     pub(crate) composer_submit_pending: bool,
+    pub(crate) actions: ComposerActions,
+    pub(crate) action_focus: [FocusHandle; 2],
     pub(crate) history_cursor: Option<usize>,
     pub(crate) history_draft: Option<String>,
     pub(crate) approved_not_started: bool,
@@ -67,6 +74,17 @@ pub struct ConversationStream {
     /// stream lifetime; later opens re-filter the projection locally).
     pub(crate) file_index_loading: bool,
     pub(crate) file_index_loaded: bool,
+    /// Monotonic owner fence for index requests and their late results.
+    pub(crate) file_index_generation: u64,
+    /// Whether the current `@` token still wants a visible selector. This is
+    /// separate from the input query so Esc/route close cannot be undone by a
+    /// late worker result.
+    pub(crate) file_selector_wanted: bool,
+    /// A failed index stays visible as a retryable state until the user leaves
+    /// the token or starts a new retry.
+    pub(crate) file_index_failure: Option<FileIndexFailureCode>,
+    /// Keyboard stop for the visible failed-index Retry action.
+    pub(crate) file_retry_focus: FocusHandle,
     /// Provider/model/thinking composer defaults (A2-14). Display state for
     /// the selector; authority is the app-level config seam.
     pub(crate) composer_defaults: ComposerDefaults,
@@ -75,9 +93,29 @@ pub struct ConversationStream {
     pub(crate) model_options: Vec<String>,
     /// Model selector popover state (open/closed + highlight row).
     pub(crate) model_selector_open: bool,
+    pub(crate) mode_menu_open: bool,
+    pub(crate) compact_workspace: bool,
+    pub(crate) project_label: String,
+    pub(crate) permission_menu_open: bool,
+    pub(crate) compact_focus: [FocusHandle; 2],
     pub(crate) model_selector_highlight: usize,
     /// Keyboard focus stop for the model selector trigger (A2-14).
     pub(crate) model_focus: FocusHandle,
+    /// In-flight in-session model selection (R1): `Some((request_id, model))`
+    /// while persistence is in flight. Blocks submit/thinking until the
+    /// exact-owner acknowledgement or failure lands.
+    pub(crate) model_selection_pending: Option<(u64, String)>,
+    /// Exact app-level owner for the in-flight model save. This is separate
+    /// from `trusted_action_busy`, which also represents branch, commit, and
+    /// artifact operations.
+    pub(crate) model_selection_save_owner: Option<u64>,
+    /// Monotonic request-id counter for model-selection intents (R1). The
+    /// app echoes it back so late callbacks can never release another
+    /// request's owner.
+    pub(crate) next_model_request_id: u64,
+    /// Keyboard-accessible return-to-tail action shown after the user scrolls
+    /// away from the live bottom (P4).
+    pub(crate) resume_tail_focus: FocusHandle,
     /// Cancels the watch listener and drops its fail-closed guard with the view.
     pub(crate) _permission_listener_task: gpui::Task<()>,
 }
@@ -90,7 +128,11 @@ impl EventEmitter<OpenCommitPanelRequested> for ConversationStream {}
 impl EventEmitter<WorkspaceToolTerminal> for ConversationStream {}
 impl EventEmitter<HistoryPageRequested> for ConversationStream {}
 impl EventEmitter<FileIndexRequested> for ConversationStream {}
+impl EventEmitter<FileIndexCancelled> for ConversationStream {}
+impl EventEmitter<ComposerStopRequested> for ConversationStream {}
+impl EventEmitter<FileIndexRetryRequested> for ConversationStream {}
 impl EventEmitter<ComposerDefaultsRequested> for ConversationStream {}
+impl EventEmitter<ThreadModelSelectionRequested> for ConversationStream {}
 
 pub(crate) struct InjectionState {
     /// Which assistant entry the replayer feeds.
@@ -100,6 +142,15 @@ pub(crate) struct InjectionState {
 }
 
 impl ConversationStream {
+    /// Projects the host column width without rebuilding composer state.
+    pub fn set_workspace_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        let compact = width < 500.;
+        if self.compact_workspace != compact {
+            self.compact_workspace = compact;
+            cx.notify();
+        }
+    }
+
     /// Builds the view for `thread` with an empty in-memory stream (S3 无消息
     /// 持久化：会话内容由流式注入与 Composer 回显产生，不落库；重启后清空
     /// 是预期行为).
@@ -113,21 +164,19 @@ impl ConversationStream {
         permission_queue: PermissionQueue,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input = cx.new(|cx| {
-            TextInput::new_multiline(
-                cx,
-                "输入消息…（Enter 换行 · Cmd+Enter 发送）",
-                COMPOSER_ROWS,
-            )
-        });
+        let input =
+            cx.new(|cx| TextInput::new_multiline(cx, "描述任务，或用 @ 引用文件", COMPOSER_ROWS));
         let branch_selector =
             cx.new(|cx| BranchSelector::new(thread.id.clone(), thread.project_id.clone(), cx));
         let commit_panel =
             cx.new(|cx| CommitPanel::new(thread.id.clone(), thread.project_id.clone(), cx));
         // 空输入禁用发送 + `@` 触发的文件选择跟随输入内容变化：输入内容
         // 变化即重渲染 Composer。
-        cx.observe(&input, |this, input, cx| this.sync_at_query(&input, cx))
-            .detach();
+        cx.observe(&input, |this, input, cx| {
+            this.sync_composer_actions(&input, cx);
+            this.sync_at_query(&input, cx);
+        })
+        .detach();
         let mut listener = permission_queue.subscribe();
         let permission_listener_task = cx.spawn(async move |this, cx| {
             while listener.changed().await {
@@ -154,6 +203,7 @@ impl ConversationStream {
         // 一致）。600px overdraw 保证滚动方向切换时前后各一屏已测量。
         let list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(600.0));
         list.set_follow_mode(gpui::FollowMode::Tail);
+        let initial_model = thread.model.clone();
         Self {
             thread,
             entries: Vec::new(),
@@ -167,7 +217,9 @@ impl ConversationStream {
             branch_selector,
             commit_panel,
             permission_queue,
+            deferred_permission: None,
             active_permission: None,
+            active_permission_call_id: None,
             plan_cards: HashMap::new(),
             summary_cards: HashMap::new(),
             hydration: HistoryHydration::default(),
@@ -176,6 +228,8 @@ impl ConversationStream {
             meter: ConversationMeter::default(),
             composer_history: Vec::new(),
             composer_submit_pending: false,
+            actions: ComposerActions::default(),
+            action_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             history_cursor: None,
             history_draft: None,
             approved_not_started: false,
@@ -195,11 +249,31 @@ impl ConversationStream {
             file_snapshot: FileIndexSnapshot::default(),
             file_index_loading: false,
             file_index_loaded: false,
-            composer_defaults: ComposerDefaults::default(),
+            file_index_generation: 0,
+            file_selector_wanted: false,
+            file_index_failure: None,
+            file_retry_focus: cx.focus_handle().tab_stop(true),
+            // R1: a reopened stream starts from the durable thread model so
+            // its first rendered chip cannot lag behind `threads.model`.
+            composer_defaults: ComposerDefaults {
+                model: initial_model,
+                thinking: "provider_default".to_string(),
+                reasoning: None,
+                reasoning_unavailable: false,
+            },
             model_options: Vec::new(),
             model_selector_open: false,
+            mode_menu_open: false,
+            compact_workspace: false,
+            project_label: String::new(),
+            permission_menu_open: false,
+            compact_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             model_selector_highlight: 0,
             model_focus: cx.focus_handle().tab_index(16).tab_stop(true),
+            model_selection_pending: None,
+            model_selection_save_owner: None,
+            next_model_request_id: 0,
+            resume_tail_focus: cx.focus_handle().tab_index(18).tab_stop(true),
             _permission_listener_task: permission_listener_task,
         }
     }
@@ -266,13 +340,145 @@ impl ConversationStream {
         self.list.is_following_tail()
     }
 
+    /// Re-engages the native list tail-follow mode after the user has scrolled
+    /// away from the live bottom. The list owns the scroll anchor and keeps the
+    /// next layout pinned to the newest entry.
+    pub(crate) fn resume_tail(&mut self, cx: &mut Context<Self>) {
+        self.list.set_follow_mode(gpui::FollowMode::Tail);
+        cx.notify();
+    }
+
     /// Applies the authoritative persisted thread settings after a request.
+    /// The composer's displayed model always mirrors the durable
+    /// `threads.model` (R1): the selection chip is a projection of the
+    /// authoritative thread, never an independent optimistic value.
     pub fn apply_thread(&mut self, thread: Thread, cx: &mut Context<Self>) {
         if thread.id == self.thread.id && thread.project_id == self.thread.project_id {
+            if !thread.model.is_empty() {
+                self.composer_defaults.model = thread.model.clone();
+            }
             self.thread = thread;
+            self.acknowledge_mode_action(cx);
             self.controller_error = None;
             cx.notify();
         }
+    }
+
+    /// Projects only a renamed title onto the cached route entity. The window
+    /// root uses this when Sidebar updates `OpenedThread`; keeping the update
+    /// field-scoped preserves the R1 model authority and any pending owner.
+    pub fn apply_thread_title(&mut self, thread: &Thread, cx: &mut Context<Self>) {
+        if thread.id != self.thread.id || thread.project_id != self.thread.project_id {
+            return;
+        }
+        if self.thread.title != thread.title {
+            self.thread.title.clone_from(&thread.title);
+            cx.notify();
+        }
+    }
+
+    /// Returns the model currently shown by the Composer selector. It is a
+    /// projection of the durable thread model after an acknowledged update.
+    pub fn displayed_model(&self) -> &str {
+        &self.composer_defaults.model
+    }
+
+    /// Whether the exact pending selection owns this acknowledgement. The
+    /// app handler checks this before publishing any global/thread projection;
+    /// a late callback therefore cannot clear a newer request or overwrite a
+    /// route with an unrelated authoritative row.
+    pub fn model_selection_ack_is_valid(&self, request_id: u64, thread: &Thread) -> bool {
+        self.model_selection_pending
+            .as_ref()
+            .is_some_and(|(owner_id, requested_model)| {
+                *owner_id == request_id
+                    && requested_model == &thread.model
+                    && thread.id == self.thread.id
+                    && thread.project_id == self.thread.project_id
+            })
+    }
+
+    /// Clears the exact selection owner after a callback that cannot be
+    /// applied to this stream (for example, after a route switch). It does
+    /// not manufacture a failure for a hidden/stale entity.
+    pub fn clear_model_selection_owner(&mut self, request_id: u64, cx: &mut Context<Self>) {
+        let Some((owner_id, _)) = self.model_selection_pending.as_ref() else {
+            return;
+        };
+        if *owner_id != request_id {
+            return;
+        }
+        self.model_selection_pending = None;
+        self.clear_model_selection_save_owner(request_id, cx);
+        cx.notify();
+    }
+
+    /// Installs the exact app-level owner after the trusted-action lease has
+    /// been acquired. A generic trusted-action busy flag never installs this
+    /// owner, so a model event can distinguish a true duplicate from a
+    /// request that must be rejected.
+    pub fn install_model_selection_save_owner(
+        &mut self,
+        request_id: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.model_selection_save_owner.is_some()
+            || !self.owns_model_selection_request(request_id)
+        {
+            return false;
+        }
+        self.model_selection_save_owner = Some(request_id);
+        self.set_trusted_action_busy(true, cx);
+        true
+    }
+
+    /// Releases only this request's model-save owner. If no exact owner is
+    /// installed, the generic trusted-action busy state is left untouched.
+    fn clear_model_selection_save_owner(
+        &mut self,
+        request_id: u64,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.model_selection_save_owner != Some(request_id) {
+            return false;
+        }
+        self.model_selection_save_owner = None;
+        self.set_trusted_action_busy(false, cx);
+        true
+    }
+
+    /// Projects a durable thread read onto a newly-created route entity. This
+    /// path is deliberately separate from request acknowledgement: the new
+    /// entity has no pending owner, but it still must converge to the worker's
+    /// authoritative row after A→B→A.
+    pub fn apply_authoritative_thread(&mut self, thread: Thread, cx: &mut Context<Self>) {
+        if self.model_selection_pending.is_some() {
+            return;
+        }
+        self.apply_thread(thread, cx);
+    }
+
+    /// Applies the model field to the newest route projection. The caller
+    /// supplies that projection so a late model result cannot replace a title,
+    /// pin, status, mode, or permission changed since the save began.
+    pub fn apply_authoritative_model(
+        &mut self,
+        current_thread: Thread,
+        model: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.model_selection_pending.is_some()
+            || current_thread.id != self.thread.id
+            || current_thread.project_id != self.thread.project_id
+        {
+            return;
+        }
+        let mut projected = current_thread;
+        projected.model = model.to_owned();
+        self.thread = projected;
+        self.composer_defaults.model = model.to_owned();
+        self.controller_error = None;
+        cx.notify();
     }
 
     /// Seeds thread-scoped Composer history from the typed conversation
@@ -295,39 +501,103 @@ impl ConversationStream {
     /// Displays a bounded controller failure without changing authoritative
     /// selected state.
     pub fn apply_controller_error(&mut self, cx: &mut Context<Self>) {
+        self.actions.pending_mode = None;
         self.controller_error = Some("操作未保存，请重试".into());
         cx.notify();
     }
 
-    /// Applies the bounded `@file` candidate projection (A2-12) handed back
-    /// by the app layer's worker. The open selector re-filters; a failed
-    /// walk leaves the selector with whatever is already loaded (empty on
-    /// first failure — the selector simply offers nothing, never guesses).
-    pub fn apply_file_index(&mut self, snapshot: FileIndexSnapshot, cx: &mut Context<Self>) {
-        self.file_index_loading = false;
-        self.file_index_loaded = true;
-        let query = self
-            .input
-            .read(cx)
-            .trailing_at_query()
-            .map(|(_, query)| query)
-            .unwrap_or_default();
-        if query.is_empty() && !self.file_selector.is_open() {
-            self.file_snapshot = snapshot;
-            cx.notify();
-            return;
-        }
-        self.file_snapshot = snapshot;
-        self.file_selector.open_for(&self.file_snapshot, &query);
+    /// Rejects request preparation while preserving the draft for credential repair.
+    pub fn apply_credential_error(&mut self, cx: &mut Context<Self>) {
+        self.reject_composer_submission(cx);
+        self.controller_error =
+            Some("本地凭据缺失或无法读取，请在设置中重新填写 API Key 后重试".into());
+        cx.notify();
+    }
+
+    /// Applies an already-loaded project display label without filesystem IO.
+    pub fn set_project_label(&mut self, label: String, cx: &mut Context<Self>) {
+        self.project_label = label;
         cx.notify();
     }
 
     /// Reflects the authoritative provider/model/thinking composer defaults
-    /// (A2-14) after the app persisted a selection at the config seam.
+    /// after the app persisted a selection at the config seam.
     pub fn apply_composer_defaults(&mut self, defaults: ComposerDefaults, cx: &mut Context<Self>) {
         self.composer_defaults = defaults;
+        if self.composer_defaults.thinking.is_empty() {
+            self.composer_defaults.thinking = self
+                .composer_defaults
+                .reasoning
+                .as_ref()
+                .map(|profile| reasoning_choice_name(&profile.preference))
+                .unwrap_or_else(|| "provider_default".to_string());
+        }
         self.model_selector_open = false;
         cx.notify();
+    }
+
+    /// Projects the exact provider/model capability loaded by the app worker
+    /// onto this route. A profile refresh also resets the displayed choice to
+    /// its persisted preference, keeping model switches deterministic.
+    pub fn apply_reasoning_profile(
+        &mut self,
+        profile: ReasoningProfileProjection,
+        cx: &mut Context<Self>,
+    ) {
+        self.composer_defaults.reasoning = Some(profile.clone());
+        self.composer_defaults.reasoning_unavailable = false;
+        self.composer_defaults.thinking = reasoning_choice_name(&profile.preference);
+        cx.notify();
+    }
+
+    /// Clears a stale provider/model capability projection when the current
+    /// model has no exact profile. A missing profile is provider-default with
+    /// no controls; retaining the previous model's profile would send a
+    /// capability declaration to the wrong model.
+    pub fn clear_reasoning_profile(&mut self, cx: &mut Context<Self>) {
+        self.composer_defaults.reasoning = None;
+        self.composer_defaults.reasoning_unavailable = false;
+        self.composer_defaults.thinking = "provider_default".to_string();
+        cx.notify();
+    }
+
+    /// Marks the independent reasoning authority unavailable. A later
+    /// provider-default fallback is allowed only after an explicit reload
+    /// establishes a valid authority or a valid missing profile.
+    pub fn mark_reasoning_unavailable(&mut self, cx: &mut Context<Self>) {
+        self.composer_defaults.reasoning = None;
+        self.composer_defaults.reasoning_unavailable = true;
+        self.composer_defaults.thinking = "provider_default".to_string();
+        cx.notify();
+    }
+
+    /// Captures the displayed provider/model selection for one run. The app
+    /// receives only identifiers and capability metadata; reasoning text is
+    /// created later by the runtime and never crosses this UI event.
+    pub fn frozen_reasoning_for_submit(
+        &self,
+    ) -> Result<Option<FrozenReasoning>, ReasoningSubmitError> {
+        if self.composer_defaults.reasoning_unavailable {
+            return Err(ReasoningSubmitError::Unavailable);
+        }
+        let Some(profile) = self.composer_defaults.reasoning.as_ref() else {
+            return Ok(None);
+        };
+        let mut frozen = profile
+            .freeze()
+            .map_err(|_| ReasoningSubmitError::Invalid)?;
+        frozen.choice = reasoning_choice_for_name(&self.composer_defaults.thinking);
+        frozen
+            .validate()
+            .map_err(|_| ReasoningSubmitError::Invalid)?;
+        Ok(Some(frozen))
+    }
+
+    /// Reports an unresolved reasoning authority to the app run gate. A
+    /// missing profile remains a valid provider-default state and returns
+    /// `false` here.
+    pub fn reasoning_unavailable(&self) -> bool {
+        self.composer_defaults.reasoning_unavailable
     }
 
     /// Installs the priced model options for the composer selector (A2-14):
@@ -343,76 +613,100 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Follows the caret into/out of an `@token` (A2-12). The first `@` in a
-    /// session triggers exactly one bounded index request (first-wins; later
-    /// opens re-filter the cached projection). No token → selector closed.
-    pub(crate) fn sync_at_query(&mut self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
-        let query = input.read(cx).trailing_at_query().map(|(_, query)| query);
-        match query {
-            None => {
-                if self.file_selector.close() {
-                    cx.notify();
-                }
-            }
-            Some(query) => {
-                if !self.file_index_loaded && !self.file_index_loading {
-                    self.file_index_loading = true;
-                    cx.emit(FileIndexRequested {
-                        thread_id: self.thread.id.clone(),
-                        project_id: self.thread.project_id.clone(),
-                    });
-                }
-                self.file_selector.open_for(&self.file_snapshot, &query);
-                cx.notify();
-            }
+    /// Emits the in-session model selection intent (R1): the displayed model
+    /// stays authoritative until the app acknowledges the durable save.
+    /// Single owner at a time; while a selection is pending, further
+    /// selections are refused and the request id carries the exact owner
+    /// identity through the acknowledgement.
+    pub fn request_model_selection(&mut self, model: &str, cx: &mut Context<Self>) {
+        // A branch/commit/artifact operation uses the same generic busy flag.
+        // Refuse at the UI boundary so an invalid event cannot install a
+        // model pending owner that the app handler would have to unwind.
+        if self.model_selection_pending.is_some()
+            || self.model_selection_save_busy()
+            || self.trusted_action_busy
+            || model.is_empty()
+        {
+            return;
         }
-    }
-
-    /// `up` in an open selector moves the highlight instead of history
-    /// recall (ui-spec §6 键盘可达；选择器打开时按键先到选择器).
-    pub(crate) fn on_selector_previous(
-        &mut self,
-        _: &PreviousFile,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.file_selector.move_highlight(-1);
+        let request_id = self.next_model_request_id;
+        self.next_model_request_id += 1;
+        self.model_selection_pending = Some((request_id, model.to_string()));
+        cx.emit(ThreadModelSelectionRequested {
+            thread_id: self.thread.id.clone(),
+            model: model.to_string(),
+            request_id,
+        });
         cx.notify();
     }
 
-    pub(crate) fn on_selector_next(
+    /// Applies the authoritative thread after the durable model save (R1):
+    /// only the exact request owner and the owning thread accept it, so a
+    /// late or stale callback can never write another thread's state or
+    /// release a newer selection's owner.
+    pub fn apply_thread_model_acknowledged(
         &mut self,
-        _: &NextFile,
-        _: &mut Window,
+        thread_id: &str,
+        request_id: u64,
+        model: &str,
+        current_thread: Thread,
         cx: &mut Context<Self>,
     ) {
-        self.file_selector.move_highlight(1);
-        cx.notify();
-    }
-
-    pub(crate) fn on_selector_cancel(
-        &mut self,
-        _: &CancelFile,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.file_selector.close();
-        cx.notify();
-    }
-
-    /// Enter/Tab in an open selector accepts first-wins and completes the
-    /// `@token` in the composer input; the send binding never fires through
-    /// this path (the selector context shadows it while open).
-    pub(crate) fn on_selector_accept(
-        &mut self,
-        _: &AcceptFile,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(path) = self.file_selector.accept() {
-            self.input
-                .update(cx, |input, cx| input.complete_at_query(&path, cx));
+        if thread_id != self.thread.id {
+            return;
         }
+        let Some((owner_id, _)) = self.model_selection_pending.as_ref() else {
+            return;
+        };
+        if *owner_id != request_id {
+            return;
+        }
+        if current_thread.id != self.thread.id
+            || current_thread.project_id != self.thread.project_id
+        {
+            return;
+        }
+        if self
+            .model_selection_pending
+            .as_ref()
+            .is_none_or(|(_, requested_model)| requested_model != model)
+        {
+            return;
+        }
+        let mut projected = current_thread;
+        projected.model = model.to_owned();
+        self.composer_defaults.model = model.to_owned();
+        self.thread = projected;
+        self.model_selection_pending = None;
+        self.clear_model_selection_save_owner(request_id, cx);
+        self.model_selector_open = false;
+        self.controller_error = None;
+        cx.notify();
+    }
+
+    /// Applies a failed in-session model save (R1): the durable/displayed
+    /// model is preserved exactly as it was (the write failed closed, so the
+    /// previous authoritative value still stands), the failure is shown and
+    /// the exact request owner is released. A late or stale callback for
+    /// another request or another thread never lands.
+    pub fn apply_thread_model_failed(
+        &mut self,
+        thread_id: &str,
+        request_id: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if thread_id != self.thread.id {
+            return;
+        }
+        let Some((owner_id, _)) = self.model_selection_pending.as_ref() else {
+            return;
+        };
+        if *owner_id != request_id {
+            return;
+        }
+        self.model_selection_pending = None;
+        self.clear_model_selection_save_owner(request_id, cx);
+        self.controller_error = Some("模型选择保存失败，请重试".into());
         cx.notify();
     }
 
@@ -425,7 +719,11 @@ impl ConversationStream {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.model_options.is_empty() {
+        if self.model_options.is_empty()
+            || self.model_selection_pending.is_some()
+            || self.model_selection_save_busy()
+            || self.trusted_action_busy
+        {
             return;
         }
         if !self.model_selector_open {
@@ -433,7 +731,7 @@ impl ConversationStream {
             self.model_selector_highlight = self
                 .model_options
                 .iter()
-                .position(|model| *model == self.composer_defaults.model)
+                .position(|model| *model == self.thread.model)
                 .unwrap_or(0);
             cx.notify();
             return;
@@ -443,12 +741,8 @@ impl ConversationStream {
             .get(self.model_selector_highlight)
             .cloned()
         {
-            self.composer_defaults.model = model;
             self.model_selector_open = false;
-            cx.emit(ComposerDefaultsRequested {
-                thread_id: self.thread.id.clone(),
-                defaults: self.composer_defaults.clone(),
-            });
+            self.request_model_selection(&model, cx);
         }
         cx.notify();
     }
@@ -459,7 +753,7 @@ impl ConversationStream {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.model_selector_open || self.model_options.is_empty() {
+        if !self.model_selector_open || self.model_options.is_empty() || self.trusted_action_busy {
             return;
         }
         self.model_selector_highlight = self.model_selector_highlight.saturating_sub(1);
@@ -467,7 +761,7 @@ impl ConversationStream {
     }
 
     pub(crate) fn on_model_next(&mut self, _: &NextModel, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.model_selector_open {
+        if !self.model_selector_open || self.trusted_action_busy {
             return;
         }
         if self.model_selector_highlight + 1 < self.model_options.len() {
@@ -487,13 +781,14 @@ impl ConversationStream {
     }
 
     pub(crate) fn select_model_option(&mut self, model: &str, cx: &mut Context<Self>) {
-        self.composer_defaults.model = model.to_string();
+        if self.model_selection_pending.is_some()
+            || self.model_selection_save_busy()
+            || self.trusted_action_busy
+        {
+            return;
+        }
         self.model_selector_open = false;
-        cx.emit(ComposerDefaultsRequested {
-            thread_id: self.thread.id.clone(),
-            defaults: self.composer_defaults.clone(),
-        });
-        cx.notify();
+        self.request_model_selection(model, cx);
     }
 
     pub(crate) fn cycle_thinking_clicked(
@@ -514,15 +809,19 @@ impl ConversationStream {
         self.cycle_thinking(cx);
     }
 
-    /// Rotates off → low → medium → high → off and persists through the
-    /// app-level config seam (A2-14 thinking 档位).
+    /// Rotates through the exact choices declared by the current
+    /// provider/model profile. Unknown or unsupported capability declarations
+    /// expose provider default only and therefore do not invent an off chip.
     pub(crate) fn cycle_thinking(&mut self, cx: &mut Context<Self>) {
-        let levels = ["off", "low", "medium", "high"];
+        let levels = self.reasoning_choice_names();
+        if levels.len() <= 1 {
+            return;
+        }
         let next = levels
             .iter()
             .position(|level| *level == self.composer_defaults.thinking)
             .map_or(0, |index| (index + 1) % levels.len());
-        self.composer_defaults.thinking = levels[next].to_string();
+        self.composer_defaults.thinking = levels[next].clone();
         cx.emit(ComposerDefaultsRequested {
             thread_id: self.thread.id.clone(),
             defaults: self.composer_defaults.clone(),
@@ -534,6 +833,19 @@ impl ConversationStream {
     pub fn apply_agent_error(&mut self, cx: &mut Context<Self>) {
         self.controller_error = Some("执行未完成，可安全重试".into());
         // S7-T39: run-scoped estimate state never survives a failure path.
+        self.meter.end_run();
+        cx.notify();
+    }
+
+    /// Displays a typed resolver rejection while keeping the original draft
+    /// editable. The app clears the submit owner before calling this method;
+    /// no user echo or durable row is created for the rejected attempt.
+    pub fn apply_reference_error(
+        &mut self,
+        code: FileReferenceFailureCode,
+        cx: &mut Context<Self>,
+    ) {
+        self.controller_error = Some(code.message().into());
         self.meter.end_run();
         cx.notify();
     }
@@ -597,5 +909,44 @@ impl ConversationStream {
         if accepted && self.meter.apply(event) {
             cx.notify();
         }
+    }
+
+    fn reasoning_choice_names(&self) -> Vec<String> {
+        let Some(profile) = self.composer_defaults.reasoning.as_ref() else {
+            return vec!["provider_default".to_string()];
+        };
+        // Required means the provider enables thinking; it does not force a
+        // named effort. Keeping provider_default here lets the provider pick
+        // its own legal default and remains distinct from disabled.
+        let mut choices = vec!["provider_default".to_string()];
+        if profile.supports_disabled {
+            choices.push("disabled".to_string());
+        }
+        if !matches!(
+            profile.support,
+            ReasoningSupport::Unsupported | ReasoningSupport::Unknown
+        ) {
+            choices.extend(profile.efforts.iter().cloned());
+        }
+        if choices.is_empty() {
+            choices.push("provider_default".to_string());
+        }
+        choices
+    }
+}
+
+fn reasoning_choice_name(choice: &ReasoningChoice) -> String {
+    match choice {
+        ReasoningChoice::ProviderDefault => "provider_default".to_string(),
+        ReasoningChoice::Disabled => "disabled".to_string(),
+        ReasoningChoice::Effort(effort) => effort.clone(),
+    }
+}
+
+fn reasoning_choice_for_name(name: &str) -> ReasoningChoice {
+    match name {
+        "disabled" => ReasoningChoice::Disabled,
+        "provider_default" | "" | "off" => ReasoningChoice::ProviderDefault,
+        effort => ReasoningChoice::Effort(effort.to_string()),
     }
 }

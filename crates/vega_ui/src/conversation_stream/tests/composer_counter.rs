@@ -3,7 +3,7 @@ use super::*;
 #[gpui::test]
 async fn composer_counter_projects_estimate_calibration_and_fences(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "meter-thread");
-    // Unpriced start: the counter is visible (not noise) and shows `—`.
+    // Unpriced start: the retained accounting snapshot reports unavailable cost.
     let initial = stream.read_with(cx, |stream, _| stream.meter_snapshot());
     assert_eq!(initial.display(), "0 tok · —");
 

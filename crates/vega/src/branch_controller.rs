@@ -180,25 +180,23 @@ pub(crate) fn run_branch_list_worker(
     let _ = sender.send((fence, result));
 }
 
+// OS preflight owns only data/service state; UI route identity stays on the foreground task.
 pub(crate) fn run_branch_prepare_worker(
     service: Arc<BranchWorkspaceService>,
-    fence: BranchPrepareFence,
+    branch_id: BranchId,
     cancel: tokio_util::sync::CancellationToken,
-    sender: mpsc::SyncSender<(
-        BranchPrepareFence,
-        Result<BranchSwitchPermit, GitWorkspaceErrorCode>,
-    )>,
+    sender: mpsc::SyncSender<Result<BranchSwitchPermit, GitWorkspaceErrorCode>>,
 ) {
     let result = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
         Ok(runtime) => runtime
-            .block_on(service.prepare_switch(fence.branch_id, cancel))
+            .block_on(service.prepare_switch(branch_id, cancel))
             .map_err(|failure| failure.code()),
         Err(_) => Err(GitWorkspaceErrorCode::SpawnFailed),
     };
-    let _ = sender.send((fence, result));
+    let _ = sender.send(result);
 }
 
 pub(crate) fn run_branch_switch_worker(

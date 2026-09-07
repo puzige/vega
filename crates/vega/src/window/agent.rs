@@ -197,6 +197,25 @@ impl VegaWindow {
         }
     }
 
+    pub(crate) fn stop_composer(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &ComposerStopRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        if self
+            .agent_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| active.thread_id == request.thread_id && active.stream == stream)
+        {
+            self.cancel_active_agent(cx);
+        }
+    }
+
     pub(crate) fn start_agent_run(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -204,7 +223,52 @@ impl VegaWindow {
         run: PendingAgentRun,
         cx: &mut Context<Self>,
     ) {
+        // Programmatic/Plan callers use the same run-start freeze as the
+        // Composer path. An invalid declared profile is rejected while the
+        // draft remains in the stream; it must never silently become a
+        // provider-default request in the worker.
+        let reasoning = match stream.read(cx).frozen_reasoning_for_submit() {
+            Ok(reasoning) => reasoning,
+            Err(_) => {
+                match &run {
+                    PendingAgentRun::UserMessage(_) => {
+                        stream.update(cx, ConversationStream::reject_composer_submission);
+                        stream.update(cx, ConversationStream::apply_agent_error);
+                    }
+                    PendingAgentRun::ApprovedPlan(_) => {
+                        stream.update(cx, ConversationStream::apply_agent_error);
+                    }
+                }
+                return;
+            }
+        };
+        self.start_agent_run_with_reasoning(stream, thread_id, run, reasoning, cx);
+    }
+
+    pub(crate) fn start_agent_run_with_reasoning(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        thread_id: &str,
+        run: PendingAgentRun,
+        reasoning: Option<FrozenReasoning>,
+        cx: &mut Context<Self>,
+    ) {
         if !self.owns_stream_request(&stream, thread_id, cx) {
+            return;
+        }
+        let reasoning_invalid = reasoning.as_ref().is_some_and(|reasoning| {
+            reasoning.validate().is_err() || reasoning.model != stream.read(cx).displayed_model()
+        });
+        if reasoning_invalid {
+            match &run {
+                PendingAgentRun::UserMessage(_) => {
+                    stream.update(cx, ConversationStream::reject_composer_submission);
+                    stream.update(cx, ConversationStream::apply_agent_error);
+                }
+                PendingAgentRun::ApprovedPlan(_) => {
+                    stream.update(cx, ConversationStream::apply_agent_error);
+                }
+            }
             return;
         }
         let pending_user_content = match &run {
@@ -215,7 +279,13 @@ impl VegaWindow {
             PendingAgentRun::UserMessage(_) => None,
             PendingAgentRun::ApprovedPlan(instruction_id) => Some(instruction_id.clone()),
         };
-        if self.agent_controller.active.is_some() || self.trusted_actions.is_busy() {
+        if stream.read(cx).has_pending_model_selection()
+            || self.agent_controller.active.is_some()
+            || self.trusted_actions.is_busy()
+            || self.reasoning_save_pending.is_some()
+            || self.model_catalog_loading
+            || stream.read(cx).reasoning_unavailable()
+        {
             match run {
                 PendingAgentRun::UserMessage(_) => {
                     stream.update(cx, ConversationStream::reject_composer_submission);
@@ -292,6 +362,7 @@ impl VegaWindow {
                 } else {
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
+                cx.set_global(vega_ui::settings::PricingSettingsRequested(true));
                 cx.set_global(SettingsOpen(true));
                 self.push_pricing_projection(cx);
                 return;
@@ -305,6 +376,7 @@ impl VegaWindow {
             pending_user_content,
             pending_approved_instruction,
         );
+        stream.update(cx, ConversationStream::begin_composer_run);
         self.begin_artifact_agent_generation(generation, &stream);
         // S7-T39/C3: the provisional estimator freezes the run-start
         // selection; it never re-reads pricing files or the live authority.
@@ -317,8 +389,11 @@ impl VegaWindow {
         });
         let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
         let worker_sender = sender.clone();
+        let config_path = self.composer_config_path();
         #[cfg(test)]
         let provider_override = self.agent_provider_override.clone();
+        #[cfg(test)]
+        let worker_start_probe = self.agent_worker_start_probe.clone();
         let worker = std::thread::Builder::new()
             .name("vega-agent".into())
             .spawn(move || {
@@ -331,11 +406,16 @@ impl VegaWindow {
                     cancel,
                     worker_sender,
                     Some(pricing_catalog),
+                    config_path,
+                    reasoning,
                     #[cfg(test)]
                     provider_override,
+                    #[cfg(test)]
+                    worker_start_probe,
                 );
             });
         if worker.is_err() {
+            stream.update(cx, |stream, cx| stream.finish_composer_run(false, cx));
             self.poison_artifact_agent_generation(generation, &stream);
             let failed_run = self.agent_controller.active.take();
             if failed_run
@@ -361,13 +441,22 @@ impl VegaWindow {
                 let batch = drain_agent_updates(&receiver);
                 let keep_running = this
                     .update(cx, |this, cx| {
-                        let (success, finished_run) = match this
-                            .apply_agent_batch_ingress(generation, &thread_id, &stream, batch, cx)
-                        {
-                            AgentBatchIngress::Stale => return false,
-                            AgentBatchIngress::Running => return true,
-                            AgentBatchIngress::Finished { success, run } => (success, run),
-                        };
+                        let (success, finished_run, reference_failure, credential_failure) =
+                            match this.apply_agent_batch_ingress(
+                                generation, &thread_id, &stream, batch, cx,
+                            ) {
+                                AgentBatchIngress::Stale => return false,
+                                AgentBatchIngress::Running => return true,
+                                AgentBatchIngress::Finished {
+                                    success,
+                                    run,
+                                    reference_failure,
+                                    credential_failure,
+                                } => (success, run, reference_failure, credential_failure),
+                            };
+                        let cancelled = finished_run.cancel.is_cancelled();
+                        let cancelled = stream
+                            .update(cx, |stream, cx| stream.finish_composer_run(cancelled, cx));
                         let ActiveAgentRun {
                             pending_user_content: pending_user,
                             pending_approved_instruction,
@@ -412,12 +501,27 @@ impl VegaWindow {
                                 display_stream
                                     .update(cx, ConversationStream::apply_approved_not_started);
                             }
+                            if let Some(code) = reference_failure {
+                                display_stream.update(cx, |stream, cx| {
+                                    stream.apply_reference_error(code, cx)
+                                });
+                            }
                         } else if approved_not_started {
                             stream.update(cx, ConversationStream::apply_approved_not_started);
+                        } else if let Some(code) = reference_failure {
+                            stream.update(cx, |stream, cx| stream.apply_reference_error(code, cx));
                         } else {
                             stream.update(cx, ConversationStream::apply_agent_error);
                         }
-                        if !success && !recovery_projected {
+                        if credential_failure {
+                            stream.update(cx, ConversationStream::apply_credential_error);
+                        }
+                        if !success
+                            && !cancelled
+                            && !recovery_projected
+                            && reference_failure.is_none()
+                            && !credential_failure
+                        {
                             stream.update(cx, ConversationStream::apply_agent_error);
                         }
                         if let Some(pending) = pending_review {
@@ -444,10 +548,24 @@ impl VegaWindow {
         {
             return;
         }
-        self.start_agent_run(
+        let reasoning = match request.reasoning.clone() {
+            Ok(reasoning) => reasoning,
+            Err(_) => {
+                // Preserve the draft and make the invalid explicit profile
+                // visible. Never turn a failed declared profile into a
+                // provider-default request.
+                stream.update(cx, |stream, cx| {
+                    stream.reject_composer_submission(cx);
+                    stream.apply_controller_error(cx);
+                });
+                return;
+            }
+        };
+        self.start_agent_run_with_reasoning(
             stream,
             &request.thread_id,
             PendingAgentRun::UserMessage(request.content.clone()),
+            reasoning,
             cx,
         );
     }

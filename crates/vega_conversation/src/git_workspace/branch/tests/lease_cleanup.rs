@@ -16,14 +16,16 @@ async fn rejected_execute_cannot_compete_with_owner_cleanup_refresh() {
     let started = controls.path().join("started");
     let release = controls.path().join("release");
     let attempts = controls.path().join("attempts");
+    let git = production_git_shell_quote();
     let script = controls.path().join("blocking-switch.sh");
     fs::write(
             &script,
             format!(
-                "#!/bin/sh\nprintf started > '{}'\nwhile [ ! -f '{}' ]; do /bin/sleep 0.01; done\nprintf 'attempt\\n' >> '{}'\nexec /usr/bin/git \"$@\"\n",
+                "#!/bin/sh\nprintf started > '{}'\nwhile [ ! -f '{}' ]; do /bin/sleep 0.01; done\nprintf 'attempt\\n' >> '{}'\nexec {git} \"$@\"\n",
                 started.display(),
                 release.display(),
-                attempts.display()
+                attempts.display(),
+                git = git
             ),
         )
         .expect("blocking script");
@@ -156,26 +158,29 @@ async fn refresh_registered_before_owner_cannot_commit_after_lease_acquisition()
     let mutation_entered = controls.path().join("mutation-entered");
     let mutation_release = controls.path().join("mutation-release");
     let attempts = controls.path().join("attempts");
+    let git = production_git_shell_quote();
     let read_wrapper = controls.path().join("read-wrapper.sh");
     fs::write(
             &read_wrapper,
             format!(
-                "#!/bin/sh\nif [ -f '{}' ] && /bin/mkdir '{}' 2>/dev/null; then\n  printf entered > '{}'\n  while [ ! -f '{}' ]; do /bin/sleep 0.01; done\nfi\nexec /usr/bin/git \"$@\"\n",
+                "#!/bin/sh\nif [ -f '{}' ] && /bin/mkdir '{}' 2>/dev/null; then\n  printf entered > '{}'\n  while [ ! -f '{}' ]; do /bin/sleep 0.01; done\nfi\nexec {git} \"$@\"\n",
                 read_arm.display(),
                 read_claim.display(),
                 read_entered.display(),
-                read_release.display()
+                read_release.display(),
+                git = git
             ),
         )
         .expect("read wrapper");
     let mutation_wrapper = controls.path().join("mutation-wrapper.sh");
     fs::write(
-            &mutation_wrapper,
-            format!(
-                "#!/bin/sh\nprintf entered > '{}'\nwhile [ ! -f '{}' ]; do /bin/sleep 0.01; done\nprintf 'attempt\\n' >> '{}'\nexec /usr/bin/git \"$@\"\n",
+        &mutation_wrapper,
+        format!(
+                "#!/bin/sh\nprintf entered > '{}'\nwhile [ ! -f '{}' ]; do /bin/sleep 0.01; done\nprintf 'attempt\\n' >> '{}'\nexec {git} \"$@\"\n",
                 mutation_entered.display(),
                 mutation_release.display(),
-                attempts.display()
+                attempts.display(),
+                git = git
             ),
         )
         .expect("mutation wrapper");

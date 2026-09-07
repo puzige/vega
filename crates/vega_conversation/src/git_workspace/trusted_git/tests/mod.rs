@@ -2,6 +2,8 @@ use super::*;
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::Command;
 use std::sync::atomic::AtomicUsize;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[path = "codec_topology.rs"]
 mod codec_topology;
@@ -181,13 +183,13 @@ fn mutation_recorder() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
     fs::write(
         &script,
-        format!(
+        production_git_script(format!(
             "#!/bin/sh\nset -eu\nprintf x >> '{}'\n: > '{}'\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '{}'; done\n/usr/bin/tee '{}' | /usr/bin/git \"$@\"\n",
             quote(&attempts),
             quote(&argv),
             quote(&argv),
             quote(&input),
-        ),
+        )),
     )
     .expect("recorder script");
     let mut permissions = fs::metadata(&script)
@@ -206,11 +208,11 @@ fn blocking_mutation() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
     fs::write(
         &script,
-        format!(
+        production_git_script(format!(
             "#!/bin/sh\nset -eu\n/usr/bin/git \"$@\"\n: > '{}'\nwhile [ ! -e '{}' ]; do /bin/sleep 0.01; done\n",
             quote(&ready),
             quote(&release),
-        ),
+        )),
     )
     .expect("blocking script");
     let mut permissions = fs::metadata(&script)
@@ -231,14 +233,14 @@ fn blocking_before_mutation() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) 
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
     fs::write(
         &script,
-        format!(
+        production_git_script(format!(
             "#!/bin/sh\nset -eu\nprintf x >> '{}'\n: > '{}'\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '{}'; done\n: > '{}'\nwhile [ ! -e '{}' ]; do /bin/sleep 0.01; done\nexec /usr/bin/git \"$@\"\n",
             quote(&attempts),
             quote(&argv),
             quote(&argv),
             quote(&ready),
             quote(&release),
-        ),
+        )),
     )
     .expect("pre-mutation script");
     let mut permissions = fs::metadata(&script)
@@ -256,12 +258,12 @@ fn fail_first_status_after_trigger(trigger: &Path) -> (tempfile::TempDir, PathBu
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
     fs::write(
         &script,
-        format!(
+        production_git_script(format!(
             "#!/bin/sh\nset -eu\nis_status=0\nfor arg in \"$@\"; do [ \"$arg\" = status ] && is_status=1 || true; done\nif [ \"$is_status\" = 1 ] && [ -e '{}' ] && [ ! -e '{}' ]; then : > '{}'; exit 7; fi\nexec /usr/bin/git \"$@\"\n",
             quote(trigger),
             quote(&failed),
             quote(&failed),
-        ),
+        )),
     )
     .expect("read fault script");
     let mut permissions = fs::metadata(&script)
@@ -280,7 +282,7 @@ fn scripted_mutation(body: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\nset -eu\nprintf x >> '{}'\n{}\n",
+            "#!/bin/sh\nif [ \"${{1-}}\" = '{FIXTURE_READINESS_ARG}' ]; then exit 0; fi\nset -eu\nprintf x >> '{}'\n{}\n",
             quote(&attempts),
             body
         ),
@@ -291,7 +293,52 @@ fn scripted_mutation(body: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
         .permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&script, permissions).expect("scripted mutation executable");
+    run_fixture_readiness(&script);
     (dir, script, attempts)
+}
+
+const FIXTURE_READINESS_ARG: &str = "--vega-test-readiness";
+const FIXTURE_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn run_fixture_readiness(script: &Path) {
+    let started = Instant::now();
+    let mut child = Command::new(script)
+        .arg(FIXTURE_READINESS_ARG)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap_or_else(|error| panic!("fixture readiness spawn failed: {error}"));
+    let pgid = child.id();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(
+                    status.success(),
+                    "fixture readiness exited with {:?}",
+                    status.code()
+                );
+                return;
+            }
+            Ok(None) if started.elapsed() < FIXTURE_READINESS_TIMEOUT => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(None) => {
+                let cleanup_failed =
+                    crate::git_workspace::terminate_group(&mut child, pgid).is_err();
+                panic!(
+                    "fixture readiness timed out after {:?}; cleanup_failed={cleanup_failed}",
+                    FIXTURE_READINESS_TIMEOUT
+                );
+            }
+            Err(error) => {
+                let cleanup_failed =
+                    crate::git_workspace::terminate_group(&mut child, pgid).is_err();
+                panic!("fixture readiness wait failed: {error}; cleanup_failed={cleanup_failed}");
+            }
+        }
+    }
 }
 
 fn before_git_mutation(body: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
@@ -352,14 +399,14 @@ fn after_git_mutation(plan: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathB
     };
     fs::write(
         &script,
-        format!(
+        production_git_script(format!(
             "#!/bin/sh\nset -eu\nprintf x >> '{}'\n: > '{}'\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '{}'; done\n/usr/bin/tee '{}' | /usr/bin/git \"$@\" >/dev/null\n{}\n",
             quote(&attempts),
             quote(&argv),
             quote(&argv),
             quote(&input),
             tail
-        ),
+        )),
     )
     .expect("after-git script");
     let mut permissions = fs::metadata(&script)
@@ -394,7 +441,7 @@ fn proof_read_recorder(
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
     fs::write(
         &script,
-        format!(
+        production_git_script(format!(
             r#"#!/bin/sh
 set -eu
 base=$(/bin/cat '{base}')
@@ -460,7 +507,7 @@ exec /usr/bin/git "$@"
             plan = plan,
             root = quote(root),
             root_backup = quote(&root_backup),
-        ),
+        )),
     )
     .expect("proof recorder script");
     let mut permissions = fs::metadata(&script)
@@ -479,11 +526,11 @@ fn blocking_summary_reader() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
     fs::write(
         &script,
-        format!(
+        production_git_script(format!(
             "#!/bin/sh\nset -eu\nis_summary=false\nfor arg in \"$@\"; do [ \"$arg\" = --patch ] && is_summary=true; done\n/usr/bin/git \"$@\"\nstatus=$?\nif [ \"$is_summary\" = true ]; then : > '{}'; while [ ! -e '{}' ]; do /bin/sleep 0.01; done; fi\nexit \"$status\"\n",
             quote(&ready),
             quote(&release),
-        ),
+        )),
     )
     .expect("summary reader script");
     let mut permissions = fs::metadata(&script)

@@ -18,6 +18,7 @@ use vega_markdown::{ListItem, TableCell};
 
 type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
+mod composer_actions;
 mod composer_counter;
 mod core_flow;
 mod e2e_variable_height;
@@ -33,7 +34,10 @@ struct StreamHarness {
 
 impl Render for StreamHarness {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.stream.clone()
+        div()
+            .key_context("VegaWindow")
+            .size_full()
+            .child(self.stream.clone())
     }
 }
 
@@ -114,20 +118,6 @@ fn open_controller_stream(
     });
     cx.run_until_parked();
     (window, stream, events)
-}
-
-fn focus_setting(
-    window: WindowHandle<StreamHarness>,
-    stream: &Entity<ConversationStream>,
-    index: usize,
-    cx: &mut TestAppContext,
-) {
-    window
-        .update(cx, |_, window, cx| {
-            let focus = stream.read(cx).setting_focus[index].clone();
-            window.focus(&focus, cx);
-        })
-        .expect("settings stream window");
 }
 
 fn focus_composer(

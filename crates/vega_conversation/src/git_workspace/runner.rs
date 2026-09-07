@@ -3,8 +3,26 @@ use super::*;
 pub(crate) struct Runner {
     pub(crate) root: PathBuf,
     pub(crate) identity: RootIdentity,
+    executable: RunnerExecutable,
+}
+
+pub(crate) enum RunnerExecutable {
+    Production(Arc<GitExecutable>),
     #[cfg(test)]
-    pub(crate) executable: Option<PathBuf>,
+    Test(Option<PathBuf>),
+}
+
+impl From<Arc<GitExecutable>> for RunnerExecutable {
+    fn from(executable: Arc<GitExecutable>) -> Self {
+        Self::Production(executable)
+    }
+}
+
+#[cfg(test)]
+impl From<Option<PathBuf>> for RunnerExecutable {
+    fn from(executable: Option<PathBuf>) -> Self {
+        Self::Test(executable)
+    }
 }
 
 pub(crate) struct Output {
@@ -13,16 +31,27 @@ pub(crate) struct Output {
 }
 
 impl Runner {
-    pub(crate) fn new(
-        root: PathBuf,
-        identity: RootIdentity,
-        #[cfg(test)] executable: Option<PathBuf>,
-    ) -> Self {
+    pub(crate) fn new<E>(root: PathBuf, identity: RootIdentity, executable: E) -> Self
+    where
+        E: Into<RunnerExecutable>,
+    {
         Self {
             root,
             identity,
+            executable: executable.into(),
+        }
+    }
+
+    fn executable_path(&self) -> Result<&Path, GitWorkspaceError> {
+        match &self.executable {
+            RunnerExecutable::Production(executable) => {
+                executable.verify()?;
+                Ok(executable.path())
+            }
             #[cfg(test)]
-            executable,
+            RunnerExecutable::Test(executable) => {
+                Ok(executable.as_deref().unwrap_or_else(|| Path::new(GIT)))
+            }
         }
     }
 
@@ -72,10 +101,7 @@ impl Runner {
         if cancel.is_cancelled() {
             return Err(error(GitWorkspaceErrorCode::Cancelled));
         }
-        #[cfg(test)]
-        let executable = self.executable.as_deref().unwrap_or_else(|| Path::new(GIT));
-        #[cfg(not(test))]
-        let executable = Path::new(GIT);
+        let executable = self.executable_path()?;
         let mut command = Command::new(executable);
         command.current_dir(&self.root);
         command
@@ -112,11 +138,8 @@ impl Runner {
         branch: &OsStr,
         cancel: &CancellationToken,
     ) -> Result<Output, GitWorkspaceError> {
-        #[cfg(test)]
-        let executable = self.executable.as_deref().unwrap_or_else(|| Path::new(GIT));
-        #[cfg(not(test))]
-        let executable = Path::new(GIT);
-        self.run_trusted_switch_with_executable(branch, cancel, executable)
+        let executable = self.executable_path()?;
+        self.run_trusted_switch_with_path(branch, cancel, executable)
     }
 
     pub(crate) fn run_trusted_mutation(
@@ -126,22 +149,8 @@ impl Runner {
         input: Arc<[u8]>,
         cancel: &CancellationToken,
     ) -> Result<Output, GitWorkspaceError> {
-        #[cfg(test)]
-        let executable = self.executable.as_deref().unwrap_or_else(|| Path::new(GIT));
-        #[cfg(not(test))]
-        let executable = Path::new(GIT);
-        self.run_trusted_mutation_with_executable(verb, args, input, cancel, executable)
-    }
-
-    pub(crate) fn run_trusted_mutation_with_executable(
-        &self,
-        verb: &'static str,
-        args: &[OsString],
-        input: Arc<[u8]>,
-        cancel: &CancellationToken,
-        executable: &Path,
-    ) -> Result<Output, GitWorkspaceError> {
-        self.run_trusted_mutation_with_executable_and_timeout(
+        let executable = self.executable_path()?;
+        self.run_trusted_mutation_with_path_and_timeout(
             verb,
             args,
             input,
@@ -151,7 +160,42 @@ impl Runner {
         )
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn run_trusted_mutation_with_executable(
+        &self,
+        verb: &'static str,
+        args: &[OsString],
+        input: Arc<[u8]>,
+        cancel: &CancellationToken,
+        executable: &Path,
+    ) -> Result<Output, GitWorkspaceError> {
+        self.run_trusted_mutation_with_path_and_timeout(
+            verb,
+            args,
+            input,
+            cancel,
+            executable,
+            MUTATION_TIMEOUT,
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn run_trusted_mutation_with_executable_and_timeout(
+        &self,
+        verb: &'static str,
+        args: &[OsString],
+        input: Arc<[u8]>,
+        cancel: &CancellationToken,
+        executable: &Path,
+        timeout: Duration,
+    ) -> Result<Output, GitWorkspaceError> {
+        self.run_trusted_mutation_with_path_and_timeout(
+            verb, args, input, cancel, executable, timeout,
+        )
+    }
+
+    fn run_trusted_mutation_with_path_and_timeout(
         &self,
         verb: &'static str,
         args: &[OsString],
@@ -212,10 +256,7 @@ impl Runner {
         if cancel.is_cancelled() {
             return Err(error(GitWorkspaceErrorCode::Cancelled));
         }
-        #[cfg(test)]
-        let executable = self.executable.as_deref().unwrap_or_else(|| Path::new(GIT));
-        #[cfg(not(test))]
-        let executable = Path::new(GIT);
+        let executable = self.executable_path()?;
         let mut command = Command::new(executable);
         command.current_dir(&self.root);
         command
@@ -252,7 +293,7 @@ impl Runner {
         )
     }
 
-    pub(crate) fn run_trusted_switch_with_executable(
+    fn run_trusted_switch_with_path(
         &self,
         branch: &OsStr,
         cancel: &CancellationToken,
@@ -293,6 +334,16 @@ impl Runner {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn run_trusted_switch_with_executable(
+        &self,
+        branch: &OsStr,
+        cancel: &CancellationToken,
+        executable: &Path,
+    ) -> Result<Output, GitWorkspaceError> {
+        self.run_trusted_switch_with_path(branch, cancel, executable)
+    }
+
     pub(crate) fn verify_root(&self) -> Result<(), GitWorkspaceError> {
         let canonical = fs::canonicalize(&self.root)
             .map_err(|_| error(GitWorkspaceErrorCode::ChangedDuringRead))?;
@@ -309,16 +360,16 @@ impl Runner {
 }
 
 pub(crate) fn scrub_git_environment(command: &mut Command) {
-    let explicit_git_keys: Vec<OsString> = command
+    let explicit_blocked_keys: Vec<OsString> = command
         .get_envs()
-        .filter(|(key, _)| key.as_bytes().starts_with(b"GIT_"))
+        .filter(|(key, _)| is_blocked_git_environment_key(key))
         .map(|(key, _)| key.to_owned())
         .collect();
-    for key in explicit_git_keys {
+    for key in explicit_blocked_keys {
         command.env_remove(key);
     }
     for (key, _) in std::env::vars_os() {
-        if key.as_os_str().as_bytes().starts_with(b"GIT_") {
+        if is_blocked_git_environment_key(key.as_os_str()) {
             command.env_remove(key);
         }
     }
@@ -328,6 +379,15 @@ pub(crate) fn scrub_git_environment(command: &mut Command) {
         .env("GIT_LITERAL_PATHSPECS", "1")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("LC_ALL", "C");
+}
+
+fn is_blocked_git_environment_key(key: &OsStr) -> bool {
+    let bytes = key.as_bytes();
+    bytes.starts_with(b"GIT_")
+        || bytes == b"DEVELOPER_DIR"
+        || bytes == b"TOOLCHAINS"
+        || bytes.starts_with(b"DYLD_")
+        || bytes.starts_with(b"LD_")
 }
 
 pub(crate) struct ReaderResult {
@@ -350,14 +410,99 @@ pub(crate) struct OverflowPolicy {
 }
 
 impl OverflowPolicy {
-    const IMMEDIATE: Self = Self {
+    pub(crate) const IMMEDIATE: Self = Self {
         stdout_immediate: true,
         stderr_immediate: true,
     };
-    const DEFERRED: Self = Self {
+    pub(crate) const DEFERRED: Self = Self {
         stdout_immediate: false,
         stderr_immediate: false,
     };
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProcessControlStage {
+    HandleCapture,
+    InitialTryWait,
+    InitialDrain,
+    RetryDrain,
+    Cleanup,
+    FinalReap,
+    FinalStatus,
+}
+
+/// Test-only, content-free context for the stable process-control error.
+///
+/// The production build keeps this as a zero-sized helper. Tests print the
+/// local state only when the final error is `ProcessControlFailed`; no command
+/// arguments, paths, output, or process identifiers are retained.
+struct ProcessControlDiagnostic {
+    #[cfg(test)]
+    first_stage: Option<ProcessControlStage>,
+    #[cfg(test)]
+    try_wait_errno: Option<i32>,
+}
+
+impl ProcessControlDiagnostic {
+    fn new() -> Self {
+        Self {
+            #[cfg(test)]
+            first_stage: None,
+            #[cfg(test)]
+            try_wait_errno: None,
+        }
+    }
+
+    fn mark_failure(&mut self, stage: ProcessControlStage) {
+        #[cfg(test)]
+        {
+            self.first_stage.get_or_insert(stage);
+        }
+        #[cfg(not(test))]
+        {
+            let _ = stage;
+        }
+    }
+
+    fn record_try_wait_error(&mut self, error: &std::io::Error) {
+        #[cfg(test)]
+        {
+            if self.try_wait_errno.is_none() {
+                self.try_wait_errno = error.raw_os_error();
+            }
+        }
+        #[cfg(not(test))]
+        {
+            let _ = error;
+        }
+    }
+
+    fn finish(
+        &self,
+        code: GitWorkspaceErrorCode,
+        outputs_len: usize,
+        status_seen: bool,
+        cleanup_failed: bool,
+        stop_code: Option<GitWorkspaceErrorCode>,
+    ) -> GitWorkspaceError {
+        #[cfg(test)]
+        if code == GitWorkspaceErrorCode::ProcessControlFailed {
+            eprintln!(
+                "git workspace process-control diagnostic: stage={:?} outputs_len={} status_seen={} cleanup_failed={} stop_code={:?} try_wait_errno={:?}",
+                self.first_stage,
+                outputs_len,
+                status_seen,
+                cleanup_failed,
+                stop_code.map(GitWorkspaceErrorCode::as_str),
+                self.try_wait_errno,
+            );
+        }
+        #[cfg(not(test))]
+        {
+            let _ = (outputs_len, status_seen, cleanup_failed, stop_code);
+        }
+        error(code)
+    }
 }
 
 pub(crate) fn collect_child(
@@ -369,6 +514,7 @@ pub(crate) fn collect_child(
     cancel: &CancellationToken,
     overflow_policy: OverflowPolicy,
 ) -> Result<Output, GitWorkspaceError> {
+    let mut diagnostic = ProcessControlDiagnostic::new();
     let pgid = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -377,8 +523,15 @@ pub(crate) fn collect_child(
         (Some(stdout), Some(stderr), Some(stdin), true) => (stdout, stderr, Some(stdin)),
         (Some(stdout), Some(stderr), None, false) => (stdout, stderr, None),
         (stdout, stderr, stdin, _) => {
+            diagnostic.mark_failure(ProcessControlStage::HandleCapture);
             cleanup_partial_child(child, pgid, stdout, stderr, stdin);
-            return Err(error(GitWorkspaceErrorCode::ProcessControlFailed));
+            return Err(diagnostic.finish(
+                GitWorkspaceErrorCode::ProcessControlFailed,
+                0,
+                false,
+                false,
+                None,
+            ));
         }
     };
     let overflowed = Arc::new(AtomicBool::new(false));
@@ -386,8 +539,15 @@ pub(crate) fn collect_child(
     let writer_failed = Arc::new(AtomicBool::new(false));
     if let Some(input) = input {
         let Some(mut stdin) = stdin else {
+            diagnostic.mark_failure(ProcessControlStage::HandleCapture);
             cleanup_partial_child(child, pgid, None, None, None);
-            return Err(error(GitWorkspaceErrorCode::ProcessControlFailed));
+            return Err(diagnostic.finish(
+                GitWorkspaceErrorCode::ProcessControlFailed,
+                0,
+                false,
+                false,
+                None,
+            ));
         };
         let done = writer_done.clone();
         let failed = writer_failed.clone();
@@ -442,7 +602,9 @@ pub(crate) fn collect_child(
         }
         match child.try_wait() {
             Ok(current) => status = current,
-            Err(_) => {
+            Err(error) => {
+                diagnostic.mark_failure(ProcessControlStage::InitialTryWait);
+                diagnostic.record_try_wait_error(&error);
                 stop_code = Some(GitWorkspaceErrorCode::ProcessControlFailed);
                 break;
             }
@@ -453,27 +615,23 @@ pub(crate) fn collect_child(
     }
     let mut cleanup_failed = false;
     if stop_code.is_some() && terminate_group(child, pgid).is_err() {
+        diagnostic.mark_failure(ProcessControlStage::Cleanup);
         cleanup_failed = true;
     }
 
-    let drain_started = Instant::now();
-    let mut outputs = Vec::with_capacity(2);
-    while outputs.len() < 2 && drain_started.elapsed() < DRAIN_GRACE {
-        match receiver.recv_timeout(Duration::from_millis(10)) {
-            Ok(output) => outputs.push(output),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
+    let mut outputs = drain_reader_results(&receiver, Instant::now());
     if outputs.len() < 2 {
+        diagnostic.mark_failure(ProcessControlStage::InitialDrain);
         stop_code.get_or_insert(GitWorkspaceErrorCode::ProcessControlFailed);
         if terminate_group(child, pgid).is_err() {
+            diagnostic.mark_failure(ProcessControlStage::Cleanup);
             cleanup_failed = true;
         }
         while outputs.len() < 2 {
             match receiver.recv_timeout(DRAIN_GRACE) {
                 Ok(output) => outputs.push(output),
                 Err(_) => {
+                    diagnostic.mark_failure(ProcessControlStage::RetryDrain);
                     cleanup_failed = true;
                     break;
                 }
@@ -485,7 +643,9 @@ pub(crate) fn collect_child(
         while status.is_none() && deadline.elapsed() < DRAIN_GRACE {
             status = match child.try_wait() {
                 Ok(status) => status,
-                Err(_) => {
+                Err(error) => {
+                    diagnostic.mark_failure(ProcessControlStage::FinalReap);
+                    diagnostic.record_try_wait_error(&error);
                     cleanup_failed = true;
                     let _ = terminate_group(child, pgid);
                     break;
@@ -496,6 +656,7 @@ pub(crate) fn collect_child(
             }
         }
         if status.is_none() {
+            diagnostic.mark_failure(ProcessControlStage::FinalReap);
             cleanup_failed = true;
             let _ = terminate_group(child, pgid);
         }
@@ -507,14 +668,28 @@ pub(crate) fn collect_child(
     if !writer_done.load(Ordering::SeqCst) || writer_failed.load(Ordering::SeqCst) {
         stop_code.get_or_insert(GitWorkspaceErrorCode::GitFailed);
         if terminate_group(child, pgid).is_err() {
+            diagnostic.mark_failure(ProcessControlStage::Cleanup);
             cleanup_failed = true;
         }
     }
     if cleanup_failed {
-        return Err(error(GitWorkspaceErrorCode::ProcessControlFailed));
+        diagnostic.mark_failure(ProcessControlStage::Cleanup);
+        return Err(diagnostic.finish(
+            GitWorkspaceErrorCode::ProcessControlFailed,
+            outputs.len(),
+            status.is_some(),
+            cleanup_failed,
+            stop_code,
+        ));
     }
     if let Some(code) = stop_code {
-        return Err(error(code));
+        return Err(diagnostic.finish(
+            code,
+            outputs.len(),
+            status.is_some(),
+            cleanup_failed,
+            Some(code),
+        ));
     }
     if outputs.iter().any(|output| {
         output.overflow
@@ -525,7 +700,16 @@ pub(crate) fn collect_child(
     if outputs.iter().any(|output| output.failed) {
         return Err(error(GitWorkspaceErrorCode::GitFailed));
     }
-    let status = status.ok_or_else(|| error(GitWorkspaceErrorCode::ProcessControlFailed))?;
+    let Some(status) = status else {
+        diagnostic.mark_failure(ProcessControlStage::FinalStatus);
+        return Err(diagnostic.finish(
+            GitWorkspaceErrorCode::ProcessControlFailed,
+            outputs.len(),
+            false,
+            cleanup_failed,
+            None,
+        ));
+    };
     if !status.success() {
         return Err(classify_git_failure(status, &outputs));
     }
@@ -698,4 +882,79 @@ pub(crate) fn classify_git_failure(
 
 pub(crate) fn error(code: GitWorkspaceErrorCode) -> GitWorkspaceError {
     GitWorkspaceError::new(code)
+}
+
+fn drain_reader_results(
+    receiver: &mpsc::Receiver<ReaderResult>,
+    drain_started: Instant,
+) -> Vec<ReaderResult> {
+    let mut outputs = Vec::with_capacity(2);
+    while outputs.len() < 2 {
+        // A descheduled collector may resume after grace with both EOF results
+        // already queued. Check readiness before deciding a pipe is still open.
+        match receiver.try_recv() {
+            Ok(output) => {
+                outputs.push(output);
+                continue;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        let Some(remaining) = DRAIN_GRACE.checked_sub(drain_started.elapsed()) else {
+            break;
+        };
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(10))) {
+            Ok(output) => outputs.push(output),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    outputs
+}
+
+#[cfg(test)]
+mod drain_tests {
+    use super::*;
+
+    fn result(stream: Stream) -> ReaderResult {
+        ReaderResult {
+            stream,
+            bytes: vec![],
+            overflow: false,
+            failed: false,
+        }
+    }
+
+    #[test]
+    fn expired_drain_collects_already_queued_results() {
+        let (sender, receiver) = mpsc::channel();
+        sender.send(result(Stream::Stdout)).unwrap();
+        sender.send(result(Stream::Stderr)).unwrap();
+        let expired = Instant::now() - DRAIN_GRACE;
+        let outputs = drain_reader_results(&receiver, expired);
+        assert_eq!(outputs.len(), 2);
+        assert!(matches!(outputs[0].stream, Stream::Stdout));
+        assert!(matches!(outputs[1].stream, Stream::Stderr));
+    }
+
+    #[test]
+    fn expired_drain_leaves_open_missing_stream_incomplete() {
+        let (sender, receiver) = mpsc::channel();
+        sender.send(result(Stream::Stdout)).unwrap();
+        let expired = Instant::now() - DRAIN_GRACE;
+        let outputs = drain_reader_results(&receiver, expired);
+        assert_eq!(outputs.len(), 1);
+        // The sender stays alive, representing a descendant retaining stderr.
+        sender.send(result(Stream::Stderr)).unwrap();
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn expired_drain_with_no_ready_results_stays_incomplete() {
+    let (sender, receiver) = mpsc::channel();
+    let outputs = drain_reader_results(&receiver, Instant::now() - DRAIN_GRACE);
+    assert!(outputs.is_empty());
+    // Keep the channel connected through the drain to model an open pipe.
+    drop(sender);
 }

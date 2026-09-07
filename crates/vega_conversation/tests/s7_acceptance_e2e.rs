@@ -575,11 +575,11 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     )?;
     assert_eq!(restored_tools, 1, "real tool card restores");
 
-    // ─── schema stays exactly six tables at user_version 3 ───
+    // R13 adds four organization metadata tables via authorized migration 0004.
     let user_version: i64 = reopened
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(user_version, 3, "exactly the three authorized migrations");
+    assert_eq!(user_version, 4, "exactly the four authorized migrations");
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -593,11 +593,15 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "messages",
             "permissions",
             "projects",
+            "sidebar_groups",
+            "sidebar_memberships",
+            "sidebar_organization",
+            "sidebar_project_order",
             "threads",
             "token_usage",
             "tool_calls",
         ],
-        "exactly the six authorized tables"
+        "exactly the ten authorized tables"
     );
     Ok(())
 }

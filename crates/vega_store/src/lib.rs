@@ -35,16 +35,19 @@
 
 //! Module layout: `paths` owns the config/data roots (tech-spec §6), `config`
 //! owns `config.toml` under the config root, `keystore` owns
-//! Keychain-backed credentials; `projects` / `git_detect` are T10 additions.
+//! owner-only plaintext local credentials; `projects` / `git_detect` are T10 additions.
 
 pub mod config;
 pub mod git_detect;
 pub mod keystore;
 pub mod messages;
+pub mod palette;
 pub mod paths;
 pub mod permissions;
 pub mod projects;
+pub mod reasoning;
 pub mod recovery;
+pub mod sidebar_organization;
 // T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
 pub mod threads;
 pub mod token_usage;
@@ -62,15 +65,29 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_plan_review.sql"),
     include_str!("../migrations/0003_token_usage_pricing.sql"),
+    include_str!("../migrations/0004_sidebar_organization.sql"),
 ];
 
-/// Single-connection SQLite store for the six-table Vega schema.
+/// Single-connection SQLite store for the Vega content and sidebar metadata schema.
 pub struct Store {
     conn: Connection,
     database_path: Option<PathBuf>,
 }
 
 impl Store {
+    /// Open an existing database read-only without migration or file creation.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
+        let conn = Connection::open_with_flags(
+            path.as_ref(),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        Ok(Self {
+            conn,
+            database_path: Some(path.as_ref().to_path_buf()),
+        })
+    }
+
     /// Opens (creating if necessary) the database file at `path` and applies
     /// the standard Vega pragmas: `journal_mode=WAL`, `synchronous=NORMAL`,
     /// `foreign_keys=ON`.
@@ -162,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_six_tables() {
+    fn migrate_creates_exactly_the_ten_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -182,6 +199,10 @@ mod tests {
                 "messages",
                 "permissions",
                 "projects",
+                "sidebar_groups",
+                "sidebar_memberships",
+                "sidebar_organization",
+                "sidebar_project_order",
                 "threads",
                 "token_usage",
                 "tool_calls",
@@ -201,9 +222,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_3() {
+    fn migrated_store_is_wal_at_user_version_4() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 3);
+        assert_eq!(user_version(&store), 4);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -230,7 +251,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 3);
+        assert_eq!(user_version(&store), 4);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -240,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn version_one_database_upgrades_in_place_without_a_seventh_table() {
+    fn version_one_database_upgrades_in_place_preserving_existing_tables() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("legacy.db");
         let store = Store::open(&path).unwrap();
@@ -266,7 +287,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 3);
+        assert_eq!(user_version(&store), 4);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -284,7 +305,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 6);
+        assert_eq!(tables, 10);
         for table in [
             "projects",
             "threads",

@@ -1,7 +1,7 @@
 use super::*;
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_run(
+pub(crate) fn prepare_run_with_reasoning(
     database_path: PathBuf,
     thread_id: String,
     user_content: String,
@@ -11,6 +11,7 @@ pub(crate) fn prepare_run(
     config: PersistenceActorConfig,
     uses_existing_user: bool,
     pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
 ) -> Result<PreparedRun, ConversationError> {
     #[cfg(not(test))]
     let _ = &config;
@@ -252,6 +253,7 @@ pub(crate) fn prepare_run(
             max_tokens: None,
             completed_tool_results,
             pricing_catalog,
+            reasoning,
             tool_config: RuntimeToolConfig::new(
                 match run_mode {
                     ThreadMode::Ask => RuntimeRunMode::Ask,

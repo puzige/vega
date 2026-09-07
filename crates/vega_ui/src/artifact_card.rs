@@ -221,7 +221,8 @@ impl ArtifactCard {
         self.fail_request(code, cx);
     }
 
-    fn preview(&mut self, cx: &mut Context<Self>) {
+    /// Requests the production bounded preview channel.
+    pub fn preview(&mut self, cx: &mut Context<Self>) {
         if !self.projection.preview_available || self.opening.is_some() {
             return;
         }
@@ -308,9 +309,7 @@ impl ArtifactCard {
             .overflow_hidden()
             .px_3()
             .bg(colors.bg_elevated)
-            .border_color(colors.border_subtle)
-            .border_l_1()
-            .border_r_1();
+            .border_color(colors.border_subtle);
         if row == 0 {
             return base
                 .border_t_1()
@@ -437,8 +436,17 @@ fn source_color(source: ArtifactSource, colors: &ThemeColors) -> gpui::Rgba {
 }
 
 fn error_label(code: Option<GitWorkspaceErrorCode>) -> String {
-    code.map_or_else(String::new, |code| {
-        format!("Artifact unavailable ({})", code.as_str())
+    code.map_or_else(String::new, |code| match code {
+        GitWorkspaceErrorCode::GitUnavailable => {
+            "Git 2.40+ was not found. Install Homebrew Git and retry.".to_owned()
+        }
+        GitWorkspaceErrorCode::GitUnsupported => {
+            "Git 2.40+ is required. Upgrade Git and retry.".to_owned()
+        }
+        GitWorkspaceErrorCode::GitExecutableChanged => {
+            "Git changed while Vega was running. Restart Vega and retry.".to_owned()
+        }
+        code => format!("Artifact unavailable ({})", code.as_str()),
     })
 }
 

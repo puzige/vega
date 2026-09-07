@@ -1,9 +1,11 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.4 · 2026-08-31 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.6 · 2026-09-05 · 关联：[vega-features.md](vega-features.md)
 
 > **设计基线决策**：UI 风格对齐 **Codex Desktop / ZCode 默认风格**——极简、留白充足、浅灰层次、无重边框、内容居中。不发明新设计语言，把精力放在渲染性能和工具卡片信息密度上。
 > 本文件是验收准线：每条都可检查、可测量。S 级 Sprint 验收时逐条过。
+
+> 当前 R8 实测视觉基线见 [R8 ZCode parity](vega-r8-zcode-parity.md)。该任务覆盖下列旧 R4 的几何、浅色中性 token、空态和 composer 分组；安全、数据与性能条款保留。
 
 ---
 
@@ -27,7 +29,7 @@
 |---|---|
 | 侧边栏宽度 | 260px，可折叠至 0（Cmd+B）；折叠状态记忆 |
 | 会话内容列 | max-width 820px，水平居中，左右留白 ≥24px |
-| Composer | 底部固定，与会话列同宽；圆角 12px，边框 1px（不使用阴影堆叠） |
+| Composer | 底部固定，与会话列同宽；圆角 20px，边框 1px（不使用阴影堆叠） |
 | 窗口最小尺寸 | 960×600；小于此时侧边栏自动折叠 |
 | 触控栏/标题栏 | 原生 macOS 标题栏透明融合（traffic lights 内嵌），不自绘 |
 
@@ -35,20 +37,20 @@
 
 | Token | Light | Dark | 用途 |
 |---|---|---|---|
-| `bg-base` | #FFFFFF | #1E1E1E | 主区背景 |
-| `bg-sidebar` | #F7F7F5 | #252525 | 侧边栏背景 |
-| `bg-elevated` | #FFFFFF | #2D2D2D | 卡片/composer |
-| `bg-hover` | #EFEFED | #383838 | 悬停态 |
-| `bg-active` | #E9E9E7 | #404040 | 选中态（当前会话） |
-| `border-subtle` | #E5E5E3 | #3A3A3A | 1px 分隔线/卡片边 |
-| `text-primary` | #1A1A1A | #ECECEC | 正文 |
-| `text-secondary` | #6B6B6B | #9C9C9C | 辅助信息/时间戳 |
-| `text-tertiary` | #9E9E9E | #6B6B6B | 占位符 |
-| `accent` | #1A1A1A | #ECECEC | 主按钮（黑底白字/反色） |
+| `bg-base` | #FFFFFF | #202020 | 主区背景 |
+| `bg-sidebar` | #F7F7F7 | #191919 | 侧边栏背景 |
+| `bg-elevated` | #F7F7F7 | #2A2A2A | 卡片/composer |
+| `bg-hover` | #ECECEC | #323232 | 悬停态 |
+| `bg-active` | #E8E8E8 | #303030 | 选中态（当前会话） |
+| `border-subtle` | #E8E8E8 | #383838 | 1px 分隔线/卡片边 |
+| `text-primary` | #202020 | #EDEDED | 正文 |
+| `text-secondary` | #676767 | #ABABAB | 辅助信息/时间戳 |
+| `text-tertiary` | #8A8A8A | #828282 | 占位符 |
+| `accent` | #202020 | #EDEDED | 主按钮（黑底白字/反色） |
 | `success` | #1A7F37 | #3FB950 | 工具成功态、diff 新增 |
 | `danger` | #CF222E | #F85149 | 错误态、diff 删除、危险操作 |
 | `warning` | #9A6700 | #D29922 | 权限确认、预算告警 |
-| `code-bg` | #F6F8FA | #282C34 | 代码块背景 |
+| `code-bg` | #F6F6F6 | #262626 | 代码块背景 |
 
 > diff 遵循国际惯例（绿增红删）；这不是股票场景。所有颜色必须走 token，禁止组件内写死色值（验收时 grep 检查）。
 
@@ -57,16 +59,18 @@
 | 项 | 规格 |
 |---|---|
 | 正文字体 | 系统字体（SF Pro），13px/1.55 行高 |
-| 会话消息正文 | 14px/1.6 |
+| 会话消息正文 | 15px/1.65 |
 | 代码字体 | SF Mono / JetBrains Mono，12.5px，等宽对齐 |
-| 侧边栏条目 | 13px，行高 32px，超出省略号 |
+| 侧边栏条目 | 13px，行高 34px，超出省略号 |
 | 标题层级 | 仅三级：页面 16px 600 / 区块 14px 600 / 卡片 13px 500 |
+| 空态主标题 | 26px / 500 |
+| 说明 / 元数据 | 12px |
 | CJK 混排 | 中英文之间自动 1/4 字距（盘古之白）；CJK 渲染无豆腐块（验收用混排样本文本） |
 
 ## 4. 核心组件规格
 
 ### 4.1 侧边栏会话条目
-- 单行：会话标题（省略号截断）+ 右侧相对时间（"2h"）；选中态 `bg-active` + 左侧 2px 强调条
+- 单行：会话标题（省略号截断）+ 右侧相对时间（"2h"）；选中态 `bg-active` + 主色标题，不增加重色左边条
 - 未读：标题 500 字重 + 右侧圆点
 - 项目分组可折叠，折叠状态记忆
 
@@ -91,10 +95,11 @@
 - key binding 仅在当前权限卡 scoped context 生效；重复按键只提交一次。卡片消失、线程切换、窗口关闭或 10 分钟超时均视为拒绝，绝不隐式批准
 
 ### 4.4 Composer
-- 多行自适应（1~8 行，超出内滚）；placeholder `text-tertiary`
-- 工具条（底部一行）：[+] [@引用] [权限模式] ··· [模型选择器] [发送]
+- 多行自适应（1~8 行，超出内滚）；placeholder `描述任务，或用 @ 引用文件`
+- 主输入区在上；第一操作行保留 Ask/Plan/Execute、模型、thinking，发送位于右侧，同一行空间不足可换行
+- 第二行只放分支、权限（只读 / 确认 / 自动）与 token / 成本计数，权限当前值持续可见
 - 模式胶囊：Ask/Plan/Execute 三态 segmented control，状态全局可见（不只藏在菜单）
-- token 计数器：右下角常驻 `12.4k tok · ¥0.17`，流式期间实时跳动
+- token 计数器：右侧常驻 `12.4k tok · ¥0.17`，流式期间实时跳动
 
 ### 4.5 Diff 视图
 - 统一视图（unified）默认，可切左右分栏
@@ -102,7 +107,7 @@
 - hunk 头 `@@` 行 `code-bg` 背景
 
 ### 4.6 空态 / 加载态 / 错误态
-- 空会话：居中引导语 + 快捷模板按钮（对标 ZCode 快捷任务），不显示大 logo 插画
+- 空会话：居中显示“想在这个项目里完成什么？”与真实的项目选择 / 添加 / 新建入口，不显示无功能模板或大 logo 插画
 - 加载：骨架屏（不转全屏 spinner）
 - 错误：内联条（`danger` 图标 + 描述 + [重试]），不弹模态
 
@@ -137,3 +142,4 @@
 - v0.2 (2026-08-30) S5 安全裁决回写：§4.2 补 invalid write/edit 的脱敏 rejected card；§4.3 区分普通/危险权限卡默认焦点与 Enter 语义，危险卡补 Tab/Shift+Tab 焦点循环、Space 激活焦点，并固定 bare Enter 在任意焦点均拒绝；两类卡保留 Cmd+Enter/Esc 及重复提交、超时与视图销毁的 fail-closed 行为。
 - v0.3 (2026-08-30) 人类批准 S5 wire schema 回写：§4.2 固定 write/edit 工具卡只消费 strict 安全成功/失败投影，隐藏 checkpoint ref，并对损坏 shape fail closed。
 - v0.4 (2026-08-31) S8-T42 契约冻结回写：§5 P7/P8 测量语义指向 [vega-s8-sdd.md](vega-s8-sdd.md) C1/C2；P8 阈值单位为 OPEN(OWNER: human)（裁决前按 decimal MB 字面权威，见 SDD §3.1/§10）。
+- v0.5 (2026-09-05) R4 客户端 UI 翻新：依据 [R4 客户端 UI 翻新 SDD](vega-ui-refresh-sdd.md) 同步 Codex / ChatGPT 工作区式层级、Light/Dark token、34px 侧栏行高、15px/1.65 会话排版、20px Composer、两行控件分组与真实空态；S3 演示、跟随诊断和无功能模板移出普通产品流，安全、controller、性能冻结条款保持不变。

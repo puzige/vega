@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_remains_six_tables_at_user_version_two() {
+    fn schema_has_ten_tables_at_user_version_four() {
         let store = store();
         let user_version: i64 = store
             .conn()
@@ -287,9 +287,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        // S7-T38 appended migration 0003 (token_usage pricing columns): user_version
-        // advances 2 → 3; the table set must stay exactly six either way.
-        assert_eq!(user_version, 3);
-        assert_eq!(table_count, 6);
+        // R13 appends migration 0004 with four organization metadata tables.
+        // Existing permission/content tables and their constraints remain intact.
+        assert_eq!(user_version, 4);
+        assert_eq!(table_count, 10);
     }
 }

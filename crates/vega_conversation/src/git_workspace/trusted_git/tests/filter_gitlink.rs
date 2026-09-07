@@ -45,9 +45,9 @@ async fn capture_head_service_rejects_bad_born_oids_before_any_mutation() {
         let read = read_dir.path().join("git-read.sh");
         fs::write(
                 &read,
-                format!(
+                production_git_script(format!(
                     "#!/bin/sh\nset -eu\nfor arg in \"$@\"; do if [ \"$arg\" = status ]; then printf '# branch.oid {bad_oid}\\0# branch.head master\\0'; exit 0; fi; done\nexec /usr/bin/git \"$@\"\n"
-                ),
+                )),
             )
             .expect("bad head read script");
         let mut permissions = fs::metadata(&read)
@@ -371,9 +371,9 @@ async fn prepare_maps_every_explicit_filter_value_to_unsafe_filter_before_add() 
         let read = read_dir.path().join("git-read.sh");
         fs::write(
                 &read,
-                format!(
+                production_git_script(format!(
                     "#!/bin/sh\nset -eu\nfor arg in \"$@\"; do if [ \"$arg\" = check-attr ]; then printf 'tracked.txt\\0filter\\0{value}\\0'; exit 0; fi; done\nexec /usr/bin/git \"$@\"\n"
-                ),
+                )),
             )
             .expect("filter read script");
         let mut permissions = fs::metadata(&read)
@@ -507,10 +507,10 @@ async fn attrs_drift_at_immediate_final_and_post_add_barriers_has_zero_zero_one_
         let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
         fs::write(
                 &read,
-                format!(
+                production_git_script(format!(
                     "#!/bin/sh\nset -eu\nfor arg in \"$@\"; do if [ \"$arg\" = check-attr ]; then count=0; [ -e '{count}' ] && count=$(/bin/cat '{count}'); count=$((count + 1)); printf '%s' \"$count\" > '{count}'; if [ \"$count\" -eq {drift_call} ]; then printf 'tracked.txt\\0text\\0set\\0'; fi; exit 0; fi; done\nexec /usr/bin/git \"$@\"\n",
                     count = quote(&count),
-                ),
+                )),
             )
             .expect("attrs read script");
         let mut permissions = fs::metadata(&read)

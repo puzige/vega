@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Vega R17 Smile logo, monochrome symbol</title>
+  <desc>Single-color connected terminal chevron, one slender four-point star, and shallow smiling cursor.</desc>
+
+  <!-- Same transparent canvas and canonical geometry as the light and dark variants.
+       currentColor keeps the symbol usable in menu-bar and wordmark contexts. -->
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M316 316 L512 512 L316 686" stroke-width="90"/>
+    <path d="M686 371
+      C688 371 689 373 690 377
+      C698 409 702 425 714 436
+      C725 446 738 450 751 454
+      C755 455 755 457 751 458
+      C738 462 725 466 714 476
+      C702 487 698 503 690 534
+      C689 538 688 540 686 540
+      C684 540 683 538 682 534
+      C674 503 670 487 658 476
+      C647 466 634 462 621 458
+      C617 457 617 455 621 454
+      C634 450 647 446 658 436
+      C670 425 674 409 682 377
+      C683 373 684 371 686 371 Z" fill="currentColor" stroke-width="2"/>
+    <path d="M473 727 Q586 757 702 727" stroke-width="56"/>
+  </g>
+</svg>

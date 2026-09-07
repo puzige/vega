@@ -18,6 +18,230 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::VegaError;
 
+/// Protocol family used to encode a frozen thinking selection.
+///
+/// The runtime never infers this value from a provider URL or model name. The
+/// app/store boundary supplies an explicit declaration; `Unknown` therefore
+/// has the safe provider-default wire behavior only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReasoningProtocol {
+    /// OpenAI-style Chat Completions using `reasoning_effort`.
+    OpenAiChatCompletions,
+    /// Zhipu/GLM Chat Completions using `thinking` and `reasoning_effort`.
+    ZhipuChatCompletions,
+    /// No declared protocol or an endpoint whose capability is unknown.
+    #[default]
+    Unknown,
+}
+
+/// Explicit wire operation used to disable thinking. `none` is only legal
+/// when a profile declares this exact operation; it is never a universal
+/// OpenAI compatibility assumption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningDisabledWire {
+    /// `thinking: { type: "disabled" }`.
+    ThinkingTypeDisabled,
+    /// `reasoning_effort: "none"`.
+    ReasoningEffortNone,
+}
+
+/// User selection frozen for one run and carried into every logical provider
+/// request. The strings are identifiers/declared effort values, never raw
+/// reasoning content.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FrozenReasoning {
+    /// Exact configured provider identifier.
+    pub provider: String,
+    /// Exact configured model identifier.
+    pub model: String,
+    /// Explicit protocol capability declaration.
+    pub protocol: ReasoningProtocol,
+    /// User choice: provider default, a true disabled operation, or a declared
+    /// effort value.
+    pub choice: ReasoningChoice,
+    /// Whether the profile explicitly permits the disabled operation.
+    pub supports_disabled: bool,
+    /// Whether the provider requires original reasoning content to be kept for
+    /// the next tool round.
+    pub preserve_reasoning_content: bool,
+    /// Exact disabled wire operation, when one is declared.
+    pub disabled_wire: Option<ReasoningDisabledWire>,
+    /// Declared effort values accepted by this exact provider/model profile.
+    pub declared_efforts: Vec<String>,
+}
+
+impl std::fmt::Debug for FrozenReasoning {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FrozenReasoning")
+            .field("provider_bytes", &self.provider.len())
+            .field("model_bytes", &self.model.len())
+            .field("protocol", &self.protocol)
+            .field("choice", &self.choice)
+            .field("supports_disabled", &self.supports_disabled)
+            .field(
+                "preserve_reasoning_content",
+                &self.preserve_reasoning_content,
+            )
+            .field("disabled_wire", &self.disabled_wire)
+            .field("declared_effort_count", &self.declared_efforts.len())
+            .finish()
+    }
+}
+
+impl FrozenReasoning {
+    /// Safe profile for an unrecognised provider/model pair. The wire encoder
+    /// omits all thinking controls for this profile.
+    pub fn unknown(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+            protocol: ReasoningProtocol::Unknown,
+            choice: ReasoningChoice::ProviderDefault,
+            supports_disabled: false,
+            preserve_reasoning_content: false,
+            disabled_wire: None,
+            declared_efforts: Vec::new(),
+        }
+    }
+
+    /// Validates that the frozen choice is permitted by its explicit profile.
+    /// Invalid choices fail before a provider request is attempted.
+    pub fn validate(&self) -> Result<(), VegaError> {
+        if self.provider.trim().is_empty() || self.model.trim().is_empty() {
+            return Err(VegaError::ReasoningSelectionInvalid {
+                message: "reasoning profile provider/model is empty".to_string(),
+            });
+        }
+        for effort in &self.declared_efforts {
+            if !matches!(
+                effort.as_str(),
+                "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+            ) {
+                return Err(VegaError::ReasoningSelectionInvalid {
+                    message: "reasoning profile declares an unsupported effort".to_string(),
+                });
+            }
+        }
+        if self
+            .declared_efforts
+            .iter()
+            .enumerate()
+            .any(|(index, effort)| self.declared_efforts[..index].contains(effort))
+        {
+            return Err(VegaError::ReasoningSelectionInvalid {
+                message: "reasoning profile declares duplicate efforts".to_string(),
+            });
+        }
+        if matches!(self.protocol, ReasoningProtocol::Unknown)
+            && (self.preserve_reasoning_content
+                || self.supports_disabled
+                || self.disabled_wire.is_some()
+                || !self.declared_efforts.is_empty())
+        {
+            return Err(VegaError::ReasoningSelectionInvalid {
+                message:
+                    "unknown reasoning protocol cannot declare controls or replay reasoning content"
+                        .to_string(),
+            });
+        }
+        if self.supports_disabled
+            && !matches!(
+                (self.protocol, self.disabled_wire),
+                (
+                    ReasoningProtocol::OpenAiChatCompletions,
+                    Some(ReasoningDisabledWire::ReasoningEffortNone)
+                ) | (
+                    ReasoningProtocol::ZhipuChatCompletions,
+                    Some(ReasoningDisabledWire::ThinkingTypeDisabled)
+                )
+            )
+        {
+            return Err(VegaError::ReasoningSelectionInvalid {
+                message: "disabled wire does not match the declared protocol".to_string(),
+            });
+        }
+        if !self.supports_disabled && self.disabled_wire.is_some() {
+            return Err(VegaError::ReasoningSelectionInvalid {
+                message: "disabled wire requires an enabled disabled capability".to_string(),
+            });
+        }
+        if matches!(self.protocol, ReasoningProtocol::ZhipuChatCompletions)
+            && matches!(self.model.as_str(), "glm-5.3" | "glm-5.3-flash")
+            && (self
+                .declared_efforts
+                .iter()
+                .any(|effort| !matches!(effort.as_str(), "low" | "high" | "max"))
+                || self.supports_disabled
+                || self.disabled_wire.is_some()
+                || matches!(&self.choice, ReasoningChoice::Disabled))
+        {
+            return Err(VegaError::ReasoningSelectionInvalid {
+                message:
+                    "standard GLM 5.3 profiles support only low/high/max and cannot be disabled"
+                        .to_string(),
+            });
+        }
+        match &self.choice {
+            ReasoningChoice::ProviderDefault => Ok(()),
+            ReasoningChoice::Effort(effort)
+                if !effort.trim().is_empty()
+                    && self
+                        .declared_efforts
+                        .iter()
+                        .any(|declared| declared == effort)
+                    && !matches!(self.protocol, ReasoningProtocol::Unknown) =>
+            {
+                Ok(())
+            }
+            ReasoningChoice::Disabled
+                if self.supports_disabled
+                    && !matches!(self.protocol, ReasoningProtocol::Unknown)
+                    && matches!(
+                        (self.protocol, self.disabled_wire),
+                        (
+                            ReasoningProtocol::OpenAiChatCompletions,
+                            Some(ReasoningDisabledWire::ReasoningEffortNone)
+                        ) | (
+                            ReasoningProtocol::ZhipuChatCompletions,
+                            Some(ReasoningDisabledWire::ThinkingTypeDisabled)
+                        )
+                    ) =>
+            {
+                Ok(())
+            }
+            ReasoningChoice::Effort(_) => Err(VegaError::ReasoningSelectionInvalid {
+                message: "effort is not declared by the provider/model profile".to_string(),
+            }),
+            ReasoningChoice::Disabled => Err(VegaError::ReasoningSelectionInvalid {
+                message: "disabled is not declared by the provider/model profile".to_string(),
+            }),
+        }
+    }
+}
+
+/// The three user-visible classes of thinking request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasoningChoice {
+    /// Omit all thinking controls and let the provider decide.
+    ProviderDefault,
+    /// Send the profile's explicit disabled operation.
+    Disabled,
+    /// Send one value from the profile's declared effort subset.
+    Effort(String),
+}
+
+/// Scope of a bounded reasoning budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningBudgetScope {
+    /// One incoming SSE delta.
+    Delta,
+    /// One logical provider call/assistant turn.
+    Turn,
+    /// All logical calls in one run, including tool rounds.
+    Run,
+}
+
 /// A stream of provider events, boxed for dyn-compatibility: mock and real
 /// providers hand out the same type (tech-spec §4.1 `EventStream`).
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<ProviderEvent, VegaError>> + Send>>;
@@ -58,6 +282,11 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     /// Calls requested by an assistant message before tool results follow.
     pub tool_calls: Vec<ChatToolCall>,
+    /// Original provider reasoning content for an assistant tool-call turn.
+    ///
+    /// This field is run-memory only. It is never persisted by
+    /// `vega_conversation`, rendered as visible text, or printed by `Debug`.
+    pub reasoning_content: Option<String>,
 }
 
 impl std::fmt::Debug for ChatMessage {
@@ -71,6 +300,10 @@ impl std::fmt::Debug for ChatMessage {
                 &self.tool_call_id.as_ref().map(String::len),
             )
             .field("tool_call_count", &self.tool_calls.len())
+            .field(
+                "reasoning_content_bytes",
+                &self.reasoning_content.as_ref().map(String::len),
+            )
             .finish()
     }
 }
@@ -83,6 +316,7 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: None,
             tool_calls: Vec::new(),
+            reasoning_content: None,
         }
     }
 
@@ -93,6 +327,23 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: None,
             tool_calls,
+            reasoning_content: None,
+        }
+    }
+
+    /// Builds the assistant turn that requested tools and preserves the
+    /// provider's original reasoning content for the next round.
+    pub fn assistant_with_tools_and_reasoning(
+        content: impl Into<String>,
+        reasoning_content: Option<String>,
+        tool_calls: Vec<ChatToolCall>,
+    ) -> Self {
+        Self {
+            role: ChatRole::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls,
+            reasoning_content,
         }
     }
 
@@ -103,6 +354,7 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: Some(call_id.into()),
             tool_calls: Vec::new(),
+            reasoning_content: None,
         }
     }
 }
@@ -164,6 +416,9 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDefinition>,
     /// Generation cap in tokens; `None` lets the provider default apply.
     pub max_tokens: Option<u32>,
+    /// Optional frozen thinking choice. `None` is retained for legacy callers
+    /// and means provider default with no extra wire fields.
+    pub reasoning: Option<FrozenReasoning>,
 }
 
 impl std::fmt::Debug for ChatRequest {
@@ -175,6 +430,7 @@ impl std::fmt::Debug for ChatRequest {
             .field("message_count", &self.messages.len())
             .field("tool_count", &self.tools.len())
             .field("max_tokens", &self.max_tokens)
+            .field("reasoning", &self.reasoning)
             .finish()
     }
 }
@@ -335,6 +591,7 @@ mod tests {
                 input_schema: serde_json::json!({"value": sentinels[5]}),
             }],
             max_tokens: Some(256),
+            reasoning: None,
         };
         let values = [
             format!("{request:?}"),

@@ -1,6 +1,51 @@
 use super::*;
 
 impl ConversationStream {
+    pub(crate) fn close_compact_settings(
+        &mut self,
+        _: &CloseCompactSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let permission = self.permission_menu_open;
+        self.mode_menu_open = false;
+        self.permission_menu_open = false;
+        self.compact_focus[usize::from(permission)].focus(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn on_settings_menu_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.mode_menu_open && !self.permission_menu_open {
+            return;
+        }
+        let permission = self.permission_menu_open;
+        let start = if permission { 3 } else { 0 };
+        match event.keystroke.key.as_str() {
+            "escape" => {
+                self.mode_menu_open = false;
+                self.permission_menu_open = false;
+                self.compact_focus[usize::from(permission)].focus(window, cx);
+            }
+            "left" | "up" | "right" | "down" => {
+                let current =
+                    (start..start + 3).find(|index| self.setting_focus[*index].is_focused(window));
+                let reverse = matches!(event.keystroke.key.as_str(), "left" | "up");
+                let index = current.map_or(start, |index| {
+                    start + (index - start + if reverse { 2 } else { 1 }) % 3
+                });
+                self.setting_focus[index].focus(window, cx);
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     /// Inserts one artifact immediately after the exact tool entry. Identical
     /// duplicates reconcile in place; conflicting ids fail the existing card
     /// closed and never insert an unrelated entry.
@@ -143,12 +188,22 @@ impl ConversationStream {
 
     /// Requests a durable turn. Draft/history/user echo remain untouched until
     /// the controller observes durable `MessageStarted` for this exact run.
+    /// An in-flight model selection (R1) also blocks submit: the next send
+    /// must run on either the old or the new authoritative model, never a
+    /// value that raced the durable write.
     pub(crate) fn submit_message(&mut self, cx: &mut Context<Self>) {
-        if self.composer_submit_pending || self.approved_not_started || self.trusted_action_busy {
+        if self.actions.running
+            || self.actions.pending_mode.is_some()
+            || self.composer_submit_pending
+            || self.approved_not_started
+            || self.trusted_action_busy
+            || self.model_selection_pending.is_some()
+        {
             return;
         }
-        // 提交即收起 `@file` 建议下拉（不拦截发送路径）。
-        self.file_selector.close();
+        // 提交即收起 `@file` 建议下拉并取消当前索引 owner；解析阶段
+        // 仍由 app 在 provider 构造前执行。
+        self.close_file_selector_and_cancel(cx);
         let text = self.input.read(cx).text().to_string();
         if text.is_empty() {
             return;
@@ -157,6 +212,7 @@ impl ConversationStream {
         cx.emit(ComposerSubmitted {
             thread_id: self.thread.id.clone(),
             content: text,
+            reasoning: self.frozen_reasoning_for_submit(),
         });
         cx.notify();
     }
@@ -251,6 +307,11 @@ impl ConversationStream {
     }
 
     pub(crate) fn request_mode(&mut self, mode: ThreadMode, cx: &mut Context<Self>) {
+        self.mode_menu_open = false;
+        cx.notify();
+        if self.model_selection_pending.is_some() {
+            return;
+        }
         if mode != self.thread.mode {
             cx.emit(ThreadSettingsRequested {
                 thread_id: self.thread.id.clone(),
@@ -305,6 +366,11 @@ impl ConversationStream {
     }
 
     pub(crate) fn request_permission_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
+        if self.model_selection_pending.is_some() {
+            return;
+        }
+        self.permission_menu_open = false;
+        cx.notify();
         if mode != self.thread.permission_mode {
             cx.emit(ThreadSettingsRequested {
                 thread_id: self.thread.id.clone(),

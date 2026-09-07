@@ -33,6 +33,7 @@ impl VegaWindow {
         !self.trusted_actions.is_busy()
             && self.agent_controller.active.is_none()
             && !stream.read(cx).has_active_agent()
+            && !stream.read(cx).has_pending_model_selection()
             && !stream.read(cx).has_pending_permission()
             && !stream.read(cx).has_pending_plan_review(cx)
     }
@@ -659,6 +660,7 @@ impl VegaWindow {
         let service = active.service.clone();
         let lease = active.lease;
         let prepared_id = request.prepared_id;
+        let config_path = self.composer_config_path();
         #[cfg(test)]
         let provider_override = self.commit_provider_override.clone();
         #[cfg(not(test))]
@@ -671,6 +673,7 @@ impl VegaWindow {
         cx.background_executor()
             .spawn(async move {
                 let result = run_commit_draft_worker(
+                    config_path,
                     service,
                     prepared_id,
                     thread,

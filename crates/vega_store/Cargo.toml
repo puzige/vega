@@ -7,13 +7,10 @@ edition.workspace = true
 # bundled：编译期自带 SQLite C 源码，首次构建耗时数分钟属正常（exec-guide §5 白名单）
 rusqlite = { workspace = true, features = ["bundled"] }
 ulid = { workspace = true }
-keyring = { workspace = true }
+libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# keyring 4.x 的 mock 凭据库在 keyring-core（keyring 自身依赖的同版本 crate），
-# 仅供 keystore 单测使用，不触碰真实 Keychain
-keyring-core = "=1.0.0"

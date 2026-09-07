@@ -67,6 +67,13 @@ impl VegaWindow {
         if !project_matches {
             return;
         }
+        self.sync_workspace_route(cx);
+        self.workspace.open(workspace::TabKey::Diff);
+        if let Some(active) = self.diff_controller.active.as_mut() {
+            active.focus_pending = true;
+            cx.notify();
+            return;
+        }
         let view =
             cx.new(|cx| DiffView::new(request.thread_id.clone(), request.project_id.clone(), cx));
         cx.subscribe(&view, |this, view, request, cx| {
@@ -91,7 +98,7 @@ impl VegaWindow {
             });
             return;
         };
-        self.schedule_diff_refresh(&identity, cx);
+        self.schedule_diff_refresh_with_progress(&identity, true, cx);
         self.start_diff_poll(identity, view, cx);
         cx.notify();
     }
@@ -132,6 +139,15 @@ impl VegaWindow {
         identity: &DiffRouteIdentity,
         cx: &mut Context<Self>,
     ) {
+        self.schedule_diff_refresh_with_progress(identity, false, cx);
+    }
+
+    pub(crate) fn schedule_diff_refresh_with_progress(
+        &mut self,
+        identity: &DiffRouteIdentity,
+        show_progress: bool,
+        cx: &mut Context<Self>,
+    ) {
         if !Self::diff_route_is_current(identity, cx) {
             if self.diff_controller.matches(identity) {
                 self.diff_controller.close();
@@ -146,19 +162,27 @@ impl VegaWindow {
             if active.identity != *identity {
                 return;
             }
-            let request_seq = match active.request_refresh() {
+            let decision = if show_progress {
+                active.request_refresh_with_progress(true)
+            } else {
+                active.request_refresh()
+            };
+            match decision {
                 DiffRefreshDecision::Start(request_seq) => request_seq,
-                DiffRefreshDecision::Coalesced => return,
+                DiffRefreshDecision::Coalesced => {
+                    if show_progress {
+                        active
+                            .view
+                            .update(cx, |view, cx| view.begin_refresh(true, cx));
+                    }
+                    return;
+                }
                 DiffRefreshDecision::Overflow => {
                     self.diff_controller.close();
                     cx.notify();
                     return;
                 }
-            };
-            active
-                .view
-                .update(cx, |view, cx| view.set_refreshing(true, cx));
-            request_seq
+            }
         };
         self.launch_diff_refresh(identity, request_seq, cx);
     }
@@ -176,15 +200,26 @@ impl VegaWindow {
             }
             return;
         }
-        let (service, cancel) = {
+        let (service, cancel, show_progress) = {
             let Some(active) = self.diff_controller.active.as_ref() else {
                 return;
             };
             if active.identity != *identity || active.refresh_in_flight != Some(request_seq) {
                 return;
             }
-            (active.service.clone(), active.cancel.child_token())
+            (
+                active.service.clone(),
+                active.cancel.child_token(),
+                active.refresh_in_flight_progress,
+            )
         };
+        if let Some(active) = self.diff_controller.active.as_ref()
+            && active.identity == *identity
+        {
+            active
+                .view
+                .update(cx, |view, cx| view.begin_refresh(show_progress, cx));
+        }
         let root = if service.is_none() {
             match self.diff_project_root(identity, cx) {
                 Ok(root) => Some(root),
@@ -480,7 +515,7 @@ impl VegaWindow {
             })
             .map(|active| active.identity.clone());
         if let Some(identity) = identity {
-            self.schedule_diff_refresh(&identity, cx);
+            self.schedule_diff_refresh_with_progress(&identity, true, cx);
         }
     }
 
@@ -496,6 +531,8 @@ impl VegaWindow {
                 && active.identity.project_id == request.project_id
         });
         if matches {
+            self.workspace.close(&workspace::TabKey::Diff);
+            self.workspace.composer_focus_pending = true;
             self.diff_controller.close();
             cx.notify();
         }

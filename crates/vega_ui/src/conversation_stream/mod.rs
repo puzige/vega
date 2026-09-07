@@ -68,36 +68,43 @@ use gpui::{
     FontStyle, FontWeight, MouseButton, MouseUpEvent, Pixels, Render, Rgba, StrikethroughStyle,
     StyledText, TextRun, TextStyle, UnderlineStyle, Window, actions, div, list, px,
 };
-use vega_conversation::agent::PermissionQueue;
+use vega_conversation::agent::{PendingPermission, PermissionQueue};
 use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
-    ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, MeterSnapshot,
-    PermissionMode, Plan, RestoredUsage, RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
+    ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
+    MeterSnapshot, PermissionMode, Plan, ReasoningChoice, ReasoningProfileProjection,
+    ReasoningSupport, RestoredUsage, RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
     RenderNode, StreamSnapshot, TableAlignment, TableBlock,
 };
-use vega_theme::{ThemeColors, Typography, theme};
+use vega_theme::{Layout, ThemeColors, Typography, theme};
 
 use crate::artifact_card::ArtifactCard;
 use crate::branch_selector::BranchSelector;
 use crate::commit_panel::CommitPanel;
 use crate::file_selector::{
-    AcceptFile, CancelFile, FILE_SUGGESTION_LIMIT, FileSelectorModel, NextFile, PreviousFile,
+    AcceptFile, CancelFile, FILE_SUGGESTION_LIMIT, FileSelectorModel, FocusPreviousRetry,
+    FocusRetry, NextFile, PreviousFile, RetryFile,
 };
 use crate::permission_card::{PermissionCard, PermissionCardResolved};
 use crate::plan_card::{PlanCard, PlanReviewRequested};
 use crate::settings::SettingsOpen;
-use crate::sidebar::CONTENT_MIN_PADDING;
 use crate::summary_card::SummaryCard;
 use crate::text_input::TextInput;
 use crate::tool_card::ToolCard;
+
+// The payload is a shared conversation boundary; keep this re-export so
+// existing UI callers retain the same import path while the owning type lives
+// in `vega_conversation::types`.
+pub use vega_conversation::types::ThreadModelSelectionRequested;
 
 actions!(
     vega_conversation_stream,
     [
         SendMessage,
+        CloseCompactSettings,
         PreviousMessage,
         ActivateThreadSetting,
         OpenWorkspaceDiff,
@@ -105,9 +112,21 @@ actions!(
         PreviousModel,
         NextModel,
         CloseModel,
-        CycleThinking
+        CycleThinking,
+        ResumeTail,
+        PreviousComposerAction,
+        NextComposerAction,
+        AcceptComposerAction,
+        CloseComposerActions,
+        StopComposer,
+        NextComposerControl,
+        PreviousComposerControl
     ]
 );
+
+// Shared result vocabularies remain owned by `vega_conversation::types`; keep
+// the old UI import path for callers that render or test the selector.
+pub use vega_conversation::types::{FileIndexFailureCode, FileReferenceFailureCode};
 
 /// Distance from the bottom (px) below which the view still counts as pinned
 /// (native tail-follow resume tolerance; mirrors the list's own 1px bottom
@@ -124,8 +143,8 @@ pub(crate) const ROW_HEIGHT: f32 = 24.0;
 const INJECT_TICK: Duration = Duration::from_millis(16);
 const INJECT_RATE: usize = 500;
 
-/// Composer visible rows (T18 最小版固定 3 行；ui-spec §4.4 的 1~8 行自适应
-/// 高度后置，任务卡允许).
+/// Composer starts at one visible row and grows to the TextInput's 1–8 row
+/// viewport as content changes (ui-spec §4.4).
 const COMPOSER_ROWS: usize = 1;
 
 /// Typed settings request emitted upward; persistence remains in conversation.
@@ -141,6 +160,23 @@ pub struct ThreadSettingsRequested {
 pub struct ComposerSubmitted {
     pub thread_id: String,
     pub content: String,
+    /// Run-start reasoning snapshot captured from the displayed exact
+    /// provider/model projection. Raw reasoning text is never part of this
+    /// event.
+    /// An invalid explicit profile is an error, rather than an implicit
+    /// provider-default fallback. The app controller can reject the submit
+    /// while keeping the input draft intact.
+    pub reasoning: Result<Option<FrozenReasoning>, ReasoningSubmitError>,
+}
+
+/// Reasons a run-start thinking snapshot cannot be submitted. The enum keeps
+/// failure typed without carrying provider data or raw reasoning content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningSubmitError {
+    /// The independent capability authority is unavailable or unresolved.
+    Unavailable,
+    /// The displayed declaration or preference violates its exact profile.
+    Invalid,
 }
 
 /// Safe route request emitted by the thread header and Cmd+Shift+D.
@@ -163,6 +199,26 @@ pub struct OpenCommitPanelRequested {
 pub struct FileIndexRequested {
     pub thread_id: String,
     pub project_id: String,
+    pub generation: u64,
+}
+
+/// Cancels the current bounded index when the token is closed or the input
+/// leaves an `@` query. The app layer cancels the matching worker and fences
+/// its result; the stream keeps the generation monotonic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileIndexCancelled {
+    pub thread_id: String,
+    pub project_id: String,
+    pub generation: u64,
+}
+
+/// Starts a fresh bounded index after a visible failure. A retry always uses a
+/// new generation so a late result from the failed job cannot land.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileIndexRetryRequested {
+    pub thread_id: String,
+    pub project_id: String,
+    pub generation: u64,
 }
 
 impl std::fmt::Debug for OpenCommitPanelRequested {
@@ -212,8 +268,11 @@ pub struct ComposerDefaultsRequested {
 /// the thread (or before any page arrived). One page is in flight at a time;
 /// a failed load pauses auto-retry until the viewport leaves the top edge.
 mod composer;
+mod composer_actions;
+use composer_actions::ComposerActions;
 mod content;
 mod core;
+mod file_reference;
 mod model;
 mod render;
 mod render_rows;
@@ -225,3 +284,8 @@ pub use core::ConversationStream;
 pub(crate) use core::*;
 pub(crate) use model::*;
 pub(crate) use render_rows::*;
+
+/// Explicit stop for the currently owned worker; the app keeps its generation until terminal.
+pub struct ComposerStopRequested {
+    pub thread_id: String,
+}

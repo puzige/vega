@@ -38,7 +38,7 @@
 - ❌ 新建数据表/改 DDL 不改 `migrations/` 递增文件（schema 只增不删）
 
 ### 安全红线
-- ❌ API key 写入任何文件/日志/代码（只能走 Keychain，tech-spec §6）
+- ❌ API key 写入 config.toml/项目文件/日志/代码（R10 人类裁决：只存配置根下独立 owner-only 明文凭据文件，不访问旧 Keychain）
 - ❌ 删/改用户工作区里 Vega 未创建的文件（工具实现必须路径围栏，risks #4）
 - ❌ 权限门禁被任何"便捷路径"绕过（tech-spec §4.3 决策顺序不可改）
 - ❌ 危险命令硬拦截清单被注释/削弱
@@ -76,7 +76,8 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 数据: rusqlite (bundled, WAL), ulid
 网络: reqwest (rustls), eventsource-stream, tokio-util, futures
 工具: ignore, regex, similar(diff), tree-sitter, pulldown-cmark, mdstream (=0.3.0，T14 spike 确认引入；上游 0.4 已换模型，vendoring 预案，tech-spec §5.0)
-安全: keyring, cap-std(备选)
+安全: libc（R10 已批准凭据文件 IO；R11 已批准终端生命周期，以及 vega_tools 只读预览 O_NOFOLLOW/O_NONBLOCK descriptor 检查）, cap-std(备选)
+终端: portable-pty(=0.9.0), vt100(=0.16.2)（R11 架构师批准，真实 PTY 与有界 ANSI screen）
 测试: insta, tempfile
 ```
 

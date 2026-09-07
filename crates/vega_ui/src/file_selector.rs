@@ -23,7 +23,15 @@ pub const FILE_INDEX_LIMIT: usize = 512;
 
 actions!(
     vega_file_selector,
-    [AcceptFile, NextFile, PreviousFile, CancelFile]
+    [
+        AcceptFile,
+        NextFile,
+        PreviousFile,
+        CancelFile,
+        RetryFile,
+        FocusRetry,
+        FocusPreviousRetry
+    ]
 );
 
 /// How many fuzzy candidates the selector presents at once (bounded list).
@@ -99,6 +107,16 @@ impl FileSelectorModel {
         let selected = self.selected()?.to_string();
         self.close();
         Some(selected)
+    }
+
+    /// Accepts a row chosen with the mouse through the same first-wins path as
+    /// keyboard Enter/Tab.
+    pub fn accept_at(&mut self, index: usize) -> Option<String> {
+        if !self.open || index >= self.candidates.len() {
+            return None;
+        }
+        self.highlighted = index;
+        self.accept()
     }
 
     /// Closes without inserting anything (Esc). `false` when already closed.

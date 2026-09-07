@@ -105,6 +105,16 @@ pub struct Thread {
     pub updated_at: i64,
 }
 
+/// In-session model-selection intent shared by the conversation UI and the
+/// application handler. `request_id` is the exact per-stream owner identity
+/// echoed by the durable acknowledgement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadModelSelectionRequested {
+    pub thread_id: String,
+    pub model: String,
+    pub request_id: u64,
+}
+
 /// Minimal projection of the project a thread attaches to.
 ///
 /// T11 resolves the "current project" for thread creation; the full

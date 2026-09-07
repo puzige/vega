@@ -218,6 +218,24 @@ pub fn set_permission_mode(
     )
 }
 
+/// Updates the durable thread model (A2-14/R1: in-session selection applies
+/// to the current thread's next run). Returns 0 when the thread row does not
+/// exist or `model` is empty; callers fail closed on a 0-row update.
+pub fn set_model(
+    conn: &Connection,
+    id: &str,
+    model: &str,
+    now: i64,
+) -> Result<usize, rusqlite::Error> {
+    if model.is_empty() {
+        return Ok(0);
+    }
+    conn.execute(
+        "UPDATE threads SET model = ?1, updated_at = ?2 WHERE id = ?3",
+        params![model, now, id],
+    )
+}
+
 /// Deletes one thread and — in the same transaction — all of its `messages`
 /// and `tool_calls` rows (A1-05: the DDL declares no `ON DELETE CASCADE`, so
 /// the deletion must sweep child tables itself to prevent orphan rows).
@@ -316,6 +334,29 @@ pub fn open_thread(
     )?;
     tx.commit()?;
     find(conn, id)
+}
+
+/// Records a genuine task visit atomically, including clearing its unread flag.
+pub fn visit_thread(
+    conn: &Connection,
+    id: &str,
+    now: i64,
+) -> Result<Option<ThreadRow>, rusqlite::Error> {
+    let tx = conn.unchecked_transaction()?;
+    if tx.execute(
+        "UPDATE threads SET updated_at = ?1, unread = 0 WHERE id = ?2",
+        params![now, id],
+    )? == 0
+    {
+        return Ok(None);
+    }
+    tx.execute(
+        "UPDATE projects SET last_opened_at = ?1 WHERE id = (SELECT project_id FROM threads WHERE id = ?2)",
+        params![now, id],
+    )?;
+    let row = find(&tx, id)?;
+    tx.commit()?;
+    Ok(row)
 }
 
 /// Maps one `threads` row into [`ThreadRow`].

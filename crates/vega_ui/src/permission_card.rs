@@ -155,6 +155,12 @@ impl PermissionCard {
         self.resolved || self.lease.as_ref().is_none_or(PermissionLease::is_resolved)
     }
 
+    /// Resolves this card's own lease without touching the queue's current
+    /// active slot, which may already belong to a newer call.
+    pub(crate) fn timeout(&mut self, cx: &mut gpui::Context<Self>) {
+        self.resolve(PermissionDecision::Timeout, cx);
+    }
+
     fn resolve(&mut self, decision: PermissionDecision, cx: &mut gpui::Context<Self>) {
         if self.resolved {
             return;

@@ -27,10 +27,16 @@ use vega_ui::commit_panel::{
 };
 use vega_ui::conversation_stream::{
     ConversationStream, HistoryPageRequested, OpenCommitPanelRequested, OpenWorkspaceDiffRequested,
+    ThreadSettingsRequested,
 };
-use vega_ui::diff_view::{DIFF_REFRESH_INTERVAL, DiffProjectionRequested, DiffView};
+use vega_ui::diff_view::{
+    DIFF_REFRESH_INTERVAL, DiffProjectionRequested, DiffRetryRequested, DiffView,
+};
 use vega_ui::plan_card::PlanReviewRequested;
-use vega_ui::settings::{PricingMutationRequested, SettingsOpen};
+use vega_ui::settings::{
+    PricingMutationRequested, ReasoningProfileSaveRequested, SettingsOpen, SettingsSaved,
+    SettingsView,
+};
 use vega_ui::sidebar::{OpenedThread, PendingDeleteConfirm, SidebarCollapsed, VegaStore};
 
 use vega_conversation::types::*;
@@ -58,10 +64,14 @@ mod artifact_terminal;
 mod branch;
 mod commit_controller;
 mod commit_panel;
+mod composer_actions;
 mod diff;
 mod history;
+mod model_selection;
+mod palette;
 mod plan;
 mod pricing;
+mod reasoning;
 
 pub(crate) use artifact_terminal::{
     artifact_capture_work, artifact_controller_repo, artifact_write_call, artifact_write_result,

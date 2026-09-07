@@ -54,6 +54,19 @@ pub(crate) fn action_button(
     focus: Option<FocusHandle>,
     listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> Div {
+    action_button_owned(label.to_string(), colors, focus, listener)
+}
+
+/// Button variant for settings controls whose label reflects the current
+/// explicit capability value. It shares the same tracked focus and mouse
+/// listener behavior as the pricing controls, so keyboard and pointer paths
+/// remain one action route.
+pub(crate) fn action_button_owned(
+    label: String,
+    colors: vega_theme::ThemeColors,
+    focus: Option<FocusHandle>,
+    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui::App) + 'static,
+) -> Div {
     let enabled = focus.is_some();
     div()
         .when_some(focus, |button, focus| button.track_focus(&focus))
@@ -112,25 +125,140 @@ pub(crate) fn field_label(label: &'static str, color: gpui::Rgba) -> Div {
         .child(label)
 }
 
-/// Whether the add-provider form may be submitted: name, base_url, and key
-/// must all be non-empty (name/base_url trimmed). Empty fields keep the
-/// submit button inert (ui-spec §4.6: no error modal).
+/// Maximum UTF-8 bytes retained for one provider model ID.
+pub(crate) const PROVIDER_MODEL_ID_MAX_BYTES: usize = 200;
+/// Maximum number of model IDs accepted in one provider entry.
+pub(crate) const PROVIDER_MODEL_COUNT_MAX: usize = 1_000;
+/// Maximum UTF-8 bytes accepted by the multiline models field.
+pub(crate) const PROVIDER_MODELS_INPUT_BYTES_LIMIT: usize = 256 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProviderModelsError {
+    Empty,
+    InputTooLarge,
+    TooMany { line: usize },
+    TooLong { line: usize },
+    Duplicate { line: usize },
+    Invalid { line: usize },
+}
+
+/// Parses the Settings models field without touching config, local credential store, or the
+/// provider. IDs are exact and case-sensitive after line-edge trimming.
+pub(crate) fn parse_provider_models(input: &str) -> Result<Vec<String>, ProviderModelsError> {
+    if input.len() > PROVIDER_MODELS_INPUT_BYTES_LIMIT {
+        return Err(ProviderModelsError::InputTooLarge);
+    }
+
+    let mut models = Vec::new();
+    for (line_index, raw_line) in input.lines().enumerate() {
+        let line = line_index + 1;
+        let model = raw_line.trim();
+        if model.is_empty() {
+            continue;
+        }
+        if model.len() > PROVIDER_MODEL_ID_MAX_BYTES {
+            return Err(ProviderModelsError::TooLong { line });
+        }
+        if models.len() >= PROVIDER_MODEL_COUNT_MAX {
+            return Err(ProviderModelsError::TooMany { line });
+        }
+        if !is_provider_model_id(model) {
+            return Err(ProviderModelsError::Invalid { line });
+        }
+        if models.iter().any(|existing| existing == model) {
+            return Err(ProviderModelsError::Duplicate { line });
+        }
+        models.push(model.to_string());
+    }
+
+    if models.is_empty() {
+        return Err(ProviderModelsError::Empty);
+    }
+    Ok(models)
+}
+
+fn is_provider_model_id(model: &str) -> bool {
+    let mut bytes = model.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    if !bytes.all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte)) {
+        return false;
+    }
+    !model.contains("..") && !model.contains("//") && !model.ends_with('/')
+}
+
+/// User-facing validation copy for the Provider form. It names the failed
+/// constraint and never includes arbitrary input or credential values.
+pub(crate) fn provider_models_error_label(error: &ProviderModelsError) -> String {
+    match error {
+        ProviderModelsError::Empty => "请至少填写一个模型 ID".to_string(),
+        ProviderModelsError::InputTooLarge => {
+            format!(
+                "模型列表过大（最多 {} KiB）",
+                PROVIDER_MODELS_INPUT_BYTES_LIMIT / 1024
+            )
+        }
+        ProviderModelsError::TooMany { line } => {
+            format!("第 {line} 行超出模型数量上限（最多 {PROVIDER_MODEL_COUNT_MAX} 个）")
+        }
+        ProviderModelsError::TooLong { line } => {
+            format!("第 {line} 行模型 ID 过长（最多 {PROVIDER_MODEL_ID_MAX_BYTES} 字节）")
+        }
+        ProviderModelsError::Duplicate { line } => {
+            format!("第 {line} 行模型 ID 与前面重复")
+        }
+        ProviderModelsError::Invalid { line } => {
+            format!("第 {line} 行模型 ID 无效：请使用字母、数字、点、下划线、冒号、斜杠或连字符")
+        }
+    }
+}
+
+/// Whether a new-provider form may be submitted. Existing providers use
+/// [`provider_form_is_submittable`] so an empty key can retain its reference.
 pub(crate) fn form_is_submittable(name: &str, base_url: &str, key: &str) -> bool {
     !name.trim().is_empty() && !base_url.trim().is_empty() && !key.is_empty()
 }
 
+/// Whether a provider form has the required visible fields. An existing
+/// provider may leave the key blank because the stored reference is retained.
+pub(crate) fn provider_form_is_submittable(
+    name: &str,
+    base_url: &str,
+    key: &str,
+    existing: bool,
+) -> bool {
+    if existing {
+        !name.trim().is_empty() && !base_url.trim().is_empty()
+    } else {
+        form_is_submittable(name, base_url, key)
+    }
+}
+
+/// Resolves the non-secret local credential store reference for a Provider submission.
+pub(crate) fn provider_key_ref(existing: Option<&ProviderConfig>, name: &str, key: &str) -> String {
+    if key.is_empty() {
+        existing
+            .map(|provider| provider.key_ref.clone())
+            .unwrap_or_else(|| name.to_string())
+    } else {
+        name.to_string()
+    }
+}
+
 /// Inserts `entry` into `providers`, appending when no provider with the same
-/// name exists and replacing the existing one otherwise (the form does not
-/// edit models, so a replacement keeps the stored models). Returns whether an
+/// name exists and replacing the existing one otherwise. Returns whether an
 /// existing entry was replaced.
+#[cfg(test)]
 pub(crate) fn upsert_provider(providers: &mut Vec<ProviderConfig>, entry: ProviderConfig) -> bool {
     if let Some(existing) = providers
         .iter_mut()
         .find(|provider| provider.name == entry.name)
     {
-        let models = std::mem::take(&mut existing.models);
         *existing = entry;
-        existing.models = models;
         true
     } else {
         providers.push(entry);
@@ -158,7 +286,7 @@ pub(crate) fn set_default_model(config: &mut AppConfig, model: &str) {
 /// Union of every provider's models in first-seen order, deduplicated.
 pub fn all_models(providers: &[ProviderConfig]) -> Vec<String> {
     let mut models = Vec::new();
-    for provider in providers {
+    for provider in providers.iter().filter(|provider| provider.enabled) {
         for model in &provider.models {
             if !models.contains(model) {
                 models.push(model.clone());

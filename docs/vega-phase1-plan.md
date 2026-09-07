@@ -59,7 +59,7 @@ vega/
 
 | Sprint | 目标 | 交付物 | 验收 |
 |---|---|---|---|
-| **S1** (W1-2) | 脚手架 & 外壳骨架 | workspace；GPUI 窗口；CI（fmt/clippy/test/build）；`xtask bench`；SQLite schema v1；设置页（API key 存储 Keychain） | CI 绿；冷启动计时上报；key 不落明文 |
+| **S1** (W1-2) | 脚手架 & 外壳骨架 | workspace；GPUI 窗口；CI（fmt/clippy/test/build）；`xtask bench`；SQLite schema v1；设置页（API key 存储本地 owner-only 凭据文件（R10）） | CI 绿；冷启动计时上报；key 不写 config.toml/日志 |
 | **S2** (W3-4) | 侧边栏 & 项目模型 | 侧边栏（新建任务/项目/会话历史）；项目注册（选文件夹→识别 git repo→分支感知）；多项目多线程数据流 | 建 2 个项目 × 各 3 个 thread，重启后状态完整恢复 |
 | **S3** (W5-6) | ⚠️ 流式会话渲染（最高风险，前置 3 天 spike） | `vega_markdown`：流式增量解析；代码块 tree-sitter 高亮；虚拟化长列表 | 10k 行会话滚动 120fps；流式追加不跳变、不重排已渲染区 |
 | **S4** (W7-8) | Vega Runtime 核心 | provider 抽象（OpenAI 兼容 + SSE 流式）；agentic 循环；read/glob/grep 只读工具 | headless 单测：给任务「找出 repo 里所有 TODO」，agent 自主调用工具完成并输出 |
@@ -116,7 +116,7 @@ loop {
 | 流式 markdown 渲染复杂（最高） | S3 前置 3 天 spike；降级方案备好 |
 | 自研 Runtime 质量差 | Phase 1 里程碑只要求「能完成真实任务」，不追求聪明；ACP 兜底在 Phase 2 |
 | agent 误操作文件 | E5 安全默认 + 危险命令拦截 + 全程落库审计 |
-| API key 泄露 | macOS Keychain 存储，绝不写明文配置 |
+| API key 泄露 | 本地 owner-only 明文凭据文件，不写 config.toml/项目/日志（R10） |
 | GPUI breaking change | 锁版本，月升级一次 |
 
 ---

@@ -138,7 +138,8 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui::Test
         let _ = root.artifact_controller.close();
     });
 
-    let starts = AGENT_WORKER_STARTS.load(Ordering::SeqCst);
+    let worker_starts = root.read_with(cx, |root, _| root.agent_worker_start_probe.clone());
+    let starts = worker_starts.load();
     let (agent_generation, artifact_epoch, artifact_active) = root.read_with(cx, |root, _| {
         (
             root.agent_controller.next_generation,
@@ -154,7 +155,7 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui::Test
             cx,
         );
     });
-    assert_eq!(AGENT_WORKER_STARTS.load(Ordering::SeqCst), starts);
+    assert_eq!(worker_starts.load(), starts);
     assert!(provider.requests().is_empty());
     root.read_with(cx, |root, _| {
         assert!(root.agent_controller.active.is_none());
@@ -171,7 +172,7 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui::Test
             cx,
         );
     });
-    assert_eq!(AGENT_WORKER_STARTS.load(Ordering::SeqCst), starts);
+    assert_eq!(worker_starts.load(), starts);
     assert!(provider.requests().is_empty());
     root.read_with(cx, |root, _| {
         assert!(root.agent_controller.active.is_none());
@@ -183,6 +184,14 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui::Test
     let settings = root
         .read_with(cx, |root, _| root.settings_view.clone())
         .expect("production settings entity");
+    assert!(
+        _window
+            .update(cx, |_, window, cx| settings
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window))
+            .expect("settings initial focus")
+    );
     let generation = root.read_with(cx, |root, _| match &root.pricing_controller.state {
         PricingControllerState::Ready { generation, .. } => *generation,
         _ => 0,
@@ -279,6 +288,6 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui::Test
         root.read_with(cx, |root, _| root.agent_controller.active.is_none())
             && provider.requests().len() == 1
     });
-    assert_eq!(AGENT_WORKER_STARTS.load(Ordering::SeqCst), starts + 1);
+    assert_eq!(worker_starts.load(), starts + 1);
     assert_eq!(provider.requests().len(), 1);
 }

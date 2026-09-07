@@ -1,0 +1,20 @@
+# R11 — Composer local actions
+
+Status: implementation contract, 2026-09-06. Extends the existing composer, thread-setting persistence and real worker cancellation contracts. No new dependency, table, provider capability or credential behavior.
+
+## User behavior
+
+- While a worker prepares or runs, the send position exposes **停止**. Activation cancels only the current stream/thread worker token, dismisses its pending permission, and shows **停止中…** until the existing terminal drain completes. Ownership remains busy until that terminal, preventing overlapping workers and late commits into a new generation. If the channel disconnects, terminal drain releases leftover message/permission presentation without claiming durable success; existing restart recovery owns interrupted durable-row repair. The input remains editable for the next draft. Terminal cancellation shows **已停止**, never the generic provider-failure message.
+- Before durable `MessageStarted` acknowledgment, the pending draft is retained. After acknowledgment the existing submitted-text clearing policy applies, preserving a different next draft. Existing runtime cancellation retains partial assistant text with canceled status; approved-plan recovery and stale event fences remain authoritative. Stop is not a new route change and never opens Settings.
+- A keyboard-accessible **+** menu exposes **项目文件引用** and **Ask / Plan / Execute** only. File reference appends a separated `@` token without deleting the draft, focuses the composer and opens its existing project index selector. This is project-file context, not image/file upload.
+- Native follow-up: the @file popup anchors its bottom above the input row and paints as a foreground overlay, so every bounded candidate remains clickable without covering the draft. Existing file/retry keyboard contexts are unchanged.
+- At the beginning of a draft, `/`, `/a`, `/p`, `/e` etc. expose matching `/ask`, `/plan`, `/execute` commands. Up/Down select, Enter/Tab accept, Escape dismisses without changing text. Unknown commands have no advertised capability. Selection uses the existing durable thread-mode handler and makes no model request. Only the leading command token is consumed after a successful mode acknowledgment; the rest of the draft, including whitespace, remains exact. Rejection preserves the full draft. If the user edits while the acknowledgment is pending, no replacement overwrites the edit.
+- IME marked text is never interpreted as a local command; new composer menu/navigation handlers preserve composition. Local Tab/Shift-Tab traversal makes the + and Stop controls reachable.
+- Canceling a pending permission preserves the runtime contract: the tool audit is rejected with a Timeout denial, while the assistant is interrupted. No tool is executed.
+- Mode actions retain existing model-save/permission/approved-plan/runtime busy guards. No `/goal`, `/compact`, extensions, skill menu, file upload, workspace panel or settings changes.
+
+## Ownership and verification
+
+UI changes are isolated to `vega_ui::conversation_stream`, its small keybinding registration, and production app subscription/cancel/terminal projection in `window/agent.rs`, `window/render.rs`, `window/session.rs`. Shared definitions remain at the existing UI event boundary; no runtime/UI dependency change.
+
+Acceptance is E2E-first: owned project/database + actual app start/stop handler + real worker/MockProvider for cancellation before durable start and after partial output; assert terminal release, draft/partial state and no late provider/tool execution. Production keyboard paths prove +/@ and slash selection, mode persistence, no provider call and Escape preservation. Existing targeted agent/mode/permission regressions remain. Run formatting, relevant clippy/tests/build; root performs integrated workspace suite/native checks. MockProvider replaces only provider/network, never database/controller behavior. Any additional deterministic construction gate is the existing test-only boundary, labeled FAULT-INJECTION.

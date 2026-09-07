@@ -1,5 +1,67 @@
 use super::*;
 
+struct DiffRefreshProbe {
+    generation: Option<u64>,
+    refreshing: bool,
+    refresh_error: Option<GitWorkspaceErrorCode>,
+    row_count: usize,
+    snapshot_stats: Option<WorkspaceStats>,
+}
+
+impl DiffRefreshProbe {
+    fn summary(&self) -> String {
+        format!(
+            "generation={:?} refreshing={} refresh_error={:?} row_count={} snapshot_stats={:?}",
+            self.generation,
+            self.refreshing,
+            self.refresh_error,
+            self.row_count,
+            self.snapshot_stats,
+        )
+    }
+}
+
+fn pump_diff_refresh_stage(
+    cx: &mut gpui::TestAppContext,
+    view: &Entity<DiffView>,
+    stage: &str,
+    mut ready: impl FnMut(&DiffView) -> bool,
+) {
+    for _ in 0..400 {
+        cx.executor().advance_clock(DIFF_RESULT_POLL);
+        cx.run_until_parked();
+        let (is_ready, probe) = view.read_with(cx, |view, _| {
+            let probe = DiffRefreshProbe {
+                generation: view.generation(),
+                refreshing: view.is_refreshing(),
+                refresh_error: view.refresh_error(),
+                row_count: view.row_count(),
+                snapshot_stats: view.snapshot_stats(),
+            };
+            (ready(view), probe)
+        });
+        if is_ready {
+            return;
+        }
+        if !probe.refreshing {
+            panic!(
+                "diff refresh stage {stage} reached terminal state without success: {}",
+                probe.summary()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let probe = view.read_with(cx, |view, _| DiffRefreshProbe {
+        generation: view.generation(),
+        refreshing: view.is_refreshing(),
+        refresh_error: view.refresh_error(),
+        row_count: view.row_count(),
+        snapshot_stats: view.snapshot_stats(),
+    });
+    panic!("diff refresh stage {stage} timed out: {}", probe.summary());
+}
+
 pub(crate) fn scrub_fixture_git_environment(command: &mut Command) {
     let explicit_git_keys: Vec<OsString> = command
         .get_envs()
@@ -348,6 +410,135 @@ async fn diff_controller_real_finish_drops_superseded_result_and_global_switch_c
 }
 
 #[gpui::test]
+async fn diff_refresh_intents_keep_content_during_background_and_retry(
+    cx: &mut gpui::TestAppContext,
+) {
+    let repo = diff_controller_repo();
+    let store = Store::open(":memory:").expect("diff refresh intent store");
+    store.migrate().expect("diff refresh intent migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        repo.path().to_str().expect("UTF-8 refresh intent root"),
+        "diff-refresh-intent",
+        None,
+    )
+    .expect("diff refresh intent project");
+    let thread = vega_conversation::threads::create_thread(
+        &store,
+        &project.id,
+        "mock",
+        PermissionMode::Confirm.as_str(),
+    )
+    .expect("diff refresh intent thread");
+    let thread_id = thread.id.clone();
+    let project_id = thread.project_id.clone();
+    cx.update(|cx| install_diff_window_globals(store, thread, cx));
+
+    let root = cx.new(VegaWindow::new);
+    let view = cx.new(|cx| DiffView::new(thread_id.clone(), project_id.clone(), cx));
+    let identity = root.update(cx, |root, _| {
+        root.diff_controller
+            .begin(thread_id.clone(), project_id.clone(), view.clone())
+            .expect("diff refresh intent route")
+    });
+
+    root.update(cx, |root, cx| {
+        root.schedule_diff_refresh_with_progress(&identity, true, cx);
+    });
+    assert!(view.read_with(cx, |view, _| {
+        view.is_refreshing() && view.is_refresh_progress_visible()
+    }));
+    pump_diff_refresh_stage(cx, &view, "initial", |view| {
+        !view.is_refreshing() && view.generation().is_some() && view.row_count() > 0
+    });
+    let initial_stats = view
+        .read_with(cx, |view, _| view.snapshot_stats())
+        .expect("initial diff stats");
+    assert_eq!(initial_stats.file_count, 1);
+
+    root.update(cx, |root, cx| root.schedule_diff_refresh(&identity, cx));
+    let background_state = view.read_with(cx, |view, _| {
+        (
+            view.is_refreshing(),
+            view.is_refresh_progress_visible(),
+            view.row_count(),
+            view.snapshot_stats(),
+        )
+    });
+    assert!(background_state.0);
+    assert!(
+        !background_state.1,
+        "background refresh has no progress marker"
+    );
+    assert_eq!(background_state.2, 1, "the old file row remains visible");
+    assert_eq!(background_state.3, Some(initial_stats.clone()));
+
+    root.update(cx, |root, cx| {
+        let request_seq = root
+            .diff_controller
+            .active
+            .as_ref()
+            .and_then(|active| active.refresh_in_flight)
+            .expect("background request sequence");
+        root.finish_diff_refresh(
+            &identity,
+            request_seq,
+            DiffRefreshWorkerResult::Failed(GitWorkspaceErrorCode::GitFailed),
+            cx,
+        );
+    });
+    assert_eq!(
+        view.read_with(cx, |view, _| {
+            (
+                view.refresh_error(),
+                view.row_count(),
+                view.snapshot_stats(),
+                view.is_refreshing(),
+            )
+        }),
+        (
+            Some(GitWorkspaceErrorCode::GitFailed),
+            1,
+            Some(initial_stats.clone()),
+            false,
+        )
+    );
+
+    root.update(cx, |root, cx| {
+        root.retry_workspace_diff(
+            view.clone(),
+            &DiffRetryRequested {
+                thread_id: identity.thread_id.clone(),
+                project_id: identity.project_id.clone(),
+            },
+            cx,
+        );
+    });
+    assert!(view.read_with(cx, |view, _| {
+        view.is_refreshing() && view.is_refresh_progress_visible()
+    }));
+    pump_diff_refresh_stage(cx, &view, "retry", |view| {
+        !view.is_refreshing() && view.refresh_error().is_none()
+    });
+
+    run_fixture_git(repo.path(), &["checkout", "--", "tracked.rs"]);
+    root.update(cx, |root, cx| root.schedule_diff_refresh(&identity, cx));
+    assert!(view.read_with(cx, |view, _| {
+        view.is_refreshing() && !view.is_refresh_progress_visible() && view.row_count() == 1
+    }));
+    pump_diff_refresh_stage(cx, &view, "clean-empty", |view| {
+        !view.is_refreshing()
+            && view.refresh_error().is_none()
+            && view.row_count() == 0
+            && view.snapshot_stats().is_some_and(|stats| {
+                stats.file_count == 0
+                    && stats.additions == WorkspaceLineCount::Known(0)
+                    && stats.deletions == WorkspaceLineCount::Known(0)
+            })
+    });
+}
+
+#[gpui::test]
 async fn diff_controller_route_latest_poll_tool_and_cross_project_fences(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -419,19 +610,21 @@ async fn diff_controller_route_latest_poll_tool_and_cross_project_fences(
         "initial/poll refresh starts one worker"
     );
     assert_eq!(
-        active.request_refresh(),
+        active.request_refresh_with_progress(true),
         DiffRefreshDecision::Coalesced,
-        "tool terminal coalesces while the poll refresh is active"
+        "explicit retry coalesces while the background refresh is active"
     );
     assert_eq!(active.refresh_request_seq, 2);
     assert_eq!(active.refresh_in_flight, Some(1));
     assert_eq!(active.queued_refresh_seq, Some(2));
+    assert!(active.queued_refresh_progress);
     assert_eq!(
         active.complete_refresh(1),
         Some(DiffRefreshCompletion::Superseded(Some(2))),
         "the pre-terminal poll result is dropped and only queues R2"
     );
     assert_eq!(active.refresh_in_flight, Some(2));
+    assert!(active.refresh_in_flight_progress);
     assert_eq!(
         active.complete_refresh(2),
         Some(DiffRefreshCompletion::Latest)

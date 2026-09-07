@@ -197,6 +197,7 @@ async fn provider_draft_uses_strict_done_eof_grammar_and_redacted_output() {
             messages: Vec::new(),
             tools: Vec::new(),
             max_tokens: Some(256),
+            reasoning: None,
         },
         CancellationToken::new(),
     )

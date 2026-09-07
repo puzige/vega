@@ -435,6 +435,10 @@ impl VegaWindow {
                 view.apply_pricing_projection(projection, cx);
             });
         }
+        let options = self.model_options_for_pricing();
+        if let Some((_, stream)) = &self.stream_view {
+            stream.update(cx, |stream, cx| stream.apply_model_options(options, cx));
+        }
         cx.notify();
     }
 }

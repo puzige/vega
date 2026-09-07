@@ -6,7 +6,7 @@
 //! it up as `dist/Vega-macos-arm64.zip` for direct copy to other Macs.
 //!
 //! Zero new dependencies: every step shells out to macOS built-ins
-//! (`qlmanage`, `sips`, `iconutil`, `codesign`, `zip`).
+//! (`swift`/AppKit, `sips`, `iconutil`, `codesign`, `zip`).
 //!
 //! Version source (stamped into `CFBundleShortVersionString`/`CFBundleVersion`
 //! and INSTALL.txt), highest priority first:
@@ -17,18 +17,15 @@
 //! 3. the workspace version from Cargo.toml (unchanged default for local
 //!    `cargo xtask package` runs).
 //!
-//! Icon source decision (recorded per the card): the app icon is rendered
-//! from `assets/logo/vega-icon-f1-light.svg` (F1, 浅色主标). Rationale —
-//! LOGO.md designates F1 as the primary Dock icon; the F1/F3 raster
-//! originals carry the hunyuan "AI 生成" watermark in their bottom-right
-//! corner and LOGO.md states the hand-vector SVG is the definitive
-//! artwork, so the iconset is generated from the SVG, not the PNGs. `.icns`
-//! has no automatic light/dark appearance variants, and LOGO.md's style
-//! ruling (classic flat third-party squircle, cf. Telegram/VS Code) makes
-//! the F1 white squircle suitable for both Dock appearances; F3 (深色变体)
-//! stays a marketing asset. The iconset intermediate files live in a temp
-//! directory and are never committed — the icns is reproducible from the
-//! committed SVG.
+//! Icon source decision (R17): the app icon is rendered from
+//! `assets/logo/vega-icon-r17-smile-light.svg`, the approved blue single-star
+//! smile mark. The source is a hand-maintained SVG with an explicit alpha
+//! canvas; its matching dark and mono variants retain the same geometry for
+//! appearance-specific and wordmark use. The historical F1/F3 vectors and
+//! exploration PNGs remain archived. `.icns` has no automatic light/dark
+//! appearance variants, so the light tile is the deterministic app source.
+//! The iconset intermediate files live in a temp directory and are never
+//! committed — the icns is reproducible from the committed SVG.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -49,6 +46,9 @@ const BUNDLE_NAME: &str = "Vega";
 const EXECUTABLE_NAME: &str = "vega";
 /// `CFBundleIconFile` without the `.icns` extension.
 const ICON_FILE: &str = "Vega";
+/// Canonical R17 app icon source. Keep this in sync with `assets/logo/` and
+/// the source name recorded in `assets/logo/LOGO.md`.
+const ICON_SOURCE: &str = "assets/logo/vega-icon-r17-smile-light.svg";
 /// arm64-only build; Apple Silicon starts at macOS 11 (GPUI/Metal needs more
 /// than the zed-rev floor of 10.15.7 anyway, so 11.0 is the honest floor).
 const MIN_MACOS: &str = "11.0";
@@ -111,7 +111,7 @@ pub fn run(args: &[String]) -> Result<()> {
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
         .with_context(|| format!("failed to chmod {}", executable.display()))?;
 
-    // Icon: SVG → 1024 PNG (qlmanage) → iconset (sips) → .icns (iconutil).
+    // Icon: SVG → transparent 1024 PNG (AppKit) → iconset (sips) → .icns (iconutil).
     let icon_path = contents.join("Resources").join(format!("{ICON_FILE}.icns"));
     render_icon(&workspace, &icon_path)?;
 
@@ -164,10 +164,24 @@ pub fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Renders the F1 light SVG into the target `.icns` (see module docs for the
+/// Exports only the production icon, without rebuilding or signing the app.
+pub fn run_icon(args: &[String]) -> Result<()> {
+    let [output] = args else {
+        bail!("usage: cargo xtask package-icon <output.icns>");
+    };
+    let target = Path::new(output);
+    if target.extension().and_then(|ext| ext.to_str()) != Some("icns") {
+        bail!("icon output must have an .icns extension");
+    }
+    render_icon(&crate::workspace_root()?, target)?;
+    println!("exported production icon: {}", target.display());
+    Ok(())
+}
+
+/// Renders the R17 light SVG into the target `.icns` (see module docs for the
 /// source-choice rationale) and returns the icns path.
 fn render_icon(workspace: &Path, target: &Path) -> Result<std::path::PathBuf> {
-    let svg = workspace.join("assets/logo/vega-icon-f1-light.svg");
+    let svg = workspace.join(ICON_SOURCE);
     if !svg.exists() {
         bail!("icon source not found at {}", svg.display());
     }
@@ -176,34 +190,16 @@ fn render_icon(workspace: &Path, target: &Path) -> Result<std::path::PathBuf> {
     fs::create_dir_all(&iconset)
         .with_context(|| format!("failed to create {}", iconset.display()))?;
 
-    // qlmanage (WebKit) rasterizes the SVG at 1024 with transparency outside
-    // the squircle; sips then normalizes to an exact 1024×1024 base.
-    let staging_arg = staging.to_string_lossy().into_owned();
-    let svg_arg = svg.to_string_lossy().into_owned();
-    run_tool(
-        "qlmanage",
-        &[
-            "-t",
-            "-s",
-            "1024",
-            "-o",
-            staging_arg.as_str(),
-            svg_arg.as_str(),
-        ],
-        None,
-    )?;
-    let rendered = staging.join("vega-icon-f1-light.svg.png");
+    // AppKit draws the vector source onto an explicit alpha bitmap. Quick Look
+    // thumbnails instead flatten its transparent margins onto opaque white.
+    let renderer = workspace.join("xtask/scripts/render-icon.swift");
     let base = staging.join("icon-1024.png");
-    let rendered_arg = rendered.to_string_lossy().into_owned();
     let base_arg = base.to_string_lossy().into_owned();
     run_tool(
-        "sips",
+        "swift",
         &[
-            "-z",
-            "1024",
-            "1024",
-            rendered_arg.as_str(),
-            "--out",
+            renderer.to_string_lossy().as_ref(),
+            svg.to_string_lossy().as_ref(),
             base_arg.as_str(),
         ],
         None,
@@ -337,6 +333,11 @@ fn install_txt(version: &str) -> String {
          b. 或在终端执行：xattr -cr /Applications/Vega.app\n\n\
          本包为 ad-hoc 签名（未经 Apple 公证），因此其他 Mac 首次启动需要\n\
          上述放行步骤；之后可正常双击启动。\n\n\
+         Git 运行时要求：Vega 需要 Git 2.40 或更新版本，以支持安全的\n\
+         check-attr --source 查询。Vega 只使用固定的 Homebrew 或系统 Git\n\
+         canonical 来源，不读取 PATH、仓库配置或用户指定的 executable。\n\
+         如出现 Git 不可用或版本过旧提示，请执行 brew install git（或升级\n\
+         已有 Homebrew Git）后重启 Vega。Vega 不会自动联网安装或替换系统 Git。\n\n\
          数据位置：\n\
          - 配置：~/.config/vega/config.toml\n\
          - 数据：~/Library/Application Support/ai.vega（bundle id ai.vega，\n\
@@ -406,7 +407,7 @@ fn walk_tree(dir: &Path, prefix: &str) -> Result<()> {
 mod tests {
     use super::{
         BUNDLE_ID, CATEGORY, EXECUTABLE_NAME, ICONSET_ENTRIES, MIN_MACOS, WORKSPACE_VERSION,
-        info_plist, resolve_version_from,
+        info_plist, install_txt, resolve_version_from,
     };
 
     #[test]
@@ -513,5 +514,14 @@ mod tests {
                 "version {good:?} must be accepted"
             );
         }
+    }
+
+    #[test]
+    fn install_instructions_state_the_fixed_git_requirement() {
+        let install = install_txt("0.1.0");
+        assert!(install.contains("Git 2.40"));
+        assert!(install.contains("check-attr --source"));
+        assert!(install.contains("brew install git"));
+        assert!(install.contains("不读取 PATH"));
     }
 }

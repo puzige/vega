@@ -388,7 +388,7 @@ impl Render for CommitPanel {
             CommitPanelStage::Checklist | CommitPanelStage::CommitReady
         );
         let inline_error = match self.model.stage() {
-            CommitPanelStage::Failed(code) => Some(code.as_str()),
+            CommitPanelStage::Failed(code) => Some(commit_error_label(code)),
             _ => None,
         };
         div()
@@ -590,5 +590,18 @@ impl Render for CommitPanel {
                     }),
             )
             .into_any_element()
+    }
+}
+
+fn commit_error_label(code: CommitErrorCode) -> &'static str {
+    match code {
+        CommitErrorCode::GitUnavailable => {
+            "Git 2.40+ was not found. Install Homebrew Git and retry."
+        }
+        CommitErrorCode::GitUnsupported => "Git 2.40+ is required. Upgrade Git and retry.",
+        CommitErrorCode::GitExecutableChanged => {
+            "Git changed while Vega was running. Restart Vega and retry."
+        }
+        _ => code.as_str(),
     }
 }

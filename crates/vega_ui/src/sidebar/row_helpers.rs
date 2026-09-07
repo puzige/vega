@@ -1,28 +1,5 @@
 use super::*;
 
-/// A single hover action button on a session row (compact text label, token
-/// colors only). The listener runs on the block entity, so button clicks do
-/// not bubble into the row's clickable body (sibling nodes, T10 经验).
-pub(crate) fn row_action_button(
-    label: &'static str,
-    text_color: gpui::Rgba,
-    hover_bg: gpui::Rgba,
-    listener: impl Fn(&mut ThreadsBlock, &MouseUpEvent, &mut Window, &mut Context<ThreadsBlock>)
-    + 'static,
-    cx: &mut Context<ThreadsBlock>,
-) -> AnyElement {
-    div()
-        .px_1()
-        .rounded_md()
-        .text_size(px(Typography::SIDEBAR))
-        .text_color(text_color)
-        .cursor_pointer()
-        .hover(move |s| s.bg(hover_bg))
-        .on_mouse_up(MouseButton::Left, cx.listener(listener))
-        .child(label)
-        .into_any_element()
-}
-
 /// The full-window delete confirmation overlay (T13): a token-derived
 /// semi-transparent scrim over everything with a centered small card in the
 /// ui-spec §4.3 权限卡 style — no shadow, `border_subtle` border, buttons

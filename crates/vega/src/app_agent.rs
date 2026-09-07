@@ -15,35 +15,27 @@ pub(crate) const AGENT_EVENT_CAPACITY: usize = 256;
 pub(crate) const AGENT_EVENT_BATCH: usize = 128;
 
 #[cfg(test)]
-pub(crate) static AGENT_WORKER_STARTS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+#[derive(Default)]
+pub(crate) struct AgentWorkerStartProbe {
+    starts: AtomicUsize,
+    /// One bounded test-only delay at the existing MockProvider construction boundary.
+    pub(crate) provider_construction_gate:
+        Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
+}
+
+#[cfg(test)]
+impl AgentWorkerStartProbe {
+    pub(crate) fn load(&self) -> usize {
+        self.starts.load(Ordering::SeqCst)
+    }
+
+    fn record(&self) {
+        self.starts.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 pub(crate) const SYSTEM_PROMPT: &str =
     "You are Vega, a careful coding agent working inside the selected project.";
-
-pub(crate) struct UnavailableProvider;
-
-impl vega_runtime::Provider for UnavailableProvider {
-    fn chat_stream(
-        &self,
-        _: vega_runtime::ChatRequest,
-        _: tokio_util::sync::CancellationToken,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<
-                    Output = Result<vega_runtime::EventStream, vega_runtime::VegaError>,
-                > + Send,
-        >,
-    > {
-        Box::pin(async {
-            Err(vega_runtime::VegaError::Provider {
-                status: None,
-                message: "provider unavailable".into(),
-                retryable: false,
-            })
-        })
-    }
-}
 
 pub(crate) enum PendingAgentRun {
     UserMessage(String),
@@ -52,21 +44,38 @@ pub(crate) enum PendingAgentRun {
 
 pub(crate) enum AgentUpdate {
     Event(vega_conversation::types::ConversationEvent),
-    Finished(bool),
+    /// The terminal carries a resolver rejection atomically with `success`.
+    /// That prevents a poll between two channel messages from losing the
+    /// typed reason before the pending draft is released.
+    Finished {
+        success: bool,
+        reference_failure: Option<FileReferenceFailureCode>,
+        credential_failure: bool,
+    },
 }
 
 pub(crate) struct AgentBatch {
     pub(crate) events: Vec<vega_conversation::types::ConversationEvent>,
+    pub(crate) reference_failure: Option<FileReferenceFailureCode>,
+    pub(crate) credential_failure: bool,
     pub(crate) finished: Option<bool>,
 }
 
 pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> AgentBatch {
     let mut events = Vec::new();
+    let mut reference_failure = None;
+    let mut credential_failure = false;
     let mut finished = None;
     for _ in 0..AGENT_EVENT_BATCH {
         match receiver.try_recv() {
             Ok(AgentUpdate::Event(event)) => events.push(event),
-            Ok(AgentUpdate::Finished(success)) => {
+            Ok(AgentUpdate::Finished {
+                success,
+                reference_failure: terminal_failure,
+                credential_failure: terminal_credential_failure,
+            }) => {
+                reference_failure = terminal_failure;
+                credential_failure = terminal_credential_failure;
                 finished = Some(success);
                 break;
             }
@@ -77,7 +86,12 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
             }
         }
     }
-    AgentBatch { events, finished }
+    AgentBatch {
+        events,
+        reference_failure,
+        credential_failure,
+        finished,
+    }
 }
 
 pub(crate) struct ActiveAgentRun {
@@ -100,7 +114,12 @@ pub(crate) struct ActiveAgentRun {
 pub(crate) enum AgentBatchIngress {
     Stale,
     Running,
-    Finished { success: bool, run: ActiveAgentRun },
+    Finished {
+        success: bool,
+        run: ActiveAgentRun,
+        reference_failure: Option<FileReferenceFailureCode>,
+        credential_failure: bool,
+    },
 }
 
 pub(crate) struct PendingPlanReview {
@@ -404,6 +423,7 @@ pub(crate) fn unique_provider_for_model(
     let mut matches = config
         .providers
         .iter()
+        .filter(|provider| provider.enabled)
         .filter(|provider| provider.models.iter().any(|candidate| candidate == model));
     let provider = matches.next()?.clone();
     if matches.next().is_some()
@@ -415,27 +435,74 @@ pub(crate) fn unique_provider_for_model(
     Some(provider)
 }
 
-pub(crate) fn commit_provider(thread: &Thread) -> Arc<dyn vega_runtime::Provider> {
-    vega_store::config::load()
-        .ok()
-        .and_then(|config| unique_provider_for_model(&config, &thread.model))
-        .and_then(|provider| {
-            vega_store::keystore::get_key(&provider.key_ref)
-                .ok()
-                .filter(|key| !key.is_empty())
-                .and_then(|key| vega_runtime::OpenAiProvider::new(provider.base_url, key).ok())
-        })
-        .map(|provider| {
-            Arc::new(provider.with_retry_policy(commit_retry_policy()))
-                as Arc<dyn vega_runtime::Provider>
-        })
-        .unwrap_or_else(|| Arc::new(UnavailableProvider))
+/// Resolves one immutable reasoning snapshot for the exact provider/model
+/// pair selected for a run. Missing profiles intentionally become provider
+/// default with no wire controls; malformed declared profiles fail closed so
+/// an invalid Settings edit cannot silently become a different request.
+pub(crate) fn reasoning_for_provider_model(
+    provider: &str,
+    model: &str,
+    reasoning_path: Option<&std::path::Path>,
+) -> Result<vega_runtime::FrozenReasoning, ()> {
+    let Some(reasoning_path) = reasoning_path else {
+        return Ok(vega_runtime::FrozenReasoning::unknown(provider, model));
+    };
+    let config = vega_store::reasoning::read_from(reasoning_path).map_err(|_| ())?;
+    let Some(profile) = config.profile(provider, model) else {
+        return Ok(vega_runtime::FrozenReasoning::unknown(provider, model));
+    };
+    let projection = ReasoningProfileProjection::from_store(profile).map_err(|_| ())?;
+    projection.freeze().map_err(|_| ())
+}
+
+pub(crate) fn commit_provider(
+    thread: &Thread,
+    config_path: Option<&std::path::Path>,
+) -> Result<Arc<dyn vega_runtime::Provider>, ()> {
+    let path = config_path.ok_or(())?;
+    let config = vega_store::config::read_from(path).map_err(|_| ())?;
+    let provider = unique_provider_for_model(&config, &thread.model).ok_or(())?;
+    let key = vega_store::keystore::get_key(path.parent().ok_or(())?, &provider.key_ref)
+        .map_err(|_| ())?;
+    let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key).map_err(|_| ())?;
+    Ok(Arc::new(provider.with_retry_policy(commit_retry_policy())))
 }
 
 pub(crate) fn commit_retry_policy() -> vega_runtime::RetryPolicy {
     vega_runtime::RetryPolicy {
         max_retries: 0,
         ..vega_runtime::RetryPolicy::default()
+    }
+}
+
+/// Converts resolver diagnostics into the content-free shared failure
+/// vocabulary before they cross the worker/UI boundary.
+pub(crate) fn map_reference_failure(error: &vega_tools::ToolError) -> FileReferenceFailureCode {
+    use vega_tools::ToolError;
+    match error {
+        ToolError::PathEscape(_) => FileReferenceFailureCode::OutsideProject,
+        ToolError::NotFound(_) => FileReferenceFailureCode::Missing,
+        ToolError::BinaryFile(_) => FileReferenceFailureCode::BinaryContent,
+        ToolError::TooManyResults { limit }
+            if *limit == vega_tools::reference::REFERENCE_MAX_FILES =>
+        {
+            FileReferenceFailureCode::TooManyReferences
+        }
+        ToolError::TooManyResults { limit }
+            if *limit == vega_tools::reference::REFERENCE_MAX_FILE_BYTES as usize =>
+        {
+            FileReferenceFailureCode::FileTooLarge
+        }
+        ToolError::TooManyResults { .. } => FileReferenceFailureCode::TotalBytesExceeded,
+        ToolError::InvalidInput(message) if message.starts_with("symlinked reference") => {
+            FileReferenceFailureCode::SymlinkRejected
+        }
+        ToolError::InvalidInput(message) if message.ends_with(" is a directory") => {
+            FileReferenceFailureCode::NotRegularFile
+        }
+        ToolError::InvalidInput(_) => FileReferenceFailureCode::InvalidReference,
+        ToolError::Io(_) | ToolError::Traversal(_) => FileReferenceFailureCode::ReadFailed,
+        ToolError::Mutation(_) => FileReferenceFailureCode::InvalidReference,
     }
 }
 
@@ -452,32 +519,92 @@ pub(crate) fn run_agent_worker(
     // ownership; the worker never re-reads pricing files or the live
     // authority mid-run.
     pricing_catalog: Option<vega_conversation::PricingCatalog>,
+    // Owned config path selected by the app/controller. The worker must never
+    // fall back to process-global config while checking the frozen owner.
+    config_path: Option<std::path::PathBuf>,
+    // Optional UI-captured reasoning snapshot. When absent (legacy callers),
+    // the worker resolves the exact profile once before the first request.
+    reasoning: Option<vega_runtime::FrozenReasoning>,
     #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
+    #[cfg(test)] worker_start_probe: Arc<AgentWorkerStartProbe>,
 ) {
     #[cfg(test)]
-    AGENT_WORKER_STARTS.fetch_add(1, Ordering::SeqCst);
+    worker_start_probe.record();
+    let mut reference_failure = None;
+    let mut credential_failure = false;
     let success = (|| -> Result<(), ()> {
-        // Config and Keychain are touched only after an explicit user submit
+        // Config and local credential storage are touched only after an explicit user submit
         // or committed Plan approval reaches this worker.
         let tools = vega_tools::Tools::new(&project_path).map_err(|_| ())?;
         let store = Store::open(database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
-        #[cfg(test)]
-        let provider = provider_override.unwrap_or_else(|| Arc::new(UnavailableProvider));
-        #[cfg(not(test))]
-        let provider: Arc<dyn vega_runtime::Provider> = vega_store::config::load()
-            .ok()
-            .and_then(|config| unique_provider_for_model(&config, &thread.model))
-            .and_then(|provider| {
-                vega_store::keystore::get_key(&provider.key_ref)
+        // Resolve provider identity once, before constructing the provider and
+        // before entering the runtime. The resulting FrozenReasoning is moved
+        // into the selected entry point and is never re-read during retries
+        // or tool rounds.
+        let configured_provider = config_path
+            .as_deref()
+            .and_then(|path| vega_store::config::read_from(path).ok())
+            .and_then(|config| unique_provider_for_model(&config, &thread.model));
+        let provider_name = configured_provider
+            .as_ref()
+            .map_or("unknown", |provider| provider.name.as_str());
+        let reasoning = match reasoning {
+            Some(reasoning) => {
+                reasoning.validate().map_err(|_| ())?;
+                if reasoning.model != thread.model {
+                    return Err(());
+                }
+                if configured_provider
+                    .as_ref()
+                    .is_none_or(|provider| reasoning.provider != provider.name)
+                {
+                    return Err(());
+                }
+                reasoning
+            }
+            None => {
+                let reasoning_path = config_path
+                    .as_deref()
+                    .map(|path| path.with_file_name(vega_store::reasoning::REASONING_FILE_NAME));
+                reasoning_for_provider_model(
+                    provider_name,
+                    &thread.model,
+                    reasoning_path.as_deref(),
+                )?
+            }
+        };
+        // Provider construction stays below the reference resolver so an
+        // unresolved @file can terminate with zero provider requests or
+        // construction, preserving R5's fail-closed boundary.
+        let mut make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
+            #[cfg(test)]
+            {
+                let gate = worker_start_probe
+                    .provider_construction_gate
+                    .lock()
                     .ok()
-                    .filter(|key| !key.is_empty())
-                    .and_then(|key| vega_runtime::OpenAiProvider::new(provider.base_url, key).ok())
-            })
-            .map_or_else(
-                || Arc::new(UnavailableProvider) as Arc<dyn vega_runtime::Provider>,
-                |provider| Arc::new(provider) as Arc<dyn vega_runtime::Provider>,
-            );
+                    .and_then(|mut gate| gate.take());
+                if let Some((entered, release)) = gate {
+                    let _ = entered.send(());
+                    let _ = release.recv_timeout(Duration::from_secs(5));
+                }
+                if let Some(provider) = provider_override.clone() {
+                    return Ok(provider);
+                }
+            }
+            let provider = configured_provider.clone().ok_or(())?;
+            let root = config_path
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .ok_or(())?;
+            let key = vega_store::keystore::get_key(root, &provider.key_ref).map_err(|_| {
+                credential_failure = true;
+            })?;
+            let provider =
+                vega_runtime::OpenAiProvider::new(provider.base_url, key).map_err(|_| ())?;
+            Ok(Arc::new(provider) as Arc<dyn vega_runtime::Provider>)
+        };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -496,60 +623,85 @@ pub(crate) fn run_agent_worker(
             PendingAgentRun::UserMessage(content) => {
                 // A2-12: resolve `@path` tokens against the project root and
                 // inject the referenced file contents ahead of the user text
-                // (bounded: 8 files, 16 KiB each, 48 KiB total). Any
-                // resolution failure degrades to the raw message — injection
-                // never blocks or fails a run.
-                let content = vega_tools::reference::resolve_bounded_references(
+                // (bounded: 8 files, 16 KiB each, 48 KiB total). A failure is
+                // fail-closed: no provider is constructed and no request is
+                // started with the unresolved user text.
+                let refs = match vega_tools::reference::resolve_bounded_references(
                     &project_path,
                     &content,
                     vega_tools::reference::REFERENCE_MAX_FILES,
                     vega_tools::reference::REFERENCE_MAX_FILE_BYTES,
                     vega_tools::reference::REFERENCE_MAX_TOTAL_BYTES,
-                )
-                .map(|refs| {
-                    if refs.is_empty() {
-                        content.clone()
-                    } else {
-                        format!(
-                            "{}\n\n{}",
-                            vega_tools::reference::render_reference_block(&refs),
-                            content
-                        )
+                ) {
+                    Ok(refs) => refs,
+                    Err(error) => {
+                        reference_failure = Some(map_reference_failure(&error));
+                        return Err(());
                     }
-                })
-                .unwrap_or(content);
-                runtime.block_on(vega_conversation::agent::run_thread_task_with_pricing(
-                    &store,
-                    provider.as_ref(),
-                    &tools,
-                    &thread.id,
-                    &content,
-                    SYSTEM_PROMPT,
-                    cancel,
-                    &permission_queue,
-                    event_sink,
-                    vega_conversation::agent::PersistenceActorConfig::default(),
-                    None,
-                    pricing_catalog,
-                ))
+                };
+                let content = if refs.is_empty() {
+                    content
+                } else {
+                    format!(
+                        "{}\n\n{}",
+                        vega_tools::reference::render_reference_block(&refs),
+                        content
+                    )
+                };
+                let provider = make_provider()?;
+                // local credential storage access is synchronous. A route cancellation while
+                // it was waiting must not start a late durable/network run.
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                runtime.block_on(
+                    vega_conversation::agent::run_thread_task_with_pricing_and_reasoning(
+                        &store,
+                        provider.as_ref(),
+                        &tools,
+                        &thread.id,
+                        &content,
+                        SYSTEM_PROMPT,
+                        cancel,
+                        &permission_queue,
+                        event_sink,
+                        vega_conversation::agent::PersistenceActorConfig::default(),
+                        None,
+                        pricing_catalog,
+                        Some(reasoning),
+                    ),
+                )
             }
-            PendingAgentRun::ApprovedPlan(instruction_message_id) => runtime.block_on(
-                vega_conversation::agent::run_approved_plan_task_with_pricing(
-                    &store,
-                    provider.as_ref(),
-                    &tools,
-                    &thread.id,
-                    &instruction_message_id,
-                    SYSTEM_PROMPT,
-                    cancel,
-                    &permission_queue,
-                    event_sink,
-                    pricing_catalog,
-                ),
-            ),
+            PendingAgentRun::ApprovedPlan(instruction_message_id) => {
+                let provider = make_provider()?;
+                // local credential storage access is synchronous. A route cancellation while
+                // it was waiting must not start a late durable/network run.
+                if cancel.is_cancelled() {
+                    return Err(());
+                }
+                runtime.block_on(
+                    vega_conversation::agent::run_approved_plan_task_with_pricing_and_reasoning(
+                        &store,
+                        provider.as_ref(),
+                        &tools,
+                        &thread.id,
+                        &instruction_message_id,
+                        SYSTEM_PROMPT,
+                        cancel,
+                        &permission_queue,
+                        event_sink,
+                        pricing_catalog,
+                        Some(reasoning),
+                    ),
+                )
+            }
         };
         result.map(|_| ()).map_err(|_| ())
     })()
     .is_ok();
-    let _ = sender.send(AgentUpdate::Finished(success));
+    let _ = sender.send(AgentUpdate::Finished {
+        success,
+        reference_failure,
+        credential_failure,
+    });
 }

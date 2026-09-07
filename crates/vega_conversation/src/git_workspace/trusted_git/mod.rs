@@ -115,7 +115,6 @@ pub(crate) struct CommitState {
 /// trusted-action token remain app responsibilities; this service enforces
 /// repository and single-use Git authority.
 pub struct TrustedGitService {
-    root: PathBuf,
     root_identity: RootIdentity,
     instance_nonce: u64,
     workspace: Arc<GitWorkspaceService>,

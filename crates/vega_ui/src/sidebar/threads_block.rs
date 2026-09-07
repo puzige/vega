@@ -1,4 +1,7 @@
 use super::*;
+use vega_conversation::types::ThreadUpdate;
+mod organization;
+use organization::Organization;
 
 /// Events emitted by the session block.
 pub enum ThreadsBlockEvent {
@@ -8,30 +11,44 @@ pub enum ThreadsBlockEvent {
 
 impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
 
+/// Shared task rows/actions. R13 enables all-project organization projections
+/// with a background metadata cache; standalone legacy consumers retain the
+/// selected-project block below.
+///
 /// The 「会话」 block: the selected project's threads, pinned group first,
 /// then `updated_at` desc (store ordering, ui-spec §4.1 置顶组优先). Rows =
 /// truncated title + relative time ("2h" style); the selected row gets
-/// `bg_active` + a 2px accent bar on the left; unread rows render medium
-/// weight + a dot (the field stays 0 until S3 produces unread state).
+/// `bg_active`; unread rows render medium weight + a dot (the field stays 0
+/// until S3 produces unread state).
 ///
 /// T13 (A1-05) session management: the main list reads `status = active`
 /// only; archived threads hide here and surface in the 「已归档 (N)」
 /// collapsed section at the bottom of the block (展开可查看，行上有「恢复」).
-/// Hovering a row reveals its action group (裁决①：置顶 / 归档或恢复 / 删除,
-/// ≤3 small buttons); double-clicking a row enters inline renaming via the
-/// shared [`TextInput`] (Enter submits, Esc cancels, empty title = cancel —
-/// the keyboard path itself is manual-acceptance, see [`resolve_rename`]).
+/// Hovering a row reveals its compact `…` action trigger (裁决①：置顶 /
+/// 归档或恢复 / 删除); the trigger is always keyboard reachable, while its
+/// low-frequency actions are collected in a focusable menu. Double-clicking a
+/// row enters inline renaming via the shared [`TextInput`] (Enter submits, Esc
+/// cancels, an empty title cancels — the keyboard path itself is
+/// manual-acceptance, see [`resolve_rename`]).
 /// No project selected → guidance copy. Collapse state persists in config
 /// (`ui.sessions_collapsed`); the archive expansion is in-memory only.
 pub struct ThreadsBlock {
-    /// Cached active rows for the project in [`Self::loaded_project`].
+    /// Cached active rows (all projects when organization is enabled).
     pub(crate) threads: Vec<Thread>,
     /// Cached archived rows (shown in the 「已归档」 collapsed section).
     pub(crate) archived: Vec<Thread>,
     /// Project id the cache was loaded for (`None` → guidance copy).
     pub(crate) loaded_project: Option<String>,
-    /// Thread id currently under the mouse; drives the hover action group.
+    /// Thread id currently under the mouse; drives the row hover background.
     pub(crate) hovered: Option<String>,
+    /// Thread id whose compact low-frequency action menu is open.
+    pub(crate) actions_open: Option<String>,
+    /// Highlighted action inside the open menu (arrow keys move it).
+    pub(crate) actions_highlight: usize,
+    /// Scope handle for the open action menu; leaving the row closes it.
+    pub(crate) actions_scope_focus: FocusHandle,
+    /// One focus-out subscription for the action-menu scope.
+    pub(crate) actions_focus_subscription: Option<Subscription>,
     /// Whether the 「已归档 (N)」 section is expanded (in-memory, T13 卡允许
     /// 不做折叠记忆).
     pub(crate) archive_expanded: bool,
@@ -39,6 +56,11 @@ pub struct ThreadsBlock {
     pub(crate) editing: Option<RenameSession>,
     /// Inline error message (ui-spec §4.6).
     pub(crate) error: Option<String>,
+    action_pending: bool,
+    project_generation: u64,
+    actions_scroll: gpui::ScrollHandle,
+    menu_height: gpui::Pixels,
+    organization: Option<Organization>,
 }
 
 /// An inline rename in progress: the thread being renamed plus the shared
@@ -56,9 +78,18 @@ impl ThreadsBlock {
             archived: Vec::new(),
             loaded_project: None,
             hovered: None,
+            actions_open: None,
+            actions_highlight: 0,
+            actions_scope_focus: cx.focus_handle(),
+            actions_focus_subscription: None,
             archive_expanded: false,
             editing: None,
             error: None,
+            action_pending: false,
+            project_generation: 0,
+            actions_scroll: gpui::ScrollHandle::new(),
+            menu_height: px(360.),
+            organization: None,
         };
         view.reload(cx);
         view
@@ -68,7 +99,18 @@ impl ThreadsBlock {
     /// main list, archived rows for the 「已归档」 section (both pinned
     /// first, then updated_at desc — store ordering).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        if self.organization.is_some() {
+            self.refresh_organization(cx);
+            return;
+        }
         let selected = cx.global::<SelectedProject>().0.clone();
+        if self.loaded_project != selected {
+            // Project changes invalidate the anchored row position and the
+            // action target together; never leave the old menu mounted for a
+            // new project's rows.
+            self.close_actions();
+            self.project_generation = self.project_generation.wrapping_add(1);
+        }
         self.loaded_project = selected.clone();
         let result = match selected {
             None => Ok((Vec::new(), Vec::new())),
@@ -101,6 +143,20 @@ impl ThreadsBlock {
                 self.editing = None;
             }
         }
+        let existing_ids: Vec<String> = self
+            .threads
+            .iter()
+            .chain(self.archived.iter())
+            .map(|thread| thread.id.clone())
+            .collect();
+        if self
+            .actions_open
+            .as_ref()
+            .is_some_and(|thread_id| !existing_ids.iter().any(|id| id == thread_id))
+        {
+            self.actions_open = None;
+            self.actions_highlight = 0;
+        }
         cx.notify();
     }
 
@@ -108,12 +164,27 @@ impl ThreadsBlock {
     /// `last_opened_at` (single transaction) and switches the content column
     /// via the [`OpenedThread`] global.
     fn open_thread(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        if cx.has_active_drag() {
+            return;
+        }
+        if task_mutation_busy(cx) {
+            self.error = Some("任务正在保存，请稍后重试".into());
+            cx.notify();
+            return;
+        }
+        if !crate::navigation::allow_task_navigation(Some(thread_id), cx) {
+            return;
+        }
+        self.close_actions();
+        crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, |store| {
-            conversation::open_thread(store, thread_id).map_err(|error| error.to_string())
+            conversation::visit_thread(store, thread_id).map_err(|error| error.to_string())
         });
+        crate::navigation::finish_task_mutation(cx);
         match result {
             Ok(opened) => {
                 self.error = None;
+                cx.set_global(SelectedProject(Some(opened.project_id.clone())));
                 cx.set_global(OpenedThread(Some(opened)));
                 self.reload(cx);
                 cx.emit(ThreadsBlockEvent::Opened);
@@ -132,7 +203,14 @@ impl ThreadsBlock {
         operation: impl FnOnce(&Store) -> Result<(), String>,
         cx: &mut Context<Self>,
     ) {
+        if task_mutation_busy(cx) {
+            self.error = Some("任务正在保存，请稍后重试".into());
+            cx.notify();
+            return;
+        }
+        crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, operation);
+        crate::navigation::finish_task_mutation(cx);
         self.reload(cx);
         if let Err(message) = result {
             self.error = Some(message);
@@ -167,6 +245,7 @@ impl ThreadsBlock {
     /// system modal). Any inline rename is folded first so the overlay's Esc
     /// semantics stay unambiguous.
     fn request_delete(&mut self, thread: &Thread, cx: &mut Context<Self>) {
+        self.close_actions();
         self.editing = None;
         cx.set_global(PendingDeleteConfirm(Some(thread.clone())));
         cx.refresh_windows();
@@ -176,6 +255,7 @@ impl ThreadsBlock {
     /// current title and moves focus into it. (合成键盘事件送不进 GPUI：键入
     /// 与 Enter/Esc 提交路径为人工验收；提交/取消的纯逻辑见 [`resolve_rename`]。)
     fn start_rename(&mut self, thread: &Thread, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_actions();
         if self
             .editing
             .as_ref()
@@ -198,35 +278,33 @@ impl ThreadsBlock {
     /// the trimmed title is persisted and the opened thread's cached copy is
     /// resynced so the content header shows the new title.
     fn commit_rename(&mut self, cx: &mut Context<Self>) {
-        let Some(session) = self.editing.take() else {
+        let Some(session) = self.editing.as_ref() else {
             return;
         };
+        let id = session.thread_id.clone();
         let raw = session.input.read(cx).text().to_string();
         match resolve_rename(&raw) {
             RenameResolution::Cancel => {
-                // 空标题提交视为取消：直接退出编辑态，不写库。
+                self.editing = None;
                 cx.notify();
             }
             RenameResolution::Commit(title) => {
-                let result = with_store(cx, |store| {
-                    conversation::rename_thread(store, &session.thread_id, &title)
-                        .map_err(|error| error.to_string())
-                });
-                // reload 先行：失败信息在其后写入，避免被 reload 清空。
-                self.reload(cx);
-                match result {
-                    Ok(renamed) => {
-                        let mut opened = cx.global::<OpenedThread>().0.clone();
-                        if let Some(opened) =
-                            opened.as_mut().filter(|opened| opened.id == renamed.id)
-                        {
-                            *opened = renamed;
-                        }
-                        cx.set_global(OpenedThread(opened));
-                    }
-                    Err(message) => self.error = Some(message),
+                if let Some(thread) = self
+                    .threads
+                    .iter()
+                    .chain(self.archived.iter())
+                    .find(|t| t.id == id)
+                    .cloned()
+                {
+                    self.apply_update(
+                        &thread,
+                        ThreadUpdate {
+                            title: Some(title),
+                            ..Default::default()
+                        },
+                        cx,
+                    );
                 }
-                cx.refresh_windows();
             }
         }
     }
@@ -257,6 +335,319 @@ impl ThreadsBlock {
         if changed {
             cx.notify();
         }
+    }
+
+    /// Opens or closes the compact action menu for one thread. The trigger
+    /// and menu each have a scoped key context, so focusing the trigger is
+    /// enough to operate the full menu with Enter/Space, arrows, and Esc.
+    fn toggle_actions(&mut self, thread_id: &str, _: &mut Window, cx: &mut Context<Self>) {
+        if cx.has_active_drag() {
+            return;
+        }
+        if self.actions_open.as_deref() == Some(thread_id) {
+            self.close_actions();
+        } else {
+            self.actions_open = Some(thread_id.to_string());
+            self.actions_highlight = 0;
+        }
+        cx.notify();
+    }
+
+    fn close_actions(&mut self) {
+        if self.actions_open.take().is_some() {
+            self.actions_highlight = 0;
+        }
+    }
+
+    fn move_action_highlight(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(thread_id) = self.actions_open.as_ref() else {
+            return;
+        };
+        let _ = thread_id;
+        let count = 9 + self.organization_actions(thread_id).len() as isize;
+        self.actions_highlight =
+            (self.actions_highlight as isize + delta).rem_euclid(count) as usize;
+        self.actions_scroll.scroll_to_item(self.actions_highlight);
+        cx.notify();
+    }
+
+    fn previous_action(
+        &mut self,
+        _: &PreviousThreadAction,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_action_highlight(-1, cx);
+    }
+
+    fn next_action(&mut self, _: &NextThreadAction, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_action_highlight(1, cx);
+    }
+
+    fn activate_action(
+        &mut self,
+        _: &ActivateThreadAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread_id) = self.actions_open.clone() else {
+            return;
+        };
+        let archived = self.is_archived(&thread_id);
+        self.activate_action_index(&thread_id, archived, self.actions_highlight, window, cx);
+    }
+
+    fn close_actions_action(
+        &mut self,
+        _: &CloseThreadActions,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.actions_open.is_some() {
+            self.close_actions();
+            cx.notify();
+        }
+    }
+
+    fn is_archived(&self, thread_id: &str) -> bool {
+        self.archived.iter().any(|thread| thread.id == thread_id)
+    }
+
+    /// Applies only committed fields, never a stale task snapshot or a route change.
+    fn apply_update(&mut self, thread: &Thread, update: ThreadUpdate, cx: &mut Context<Self>) {
+        if self.action_pending || task_mutation_busy(cx) {
+            self.error = Some("任务操作正在保存，请稍后重试".into());
+            cx.notify();
+            return;
+        }
+        let generation = self.project_generation;
+        let id = thread.id.clone();
+        let project = thread.project_id.clone();
+        let database = with_store(cx, |store| {
+            store
+                .database_path()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| "任务存储需要文件数据库".to_string())
+        });
+        let Ok(database) = database else {
+            self.error = database.err();
+            cx.notify();
+            return;
+        };
+        self.action_pending = true;
+        crate::navigation::begin_task_mutation(cx);
+        let committed = update.clone();
+        let worker = cx.background_executor().spawn(async move {
+            let store = Store::open(database).map_err(|e| e.to_string())?;
+            let renamed_at = if let Some(title) = &update.title {
+                Some(
+                    conversation::rename_thread(&store, &id, title)
+                        .map_err(|e| e.to_string())?
+                        .updated_at,
+                )
+            } else {
+                conversation::update_thread(&store, &id, &update).map_err(|e| e.to_string())?;
+                None
+            };
+            Ok::<_, String>((id, project, renamed_at))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            // Release the application fence even when the originating block is gone.
+            cx.update(crate::navigation::finish_task_mutation);
+            this.update(cx, |this, cx| {
+                this.action_pending = false;
+                if this.project_generation != generation {
+                    return;
+                }
+                match result {
+                    Ok((id, project, renamed_at)) => {
+                        if this.organization.is_none()
+                            && this.loaded_project.as_deref() != Some(&project)
+                        {
+                            return;
+                        }
+                        for row in this
+                            .threads
+                            .iter_mut()
+                            .chain(this.archived.iter_mut())
+                            .filter(|row| row.id == id)
+                        {
+                            merge_update(row, &committed);
+                            if let Some(at) = renamed_at {
+                                row.updated_at = row.updated_at.max(at);
+                            }
+                        }
+                        if let Some(mut opened) = cx
+                            .global::<OpenedThread>()
+                            .0
+                            .clone()
+                            .filter(|row| row.id == id)
+                        {
+                            merge_update(&mut opened, &committed);
+                            if let Some(at) = renamed_at {
+                                opened.updated_at = opened.updated_at.max(at);
+                            }
+                            cx.set_global(OpenedThread(Some(opened)));
+                        }
+                        if committed.title.is_some()
+                            && this.editing.as_ref().is_some_and(|s| {
+                                s.thread_id == id
+                                    && committed.title.as_deref()
+                                        == Some(s.input.read(cx).text().trim())
+                            })
+                        {
+                            this.editing = None;
+                        }
+                        if renamed_at.is_some() {
+                            this.threads.sort_by_key(|row| {
+                                (
+                                    std::cmp::Reverse(row.pinned),
+                                    std::cmp::Reverse(row.updated_at),
+                                )
+                            });
+                            this.archived.sort_by_key(|row| {
+                                (
+                                    std::cmp::Reverse(row.pinned),
+                                    std::cmp::Reverse(row.updated_at),
+                                )
+                            });
+                        }
+                        this.error = None;
+                        if this.organization.is_some() {
+                            this.refresh_organization(cx);
+                        }
+                    }
+                    Err(error) => this.error = Some(error),
+                }
+                cx.refresh_windows();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn project_action(&mut self, thread: &Thread, finder: bool, cx: &mut Context<Self>) {
+        if self.action_pending {
+            self.error = Some("任务操作正在保存，请稍后重试".into());
+            cx.notify();
+            return;
+        }
+        let generation = self.project_generation;
+        let id = thread.id.clone();
+        let project = thread.project_id.clone();
+        let target_id = id.clone();
+        let route = cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone());
+        let database = with_store(cx, |store| {
+            store
+                .database_path()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| "任务存储需要文件数据库".to_string())
+        });
+        let Ok(database) = database else {
+            self.error = database.err();
+            cx.notify();
+            return;
+        };
+        self.action_pending = true;
+        let worker = cx.background_executor().spawn(async move {
+            let store = Store::open_read_only(database).map_err(|e| e.to_string())?;
+            conversation::task_project_path(&store, &id).map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let result = worker.await;
+            this.update(cx, |this, cx| {
+                this.action_pending = false;
+                if this.project_generation != generation {
+                    return;
+                }
+                if this.organization.is_none() && this.loaded_project.as_deref() != Some(&project) {
+                    return;
+                }
+                if cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone()) != route
+                    || !this
+                        .threads
+                        .iter()
+                        .chain(this.archived.iter())
+                        .any(|t| t.id == target_id)
+                {
+                    return;
+                }
+                match result {
+                    Ok(path) => {
+                        if finder {
+                            cx.reveal_path(&path);
+                        } else {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                path.to_string_lossy().into_owned(),
+                            ));
+                        }
+                        this.error = None;
+                    }
+                    Err(error) => this.error = Some(error),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn activate_action_index(
+        &mut self,
+        thread_id: &str,
+        _archived: bool,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(thread) = self
+            .threads
+            .iter()
+            .chain(self.archived.iter())
+            .find(|t| t.id == thread_id)
+            .cloned()
+        else {
+            return;
+        };
+        self.close_actions();
+        match index {
+            0 => self.toggle_pin(thread_id, thread.pinned, cx),
+            1 => self.start_rename(&thread, window, cx),
+            2 => self.set_thread_status(
+                thread_id,
+                if thread.status == ThreadStatus::Archived {
+                    ThreadStatus::Active
+                } else {
+                    ThreadStatus::Archived
+                },
+                cx,
+            ),
+            3 => self.apply_update(
+                &thread,
+                ThreadUpdate {
+                    unread: Some(!thread.unread),
+                    ..Default::default()
+                },
+                cx,
+            ),
+            4 => self.project_action(&thread, true, cx),
+            5 => self.project_action(&thread, false, cx),
+            6 => cx.write_to_clipboard(gpui::ClipboardItem::new_string(thread.id)),
+            7 => {
+                cx.set_global(SettingsOpen(true));
+                cx.refresh_windows();
+            }
+            8 => self.request_delete(&thread, cx),
+            index => {
+                if let Some((_, action)) =
+                    self.organization_actions(thread_id).get(index - 9).cloned()
+                {
+                    self.submit_organization(action, cx);
+                }
+            }
+        }
+        cx.notify();
     }
 
     /// Block header: collapsible title (chevron shows the state).
@@ -383,10 +774,10 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    /// One session row per ui-spec §4.1: [2px accent bar][pin mark][title…]
-    /// [dot] [relative time | hover action group]. The selected row gets
-    /// `bg_active`; hovering a non-editing row swaps the time label for its
-    /// action group (裁决①：置顶 / 归档或恢复 / 删除；行内编辑行除外)。
+    /// One session row per ui-spec §4.1: [pin mark][title…] [dot]
+    /// [relative time | compact action trigger]. The selected row gets
+    /// `bg_active`; hovering a non-editing row gets `bg_hover` and reveals the
+    /// trigger for its action menu (置顶 / 归档或恢复 / 删除；行内编辑行除外).
     ///
     /// The clickable body and the right side are sibling nodes — clicks on
     /// the action buttons must not re-trigger open (T10 经验：兄弟节点避免
@@ -406,11 +797,16 @@ impl ThreadsBlock {
             .as_ref()
             .filter(|session| session.thread_id == thread.id);
         let editing_this_row = editing_session.is_some();
-        let actions_visible = row_shows_actions(hovered, editing_this_row);
+        let actions_visible = row_shows_actions(hovered, editing_this_row)
+            || self.actions_open.as_deref() == Some(thread.id.as_str());
         let thread_id = thread.id.clone();
         let row_thread = thread.clone();
         let mut row = div()
             .id(ElementId::Name(format!("thread-row-{thread_id}").into()))
+            .debug_selector({
+                let id = thread_id.clone();
+                move || format!("thread-row-{id}")
+            })
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .flex()
             .items_center()
@@ -420,20 +816,15 @@ impl ThreadsBlock {
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.set_hovered(&thread_id, *hovered, cx);
             }))
-            .when(selected || (hovered && !editing_this_row), move |row| {
-                row.bg(if selected {
-                    colors.bg_active
-                } else {
-                    colors.bg_hover
-                })
-            })
-            // 左侧 2px 强调条（选中态着 accent 色，未选中占位保持对齐）。
-            .child(
-                div()
-                    .w(px(2.))
-                    .h_full()
-                    .flex_shrink_0()
-                    .when(selected, move |bar| bar.bg(colors.accent)),
+            .when(
+                selected || (actions_visible && !editing_this_row),
+                move |row| {
+                    row.bg(if selected {
+                        colors.bg_active
+                    } else {
+                        colors.bg_hover
+                    })
+                },
             );
         if let Some(session) = editing_session {
             row = row.child(self.render_rename_editor(session, cx));
@@ -449,14 +840,15 @@ impl ThreadsBlock {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .pl_2()
+                        .pl(px(28.))
+                        .pr_2()
                         .cursor_pointer()
-                        .when(!selected, move |main| {
-                            main.hover(move |s| s.bg(colors.bg_hover))
-                        })
                         .on_mouse_up(
                             MouseButton::Left,
                             cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                                if cx.has_active_drag() {
+                                    return;
+                                }
                                 if event.click_count >= 2 {
                                     this.start_rename(&row_thread, window, cx);
                                 } else {
@@ -470,6 +862,8 @@ impl ThreadsBlock {
                         }))
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
                                 .truncate()
                                 .text_color(colors.text_primary)
                                 .when(thread.unread, |title| {
@@ -484,80 +878,285 @@ impl ThreadsBlock {
                         .unread
                         .then(|| div().size(px(6.)).rounded_full().bg(colors.accent)),
                 );
-            if actions_visible {
-                row = row.child(self.render_row_actions(thread, archived, cx));
-            } else {
-                row = row.child(
-                    div()
-                        .flex_shrink_0()
-                        .px_2()
-                        .text_color(colors.text_secondary)
-                        .child(relative_time(thread.updated_at)),
-                );
-            }
+            row = row.child(self.render_row_actions(thread, archived, actions_visible, cx));
         }
         row.into_any_element()
     }
 
-    /// The hover action group (裁决①：每组最多 3 个小按钮). Active rows get
-    /// [置顶/取消置顶][归档][删除]; archived rows get [恢复][删除].
+    /// The fixed-width row tail. A timestamp remains visible at rest; hover
+    /// (or keyboard focus) reveals one compact action trigger. The actual
+    /// operations are rendered in a deferred anchored menu so the row and
+    /// sidebar scroll masks cannot clip the popup.
     fn render_row_actions(
+        &self,
+        thread: &Thread,
+        archived: bool,
+        actions_visible: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let thread_id = thread.id.clone();
+        let menu_open = self.actions_open.as_deref() == Some(thread.id.as_str());
+        let mut trigger = div()
+            .id(ElementId::Name(
+                format!("thread-actions-{thread_id}").into(),
+            ))
+            .debug_selector({
+                let id = thread_id.clone();
+                move || format!("thread-actions-{id}")
+            })
+            .relative()
+            .w(px(28.))
+            .h(px(28.))
+            .rounded_md()
+            .text_size(px(Typography::HEADING_BLOCK))
+            .text_color(colors.text_secondary)
+            .aria_label("会话操作")
+            .focusable()
+            .tab_stop(true)
+            .focus_visible(|style| {
+                style
+                    .opacity(1.)
+                    .bg(colors.bg_hover)
+                    .text_color(colors.text_primary)
+            })
+            .cursor_pointer()
+            .hover(move |style| style.bg(colors.bg_hover));
+
+        if menu_open {
+            trigger = trigger
+                .key_context("ThreadActionsMenu")
+                .on_action(cx.listener(Self::previous_action))
+                .on_action(cx.listener(Self::next_action))
+                .on_action(cx.listener(Self::activate_action))
+                .on_action(cx.listener(Self::close_actions_action));
+        } else {
+            trigger = trigger
+                .key_context("ThreadActionTrigger")
+                .on_action(cx.listener({
+                    let thread_id = thread.id.clone();
+                    move |this, _: &OpenThreadActions, window, cx| {
+                        this.toggle_actions(&thread_id, window, cx);
+                    }
+                }));
+        }
+
+        let menu = menu_open.then(|| {
+            // Pin an absolute zero-origin layer to the trigger, then give
+            // Anchored an explicit relative containing block. This keeps the
+            // trigger button's block position out of the popup's static origin.
+            div().absolute().top_0().left_0().w_full().h_full().child(
+                div().relative().size_full().child(
+                    anchored()
+                        .anchor(Anchor::TopRight)
+                        .position_mode(AnchoredPositionMode::Local)
+                        // The popup is anchored to the 28px trigger's bottom-right.
+                        // Anchored prepaint stays in the local containing block;
+                        // only the menu surface is deferred so it escapes the
+                        // row/sidebar content mask with the computed offset.
+                        .position(point(px(28.), px(28.)))
+                        .snap_to_window_with_margin(px(8.))
+                        .child(
+                            deferred(self.render_action_menu(thread, archived, cx))
+                                .with_priority(2),
+                        ),
+                ),
+            )
+        });
+
+        // Keep the click hitbox separate from the popup. The trigger owns the
+        // focus stop and keyboard scope, while the sibling deferred menu can
+        // receive its own mouse actions without the trigger's capture handler
+        // swallowing them.
+        let trigger_button = div()
+            .w_full()
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            // A mouse click focuses the trigger automatically. When the menu
+            // is already open, consume a second click on the trigger so the
+            // outside-dismiss listener cannot reopen it in the bubble phase.
+            .capture_any_mouse_up(cx.listener({
+                let thread_id = thread.id.clone();
+                move |this, event: &MouseUpEvent, _, cx| {
+                    if event.button == MouseButton::Left
+                        && this.actions_open.as_deref() == Some(thread_id.as_str())
+                    {
+                        this.close_actions();
+                        cx.notify();
+                        cx.stop_propagation();
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener({
+                    let thread_id = thread.id.clone();
+                    move |this, _: &MouseUpEvent, window, cx| {
+                        this.toggle_actions(&thread_id, window, cx);
+                    }
+                }),
+            )
+            .child("…");
+        trigger = trigger.child(trigger_button);
+        if let Some(menu) = menu {
+            trigger = trigger.child(menu);
+        }
+
+        let mut group = div()
+            .relative()
+            .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
+            .flex()
+            .items_center()
+            .justify_end()
+            .flex_shrink_0()
+            .pr_1();
+        if menu_open {
+            group = group.track_focus(&self.actions_scope_focus);
+        }
+        if !actions_visible {
+            group = group.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_right()
+                    .text_color(colors.text_secondary)
+                    .child(relative_time(thread.updated_at)),
+            );
+        }
+        // Keep the trigger mounted even at rest so Tab can reach every row's
+        // action entry. It is visually quiet until hover/focus/open.
+        if !actions_visible {
+            trigger = trigger.opacity(0.);
+        }
+        group = group.child(trigger);
+        group.into_any_element()
+    }
+
+    /// Focusable popup menu for one row. Mouse activation calls the same
+    /// mutation methods as the former inline action group; keyboard activation
+    /// uses the highlighted index maintained by [`Self::actions_highlight`].
+    fn render_action_menu(
         &self,
         thread: &Thread,
         archived: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
+        let mut actions: Vec<(String, bool)> = vec![
+            (
+                if thread.pinned {
+                    "取消置顶"
+                } else {
+                    "置顶"
+                },
+                false,
+            ),
+            ("重命名", false),
+            (if archived { "恢复" } else { "归档" }, false),
+            (
+                if thread.unread {
+                    "标记为已读"
+                } else {
+                    "标记为未读"
+                },
+                false,
+            ),
+            ("在 Finder 中打开项目", false),
+            ("复制项目路径", false),
+            ("复制会话 ID", false),
+            ("前往设置", false),
+            ("删除", true),
+        ]
+        .into_iter()
+        .map(|(label, danger)| (label.to_string(), danger))
+        .collect();
+        actions.extend(
+            self.organization_actions(&thread.id)
+                .into_iter()
+                .map(|(label, _)| (label, false)),
+        );
         let thread_id = thread.id.clone();
-        let mut group = div().flex().items_center().gap_0p5().flex_shrink_0().pr_1();
-        if archived {
-            group = group.child(row_action_button(
-                "恢复",
-                colors.text_secondary,
-                colors.bg_active,
-                move |this, _: &MouseUpEvent, _, cx| {
-                    this.set_thread_status(&thread_id, ThreadStatus::Active, cx);
-                },
-                cx,
-            ));
-        } else {
-            let (pin_label, now_pinned) = if thread.pinned {
-                ("取消置顶", true)
-            } else {
-                ("置顶", false)
-            };
-            group = group.child(row_action_button(
-                pin_label,
-                colors.text_secondary,
-                colors.bg_active,
-                move |this, _: &MouseUpEvent, _, cx| {
-                    this.toggle_pin(&thread_id, now_pinned, cx);
-                },
-                cx,
-            ));
-            let thread_id = thread.id.clone();
-            group = group.child(row_action_button(
-                "归档",
-                colors.text_secondary,
-                colors.bg_active,
-                move |this, _: &MouseUpEvent, _, cx| {
-                    this.set_thread_status(&thread_id, ThreadStatus::Archived, cx);
-                },
-                cx,
-            ));
-        }
-        let thread_for_delete = thread.clone();
-        group
-            .child(row_action_button(
-                "删除",
-                colors.danger,
-                colors.bg_active,
-                move |this, _: &MouseUpEvent, _, cx| {
-                    let thread = thread_for_delete.clone();
-                    this.request_delete(&thread, cx);
-                },
-                cx,
+        div()
+            .id(ElementId::Name(
+                format!("thread-actions-menu-{thread_id}").into(),
             ))
+            .w(px(Layout::TASK_MENU_WIDTH))
+            // The deferred popup is above sibling rows; its hitbox must stop them too.
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
+            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .max_h(self.menu_height)
+            .track_scroll(&self.actions_scroll)
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_elevated)
+            .p_1()
+            .shadow_md()
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    if this.actions_open.is_some() {
+                        this.close_actions();
+                        cx.notify();
+                    }
+                }),
+            )
+            .children(
+                actions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (label, danger))| {
+                        let thread_id = thread.id.clone();
+                        let selected = self.actions_highlight == index;
+                        let mut item = div()
+                            .id(ElementId::Name(
+                                format!("thread-action-{thread_id}-{index}").into(),
+                            ))
+                            .debug_selector({
+                                let id = thread_id.clone();
+                                move || format!("thread-action-{id}-{index}")
+                            })
+                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                            .flex_shrink_0()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .rounded_md()
+                            .text_size(px(Typography::SIDEBAR))
+                            .text_color(if danger {
+                                colors.danger
+                            } else {
+                                colors.text_primary
+                            })
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(colors.bg_hover))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.activate_action_index(
+                                        &thread_id, archived, index, window, cx,
+                                    );
+                                }),
+                            )
+                            .child(label);
+                        if selected {
+                            item = item.bg(colors.bg_active);
+                        }
+                        item
+                    }),
+            )
             .into_any_element()
     }
 
@@ -581,10 +1180,38 @@ impl ThreadsBlock {
 }
 
 impl Render for ThreadsBlock {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.menu_height =
+            (window.viewport_size().height - px(16.)).max(px(Typography::SIDEBAR_LINE_HEIGHT));
+        if self.actions_focus_subscription.is_none() {
+            self.actions_focus_subscription =
+                Some(
+                    cx.on_focus_out(&self.actions_scope_focus, window, |this, _, _, cx| {
+                        if this.actions_open.is_some() {
+                            this.close_actions();
+                            cx.notify();
+                        }
+                    }),
+                );
+        }
         let colors = theme(cx).colors;
+        if self.organization.is_some() {
+            return self.render_organization(window, cx);
+        }
         let collapsed = cx.global::<SessionsCollapsed>().0;
         div()
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "tab" && this.editing.is_none() {
+                    this.close_actions();
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .flex()
             .flex_col()
             .gap_1()
@@ -598,5 +1225,354 @@ impl Render for ThreadsBlock {
                 block.child(self.render_body(cx, &colors))
             })
             .into_any_element()
+    }
+}
+
+fn merge_update(thread: &mut Thread, update: &ThreadUpdate) {
+    if let Some(title) = &update.title {
+        thread.title = title.clone();
+    }
+    if let Some(unread) = update.unread {
+        thread.unread = unread;
+    }
+    if let Some(pinned) = update.pinned {
+        thread.pinned = pinned;
+    }
+    if let Some(status) = update.status {
+        thread.status = status;
+    }
+}
+
+#[cfg(test)]
+mod task_action_tests {
+    use super::*;
+
+    fn fixture(
+        cx: &mut gpui::TestAppContext,
+    ) -> (tempfile::TempDir, Entity<ThreadsBlock>, Thread, Thread) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("owned.db")).unwrap();
+        store.migrate().unwrap();
+        store.conn().execute("INSERT INTO projects (id,path,name,created_at,last_opened_at) VALUES ('p',?1,'owned',0,0)", [dir.path().to_str().unwrap()]).unwrap();
+        let first = conversation::create_thread(&store, "p", "initial", "confirm").unwrap();
+        let other = conversation::create_thread(&store, "p", "other", "confirm").unwrap();
+        cx.update(|cx| {
+            cx.set_global(VegaStore(Ok(store)));
+            cx.set_global(SelectedProject(Some("p".into())));
+            cx.set_global(OpenedThread(Some(first.clone())));
+        });
+        let block = cx.new(ThreadsBlock::new);
+        (dir, block, first, other)
+    }
+
+    struct PointerRoot {
+        block: Entity<ThreadsBlock>,
+        draft: Entity<TextInput>,
+    }
+    impl Render for PointerRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .child(div().w(px(Layout::SIDEBAR_WIDTH)).child(self.block.clone()))
+                .child(div().flex_1().child(self.draft.clone()))
+        }
+    }
+
+    #[gpui::test]
+    async fn deferred_project_copy_pointer_occludes_other_task_and_preserves_route_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (dir, block, current, target) = fixture(cx);
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            cx.set_global(SessionsCollapsed(false));
+            crate::init(cx);
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                "previous session id".into(),
+            ));
+            with_store(cx, |store| {
+                for _ in 0..12 {
+                    conversation::create_thread(store, "p", "model", "confirm").unwrap();
+                }
+                store
+                    .conn()
+                    .execute(
+                        "UPDATE threads SET updated_at = 9000000000000 WHERE id = ?1",
+                        [&target.id],
+                    )
+                    .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+        block.update(cx, ThreadsBlock::reload);
+        let draft = cx.new(|cx| TextInput::new(cx, "draft", false));
+        draft.update(cx, |input, cx| input.set_text("Gamma unsent draft", cx));
+        let root_block = block.clone();
+        let root_draft = draft.clone();
+        let window = cx.update(|cx| {
+            let bounds = gpui::Bounds::centered(None, gpui::size(px(960.), px(600.)), cx);
+            cx.open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                move |_, cx| {
+                    cx.new(|_| PointerRoot {
+                        block: root_block,
+                        draft: root_draft,
+                    })
+                },
+            )
+            .unwrap()
+        });
+        cx.run_until_parked();
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        let trigger: &'static str =
+            Box::leak(format!("thread-actions-{}", target.id).into_boxed_str());
+        let trigger_bounds = visual.debug_bounds(trigger).unwrap();
+        visual.simulate_click(trigger_bounds.center(), Default::default());
+        cx.run_until_parked();
+        let item: &'static str =
+            Box::leak(format!("thread-action-{}-5", target.id).into_boxed_str());
+        let item_bounds = visual.debug_bounds(item).unwrap();
+        let point = item_bounds.center();
+        let ids = block.read_with(cx, |block, _| {
+            block
+                .threads
+                .iter()
+                .map(|t| t.id.clone())
+                .collect::<Vec<_>>()
+        });
+        let underlying = ids.iter().any(|id| {
+            if id == &target.id || id == &current.id {
+                return false;
+            }
+            let selector: &'static str = Box::leak(format!("thread-row-{id}").into_boxed_str());
+            visual
+                .debug_bounds(selector)
+                .is_some_and(|bounds| bounds.contains(&point))
+        });
+        assert!(underlying, "copy item must overlap a different task row");
+        visual.simulate_click(point, Default::default());
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                cx.global::<OpenedThread>().0.as_ref().unwrap().id,
+                current.id,
+                "popup must not open the underlying row"
+            );
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                dir.path().to_string_lossy()
+            );
+        });
+        assert_eq!(
+            draft.read_with(cx, |input, _| input.text().to_string()),
+            "Gamma unsent draft"
+        );
+    }
+
+    #[gpui::test]
+    async fn task_mutation_epoch_fences_real_archive_and_releases_after_dropped_async_owner(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::navigation::{TaskMutationState, begin_task_mutation, finish_task_mutation};
+        let (dir, block, first, other) = fixture(cx);
+        // Model an accepted N visit: A must not archive its destination while pending.
+        cx.update(begin_task_mutation);
+        block.update(cx, |block, cx| {
+            block.set_thread_status(&other.id, ThreadStatus::Archived, cx)
+        });
+        let store = Store::open(dir.path().join("owned.db")).unwrap();
+        assert_eq!(
+            conversation::open_thread(&store, &other.id).unwrap().status,
+            ThreadStatus::Active
+        );
+        block.read_with(cx, |block, _| assert!(block.error.is_some()));
+        cx.update(finish_task_mutation);
+        let resolved_epoch = cx.update(|cx| *cx.global::<TaskMutationState>());
+        block.update(cx, |block, cx| {
+            block.set_thread_status(&other.id, ThreadStatus::Archived, cx)
+        });
+        assert_eq!(
+            conversation::open_thread(&store, &other.id).unwrap().status,
+            ThreadStatus::Archived
+        );
+        cx.update(|cx| {
+            let state = cx.global::<TaskMutationState>();
+            assert_eq!(state.pending, 0);
+            assert_ne!(
+                *state, resolved_epoch,
+                "a previously resolved N target must now fail its fence"
+            );
+        });
+        block.update(cx, |block, cx| {
+            block.apply_update(
+                &first,
+                ThreadUpdate {
+                    title: Some("durable after drop".into()),
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        cx.update(|cx| assert_eq!(cx.global::<TaskMutationState>().pending, 1));
+        drop(block);
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(cx.global::<TaskMutationState>().pending, 0));
+        assert_eq!(
+            conversation::open_thread(&store, &first.id).unwrap().title,
+            "durable after drop"
+        );
+    }
+
+    #[gpui::test]
+    async fn task_menu_keyboard_reaches_unread_and_escape(cx: &mut gpui::TestAppContext) {
+        let (dir, block, _, _) = fixture(cx);
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            cx.set_global(SessionsCollapsed(false));
+            crate::init(cx);
+        });
+        let target = block.read_with(cx, |block, _| block.threads[0].id.clone());
+        let root = block.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, _| root)
+                .unwrap()
+        });
+        cx.run_until_parked();
+        // Establish the platform's initial tab stop; subsequent input uses real dispatch.
+        window
+            .update(cx, |_, window, cx| window.focus_next(cx))
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        block.read_with(cx, |block, _| {
+            assert_eq!(block.actions_open.as_deref(), Some(target.as_str()))
+        });
+        cx.simulate_keystrokes(window.into(), "down down down enter");
+        cx.run_until_parked();
+        let store = Store::open(dir.path().join("owned.db")).unwrap();
+        assert!(conversation::open_thread(&store, &target).unwrap().unread);
+        cx.simulate_keystrokes(window.into(), "enter escape");
+        cx.run_until_parked();
+        block.read_with(cx, |block, _| assert!(block.actions_open.is_none()));
+        cx.simulate_keystrokes(window.into(), "tab enter");
+        cx.run_until_parked();
+        block.read_with(cx, |block, _| {
+            assert!(block.actions_open.is_some());
+            assert_ne!(block.actions_open.as_deref(), Some(target.as_str()));
+        });
+    }
+
+    #[gpui::test]
+    async fn durable_unread_ack_preserves_new_model_and_metadata_refresh(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (dir, block, first, _) = fixture(cx);
+        block.update(cx, |block, cx| {
+            block.apply_update(
+                &first,
+                ThreadUpdate {
+                    unread: Some(true),
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        cx.update(|cx| {
+            let mut current = cx.global::<OpenedThread>().0.clone().unwrap();
+            current.model = "later-model".into();
+            cx.set_global(OpenedThread(Some(current)));
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let current = cx.global::<OpenedThread>().0.as_ref().unwrap();
+            assert!(current.unread);
+            assert_eq!(current.model, "later-model");
+        });
+        let reopened = Store::open(dir.path().join("owned.db")).unwrap();
+        assert!(
+            conversation::open_thread(&reopened, &first.id)
+                .unwrap()
+                .unread
+        );
+        assert!(
+            !conversation::visit_thread(&reopened, &first.id)
+                .unwrap()
+                .unread
+        );
+    }
+
+    #[gpui::test]
+    async fn rename_noncurrent_task_does_not_navigate_and_failure_retains_input(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (dir, block, first, other) = fixture(cx);
+        block.update(cx, |block, cx| {
+            let input = cx.new(|cx| TextInput::new(cx, "title", false));
+            input.update(cx, |input, cx| input.set_text("renamed", cx));
+            block.editing = Some(RenameSession {
+                thread_id: other.id.clone(),
+                input,
+            });
+            block.commit_rename(cx);
+        });
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(cx.global::<OpenedThread>().0.as_ref().unwrap().id, first.id));
+        block.read_with(cx, |block, _| assert!(block.editing.is_none()));
+        let store = Store::open(dir.path().join("owned.db")).unwrap();
+        assert_eq!(
+            conversation::open_thread(&store, &other.id).unwrap().title,
+            "renamed"
+        );
+        store.conn().execute_batch("CREATE TRIGGER reject_rename BEFORE UPDATE OF title ON threads BEGIN SELECT RAISE(ABORT, 'owned failure'); END;").unwrap();
+        block.update(cx, |block, cx| {
+            let input = cx.new(|cx| TextInput::new(cx, "title", false));
+            input.update(cx, |input, cx| input.set_text("retry me", cx));
+            block.editing = Some(RenameSession {
+                thread_id: other.id.clone(),
+                input,
+            });
+            block.commit_rename(cx);
+        });
+        cx.run_until_parked();
+        block.read_with(cx, |block, cx| {
+            assert!(block.error.is_some());
+            assert_eq!(
+                block.editing.as_ref().unwrap().input.read(cx).text(),
+                "retry me"
+            );
+        });
+        assert_eq!(
+            conversation::open_thread(&store, &other.id).unwrap().title,
+            "renamed"
+        );
+    }
+
+    #[gpui::test]
+    async fn late_task_ack_cannot_replace_new_route(cx: &mut gpui::TestAppContext) {
+        let (dir, block, first, other) = fixture(cx);
+        block.update(cx, |block, cx| {
+            block.apply_update(
+                &first,
+                ThreadUpdate {
+                    unread: Some(true),
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        cx.update(|cx| cx.set_global(OpenedThread(Some(other.clone()))));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let current = cx.global::<OpenedThread>().0.as_ref().unwrap();
+            assert_eq!(current.id, other.id);
+            assert!(!current.unread);
+        });
+        let store = Store::open(dir.path().join("owned.db")).unwrap();
+        assert!(conversation::open_thread(&store, &first.id).unwrap().unread);
     }
 }

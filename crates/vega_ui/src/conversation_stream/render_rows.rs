@@ -70,13 +70,25 @@ pub(crate) fn render_entry(
                 PlanCard::render_row(card.clone(), row, window, cx)
             })
         }
-        StreamEntry::Summary { card } => {
-            let card = card.clone();
-            let row_count = card.read(cx).row_count();
-            card_rows_item(row_count, move |row| {
-                SummaryCard::render_row(card.clone(), row, cx)
-            })
-        }
+        StreamEntry::Summary { card } => match card.read(cx).summary().outcome {
+            vega_conversation::types::TaskSummaryOutcome::Completed => div()
+                .h_0()
+                .debug_selector(|| "completed-task-summary-hidden".to_string())
+                .into_any_element(),
+            outcome => div()
+                .debug_selector(|| "task-outcome-status".to_string())
+                .py_1()
+                .text_size(px(Typography::METADATA))
+                .text_color(theme(cx).colors.text_secondary)
+                .child(
+                    if outcome == vega_conversation::types::TaskSummaryOutcome::Failed {
+                        "失败"
+                    } else {
+                        "已中断"
+                    },
+                )
+                .into_any_element(),
+        },
     };
     if let Ok(mut samples) = counters.row_build_ns.lock() {
         samples.push(row_t0.elapsed().as_nanos());
@@ -94,7 +106,6 @@ fn card_rows_item(row_count: usize, mut render_row: impl FnMut(usize) -> AnyElem
     div()
         .w_full()
         .flex_shrink_0()
-        .px(px(CONTENT_MIN_PADDING))
         .pt(px(4.0))
         .pb(px(8.0))
         .flex()
@@ -109,7 +120,6 @@ pub(crate) fn markdown_item(model: &StreamModel, colors: &ThemeColors) -> AnyEle
     div()
         .w_full()
         .flex_shrink_0()
-        .px(px(CONTENT_MIN_PADDING))
         .pt(px(4.0))
         .pb(px(8.0))
         .flex()
@@ -124,17 +134,16 @@ pub(crate) fn markdown_item(model: &StreamModel, colors: &ThemeColors) -> AnyEle
         .into_any_element()
 }
 
-/// One user echo as one natural-height item: the 「你」 label plus a
-/// bg_elevated card whose lines are individual wrapping text rows (风格裁决:
-/// bg_elevated 圆角卡片 + 「你」标记、左对齐、1px border_subtle).
+/// One user echo as one natural-height item: the 「你」 label plus a single
+/// light rounded surface whose lines remain a continuous wrapping region.
+/// There are no per-line separators, so a long CJK/Latin message reads as one
+/// calm block while the variable-height item still preserves every line.
 pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> AnyElement {
     let mut body = div()
         .bg(colors.bg_elevated)
-        .border_1()
-        .border_color(colors.border_subtle)
-        .rounded_lg()
-        .px_2()
-        .py_1()
+        .rounded(px(Layout::PANEL_RADIUS))
+        .px_3()
+        .py_2()
         .text_color(colors.text_primary)
         .flex()
         .flex_col();
@@ -157,7 +166,6 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
     div()
         .w_full()
         .flex_shrink_0()
-        .px(px(CONTENT_MIN_PADDING))
         .pt(px(8.0))
         .pb(px(8.0))
         .flex()
@@ -295,9 +303,6 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
             .child(div().px_2().child("你"))
             .into_any_element(),
         LineKind::UserLine { .. } => item
-            .bg(colors.bg_elevated)
-            .border_1()
-            .border_color(colors.border_subtle)
             .child(div().px_2().py(px(1.0)).child(block_text(
                 &line.spans,
                 user_body_style(colors),
@@ -400,11 +405,11 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                         .child(if checked { "[x]" } else { "[ ]" }),
                 );
             }
-            row = row.child(block_text(
+            row = row.child(div().flex_1().min_w_0().child(block_text(
                 &line.spans,
                 message_run_style(colors.text_primary),
                 colors,
-            ));
+            )));
             item.child(row).into_any_element()
         }
         LineKind::Paragraph => item

@@ -4,7 +4,7 @@
 //! - **config root**: `${XDG_CONFIG_HOME:-$HOME/.config}/vega` on every
 //!   platform; `config.toml` lives directly inside it.
 //! - **data root**: macOS `$HOME/Library/Application Support/ai.vega`
-//!   (bundle-id namespace, matching the Keychain service `ai.vega`); every
+//!   (bundle-id namespace); every
 //!   other platform (Linux, Phase 4) `${XDG_DATA_HOME:-$HOME/.local/share}/vega`.
 //!   `vega.db` lives directly inside it.
 //!

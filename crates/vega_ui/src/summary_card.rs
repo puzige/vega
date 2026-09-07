@@ -7,13 +7,17 @@
 //! mirrors the ui-spec §4.2 tool-card frame: 8px radius, 1px `border-subtle`,
 //! no shadow, all colors from the theme tokens.
 
+#[cfg(test)]
 use gpui::prelude::*;
+#[cfg(test)]
 use gpui::{AnyElement, App, Entity, div, px};
 use vega_conversation::types::{
     Microcents, SummaryCost, TaskCostSummary, TaskSummaryOutcome, TokenUsage,
 };
+#[cfg(test)]
 use vega_theme::{Typography, theme};
 
+#[cfg(test)]
 use crate::conversation_stream::{MONOFONT, ROW_HEIGHT};
 
 /// The em dash shown for every unavailable fact (C4: `—`, not `0`).
@@ -51,6 +55,7 @@ impl SummaryCard {
         .join(" · ")
     }
 
+    #[cfg(test)]
     pub(crate) fn render_row(card: Entity<Self>, row: usize, cx: &App) -> AnyElement {
         let colors = theme(cx).colors;
         let summary = card.read(cx).summary.clone();
@@ -64,9 +69,7 @@ impl SummaryCard {
             .items_center()
             .px_3()
             .bg(colors.bg_elevated)
-            .border_color(colors.border_subtle)
-            .border_l_1()
-            .border_r_1();
+            .border_color(colors.border_subtle);
         match row {
             0 => base
                 .border_t_1()
@@ -168,7 +171,7 @@ fn compact_tokens(tokens: u64) -> String {
 
 /// Formats priced microcents as `US$<cost>` with enough precision to keep
 /// nonzero microcents distinguishable (C4). Exact integer math, no floats.
-fn format_usd(microcents: Microcents) -> String {
+pub(crate) fn format_usd(microcents: Microcents) -> String {
     let Microcents(microcents) = microcents;
     let negative = microcents < 0;
     let value = microcents.unsigned_abs();

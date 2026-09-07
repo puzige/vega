@@ -61,3 +61,15 @@ async fn visual_wrap_grows_shrinks_and_caps_with_cursor_follow(cx: &mut TestAppC
     });
     assert_eq!((rows, first), (1, 0));
 }
+
+#[gpui::test]
+async fn at_completion_replaces_only_the_token_body(cx: &mut TestAppContext) {
+    let (_window, input) = open_input(cx);
+    set_text(&input, "请读 @notes", cx);
+    input.update(cx, |input, cx| input.complete_at_query("notes.txt", cx));
+    cx.run_until_parked();
+    assert_eq!(
+        input.read_with(cx, |input, _| input.text().to_string()),
+        "请读 @notes.txt "
+    );
+}

@@ -25,6 +25,7 @@ async fn happy_path_sends_openai_wire_format_and_streams_events() {
             input_schema: serde_json::json!({"type":"object"}),
         }],
         max_tokens: Some(64),
+        reasoning: None,
     };
     let cancel = CancellationToken::new();
     let stream = tokio::time::timeout(Duration::from_secs(10), provider.chat_stream(req, cancel))
@@ -141,6 +142,35 @@ async fn retry_policy_zero_makes_exactly_one_local_http_attempt() {
     ));
     assert_eq!(server.connection_count(), 1);
     assert_eq!(server.captured().len(), 1);
+}
+
+#[tokio::test]
+async fn mismatched_reasoning_model_fails_before_loopback_http() {
+    let server = spawn_server(scripted_server(vec![])).await;
+    let provider = provider_for(&server, fast_policy(1));
+    let request = ChatRequest {
+        model: MODEL.into(),
+        reasoning: Some(FrozenReasoning {
+            provider: "openai".into(),
+            model: "different-model".into(),
+            protocol: ReasoningProtocol::OpenAiChatCompletions,
+            choice: ReasoningChoice::Effort("low".into()),
+            supports_disabled: false,
+            preserve_reasoning_content: false,
+            disabled_wire: None,
+            declared_efforts: vec!["low".into()],
+        }),
+        ..Default::default()
+    };
+    let result = provider
+        .chat_stream(request, CancellationToken::new())
+        .await;
+    assert!(matches!(
+        result,
+        Err(VegaError::ReasoningSelectionInvalid { .. })
+    ));
+    assert_eq!(server.connection_count(), 0);
+    assert!(server.captured().is_empty());
 }
 
 #[tokio::test]

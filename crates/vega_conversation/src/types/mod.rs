@@ -16,9 +16,11 @@ mod events;
 mod meter;
 mod permission;
 mod pricing;
+mod reasoning;
 mod thread;
 mod tool_calls;
 mod usage;
+mod usage_dashboard;
 mod workspace;
 
 #[cfg(test)]
@@ -31,7 +33,25 @@ pub use events::*;
 pub use meter::*;
 pub use permission::*;
 pub use pricing::*;
+pub use reasoning::*;
 pub use thread::*;
 pub use tool_calls::*;
 pub use usage::*;
+pub use usage_dashboard::*;
 pub use workspace::*;
+
+mod palette;
+pub use palette::*;
+mod terminal;
+pub use terminal::*;
+
+mod project_branch;
+pub use project_branch::*;
+mod navigation;
+pub use navigation::*;
+
+mod sidebar_organization;
+pub use sidebar_organization::*;
+
+mod provider_settings;
+pub use provider_settings::*;

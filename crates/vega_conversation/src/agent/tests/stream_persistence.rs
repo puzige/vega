@@ -111,6 +111,10 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "messages",
             "permissions",
             "projects",
+            "sidebar_groups",
+            "sidebar_memberships",
+            "sidebar_organization",
+            "sidebar_project_order",
             "threads",
             "token_usage",
             "tool_calls"

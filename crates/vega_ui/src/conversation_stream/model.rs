@@ -720,7 +720,10 @@ impl StreamEntry {
             StreamEntry::Artifact { card } => card.read(cx).row_count(),
             StreamEntry::Permission { card } => card.read(cx).row_count(),
             StreamEntry::Plan { card } => card.read(cx).row_count(),
-            StreamEntry::Summary { card } => card.read(cx).row_count(),
+            StreamEntry::Summary { card } => usize::from(
+                card.read(cx).summary().outcome
+                    != vega_conversation::types::TaskSummaryOutcome::Completed,
+            ),
         }
     }
 }

@@ -12,6 +12,14 @@ impl PendingPermission {
         self.request.as_ref()
     }
 
+    /// Whether cancellation, timeout, or a user decision already won the
+    /// request latch while the UI was waiting for its matching proposal.
+    pub fn is_resolved(&self) -> bool {
+        self.responder
+            .as_ref()
+            .is_none_or(PermissionResponder::is_resolved)
+    }
+
     /// Transfers the safe request and a responder-only card lease. The UI may
     /// use the request call id transiently for card lookup, then must discard
     /// it before storing the lease in an entity.

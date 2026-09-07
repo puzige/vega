@@ -30,7 +30,26 @@ mod trusted_git;
 pub use branch::{BranchSwitchPermit, BranchWorkspaceService};
 pub use trusted_git::TrustedGitService;
 
+#[cfg(test)]
 const GIT: &str = "/usr/bin/git";
+
+/// Returns the same process-selected executable used by production runners,
+/// quoted for embedding in a test-only shell delegating script.
+#[cfg(test)]
+fn production_git_shell_quote() -> String {
+    let path = process_git_executable(&CancellationToken::new())
+        .expect("production Git executable")
+        .path()
+        .to_string_lossy()
+        .into_owned();
+    format!("'{}'", path.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+fn production_git_script(script: String) -> String {
+    script.replace("/usr/bin/git", &production_git_shell_quote())
+}
+
 const KILL: &str = "/bin/kill";
 const IO_CHUNK: usize = 16 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -325,12 +344,13 @@ impl GitWorkspaceService {
         #[cfg(test)]
         let executable = self.executable.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let runner = Runner::new(
+            let runner = runner_for_parts(
                 root,
                 identity,
+                &cancel,
                 #[cfg(test)]
                 executable,
-            );
+            )?;
             build_snapshot(&runner, 0, instance_nonce, &cancel)
         })
         .await
@@ -449,12 +469,13 @@ impl GitWorkspaceService {
         #[cfg(test)]
         let executable = self.executable.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let runner = Runner::new(
+            let runner = runner_for_parts(
                 root,
                 identity,
+                &cancel,
                 #[cfg(test)]
                 executable,
-            );
+            )?;
             build_snapshot(&runner, 0, instance_nonce, &cancel)
         })
         .await
@@ -583,12 +604,13 @@ impl GitWorkspaceService {
         #[cfg(test)]
         let executable = self.executable.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let runner = Runner::new(
+            let runner = runner_for_parts(
                 root,
                 identity,
+                &cancel,
                 #[cfg(test)]
                 executable,
-            );
+            )?;
             build_projection(&runner, private, &cancel)
         })
         .await
@@ -670,11 +692,22 @@ impl GitWorkspaceService {
         cancel: CancellationToken,
     ) -> Result<ArtifactEvidence, GitWorkspaceError> {
         let file_id = file.id;
-        let runner = self.artifact_runner();
-        let result =
-            tokio::task::spawn_blocking(move || build_artifact_evidence(&runner, &file, &cancel))
-                .await
-                .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))??;
+        let root = self.root.clone();
+        let identity = self.identity;
+        #[cfg(test)]
+        let executable = self.executable.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let runner = runner_for_parts(
+                root,
+                identity,
+                &cancel,
+                #[cfg(test)]
+                executable,
+            )?;
+            build_artifact_evidence(&runner, &file, &cancel)
+        })
+        .await
+        .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))??;
         self.ensure_artifact_current(file_id)?;
         Ok(result)
     }
@@ -686,11 +719,22 @@ impl GitWorkspaceService {
         cancel: CancellationToken,
     ) -> Result<Vec<u8>, GitWorkspaceError> {
         let file_id = file.id;
-        let runner = self.artifact_runner();
-        let result =
-            tokio::task::spawn_blocking(move || read_artifact_file(&runner, &file, limit, &cancel))
-                .await
-                .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))??;
+        let root = self.root.clone();
+        let identity = self.identity;
+        #[cfg(test)]
+        let executable = self.executable.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let runner = runner_for_parts(
+                root,
+                identity,
+                &cancel,
+                #[cfg(test)]
+                executable,
+            )?;
+            read_artifact_file(&runner, &file, limit, &cancel)
+        })
+        .await
+        .map_err(|_| error(GitWorkspaceErrorCode::GitFailed))??;
         self.ensure_artifact_current(file_id)?;
         Ok(result)
     }
@@ -708,8 +752,18 @@ impl GitWorkspaceService {
             + 'static,
     {
         let file_id = file.id;
-        let runner = self.artifact_runner();
+        let root = self.root.clone();
+        let identity = self.identity;
+        #[cfg(test)]
+        let executable = self.executable.clone();
         let result = tokio::task::spawn_blocking(move || {
+            let runner = runner_for_parts(
+                root,
+                identity,
+                &cancel,
+                #[cfg(test)]
+                executable,
+            )?;
             let guard = build_artifact_open_guard(&runner, &file, &cancel)?;
             guard.revalidate()?;
             if cancel.is_cancelled() {
@@ -732,19 +786,47 @@ impl GitWorkspaceService {
         self.artifact_file_by_id(file_id).map(|_| ())
     }
 
-    fn artifact_runner(&self) -> Runner {
-        Runner::new(
+    pub(crate) fn runner(&self, cancel: &CancellationToken) -> Result<Runner, GitWorkspaceError> {
+        runner_for_parts(
             self.root.clone(),
             self.identity,
+            cancel,
             #[cfg(test)]
-            self.executable.clone(),
+            None,
         )
+    }
+
+    pub(crate) fn runner_with_test_override(
+        &self,
+        #[allow(unused_variables)] executable: Option<PathBuf>,
+        cancel: &CancellationToken,
+    ) -> Result<Runner, GitWorkspaceError> {
+        #[cfg(test)]
+        if executable.is_some() {
+            return Ok(Runner::new(self.root.clone(), self.identity, executable));
+        }
+        self.runner(cancel)
     }
 
     #[cfg(test)]
     fn new_for_test(root: &Path, executable: PathBuf) -> Result<Self, GitWorkspaceError> {
         Self::new_inner(root, Some(executable))
     }
+}
+
+#[allow(unused_variables)]
+fn runner_for_parts(
+    root: PathBuf,
+    identity: RootIdentity,
+    cancel: &CancellationToken,
+    #[cfg(test)] executable: Option<PathBuf>,
+) -> Result<Runner, GitWorkspaceError> {
+    #[cfg(test)]
+    if let Some(executable) = executable {
+        return Ok(Runner::new(root, identity, Some(executable)));
+    }
+    let executable = process_git_executable(cancel)?;
+    Ok(Runner::new(root, identity, executable))
 }
 
 fn unique_file<'a>(mut files: impl Iterator<Item = &'a PrivateFile>) -> Option<&'a PrivateFile> {
@@ -854,6 +936,7 @@ fn assign_generation(
 }
 
 mod diff;
+mod executable;
 mod identity;
 mod projection;
 mod runner;
@@ -863,6 +946,7 @@ mod snapshot;
 mod tests;
 
 pub(crate) use diff::*;
+pub(crate) use executable::*;
 pub(crate) use identity::*;
 pub(crate) use projection::*;
 pub(crate) use runner::*;

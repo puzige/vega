@@ -43,7 +43,11 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
         }))
         .expect("orphan proposal");
     sender
-        .send(AgentUpdate::Finished(false))
+        .send(AgentUpdate::Finished {
+            success: false,
+            reference_failure: None,
+            credential_failure: false,
+        })
         .expect("orphan terminal");
     let batch = drain_agent_updates(&receiver);
     assert!(root.update(cx, |root, cx| matches!(
@@ -72,6 +76,8 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                 events: vec![ConversationEvent::ToolCallProposed {
                     call: artifact_write_call("stale-generation", "artifact.txt", 6),
                 }],
+                reference_failure: None,
+                credential_failure: false,
                 finished: None,
             },
             cx,
@@ -125,6 +131,8 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
             &stream,
             AgentBatch {
                 events: Vec::new(),
+                reference_failure: None,
+                credential_failure: false,
                 finished: Some(false),
             },
             cx,
@@ -148,6 +156,8 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                     events: vec![ConversationEvent::ToolCallProposed {
                         call: artifact_write_call("cancelled-id", "artifact.txt", 6),
                     }],
+                    reference_failure: None,
+                    credential_failure: false,
                     finished: None,
                 },
                 cx,
@@ -168,6 +178,8 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                 &stream,
                 AgentBatch {
                     events: Vec::new(),
+                    reference_failure: None,
+                    credential_failure: false,
                     finished: Some(false),
                 },
                 cx,
@@ -200,6 +212,8 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                             false,
                         ),
                     }],
+                    reference_failure: None,
+                    credential_failure: false,
                     finished: None,
                 },
                 cx,

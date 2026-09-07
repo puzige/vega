@@ -13,6 +13,7 @@ impl DiffView {
             refresh_error: None,
             projection_error: None,
             refreshing: false,
+            show_refresh_progress: false,
             rows: Vec::new(),
             hunk_indexes: Vec::new(),
             current_hunk: None,
@@ -33,6 +34,12 @@ impl DiffView {
         self.snapshot.as_ref().map(|snapshot| snapshot.generation)
     }
 
+    pub fn snapshot_stats(&self) -> Option<WorkspaceStats> {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.stats.clone())
+    }
+
     pub fn layout(&self) -> DiffLayout {
         self.layout
     }
@@ -47,6 +54,10 @@ impl DiffView {
 
     pub fn is_refreshing(&self) -> bool {
         self.refreshing
+    }
+
+    pub fn is_refresh_progress_visible(&self) -> bool {
+        self.show_refresh_progress
     }
 
     pub fn refresh_error(&self) -> Option<GitWorkspaceErrorCode> {
@@ -88,6 +99,9 @@ impl DiffView {
         projection: DiffTextProjection,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.refresh_error.is_some() {
+            return false;
+        }
         let file_id = projection.file_id();
         let is_current = self.snapshot.as_ref().is_some_and(|snapshot| {
             exact_current_file(
@@ -108,17 +122,26 @@ impl DiffView {
         true
     }
 
-    /// Invalidates every capability after a latest refresh failure.
+    /// Keeps the last usable snapshot visible while retaining a typed retryable
+    /// failure. A first-load failure still leaves the view without a snapshot.
     pub fn apply_refresh_error(&mut self, code: GitWorkspaceErrorCode, cx: &mut Context<Self>) {
-        self.snapshot = None;
-        self.expanded_file = None;
-        self.prepared_projection = None;
+        let invalidate_projection =
+            self.pending_projection.is_some() || self.projection_error.is_some();
+        self.refresh_error = Some(code);
         self.pending_projection = None;
         self.projection_error = None;
-        self.refresh_error = Some(code);
-        self.rows.clear();
-        self.hunk_indexes.clear();
-        self.current_hunk = None;
+        if self.snapshot.is_none() {
+            self.expanded_file = None;
+            self.prepared_projection = None;
+            self.rows.clear();
+            self.hunk_indexes.clear();
+            self.current_hunk = None;
+        } else if invalidate_projection {
+            self.expanded_file = None;
+            self.prepared_projection = None;
+            self.current_hunk = None;
+            self.rebuild_rows();
+        }
         cx.notify();
     }
 
@@ -129,7 +152,7 @@ impl DiffView {
         code: GitWorkspaceErrorCode,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.expanded_file != Some(file_id) {
+        if self.refresh_error.is_some() || self.expanded_file != Some(file_id) {
             return false;
         }
         self.prepared_projection = None;
@@ -142,11 +165,23 @@ impl DiffView {
 
     pub fn set_refreshing(&mut self, refreshing: bool, cx: &mut Context<Self>) {
         self.refreshing = refreshing;
+        if !refreshing {
+            self.show_refresh_progress = false;
+        }
+        cx.notify();
+    }
+
+    pub fn begin_refresh(&mut self, show_progress: bool, cx: &mut Context<Self>) {
+        self.refreshing = true;
+        self.show_refresh_progress = show_progress;
         cx.notify();
     }
 
     /// Enforces the single-open accordion invariant.
     pub(crate) fn toggle_file(&mut self, file_id: WorkspaceFileId, cx: &mut Context<Self>) {
+        if self.refresh_error.is_some() {
+            return;
+        }
         let current = self
             .snapshot
             .as_ref()
@@ -195,6 +230,9 @@ impl DiffView {
     }
 
     pub(crate) fn request_missing_projection(&mut self) -> Option<DiffProjectionRequested> {
+        if self.refresh_error.is_some() {
+            return None;
+        }
         let snapshot = self.snapshot.as_ref()?;
         let file_id = self.expanded_file?;
         if self.prepared_projection.is_some()
@@ -263,6 +301,10 @@ impl DiffView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.retry(cx);
+    }
+
+    pub(crate) fn retry(&mut self, cx: &mut Context<Self>) {
         if self.refreshing {
             return;
         }
@@ -288,18 +330,6 @@ impl DiffView {
             cx.emit(request);
         }
         cx.notify();
-    }
-
-    pub(crate) fn back_clicked(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        cx.emit(DiffClosed {
-            thread_id: self.thread_id.clone(),
-            project_id: self.project_id.clone(),
-        });
     }
 
     pub(crate) fn close_action(&mut self, _: &CloseDiff, _: &mut Window, cx: &mut Context<Self>) {

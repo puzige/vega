@@ -137,6 +137,27 @@ pub fn find(conn: &Connection, id: &str) -> Result<Option<Project>, ProjectsErro
     .map_err(ProjectsError::from)
 }
 
+/// Finds the existing registration for an exact persisted folder path.
+pub fn find_by_path(conn: &Connection, path: &str) -> Result<Option<Project>, ProjectsError> {
+    conn.query_row(
+        "SELECT id, path, name, git_default_branch, created_at, last_opened_at \
+         FROM projects WHERE path = ?1",
+        [path],
+        |row| {
+            Ok(Project {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                name: row.get(2)?,
+                git_default_branch: row.get(3)?,
+                created_at: row.get(4)?,
+                last_opened_at: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(ProjectsError::from)
+}
+
 /// Removes the project row with `id` and returns whether a row was deleted.
 ///
 /// Only the database row is removed; files on disk are never touched (S2

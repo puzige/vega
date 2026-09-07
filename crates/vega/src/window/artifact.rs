@@ -24,6 +24,9 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         if let Some(active) = self.artifact_controller.close() {
+            for key in active.cards.keys() {
+                self.workspace.close(&workspace::TabKey::Artifact(*key));
+            }
             for card in active.cards.into_values() {
                 card.update(cx, |card, cx| card.invalidate(code, cx));
             }
@@ -187,6 +190,7 @@ impl VegaWindow {
         let Some(success) = batch.finished else {
             return AgentBatchIngress::Running;
         };
+        let reference_failure = batch.reference_failure;
         self.poison_artifact_agent_generation(generation, stream);
         let Some(run) = self.agent_controller.finish(generation, thread_id, stream) else {
             return AgentBatchIngress::Stale;
@@ -212,7 +216,12 @@ impl VegaWindow {
                 stream.update(cx, |stream, cx| stream.apply_task_summary(summary, cx));
             }
         }
-        AgentBatchIngress::Finished { success, run }
+        AgentBatchIngress::Finished {
+            success,
+            run,
+            reference_failure,
+            credential_failure: batch.credential_failure,
+        }
     }
 
     pub(crate) fn cancel_artifact_interactions(active: &mut ActiveArtifactRoute, cx: &mut App) {
@@ -535,6 +544,8 @@ impl VegaWindow {
             active.preview_cancel = Some(cancel.clone());
             (fence, active.service.clone(), cancel)
         };
+        self.workspace
+            .open(workspace::TabKey::Artifact(request.card_id));
         let (sender, receiver) = mpsc::sync_channel(1);
         #[cfg(test)]
         ARTIFACT_PREVIEW_WORKER_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

@@ -54,42 +54,62 @@ pub struct ThemeColors {
     pub warning: Rgba,
     /// Code block background.
     pub code_bg: Rgba,
+    /// Sidebar custom group colors: gray, red, orange, yellow, green, blue, purple.
+    pub sidebar_group_colors: [Rgba; 7],
 }
 
 /// Light palette (UI spec §2, "Light" column).
 pub const LIGHT: ThemeColors = ThemeColors {
-    bg_base: rgba(0xFFFFFFFF),
-    bg_sidebar: rgba(0xF7F7F5FF),
+    bg_base: rgba(0xFAFAFAFF),
+    bg_sidebar: rgba(0xF2F2F2FF),
     bg_elevated: rgba(0xFFFFFFFF),
-    bg_hover: rgba(0xEFEFEDFF),
-    bg_active: rgba(0xE9E9E7FF),
-    border_subtle: rgba(0xE5E5E3FF),
-    text_primary: rgba(0x1A1A1AFF),
-    text_secondary: rgba(0x6B6B6BFF),
-    text_tertiary: rgba(0x9E9E9EFF),
-    accent: rgba(0x1A1A1AFF),
+    bg_hover: rgba(0xECECECFF),
+    bg_active: rgba(0xE8E8E8FF),
+    border_subtle: rgba(0xE8E8E8FF),
+    text_primary: rgba(0x202020FF),
+    text_secondary: rgba(0x676767FF),
+    text_tertiary: rgba(0x8A8A8AFF),
+    accent: rgba(0x202020FF),
     success: rgba(0x1A7F37FF),
     danger: rgba(0xCF222EFF),
     warning: rgba(0x9A6700FF),
-    code_bg: rgba(0xF6F8FAFF),
+    code_bg: rgba(0xF6F6F6FF),
+    sidebar_group_colors: [
+        rgba(0x8A8A8AFF),
+        rgba(0xCF222EFF),
+        rgba(0xBC4C00FF),
+        rgba(0x9A6700FF),
+        rgba(0x1A7F37FF),
+        rgba(0x0969DAFF),
+        rgba(0x8250DFFF),
+    ],
 };
 
 /// Dark palette (UI spec §2, "Dark" column).
 pub const DARK: ThemeColors = ThemeColors {
-    bg_base: rgba(0x1E1E1EFF),
-    bg_sidebar: rgba(0x252525FF),
-    bg_elevated: rgba(0x2D2D2DFF),
-    bg_hover: rgba(0x383838FF),
-    bg_active: rgba(0x404040FF),
-    border_subtle: rgba(0x3A3A3AFF),
-    text_primary: rgba(0xECECECFF),
-    text_secondary: rgba(0x9C9C9CFF),
-    text_tertiary: rgba(0x6B6B6BFF),
-    accent: rgba(0xECECECFF),
+    bg_base: rgba(0x202020FF),
+    bg_sidebar: rgba(0x191919FF),
+    bg_elevated: rgba(0x2A2A2AFF),
+    bg_hover: rgba(0x323232FF),
+    bg_active: rgba(0x303030FF),
+    border_subtle: rgba(0x383838FF),
+    text_primary: rgba(0xEDEDEDFF),
+    text_secondary: rgba(0xABABABFF),
+    text_tertiary: rgba(0x828282FF),
+    accent: rgba(0xEDEDEDFF),
     success: rgba(0x3FB950FF),
     danger: rgba(0xF85149FF),
     warning: rgba(0xD29922FF),
-    code_bg: rgba(0x282C34FF),
+    code_bg: rgba(0x262626FF),
+    sidebar_group_colors: [
+        rgba(0xABABABFF),
+        rgba(0xF85149FF),
+        rgba(0xF0883EFF),
+        rgba(0xD29922FF),
+        rgba(0x3FB950FF),
+        rgba(0x58A6FFFF),
+        rgba(0xBC8CFFFF),
+    ],
 };
 
 /// Which palette the theme currently applies.
@@ -121,6 +141,8 @@ pub struct Theme {
     pub colors: ThemeColors,
     /// Which palette is currently active.
     pub appearance: Appearance,
+    /// Whether native appearance changes should update this palette.
+    pub follow_system: bool,
 }
 
 impl Global for Theme {}
@@ -131,6 +153,7 @@ impl Theme {
         Theme {
             colors: LIGHT,
             appearance: Appearance::Light,
+            follow_system: false,
         }
     }
 
@@ -139,6 +162,7 @@ impl Theme {
         Theme {
             colors: DARK,
             appearance: Appearance::Dark,
+            follow_system: false,
         }
     }
 
@@ -148,14 +172,17 @@ impl Theme {
     /// exposes it on this rev); `VibrantLight`/`VibrantDark` map onto
     /// light/dark respectively.
     pub fn system(cx: &App) -> Self {
-        match cx.window_appearance() {
+        let mut theme = match cx.window_appearance() {
             WindowAppearance::Dark | WindowAppearance::VibrantDark => Self::dark(),
             WindowAppearance::Light | WindowAppearance::VibrantLight => Self::light(),
-        }
+        };
+        theme.follow_system = true;
+        theme
     }
 
     /// Flips between light and dark in place, swapping the palette to match.
     pub fn toggle(&mut self) {
+        self.follow_system = false;
         self.appearance = self.appearance.toggle();
         self.colors = match self.appearance {
             Appearance::Light => LIGHT,
@@ -179,20 +206,28 @@ pub fn theme(cx: &App) -> &Theme {
 pub struct Typography;
 
 impl Typography {
+    /// Settings page title from R8 reference.
+    pub const SETTINGS_TITLE: f32 = 24.0;
     /// Body text: 13px (§3 "正文字体 …13px/1.55 行高").
     pub const BODY: f32 = 13.0;
     /// Body line height: 1.55× font size (ratio, §3).
     pub const BODY_LINE_HEIGHT: f32 = 1.55;
-    /// Conversation message body: 14px (§3 "会话消息正文 14px/1.6").
-    pub const MESSAGE: f32 = 14.0;
-    /// Message line height: 1.6× font size (ratio, §3).
-    pub const MESSAGE_LINE_HEIGHT: f32 = 1.6;
+    /// Conversation message body: 15px (R4 visual revision §2).
+    pub const MESSAGE: f32 = 15.0;
+    /// Message line height: 1.65× font size (ratio, R4 visual revision §2).
+    pub const MESSAGE_LINE_HEIGHT: f32 = 1.65;
     /// Code font size: 12.5px, monospace (§3 "代码字体 SF Mono / JetBrains Mono，12.5px").
     pub const CODE: f32 = 12.5;
-    /// Sidebar entry font size: 13px (§3 "侧边栏条目 13px，行高 32px").
+    /// Sidebar entry font size: 13px (§3 "侧边栏条目 13px，行高 34px").
     pub const SIDEBAR: f32 = 13.0;
-    /// Sidebar entry row height: 32px absolute (§3).
-    pub const SIDEBAR_LINE_HEIGHT: f32 = 32.0;
+    /// Sidebar entry row height: 34px absolute (R4 visual revision §2).
+    pub const SIDEBAR_LINE_HEIGHT: f32 = 34.0;
+    /// Compact metadata and status labels: 12px (R4 visual revision §2).
+    pub const METADATA: f32 = 12.0;
+    /// Empty-state title: 28px semibold (R8 visual parity).
+    pub const EMPTY_STATE_TITLE: f32 = 28.0;
+    /// Empty-state title weight: semibold (R8 visual parity).
+    pub const EMPTY_STATE_TITLE_WEIGHT: FontWeight = FontWeight::SEMIBOLD;
     /// Page heading size: 16px (§3 "页面 16px 600").
     pub const HEADING_PAGE: f32 = 16.0;
     /// Page heading weight: 600 (§3).
@@ -207,6 +242,65 @@ impl Typography {
     pub const HEADING_CARD_WEIGHT: FontWeight = FontWeight::MEDIUM;
 }
 
+/// Shared layout tokens for the native client.
+///
+/// Keeping radii and content geometry here makes the visual contract explicit
+/// at call sites and prevents a component from silently falling back to a
+/// named GPUI radius whose value can change between revisions.
+pub struct Layout;
+
+impl Layout {
+    /// Leading space reserved for native macOS titlebar controls.
+    pub const TITLEBAR_LEADING_INSET: f32 = 96.0;
+    /// Maximum readable width for conversation, settings, and diff content.
+    pub const CONTENT_MAX_WIDTH: f32 = 820.0;
+    /// Minimum horizontal page padding around a readable content column.
+    pub const CONTENT_PADDING: f32 = 16.0;
+    /// Radius for ordinary panels and cards.
+    pub const PANEL_RADIUS: f32 = 12.0;
+    /// Radius for the primary composer surface.
+    pub const COMPOSER_RADIUS: f32 = 16.0;
+    /// Sidebar width from the measured R8 visual specification.
+    /// Provider selector column inside Settings.
+    pub const PROVIDER_LIST_WIDTH: f32 = 180.0;
+    pub const SIDEBAR_WIDTH: f32 = 330.0;
+    /// Sidebar horizontal padding.
+    pub const SIDEBAR_PADDING: f32 = 8.0;
+    /// Reserved trailing width for session timestamps and the compact action
+    /// menu trigger. Low-frequency actions live in the popover so long
+    /// session titles keep the main width of the rail.
+    pub const SIDEBAR_ACTIONS_WIDTH: f32 = 72.0;
+    /// Compact width for the sidebar task action popup.
+    pub const TASK_MENU_WIDTH: f32 = 240.0;
+}
+
+/// Standard xterm ANSI palette, used only for colors explicitly emitted by a terminal.
+pub fn terminal_indexed_color(index: u8) -> Rgba {
+    const BASE: [u32; 16] = [
+        0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f,
+        0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
+    ];
+    let value = match index {
+        0..=15 => BASE[index as usize],
+        16..=231 => {
+            let index = index - 16;
+            let level = |value: u8| {
+                if value == 0 {
+                    0
+                } else {
+                    55 + u32::from(value) * 40
+                }
+            };
+            (level(index / 36) << 16) | (level((index / 6) % 6) << 8) | level(index % 6)
+        }
+        _ => {
+            let value = 8 + u32::from(index - 232) * 10;
+            (value << 16) | (value << 8) | value
+        }
+    };
+    rgba((value << 8) | 255)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,17 +308,21 @@ mod tests {
     #[test]
     fn dark_tokens_match_ui_spec_table() {
         // Spot-check a few Dark column entries from the UI spec §2 table.
-        assert_eq!(u32::from(DARK.bg_base), 0x1E1E1EFF);
-        assert_eq!(u32::from(DARK.text_primary), 0xECECECFF);
-        assert_eq!(u32::from(DARK.code_bg), 0x282C34FF);
+        assert_eq!(u32::from(DARK.bg_base), 0x202020FF);
+        assert_eq!(u32::from(DARK.text_primary), 0xEDEDEDFF);
+        assert_eq!(u32::from(DARK.code_bg), 0x262626FF);
     }
 
     #[test]
     fn light_tokens_match_ui_spec_table() {
         // Spot-check a few Light column entries from the UI spec §2 table.
-        assert_eq!(u32::from(LIGHT.bg_base), 0xFFFFFFFF);
+        assert_eq!(u32::from(LIGHT.bg_base), 0xFAFAFAFF);
+        // Preserve the original semantic-color guards while checking the R4
+        // palette refresh around the neutral tokens.
         assert_eq!(u32::from(LIGHT.success), 0x1A7F37FF);
         assert_eq!(u32::from(LIGHT.danger), 0xCF222EFF);
+        assert_eq!(u32::from(LIGHT.bg_sidebar), 0xF2F2F2FF);
+        assert_eq!(u32::from(LIGHT.code_bg), 0xF6F6F6FF);
     }
 
     #[test]

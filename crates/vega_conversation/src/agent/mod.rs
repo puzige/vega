@@ -15,7 +15,7 @@ use futures::future::BoxFuture;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use vega_runtime::{
-    AgentRequest, Provider, RuntimeEvent, RuntimeExactRule, RuntimeMutatingTool,
+    AgentRequest, FrozenReasoning, Provider, RuntimeEvent, RuntimeExactRule, RuntimeMutatingTool,
     RuntimePermissionHook, RuntimePermissionMode, RuntimeRunMode, RuntimeToolConfig,
     RuntimeToolStatus, RuntimeUserDecision, VegaError, run_agent_with_permission_sink,
 };

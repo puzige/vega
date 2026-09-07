@@ -9,21 +9,22 @@
 //! every mutation, so configuration survives a restart.
 //!
 //! Credentials never appear in the UI: the key form field is masked while
-//! typing and every stored provider shows the constant "•••••••已存储"
-//! placeholder; the key value itself only ever goes to the Keychain.
+//! typing; cached actual local references decide the stored/re-entry badge.
+//! Values persist only in the owner-only plaintext local credential store.
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Div, Entity, EventEmitter, FocusHandle, Global, MouseButton, MouseUpEvent,
-    Window, actions, div, px, relative,
+    AnyElement, App, Div, Entity, EventEmitter, FocusHandle, Focusable, Global, MouseButton,
+    MouseUpEvent, Window, actions, div, px, relative,
 };
 use vega_conversation::types::{
     PricingDraftReason, PricingEntryKind, PricingEntryProjection, PricingMutation, PricingNotice,
-    PricingRateInputs, PricingSettingsErrorCode, PricingSettingsProjection,
+    PricingRateInputs, PricingSettingsErrorCode, PricingSettingsProjection, ReasoningChoice,
+    ReasoningDisabledWire, ReasoningProfileProjection, ReasoningProtocol, ReasoningSupport,
 };
 use vega_store::config::{self, AppConfig, ProviderConfig};
 use vega_store::keystore;
-use vega_theme::{Typography, theme};
+use vega_theme::{Layout, Typography, theme};
 
 use crate::text_input::TextInput;
 
@@ -32,6 +33,9 @@ actions!(
     [
         OpenSettings,
         CloseSettings,
+        ActivateProviderAction,
+        NextProviderAction,
+        PreviousProviderAction,
         ActivatePricingAction,
         NextPricingAction,
         PreviousPricingAction
@@ -55,6 +59,60 @@ pub struct PricingRetryRequested {
 /// Discards the controller-owned dirty plan and keeps current authority.
 pub struct PricingDiscardRequested {
     pub generation: u64,
+}
+
+/// Emitted after a Settings config mutation has been written successfully.
+/// The app uses this as the boundary to refresh its model catalog; it never
+/// carries a credential or requests an in-session model change.
+pub struct SettingsSaved;
+
+/// Content-safe error vocabulary for the worker-owned reasoning settings
+/// controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningSettingsErrorCode {
+    Io,
+    Invalid,
+    Conflict,
+    Busy,
+}
+
+/// Typed projection of the independent reasoning.toml authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasoningSettingsProjection {
+    Loading,
+    Ready {
+        generation: u64,
+        profiles: Vec<ReasoningProfileProjection>,
+        error: Option<ReasoningSettingsErrorCode>,
+    },
+    Saving {
+        generation: u64,
+        operation_id: u64,
+        profile: ReasoningProfileProjection,
+    },
+}
+
+/// Exact profile edit sent to the app controller. `base` lets the worker
+/// compute a field patch and preserve disjoint external edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningProfileSaveRequested {
+    pub generation: u64,
+    pub operation_id: u64,
+    pub base: ReasoningProfileProjection,
+    pub profile: ReasoningProfileProjection,
+}
+
+/// Requests a fresh worker-side reasoning.toml read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReasoningReloadRequested;
+
+/// User-selectable capability templates. A template only supplies an
+/// explicit declaration; it is never inferred from a provider URL or model
+/// name. The resulting fields remain editable before the worker saves them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningTemplate {
+    OpenAi,
+    Zhipu,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +141,27 @@ pub(crate) enum PricingFocusTarget {
     Cancel,
 }
 
+/// Keyboard focus targets for the thinking capability editor. The target is
+/// rebuilt with the exact provider/model projection, so a stale failed draft
+/// cannot be applied to a different profile by index alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReasoningFocusTarget {
+    Reload,
+    Template {
+        index: usize,
+        template: ReasoningTemplate,
+    },
+    Protocol(usize),
+    Support(usize),
+    Effort {
+        index: usize,
+        effort: &'static str,
+    },
+    Preference(usize),
+    Disabled(usize),
+    Replay(usize),
+}
+
 /// Whether the settings view currently replaces the session placeholder.
 ///
 /// Toggled by the app-level [`OpenSettings`]/[`CloseSettings`] handlers.
@@ -90,10 +169,14 @@ pub struct SettingsOpen(pub bool);
 
 impl Global for SettingsOpen {}
 
+/// One-shot route requested by a pricing preflight failure.
+pub struct PricingSettingsRequested(pub bool);
+impl Global for PricingSettingsRequested {}
+
 /// Fixed permission-mode vocabulary (matches `vega_store::config::Defaults`).
 const PERMISSION_MODES: [&str; 3] = ["readonly", "confirm", "auto"];
 
-/// Status placeholder shown for every provider with a non-empty `key_ref`;
+/// Status placeholder shown only when the local store contains the reference;
 /// the key value itself is never rendered (safety red line).
 const KEY_STORED_PLACEHOLDER: &str = "•••••••已存储";
 
@@ -101,8 +184,14 @@ const KEY_STORED_PLACEHOLDER: &str = "•••••••已存储";
 /// form, and the default pickers. Holds its own form input buffers, so it
 /// must be cached by the parent across re-renders (it is rebuilt — reloading
 mod helpers;
+mod preferences;
+mod provider_management;
+mod reasoning_render;
+mod reasoning_state;
 mod render_impl;
 mod state;
+mod usage;
+pub use usage::UsageReloadRequested;
 
 #[cfg(test)]
 mod tests;

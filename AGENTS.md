@@ -40,6 +40,6 @@ cargo test --workspace
 
 - `vega_runtime` 禁止依赖 GPUI/任何 UI crate（headless 可测）
 - 跨 crate 共享类型只放 `vega_conversation::types`
-- API key 只存 macOS Keychain，永不落文件/日志
+- API key 只存配置根下独立的 owner-only 明文凭据文件（R10），不写 config.toml/项目文件/日志；不访问旧 Keychain
 - 非测试代码禁止 `unwrap()`/`expect()`
 - schema 只增不删，走 `migrations/` 递增文件

@@ -62,15 +62,84 @@ pub struct FileIndexSnapshot {
     pub entries: Vec<String>,
 }
 
+/// Stable, content-free failures from the bounded project-file index. The app
+/// maps these codes to a short UI message without exposing filesystem detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileIndexFailureCode {
+    Cancelled,
+    DeadlineExceeded,
+    VisitedLimitExceeded,
+    RetainedBytesExceeded,
+    ProjectUnavailable,
+    Traversal,
+    InvalidPath,
+}
+
+impl FileIndexFailureCode {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Cancelled => "索引已取消",
+            Self::DeadlineExceeded => "索引超时，请重试",
+            Self::VisitedLimitExceeded => "项目过大，请缩小范围后重试",
+            Self::RetainedBytesExceeded => "候选过多，请重试",
+            Self::ProjectUnavailable => "项目不可用，请重试",
+            Self::Traversal => "无法读取项目，请重试",
+            Self::InvalidPath => "项目路径无效，请重试",
+        }
+    }
+}
+
+/// Stable, content-free failures from the bounded `@file` resolver. The app
+/// maps these codes to the UI without exposing paths, errno or file content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileReferenceFailureCode {
+    ProjectUnavailable,
+    OutsideProject,
+    Missing,
+    BinaryContent,
+    InvalidReference,
+    TooManyReferences,
+    FileTooLarge,
+    TotalBytesExceeded,
+    SymlinkRejected,
+    NotRegularFile,
+    ReadFailed,
+}
+
+impl FileReferenceFailureCode {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::ProjectUnavailable => "项目不可用，请编辑引用后重试",
+            Self::OutsideProject => "引用路径超出项目范围，请编辑后重试",
+            Self::Missing => "引用文件不存在，请编辑后重试",
+            Self::BinaryContent => "引用文件不是文本，请编辑后重试",
+            Self::InvalidReference => "引用无法解析，请编辑后重试",
+            Self::TooManyReferences => "引用文件过多，请编辑后重试",
+            Self::FileTooLarge => "引用文件过大，请编辑后重试",
+            Self::TotalBytesExceeded => "引用内容过多，请编辑后重试",
+            Self::SymlinkRejected => "不支持引用符号链接，请编辑后重试",
+            Self::NotRegularFile => "只能引用普通文件，请编辑后重试",
+            Self::ReadFailed => "引用文件读取失败，请编辑后重试",
+        }
+    }
+}
+
 /// Provider/model/thinking selection state for the composer selector
-/// (A2-14, S8-T47). Persisted at the app-level config seam; the run-start
-/// model snapshot semantics of `threads.model` are untouched.
+/// (A2-14, R2). The exact capability projection is supplied by the app
+/// boundary; the composer never guesses a wire protocol from a URL/model.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ComposerDefaults {
     /// Selected model id (empty = no explicit selection yet).
     pub model: String,
-    /// Thinking level (`off|low|medium|high`).
+    /// Thinking choice (`provider_default|disabled|declared effort`).
     pub thinking: String,
+    /// Exact provider/model capability projection, when the app has loaded
+    /// it. `None` renders provider default and exposes no guessed controls.
+    pub reasoning: Option<ReasoningProfileProjection>,
+    /// The independent reasoning authority could not be read or reconciled.
+    /// This is distinct from a valid missing profile, which is provider
+    /// default and remains submittable.
+    pub reasoning_unavailable: bool,
 }
 
 /// Content-free outcome of an attempted branch switch. The accompanying
@@ -214,6 +283,9 @@ impl std::fmt::Debug for CommitDraft {
 pub enum CommitErrorCode {
     InvalidRoot,
     NotRepository,
+    GitUnavailable,
+    GitUnsupported,
+    GitExecutableChanged,
     SpawnFailed,
     GitFailed,
     TimedOut,
@@ -237,6 +309,9 @@ impl CommitErrorCode {
         match self {
             Self::InvalidRoot => "invalid_root",
             Self::NotRepository => "not_repository",
+            Self::GitUnavailable => "git_unavailable",
+            Self::GitUnsupported => "git_unsupported",
+            Self::GitExecutableChanged => "git_executable_changed",
             Self::SpawnFailed => "spawn_failed",
             Self::GitFailed => "git_failed",
             Self::TimedOut => "timed_out",

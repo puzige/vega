@@ -1,5 +1,8 @@
 use super::*;
-use crate::provider::{ChatMessage, ChatRole, ChatToolCall, ToolDefinition};
+use crate::provider::{
+    ChatMessage, ChatRole, ChatToolCall, FrozenReasoning, ReasoningChoice, ReasoningDisabledWire,
+    ReasoningProtocol, ToolDefinition,
+};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,6 +55,101 @@ fn follow_up_messages_serialize_exact_tool_call_wire_shape() {
             "tool_call_id": "call-7"
         })
     );
+}
+
+#[test]
+fn zhipu_enabled_effort_omits_cross_round_clear_switch() {
+    let request = ChatRequest {
+        model: "glm-5.3".into(),
+        reasoning: Some(FrozenReasoning {
+            provider: "zhipu".into(),
+            model: "glm-5.3".into(),
+            protocol: ReasoningProtocol::ZhipuChatCompletions,
+            choice: ReasoningChoice::Effort("max".into()),
+            supports_disabled: false,
+            preserve_reasoning_content: true,
+            disabled_wire: None,
+            declared_efforts: vec!["low".into(), "high".into(), "max".into()],
+        }),
+        ..Default::default()
+    };
+    let wire = build_request_body(&request);
+    assert_eq!(wire["thinking"], serde_json::json!({"type": "enabled"}));
+    assert_eq!(wire["reasoning_effort"], "max");
+    assert!(wire.get("clear_thinking").is_none());
+}
+
+#[test]
+fn false_and_unknown_profiles_omit_reasoning_content_on_follow_up_messages() {
+    for reasoning in [
+        FrozenReasoning {
+            provider: "openai".into(),
+            model: MODEL.into(),
+            protocol: ReasoningProtocol::OpenAiChatCompletions,
+            choice: ReasoningChoice::Effort("low".into()),
+            supports_disabled: false,
+            preserve_reasoning_content: false,
+            disabled_wire: None,
+            declared_efforts: vec!["low".into()],
+        },
+        FrozenReasoning::unknown("custom", MODEL),
+    ] {
+        let request = ChatRequest {
+            model: MODEL.into(),
+            messages: vec![ChatMessage::assistant_with_tools_and_reasoning(
+                "tool request",
+                None,
+                vec![ChatToolCall {
+                    id: "call-1".into(),
+                    name: "read".into(),
+                    input_json: "{}".into(),
+                }],
+            )],
+            reasoning: Some(reasoning),
+            ..Default::default()
+        };
+        let message = &build_request_body(&request)["messages"][0];
+        assert!(message.get("reasoning_content").is_none());
+    }
+}
+
+#[test]
+fn explicit_disabled_wire_is_only_emitted_for_declared_protocol() {
+    let request = ChatRequest {
+        model: MODEL.into(),
+        reasoning: Some(FrozenReasoning {
+            provider: "openai".into(),
+            model: MODEL.into(),
+            protocol: ReasoningProtocol::OpenAiChatCompletions,
+            choice: ReasoningChoice::Disabled,
+            supports_disabled: true,
+            preserve_reasoning_content: false,
+            disabled_wire: Some(ReasoningDisabledWire::ReasoningEffortNone),
+            declared_efforts: vec!["low".into()],
+        }),
+        ..Default::default()
+    };
+    let wire = build_request_body(&request);
+    assert_eq!(wire["reasoning_effort"], "none");
+    assert!(wire.get("thinking").is_none());
+}
+
+#[test]
+fn standard_glm_profile_cannot_claim_disabled_thinking() {
+    let reasoning = FrozenReasoning {
+        provider: "zhipu".into(),
+        model: "glm-5.3-flash".into(),
+        protocol: ReasoningProtocol::ZhipuChatCompletions,
+        choice: ReasoningChoice::ProviderDefault,
+        supports_disabled: true,
+        preserve_reasoning_content: true,
+        disabled_wire: Some(ReasoningDisabledWire::ThinkingTypeDisabled),
+        declared_efforts: vec!["low".into(), "high".into(), "max".into()],
+    };
+    assert!(matches!(
+        reasoning.validate(),
+        Err(crate::VegaError::ReasoningSelectionInvalid { .. })
+    ));
 }
 
 // ---------- 纯单元：SseAssembler ----------

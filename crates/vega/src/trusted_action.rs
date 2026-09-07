@@ -6,6 +6,10 @@ pub(crate) enum TrustedActionKind {
     BranchSwitch,
     ArtifactOpen,
     Commit,
+    /// A2-14/R1: pending model-selection persistence. Shares the single-flight
+    /// coordinator so submit/plan/commit/branch stay blocked until the
+    /// authoritative `threads.model` write settles.
+    ModelSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

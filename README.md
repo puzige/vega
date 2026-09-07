@@ -5,7 +5,7 @@
 > The agent command center that flies: native speed, any model, every token accounted for.
 
 <p>
-  <img src="assets/logo/vega-icon-f1-light.svg" width="128" alt="Vega logo">
+  <img src="assets/logo/vega-icon-r17-smile-light.svg" width="128" alt="Vega logo">
 </p>
 
 Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agent 工作台，但**不是 Electron 套壳**——用 Rust + GPUI（Zed 的 GPU 框架）+ Metal 原生渲染，万行会话流 120fps，内存仅为 Electron 同类产品的 1/10。
@@ -18,10 +18,13 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 ## 状态
 
+**2026-09-05 本地 review 更新**：[当前交付与待办](docs/vega-review-current-status.md) 是本轮入口。模型选择、UI 翻新、受信 Git、权限确认、Thinking、@file、Diff 刷新及 Provider/models 表单已本地集成。最新完整功能测试为 898 通过 / 0 失败 / 1 忽略，严格clippy/build/fmt通过。共享worker计数已修复；Astra随后修复了已排队结果被超时检查遗漏的确定性竞态，Git相关149/149及最终build通过；历史Diff/Artifact失败与该竞态的关联未证实，旧证据保留。Thinking 的独立配置原生保存、重启保持与深色显示已验收，不能据此宣称 Phase 1 完成。UI 参考本地 Zcode，性能测试按用户最新要求延期。以下 Sprint 状态保留历史验收边界。
+
 📋 **S1（脚手架）、S2（侧边栏 & 项目模型）、S3（流式会话渲染）、S4（Runtime 核心）、S5（写工具、权限门禁与三模式）、S6（Diff 审阅 & 产物）已完成并验收；S7（Token 经济：定价目录、API 校准、流式计数与任务成本汇总）已完成自动化/Mock 验收（mock 账单零误差；真实账单 dogfood 为 `real provider/billing pending`）；S8（打磨 & 里程碑：性能埋点真值化、分页水合、Stop/Resume、P0 收口、1000 行重构）已收口为 `engineering fixture passed`——性能 gate（P7 首帧 / P8 空闲 RSS）按 T43 冻结基线如实 `performance gate failed`，与 T44 虚拟化、T48 调优一并 **deferred-to-final-optimization**（期末统一优化批，主人决策 2026-08-31）**。真实账单 <5%、ProMotion 120fps、真实仓库任务、7 天 dogfood 为 `human/hardware pending`，由 T50 人类收口。真实 API/dogfood、人工 UI 与未达性能项边界见各 Sprint 验收报告。全部设计文档在 [`docs/`](docs/)：
 
 | 文档 | 内容 |
 |---|---|
+| [vega-review-current-status.md](docs/vega-review-current-status.md) | 当前本地交付、真实验收结果、待办和历史报告勘误入口 |
 | [vega-prd.md](docs/vega-prd.md) | PRD v0.3.3：7 项锁定决策、模块 A1-A12、5 Phase 路线图 |
 | [vega-feature-teardown.md](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
 | [vega-features.md](docs/vega-features.md) | 96 个功能点全表（Phase 1 P0 ×38） |

@@ -2,7 +2,7 @@
 
 本文覆盖 Vega 桌面端在 macOS 上的构建、打包（.app bundle）与分发。
 打包入口是 xtask 的 `package` 子命令（零新增第三方依赖，全部使用 macOS
-自带工具：qlmanage / sips / iconutil / codesign / zip）。
+自带工具：swift/AppKit / sips / iconutil / codesign / zip）。
 
 ## 1. 构建
 
@@ -24,14 +24,14 @@ cargo xtask package
 一条命令完成（`xtask/src/package.rs`）：
 
 1. release 构建；
-2. 图标：以 `assets/logo/vega-icon-f1-light.svg`（F1 浅色主标）为源，经
-   `qlmanage -t -s 1024`（WebKit 栅格化，squircle 外透明）→ `sips` 生成
+2. 图标：以 `assets/logo/vega-icon-r17-smile-light.svg`（R17 蓝色单星笑脸浅色主标）为源，经
+   `swift`/AppKit 画到透明 1024px RGBA 位图 → `sips` 生成
    Apple 标准 iconset（16/32/128/256/512 + @2x，至 1024px）→
    `iconutil -c icns` 得到 `Resources/Vega.icns`。
    **为什么不直接用 raster PNG**：`raster/vega-icon-f*-original.png` 右下角
-   带 AI 生成水印（LOGO.md 明示 SVG 矢量版为定稿）；F3 深色变体留作营销
-   素材——`.icns` 无自动明暗外观切换机制，F1 白色 squircle 在明暗 Dock
-   均适用（LOGO.md 的经典扁平第三方图标风格决策）。
+   带 AI 生成水印（LOGO.md 明示 SVG 矢量版为定稿）；历史 F1/F3 变体与
+   R16 探索稿继续归档——`.icns` 无自动明暗外观切换机制，因此使用 R17
+   浅色主标作为确定性生产源。
 3. 组装 `dist/Vega.app`：
 
    ```
@@ -45,8 +45,7 @@ cargo xtask package
    ```
 
 4. 写 `Info.plist`。**`CFBundleIdentifier = ai.vega` 是兼容性红线**：它就是
-   macOS 数据根 `~/Library/Application Support/ai.vega` 与 Keychain 服务
-   `ai.vega` 的命名空间（权威定义见
+   macOS 数据根 `~/Library/Application Support/ai.vega` 的命名空间（权威定义见
    `crates/vega_store/src/paths.rs`）；改动会让本机已有 dogfood 数据全部
    孤儿化。其余键：CFBundleName/DisplayName=Vega、
    CFBundleExecutable=vega、CFBundleVersion 与
@@ -61,6 +60,20 @@ cargo xtask package
 `dist/` 中的产物全部不入库（.gitignore）；icns 可由入库的 SVG 确定性
 重建，故 iconset/icns 均不备库。单测覆盖 Info.plist 必备键与 iconset
 尺寸表（`cargo test -p xtask`）。
+
+## 3.1 Git 运行时要求
+
+Vega 的 workspace、branch 和 trusted commit 操作只使用固定的 canonical
+Git 来源：Apple Silicon 按顺序检查
+`/opt/homebrew/opt/git/bin/git` 与 `/usr/bin/git`，Intel Mac 按顺序检查
+`/usr/local/opt/git/bin/git` 与 `/usr/bin/git`。解析成功后，进程会固定该
+来源并在每次启动子进程前复核文件身份、canonical 路径和权限；`PATH`、仓库
+配置以及任意用户指定的 executable 不参与选择。
+
+运行时需要 Git **2.40 或更新版本**（用于安全的 `check-attr --source`
+查询）。如果 Vega 显示 Git 不可用或版本过旧，请在对应 Mac 上安装或升级
+Homebrew Git，例如执行 `brew install git`，然后重启 Vega。Vega 不会自动
+联网安装、替换 `/usr/bin/git` 或修改用户仓库。
 
 ## 3. 分发（其他 Mac 安装）
 

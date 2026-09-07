@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# R11 approved: nonblocking/no-follow descriptor open for read-only preview.
+libc = { workspace = true }
 # 内置工具 read/glob/grep/write/edit/bash（S4-T21 / S5-T23~T24；exec-guide §5 白名单）
 ignore = { workspace = true }
 regex = { workspace = true }

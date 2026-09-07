@@ -17,6 +17,7 @@ fn commit_redaction_all_public_provider_carriers_hide_sentinels() {
             input_schema: serde_json::json!({"sentinel": SENTINEL}),
         }],
         max_tokens: Some(256),
+        reasoning: None,
     };
     let event = ProviderEvent::ToolUse {
         id: SENTINEL.into(),
@@ -77,6 +78,7 @@ fn commit_redaction_all_public_provider_carriers_hide_sentinels() {
             }],
         ),
         pricing_catalog: None,
+        reasoning: None,
     };
     let agent_outcome = vega_runtime::AgentOutcome {
         events: vec![runtime_event.clone()],

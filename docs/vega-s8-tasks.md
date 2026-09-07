@@ -154,6 +154,8 @@
 
 ## T47 · Phase 1 P0 收口（A2-12/A2-14 等）
 
+> 2026-09-05 当前任务模型选择补修见 [R1 SDD](vega-review-r1-model-selection.md)：冻结“会话内选择作用于当前任务下一次运行”，不改历史验收事实；thinking 仍为独立后续卡。
+
 - **前置**：T46 合并；T42 批准的 P0 审计清单与 S7 真实 API。
 - **参考**：[vega-features.md](vega-features.md) A2-12（`@file`）/A2-14（provider/model/thinking 选择器）/A2-17；ui-spec §4 Composer 规格；[vega-prd.md](vega-prd.md) P0 行为定义。
 - **范围**：

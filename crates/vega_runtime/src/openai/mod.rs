@@ -26,7 +26,10 @@ use futures::{Stream, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::VegaError;
-use crate::provider::{ChatRequest, EventStream, Provider, ProviderEvent, StopReason};
+use crate::provider::{
+    ChatRequest, EventStream, FrozenReasoning, Provider, ProviderEvent, ReasoningChoice,
+    ReasoningDisabledWire, ReasoningProtocol, StopReason,
+};
 use crate::retry::{RetryPolicy, parse_retry_after};
 
 /// Authorization scheme for OpenAI-compatible APIs (used for the single
@@ -126,6 +129,14 @@ impl OpenAiProvider {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
+        if let Some(reasoning) = &req.reasoning {
+            reasoning.validate()?;
+            if reasoning.model != req.model {
+                return Err(VegaError::ReasoningSelectionInvalid {
+                    message: "reasoning profile model does not match request model".to_string(),
+                });
+            }
+        }
         let mut attempt: u32 = 0;
         loop {
             let send = self.send_attempt(&req);
@@ -208,6 +219,9 @@ pub(crate) fn build_request_body(req: &ChatRequest) -> serde_json::Value {
                 "role": message.role.as_str(),
                 "content": message.content,
             });
+            if let Some(reasoning_content) = &message.reasoning_content {
+                wire["reasoning_content"] = serde_json::Value::String(reasoning_content.clone());
+            }
             if let Some(call_id) = &message.tool_call_id {
                 wire["tool_call_id"] = serde_json::Value::String(call_id.clone());
             }
@@ -258,7 +272,39 @@ pub(crate) fn build_request_body(req: &ChatRequest) -> serde_json::Value {
     if let Some(max_tokens) = req.max_tokens {
         body["max_tokens"] = serde_json::json!(max_tokens);
     }
+    if let Some(reasoning) = &req.reasoning {
+        apply_reasoning_wire(&mut body, reasoning);
+    }
     body
+}
+
+fn apply_reasoning_wire(body: &mut serde_json::Value, reasoning: &FrozenReasoning) {
+    match &reasoning.choice {
+        ReasoningChoice::ProviderDefault => {}
+        ReasoningChoice::Effort(effort) => match reasoning.protocol {
+            ReasoningProtocol::OpenAiChatCompletions => {
+                body["reasoning_effort"] = serde_json::Value::String(effort.clone());
+            }
+            ReasoningProtocol::ZhipuChatCompletions => {
+                // `reasoning_content` is retained and replayed by the bounded
+                // in-memory run accumulator.  That is separate from Zhipu's
+                // cross-round `clear_thinking` protocol switch, so never infer
+                // the latter from the former.
+                body["thinking"] = serde_json::json!({"type": "enabled"});
+                body["reasoning_effort"] = serde_json::Value::String(effort.clone());
+            }
+            ReasoningProtocol::Unknown => {}
+        },
+        ReasoningChoice::Disabled => match reasoning.disabled_wire {
+            Some(ReasoningDisabledWire::ThinkingTypeDisabled) => {
+                body["thinking"] = serde_json::json!({"type": "disabled"});
+            }
+            Some(ReasoningDisabledWire::ReasoningEffortNone) => {
+                body["reasoning_effort"] = serde_json::Value::String("none".to_string());
+            }
+            None => {}
+        },
+    }
 }
 
 fn is_retryable_status(status: u16) -> bool {

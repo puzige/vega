@@ -32,7 +32,6 @@ impl TrustedGitService {
             })
             .map_err(|_| CommitErrorCode::OutputTooLarge)?;
         Ok(Self {
-            root,
             root_identity: RootIdentity {
                 dev: metadata.dev(),
                 ino: metadata.ino(),
@@ -331,6 +330,7 @@ impl TrustedGitService {
             ],
             tools: Vec::new(),
             max_tokens: Some(256),
+            reasoning: None,
         };
         let draft =
             collect_draft_with_deadline(provider, request, cancel.clone(), DRAFT_TIMEOUT).await?;
@@ -449,21 +449,26 @@ impl TrustedGitService {
         workspace_generation: u64,
         cancel: CancellationToken,
     ) -> Result<IndexAuthority, CommitErrorCode> {
-        let root = self.root.clone();
-        let identity = self.root_identity;
+        let workspace = self.workspace.clone();
         #[cfg(test)]
         let read_executable = self.read_executable.clone();
         tokio::task::spawn_blocking(move || {
-            capture_authority(
-                &Runner::new(
-                    root,
-                    identity,
-                    #[cfg(test)]
-                    read_executable,
-                ),
-                workspace_generation,
-                &cancel,
-            )
+            let runner = workspace
+                .runner_with_test_override(
+                    {
+                        #[cfg(test)]
+                        {
+                            read_executable
+                        }
+                        #[cfg(not(test))]
+                        {
+                            None
+                        }
+                    },
+                    &cancel,
+                )
+                .map_err(map_workspace_error)?;
+            capture_authority(&runner, workspace_generation, &cancel)
         })
         .await
         .map_err(|_| CommitErrorCode::GitFailed)?
@@ -669,17 +674,25 @@ impl TrustedGitService {
             input.extend_from_slice(path);
             input.push(0);
         }
-        let root = self.root.clone();
-        let identity = self.root_identity;
+        let workspace = self.workspace.clone();
         #[cfg(test)]
         let read_executable = self.read_executable.clone();
         tokio::task::spawn_blocking(move || {
-            let runner = Runner::new(
-                root,
-                identity,
-                #[cfg(test)]
-                read_executable,
-            );
+            let runner = workspace
+                .runner_with_test_override(
+                    {
+                        #[cfg(test)]
+                        {
+                            read_executable
+                        }
+                        #[cfg(not(test))]
+                        {
+                            None
+                        }
+                    },
+                    &cancel,
+                )
+                .map_err(map_workspace_error)?;
             let output = runner
                 .run_with_input(
                     "check-attr",
@@ -716,19 +729,15 @@ impl TrustedGitService {
             input.extend_from_slice(path);
             input.push(0);
         }
-        let root = self.root.clone();
-        let identity = self.root_identity;
+        let workspace = self.workspace.clone();
         #[cfg(test)]
         let mutation_executable = self.mutation_executable.clone();
         #[cfg(test)]
         let mutation_timeout = self.mutation_timeout;
         tokio::task::spawn_blocking(move || {
-            let runner = Runner::new(
-                root,
-                identity,
-                #[cfg(test)]
-                None,
-            );
+            let runner = workspace
+                .runner_with_test_override(None, &cancel)
+                .map_err(map_workspace_error)?;
             #[cfg(test)]
             if let Some(executable) = mutation_executable {
                 return runner
@@ -772,19 +781,28 @@ impl TrustedGitService {
     ) -> Result<(String, bool), CommitErrorCode> {
         self.require_exact_authority(authority, cancel.clone())
             .await?;
-        let root = self.root.clone();
-        let identity = self.root_identity;
+        let workspace = self.workspace.clone();
         #[cfg(test)]
         let read_executable = self.read_executable.clone();
         let output = tokio::task::spawn_blocking(move || {
-            Runner::new(
-                root,
-                identity,
-                #[cfg(test)]
-                read_executable,
-            )
-            .run_commit_summary(SUMMARY_LIMIT, &cancel)
-            .map_err(map_workspace_error)
+            let runner = workspace
+                .runner_with_test_override(
+                    {
+                        #[cfg(test)]
+                        {
+                            read_executable
+                        }
+                        #[cfg(not(test))]
+                        {
+                            None
+                        }
+                    },
+                    &cancel,
+                )
+                .map_err(map_workspace_error)?;
+            runner
+                .run_commit_summary(SUMMARY_LIMIT, &cancel)
+                .map_err(map_workspace_error)
         })
         .await
         .map_err(|_| CommitErrorCode::GitFailed)??;
@@ -804,19 +822,15 @@ impl TrustedGitService {
         self.require_exact_authority(&prepared.authority, cancel.clone())
             .await?;
         let before = prepared.authority.head.clone();
-        let root = self.root.clone();
-        let identity = self.root_identity;
+        let workspace = self.workspace.clone();
         #[cfg(test)]
         let mutation_executable = self.mutation_executable.clone();
         #[cfg(test)]
         let mutation_timeout = self.mutation_timeout;
         tokio::task::spawn_blocking(move || {
-            let runner = Runner::new(
-                root,
-                identity,
-                #[cfg(test)]
-                None,
-            );
+            let runner = workspace
+                .runner_with_test_override(None, &cancel)
+                .map_err(map_workspace_error)?;
             let input: Arc<[u8]> = Arc::from(message.into_bytes());
             let args = [
                 OsString::from("--no-gpg-sign"),
@@ -852,20 +866,28 @@ impl TrustedGitService {
         before: &HeadAuthority,
         prepared: &IndexAuthority,
     ) -> Result<(), CommitErrorCode> {
-        let root = self.root.clone();
-        let identity = self.root_identity;
+        let workspace = self.workspace.clone();
         let before = before.clone();
         let expected_tree = prepared.stages.clone();
         #[cfg(test)]
         let read_executable = self.read_executable.clone();
         tokio::task::spawn_blocking(move || {
             let cancel = CancellationToken::new();
-            let runner = Runner::new(
-                root,
-                identity,
-                #[cfg(test)]
-                read_executable,
-            );
+            let runner = workspace
+                .runner_with_test_override(
+                    {
+                        #[cfg(test)]
+                        {
+                            read_executable
+                        }
+                        #[cfg(not(test))]
+                        {
+                            None
+                        }
+                    },
+                    &cancel,
+                )
+                .map_err(map_workspace_error)?;
             let head = capture_head(&runner, &cancel)?;
             if head.unborn || head.full_ref != before.full_ref || head.oid == before.oid {
                 return Err(CommitErrorCode::ChangedDuringRead);

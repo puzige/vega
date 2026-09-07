@@ -8,9 +8,11 @@
 
 pub mod artifact_card;
 pub mod branch_selector;
+pub mod command_palette;
 pub mod commit_panel;
 pub mod conversation_stream;
 pub mod diff_view;
+pub mod file_preview;
 pub mod file_selector;
 pub mod permission_card;
 pub mod plan_card;
@@ -29,7 +31,79 @@ use gpui::{App, KeyBinding};
 /// Cmd+Enter = send, scoped to `Composer`). Call once at app startup; the
 /// settings actions are bound by the `vega` binary itself.
 pub fn init(cx: &mut App) {
+    navigation::init(cx);
+    cx.on_app_quit(|_| vega_conversation::terminal::shutdown_all())
+        .detach();
     cx.bind_keys([
+        KeyBinding::new("cmd-k", command_palette::OpenPalette, None),
+        KeyBinding::new("cmd-o", command_palette::OpenWorkspacePicker, None),
+        KeyBinding::new("cmd-j", command_palette::ToggleWorkspaceTerminal, None),
+        KeyBinding::new("down", command_palette::PaletteNext, Some("CommandPalette")),
+        KeyBinding::new(
+            "up",
+            command_palette::PalettePrevious,
+            Some("CommandPalette"),
+        ),
+        KeyBinding::new(
+            "enter",
+            command_palette::PaletteAccept,
+            Some("CommandPalette"),
+        ),
+        KeyBinding::new(
+            "escape",
+            command_palette::PaletteDismiss,
+            Some("CommandPalette"),
+        ),
+        KeyBinding::new(
+            "tab",
+            command_palette::PaletteNextScope,
+            Some("CommandPalette"),
+        ),
+        KeyBinding::new(
+            "tab",
+            conversation_stream::NextComposerControl,
+            Some("Composer"),
+        ),
+        KeyBinding::new(
+            "shift-tab",
+            conversation_stream::PreviousComposerControl,
+            Some("Composer"),
+        ),
+        KeyBinding::new(
+            "up",
+            conversation_stream::PreviousComposerAction,
+            Some("ComposerActions"),
+        ),
+        KeyBinding::new(
+            "down",
+            conversation_stream::NextComposerAction,
+            Some("ComposerActions"),
+        ),
+        KeyBinding::new(
+            "enter",
+            conversation_stream::AcceptComposerAction,
+            Some("ComposerActions"),
+        ),
+        KeyBinding::new(
+            "tab",
+            conversation_stream::AcceptComposerAction,
+            Some("ComposerActions"),
+        ),
+        KeyBinding::new(
+            "escape",
+            conversation_stream::CloseComposerActions,
+            Some("ComposerActions"),
+        ),
+        KeyBinding::new(
+            "enter",
+            conversation_stream::StopComposer,
+            Some("ComposerStop"),
+        ),
+        KeyBinding::new(
+            "space",
+            conversation_stream::StopComposer,
+            Some("ComposerStop"),
+        ),
         KeyBinding::new("backspace", text_input::Backspace, None),
         KeyBinding::new("delete", text_input::Delete, None),
         KeyBinding::new("left", text_input::Left, None),
@@ -59,9 +133,72 @@ pub fn init(cx: &mut App) {
             settings::PreviousPricingAction,
             Some("PricingSettings"),
         ),
+        // Provider form: multiline models use Enter for a new line; the
+        // focused Save/Edit controls accept Enter/Space, and Cmd+Enter saves
+        // from any provider input without changing the current thread model.
+        KeyBinding::new("enter", text_input::InsertNewline, Some("ProviderSettings")),
+        KeyBinding::new(
+            "cmd-enter",
+            settings::ActivateProviderAction,
+            Some("ProviderSettings"),
+        ),
+        KeyBinding::new(
+            "enter",
+            settings::ActivateProviderAction,
+            Some("ProviderAction"),
+        ),
+        KeyBinding::new(
+            "space",
+            settings::ActivateProviderAction,
+            Some("ProviderAction"),
+        ),
+        KeyBinding::new(
+            "tab",
+            settings::NextProviderAction,
+            Some("ProviderSettings"),
+        ),
+        KeyBinding::new(
+            "shift-tab",
+            settings::PreviousProviderAction,
+            Some("ProviderSettings"),
+        ),
         // T13 行内重命名：Enter 提交（作用域 ThreadRename；Esc 取消通过
         // 重命名编辑器拦截全局 CloseSettings 动作实现，见 sidebar.rs）。
         KeyBinding::new("enter", sidebar::ConfirmRename, Some("ThreadRename")),
+        // Session rows expose low-frequency actions through one compact menu
+        // trigger. The row keeps its own key context while the menu is open,
+        // so arrows, Enter/Space, and Esc remain mouse-independent.
+        KeyBinding::new(
+            "enter",
+            sidebar::OpenThreadActions,
+            Some("ThreadActionTrigger"),
+        ),
+        KeyBinding::new(
+            "space",
+            sidebar::OpenThreadActions,
+            Some("ThreadActionTrigger"),
+        ),
+        KeyBinding::new(
+            "up",
+            sidebar::PreviousThreadAction,
+            Some("ThreadActionsMenu"),
+        ),
+        KeyBinding::new("down", sidebar::NextThreadAction, Some("ThreadActionsMenu")),
+        KeyBinding::new(
+            "enter",
+            sidebar::ActivateThreadAction,
+            Some("ThreadActionsMenu"),
+        ),
+        KeyBinding::new(
+            "space",
+            sidebar::ActivateThreadAction,
+            Some("ThreadActionsMenu"),
+        ),
+        KeyBinding::new(
+            "escape",
+            sidebar::CloseThreadActions,
+            Some("ThreadActionsMenu"),
+        ),
         // T18 Composer：Enter=换行、Cmd+Enter=发送（架构师裁定，ui-spec
         // §4.4 未定项）。作用域 Composer——仅在 Composer 输入聚焦时生效，
         // 不影响设置表单与行内重命名。
@@ -124,6 +261,26 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("up", file_selector::PreviousFile, Some("FileSelect")),
         KeyBinding::new("down", file_selector::NextFile, Some("FileSelect")),
         KeyBinding::new("escape", file_selector::CancelFile, Some("FileSelect")),
+        // A failed index gets its own focusable Retry stop. Enter activates it
+        // from the failed panel; Space is limited to the focused button.
+        KeyBinding::new("enter", file_selector::RetryFile, Some("FileSelectRetry")),
+        KeyBinding::new(
+            "enter",
+            file_selector::RetryFile,
+            Some("FileSelectRetryButton"),
+        ),
+        KeyBinding::new(
+            "space",
+            file_selector::RetryFile,
+            Some("FileSelectRetryButton"),
+        ),
+        KeyBinding::new("tab", file_selector::FocusRetry, Some("FileSelectRetry")),
+        KeyBinding::new(
+            "shift-tab",
+            file_selector::FocusPreviousRetry,
+            Some("FileSelectRetry"),
+        ),
+        KeyBinding::new("escape", file_selector::CancelFile, Some("FileSelectRetry")),
         // A2-14 模型选择器（S8-T47）：Enter/Space 开合与接受、Up/Down 移动、
         // Esc 关闭；thinking 档位 chip 用 Enter/Space 循环。
         KeyBinding::new(
@@ -145,6 +302,11 @@ pub fn init(cx: &mut App) {
             "down",
             conversation_stream::NextModel,
             Some("ModelSelector"),
+        ),
+        KeyBinding::new(
+            "escape",
+            conversation_stream::CloseCompactSettings,
+            Some("CompactComposerSettings"),
         ),
         KeyBinding::new(
             "escape",
@@ -224,8 +386,28 @@ pub fn init(cx: &mut App) {
             conversation_stream::OpenWorkspaceDiff,
             Some("ConversationStream"),
         ),
+        KeyBinding::new(
+            "cmd-down",
+            conversation_stream::ResumeTail,
+            Some("ConversationStream"),
+        ),
+        KeyBinding::new(
+            "enter",
+            conversation_stream::ResumeTail,
+            Some("ResumeTailButton"),
+        ),
+        KeyBinding::new(
+            "space",
+            conversation_stream::ResumeTail,
+            Some("ResumeTailButton"),
+        ),
         KeyBinding::new("escape", diff_view::CloseDiff, Some("DiffView")),
         KeyBinding::new("[", diff_view::PreviousDiffHunk, Some("DiffView")),
         KeyBinding::new("]", diff_view::NextDiffHunk, Some("DiffView")),
     ]);
 }
+
+pub mod icons;
+
+pub mod navigation;
+pub mod terminal;

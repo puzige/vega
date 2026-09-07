@@ -51,7 +51,7 @@
 
 ## 首次运行验证点
 
-`cargo xtask package` 依赖 `qlmanage`（WebKit 栅格化图标）。CI runner 无
-桌面会话，理论可跑（QuickLook satellite 进程），但首次 tag 发布时留意该
-步骤日志；若失败可临时降级为 PNG→icns 路径（见
+`cargo xtask package` 依赖 macOS `swift`/AppKit（SVG 栅格化图标）。CI runner
+无桌面会话，但 AppKit 位图渲染不依赖 QuickLook satellite；首次 tag 发布时
+仍应留意该步骤日志（见
 [vega-packaging.md](vega-packaging.md) §2 的图标链路说明）。

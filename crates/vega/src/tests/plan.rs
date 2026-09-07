@@ -47,6 +47,7 @@ fn change_and_abandon_never_schedule_execute_turn() {
 #[test]
 fn provider_model_resolution_is_exact_and_unique() {
     let provider = |name: &str, models: &[&str]| vega_store::config::ProviderConfig {
+        enabled: true,
         name: name.into(),
         base_url: "https://provider.invalid/v1".into(),
         models: models.iter().map(|model| (*model).to_string()).collect(),
@@ -63,6 +64,35 @@ fn provider_model_resolution_is_exact_and_unique() {
     assert!(unique_provider_for_model(&config, "missing").is_none());
     config.providers.push(provider("duplicate", &["model"]));
     assert!(unique_provider_for_model(&config, "model").is_none());
+}
+
+#[test]
+fn disabled_providers_do_not_resolve_or_make_enabled_models_ambiguous() {
+    let mut config = vega_store::config::AppConfig {
+        providers: vec![vega_store::config::ProviderConfig {
+            enabled: true,
+            name: "enabled".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            models: vec!["model".into()],
+            key_ref: "synthetic".into(),
+        }],
+        ..Default::default()
+    };
+    let frozen = unique_provider_for_model(&config, "model").unwrap();
+    let mut disabled_duplicate = frozen.clone();
+    disabled_duplicate.name = "disabled".into();
+    disabled_duplicate.enabled = false;
+    config.providers.insert(0, disabled_duplicate);
+    assert_eq!(
+        unique_provider_for_model(&config, "model"),
+        Some(frozen.clone())
+    );
+    config.providers[1].enabled = false;
+    assert!(unique_provider_for_model(&config, "model").is_none());
+    assert!(
+        frozen.enabled,
+        "already frozen provider snapshots remain unchanged"
+    );
 }
 
 #[gpui::test]

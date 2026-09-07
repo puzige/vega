@@ -50,11 +50,14 @@ fn dispatch(args: &[String]) -> Result<()> {
         Some("bench-p7") => bench_c1c2_only(),
         Some("bench-p2") => bench_p2_only(),
         Some("package") => package::run(&args[1..]),
+        Some("package-icon") => package::run_icon(&args[1..]),
         other => {
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
             }
-            eprintln!("usage: cargo xtask bench [or bench-p7 | bench-p2 | package]");
+            eprintln!(
+                "usage: cargo xtask bench [or bench-p7 | bench-p2 | package | package-icon <output.icns>]"
+            );
             std::process::exit(2);
         }
     }

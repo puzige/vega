@@ -1,4 +1,7 @@
 use super::*;
+use crate::settings::state::{
+    PROVIDER_MODELS_FRAME_INSET, PROVIDER_MODELS_MAX_ROWS, PROVIDER_MODELS_MIN_ROWS,
+};
 
 impl SettingsView {
     pub(crate) fn render_pricing(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -138,7 +141,7 @@ impl SettingsView {
             .min_w_0()
             .px_3()
             .py_2()
-            .rounded_lg()
+            .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
             .bg(colors.bg_elevated)
@@ -147,6 +150,7 @@ impl SettingsView {
                     .flex()
                     .flex_col()
                     .min_w_0()
+                    .flex_1()
                     .child(div().truncate().child(entry.model))
                     .child(
                         div()
@@ -158,6 +162,7 @@ impl SettingsView {
             .child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .gap_2()
                     .child(action_button(
                         "编辑",
@@ -214,7 +219,7 @@ impl SettingsView {
             .gap_2()
             .px_3()
             .py_3()
-            .rounded_lg()
+            .rounded(px(Layout::PANEL_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
             .bg(colors.bg_elevated)
@@ -258,6 +263,7 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         // 与 Esc 同效：派发同一动作，由 app 级处理器统一收口。
+        self.cancel_provider_operation(cx);
         window.dispatch_action(Box::new(CloseSettings), cx);
     }
 
@@ -267,154 +273,24 @@ impl SettingsView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name = self.name_input.read(cx).text().trim().to_string();
-        let base_url = self.base_url_input.read(cx).text().trim().to_string();
-        let key = self.key_input.read(cx).text().to_string();
-        if !form_is_submittable(&name, &base_url, &key) {
-            // 空字段时按钮本应无效；这里的守卫保证即便触发也无副作用。
-            return;
-        }
-
-        // 凭据只进 Keychain（安全红线）；key_ref 约定为 provider 名称。
-        if let Err(error) = keystore::set_key(&name, &key) {
-            self.error = Some(format!("Keychain 写入失败：{error}"));
-            cx.notify();
-            return;
-        }
-
-        upsert_provider(
-            &mut self.config.providers,
-            ProviderConfig {
-                name: name.clone(),
-                base_url,
-                // 表单不编辑 models：新增时为空，同名更新时保留原值。
-                models: Vec::new(),
-                key_ref: name,
-            },
-        );
-
-        // 立即落盘，满足"保存 → config.toml 更新；重启后配置恢复"。
-        if let Err(error) = self.config.save() {
-            self.error = Some(format!("配置保存失败：{error}"));
-            cx.notify();
-            return;
-        }
-
-        self.name_input.update(cx, TextInput::clear);
-        self.base_url_input.update(cx, TextInput::clear);
-        self.key_input.update(cx, TextInput::clear);
-        self.error = None;
-        cx.notify();
+        self.submit_provider(cx);
     }
 
     pub(crate) fn select_mode(&mut self, mode: &'static str, cx: &mut Context<Self>) {
         self.mode_open = false;
-        if select_permission_mode(&mut self.config, mode).is_ok() {
-            // 改动即保存。
-            if let Err(error) = self.config.save() {
-                self.error = Some(format!("配置保存失败：{error}"));
-            }
+        let mut candidate = self.config.clone();
+        if select_permission_mode(&mut candidate, mode).is_ok() {
+            self.save_preferences(candidate, cx);
         }
         cx.notify();
     }
 
     pub(crate) fn select_model(&mut self, model: &str, cx: &mut Context<Self>) {
         self.model_open = false;
-        set_default_model(&mut self.config, model);
-        // 改动即保存。
-        if let Err(error) = self.config.save() {
-            self.error = Some(format!("配置保存失败：{error}"));
-        }
+        let mut candidate = self.config.clone();
+        set_default_model(&mut candidate, model);
+        self.save_preferences(candidate, cx);
         cx.notify();
-    }
-
-    pub(crate) fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        div()
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_elevated)
-                    .text_size(px(Typography::SIDEBAR))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(colors.bg_hover))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_back))
-                    .child("返回"),
-            )
-            .child(
-                div()
-                    .text_size(px(Typography::HEADING_PAGE))
-                    .font_weight(Typography::HEADING_PAGE_WEIGHT)
-                    .child("设置"),
-            )
-            .into_any_element()
-    }
-
-    pub(crate) fn render_provider_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(section_title("Provider", colors.text_primary))
-            .children(self.config.providers.is_empty().then(|| {
-                div()
-                    .text_color(colors.text_tertiary)
-                    .text_size(px(Typography::BODY))
-                    .child("暂无 Provider，使用下方表单添加")
-                    .into_any_element()
-            }))
-            .children(self.config.providers.iter().map(|provider| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .px_3()
-                    .py_2()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_elevated)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_size(px(Typography::HEADING_CARD))
-                                    .font_weight(Typography::HEADING_CARD_WEIGHT)
-                                    .child(provider.name.clone()),
-                            )
-                            // 凡 key_ref 非空即显示已存储占位，永不回显 key 值。
-                            .children((!provider.key_ref.is_empty()).then(|| {
-                                div()
-                                    .text_color(colors.text_secondary)
-                                    .text_size(px(Typography::BODY))
-                                    .child(KEY_STORED_PLACEHOLDER)
-                            })),
-                    )
-                    .child(
-                        div()
-                            .text_color(colors.text_secondary)
-                            .text_size(px(Typography::BODY))
-                            .child(provider.base_url.clone()),
-                    )
-                    .children((!provider.models.is_empty()).then(|| {
-                        div()
-                            .text_color(colors.text_tertiary)
-                            .text_size(px(Typography::BODY))
-                            .child(provider.models.join(", "))
-                    }))
-            }))
-            .into_any_element()
     }
 
     pub(crate) fn render_add_form(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -423,8 +299,25 @@ impl SettingsView {
         // 重新渲染本视图（GPUI 的渲染期读取即依赖注册）。
         let name = self.name_input.read(cx).text().to_string();
         let base_url = self.base_url_input.read(cx).text().to_string();
+        let models_rows = self
+            .models_input
+            .read(cx)
+            .visible_rows()
+            .clamp(PROVIDER_MODELS_MIN_ROWS, PROVIDER_MODELS_MAX_ROWS);
+        let models_height = px(models_rows as f32
+            * Typography::BODY
+            * Typography::BODY_LINE_HEIGHT
+            + PROVIDER_MODELS_FRAME_INSET);
         let key = self.key_input.read(cx).text().to_string();
-        let submittable = form_is_submittable(&name, &base_url, &key);
+        let existing = self.provider_management.form_base.is_some()
+            || (!self.provider_management.form
+                && self
+                    .config
+                    .providers
+                    .iter()
+                    .any(|provider| provider.name == name.trim()));
+        let submittable = !self.provider_management.saving
+            && provider_form_is_submittable(&name, &base_url, &key, existing);
 
         let (button_bg, button_text) = if submittable {
             (colors.accent, colors.bg_base)
@@ -433,15 +326,49 @@ impl SettingsView {
         };
 
         div()
+            .key_context("ProviderSettings")
             .flex()
             .flex_col()
             .gap_2()
-            .child(section_title("添加 Provider", colors.text_primary))
+            .child(section_title("添加或更新 Provider", colors.text_primary))
             .child(self.name_input.clone())
             .child(self.base_url_input.clone())
+            .child(
+                div()
+                    .id("provider-models-input-frame")
+                    .debug_selector(|| "provider-models-input-frame".to_string())
+                    .w_full()
+                    .h(models_height)
+                    .flex_shrink_0()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .bg(colors.bg_elevated)
+                    .p_2()
+                    .child(self.models_input.clone()),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "provider-models-input-help".to_string())
+                    .text_color(colors.text_tertiary)
+                    .text_size(px(Typography::BODY))
+                    .child(format!(
+                        "每行填写一个模型 ID；保留大小写和 / - .；最多 {} 个",
+                        PROVIDER_MODEL_COUNT_MAX
+                    )),
+            )
             .child(self.key_input.clone())
             .child(
                 div()
+                    .text_color(colors.text_tertiary)
+                    .text_size(px(Typography::BODY))
+                    .child("更新已有 Provider 时可留空，以保留现有密钥"),
+            )
+            .child(
+                div()
+                    .key_context("ProviderAction")
+                    .track_focus(&self.provider_save_focus)
+                    .tab_stop(true)
                     .px_3()
                     .py_1()
                     .rounded_md()
@@ -453,9 +380,19 @@ impl SettingsView {
                         button
                             .cursor_pointer()
                             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_submit))
-                    }),
+                    })
+                    .child("保存 Provider"),
             )
             .into_any_element()
+    }
+
+    fn set_appearance(&mut self, value: &str, cx: &mut Context<Self>) {
+        let mut candidate = self.config.clone();
+        candidate.ui.theme = value.to_string();
+        if let Some(sidebar) = cx.try_global::<crate::sidebar::SidebarCollapsed>() {
+            candidate.ui.sidebar_collapsed = sidebar.0;
+        }
+        self.save_preferences(candidate, cx);
     }
 
     pub(crate) fn render_defaults(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -464,6 +401,98 @@ impl SettingsView {
             .flex()
             .flex_col()
             .gap_2()
+            .child(section_title("外观与布局", colors.text_primary))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(field_label("主题", colors.text_secondary))
+                    .children(
+                        [("light", "浅色"), ("dark", "深色"), ("system", "跟随系统")]
+                            .into_iter()
+                            .map(|(value, label)| {
+                                div()
+                                    .id(label)
+                                    .focusable()
+                                    .px_3()
+                                    .py_2()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .bg(if self.config.ui.theme == value {
+                                        colors.bg_active
+                                    } else {
+                                        colors.bg_elevated
+                                    })
+                                    .hover(move |style| style.bg(colors.bg_hover))
+                                    .child(label)
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.set_appearance(value, cx)
+                                        }),
+                                    )
+                                    .on_key_down(cx.listener(
+                                        move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                            if matches!(
+                                                event.keystroke.key.as_str(),
+                                                "enter" | "space"
+                                            ) {
+                                                this.set_appearance(value, cx);
+                                                cx.stop_propagation();
+                                            }
+                                        },
+                                    ))
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(field_label("侧栏", colors.text_secondary))
+                    .child(
+                        div()
+                            .id("settings-sidebar-visibility")
+                            .focusable()
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .bg(colors.bg_elevated)
+                            .cursor_pointer()
+                            .child(
+                                if cx
+                                    .try_global::<crate::sidebar::SidebarCollapsed>()
+                                    .is_some_and(|sidebar| sidebar.0)
+                                {
+                                    "显示侧栏"
+                                } else {
+                                    "隐藏侧栏"
+                                },
+                            )
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|_, _, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(crate::sidebar::ToggleSidebar),
+                                        cx,
+                                    )
+                                }),
+                            )
+                            .on_key_down(cx.listener(
+                                |_, event: &gpui::KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        window.dispatch_action(
+                                            Box::new(crate::sidebar::ToggleSidebar),
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            )),
+                    ),
+            )
             .child(section_title("默认项", colors.text_primary))
             .child(
                 div()
@@ -501,9 +530,7 @@ impl SettingsView {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_elevated)
+                    .bg(colors.bg_hover)
                     .text_size(px(Typography::BODY))
                     .cursor_pointer()
                     .hover(move |s| s.bg(colors.bg_hover))
@@ -569,9 +596,7 @@ impl SettingsView {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .bg(colors.bg_elevated)
+                    .bg(colors.bg_hover)
                     .text_size(px(Typography::BODY))
                     .cursor_pointer()
                     .hover(move |s| s.bg(colors.bg_hover))
@@ -625,11 +650,40 @@ impl SettingsView {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if cx
+            .try_global::<PricingSettingsRequested>()
+            .is_some_and(|request| request.0)
+        {
+            self.section = 3;
+            cx.set_global(PricingSettingsRequested(false));
+        }
+        let current_theme = theme(cx);
+        self.config.ui.theme = if current_theme.follow_system {
+            "system"
+        } else {
+            match current_theme.appearance {
+                vega_theme::Appearance::Light => "light",
+                vega_theme::Appearance::Dark => "dark",
+            }
+        }
+        .into();
+        if let Some(sidebar) = cx.try_global::<crate::sidebar::SidebarCollapsed>() {
+            self.config.ui.sidebar_collapsed = sidebar.0;
+        }
+        if let Some(projects) = cx.try_global::<crate::sidebar::ProjectsCollapsed>() {
+            self.config.ui.projects_collapsed = projects.0;
+        }
+        if let Some(sessions) = cx.try_global::<crate::sidebar::SessionsCollapsed>() {
+            self.config.ui.sessions_collapsed = sessions.0;
+        }
         let colors = theme(cx).colors;
         div()
             .id("settings-page")
             .key_context("PricingSettings")
+            .on_action(cx.listener(Self::activate_provider_action))
+            .on_action(cx.listener(Self::next_provider_action))
+            .on_action(cx.listener(Self::previous_provider_action))
             .on_action(cx.listener(Self::activate_pricing_action))
             .on_action(cx.listener(Self::next_pricing_action))
             .on_action(cx.listener(Self::previous_pricing_action))
@@ -640,36 +694,151 @@ impl Render for SettingsView {
             .text_color(colors.text_primary)
             .text_size(px(Typography::BODY))
             .line_height(relative(Typography::BODY_LINE_HEIGHT))
-            .overflow_y_scroll()
             .child(
-                // Content column per UI spec §1: max 820px, centered, ≥24px
-                // side padding.
                 div()
                     .flex()
-                    .flex_col()
-                    .gap_4()
-                    .w_full()
-                    .max_w(px(820.))
-                    .mx_auto()
-                    .px(px(24.))
-                    .py(px(24.))
-                    .child(self.render_header(cx))
-                    .children(self.error.clone().map(|message| {
+                    .size_full()
+                    .child(
                         div()
+                            .w(px(64.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .pt(px(56.))
                             .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(colors.bg_elevated)
-                            .border_1()
-                            .border_color(colors.danger)
-                            .text_color(colors.danger)
-                            .text_size(px(Typography::BODY))
-                            .child(message)
-                    }))
-                    .child(self.render_provider_list(cx))
-                    .child(self.render_add_form(cx))
-                    .child(self.render_defaults(cx))
-                    .child(self.render_pricing(cx)),
+                            .bg(colors.bg_sidebar)
+                            .child(
+                                div()
+                                    .id("settings-back")
+                                    .size(px(38.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_lg()
+                                    .text_size(px(Typography::HEADING_PAGE))
+                                    .cursor_pointer()
+                                    .hover(move |s| s.bg(colors.bg_hover))
+                                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_back))
+                                    .child(crate::icons::icon(
+                                        crate::icons::Icon::ArrowLeft,
+                                        colors.text_primary,
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .px_4()
+                            .pt(px(if window.viewport_size().height > px(700.) { 104. } else { 58. }))
+                            .pb_4()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .text_size(px(Typography::SETTINGS_TITLE))
+                                    .font_weight(Typography::HEADING_PAGE_WEIGHT)
+                                    .child("设置"),
+                            )
+                            .child(
+                                div()
+                                    .text_color(colors.text_secondary)
+                                    .child("管理模型、权限与使用偏好"),
+                            )
+                            .children(
+                                self.error
+                                    .clone()
+                                    .map(|message| div().text_color(colors.danger).child(message)),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .rounded(px(Layout::PANEL_RADIUS))
+                                    .border_1()
+                                    .border_color(colors.border_subtle)
+                                    .bg(colors.bg_elevated)
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .w(px(160.))
+                                            .flex_shrink_0()
+                                            .h_full()
+                                            .p_3()
+                                            .border_r_1()
+                                            .border_color(colors.border_subtle)
+                                            .children(
+                                                ["模型供应商", "默认设置", "思考能力", "模型定价", "使用统计"]
+                                                    .into_iter()
+                                                    .enumerate()
+                                                    .map(|(index, label)| {
+                                                        div()
+                                                            .id(("settings-section", index))
+                                                .track_focus(&self.section_focuses[index])
+                                                .tab_stop(true)
+                                                .focus_visible(move |style| style.bg(colors.bg_hover))
+                                                .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                                        this.cancel_provider_operation(cx);
+                                                        this.section = index;
+                                                        cx.stop_propagation();
+                                                        cx.notify();
+                                                    }
+                                                }))
+                                                            .h(px(34.))
+                                                            .px_2()
+                                                            .flex()
+                                                            .items_center()
+                                                            .rounded_md()
+                                                            .when(self.section == index, |s| {
+                                                                s.bg(colors.bg_active)
+                                                            })
+                                                            .cursor_pointer()
+                                                            .hover(move |s| s.bg(colors.bg_hover))
+                                                            .on_mouse_up(
+                                                                MouseButton::Left,
+                                                                cx.listener(
+                                                                    move |this, _, _, cx| {
+                                                                        this.cancel_provider_operation(cx);
+                                                        this.section = index;
+                                                                        cx.notify();
+                                                                    },
+                                                                ),
+                                                            )
+                                                            .child(label)
+                                                    }),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("settings-section-content")
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h_full()
+                                            .when(self.section != 0, |body| body.overflow_y_scroll())
+                                            .when(self.section == 0, |body| body.overflow_hidden())
+                                            .p_4()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_4()
+                                            .when(self.section == 0, |body| {
+                                                body.child(self.render_provider_management(cx))
+                                            })
+                                            .when(self.section == 1, |body| {
+                                                body.child(self.render_defaults(cx))
+                                            })
+                                            .when(self.section == 2, |body| {
+                                                body.child(self.render_reasoning(cx))
+                                            })
+                                            .when(self.section == 3, |body| {
+                                                body.child(self.render_pricing(cx))
+                                            })
+                                            .when(self.section == 4, |body| body.child(self.render_usage(cx))),
+                                    ),
+                            ),
+                    ),
             )
     }
 }

@@ -16,8 +16,8 @@ use vega_token::{PricingCatalog, PricingProfile};
 
 use crate::error::VegaError;
 use crate::provider::{
-    ChatMessage, ChatRequest, ChatRole, ChatToolCall, Provider, ProviderEvent, StopReason,
-    ToolDefinition,
+    ChatMessage, ChatRequest, ChatRole, ChatToolCall, FrozenReasoning, Provider, ProviderEvent,
+    ReasoningBudgetScope, StopReason, ToolDefinition,
 };
 use crate::{
     RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeCapabilityOutcome,
@@ -28,6 +28,12 @@ use crate::{
 
 /// Maximum number of tool calls executed by one task.
 pub const TOOL_CALL_LIMIT: usize = 100;
+/// Maximum bytes accepted from one streamed reasoning delta.
+pub const REASONING_DELTA_MAX_BYTES: usize = 64 * 1024;
+/// Maximum bytes retained for one logical provider call/assistant turn.
+pub const REASONING_TURN_MAX_BYTES: usize = 256 * 1024;
+/// Maximum bytes retained across all logical provider calls in one run.
+pub const REASONING_RUN_MAX_BYTES: usize = 1024 * 1024;
 /// Stable content-free result for a provider call id that conflicts with
 /// persisted owner, tool, or safe input identity.
 pub const CALL_ID_CONFLICT_OUTPUT: &str = "Tool error: persisted call identity conflict";
@@ -191,6 +197,9 @@ pub struct AgentRequest {
     /// `None` keeps the S4 legacy/unpriced semantics: usage rows persist with
     /// `cost_microcents = 0` and NULL pricing columns.
     pub pricing_catalog: Option<PricingCatalog>,
+    /// Immutable provider/model thinking selection. `None` keeps the legacy
+    /// provider-default request for callers that have no profile declaration.
+    pub reasoning: Option<FrozenReasoning>,
 }
 
 impl fmt::Debug for AgentRequest {
@@ -206,6 +215,7 @@ impl fmt::Debug for AgentRequest {
                 &self.completed_tool_results.len(),
             )
             .field("tool_config", &self.tool_config)
+            .field("reasoning", &self.reasoning)
             .finish()
     }
 }

@@ -1,13 +1,19 @@
 //! Sidebar (T09 shell + T12 content + T13 session management): the fixed
-//! 260px left column of the main window layout
+//! 330px left column of the main window layout
 //! ([vega-ui-spec.md §1](../../docs/vega-ui-spec.md)).
 //!
-//! Structure per the T12 architect ruling: the top [新建任务] button, then two
-//! independent block components — [`ProjectsBlock`] (project list: select /
-//! add / remove / sort toggle, branch suffix per row) and [`ThreadsBlock`]
-//! (the selected project's sessions: pinned group first, `updated_at` desc)
-//! — orchestrated by [`Sidebar`], which owns the cross-block wiring. The
-//! automation entry stays grayed out until Phase 3 (A1-13).
+//! Structure per the T12 architect ruling: a small Vega brand row, a light
+//! [新建任务] entry, then two independent block components — [`ProjectsBlock`]
+//! (project list: select / add / remove / sort toggle, branch suffix per row)
+//! and [`ThreadsBlock`] (the selected project's sessions: pinned group first,
+//! `updated_at` desc) — orchestrated by [`Sidebar`], which owns the
+//! cross-block wiring. Settings remains a stable low-frequency entry at the
+//! bottom of the rail.
+//!
+//! R13 projects the same task rows into nested projects, a local-calendar
+//! timeline, or cross-project custom groups. Organization metadata uses one
+//! background revision-checked lane; project registration/live branches and
+//! the existing task action/navigation boundaries remain shared.
 //!
 //! T13 (A1-05) adds the session management operations to [`ThreadsBlock`]:
 //! per-row hover action groups (置顶 / 归档或恢复 / 删除), double-click inline
@@ -39,8 +45,9 @@ use std::path::Path;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, ElementId, Entity, EventEmitter, Focusable, Global, MouseButton,
-    MouseDownEvent, MouseUpEvent, PathPromptOptions, Window, actions, div, px,
+    Anchor, AnchoredPositionMode, AnyElement, App, Context, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, Global, MouseButton, MouseDownEvent, MouseUpEvent, PathPromptOptions,
+    Subscription, Window, actions, anchored, deferred, div, point, px,
 };
 use vega_conversation::threads as conversation;
 use vega_conversation::types::{Thread, ThreadStatus};
@@ -48,24 +55,36 @@ use vega_store::Store;
 use vega_store::config;
 use vega_store::git_detect;
 use vega_store::projects::{self, Project, ProjectSort};
-use vega_theme::{ThemeColors, Typography, theme};
+use vega_theme::{Layout, ThemeColors, Typography, theme};
 
-use crate::settings::CloseSettings;
+use crate::settings::{CloseSettings, SettingsOpen};
 use crate::text_input::TextInput;
 
-actions!(vega_sidebar, [ToggleSidebar, NewThread, ConfirmRename]);
+actions!(
+    vega_sidebar,
+    [
+        ToggleSidebar,
+        NewThread,
+        ConfirmRename,
+        OpenThreadActions,
+        NextThreadAction,
+        PreviousThreadAction,
+        ActivateThreadAction,
+        CloseThreadActions
+    ]
+);
 
 /// Sidebar width in logical pixels (ui-spec §1).
-pub const SIDEBAR_WIDTH: f32 = 260.0;
+pub const SIDEBAR_WIDTH: f32 = Layout::SIDEBAR_WIDTH;
 
 /// Viewport width below which the sidebar auto-collapses (ui-spec §1).
 pub const AUTO_COLLAPSE_WIDTH: f32 = 960.0;
 
 /// Content column max width in logical pixels (ui-spec §1).
-pub const CONTENT_MAX_WIDTH: f32 = 820.0;
+pub const CONTENT_MAX_WIDTH: f32 = Layout::CONTENT_MAX_WIDTH;
 
 /// Content column minimum horizontal padding in logical pixels (ui-spec §1).
-pub const CONTENT_MIN_PADDING: f32 = 24.0;
+pub const CONTENT_MIN_PADDING: f32 = Layout::CONTENT_PADDING;
 
 /// Whether the user collapsed the sidebar with Cmd+B (T09, persisted as
 /// `ui.sidebar_collapsed`). The effective sidebar visibility is
@@ -73,6 +92,28 @@ pub const CONTENT_MIN_PADDING: f32 = 24.0;
 pub struct SidebarCollapsed(pub bool);
 
 impl Global for SidebarCollapsed {}
+
+/// Explicit reveal overrides automatic narrow-window collapse for this app session.
+#[derive(Default)]
+pub struct SidebarExplicitlyShown(pub bool);
+impl Global for SidebarExplicitlyShown {}
+
+/// Show the sidebar using its existing persisted preference path.
+pub fn show_persisted(cx: &mut App) {
+    cx.set_global(SidebarExplicitlyShown(true));
+    cx.set_global(SidebarCollapsed(false));
+    cx.set_global(ProjectsCollapsed(false));
+    cx.set_global(SessionsCollapsed(false));
+    persist_ui(
+        |config| {
+            config.ui.sidebar_collapsed = false;
+            config.ui.projects_collapsed = false;
+            config.ui.sessions_collapsed = false;
+        },
+        "sidebar reveal",
+        cx,
+    );
+}
 
 /// The project the 「会话」 block is scoped to (T12 architect ruling: cached
 /// as a global so renders never query the store). Seeded at startup from
@@ -136,6 +177,7 @@ pub fn load_collapsed() -> bool {
 /// (ui-spec §4.6: no modals); the next successful toggle rewrites the file.
 pub fn toggle_persisted(cx: &mut App) {
     let collapsed = !cx.global::<SidebarCollapsed>().0;
+    cx.set_global(SidebarExplicitlyShown(!collapsed));
     cx.set_global(SidebarCollapsed(collapsed));
     persist_ui(
         |config| config.ui.sidebar_collapsed = collapsed,
@@ -203,16 +245,8 @@ fn load_block_state() -> (bool, bool) {
 /// windows. Persistence failures degrade to in-memory state (ui-spec §4.6);
 /// the next successful write repairs the file.
 fn persist_ui(mutate: impl FnOnce(&mut config::AppConfig), what: &'static str, cx: &mut App) {
-    match config::load() {
-        Ok(mut config) => {
-            mutate(&mut config);
-            if let Err(error) = config.save() {
-                tracing::error!(%error, "failed to persist {what} to config.toml");
-            }
-        }
-        Err(error) => {
-            tracing::error!(%error, "failed to load config.toml to persist {what}");
-        }
+    if let Err(error) = config::update(mutate) {
+        tracing::error!(%error, "failed to persist {what} to config.toml");
     }
     cx.refresh_windows();
 }
@@ -240,6 +274,12 @@ fn toggle_sessions_block(cx: &mut App) {
     );
 }
 
+/// Mutations and accepted navigation visits share one short application fence.
+fn task_mutation_busy(cx: &App) -> bool {
+    cx.try_global::<crate::navigation::TaskMutationState>()
+        .is_some_and(|state| state.pending > 0)
+}
+
 /// Runs a store operation against the global store; store init failures
 /// become ready-to-render messages.
 fn with_store<R>(
@@ -253,8 +293,8 @@ fn with_store<R>(
     }
 }
 
-/// The sidebar orchestrator: [新建任务] on top, the two block entities, and
-/// the automation placeholder. Block components own their data + row
+/// The sidebar orchestrator: brand/new-task chrome, the two block entities,
+/// and a stable settings entry. Block components own their data + row
 /// interactions; this struct only wires cross-block reactions (project
 /// selection resyncs the session list, opening a thread refreshes the
 /// project order) plus the T13 delete-confirmation execution
@@ -271,6 +311,9 @@ impl Sidebar {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let projects_block = cx.new(ProjectsBlock::new);
         let sessions_block = cx.new(ThreadsBlock::new);
+        sessions_block.update(cx, |block, cx| {
+            block.enable_organization(projects_block.clone(), cx)
+        });
         cx.subscribe(&projects_block, Self::on_projects_event)
             .detach();
         cx.subscribe(&sessions_block, Self::on_sessions_event)
@@ -291,7 +334,8 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         match event {
-            ProjectsBlockEvent::Selected(project_id) => {
+            ProjectsBlockEvent::Selected(project_id)
+            | ProjectsBlockEvent::Registered(project_id) => {
                 clear_opened_thread_of_other_project(project_id, cx);
                 self.sessions_block.update(cx, ThreadsBlock::reload);
             }
@@ -303,6 +347,10 @@ impl Sidebar {
                 clear_opened_thread_of_project(project_id, cx);
                 self.sessions_block.update(cx, ThreadsBlock::reload);
             }
+        }
+        if let ProjectsBlockEvent::Registered(id) = event {
+            self.sessions_block
+                .update(cx, |block, cx| block.reveal_registered_project(id, cx));
         }
         cx.refresh_windows();
     }
@@ -327,10 +375,19 @@ impl Sidebar {
         let Some(thread) = cx.global::<PendingDeleteConfirm>().0.clone() else {
             return;
         };
+        if task_mutation_busy(cx) {
+            self.sessions_block.update(cx, |block, cx| {
+                block.error = Some("任务正在保存，请稍后重试删除".into());
+                cx.notify();
+            });
+            return;
+        }
         cx.set_global(PendingDeleteConfirm(None));
+        crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, |store| {
             conversation::delete_thread(store, &thread.id).map_err(|error| error.to_string())
         });
+        crate::navigation::finish_task_mutation(cx);
         match result {
             Ok(()) => {
                 // 删除的是打开中的会话：内容区回落 §4.6 空态。
@@ -355,6 +412,14 @@ impl Sidebar {
     /// GPUI，按钮与快捷键共用 handler). Creates a thread in the selected
     /// project from the config defaults and opens it (T11 semantics).
     pub fn create_thread(&mut self, cx: &mut Context<Self>) {
+        if task_mutation_busy(cx) {
+            self.new_task_error = Some("任务正在保存，请稍后重试".into());
+            cx.notify();
+            return;
+        }
+        if !crate::navigation::allow_task_navigation(None, cx) {
+            return;
+        }
         self.new_task_error = None;
         let Some(project_id) = cx.global::<SelectedProject>().0.clone() else {
             // 无项目：按钮已是禁用态；守卫保证即便触发也无副作用，行内提示。
@@ -379,6 +444,7 @@ impl Sidebar {
         match result {
             Ok(opened) => {
                 self.new_task_error = None;
+                cx.set_global(SettingsOpen(false));
                 cx.set_global(OpenedThread(Some(opened)));
                 self.sessions_block.update(cx, ThreadsBlock::reload);
                 self.projects_block.update(cx, ProjectsBlock::reload);
@@ -388,42 +454,114 @@ impl Sidebar {
         cx.refresh_windows();
     }
 
-    /// The [新建任务] button + the no-project inline hint. Disabled (inert,
-    /// tertiary colors) while no project is selected — no modal (ui-spec
-    /// §4.6).
+    /// Returns an already-loaded project label without store or filesystem IO.
+    pub fn project_label(&self, project_id: &str, cx: &App) -> Option<String> {
+        self.projects_block
+            .read(cx)
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| project.name.clone())
+    }
+
+    /// Opens the existing settings route from the persistent sidebar entry.
+    /// The app-level observer owns view creation; this action only changes the
+    /// route global and keeps the sidebar free of settings state.
+    fn open_settings(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        cx.set_global(SettingsOpen(true));
+        cx.refresh_windows();
+    }
+
+    /// Empty-state entry point for the existing project picker. The block
+    /// keeps all folder registration and error handling in its original
+    /// handler; this wrapper only exposes the same action outside the rail.
+    pub fn open_project_picker(&mut self, cx: &mut Context<Self>) {
+        self.projects_block.update(cx, ProjectsBlock::open_picker);
+    }
+
+    /// Compact functional sidebar toolbar, aligned with the native titlebar.
+    fn render_brand(&self, colors: &ThemeColors, cx: &App) -> AnyElement {
+        div()
+            .h(px(34.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+            .px_2()
+            .pl(px(Layout::TITLEBAR_LEADING_INSET))
+            .text_size(px(Typography::HEADING_PAGE))
+            .text_color(colors.text_secondary)
+            .child(crate::navigation::controls(cx, true))
+            .into_any_element()
+    }
+
+    /// The light [新建任务] entry + the no-project inline hint. Disabled
+    /// (inert, tertiary colors) while no project is selected — no modal
+    /// (ui-spec §4.6).
     fn render_new_task(
         &mut self,
         cx: &mut Context<Self>,
         has_project: bool,
         colors: &ThemeColors,
     ) -> AnyElement {
-        let (bg, fg) = if has_project {
-            (colors.accent, colors.bg_base)
+        let fg = if has_project {
+            colors.text_primary
         } else {
-            (colors.bg_hover, colors.text_tertiary)
+            colors.text_tertiary
         };
         div()
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .gap_1()
             .child(
                 div()
+                    .id("sidebar-new-task")
+                    .debug_selector(|| "sidebar-new-task".into())
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .flex()
                     .items_center()
-                    .justify_center()
+                    .gap_2()
+                    .px_2()
                     .rounded_md()
-                    .bg(bg)
                     .text_color(fg)
                     .text_size(px(Typography::SIDEBAR))
-                    .font_weight(Typography::HEADING_CARD_WEIGHT)
                     .when(has_project, |button| {
-                        button.cursor_pointer().on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _: &MouseUpEvent, _, cx| this.create_thread(cx)),
-                        )
+                        button
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(colors.bg_hover))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseUpEvent, _, cx| this.create_thread(cx)),
+                            )
                     })
-                    .child("新建任务"),
+                    .child(
+                        div()
+                            .size(px(20.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(if has_project {
+                                colors.text_secondary
+                            } else {
+                                colors.border_subtle
+                            })
+                            .text_size(px(Typography::HEADING_BLOCK))
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::Plus,
+                                colors.text_secondary,
+                            )),
+                    )
+                    .child("新建任务")
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_tertiary)
+                            .child("⌘N"),
+                    ),
             )
             .when(!has_project, |hint| {
                 hint.child(
@@ -440,6 +578,37 @@ impl Sidebar {
             )
             .into_any_element()
     }
+
+    /// Stable low-frequency settings entry. It stays in the rail even when
+    /// project/session blocks grow or collapse, so the route is discoverable.
+    fn render_settings_entry(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
+        div()
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .rounded_md()
+            .text_size(px(Typography::SIDEBAR))
+            .text_color(colors.text_secondary)
+            .cursor_pointer()
+            .hover(move |style| style.bg(colors.bg_hover))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::open_settings))
+            .child(crate::icons::icon(
+                crate::icons::Icon::Settings,
+                colors.text_secondary,
+            ))
+            .child("设置")
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_tertiary)
+                    .child("⌘,"),
+            )
+            .into_any_element()
+    }
 }
 
 impl Render for Sidebar {
@@ -450,33 +619,50 @@ impl Render for Sidebar {
             .id("sidebar")
             .flex()
             .flex_col()
-            .w(px(SIDEBAR_WIDTH))
+            .w(px(Layout::SIDEBAR_WIDTH))
             .h_full()
             .flex_shrink_0()
             .bg(colors.bg_sidebar)
-            .px_4()
-            .pt_4()
-            .pb_4()
-            .gap_4()
-            .overflow_y_scroll()
+            .px(px(Layout::SIDEBAR_PADDING))
+            .pt(px(Layout::SIDEBAR_PADDING))
+            .pb(px(Layout::SIDEBAR_PADDING))
+            .gap_3()
+            .overflow_hidden()
+            .child(self.render_brand(&colors, cx))
             .child(self.render_new_task(cx, has_project, &colors))
-            .child(self.projects_block.clone())
-            .child(self.sessions_block.clone())
-            .child(automation_entry(&colors))
+            .child(
+                div()
+                    .id("sidebar-search")
+                    .debug_selector(|| "sidebar-search".into())
+                    .mx_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .flex()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_secondary)
+                    .cursor_pointer()
+                    .child("搜索")
+                    .child(div().flex_1())
+                    .child("⌘K")
+                    .on_mouse_up(MouseButton::Left, |_, window, cx| {
+                        window.dispatch_action(Box::new(crate::command_palette::OpenPalette), cx)
+                    }),
+            )
+            .child(
+                div()
+                    .id("sidebar-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .overflow_y_scroll()
+                    .child(self.sessions_block.clone()),
+            )
+            .child(self.render_settings_entry(cx, &colors))
             .into_any_element()
     }
-}
-
-/// The automation entry (A1-13): grayed out and inert until Phase 3 (T09).
-fn automation_entry(colors: &ThemeColors) -> AnyElement {
-    div()
-        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-        .flex()
-        .items_center()
-        .text_size(px(Typography::SIDEBAR))
-        .text_color(colors.text_tertiary)
-        .child("自动化")
-        .into_any_element()
 }
 
 mod projects_block;

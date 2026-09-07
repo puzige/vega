@@ -18,6 +18,39 @@ pub async fn run_agent(
     .await
 }
 
+pub(super) fn reasoning_budget_violation(
+    delta_bytes: usize,
+    turn_bytes: usize,
+    run_bytes: usize,
+) -> Option<(ReasoningBudgetScope, usize)> {
+    if delta_bytes > REASONING_DELTA_MAX_BYTES {
+        return Some((ReasoningBudgetScope::Delta, delta_bytes));
+    }
+    let next_turn = match turn_bytes.checked_add(delta_bytes) {
+        Some(next) => next,
+        None => return Some((ReasoningBudgetScope::Turn, usize::MAX)),
+    };
+    if next_turn > REASONING_TURN_MAX_BYTES {
+        return Some((ReasoningBudgetScope::Turn, next_turn));
+    }
+    let next_run = match run_bytes.checked_add(delta_bytes) {
+        Some(next) => next,
+        None => return Some((ReasoningBudgetScope::Run, usize::MAX)),
+    };
+    if next_run > REASONING_RUN_MAX_BYTES {
+        return Some((ReasoningBudgetScope::Run, next_run));
+    }
+    None
+}
+
+fn reasoning_budget_limit(scope: ReasoningBudgetScope) -> usize {
+    match scope {
+        ReasoningBudgetScope::Delta => REASONING_DELTA_MAX_BYTES,
+        ReasoningBudgetScope::Turn => REASONING_TURN_MAX_BYTES,
+        ReasoningBudgetScope::Run => REASONING_RUN_MAX_BYTES,
+    }
+}
+
 /// Runs the agent and delivers each owned runtime event to an async sink at
 /// its real lifecycle boundary before the loop may continue when required.
 ///
@@ -59,6 +92,15 @@ where
     F: FnMut(RuntimeEvent) -> Fut,
     Fut: Future<Output = Result<(), VegaError>>,
 {
+    if let Some(reasoning) = &request.reasoning {
+        reasoning.validate()?;
+        if reasoning.model != request.model {
+            return Err(VegaError::ReasoningSelectionInvalid {
+                message: "reasoning profile model does not match request model".to_string(),
+            });
+        }
+    }
+
     macro_rules! emit {
         ($events:ident, $sink:ident, $event:expr) => {{
             let event = $event;
@@ -78,6 +120,7 @@ where
     let mut final_text = String::new();
     let mut tool_call_count = 0usize;
     let mut executed_tool_call_count = 0usize;
+    let mut reasoning_run_bytes = 0usize;
 
     loop {
         if cancel.is_cancelled() {
@@ -98,11 +141,13 @@ where
         // exact timestamp, later rounds capture a fresh one.
         let call_started_utc_seconds = unix_utc_seconds();
         let mut usage_seen = false;
+        let mut reasoning_turn_bytes = 0usize;
         let chat_request = ChatRequest {
             model: request.model.clone(),
             messages: messages.clone(),
             tools: tool_definitions(tool_config.run_mode),
             max_tokens: request.max_tokens,
+            reasoning: request.reasoning.clone(),
         };
         let mut stream = match provider.chat_stream(chat_request, cancel.clone()).await {
             Ok(stream) => stream,
@@ -133,6 +178,11 @@ where
         };
 
         let mut assistant_text = String::new();
+        let preserve_reasoning_content = request
+            .reasoning
+            .as_ref()
+            .is_some_and(|reasoning| reasoning.preserve_reasoning_content);
+        let mut assistant_reasoning = String::new();
         let mut calls = Vec::new();
         let mut stop_reason = None;
         loop {
@@ -160,6 +210,36 @@ where
                     emit!(events, sink, RuntimeEvent::TextDelta(delta));
                 }
                 Ok(ProviderEvent::ThinkingDelta(delta)) => {
+                    if let Some((scope, observed_bytes)) = reasoning_budget_violation(
+                        delta.len(),
+                        reasoning_turn_bytes,
+                        reasoning_run_bytes,
+                    ) {
+                        let error = Arc::new(VegaError::ReasoningBudgetExceeded {
+                            scope,
+                            limit_bytes: reasoning_budget_limit(scope),
+                            observed_bytes,
+                        });
+                        cancel.cancel();
+                        emit!(events, sink, RuntimeEvent::Error(error));
+                        return Ok(outcome(
+                            events,
+                            messages,
+                            final_text,
+                            tool_call_count,
+                            executed_tool_call_count,
+                            false,
+                            true,
+                        ));
+                    }
+                    reasoning_turn_bytes += delta.len();
+                    reasoning_run_bytes += delta.len();
+                    if preserve_reasoning_content {
+                        assistant_reasoning.push_str(&delta);
+                    }
+                    // Preserve the existing event contract. The conversation
+                    // layer keeps this out of visible content, persistence,
+                    // cost, and Debug projections.
                     emit!(events, sink, RuntimeEvent::ThinkingDelta(delta));
                 }
                 Ok(ProviderEvent::ToolUse {
@@ -374,8 +454,9 @@ where
                 }
             })
             .collect();
-        messages.push(ChatMessage::assistant_with_tools(
+        messages.push(ChatMessage::assistant_with_tools_and_reasoning(
             assistant_text,
+            preserve_reasoning_content.then_some(assistant_reasoning),
             wire_calls,
         ));
 

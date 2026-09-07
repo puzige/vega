@@ -36,6 +36,24 @@ pub enum VegaError {
     /// Operation was cancelled through its `CancellationToken`.
     #[error("operation cancelled")]
     Cancelled,
+    /// A frozen provider/model thinking selection violated its explicit
+    /// capability declaration before any request was sent.
+    #[error("reasoning selection is invalid")]
+    ReasoningSelectionInvalid {
+        /// Content-safe internal diagnostic; `Display`/`Debug` omit it.
+        message: String,
+    },
+    /// The provider streamed more reasoning content than the bounded runtime
+    /// contract can retain and replay safely.
+    #[error("reasoning content exceeded the {scope:?} budget of {limit_bytes} bytes")]
+    ReasoningBudgetExceeded {
+        /// Which bound was exceeded.
+        scope: crate::provider::ReasoningBudgetScope,
+        /// Frozen limit in UTF-8 bytes.
+        limit_bytes: usize,
+        /// Observed count at failure (metadata only).
+        observed_bytes: usize,
+    },
 }
 
 impl fmt::Debug for VegaError {
@@ -62,6 +80,20 @@ impl fmt::Debug for VegaError {
                 .field("message_bytes", &message.len())
                 .finish(),
             Self::Cancelled => formatter.write_str("Cancelled"),
+            Self::ReasoningSelectionInvalid { message } => formatter
+                .debug_struct("ReasoningSelectionInvalid")
+                .field("message_bytes", &message.len())
+                .finish(),
+            Self::ReasoningBudgetExceeded {
+                scope,
+                limit_bytes,
+                observed_bytes,
+            } => formatter
+                .debug_struct("ReasoningBudgetExceeded")
+                .field("scope", scope)
+                .field("limit_bytes", limit_bytes)
+                .field("observed_bytes", observed_bytes)
+                .finish(),
         }
     }
 }
