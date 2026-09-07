@@ -717,11 +717,10 @@ impl ThreadsBlock {
             // 仅剩归档线程：主列表给一行引导，归档折叠区照常可见可展开。
             body = body.child(guidance("暂无活跃会话"));
         } else {
-            body = body.children(
-                self.threads
-                    .iter()
-                    .map(|thread| self.render_row(thread, &opened_id, false, cx)),
-            );
+            body =
+                body.children(self.threads.iter().map(|thread| {
+                    self.render_row(thread, &opened_id, false, "thread-row-", true, cx)
+                }));
         }
         body.children(
             archive_section_visible(self.archived.len())
@@ -730,11 +729,9 @@ impl ThreadsBlock {
         .when(
             self.archive_expanded && archive_section_visible(self.archived.len()),
             |column| {
-                column.children(
-                    self.archived
-                        .iter()
-                        .map(|thread| self.render_row(thread, &opened_id, true, cx)),
-                )
+                column.children(self.archived.iter().map(|thread| {
+                    self.render_row(thread, &opened_id, true, "thread-row-", true, cx)
+                }))
             },
         )
         .into_any_element()
@@ -787,6 +784,8 @@ impl ThreadsBlock {
         thread: &Thread,
         opened_id: &Option<String>,
         archived: bool,
+        selector_prefix: &str,
+        actions_enabled: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -802,10 +801,13 @@ impl ThreadsBlock {
         let thread_id = thread.id.clone();
         let row_thread = thread.clone();
         let mut row = div()
-            .id(ElementId::Name(format!("thread-row-{thread_id}").into()))
+            .id(ElementId::Name(
+                format!("{selector_prefix}{thread_id}").into(),
+            ))
             .debug_selector({
                 let id = thread_id.clone();
-                move || format!("thread-row-{id}")
+                let selector_prefix = selector_prefix.to_owned();
+                move || format!("{selector_prefix}{id}")
             })
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .flex()
@@ -878,7 +880,17 @@ impl ThreadsBlock {
                         .unread
                         .then(|| div().size(px(6.)).rounded_full().bg(colors.accent)),
                 );
-            row = row.child(self.render_row_actions(thread, archived, actions_visible, cx));
+            row = if actions_enabled {
+                row.child(self.render_row_actions(
+                    thread,
+                    archived,
+                    actions_visible,
+                    selector_prefix,
+                    cx,
+                ))
+            } else {
+                row.child(div().w(px(Layout::SIDEBAR_ACTIONS_WIDTH)).flex_shrink_0())
+            };
         }
         row.into_any_element()
     }
@@ -892,18 +904,23 @@ impl ThreadsBlock {
         thread: &Thread,
         archived: bool,
         actions_visible: bool,
+        selector_prefix: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let thread_id = thread.id.clone();
+        let action_prefix = selector_prefix
+            .strip_suffix("thread-row-")
+            .unwrap_or(selector_prefix);
         let menu_open = self.actions_open.as_deref() == Some(thread.id.as_str());
         let mut trigger = div()
             .id(ElementId::Name(
-                format!("thread-actions-{thread_id}").into(),
+                format!("{action_prefix}thread-actions-{thread_id}").into(),
             ))
             .debug_selector({
                 let id = thread_id.clone();
-                move || format!("thread-actions-{id}")
+                let action_prefix = action_prefix.to_owned();
+                move || format!("{action_prefix}thread-actions-{id}")
             })
             .relative()
             .w(px(28.))
@@ -957,7 +974,7 @@ impl ThreadsBlock {
                         .position(point(px(28.), px(28.)))
                         .snap_to_window_with_margin(px(8.))
                         .child(
-                            deferred(self.render_action_menu(thread, archived, cx))
+                            deferred(self.render_action_menu(thread, archived, action_prefix, cx))
                                 .with_priority(2),
                         ),
                 ),
@@ -1041,6 +1058,7 @@ impl ThreadsBlock {
         &self,
         thread: &Thread,
         archived: bool,
+        action_prefix: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -1080,7 +1098,7 @@ impl ThreadsBlock {
         let thread_id = thread.id.clone();
         div()
             .id(ElementId::Name(
-                format!("thread-actions-menu-{thread_id}").into(),
+                format!("{action_prefix}thread-actions-menu-{thread_id}").into(),
             ))
             .w(px(Layout::TASK_MENU_WIDTH))
             // The deferred popup is above sibling rows; its hitbox must stop them too.
@@ -1120,11 +1138,12 @@ impl ThreadsBlock {
                         let selected = self.actions_highlight == index;
                         let mut item = div()
                             .id(ElementId::Name(
-                                format!("thread-action-{thread_id}-{index}").into(),
+                                format!("{action_prefix}thread-action-{thread_id}-{index}").into(),
                             ))
                             .debug_selector({
                                 let id = thread_id.clone();
-                                move || format!("thread-action-{id}-{index}")
+                                let action_prefix = action_prefix.to_owned();
+                                move || format!("{action_prefix}thread-action-{id}-{index}")
                             })
                             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                             .flex_shrink_0()

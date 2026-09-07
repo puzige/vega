@@ -13,7 +13,13 @@ use vega_ui::sidebar::*;
 
 actions!(vega, [Quit, ToggleTheme]);
 
-/// Initial (and minimum) main window size in logical pixels (UI spec §1).
+/// Initial main window size in logical pixels. Keep this below the common
+/// 1280x800 macOS work area so the first launch has room for the titlebar and
+/// Dock while still giving the three-column shell useful breathing room.
+const WINDOW_INITIAL_WIDTH: f32 = 1200.0;
+const WINDOW_INITIAL_HEIGHT: f32 = 760.0;
+
+/// Minimum main window size in logical pixels (UI spec §1).
 const WINDOW_MIN_WIDTH: f32 = 960.0;
 const WINDOW_MIN_HEIGHT: f32 = 600.0;
 
@@ -96,7 +102,11 @@ fn main() {
         // sidebar blocks degrade to inline error bars (ui-spec §4.6).
         vega_ui::sidebar::init(cx);
 
-        let bounds = Bounds::centered(None, size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT)), cx);
+        let bounds = Bounds::centered(
+            None,
+            size(px(WINDOW_INITIAL_WIDTH), px(WINDOW_INITIAL_HEIGHT)),
+            cx,
+        );
         let min_size = size(px(WINDOW_MIN_WIDTH), px(WINDOW_MIN_HEIGHT));
 
         let window = cx.open_window(

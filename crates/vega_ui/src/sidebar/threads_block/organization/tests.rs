@@ -74,7 +74,7 @@ fn fixture(cx: &mut gpui_kit::TestAppContext) -> Fixture {
         cx.open_window(
             gpui_kit::WindowOptions {
                 window_bounds: Some(gpui_kit::WindowBounds::Windowed(
-                    gpui_kit::Bounds::centered(None, gpui_kit::size(px(960.), px(600.)), cx),
+                    gpui_kit::Bounds::centered(None, gpui_kit::size(px(1200.), px(1100.)), cx),
                 )),
                 ..Default::default()
             },

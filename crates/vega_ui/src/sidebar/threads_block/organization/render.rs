@@ -146,11 +146,16 @@ impl ThreadsBlock {
         let Some(org) = &self.organization else {
             return div().into_any_element();
         };
-        let snapshot = org.snapshot.clone();
-        let preferences = snapshot
-            .as_ref()
-            .map(|s| s.preferences.clone())
-            .unwrap_or_default();
+        let Some(snapshot) = org.snapshot.clone() else {
+            return div()
+                .id("sidebar-organization")
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child("正在载入…")
+                .into_any_element();
+        };
+        let preferences = snapshot.preferences.clone();
         let archive = org.archive;
         let project_error = org.projects.read(cx).error.clone();
         let mut body = div()
@@ -178,14 +183,20 @@ impl ThreadsBlock {
                 }),
             )
             .child(
+                // The organization view is one vertical sidebar with two
+                // independent sections. SESSIONS and PROJECTS retain their
+                // existing focusable controls (and persisted view action),
+                // but they no longer hide each other as a tab strip.
                 div()
                     .relative()
                     .flex()
-                    .items_center()
+                    .flex_col()
+                    .gap_3()
                     .child(
                         div()
                             .flex()
                             .items_center()
+                            .justify_between()
                             .gap_1()
                             .child(self.organization_control(
                                 "organization-groups",
@@ -194,36 +205,82 @@ impl ThreadsBlock {
                                 preferences.view == SidebarView::Groups,
                                 cx,
                             ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(self.organization_control(
+                                        "organization-new-group",
+                                        "+ 新建分组",
+                                        Control::NewGroup,
+                                        false,
+                                        cx,
+                                    ))
+                                    .child(self.organization_control(
+                                        "organization-collapse-all",
+                                        "⌃",
+                                        Control::CollapseAll,
+                                        false,
+                                        cx,
+                                    ))
+                                    .child(self.organization_control(
+                                        "organization-archive",
+                                        "归档",
+                                        Control::Archive,
+                                        archive,
+                                        cx,
+                                    )),
+                            ),
+                    )
+                    .child(if archive {
+                        let mut archived = div().flex().flex_col();
+                        archived = archived.child(self.section_label("已归档", cx));
+                        if self.archived.is_empty() {
+                            archived = archived.child(self.section_label("暂无已归档任务", cx));
+                        }
+                        for thread in self.archived.clone() {
+                            archived = archived.child(
+                                self.organization_thread(&thread, None, true, true, true, cx),
+                            );
+                        }
+                        archived.into_any_element()
+                    } else {
+                        // Groups are the session projection. The PROJECTS
+                        // projection below remains visible at the same time;
+                        // selecting a section still controls the persisted
+                        // view used by Collapse All and keyboard workflows.
+                        self.render_group_projection(&snapshot, cx)
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_1()
                             .child(self.organization_control(
                                 "organization-projects",
                                 "PROJECTS",
                                 Control::View(SidebarView::Projects),
                                 preferences.view == SidebarView::Projects,
                                 cx,
+                            ))
+                            .child(self.organization_control(
+                                "organization-filter",
+                                "≡",
+                                Control::Menu(OrganizationMenu::Filter),
+                                false,
+                                cx,
                             )),
                     )
-                    .child(div().flex_1())
-                    .child(self.organization_control(
-                        "organization-collapse-all",
-                        "⌃",
-                        Control::CollapseAll,
-                        false,
-                        cx,
-                    ))
-                    .child(self.organization_control(
-                        "organization-filter",
-                        "≡",
-                        Control::Menu(OrganizationMenu::Filter),
-                        false,
-                        cx,
-                    ))
-                    .child(self.organization_control(
-                        "organization-archive",
-                        "归档",
-                        Control::Archive,
-                        archive,
-                        cx,
-                    ))
+                    .child(match preferences.project_view {
+                        SidebarProjectView::ByProject => {
+                            self.render_project_projection(&snapshot, cx)
+                        }
+                        SidebarProjectView::Timeline => {
+                            self.render_timeline_projection(&snapshot, cx)
+                        }
+                    })
                     .children(
                         self.organization
                             .as_ref()
@@ -256,24 +313,6 @@ impl ThreadsBlock {
                     }))
                     .child(editor.input.clone()),
             );
-        }
-        let Some(snapshot) = snapshot else {
-            return body.child("正在载入…").into_any_element();
-        };
-        if archive {
-            body = body.child(self.section_label("已归档", cx));
-            if self.archived.is_empty() {
-                body = body.child(self.section_label("暂无已归档任务", cx));
-            }
-            for thread in self.archived.clone() {
-                body = body.child(self.organization_thread(&thread, None, true, true, cx));
-            }
-        } else if preferences.view == SidebarView::Groups {
-            body = body.child(self.render_group_projection(&snapshot, cx));
-        } else if preferences.project_view == SidebarProjectView::ByProject {
-            body = body.child(self.render_project_projection(&snapshot, cx));
-        } else {
-            body = body.child(self.render_timeline_projection(&snapshot, cx));
         }
         body.into_any_element()
     }

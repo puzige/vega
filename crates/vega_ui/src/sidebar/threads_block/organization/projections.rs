@@ -10,13 +10,6 @@ impl ThreadsBlock {
         let preferences = snapshot.preferences.clone();
         let colors = theme(cx).colors;
 
-        body = body.child(self.organization_control(
-            "organization-new-group",
-            "+ 新建分组",
-            Control::NewGroup,
-            false,
-            cx,
-        ));
         for group in &snapshot.groups {
             let target = SidebarCollapseTarget::Group(group.id.clone());
             let collapsed = snapshot.collapsed.contains(&target);
@@ -114,6 +107,7 @@ impl ThreadsBlock {
                         Some(group.id.clone()),
                         true,
                         false,
+                        true,
                         cx,
                     ));
                 }
@@ -150,7 +144,7 @@ impl ThreadsBlock {
                 .into_iter()
                 .filter(|t| !snapshot.memberships.iter().any(|m| m.thread_id == t.id))
             {
-                rows = rows.child(self.organization_thread(&thread, None, true, false, cx));
+                rows = rows.child(self.organization_thread(&thread, None, true, false, true, cx));
             }
         }
         body = body.child(rows);
@@ -165,7 +159,6 @@ impl ThreadsBlock {
         let preferences = snapshot.preferences.clone();
         let colors = theme(cx).colors;
 
-        body = body.child(self.section_label("PROJECTS", cx));
         body = body.child(self.organization_control(
             "organization-add-project",
             "+ 添加项目",
@@ -296,7 +289,8 @@ impl ThreadsBlock {
                     body = body.child(self.section_label("暂无任务", cx));
                 }
                 for thread in rows.iter().take(count) {
-                    body = body.child(self.organization_thread(thread, None, false, false, cx));
+                    body =
+                        body.child(self.organization_thread(thread, None, false, false, false, cx));
                 }
                 if rows.len() > count {
                     body = body.child(self.organization_control(
@@ -364,7 +358,8 @@ impl ThreadsBlock {
             ));
             if !snapshot.collapsed.contains(&target) {
                 for thread in rows {
-                    body = body.child(self.organization_thread(thread, None, true, false, cx));
+                    body =
+                        body.child(self.organization_thread(thread, None, true, false, false, cx));
                 }
             }
         }
@@ -415,8 +410,12 @@ impl ThreadsBlock {
         group_id: Option<String>,
         show_project: bool,
         archived: bool,
+        actions_enabled: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if !actions_enabled {
+            return self.render_project_thread(thread, show_project, cx);
+        }
         let colors = theme(cx).colors;
         let opened = cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone());
         let before = thread.id.clone();
@@ -451,7 +450,18 @@ impl ThreadsBlock {
                         cx.stop_propagation();
                     }))
             })
-            .child(self.render_row(thread, &opened, archived, cx));
+            .child(self.render_row(
+                thread,
+                &opened,
+                archived,
+                if show_project {
+                    "thread-row-"
+                } else {
+                    "project-thread-row-"
+                },
+                actions_enabled,
+                cx,
+            ));
         if show_project
             && let Some(project) = self
                 .organization
@@ -462,6 +472,82 @@ impl ThreadsBlock {
             row = row.child(
                 div()
                     .pl(px(28.))
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_tertiary)
+                    .child(project.name.clone()),
+            );
+        }
+        row.into_any_element()
+    }
+
+    /// Project and timeline projections intentionally use a compact, passive
+    /// row. The full session section owns drag and action-menu interactions;
+    /// duplicating those focusable controls in the second projection would
+    /// create two hit targets for the same thread.
+    fn render_project_thread(
+        &self,
+        thread: &Thread,
+        show_project: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let opened = cx.global::<OpenedThread>().0.as_ref().map(|t| t.id.clone());
+        let selected = opened.as_deref() == Some(thread.id.as_str());
+        let thread_id = thread.id.clone();
+        let mut row = div()
+            .id(ElementId::Name(
+                format!("project-thread-row-{thread_id}").into(),
+            ))
+            .debug_selector({
+                let id = thread_id.clone();
+                move || format!("project-thread-row-{id}")
+            })
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+            .flex()
+            .items_center()
+            .gap_1()
+            .rounded_md()
+            .px_3()
+            .cursor_pointer()
+            .text_size(px(Typography::SIDEBAR))
+            .text_color(colors.text_primary)
+            .when(selected, |row| row.bg(colors.bg_active))
+            .hover(move |style| style.bg(colors.bg_hover))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| this.open_thread(&thread_id, cx)),
+            )
+            .children(
+                thread
+                    .pinned
+                    .then(|| div().flex_shrink_0().text_color(colors.accent).child("▲")),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .when(thread.unread, |title| {
+                        title.font_weight(Typography::HEADING_CARD_WEIGHT)
+                    })
+                    .child(thread_title(thread)),
+            )
+            .children(
+                thread
+                    .unread
+                    .then(|| div().size(px(6.)).rounded_full().bg(colors.accent)),
+            );
+        if show_project
+            && let Some(project) = self
+                .organization
+                .as_ref()
+                .and_then(|org| org.snapshot.as_ref())
+                .and_then(|snapshot| snapshot.projects.iter().find(|p| p.id == thread.project_id))
+        {
+            row = row.child(
+                div()
+                    .max_w(px(85.))
+                    .truncate()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
                     .child(project.name.clone()),

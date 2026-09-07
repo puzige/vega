@@ -631,6 +631,7 @@ impl Render for Sidebar {
             .child(
                 div()
                     .id("sidebar-scroll")
+                    .debug_selector(|| "sidebar-scroll".into())
                     .flex_1()
                     .min_h_0()
                     .flex()
