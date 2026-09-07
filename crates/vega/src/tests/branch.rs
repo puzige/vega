@@ -26,8 +26,8 @@ fn branch_controller_shared_lease_is_first_wins_and_aba_safe() {
     assert!(actions.release(second));
 }
 
-#[gpui::test]
-async fn branch_controller_route_and_active_guards_fail_closed(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn branch_controller_route_and_active_guards_fail_closed(cx: &mut gpui_kit::TestAppContext) {
     let repo = artifact_controller_repo();
     let store = Store::open(":memory:").expect("branch window memory store");
     store.migrate().expect("branch window migrations");
@@ -105,9 +105,9 @@ async fn branch_controller_route_and_active_guards_fail_closed(cx: &mut gpui::Te
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn branch_controller_guard_change_after_preflight_starts_zero_execute(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     run_fixture_git(repo.path(), &["branch", "other"]);
@@ -217,9 +217,9 @@ async fn branch_controller_guard_change_after_preflight_starts_zero_execute(
     assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn branch_controller_close_during_preflight_clears_exact_pending_then_reopens(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     run_fixture_git(repo.path(), &["branch", "preflight-close-target"]);
@@ -390,9 +390,9 @@ async fn branch_controller_close_during_preflight_clears_exact_pending_then_reop
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn branch_controller_close_cancels_owner_but_releases_only_after_cleanup(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     run_fixture_git(repo.path(), &["branch", "cancel-target"]);
@@ -596,9 +596,9 @@ async fn branch_controller_close_cancels_owner_but_releases_only_after_cleanup(
     assert!(!stream.read_with(cx, |stream, _| stream.has_active_agent()));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn branch_controller_s6_controller_owner_success_applies_authority_then_releases(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     run_fixture_git(repo.path(), &["branch", "success-target"]);
@@ -808,9 +808,9 @@ async fn branch_controller_s6_controller_owner_success_applies_authority_then_re
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn branch_selector_real_projection_keyboard_first_wins_and_visible_range(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     run_fixture_git(repo.path(), &["branch", "aaa-selector"]);
@@ -972,9 +972,9 @@ async fn branch_selector_real_projection_keyboard_first_wins_and_visible_range(
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn branch_prepare_worker_held_after_route_close_does_not_retain_ui(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     run_fixture_git(repo.path(), &["branch", "held-preflight-target"]);

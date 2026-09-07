@@ -1,6 +1,6 @@
 use super::*;
 
-use gpui::Focusable;
+use gpui_kit::Focusable;
 
 impl ConversationStream {
     /// Applies a bounded `@file` worker result only for the current request

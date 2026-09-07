@@ -528,12 +528,14 @@ impl SettingsView {
                             this.provider_command(command.clone(), cx)
                         }),
                     )
-                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.provider_command(key_command.clone(), cx);
-                            cx.stop_propagation();
-                        }
-                    }))
+                    .on_key_down(
+                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.provider_command(key_command.clone(), cx);
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
             })
             .child(label)
             .into_any_element()
@@ -592,12 +594,14 @@ impl SettingsView {
                             this.provider_command(Command::Select(name.clone()), cx)
                         }),
                     )
-                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            this.provider_command(Command::Select(key_name.clone()), cx);
-                            cx.stop_propagation();
-                        }
-                    }))
+                    .on_key_down(
+                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.provider_command(Command::Select(key_name.clone()), cx);
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
                     .child(
                         div()
                             .text_color(if p.enabled {
@@ -883,30 +887,28 @@ impl SettingsView {
             .items_start()
             .min_w_0()
             .gap_4()
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "enter"
-                    && this
-                        .provider_management
-                        .model_editor
-                        .as_ref()
-                        .is_some_and(|(_, input)| {
-                            input.read(cx).focus_handle(cx).is_focused(window)
-                        })
-                {
-                    this.provider_command(Command::SaveModel, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-                if event.keystroke.key == "escape"
-                    && (this.provider_management.form
-                        || this.provider_management.model_editor.is_some()
-                        || this.provider_management.candidates.is_some()
-                        || this.provider_management.cancel.is_some())
-                {
-                    this.provider_command(Command::Cancel, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .on_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "enter"
+                        && this.provider_management.model_editor.as_ref().is_some_and(
+                            |(_, input)| input.read(cx).focus_handle(cx).is_focused(window),
+                        )
+                    {
+                        this.provider_command(Command::SaveModel, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if event.keystroke.key == "escape"
+                        && (this.provider_management.form
+                            || this.provider_management.model_editor.is_some()
+                            || this.provider_management.candidates.is_some()
+                            || this.provider_management.cancel.is_some())
+                    {
+                        this.provider_command(Command::Cancel, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .child(list)
             .child(
                 div()

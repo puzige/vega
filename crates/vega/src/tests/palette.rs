@@ -5,14 +5,14 @@ struct PaletteHarness {
     root: Entity<VegaWindow>,
 }
 impl Render for PaletteHarness {
-    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, _: &mut gpui_kit::Context<Self>) -> impl IntoElement {
         self.root.clone()
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn production_root_palette_escape_preserves_composer_and_settings_action(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let data = tempfile::tempdir().unwrap();
     let path = data.path().join("vega.db");

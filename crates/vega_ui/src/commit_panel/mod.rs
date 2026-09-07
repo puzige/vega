@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::prelude::*;
+use gpui_kit::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, Render,
     UniformListScrollHandle, Window, actions, div, px, uniform_list,
 };

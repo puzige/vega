@@ -24,7 +24,7 @@ pub(super) struct Organization {
     menu: Option<OrganizationMenu>,
     menu_focus: FocusHandle,
     menu_index: usize,
-    menu_scroll: gpui::ScrollHandle,
+    menu_scroll: gpui_kit::ScrollHandle,
     archive: bool,
     reveal_project: Option<(String, std::rc::Rc<std::cell::Cell<bool>>)>,
 }
@@ -91,7 +91,7 @@ impl ThreadsBlock {
             menu: None,
             menu_focus: cx.focus_handle(),
             menu_index: 0,
-            menu_scroll: gpui::ScrollHandle::new(),
+            menu_scroll: gpui_kit::ScrollHandle::new(),
             archive: false,
             reveal_project: None,
         });

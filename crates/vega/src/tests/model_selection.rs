@@ -20,8 +20,10 @@ theme = "dark"
     .expect("owned model config");
 }
 
-#[gpui::test]
-async fn model_selection_app_handler_persists_and_runs_exact_model(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn model_selection_app_handler_persists_and_runs_exact_model(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     let config_root = tempfile::tempdir().expect("config root");
     let config_path = config_root.path().join("config.toml");
     model_selection_config(&config_path);
@@ -396,9 +398,9 @@ fn model_selection_config_read_is_strictly_read_only() {
     assert!(!path.exists());
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn model_selection_generic_busy_rejects_without_releasing_other_owner(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let data_root = tempfile::tempdir().expect("generic busy data root");
     let database_path = data_root.path().join("vega.db");
@@ -473,8 +475,8 @@ async fn model_selection_generic_busy_rejects_without_releasing_other_owner(
     });
 }
 
-#[gpui::test]
-async fn model_selection_settings_deferred_keeps_sidebar_rename(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn model_selection_settings_deferred_keeps_sidebar_rename(cx: &mut gpui_kit::TestAppContext) {
     let config_root = tempfile::tempdir().expect("settings deferred config root");
     let config_path = config_root.path().join("config.toml");
     model_selection_config(&config_path);

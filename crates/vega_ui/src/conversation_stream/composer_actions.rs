@@ -1,6 +1,6 @@
 //! Small local composer commands; all durable changes still use thread settings.
 use super::*;
-use gpui::Focusable;
+use gpui_kit::Focusable;
 
 const MODES: [(&str, ThreadMode); 3] = [
     ("/ask", ThreadMode::Ask),

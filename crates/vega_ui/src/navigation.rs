@@ -1,5 +1,5 @@
 //! Window-level navigation actions and shared sidebar/collapsed controls.
-use gpui::{prelude::*, *};
+use gpui_kit::{prelude::*, *};
 use vega_theme::{Typography, theme};
 actions!(
     navigation,

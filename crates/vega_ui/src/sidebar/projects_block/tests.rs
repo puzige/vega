@@ -1,5 +1,5 @@
 use super::*;
-use gpui::TestAppContext;
+use gpui_kit::TestAppContext;
 
 fn git(root: &Path, args: &[&str]) {
     let output = std::process::Command::new("/usr/bin/git")
@@ -38,7 +38,7 @@ fn wait_for_suffix(
         std::thread::sleep(Duration::from_millis(10));
     }
 }
-#[gpui::test]
+#[gpui_kit::test]
 async fn production_sidebar_refreshes_real_checkout_and_rejects_removed_results(
     cx: &mut TestAppContext,
 ) {
@@ -103,7 +103,7 @@ async fn production_sidebar_refreshes_real_checkout_and_rejects_removed_results(
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn hidden_sidebar_cancels_pending_and_generation_path_guard(cx: &mut TestAppContext) {
     let owned = tempfile::tempdir().unwrap();
     let root = owned.path().canonicalize().unwrap();
@@ -137,7 +137,7 @@ async fn hidden_sidebar_cancels_pending_and_generation_path_guard(cx: &mut TestA
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn r14_registration_completion_cannot_mutate_replaced_database_owner(
     cx: &mut TestAppContext,
 ) {

@@ -82,8 +82,8 @@ impl Render for PricingWindowHarness {
     }
 }
 
-#[gpui::test]
-async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui_kit::TestAppContext) {
     let repo = diff_controller_repo();
     let data = tempfile::tempdir().expect("pricing data root");
     let store = Store::open(data.path().join("vega.db")).expect("pricing file store");
@@ -118,7 +118,7 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui::Test
         root.agent_provider_override = Some(provider.clone());
     });
     let window_root = root.clone();
-    let _window: gpui::WindowHandle<PricingWindowHarness> = cx
+    let _window: gpui_kit::WindowHandle<PricingWindowHarness> = cx
         .update(|cx| {
             cx.open_window(Default::default(), move |_, cx| {
                 cx.new(|_| PricingWindowHarness { root: window_root })

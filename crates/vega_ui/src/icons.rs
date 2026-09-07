@@ -1,5 +1,5 @@
 //! Original monochrome line icons for compact native chrome.
-use gpui::{IntoElement, PathBuilder, Rgba, canvas, point, prelude::*, px};
+use gpui_kit::{IntoElement, PathBuilder, Rgba, canvas, point, prelude::*, px};
 
 /// Small functional line icons, drawn without platform-dependent glyphs.
 #[derive(Clone, Copy)]
@@ -160,11 +160,15 @@ pub fn icon(kind: Icon, color: Rgba) -> impl IntoElement {
     .flex_shrink_0()
 }
 
-struct IconTooltip(gpui::SharedString);
-impl gpui::Render for IconTooltip {
-    fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+struct IconTooltip(gpui_kit::SharedString);
+impl gpui_kit::Render for IconTooltip {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> impl IntoElement {
         let colors = vega_theme::theme(cx).colors;
-        gpui::div()
+        gpui_kit::div()
             .px_2()
             .py_1()
             .rounded_md()
@@ -180,11 +184,11 @@ impl gpui::Render for IconTooltip {
 /// Compact labeled control with a native tooltip and Enter/Space activation.
 pub fn icon_button(
     kind: Icon,
-    label: impl Into<gpui::SharedString>,
+    label: impl Into<gpui_kit::SharedString>,
     colors: vega_theme::ThemeColors,
-    activate: impl Fn(&(), &mut gpui::Window, &mut gpui::App) + 'static,
-) -> gpui::Stateful<gpui::Div> {
-    use gpui::{MouseButton, div};
+    activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::{MouseButton, div};
     let label = label.into();
     let tooltip_label = label.clone();
     let accessible_label = label.clone();
@@ -219,7 +223,10 @@ pub fn icon_button(
 }
 
 /// Builds a native tooltip using the current theme.
-pub fn tooltip(label: impl Into<gpui::SharedString>, cx: &mut gpui::App) -> gpui::AnyView {
+pub fn tooltip(
+    label: impl Into<gpui_kit::SharedString>,
+    cx: &mut gpui_kit::App,
+) -> gpui_kit::AnyView {
     let label = label.into();
     cx.new(|_| IconTooltip(label)).into()
 }

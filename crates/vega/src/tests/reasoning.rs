@@ -4,9 +4,9 @@ use super::*;
 use vega_store::config::AppConfig;
 use vega_ui::settings::{ReasoningSettingsProjection, ReasoningTemplate};
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn reasoning_authority_reconcile_error_blocks_controller_before_provider(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let config_root = tempfile::tempdir().expect("reasoning controller config root");
     let config_path = config_root.path().join("config.toml");
@@ -96,9 +96,9 @@ async fn reasoning_authority_reconcile_error_blocks_controller_before_provider(
     assert!(provider.requests().is_empty());
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn settings_unknown_reasoning_template_saves_reads_back_and_reaches_mock_run(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     // Start with a provider/model config but no reasoning file. The test uses
     // an owned Settings entity through the same public view constructor; the
@@ -297,9 +297,9 @@ async fn settings_unknown_reasoning_template_saves_reads_back_and_reaches_mock_r
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn frozen_reasoning_owner_change_same_model_fails_before_provider(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let config_root = tempfile::tempdir().expect("owner change config root");
     let config_path = config_root.path().join("config.toml");
@@ -394,9 +394,9 @@ async fn frozen_reasoning_owner_change_same_model_fails_before_provider(
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn provider_catalog_refresh_gates_settings_until_new_generation_is_ready(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let config_root = tempfile::tempdir().expect("catalog refresh config root");
     let config_path = config_root.path().join("config.toml");
@@ -530,7 +530,7 @@ async fn provider_catalog_refresh_gates_settings_until_new_generation_is_ready(
 }
 
 async fn exercise_catalog_reasoning_save_order(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
     reasoning_first: bool,
 ) {
     let config_root = tempfile::tempdir().expect("catalog order config root");
@@ -692,17 +692,17 @@ async fn exercise_catalog_reasoning_save_order(
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn reasoning_and_provider_catalog_completion_orders_are_coordinated(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     exercise_catalog_reasoning_save_order(cx, true).await;
     exercise_catalog_reasoning_save_order(cx, false).await;
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn failed_reasoning_save_keeps_error_and_draft_through_catalog_refresh(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let config_root = tempfile::tempdir().expect("failed reasoning config root");
     let config_path = config_root.path().join("config.toml");

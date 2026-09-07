@@ -4,8 +4,8 @@ use std::ops::Range;
 mod current_head;
 use current_head::CurrentHead;
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::prelude::*;
+use gpui_kit::{
     Anchor, AnchoredPositionMode, App, Context, EventEmitter, FocusHandle, Focusable, MouseButton,
     Render, ScrollStrategy, UniformListScrollHandle, Window, actions, anchored, div, point, px,
     uniform_list,
@@ -526,7 +526,7 @@ impl BranchSelector {
         cx.notify();
     }
 
-    fn toggle(&mut self, _: &gpui::MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn toggle(&mut self, _: &gpui_kit::MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.disabled || self.model.is_pending() {
             return;
         }
@@ -764,7 +764,7 @@ impl Render for BranchSelector {
                                     }),
                                 ))
                                 .snap_to_window_with_margin(px(8.0))
-                                .child(gpui::deferred(popup).with_priority(2)),
+                                .child(gpui_kit::deferred(popup).with_priority(2)),
                         ),
                     ),
                 )
@@ -778,7 +778,7 @@ fn render_branch_row(
     focused: Option<BranchId>,
     disabled: bool,
     colors: vega_theme::ThemeColors,
-    view: gpui::Entity<BranchSelector>,
+    view: gpui_kit::Entity<BranchSelector>,
 ) -> impl IntoElement {
     let id = branch.id;
     let current = branch.current;

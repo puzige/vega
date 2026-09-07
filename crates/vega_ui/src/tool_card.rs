@@ -1,7 +1,7 @@
 //! Audited tool-call cards over strict `vega_conversation` projections.
 
-use gpui::prelude::*;
-use gpui::{AnyElement, App, Entity, MouseButton, MouseUpEvent, div, px};
+use gpui_kit::prelude::*;
+use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, div, px};
 use vega_conversation::types::{
     Approval, ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
     ToolResult, tool_card_input_projection, tool_card_result_projection,
@@ -121,7 +121,7 @@ impl ToolCard {
     }
 
     /// Converts an illegal transition to the fixed corrupt state.
-    pub fn fail_corrupt(&mut self, cx: &mut gpui::Context<Self>) {
+    pub fn fail_corrupt(&mut self, cx: &mut gpui_kit::Context<Self>) {
         self.set_corrupt();
         cx.notify();
     }
@@ -367,7 +367,7 @@ impl ToolCard {
         )
     }
 
-    fn status_color(&self, colors: &ThemeColors) -> gpui::Rgba {
+    fn status_color(&self, colors: &ThemeColors) -> gpui_kit::Rgba {
         if self.bash_exit_failed() {
             return colors.danger;
         }
@@ -496,7 +496,7 @@ fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> 
     output.lines().map(str::to_string).collect()
 }
 
-fn status_color(status: ToolCallStatus, colors: &ThemeColors) -> gpui::Rgba {
+fn status_color(status: ToolCallStatus, colors: &ThemeColors) -> gpui_kit::Rgba {
     match status {
         ToolCallStatus::Success => colors.success,
         ToolCallStatus::Rejected | ToolCallStatus::Failed | ToolCallStatus::Cancelled => {

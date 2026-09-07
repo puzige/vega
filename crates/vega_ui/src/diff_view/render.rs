@@ -278,9 +278,9 @@ impl Render for DiffView {
 
 pub(crate) fn diff_button(
     label: &'static str,
-    color: gpui::Rgba,
+    color: gpui_kit::Rgba,
     colors: ThemeColors,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     div()
         .px_2()
         .py_1()
@@ -392,7 +392,7 @@ pub(crate) fn render_diff_half(
     line: Option<PreparedLine>,
     colors: &ThemeColors,
     side: LineSide,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     match line {
         Some(line) => render_diff_line_div(line, colors, side)
             .w_1_2()
@@ -419,7 +419,7 @@ pub(crate) fn render_diff_line_div(
     line: PreparedLine,
     colors: &ThemeColors,
     side: LineSide,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     let number = match side {
         LineSide::Unified => format!(
             "{:>4} {:>4}",

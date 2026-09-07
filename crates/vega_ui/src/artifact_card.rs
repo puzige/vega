@@ -1,7 +1,7 @@
 //! Compact, safe artifact cards embedded in the virtual conversation stream.
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::prelude::*;
+use gpui_kit::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
     MouseButton, Window, actions, div, px,
 };
@@ -402,7 +402,7 @@ fn artifact_button(
     enabled: bool,
     focus: FocusHandle,
     colors: ThemeColors,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     div()
         .track_focus(&focus)
         .flex_shrink_0()
@@ -428,7 +428,7 @@ fn source_label(source: ArtifactSource) -> &'static str {
     }
 }
 
-fn source_color(source: ArtifactSource, colors: &ThemeColors) -> gpui::Rgba {
+fn source_color(source: ArtifactSource, colors: &ThemeColors) -> gpui_kit::Rgba {
     match source {
         ArtifactSource::AgentArtifact => colors.success,
         ArtifactSource::WorkspaceChange => colors.text_secondary,

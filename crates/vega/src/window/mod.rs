@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::atomic::*;
 use std::sync::*;
 
-use gpui::prelude::*;
-use gpui::*;
+use gpui_kit::prelude::*;
+use gpui_kit::*;
 use vega_conversation::types::*;
 use vega_conversation::*;
 use vega_theme::*;

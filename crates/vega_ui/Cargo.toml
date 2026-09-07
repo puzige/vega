@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gpui.workspace = true
+gpui_kit.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -18,5 +18,5 @@ vega_markdown.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
+gpui_kit = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

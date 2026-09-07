@@ -527,9 +527,9 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn reconcile_external_profile_deletion_keeps_catalog_as_provider_default(
-        _cx: &mut gpui::TestAppContext,
+        _cx: &mut gpui_kit::TestAppContext,
     ) {
         let catalog = vec![ReasoningProfileProjection::from_store(&glm_profile()).unwrap()];
         let reconciled = reconcile_reasoning_profiles(
@@ -546,9 +546,9 @@ mod tests {
         assert!(!reconciled[0].preserve_reasoning_content);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn reconcile_invalid_declared_profile_cannot_become_provider_default(
-        _cx: &mut gpui::TestAppContext,
+        _cx: &mut gpui_kit::TestAppContext,
     ) {
         let mut invalid = glm_profile();
         invalid.protocol = "openai_chat_completions".into();

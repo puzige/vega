@@ -4,7 +4,7 @@ use crate::{
     icons::{Icon, icon_button},
     text_input,
 };
-use gpui::{prelude::*, *};
+use gpui_kit::{prelude::*, *};
 use std::{ops::Range, path::PathBuf, time::Duration};
 use vega_conversation::{
     terminal::TerminalSession,
@@ -373,7 +373,7 @@ fn paint_terminal(
                             bounds.left() + cell_width * col as f32,
                             bounds.top() + line_height * (row as f32 + 1.) - px(2.),
                         ),
-                        gpui::size(cell_width, px(2.)),
+                        gpui_kit::size(cell_width, px(2.)),
                     ),
                     colors.accent,
                 ));
@@ -453,7 +453,7 @@ impl EntityInputHandler for TerminalView {
 #[cfg(all(test, unix))]
 mod tests {
     use super::{Duration, Entity, PathBuf, TerminalStatus, TerminalView};
-    use gpui::{AppContext, EntityInputHandler, TestAppContext};
+    use gpui_kit::{AppContext, EntityInputHandler, TestAppContext};
     use std::{process::Command, time::Instant};
 
     fn wait_ui(
@@ -472,7 +472,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(15));
         }
     }
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn production_terminal_input_handler_and_keys_reach_real_pty(cx: &mut TestAppContext) {
         const MARKER: &str = "VEGA_R11_TERMINAL_UI_CHILD";
         let Some(root) = std::env::var_os(MARKER) else {

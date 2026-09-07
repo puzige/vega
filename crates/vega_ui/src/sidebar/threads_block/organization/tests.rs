@@ -19,11 +19,11 @@ struct Fixture {
     dir: tempfile::TempDir,
     sidebar: Entity<Sidebar>,
     draft: Entity<TextInput>,
-    window: gpui::WindowHandle<MountedSidebar>,
+    window: gpui_kit::WindowHandle<MountedSidebar>,
     first: Thread,
     other: Thread,
 }
-fn fixture(cx: &mut gpui::TestAppContext) -> Fixture {
+fn fixture(cx: &mut gpui_kit::TestAppContext) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("organization.db")).unwrap();
     store.migrate().unwrap();
@@ -46,10 +46,11 @@ fn fixture(cx: &mut gpui::TestAppContext) -> Fixture {
     )
     .unwrap();
     cx.update(|cx| {
+        gpui_kit::component::init(cx);
         crate::init(cx);
         // Match the application-level binding and fallback handler: otherwise
         // Escape reaches raw key_down and hides a real action-dispatch defect.
-        cx.bind_keys([gpui::KeyBinding::new(
+        cx.bind_keys([gpui_kit::KeyBinding::new(
             "escape",
             CloseSettings,
             Some("VegaWindow"),
@@ -71,12 +72,10 @@ fn fixture(cx: &mut gpui::TestAppContext) -> Fixture {
     let d = draft.clone();
     let window = cx.update(|cx| {
         cx.open_window(
-            gpui::WindowOptions {
-                window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::centered(
-                    None,
-                    gpui::size(px(960.), px(600.)),
-                    cx,
-                ))),
+            gpui_kit::WindowOptions {
+                window_bounds: Some(gpui_kit::WindowBounds::Windowed(
+                    gpui_kit::Bounds::centered(None, gpui_kit::size(px(960.), px(600.)), cx),
+                )),
                 ..Default::default()
             },
             move |_, cx| {
@@ -98,9 +97,9 @@ fn fixture(cx: &mut gpui::TestAppContext) -> Fixture {
         other,
     }
 }
-fn click(f: &Fixture, cx: &mut gpui::TestAppContext, selector: impl Into<String>) {
+fn click(f: &Fixture, cx: &mut gpui_kit::TestAppContext, selector: impl Into<String>) {
     let selector: &'static str = Box::leak(selector.into().into_boxed_str());
-    let mut visual = gpui::VisualTestContext::from_window(f.window.into(), cx);
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
     let bounds = visual
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing {selector}"));
@@ -110,7 +109,7 @@ fn click(f: &Fixture, cx: &mut gpui::TestAppContext, selector: impl Into<String>
 fn snapshot(f: &Fixture) -> SidebarOrganizationSnapshot {
     service::snapshot(&Store::open(f.dir.path().join("organization.db")).unwrap()).unwrap()
 }
-fn create_group(f: &Fixture, cx: &mut gpui::TestAppContext, name: &str) -> String {
+fn create_group(f: &Fixture, cx: &mut gpui_kit::TestAppContext, name: &str) -> String {
     click(f, cx, "organization-new-group");
     cx.simulate_input(f.window.into(), name);
     cx.simulate_keystrokes(f.window.into(), "enter");
@@ -123,9 +122,9 @@ fn create_group(f: &Fixture, cx: &mut gpui::TestAppContext, name: &str) -> Strin
         .id
         .clone()
 }
-#[gpui::test]
+#[gpui_kit::test]
 async fn mounted_sidebar_views_more_group_edit_menu_move_restart_and_navigation_guard(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
     cx.update(|cx| cx.set_global(SettingsOpen(true)));
@@ -336,10 +335,10 @@ async fn mounted_sidebar_views_more_group_edit_menu_move_restart_and_navigation_
     assert!(snapshot(&f).memberships.is_empty());
 }
 
-fn drag(f: &Fixture, cx: &mut gpui::TestAppContext, source: String, target: String) {
+fn drag(f: &Fixture, cx: &mut gpui_kit::TestAppContext, source: String, target: String) {
     let source: &'static str = Box::leak(source.into_boxed_str());
     let target: &'static str = Box::leak(target.into_boxed_str());
-    let mut visual = gpui::VisualTestContext::from_window(f.window.into(), cx);
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
     let from = visual.debug_bounds(source).unwrap().center();
     let to = visual.debug_bounds(target).unwrap().center();
     visual.simulate_mouse_down(from, MouseButton::Left, Default::default());
@@ -353,9 +352,9 @@ fn drag(f: &Fixture, cx: &mut gpui::TestAppContext, source: String, target: Stri
     visual.simulate_mouse_up(to, MouseButton::Left, Default::default());
     cx.run_until_parked();
 }
-#[gpui::test]
+#[gpui_kit::test]
 async fn mounted_sidebar_real_drag_and_conflict_retry_preserve_tasks(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
     click(&f, cx, "project-collapse-p");
@@ -489,9 +488,9 @@ async fn mounted_sidebar_real_drag_and_conflict_retry_preserve_tasks(
     assert_eq!(snapshot(&f).threads.len(), 7);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn mounted_sidebar_group_task_creation_uses_atomic_service_identity(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
     click(&f, cx, "organization-groups");
@@ -518,9 +517,9 @@ async fn mounted_sidebar_group_task_creation_uses_atomic_service_identity(
 
 // The deterministic GPUI input helpers drain every event. This narrow handler-level
 // race retains the real worker/file DB while staging two actions before its ack.
-#[gpui::test]
+#[gpui_kit::test]
 async fn organization_ack_preserves_newer_editor_and_does_not_steal_later_route(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
     click(&f, cx, "organization-groups");
@@ -603,9 +602,9 @@ async fn organization_ack_preserves_newer_editor_and_does_not_steal_later_route(
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn r14_production_folder_registration_reveals_dedupes_and_scopes_new_tasks(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
     click(&f, cx, "organization-groups");
@@ -615,7 +614,7 @@ async fn r14_production_folder_registration_reveals_dedupes_and_scopes_new_tasks
     std::fs::create_dir(&first).unwrap();
     std::fs::create_dir(&second).unwrap();
     cx.update(|cx| cx.set_global(SidebarCollapsed(true)));
-    let register = |path: &Path, cx: &mut gpui::TestAppContext| {
+    let register = |path: &Path, cx: &mut gpui_kit::TestAppContext| {
         f.sidebar.update(cx, |sidebar, cx| {
             sidebar
                 .projects_block

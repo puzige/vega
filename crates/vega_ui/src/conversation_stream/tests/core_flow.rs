@@ -1,6 +1,6 @@
 use super::*;
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn settings_keyboard_emits_scoped_requests_without_optimistic_state(cx: &mut TestAppContext) {
     let global_escapes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed_escapes = global_escapes.clone();
@@ -8,7 +8,7 @@ async fn settings_keyboard_emits_scoped_requests_without_optimistic_state(cx: &m
         cx.on_action(move |_: &crate::settings::CloseSettings, _| {
             observed_escapes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         });
-        cx.bind_keys([gpui::KeyBinding::new(
+        cx.bind_keys([gpui_kit::KeyBinding::new(
             "escape",
             crate::settings::CloseSettings,
             Some("VegaWindow"),
@@ -74,7 +74,7 @@ async fn settings_keyboard_emits_scoped_requests_without_optimistic_state(cx: &m
     assert_eq!(selected, (ThreadMode::Plan, PermissionMode::Auto));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn multiline_history_continues_and_is_thread_scoped(cx: &mut TestAppContext) {
     let (first_window, first, _) = open_controller_stream(cx, "history-a");
     let (_second_window, second, _) = open_controller_stream(cx, "history-b");
@@ -107,7 +107,7 @@ async fn multiline_history_continues_and_is_thread_scoped(cx: &mut TestAppContex
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn composer_echo_waits_for_durable_acceptance(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "durable-submit");
     stream.update(cx, |stream, cx| {
@@ -155,7 +155,7 @@ async fn composer_echo_waits_for_durable_acceptance(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn credential_failure_keeps_draft_and_renders_recovery_error(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "credential-submit");
     stream.update(cx, |stream, cx| {
@@ -176,7 +176,7 @@ async fn credential_failure_keeps_draft_and_renders_recovery_error(cx: &mut Test
             Some("本地凭据缺失或无法读取，请在设置中重新填写 API Key 后重试")
         );
     });
-    let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(
         visual
             .debug_bounds("conversation-controller-error")
@@ -184,7 +184,7 @@ async fn credential_failure_keeps_draft_and_renders_recovery_error(cx: &mut Test
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn reference_rejection_releases_submit_and_keeps_editable_draft(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "reference-rejection");
     stream.update(cx, |stream, cx| {
@@ -212,7 +212,7 @@ async fn reference_rejection_releases_submit_and_keeps_editable_draft(cx: &mut T
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn file_index_generation_overflow_fails_closed(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "reference-generation-overflow");
     stream.update(cx, |stream, _| {
@@ -225,7 +225,7 @@ async fn file_index_generation_overflow_fails_closed(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn file_index_late_success_is_fenced_after_cancel(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "reference-late-result");
     let input = stream.read_with(cx, |stream, _| stream.composer_input());
@@ -250,7 +250,7 @@ async fn file_index_late_success_is_fenced_after_cancel(cx: &mut TestAppContext)
     assert!(stream.read_with(cx, |stream, _| stream.file_index_candidates().is_empty()));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn failed_file_index_keys_restore_composer_scope(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "reference-failed-keys");
     let input = stream.read_with(cx, |stream, _| stream.composer_input());
@@ -309,7 +309,7 @@ async fn failed_file_index_keys_restore_composer_scope(cx: &mut TestAppContext) 
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn failed_file_index_enter_retries_through_key_dispatch(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "reference-retry-key");
     let retries = Arc::new(Mutex::new(Vec::<FileIndexRetryRequested>::new()));
@@ -355,7 +355,7 @@ async fn failed_file_index_enter_retries_through_key_dispatch(cx: &mut TestAppCo
     assert_eq!(retries[0].thread_id, "reference-retry-key");
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn unresolved_reasoning_authority_rejects_submit_but_missing_profile_defaults(
     cx: &mut TestAppContext,
 ) {
@@ -371,7 +371,7 @@ async fn unresolved_reasoning_authority_rejects_submit_but_missing_profile_defau
     }));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn approved_not_started_projection_preserves_and_blocks_new_draft(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "approved-recovery");
     stream.update(cx, |stream, cx| {
@@ -392,7 +392,7 @@ async fn approved_not_started_projection_preserves_and_blocks_new_draft(cx: &mut
     assert_eq!(state, (true, false, "do not lose".into(), 0));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn durable_assistant_events_require_exact_active_message(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "durable-events");
     stream.update(cx, |stream, cx| {
@@ -452,7 +452,7 @@ async fn durable_assistant_events_require_exact_active_message(cx: &mut TestAppC
     assert!(stream.read_with(cx, |stream, _| stream.active_agent_message.is_none()));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn completed_plan_replaces_streaming_assistant_after_older_plan_refresh(
     cx: &mut TestAppContext,
 ) {
@@ -518,7 +518,7 @@ async fn completed_plan_replaces_streaming_assistant_after_older_plan_refresh(
     assert_eq!((plans, assistants, entries), (2, 0, 2));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn task_summary_card_appends_once_and_ignores_duplicates(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "summary-card");
     let summary = TaskCostSummary {
@@ -562,7 +562,7 @@ async fn task_summary_card_appends_once_and_ignores_duplicates(cx: &mut TestAppC
     assert!(text.contains("工具 2 · 缓存命中 33%"));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn transcript_hides_completed_statistics_but_keeps_failure_status(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "quiet-usage");
     stream.update(cx, |stream, cx| {
@@ -585,7 +585,7 @@ async fn transcript_hides_completed_statistics_but_keeps_failure_status(cx: &mut
         }
     });
     cx.run_until_parked();
-    let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert_eq!(
         visual
             .debug_bounds("completed-task-summary-hidden")
@@ -608,7 +608,7 @@ async fn transcript_hides_completed_statistics_but_keeps_failure_status(cx: &mut
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn batch_finished_flush_materializes_the_final_committed_tail(cx: &mut TestAppContext) {
     // S8-T44 review P1-1: a batched ingress tail [TextDelta…, MessageFinished]
     // must materialize the frozen committed tail in finish_agent_message

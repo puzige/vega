@@ -1,6 +1,6 @@
 //! Bounded read-only file pane. Filesystem access remains in conversation/app.
-use gpui::prelude::*;
-use gpui::*;
+use gpui_kit::prelude::*;
+use gpui_kit::*;
 use vega_conversation::types::PaletteFilePreview;
 use vega_theme::{Typography, theme};
 /// Requests a revalidated Finder reveal of this relative path.

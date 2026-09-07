@@ -127,7 +127,7 @@ impl ThreadsBlock {
                 }),
             )
             .on_key_down(
-                cx.listener(move |this, event: &gpui::KeyDownEvent, window, cx| {
+                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "enter" || event.keystroke.key == "space" {
                         cx.stop_propagation();
                         this.control_action(keyboard_action.clone(), window, cx);
@@ -158,23 +158,25 @@ impl ThreadsBlock {
             .flex()
             .flex_col()
             .gap_1()
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "tab"
-                    && this.editing.is_none()
-                    && this
-                        .organization
-                        .as_ref()
-                        .is_none_or(|o| o.editor.is_none())
-                {
-                    this.close_actions();
-                    if event.keystroke.modifiers.shift {
-                        window.focus_prev(cx);
-                    } else {
-                        window.focus_next(cx);
+            .on_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "tab"
+                        && this.editing.is_none()
+                        && this
+                            .organization
+                            .as_ref()
+                            .is_none_or(|o| o.editor.is_none())
+                    {
+                        this.close_actions();
+                        if event.keystroke.modifiers.shift {
+                            window.focus_prev(cx);
+                        } else {
+                            window.focus_next(cx);
+                        }
+                        cx.stop_propagation();
                     }
-                    cx.stop_propagation();
-                }
-            }))
+                }),
+            )
             .child(
                 div()
                     .relative()

@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use gpui::{Focusable, TestAppContext, WindowHandle};
+use gpui_kit::{Focusable, TestAppContext, WindowHandle};
 use tokio_util::sync::CancellationToken;
 use vega_conversation::agent::PermissionHook;
 use vega_conversation::types::{

@@ -2,8 +2,8 @@
 
 use std::{ops::Range, time::Duration};
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::prelude::*;
+use gpui_kit::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton,
     MouseUpEvent, Render, ScrollStrategy, UniformListScrollHandle, Window, actions, div, px,
     uniform_list,

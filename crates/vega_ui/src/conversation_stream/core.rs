@@ -11,7 +11,7 @@ pub struct ConversationStream {
     /// Variable-height list state (S8-T44/C4): one item per semantic entry,
     /// natural heights. The same state owns the scroll position and the P4
     /// tail-follow semantics (`FollowMode::Tail`).
-    pub(crate) list: gpui::ListState,
+    pub(crate) list: gpui_kit::ListState,
     /// Active demo injection (`None` = idle/finished).
     pub(crate) injecting: Option<InjectionState>,
     /// Composer 输入状态（独立 `TextInput` Entity，1–8 行自适应多行）。
@@ -117,7 +117,7 @@ pub struct ConversationStream {
     /// away from the live bottom (P4).
     pub(crate) resume_tail_focus: FocusHandle,
     /// Cancels the watch listener and drops its fail-closed guard with the view.
-    pub(crate) _permission_listener_task: gpui::Task<()>,
+    pub(crate) _permission_listener_task: gpui_kit::Task<()>,
 }
 
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
@@ -201,8 +201,8 @@ impl ConversationStream {
         // P4 anchor (贴底跟随 / 上翻 detach / 回底 resume)，由列表原生承担
         // （任何上滚事件 detach，回到距底 1px 内恢复——容差与旧锚定状态机
         // 一致）。600px overdraw 保证滚动方向切换时前后各一屏已测量。
-        let list = gpui::ListState::new(0, gpui::ListAlignment::Top, px(600.0));
-        list.set_follow_mode(gpui::FollowMode::Tail);
+        let list = gpui_kit::ListState::new(0, gpui_kit::ListAlignment::Top, px(600.0));
+        list.set_follow_mode(gpui_kit::FollowMode::Tail);
         let initial_model = thread.model.clone();
         Self {
             thread,
@@ -344,7 +344,7 @@ impl ConversationStream {
     /// away from the live bottom. The list owns the scroll anchor and keeps the
     /// next layout pinned to the newest entry.
     pub(crate) fn resume_tail(&mut self, cx: &mut Context<Self>) {
-        self.list.set_follow_mode(gpui::FollowMode::Tail);
+        self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
         cx.notify();
     }
 

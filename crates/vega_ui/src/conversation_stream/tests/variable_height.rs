@@ -19,11 +19,11 @@ fn variable_item_height(index: usize) -> f32 {
     }
 }
 
-struct HeightView(gpui::ListState);
+struct HeightView(gpui_kit::ListState);
 
 impl Render for HeightView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        gpui::list(self.0.clone(), |index, _, _| {
+        gpui_kit::list(self.0.clone(), |index, _, _| {
             div().h(px(variable_item_height(index))).w_full().into_any()
         })
         .w_full()
@@ -31,22 +31,22 @@ impl Render for HeightView {
     }
 }
 
-fn draw_height_view(cx: &mut gpui::VisualTestContext, view: &Entity<HeightView>) {
+fn draw_height_view(cx: &mut gpui_kit::VisualTestContext, view: &Entity<HeightView>) {
     cx.draw(
-        gpui::point(px(0.), px(0.)),
-        gpui::size(px(100.), px(200.)),
+        gpui_kit::point(px(0.), px(0.)),
+        gpui_kit::size(px(100.), px(200.)),
         |_, _| view.clone().into_any_element(),
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn variable_height_geometry_items_measure_at_natural_heights(cx: &mut TestAppContext) {
     let cx = cx.add_empty_window();
     // 9 items: total = 3×(40+96+64) = 600px; viewport 200px. The overdraw is
     // large enough to measure every item in one frame so the geometry
     // assertions cover the whole list.
     let count = 9usize;
-    let state = gpui::ListState::new(count, gpui::ListAlignment::Top, px(600.0));
+    let state = gpui_kit::ListState::new(count, gpui_kit::ListAlignment::Top, px(600.0));
 
     let view = cx.update(|_, cx| cx.new(|_| HeightView(state.clone())));
     draw_height_view(cx, &view);
@@ -76,11 +76,11 @@ fn variable_height_geometry_items_measure_at_natural_heights(cx: &mut TestAppCon
     assert_eq!(total, expected_total, "total height is the exact item sum");
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn prepend_splice_preserves_page_boundary_anchor(cx: &mut TestAppContext) {
     let cx = cx.add_empty_window();
     // 12 items × mixed heights; viewport 200px.
-    let state = gpui::ListState::new(12, gpui::ListAlignment::Top, px(600.0));
+    let state = gpui_kit::ListState::new(12, gpui_kit::ListAlignment::Top, px(600.0));
 
     let view = cx.update(|_, cx| cx.new(|_| HeightView(state.clone())));
     draw_height_view(cx, &view);
@@ -88,7 +88,7 @@ fn prepend_splice_preserves_page_boundary_anchor(cx: &mut TestAppContext) {
     // The user reads item 5 (not at the page top): scroll so item 5 sits at
     // the viewport top with 8px offset into the item (a sub-pixel-exact
     // reading position).
-    state.scroll_to(gpui::ListOffset {
+    state.scroll_to(gpui_kit::ListOffset {
         item_ix: 5,
         offset_in_item: px(8.0),
     });

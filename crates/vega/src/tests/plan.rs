@@ -95,8 +95,10 @@ fn disabled_providers_do_not_resolve_or_make_enabled_models_ambiguous() {
     );
 }
 
-#[gpui::test]
-async fn active_plan_review_is_deferred_and_cancels_exactly_once(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn active_plan_review_is_deferred_and_cancels_exactly_once(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     cx.update(|cx| {
         cx.set_global(Theme::light());
         cx.set_global(SettingsOpen(false));

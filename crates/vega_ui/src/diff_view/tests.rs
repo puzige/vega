@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use gpui::{TestAppContext, WindowHandle};
+use gpui_kit::{TestAppContext, WindowHandle};
 
 struct Harness {
     view: Entity<DiffView>,
@@ -191,7 +191,7 @@ fn frozen_layout_constants_are_exact() {
     assert_eq!(DIFF_CHANGE_BACKGROUND_OPACITY, 0.08);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn focused_escape_closes_the_exact_diff_route(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());

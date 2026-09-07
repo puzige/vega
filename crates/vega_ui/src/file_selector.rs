@@ -13,7 +13,7 @@
 //! to the `FileSelect` key context so they shadow the composer bindings
 //! only while the list is open.
 
-use gpui::actions;
+use gpui_kit::actions;
 use vega_conversation::types::FileIndexSnapshot;
 
 /// UI-side hard cap mirroring the producer contract: the app layer walks the

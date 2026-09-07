@@ -100,9 +100,9 @@ impl Drop for AgentWorkerGuard {
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn production_agent_request_first_keeps_permission_until_proposal_ingress(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = diff_controller_repo();
     let data = tempfile::tempdir().expect("permission order data root");
@@ -267,9 +267,9 @@ async fn production_agent_request_first_keeps_permission_until_proposal_ingress(
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn production_agent_start_entry_surfaces_write_permission_and_continues(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     // The production entry owns a dedicated worker thread. Permit its
     // PermissionQueue wakeup to cross the deterministic test scheduler; all
@@ -472,8 +472,10 @@ fn finished_refresh_routes_only_to_matching_current_thread_cache() {
     );
 }
 
-#[gpui::test]
-async fn cancellation_keeps_active_until_durable_handshake_finishes(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn cancellation_keeps_active_until_durable_handshake_finishes(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     cx.update(|cx| {
         cx.set_global(Theme::light());
         cx.set_global(SettingsOpen(false));
@@ -563,9 +565,9 @@ async fn cancellation_keeps_active_until_durable_handshake_finishes(cx: &mut gpu
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn stop_resume_fences_drop_every_late_callback_per_c5_fence_class(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(|cx| {
         cx.set_global(Theme::light());

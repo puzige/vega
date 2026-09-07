@@ -130,9 +130,9 @@ fn commit_runtime_failure_is_typed_and_recovery_backoff_is_bounded() {
     assert_eq!(waits.len(), 5, "the terminal failure is bounded");
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn commit_controller_retiring_fence_is_first_wins_and_holds_owner(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(|cx| {
         cx.set_global(Theme::light());
@@ -208,9 +208,9 @@ async fn commit_controller_retiring_fence_is_first_wins_and_holds_owner(
     assert!(matches!(controller.claim(&fence), CommitClaim::Stale));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn commit_controller_binds_exact_snapshot_and_overflow_is_zero_work(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(|cx| {
         cx.set_global(Theme::light());
@@ -312,9 +312,9 @@ async fn commit_controller_binds_exact_snapshot_and_overflow_is_zero_work(
     assert!(active.cancel.is_none());
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn commit_controller_same_id_entity_aba_is_stale_and_worker_recovers_authority(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     let store = Store::open(":memory:").expect("commit window memory store");

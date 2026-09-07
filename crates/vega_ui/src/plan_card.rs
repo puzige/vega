@@ -1,7 +1,7 @@
 //! Typed Plan review card. It emits commands upward and never reads SQLite.
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::prelude::*;
+use gpui_kit::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, MouseButton, Window, actions, div,
     px,
 };
@@ -237,10 +237,10 @@ impl PlanCard {
 fn action_button(
     label: &'static str,
     enabled: bool,
-    color: gpui::Rgba,
+    color: gpui_kit::Rgba,
     focus: FocusHandle,
     tab_index: isize,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     div()
         .track_focus(&focus)
         .tab_index(tab_index)
@@ -267,7 +267,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use gpui::{Render, TestAppContext, WindowHandle};
+    use gpui_kit::{Render, TestAppContext, WindowHandle};
 
     struct Harness {
         card: Entity<PlanCard>,
@@ -340,7 +340,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn keyboard_focus_order_and_first_wins(cx: &mut TestAppContext) {
         let expected = [
             PlanReviewAction::Approve,

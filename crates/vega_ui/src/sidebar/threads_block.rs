@@ -58,8 +58,8 @@ pub struct ThreadsBlock {
     pub(crate) error: Option<String>,
     action_pending: bool,
     project_generation: u64,
-    actions_scroll: gpui::ScrollHandle,
-    menu_height: gpui::Pixels,
+    actions_scroll: gpui_kit::ScrollHandle,
+    menu_height: gpui_kit::Pixels,
     organization: Option<Organization>,
 }
 
@@ -87,7 +87,7 @@ impl ThreadsBlock {
             error: None,
             action_pending: false,
             project_generation: 0,
-            actions_scroll: gpui::ScrollHandle::new(),
+            actions_scroll: gpui_kit::ScrollHandle::new(),
             menu_height: px(360.),
             organization: None,
         };
@@ -578,7 +578,7 @@ impl ThreadsBlock {
                         if finder {
                             cx.reveal_path(&path);
                         } else {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                                 path.to_string_lossy().into_owned(),
                             ));
                         }
@@ -633,7 +633,7 @@ impl ThreadsBlock {
             ),
             4 => self.project_action(&thread, true, cx),
             5 => self.project_action(&thread, false, cx),
-            6 => cx.write_to_clipboard(gpui::ClipboardItem::new_string(thread.id)),
+            6 => cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(thread.id)),
             7 => {
                 cx.set_global(SettingsOpen(true));
                 cx.refresh_windows();
@@ -1200,18 +1200,20 @@ impl Render for ThreadsBlock {
         }
         let collapsed = cx.global::<SessionsCollapsed>().0;
         div()
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                if event.keystroke.key == "tab" && this.editing.is_none() {
-                    this.close_actions();
-                    if event.keystroke.modifiers.shift {
-                        window.focus_prev(cx);
-                    } else {
-                        window.focus_next(cx);
+            .on_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "tab" && this.editing.is_none() {
+                        this.close_actions();
+                        if event.keystroke.modifiers.shift {
+                            window.focus_prev(cx);
+                        } else {
+                            window.focus_next(cx);
+                        }
+                        cx.stop_propagation();
+                        cx.notify();
                     }
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
+                }),
+            )
             .flex()
             .flex_col()
             .gap_1()
@@ -1248,7 +1250,7 @@ mod task_action_tests {
     use super::*;
 
     fn fixture(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) -> (tempfile::TempDir, Entity<ThreadsBlock>, Thread, Thread) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("owned.db")).unwrap();
@@ -1279,16 +1281,16 @@ mod task_action_tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn deferred_project_copy_pointer_occludes_other_task_and_preserves_route_draft(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let (dir, block, current, target) = fixture(cx);
         cx.update(|cx| {
             cx.set_global(vega_theme::Theme::light());
             cx.set_global(SessionsCollapsed(false));
             crate::init(cx);
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
                 "previous session id".into(),
             ));
             with_store(cx, |store| {
@@ -1312,10 +1314,10 @@ mod task_action_tests {
         let root_block = block.clone();
         let root_draft = draft.clone();
         let window = cx.update(|cx| {
-            let bounds = gpui::Bounds::centered(None, gpui::size(px(960.), px(600.)), cx);
+            let bounds = gpui_kit::Bounds::centered(None, gpui_kit::size(px(960.), px(600.)), cx);
             cx.open_window(
-                gpui::WindowOptions {
-                    window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                gpui_kit::WindowOptions {
+                    window_bounds: Some(gpui_kit::WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
                 move |_, cx| {
@@ -1328,7 +1330,7 @@ mod task_action_tests {
             .unwrap()
         });
         cx.run_until_parked();
-        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         let trigger: &'static str =
             Box::leak(format!("thread-actions-{}", target.id).into_boxed_str());
         let trigger_bounds = visual.debug_bounds(trigger).unwrap();
@@ -1374,9 +1376,9 @@ mod task_action_tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn task_mutation_epoch_fences_real_archive_and_releases_after_dropped_async_owner(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         use crate::navigation::{TaskMutationState, begin_task_mutation, finish_task_mutation};
         let (dir, block, first, other) = fixture(cx);
@@ -1428,8 +1430,8 @@ mod task_action_tests {
         );
     }
 
-    #[gpui::test]
-    async fn task_menu_keyboard_reaches_unread_and_escape(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    async fn task_menu_keyboard_reaches_unread_and_escape(cx: &mut gpui_kit::TestAppContext) {
         let (dir, block, _, _) = fixture(cx);
         cx.update(|cx| {
             cx.set_global(vega_theme::Theme::light());
@@ -1467,9 +1469,9 @@ mod task_action_tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn durable_unread_ack_preserves_new_model_and_metadata_refresh(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let (dir, block, first, _) = fixture(cx);
         block.update(cx, |block, cx| {
@@ -1506,9 +1508,9 @@ mod task_action_tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn rename_noncurrent_task_does_not_navigate_and_failure_retains_input(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let (dir, block, first, other) = fixture(cx);
         block.update(cx, |block, cx| {
@@ -1552,8 +1554,8 @@ mod task_action_tests {
         );
     }
 
-    #[gpui::test]
-    async fn late_task_ack_cannot_replace_new_route(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    async fn late_task_ack_cannot_replace_new_route(cx: &mut gpui_kit::TestAppContext) {
         let (dir, block, first, other) = fixture(cx);
         block.update(cx, |block, cx| {
             block.apply_update(

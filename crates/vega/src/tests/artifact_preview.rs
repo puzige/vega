@@ -1,8 +1,8 @@
 use super::*;
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn artifact_controller_agent_batch_generation_orphans_are_content_free_refreshes(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     let store = Store::open(":memory:").expect("artifact generation store");
@@ -233,9 +233,9 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn artifact_controller_preview_open_latest_stale_and_max_fences(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     let late_branch_repo = artifact_controller_repo();

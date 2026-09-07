@@ -3,9 +3,9 @@
 //! render_frame self-measurement probe (see
 //! [`vega_ui::conversation_stream::bench`]).
 
-use gpui::prelude::*;
-use gpui::*;
-use gpui_platform::application;
+use gpui_kit::application;
+use gpui_kit::prelude::*;
+use gpui_kit::*;
 use vega_theme::*;
 use vega_ui::conversation_stream::bench as render_frame_bench;
 use vega_ui::settings::*;
@@ -38,11 +38,18 @@ fn main() {
     // S3-T17 隐藏自测量模式：`vega --vega-bench-render <out.json>` 跑完写
     // JSON 后退出（xtask bench render_frame 的数据来源），不进入正常应用。
     if let Some(output) = render_frame_bench::output_path_from_args() {
-        application().run(|cx: &mut App| render_frame_bench::start(output, cx));
+        application().run(|cx: &mut App| {
+            gpui_kit::init(cx);
+            render_frame_bench::start(output, cx);
+        });
         return;
     }
 
     application().run(|cx: &mut App| {
+        // GPUI Kit owns the shared component/base globals before any Vega
+        // view can render a Kit control.
+        gpui_kit::init(cx);
+
         // Seed the global theme from the macOS appearance; components read it
         // via `vega_theme::theme(cx)`.
         let theme = match vega_store::config::load()
@@ -53,6 +60,11 @@ fn main() {
             Ok("dark") => Theme::dark(),
             _ => Theme::system(cx),
         };
+        let component_mode = match theme.appearance {
+            Appearance::Light => gpui_kit::component::ThemeMode::Light,
+            Appearance::Dark => gpui_kit::component::ThemeMode::Dark,
+        };
+        gpui_kit::component::Theme::change(component_mode, None, cx);
         cx.set_global(theme);
 
         // Sidebar collapse preference, restored from config.toml before the
@@ -117,7 +129,16 @@ fn main() {
         cx.activate(true);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &ToggleTheme, cx| {
-            cx.global_mut::<Theme>().toggle();
+            let appearance = {
+                let theme = cx.global_mut::<Theme>();
+                theme.toggle();
+                theme.appearance
+            };
+            let component_mode = match appearance {
+                Appearance::Light => gpui_kit::component::ThemeMode::Light,
+                Appearance::Dark => gpui_kit::component::ThemeMode::Dark,
+            };
+            gpui_kit::component::Theme::change(component_mode, None, cx);
             // Redraw all windows so the new palette is visible immediately.
             cx.refresh_windows();
         });

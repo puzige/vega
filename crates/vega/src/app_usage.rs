@@ -6,7 +6,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gpui::{Context, Entity};
+use gpui_kit::{Context, Entity};
 use vega_conversation::{
     UsageDashboardController,
     types::{UsageDashboard, UsageDashboardError},

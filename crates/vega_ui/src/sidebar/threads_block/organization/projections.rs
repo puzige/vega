@@ -486,7 +486,7 @@ fn sorted_threads(threads: &[Thread], sort: SidebarTaskSort) -> Vec<Thread> {
     });
     threads
 }
-fn group_color(color: SidebarGroupColor, colors: &ThemeColors) -> gpui::Rgba {
+fn group_color(color: SidebarGroupColor, colors: &ThemeColors) -> gpui_kit::Rgba {
     colors.sidebar_group_colors[match color {
         SidebarGroupColor::Gray => 0,
         SidebarGroupColor::Red => 1,

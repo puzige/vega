@@ -134,9 +134,9 @@ fn artifact_controller_terminal_refresh_captures_and_bash_reconciles_downgrade()
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn artifact_controller_real_batch_pairing_conflict_overflow_and_route_cancel(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = artifact_controller_repo();
     let store = Store::open(":memory:").expect("artifact window memory store");

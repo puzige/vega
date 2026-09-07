@@ -37,8 +37,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
 use std::time::{Duration, Instant};
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::prelude::*;
+use gpui_kit::{
     App, Bounds, Context, Entity, Render, TitlebarOptions, Window, WindowBounds, WindowOptions,
     div, px, size,
 };
@@ -504,7 +504,7 @@ impl Render for ProbeRoot {
                 p2.batches_window += 1;
             }
         }
-        let content: gpui::AnyElement = match &self.stream {
+        let content: gpui_kit::AnyElement = match &self.stream {
             Some(stream) => stream.clone().into_any_element(),
             None => div().size_full().into_any_element(),
         };
@@ -524,7 +524,8 @@ impl Render for ProbeRoot {
 
 /// Runs the probe app for the parsed mode. Exits when the app quits.
 pub fn run(mode: ProbeMode) {
-    gpui_platform::application().run(move |cx: &mut App| {
+    gpui_kit::application().run(move |cx: &mut App| {
+        gpui_kit::init(cx);
         // Production boot path (mirrors the app entry at 429cb2d).
         cx.set_global(vega_theme::Theme::system(cx));
         cx.set_global(SidebarCollapsed(vega_ui::sidebar::load_collapsed()));

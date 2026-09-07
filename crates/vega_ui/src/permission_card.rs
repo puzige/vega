@@ -2,8 +2,8 @@
 
 use std::fmt;
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::prelude::*;
+use gpui_kit::{
     AnyElement, App, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, MouseUpEvent, Task,
     Window, actions, div, px,
 };
@@ -96,7 +96,7 @@ impl PermissionCard {
     pub(crate) fn new(
         request: &PermissionRequest,
         lease: PermissionLease,
-        cx: &mut gpui::Context<Self>,
+        cx: &mut gpui_kit::Context<Self>,
     ) -> Self {
         let note = cx.new(|cx| TextInput::new(cx, "拒绝原因（可选）", false));
         cx.observe(&note, |_, _, cx| cx.notify()).detach();
@@ -157,11 +157,11 @@ impl PermissionCard {
 
     /// Resolves this card's own lease without touching the queue's current
     /// active slot, which may already belong to a newer call.
-    pub(crate) fn timeout(&mut self, cx: &mut gpui::Context<Self>) {
+    pub(crate) fn timeout(&mut self, cx: &mut gpui_kit::Context<Self>) {
         self.resolve(PermissionDecision::Timeout, cx);
     }
 
-    fn resolve(&mut self, decision: PermissionDecision, cx: &mut gpui::Context<Self>) {
+    fn resolve(&mut self, decision: PermissionDecision, cx: &mut gpui_kit::Context<Self>) {
         if self.resolved {
             return;
         }
@@ -174,7 +174,7 @@ impl PermissionCard {
         cx.notify();
     }
 
-    fn deny(&mut self, cx: &mut gpui::Context<Self>) {
+    fn deny(&mut self, cx: &mut gpui_kit::Context<Self>) {
         let note = self.note.read(cx).text().trim().to_string();
         self.resolve(
             PermissionDecision::Deny {
@@ -184,7 +184,7 @@ impl PermissionCard {
         );
     }
 
-    fn sync_external_resolution(&mut self, cx: &mut gpui::Context<Self>) {
+    fn sync_external_resolution(&mut self, cx: &mut gpui_kit::Context<Self>) {
         if !self.resolved
             && self
                 .lease
@@ -235,7 +235,7 @@ impl PermissionCard {
         self.focus(next, window, cx);
     }
 
-    fn activate_focused(&mut self, window: &Window, cx: &mut gpui::Context<Self>) -> bool {
+    fn activate_focused(&mut self, window: &Window, cx: &mut gpui_kit::Context<Self>) -> bool {
         if self.once_focus.is_focused(window) {
             self.resolve(PermissionDecision::Once, cx);
             true
@@ -505,7 +505,7 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
 
-    use gpui::{Render, TestAppContext, WindowHandle, div};
+    use gpui_kit::{Render, TestAppContext, WindowHandle, div};
     use tokio_util::sync::CancellationToken;
     use vega_conversation::agent::{PermissionHook, PermissionQueue, PermissionQueueListener};
     use vega_theme::Theme;
@@ -522,7 +522,7 @@ mod tests {
         fn render(
             &mut self,
             window: &mut Window,
-            cx: &mut gpui::Context<Self>,
+            cx: &mut gpui_kit::Context<Self>,
         ) -> impl IntoElement {
             let rows = self.card.read(cx).row_count();
             div().flex().flex_col().children(
@@ -594,7 +594,7 @@ mod tests {
             .unwrap()
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn ordinary_focus_note_and_keyboard_decisions(cx: &mut TestAppContext) {
         init_test(cx);
         for tabs in 0..4 {
@@ -638,7 +638,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn ordinary_tab_wrap_cmd_enter_and_escape_matrix(cx: &mut TestAppContext) {
         init_test(cx);
         let (window, card, future, _listener) = open_card(cx, false, "printf cycle");
@@ -676,7 +676,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn danger_focus_ring_enter_and_space_matrix(cx: &mut TestAppContext) {
         init_test(cx);
         for tabs in 0..3 {
@@ -744,7 +744,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn timeout_duplicate_and_window_release_are_fail_closed(cx: &mut TestAppContext) {
         init_test(cx);
         let (window, card, future, _listener) = open_card(cx, false, "printf ok");
@@ -767,7 +767,7 @@ mod tests {
         assert_eq!(future.await, PermissionDecision::Timeout);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn danger_copy_long_utf8_command_and_debug_are_complete_and_redacted(cx: &mut TestAppContext) {
         init_test(cx);
         let command = format!("printf '{}{}'", "中".repeat(70), "a".repeat(90));

@@ -7,9 +7,9 @@ enum CapturedCommitEvent {
     Commit(CommitRequested),
     Close,
 }
-#[gpui::test]
+#[gpui_kit::test]
 async fn commit_panel_accepts_canonical_mixed_staged_and_unstaged_identity(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = diff_controller_repo();
     run_fixture_git(repo.path(), &["add", "--", "tracked.rs"]);
@@ -44,8 +44,10 @@ async fn commit_panel_accepts_canonical_mixed_staged_and_unstaged_identity(
     });
 }
 
-#[gpui::test]
-async fn commit_panel_real_key_handlers_are_scoped_and_first_wins(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn commit_panel_real_key_handlers_are_scoped_and_first_wins(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     cx.update(|cx| {
         cx.set_global(Theme::light());
         vega_ui::init(cx);
@@ -279,9 +281,9 @@ async fn commit_panel_real_key_handlers_are_scoped_and_first_wins(cx: &mut gpui:
     assert!(commit.is_some_and(|request| request.prepared_id == prepared.id));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn commit_app_production_handlers_reconcile_before_release_across_close_and_routes_s6_controller(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = diff_controller_repo();
     let store = Store::open(":memory:").expect("commit production store");

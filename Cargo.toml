@@ -74,7 +74,7 @@ vega_token = { path = "crates/vega_token" }
 anyhow = "=1.0.104"
 # 仅供测试使用（dev-dependency）
 tempfile = "=3.27.0"
-# UI 依赖（exec-guide §5 白名单）：zed 官方仓库 git rev 锁定（phase1-plan E1）；
-# 禁第三方发行版、禁混用来源、不开 runtime_shaders；升级须全依赖图同步换 rev
-gpui = { git = "https://github.com/zed-industries/zed", rev = "9e9b13c5b6e3d2f1c3819eb8e96b6f8ab5e97aab" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "9e9b13c5b6e3d2f1c3819eb8e96b6f8ab5e97aab", features = ["font-kit"] }
+# UI 依赖：GPUI Kit 是唯一入口；它 re-export 了匹配版本的 GPUI、平台层
+# 以及可选的组件层。源码使用 facade crate 的 `gpui_kit::…` 命名空间，
+# 避免 GPUI Kit re-export 的 `gpui` 模块与外层 crate 名发生 glob 冲突。
+gpui_kit = { package = "gpui-kit", version = "=0.6.0", default-features = false, features = ["component", "test-support"] }

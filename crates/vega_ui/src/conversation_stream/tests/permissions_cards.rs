@@ -1,6 +1,6 @@
 use super::*;
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn permission_queue_installs_matching_card_and_once_resolves(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);
@@ -15,7 +15,7 @@ async fn permission_queue_installs_matching_card_and_once_resolves(cx: &mut Test
     assert!(!has_active_permission(window, cx));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn permission_request_first_waits_for_matching_proposal(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);
@@ -58,7 +58,7 @@ async fn permission_request_first_waits_for_matching_proposal(cx: &mut TestAppCo
     assert!(!has_active_permission(window, cx));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn terminal_for_old_card_does_not_clear_new_permission_request(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);
@@ -102,7 +102,7 @@ async fn terminal_for_old_card_does_not_clear_new_permission_request(cx: &mut Te
     assert!(!has_active_permission(window, cx));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn terminal_first_request_is_failed_closed_and_late_proposal_stays_hidden(
     cx: &mut TestAppContext,
 ) {
@@ -141,7 +141,7 @@ async fn terminal_first_request_is_failed_closed_and_late_proposal_stays_hidden(
     assert!(!has_active_permission(window, cx));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn settings_close_deferred_permission_before_late_proposal(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);
@@ -164,7 +164,7 @@ async fn settings_close_deferred_permission_before_late_proposal(cx: &mut TestAp
     assert!(!has_active_permission(window, cx));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn cancel_clears_deferred_permission_before_late_proposal(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);
@@ -185,7 +185,7 @@ async fn cancel_clears_deferred_permission_before_late_proposal(cx: &mut TestApp
     assert!(!has_active_permission(window, cx));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn permission_target_mismatch_times_out_and_corrupts_tool_card(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);
@@ -203,7 +203,7 @@ async fn permission_target_mismatch_times_out_and_corrupts_tool_card(cx: &mut Te
     assert!(!visible.contains("printf different"));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn late_permission_requests_for_approved_terminal_or_corrupt_cards_timeout(
     cx: &mut TestAppContext,
 ) {
@@ -281,7 +281,7 @@ async fn late_permission_requests_for_approved_terminal_or_corrupt_cards_timeout
     assert_eq!(permission_entries, 0);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn settings_hidden_and_terminal_paths_fail_closed_without_rendering(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);
@@ -329,7 +329,7 @@ async fn settings_hidden_and_terminal_paths_fail_closed_without_rendering(cx: &m
     assert!(!has_active_permission(window, cx));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn window_release_drops_listener_and_active_card_fail_closed(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);
@@ -344,7 +344,7 @@ async fn window_release_drops_listener_and_active_card_fail_closed(cx: &mut Test
     assert_eq!(future.await, PermissionDecision::Timeout);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn thread_switch_timeout_contract_removes_prompt_before_view_replacement(
     cx: &mut TestAppContext,
 ) {

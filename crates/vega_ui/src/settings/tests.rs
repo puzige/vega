@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use gpui::{
+use gpui_kit::{
     Bounds, KeyBinding, Render, TestAppContext, VisualTestContext, WindowBounds, WindowHandle,
     WindowOptions, size,
 };
@@ -135,7 +135,7 @@ fn upsert_appends_new_and_updates_same_name_models() {
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn provider_submit_uses_owned_backends_and_emits_only_after_save(cx: &mut TestAppContext) {
     let view = cx.new(SettingsView::new_for_test);
     let saved = Arc::new(Mutex::new(Vec::<AppConfig>::new()));
@@ -211,7 +211,7 @@ async fn provider_submit_uses_owned_backends_and_emits_only_after_save(cx: &mut 
     }));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn provider_submit_keeps_draft_and_authority_on_validation_or_save_failure(
     cx: &mut TestAppContext,
 ) {
@@ -280,7 +280,7 @@ async fn provider_submit_keeps_draft_and_authority_on_validation_or_save_failure
     }));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn provider_form_focus_and_edit_action_follow_the_real_ui_path(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());
@@ -423,7 +423,7 @@ async fn provider_form_focus_and_edit_action_follow_the_real_ui_path(cx: &mut Te
     assert_eq!(save_count.load(Ordering::SeqCst), 1);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn provider_models_frame_reserves_rows_and_keeps_tail_visible(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());
@@ -575,7 +575,7 @@ fn explicit_openai_profile(provider: &str, model: &str) -> ReasoningProfileProje
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn reasoning_template_is_explicit_and_failed_draft_keeps_exact_owner(
     cx: &mut TestAppContext,
 ) {
@@ -661,7 +661,7 @@ async fn reasoning_template_is_explicit_and_failed_draft_keeps_exact_owner(
     assert_eq!(second.profile.model, "model-b");
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn reasoning_unknown_template_is_tab_reachable_and_enter_activates(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());
@@ -764,7 +764,7 @@ async fn reasoning_unknown_template_is_tab_reachable_and_enter_activates(cx: &mu
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn pricing_actions_are_tab_reachable_and_enter_space_activate_once(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());
@@ -914,7 +914,7 @@ async fn pricing_actions_are_tab_reachable_and_enter_space_activate_once(cx: &mu
     assert_eq!(*events.lock().expect("pricing events"), vec![(7, true)]);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn local_credentials_settings_save_and_runtime_read_share_owned_root(
     cx: &mut TestAppContext,
 ) {
@@ -964,7 +964,7 @@ async fn local_credentials_settings_save_and_runtime_read_share_owned_root(
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn preference_worker_preserves_new_provider_fields_and_detects_same_field_conflict(
     cx: &mut TestAppContext,
 ) {
@@ -1004,7 +1004,7 @@ async fn preference_worker_preserves_new_provider_fields_and_detects_same_field_
     }));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn provider_rename_retains_exact_form_baseline_and_rejects_collision(
     cx: &mut TestAppContext,
 ) {

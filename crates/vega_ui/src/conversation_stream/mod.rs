@@ -62,8 +62,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::prelude::*;
+use gpui_kit::{
     AbsoluteLength, AnyElement, App, Context, DefiniteLength, Entity, EventEmitter, FocusHandle,
     FontStyle, FontWeight, MouseButton, MouseUpEvent, Pixels, Render, Rgba, StrikethroughStyle,
     StyledText, TextRun, TextStyle, UnderlineStyle, Window, actions, div, list, px,

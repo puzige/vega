@@ -218,37 +218,39 @@ impl ThreadsBlock {
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                let count = this.organization_menu_items().len();
-                if count == 0 {
-                    return;
-                }
-                let Some(org) = this.organization.as_mut() else {
-                    return;
-                };
-                match event.keystroke.key.as_str() {
-                    "up" => org.menu_index = (org.menu_index + count - 1) % count,
-                    "down" => org.menu_index = (org.menu_index + 1) % count,
-                    "tab" => {
-                        org.menu_index = if event.keystroke.modifiers.shift {
-                            (org.menu_index + count - 1) % count
-                        } else {
-                            (org.menu_index + 1) % count
+            .on_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    let count = this.organization_menu_items().len();
+                    if count == 0 {
+                        return;
+                    }
+                    let Some(org) = this.organization.as_mut() else {
+                        return;
+                    };
+                    match event.keystroke.key.as_str() {
+                        "up" => org.menu_index = (org.menu_index + count - 1) % count,
+                        "down" => org.menu_index = (org.menu_index + 1) % count,
+                        "tab" => {
+                            org.menu_index = if event.keystroke.modifiers.shift {
+                                (org.menu_index + count - 1) % count
+                            } else {
+                                (org.menu_index + 1) % count
+                            }
                         }
+                        "escape" => org.menu = None,
+                        "enter" | "space" => {
+                            let index = org.menu_index;
+                            this.activate_organization_menu(index, window, cx);
+                        }
+                        _ => return,
                     }
-                    "escape" => org.menu = None,
-                    "enter" | "space" => {
-                        let index = org.menu_index;
-                        this.activate_organization_menu(index, window, cx);
+                    if let Some(org) = this.organization.as_ref() {
+                        org.menu_scroll.scroll_to_item(org.menu_index + 1);
                     }
-                    _ => return,
-                }
-                if let Some(org) = this.organization.as_ref() {
-                    org.menu_scroll.scroll_to_item(org.menu_index + 1);
-                }
-                cx.stop_propagation();
-                cx.notify();
-            }))
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
             .child(
                 div()
                     .px_2()

@@ -60,7 +60,7 @@ fn user_entry_text(entry: &StreamEntry) -> String {
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let stream = cx.new(|cx| ConversationStream::new(permission_thread(), cx));
@@ -94,11 +94,11 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
     let (harness, visual) = cx.add_window_view(|_, _| StreamHarness {
         stream: stream.clone(),
     });
-    let draw = |visual: &mut gpui::VisualTestContext, harness: &Entity<StreamHarness>| {
+    let draw = |visual: &mut gpui_kit::VisualTestContext, harness: &Entity<StreamHarness>| {
         let element = harness.clone();
         visual.draw(
-            gpui::point(px(0.), px(0.)),
-            gpui::size(px(1200.), px(800.)),
+            gpui_kit::point(px(0.), px(0.)),
+            gpui_kit::size(px(1200.), px(800.)),
             |_, _| element.into_any_element(),
         );
     };
@@ -355,7 +355,7 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
 /// Whether the last entry is on screen (the tail-follow visibility proof).
 fn tail_item_visible(
     stream: &Entity<ConversationStream>,
-    visual: &mut gpui::VisualTestContext,
+    visual: &mut gpui_kit::VisualTestContext,
 ) -> bool {
     stream.read_with(visual, |stream, _| {
         let count = stream.entries.len();

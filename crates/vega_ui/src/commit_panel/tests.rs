@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use gpui::{TestAppContext, WindowHandle};
+use gpui_kit::{TestAppContext, WindowHandle};
 
 struct Harness {
     panel: Entity<CommitPanel>,
@@ -147,7 +147,7 @@ fn commit_panel_focus_boundaries_escape_without_wrapping() {
     assert_eq!(model.focus(), CommitPanelFocus::Generate);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn commit_panel_draft_revision_overflow_never_accepts_equal_revision(
     cx: &mut TestAppContext,
 ) {
@@ -163,7 +163,7 @@ async fn commit_panel_draft_revision_overflow_never_accepts_equal_revision(
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn commit_panel_scoped_keys_focus_cancel_and_escape_first_wins(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());
@@ -203,7 +203,7 @@ async fn commit_panel_scoped_keys_focus_cancel_and_escape_first_wins(cx: &mut Te
     assert!(!panel.read_with(cx, |panel, _| panel.is_open()));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn commit_panel_ready_tab_chain_reaches_editor_generate_and_confirm(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());

@@ -2,7 +2,7 @@ use crate::trusted_action::*;
 use std::path::PathBuf;
 use std::sync::*;
 
-use gpui::*;
+use gpui_kit::*;
 use vega_conversation::types::*;
 use vega_conversation::*;
 use vega_ui::branch_selector::*;

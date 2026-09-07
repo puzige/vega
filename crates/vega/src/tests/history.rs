@@ -103,8 +103,8 @@ fn history_page_worker_reads_one_keyset_page_off_thread() {
     assert_eq!(heads.len(), 100);
 }
 
-#[gpui::test]
-async fn late_hydration_page_is_dropped_after_route_replacement(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn late_hydration_page_is_dropped_after_route_replacement(cx: &mut gpui_kit::TestAppContext) {
     let (store, thread, _dir) = seed_hydration_thread(150);
     // Read the typed page while the seed store is alive, then hand the
     // store to the route globals (the app never re-reads it here).
@@ -153,8 +153,10 @@ async fn late_hydration_page_is_dropped_after_route_replacement(cx: &mut gpui::T
     assert_eq!(b_entries, 0, "the late page never reaches the new route");
 }
 
-#[gpui::test]
-async fn file_index_cancel_cancels_the_owned_worker_without_joining(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn file_index_cancel_cancels_the_owned_worker_without_joining(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     let workspace = tempfile::tempdir().expect("file index cancellation workspace");
     let store = Store::open(":memory:").expect("file index cancellation store");
     store.migrate().expect("file index cancellation migrations");
@@ -332,8 +334,10 @@ fn at_reference_rejection_keeps_provider_at_zero_calls() {
     );
 }
 
-#[gpui::test]
-async fn at_reference_real_subscription_indexes_and_injects_request(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn at_reference_real_subscription_indexes_and_injects_request(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     let workspace = tempfile::tempdir().expect("subscription workspace");
     std::fs::write(
         workspace.path().join("notes.txt"),

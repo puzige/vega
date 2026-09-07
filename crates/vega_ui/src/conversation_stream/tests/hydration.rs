@@ -1,6 +1,6 @@
 use super::*;
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn hydrated_page_fills_durable_entries_in_sequence_position(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "hydration-thread");
     stream.update(cx, |stream, cx| {
@@ -51,7 +51,7 @@ async fn hydrated_page_fills_durable_entries_in_sequence_position(cx: &mut TestA
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn scroll_up_page_prepends_and_keeps_streaming_turn_on_target(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "hydration-prepend");
     // A live agent turn is streaming when the user scrolls up.
@@ -112,7 +112,7 @@ async fn scroll_up_page_prepends_and_keeps_streaming_turn_on_target(cx: &mut Tes
     assert_eq!(cursor, Some(1));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn hydrated_durable_cards_reconcile_first_wins(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "hydration-dedup");
     let page_entries = vec![
@@ -141,7 +141,7 @@ async fn hydrated_durable_cards_reconcile_first_wins(cx: &mut TestAppContext) {
     assert_eq!(summaries, 1, "the summary card stays first-wins unique");
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn foreign_thread_summary_is_dropped_and_failure_pauses(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "hydration-fence");
     // Failure: the in-flight slot releases, auto-retry pauses.

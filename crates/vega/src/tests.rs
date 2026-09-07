@@ -6,8 +6,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use gpui::prelude::*;
-use gpui::{App, Entity, Focusable, Window, div};
+use gpui_kit::prelude::*;
+use gpui_kit::{App, Entity, Focusable, Window, div};
 use vega_conversation::types::{
     BranchSnapshot, BranchSwitchCompletion, BranchSwitchOutcome, CommitErrorCode,
     CommitPrepareCompletion, ConversationEvent, GitWorkspaceErrorCode, OpenInOutcome, OpenInTarget,
@@ -84,8 +84,8 @@ pub(crate) use diff::{
 pub(crate) use pricing::CommitPanelHarness;
 
 fn pump_test_app(
-    cx: &mut gpui::TestAppContext,
-    mut ready: impl FnMut(&mut gpui::TestAppContext) -> bool,
+    cx: &mut gpui_kit::TestAppContext,
+    mut ready: impl FnMut(&mut gpui_kit::TestAppContext) -> bool,
 ) {
     for _ in 0..400 {
         cx.executor().advance_clock(DIFF_RESULT_POLL);

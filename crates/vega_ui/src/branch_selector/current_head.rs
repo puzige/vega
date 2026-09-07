@@ -169,8 +169,10 @@ impl BranchSelector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[gpui::test]
-    async fn r14_head_resolution_rejects_replaced_database_owner(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    async fn r14_head_resolution_rejects_replaced_database_owner(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let owned = dir.path().canonicalize().unwrap();
         let mut stores = Vec::new();

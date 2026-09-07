@@ -411,19 +411,21 @@ impl ConversationStream {
                             cx.notify();
                         }),
                     )
-                    .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            if permissions {
-                                this.mode_menu_open = false;
-                                this.permission_menu_open = !this.permission_menu_open;
-                            } else {
-                                this.permission_menu_open = false;
-                                this.mode_menu_open = !this.mode_menu_open;
+                    .on_key_down(
+                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                if permissions {
+                                    this.mode_menu_open = false;
+                                    this.permission_menu_open = !this.permission_menu_open;
+                                } else {
+                                    this.permission_menu_open = false;
+                                    this.mode_menu_open = !this.mode_menu_open;
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
                             }
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
-                    }))
+                        }),
+                    )
                     .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
                     .when(self.compact_workspace, |trigger| {
                         trigger
@@ -686,10 +688,10 @@ impl ConversationStream {
         // The containing block is the whole input row. Anchor the popup's
         // bottom to its top, rather than covering the draft at bottom: 0.
         // Defer paint/hit-testing so the transcript cannot cover candidates.
-        gpui::deferred(
+        gpui_kit::deferred(
             div()
                 .absolute()
-                .bottom(gpui::relative(1.0))
+                .bottom(gpui_kit::relative(1.0))
                 .mb_2()
                 .left_0()
                 .w(px(360.))
@@ -870,7 +872,7 @@ fn segment(
     colors: ThemeColors,
     focus: FocusHandle,
     enabled: bool,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     div()
         .track_focus(&focus)
         .px_2()

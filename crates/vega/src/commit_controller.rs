@@ -4,7 +4,7 @@ use std::sync::atomic::*;
 use std::sync::*;
 use std::time::*;
 
-use gpui::*;
+use gpui_kit::*;
 use vega_conversation::types::ArtifactCard as ArtifactProjection;
 use vega_conversation::types::*;
 use vega_conversation::*;

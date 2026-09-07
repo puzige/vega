@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{
+use gpui_kit::{
     Bounds, TestAppContext, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, size,
 };
 use std::io::{Read, Write};
@@ -19,7 +19,7 @@ fn click(cx: &mut TestAppContext, window: WindowHandle<Harness>, selector: &'sta
     cx.run_until_parked();
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn pointer_settings_uses_real_service_config_and_loopback_transport(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("config.toml");
@@ -168,7 +168,7 @@ async fn pointer_settings_uses_real_service_config_and_loopback_transport(cx: &m
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn pointer_credential_recovery_patch_and_reload_clear_obsolete_network_results(
     cx: &mut TestAppContext,
 ) {
@@ -257,7 +257,7 @@ async fn pointer_credential_recovery_patch_and_reload_clear_obsolete_network_res
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn small_provider_detail_retains_url_height_with_multiple_models(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("config.toml");
@@ -339,7 +339,7 @@ async fn small_provider_detail_retains_url_height_with_multiple_models(cx: &mut 
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn pointer_stop_clears_pending_connection_projection(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());

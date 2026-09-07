@@ -37,7 +37,7 @@ pub(crate) fn pricing_mutation_input_bytes(mutation: &PricingMutation) -> Option
     }
 }
 
-pub(crate) fn pricing_status(label: &'static str, color: gpui::Rgba) -> Div {
+pub(crate) fn pricing_status(label: &'static str, color: gpui_kit::Rgba) -> Div {
     div()
         .px_3()
         .py_2()
@@ -52,7 +52,7 @@ pub(crate) fn action_button(
     label: &'static str,
     colors: vega_theme::ThemeColors,
     focus: Option<FocusHandle>,
-    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui::App) + 'static,
+    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui_kit::App) + 'static,
 ) -> Div {
     action_button_owned(label.to_string(), colors, focus, listener)
 }
@@ -65,7 +65,7 @@ pub(crate) fn action_button_owned(
     label: String,
     colors: vega_theme::ThemeColors,
     focus: Option<FocusHandle>,
-    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui::App) + 'static,
+    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui_kit::App) + 'static,
 ) -> Div {
     let enabled = focus.is_some();
     div()
@@ -109,7 +109,7 @@ pub(crate) fn pricing_notice_label(notice: PricingNotice) -> &'static str {
     }
 }
 
-pub(crate) fn section_title(label: &'static str, color: gpui::Rgba) -> Div {
+pub(crate) fn section_title(label: &'static str, color: gpui_kit::Rgba) -> Div {
     div()
         .text_size(px(Typography::HEADING_BLOCK))
         .font_weight(Typography::HEADING_BLOCK_WEIGHT)
@@ -117,7 +117,7 @@ pub(crate) fn section_title(label: &'static str, color: gpui::Rgba) -> Div {
         .child(label)
 }
 
-pub(crate) fn field_label(label: &'static str, color: gpui::Rgba) -> Div {
+pub(crate) fn field_label(label: &'static str, color: gpui_kit::Rgba) -> Div {
     div()
         .w(px(72.))
         .text_color(color)

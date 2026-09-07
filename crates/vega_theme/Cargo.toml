@@ -4,4 +4,4 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-gpui.workspace = true
+gpui_kit.workspace = true

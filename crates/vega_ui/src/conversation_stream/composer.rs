@@ -16,7 +16,7 @@ impl ConversationStream {
 
     pub(crate) fn on_settings_menu_key(
         &mut self,
-        event: &gpui::KeyDownEvent,
+        event: &gpui_kit::KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

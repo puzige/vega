@@ -12,8 +12,8 @@
 //! typing; cached actual local references decide the stored/re-entry badge.
 //! Values persist only in the owner-only plaintext local credential store.
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::prelude::*;
+use gpui_kit::{
     AnyElement, App, Div, Entity, EventEmitter, FocusHandle, Focusable, Global, MouseButton,
     MouseUpEvent, Window, actions, div, px, relative,
 };

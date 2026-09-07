@@ -8,9 +8,9 @@
 //! no shadow, all colors from the theme tokens.
 
 #[cfg(test)]
-use gpui::prelude::*;
+use gpui_kit::prelude::*;
 #[cfg(test)]
-use gpui::{AnyElement, App, Entity, div, px};
+use gpui_kit::{AnyElement, App, Entity, div, px};
 use vega_conversation::types::{
     Microcents, SummaryCost, TaskCostSummary, TaskSummaryOutcome, TokenUsage,
 };
@@ -254,7 +254,7 @@ mod tests {
     }
 
     mod gpui_tests {
-        use gpui::{
+        use gpui_kit::{
             Bounds, Render, TestAppContext, WindowBounds, WindowHandle, WindowOptions, size,
         };
 
@@ -267,8 +267,8 @@ mod tests {
         impl Render for Harness {
             fn render(
                 &mut self,
-                _: &mut gpui::Window,
-                cx: &mut gpui::Context<Self>,
+                _: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
             ) -> impl IntoElement {
                 div().flex().flex_col().children(
                     (0..self.card.read(cx).row_count())
@@ -284,7 +284,8 @@ mod tests {
             let card = cx.new(|_| SummaryCard::new(summary));
             cx.update(|cx| {
                 cx.set_global(vega_theme::Theme::light());
-                let bounds = Bounds::centered(None, size(gpui::px(960.), gpui::px(600.)), cx);
+                let bounds =
+                    Bounds::centered(None, size(gpui_kit::px(960.), gpui_kit::px(600.)), cx);
                 cx.open_window(
                     WindowOptions {
                         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -296,7 +297,7 @@ mod tests {
             })
         }
 
-        #[gpui::test]
+        #[gpui_kit::test]
         async fn renders_exact_window_under_light_and_dark_without_layout_panic(
             cx: &mut TestAppContext,
         ) {
@@ -315,7 +316,7 @@ mod tests {
                 window
                     .update(cx, |_, window, _| window.viewport_size())
                     .expect("summary viewport"),
-                size(gpui::px(960.), gpui::px(600.)),
+                size(gpui_kit::px(960.), gpui_kit::px(600.)),
                 "minimum window (ui-spec §6) must not break the card layout"
             );
             cx.update(|cx| {
@@ -330,7 +331,7 @@ mod tests {
             );
         }
 
-        #[gpui::test]
+        #[gpui_kit::test]
         async fn read_only_card_never_traps_keyboard_navigation(cx: &mut TestAppContext) {
             let summary = TaskCostSummary {
                 message_id: "keyboard-message".into(),

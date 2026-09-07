@@ -1,6 +1,6 @@
 //! Read-only Settings usage dashboard, populated by the app-owned worker.
 use super::*;
-use gpui::{Bounds, PathBuilder, Rgba, canvas, fill, point, size};
+use gpui_kit::{Bounds, PathBuilder, Rgba, canvas, fill, point, size};
 use vega_conversation::types::{UsageDashboard, UsageDashboardError, UsageTotals};
 
 /// Requests a fresh persisted-usage projection from the app worker.
@@ -138,12 +138,14 @@ impl SettingsView {
         div()
             .id(id)
             .track_focus(&self.usage_focuses[index])
-            .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    keyboard_action(this, cx);
-                    cx.stop_propagation();
-                }
-            }))
+            .on_key_down(
+                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        keyboard_action(this, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
             .debug_selector(move || id.into())
             .tab_stop(true)
             .px_2()
@@ -365,7 +367,8 @@ impl SettingsView {
             .copied()
             .max()
             .unwrap_or(0);
-        let canvas_bounds = std::rc::Rc::new(std::cell::Cell::new(None::<Bounds<gpui::Pixels>>));
+        let canvas_bounds =
+            std::rc::Rc::new(std::cell::Cell::new(None::<Bounds<gpui_kit::Pixels>>));
         let clicked_bounds = canvas_bounds.clone();
         let trend = div()
             .debug_selector(|| "usage-trend".into())
@@ -394,7 +397,7 @@ impl SettingsView {
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |this, event: &gpui::MouseDownEvent, _, cx| {
+                        cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
                             if let Some(bounds) = clicked_bounds.get() {
                                 let fraction = ((event.position.x - bounds.origin.x)
                                     / bounds.size.width)
@@ -650,7 +653,7 @@ type ModelPoints = Vec<(String, Vec<u64>, Rgba)>;
 fn trend_canvas(
     models: ModelPoints,
     colors: vega_theme::ThemeColors,
-    layout: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
+    layout: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui_kit::Pixels>>>>,
 ) -> AnyElement {
     canvas(
         move |bounds, _, _| {
@@ -743,7 +746,7 @@ fn donut_canvas(models: ModelPoints, colors: vega_theme::ThemeColors) -> AnyElem
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{TestAppContext, VisualTestContext, WindowBounds, WindowOptions};
+    use gpui_kit::{TestAppContext, VisualTestContext, WindowBounds, WindowOptions};
     use vega_conversation::types::{UsageDay, UsageModelSeries};
     fn sample(calls: u64) -> UsageDashboard {
         let totals = UsageTotals {
@@ -796,7 +799,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn settings_usage_real_render_controls_refresh_empty_and_failure(
         cx: &mut TestAppContext,
     ) {
@@ -837,7 +840,7 @@ mod tests {
         let refresh = visual
             .debug_bounds("usage-refresh")
             .expect("refresh button");
-        visual.simulate_click(refresh.center(), gpui::Modifiers::default());
+        visual.simulate_click(refresh.center(), gpui_kit::Modifiers::default());
         visual.run_until_parked();
         assert_eq!(reloads.load(std::sync::atomic::Ordering::SeqCst), 1);
         view.update(&mut visual, |view, cx| {
@@ -869,7 +872,7 @@ mod tests {
         let chart = visual
             .debug_bounds("usage-trend-chart")
             .expect("clickable daily chart");
-        visual.simulate_click(chart.center(), gpui::Modifiers::default());
+        visual.simulate_click(chart.center(), gpui_kit::Modifiers::default());
         visual.run_until_parked();
         assert_eq!(
             view.read_with(&visual, |v, _| v.usage.selected_day),
@@ -877,11 +880,11 @@ mod tests {
         );
         assert!(visual.debug_bounds("usage-daily-detail").is_some());
         let weekly = visual.debug_bounds("usage-weekly").expect("weekly control");
-        visual.simulate_click(weekly.center(), gpui::Modifiers::default());
+        visual.simulate_click(weekly.center(), gpui_kit::Modifiers::default());
         visual.run_until_parked();
         assert_eq!(view.read_with(&visual, |v, _| v.usage.heatmap_mode), 1);
         let thirty = visual.debug_bounds("usage-30days").expect("range control");
-        visual.simulate_click(thirty.center(), gpui::Modifiers::default());
+        visual.simulate_click(thirty.center(), gpui_kit::Modifiers::default());
         visual.run_until_parked();
         assert_eq!(view.read_with(&visual, |v, _| v.usage.range_days), 30);
         visual.update(|_, cx| {

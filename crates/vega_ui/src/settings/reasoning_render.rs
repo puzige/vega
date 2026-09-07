@@ -291,7 +291,7 @@ impl SettingsView {
     }
 }
 
-fn reasoning_status(label: impl Into<String>, color: gpui::Rgba) -> Div {
+fn reasoning_status(label: impl Into<String>, color: gpui_kit::Rgba) -> Div {
     div()
         .text_color(color)
         .text_size(px(Typography::BODY))

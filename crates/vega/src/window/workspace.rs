@@ -1037,15 +1037,15 @@ fn workspace_button(
 mod tests {
     use super::{TabKey, VegaWindow};
     use crate::tests::{diff_controller_repo, install_diff_window_globals};
-    use gpui::prelude::*;
-    use gpui::{AppContext, KeyBinding};
+    use gpui_kit::prelude::*;
+    use gpui_kit::{AppContext, KeyBinding};
     use vega_ui::diff_view::DiffClosed;
     use vega_ui::settings::{CloseSettings, SettingsOpen, SettingsView};
     use vega_ui::sidebar::{OpenedThread, PendingDeleteConfirm};
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn workspace_root_preserves_draft_reopens_review_and_fences_task_switch(
-        cx: &mut gpui::TestAppContext,
+        cx: &mut gpui_kit::TestAppContext,
     ) {
         let repo = diff_controller_repo();
         let store = vega_store::Store::open(":memory:").expect("owned store");
@@ -1235,11 +1235,11 @@ mod tests {
 mod terminal_tests {
     use super::{TabKey, VegaWindow};
     use crate::tests::install_diff_window_globals;
-    use gpui::Focusable;
-    use gpui::{AppContext, TestAppContext};
+    use gpui_kit::Focusable;
+    use gpui_kit::{AppContext, TestAppContext};
     use vega_ui::sidebar::SelectedProject;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn terminal_workspace_production_handlers_preserve_docking_and_project_isolation(
         cx: &mut TestAppContext,
     ) {
@@ -1278,10 +1278,10 @@ mod terminal_tests {
         let entity = root.clone();
         let window = cx.update(|cx| {
             cx.open_window(
-                gpui::WindowOptions {
-                    window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
-                        gpui::point(gpui::px(0.), gpui::px(0.)),
-                        gpui::size(gpui::px(960.), gpui::px(600.)),
+                gpui_kit::WindowOptions {
+                    window_bounds: Some(gpui_kit::WindowBounds::Windowed(gpui_kit::Bounds::new(
+                        gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                        gpui_kit::size(gpui_kit::px(960.), gpui_kit::px(600.)),
                     ))),
                     ..Default::default()
                 },
@@ -1352,17 +1352,17 @@ mod terminal_tests {
             let scroll = &root.workspace.tab_scroll[0];
             let viewport = scroll.bounds();
             let tab = scroll.bounds_for_item(position).unwrap();
-            assert!(viewport.size.width > gpui::px(0.));
+            assert!(viewport.size.width > gpui_kit::px(0.));
             assert!(
-                scroll.offset().x < gpui::px(0.),
+                scroll.offset().x < gpui_kit::px(0.),
                 "selected terminal was revealed by horizontal scrolling"
             );
             assert!(
-                tab.left() + scroll.offset().x >= viewport.left() - gpui::px(1.),
+                tab.left() + scroll.offset().x >= viewport.left() - gpui_kit::px(1.),
                 "selected label visible"
             );
             assert!(
-                tab.right() + scroll.offset().x <= viewport.right() + gpui::px(1.),
+                tab.right() + scroll.offset().x <= viewport.right() + gpui_kit::px(1.),
                 "selected close control visible"
             );
         });

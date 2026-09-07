@@ -1,6 +1,6 @@
 use super::*;
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn r11_composer_mode_ack_preserves_later_edits_and_terminal_precedence(
     cx: &mut TestAppContext,
 ) {
@@ -85,9 +85,9 @@ async fn r11_composer_mode_ack_preserves_later_edits_and_terminal_precedence(
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn r11_composer_marked_text_is_not_a_command(cx: &mut TestAppContext) {
-    use gpui::EntityInputHandler;
+    use gpui_kit::EntityInputHandler;
     let (window, stream, events) = open_controller_stream(cx, "actions-ime");
     focus_composer(window, &stream, cx);
     window

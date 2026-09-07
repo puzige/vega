@@ -1,6 +1,6 @@
 //! Actual root subscriptions, owned DB/project and real worker; provider boundary only is mocked.
 use super::*;
-use gpui::{Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, px, size};
+use gpui_kit::{Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, px, size};
 
 struct Fixture {
     _data: TempDir,
@@ -12,7 +12,10 @@ struct Fixture {
     window: WindowHandle<VegaWindow>,
 }
 
-fn fixture(cx: &mut gpui::TestAppContext, provider: Arc<vega_runtime::MockProvider>) -> Fixture {
+fn fixture(
+    cx: &mut gpui_kit::TestAppContext,
+    provider: Arc<vega_runtime::MockProvider>,
+) -> Fixture {
     let data = tempfile::tempdir().expect("owned composer data");
     let repo = diff_controller_repo();
     fs::write(repo.path().join("context.txt"), "owned context").expect("context fixture");
@@ -79,7 +82,7 @@ fn fixture(cx: &mut gpui::TestAppContext, provider: Arc<vega_runtime::MockProvid
     }
 }
 
-fn edit(f: &Fixture, text: &str, cx: &mut gpui::TestAppContext) {
+fn edit(f: &Fixture, text: &str, cx: &mut gpui_kit::TestAppContext) {
     let input = f.stream.read_with(cx, |stream, _| stream.composer_input());
     input.update(cx, |input, cx| input.set_text(text, cx));
     f.window
@@ -91,23 +94,23 @@ fn edit(f: &Fixture, text: &str, cx: &mut gpui::TestAppContext) {
     cx.run_until_parked();
 }
 
-fn draft(f: &Fixture, cx: &mut gpui::TestAppContext) -> String {
+fn draft(f: &Fixture, cx: &mut gpui_kit::TestAppContext) -> String {
     f.stream.read_with(cx, |stream, cx| {
         stream.composer_input().read(cx).text().to_owned()
     })
 }
 
-fn click(f: &Fixture, selector: &'static str, cx: &mut gpui::TestAppContext) {
+fn click(f: &Fixture, selector: &'static str, cx: &mut gpui_kit::TestAppContext) {
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(f.window.into(), cx);
     let bounds = visual
         .debug_bounds(selector)
         .expect("visible production control");
-    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
 }
 
-fn assert_terminal(f: &Fixture, cx: &mut gpui::TestAppContext) {
+fn assert_terminal(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
     pump_test_app(cx, |cx| {
         f.root
             .read_with(cx, |root, _| root.agent_controller.active.is_none())
@@ -129,9 +132,9 @@ fn assert_terminal(f: &Fixture, cx: &mut gpui::TestAppContext) {
     assert!(visual.debug_bounds("composer-stop").is_none());
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn r11_composer_preparation_stop_preserves_draft_and_prevents_late_start(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![
         vega_runtime::ScriptStep::text("must not start"),
@@ -182,8 +185,10 @@ async fn r11_composer_preparation_stop_preserves_draft_and_prevents_late_start(
     assert_eq!(probe.load(), 1);
 }
 
-#[gpui::test]
-async fn r11_composer_stream_stop_retains_partial_and_next_draft(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn r11_composer_stream_stop_retains_partial_and_next_draft(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![
         vega_runtime::ScriptStep::text("retained partial text"),
         vega_runtime::ScriptStep::delay(Duration::from_secs(30)),
@@ -240,9 +245,9 @@ async fn r11_composer_stream_stop_retains_partial_and_next_draft(cx: &mut gpui::
     assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn r11_composer_context_and_slash_keyboard_use_real_mode_and_file_handlers(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![]));
     let f = fixture(cx, provider.clone());
@@ -338,9 +343,9 @@ async fn r11_composer_context_and_slash_keyboard_use_real_mode_and_file_handlers
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn r11_composer_stop_revokes_pending_permission_without_tool_execution(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     // Same real-worker wake allowance as production_app_entry_keeps_permission tests.
     cx.executor().allow_parking();

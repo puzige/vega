@@ -433,7 +433,7 @@ impl SettingsView {
                                         }),
                                     )
                                     .on_key_down(cx.listener(
-                                        move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                        move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
                                             if matches!(
                                                 event.keystroke.key.as_str(),
                                                 "enter" | "space"
@@ -481,7 +481,7 @@ impl SettingsView {
                                 }),
                             )
                             .on_key_down(cx.listener(
-                                |_, event: &gpui::KeyDownEvent, window, cx| {
+                                |_, event: &gpui_kit::KeyDownEvent, window, cx| {
                                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                         window.dispatch_action(
                                             Box::new(crate::sidebar::ToggleSidebar),
@@ -779,7 +779,7 @@ impl Render for SettingsView {
                                                 .track_focus(&self.section_focuses[index])
                                                 .tab_stop(true)
                                                 .focus_visible(move |style| style.bg(colors.bg_hover))
-                                                .on_key_down(cx.listener(move |this, event: &gpui::KeyDownEvent, _, cx| {
+                                                .on_key_down(cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
                                                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                                         this.cancel_provider_operation(cx);
                                                         this.section = index;

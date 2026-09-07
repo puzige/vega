@@ -1,7 +1,6 @@
 //! IO-free search panel; workers and route authority remain in the application.
 use crate::text_input::TextInput;
-use gpui::prelude::*;
-use gpui::*;
+use gpui_kit::{prelude::*, *};
 use vega_conversation::types::*;
 use vega_theme::{Typography, theme};
 
@@ -387,7 +386,7 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
     use std::sync::{Arc, Mutex};
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn production_palette_keyboard_queries_scopes_activate_and_ime_guard(
         cx: &mut TestAppContext,
     ) {

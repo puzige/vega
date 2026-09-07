@@ -1,6 +1,6 @@
 //! App-owned command routing and bounded background search/preview ownership.
 use crate::window::VegaWindow;
-use gpui::*;
+use gpui_kit::*;
 use std::{sync::mpsc, time::Duration};
 use tokio_util::sync::CancellationToken;
 use vega_conversation::{palette::PaletteService, types::*};

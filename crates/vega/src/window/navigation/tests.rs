@@ -1,8 +1,8 @@
 use super::{DRAFT_BYTES, HISTORY_LIMIT};
 use crate::window::VegaWindow;
-use gpui::prelude::*;
-use gpui::{Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, size};
-use gpui::{Entity, EntityInputHandler, Focusable, Modifiers, TestAppContext, px};
+use gpui_kit::prelude::*;
+use gpui_kit::{Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, size};
+use gpui_kit::{Entity, EntityInputHandler, Focusable, Modifiers, TestAppContext, px};
 use std::time::Duration;
 use vega_conversation::types::{Thread, ThreadStatus};
 use vega_store::Store;
@@ -154,7 +154,7 @@ fn click(f: &Fixture, selector: &'static str, cx: &mut TestAppContext) {
     visual.run_until_parked();
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn navigation_real_root_palette_mouse_shortcuts_and_settings_preserve_drafts(
     cx: &mut TestAppContext,
 ) {
@@ -232,7 +232,7 @@ async fn navigation_real_root_palette_mouse_shortcuts_and_settings_preserve_draf
     assert!(f.data.path().join("vega.db").is_file());
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn navigation_real_root_skips_archived_and_capacity_refusal_precedes_visit(
     cx: &mut TestAppContext,
 ) {
@@ -290,7 +290,7 @@ async fn navigation_real_root_skips_archived_and_capacity_refusal_precedes_visit
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn navigation_coalesces_attributes_bounds_history_and_rejects_stale_result(
     cx: &mut TestAppContext,
 ) {
@@ -344,7 +344,7 @@ async fn navigation_coalesces_attributes_bounds_history_and_rejects_stale_result
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn navigation_settings_returns_to_empty_without_database(cx: &mut TestAppContext) {
     let f = fixture(cx);
     cx.update(|cx| {
@@ -379,7 +379,7 @@ async fn navigation_settings_returns_to_empty_without_database(cx: &mut TestAppC
     assert_eq!(f.root.read_with(cx, |root, _| root.navigation.cursor), 1);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn navigation_resolver_rejects_real_sidebar_delete_before_ack(cx: &mut TestAppContext) {
     let f = fixture(cx);
     palette_second(&f, cx);
@@ -413,7 +413,7 @@ async fn navigation_resolver_rejects_real_sidebar_delete_before_ack(cx: &mut Tes
     assert_eq!(current(&f, cx), Some(f.second.id.clone()));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn navigation_draft_growth_during_read_only_resolution_does_not_record_visit(
     cx: &mut TestAppContext,
 ) {
@@ -458,7 +458,7 @@ async fn navigation_draft_growth_during_read_only_resolution_does_not_record_vis
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn navigation_consecutive_shortcuts_survive_dropped_composer_focus(cx: &mut TestAppContext) {
     let f = fixture(cx);
     editor(&f, cx).update(cx, |input, cx| input.set_text("Alpha draft", cx));
@@ -480,13 +480,13 @@ async fn navigation_consecutive_shortcuts_survive_dropped_composer_focus(cx: &mu
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn r14_real_root_sidebar_pointer_then_keyboard_preserves_toggle_and_editor_focus(
     cx: &mut TestAppContext,
 ) {
     let f = fixture(cx);
     cx.update(|cx| {
-        cx.bind_keys([gpui::KeyBinding::new(
+        cx.bind_keys([gpui_kit::KeyBinding::new(
             "cmd-b",
             vega_ui::sidebar::ToggleSidebar,
             None,
@@ -523,7 +523,7 @@ async fn r14_real_root_sidebar_pointer_then_keyboard_preserves_toggle_and_editor
         .unwrap();
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn r14_current_head_loads_without_selector_click_and_refreshes_hidden_sidebar(
     cx: &mut TestAppContext,
 ) {

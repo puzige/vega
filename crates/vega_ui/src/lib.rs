@@ -22,7 +22,7 @@ pub mod summary_card;
 pub mod text_input;
 pub mod tool_card;
 
-use gpui::{App, KeyBinding};
+use gpui_kit::{App, KeyBinding};
 
 /// Registers the key bindings required by the vega_ui input components
 /// (editing keys for [`text_input::TextInput`]), the T13 inline-rename

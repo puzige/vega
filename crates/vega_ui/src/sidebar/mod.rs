@@ -43,8 +43,12 @@
 
 use std::path::Path;
 
-use gpui::prelude::*;
-use gpui::{
+use gpui_kit::component::{
+    Sizable,
+    button::{Button, ButtonVariants},
+};
+use gpui_kit::prelude::*;
+use gpui_kit::{
     Anchor, AnchoredPositionMode, AnyElement, App, Context, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, Global, MouseButton, MouseDownEvent, MouseUpEvent, PathPromptOptions,
     Subscription, Window, actions, anchored, deferred, div, point, px,
@@ -467,6 +471,7 @@ impl Sidebar {
     /// Opens the existing settings route from the persistent sidebar entry.
     /// The app-level observer owns view creation; this action only changes the
     /// route global and keeps the sidebar free of settings state.
+    #[cfg(test)]
     fn open_settings(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         cx.set_global(SettingsOpen(true));
         cx.refresh_windows();
@@ -569,32 +574,17 @@ impl Sidebar {
 
     /// Stable low-frequency settings entry. It stays in the rail even when
     /// project/session blocks grow or collapse, so the route is discoverable.
-    fn render_settings_entry(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
-        div()
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .gap_2()
-            .px_2()
-            .rounded_md()
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_secondary)
-            .cursor_pointer()
-            .hover(move |style| style.bg(colors.bg_hover))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::open_settings))
-            .child(crate::icons::icon(
-                crate::icons::Icon::Settings,
-                colors.text_secondary,
-            ))
-            .child("设置")
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_tertiary)
-                    .child("⌘,"),
-            )
+    fn render_settings_entry(&self) -> AnyElement {
+        Button::new("sidebar-settings")
+            .ghost()
+            .small()
+            .label("设置")
+            .accessibility_label("设置 (⌘,)")
+            .tooltip("设置 (⌘,)")
+            .on_click(|_, _, cx| {
+                cx.set_global(SettingsOpen(true));
+                cx.refresh_windows();
+            })
             .into_any_element()
     }
 }
@@ -649,7 +639,7 @@ impl Render for Sidebar {
                     .overflow_y_scroll()
                     .child(self.sessions_block.clone()),
             )
-            .child(self.render_settings_entry(cx, &colors))
+            .child(self.render_settings_entry())
             .into_any_element()
     }
 }
@@ -694,8 +684,8 @@ mod tests {
         assert_eq!(thread_title(&thread_with_title("我的任务")), "我的任务");
     }
 
-    #[gpui::test]
-    async fn removing_opened_project_clears_opened_thread(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    async fn removing_opened_project_clears_opened_thread(cx: &mut gpui_kit::TestAppContext) {
         cx.update(|cx| {
             cx.set_global(OpenedThread(Some(thread_with_title("active"))));
             clear_opened_thread_of_project("p1", cx);

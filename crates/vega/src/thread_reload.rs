@@ -1,4 +1,4 @@
-use gpui::*;
+use gpui_kit::*;
 use vega_conversation::history::HistoryPage;
 use vega_conversation::types::*;
 use vega_store::Store;

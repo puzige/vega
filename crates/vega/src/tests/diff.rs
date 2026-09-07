@@ -22,7 +22,7 @@ impl DiffRefreshProbe {
 }
 
 fn pump_diff_refresh_stage(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
     view: &Entity<DiffView>,
     stage: &str,
     mut ready: impl FnMut(&DiffView) -> bool,
@@ -259,9 +259,9 @@ fn diff_controller_worker_preserves_unchanged_generation_and_rejects_stale_file(
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn diff_controller_real_finish_drops_superseded_result_and_global_switch_closes_route(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = diff_controller_repo();
     let (service, snapshot) = receive_refresh(None, Some(repo.path().to_path_buf()));
@@ -409,9 +409,9 @@ async fn diff_controller_real_finish_drops_superseded_result_and_global_switch_c
     assert!(exhausted_cancel.is_cancelled());
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn diff_refresh_intents_keep_content_during_background_and_retry(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     let repo = diff_controller_repo();
     let store = Store::open(":memory:").expect("diff refresh intent store");
@@ -538,9 +538,9 @@ async fn diff_refresh_intents_keep_content_during_background_and_retry(
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn diff_controller_route_latest_poll_tool_and_cross_project_fences(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(|cx| {
         cx.set_global(Theme::light());

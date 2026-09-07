@@ -4,7 +4,7 @@
 //! height semantic document (markdown / wrapped CJK / emoji / code / all
 //! card kinds), then writes the measured JSON report and quits.
 //!
-//! Mechanism note (task-card decision): `#[gpui::test]` frame timing was
+//! Mechanism note (task-card decision): `#[gpui_kit::test]` frame timing was
 //! evaluated first, but at this gpui rev tests run on `TestPlatform` with
 //! `NoopTextSystem` and no real frame cadence, so neither fps nor frame-build
 //! times would be representative (text shaping is the dominant cost of a
@@ -27,8 +27,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use gpui::prelude::*;
-use gpui::{App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, div, px};
+use gpui_kit::prelude::*;
+use gpui_kit::{App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, div, px};
 use vega_conversation::types::{
     Plan, PlanStatus, ReadOnlyToolKind, SummaryCost, TaskCostSummary, TaskSummaryOutcome,
     ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
@@ -78,10 +78,10 @@ pub fn output_path_from_args() -> Option<PathBuf> {
 pub fn start(output: PathBuf, cx: &mut App) {
     // Bench 模式不经过主应用启动路径：单独注册 light 主题供 item 渲染取 token。
     cx.set_global(vega_theme::Theme::light());
-    let bounds = Bounds::centered(None, gpui::size(px(1200.0), px(800.0)), cx);
+    let bounds = Bounds::centered(None, gpui_kit::size(px(1200.0), px(800.0)), cx);
     let window = cx.open_window(
         WindowOptions {
-            titlebar: Some(gpui::TitlebarOptions {
+            titlebar: Some(gpui_kit::TitlebarOptions {
                 title: Some("Vega Bench — render_frame".into()),
                 ..Default::default()
             }),
@@ -148,7 +148,7 @@ impl PhaseMeasurements {
 struct BenchStreamView {
     entries: Vec<StreamEntry>,
     counters: Arc<StreamCounters>,
-    list: gpui::ListState,
+    list: gpui_kit::ListState,
     phase: Phase,
     started: Instant,
     /// When the STREAM phase began (injection-rate baseline).
@@ -322,11 +322,11 @@ impl BenchStreamView {
         ));
         let deltas = split_deltas(&markdown_turn(ITEM_COUNT + 1), 0x5EED);
 
-        let list = gpui::ListState::new(entries.len(), gpui::ListAlignment::Top, px(600.0))
+        let list = gpui_kit::ListState::new(entries.len(), gpui_kit::ListAlignment::Top, px(600.0))
             .with_uniform_item_height(px(48.0));
         // SCROLL 阶段为纯程序化滚动：关闭原生 tail follow，防止首帧吸附到
         // 底部；STREAM 阶段视口停在冻结区，注入由显式失效驱动。
-        list.set_follow_mode(gpui::FollowMode::Normal);
+        list.set_follow_mode(gpui_kit::FollowMode::Normal);
 
         let mut view = Self {
             entries,
@@ -584,7 +584,7 @@ impl Render for BenchStreamView {
                     .size_full()
                     .overflow_hidden()
                     .child(
-                        gpui::list(
+                        gpui_kit::list(
                             list,
                             cx.processor(
                                 move |this: &mut BenchStreamView, index: usize, window, cx| {

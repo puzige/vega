@@ -4,11 +4,11 @@
 //! All hex color literals in the workspace are confined to this crate;
 //! components must reference these tokens instead of hardcoding colors.
 
-use gpui::{App, FontWeight, Global, Rgba, WindowAppearance};
+use gpui_kit::{App, FontWeight, Global, Rgba, WindowAppearance};
 
 /// Converts an RGBA hex literal (`0xRRGGBBAA`) to [`Rgba`].
 ///
-/// Mirrors `gpui::rgba`, which is not `const` and therefore cannot be used
+/// Mirrors `gpui_kit::rgba`, which is not `const` and therefore cannot be used
 /// in the token constants below.
 const fn rgba(hex: u32) -> Rgba {
     let [r, g, b, a] = hex.to_be_bytes();
@@ -200,7 +200,7 @@ pub fn theme(cx: &App) -> &Theme {
 
 /// Typography constants ([vega-ui-spec.md §3](../../docs/vega-ui-spec.md)).
 ///
-/// Font sizes are logical pixels, meant to be fed to `gpui::px`. Line-height
+/// Font sizes are logical pixels, meant to be fed to `gpui_kit::px`. Line-height
 /// values marked as ratios are unitless multipliers; `SIDEBAR_LINE_HEIGHT` is
 /// an absolute pixel row height, matching the spec verbatim.
 pub struct Typography;

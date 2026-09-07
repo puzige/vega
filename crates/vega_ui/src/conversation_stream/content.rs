@@ -406,7 +406,7 @@ impl ConversationStream {
         self.active_permission_call_id = Some(request.call_id);
         // The prompt must be visible immediately: re-engage native tail
         // follow (which also scrolls to the end on the next layout).
-        self.list.set_follow_mode(gpui::FollowMode::Tail);
+        self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
         cx.notify();
     }
 

@@ -1,6 +1,6 @@
 use super::*;
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn composer_counter_projects_estimate_calibration_and_fences(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "meter-thread");
     // Unpriced start: the retained accounting snapshot reports unavailable cost.
@@ -110,7 +110,7 @@ async fn composer_counter_projects_estimate_calibration_and_fences(cx: &mut Test
     assert_eq!(restored.display(), "1.2M tok · US$0.18");
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn composer_counter_error_path_clears_provisional(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "meter-error-thread");
     stream.update(cx, |stream, cx| {

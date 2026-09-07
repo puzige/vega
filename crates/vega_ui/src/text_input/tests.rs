@@ -1,5 +1,5 @@
 use super::*;
-use gpui::{Render, TestAppContext, WindowHandle};
+use gpui_kit::{Render, TestAppContext, WindowHandle};
 
 struct Harness {
     input: Entity<TextInput>,
@@ -33,7 +33,7 @@ fn set_text(input: &Entity<TextInput>, text: &str, cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn visual_wrap_grows_shrinks_and_caps_with_cursor_follow(cx: &mut TestAppContext) {
     let (_window, input) = open_input(cx);
 
@@ -62,7 +62,7 @@ async fn visual_wrap_grows_shrinks_and_caps_with_cursor_follow(cx: &mut TestAppC
     assert_eq!((rows, first), (1, 0));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn at_completion_replaces_only_the_token_body(cx: &mut TestAppContext) {
     let (_window, input) = open_input(cx);
     set_text(&input, "请读 @notes", cx);
