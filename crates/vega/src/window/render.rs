@@ -495,7 +495,7 @@ impl VegaWindow {
         let start_action = if has_project {
             div()
                 .w_full()
-                .h(px(106.))
+                .h(px(80.))
                 .p_3()
                 .rounded(px(Layout::COMPOSER_RADIUS))
                 .border_1()
@@ -515,7 +515,7 @@ impl VegaWindow {
         } else {
             div()
                 .w_full()
-                .h(px(106.))
+                .h(px(80.))
                 .p_3()
                 .rounded(px(Layout::COMPOSER_RADIUS))
                 .border_1()
@@ -553,35 +553,50 @@ impl VegaWindow {
             .size_full()
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
+            .child(
+                div()
+                    .flex_1()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px(px(Layout::CONTENT_PADDING))
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_size(px(Typography::EMPTY_STATE_TITLE))
+                                    .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
+                                    .text_color(colors.text_primary)
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(colors.text_secondary)
+                                    .child(description),
+                            ),
+                    ),
+            )
             .child(
                 div()
                     .w_full()
-                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
                     .px(px(Layout::CONTENT_PADDING))
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(32.))
+                    .pt(px(12.))
+                    .pb(px(16.))
                     .child(
                         div()
-                            .text_size(px(Typography::EMPTY_STATE_TITLE))
-                            .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
-                            .text_color(colors.text_primary)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_secondary)
-                            .child(description),
-                    )
-                    .child(
-                        div()
+                            .w_full()
+                            .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                            .mx_auto()
                             .flex()
                             .flex_col()
-                            .w_full()
                             .gap_2()
                             .child(start_action)
                             .children(show_sidebar),

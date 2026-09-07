@@ -183,18 +183,18 @@ impl ThreadsBlock {
                     .child(
                         div()
                             .flex()
-                            .rounded_md()
-                            .bg(colors.bg_hover)
+                            .items_center()
+                            .gap_1()
                             .child(self.organization_control(
                                 "organization-groups",
-                                "分组",
+                                "SESSIONS",
                                 Control::View(SidebarView::Groups),
                                 preferences.view == SidebarView::Groups,
                                 cx,
                             ))
                             .child(self.organization_control(
                                 "organization-projects",
-                                "项目",
+                                "PROJECTS",
                                 Control::View(SidebarView::Projects),
                                 preferences.view == SidebarView::Projects,
                                 cx,

@@ -182,7 +182,7 @@ impl ConversationStream {
                 root.child(
                     div()
                         .w_full()
-                        .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                        .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                         .mx_auto()
                         .h(px(36.))
                         .px_3()
@@ -204,7 +204,7 @@ impl ConversationStream {
             .child(
                 div()
                     .w_full()
-                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                     .mx_auto()
                     // Cmd+Enter 的按键上下文（绑定见 vega_ui::init）。
                     .key_context("Composer")
@@ -333,7 +333,7 @@ impl ConversationStream {
                     div()
                         .id("composer-preparing-request")
                         .w_full()
-                        .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                        .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                         .mx_auto()
                         .mt_2()
                         .text_size(px(Typography::METADATA))
@@ -345,7 +345,7 @@ impl ConversationStream {
                 div()
                     .debug_selector(|| "conversation-controller-error".to_string())
                     .w_full()
-                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                     .mx_auto()
                     .mt_1()
                     .text_size(px(Typography::METADATA))
@@ -930,7 +930,8 @@ impl Render for ConversationStream {
         let body: AnyElement = if self.entries.is_empty() {
             div()
                 .w_full()
-                .h(px(40.))
+                .h(px(72.))
+                .mb(px(24.))
                 .flex()
                 .flex_col()
                 .items_center()
@@ -941,6 +942,12 @@ impl Render for ConversationStream {
                         .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
                         .text_color(colors.text_primary)
                         .child("今天想做些什么？"),
+                )
+                .child(
+                    div()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_secondary)
+                        .child("输入任务开始，或用 @ 引用文件"),
                 )
                 .into_any_element()
         } else {
@@ -1005,7 +1012,6 @@ impl Render for ConversationStream {
             .when(!self.entries.is_empty(), |root| {
                 root.child(self.render_header(cx))
             })
-            .when(self.entries.is_empty(), |root| root.justify_center())
             .child(
                 div()
                     .w_full()
@@ -1013,16 +1019,23 @@ impl Render for ConversationStream {
                     .when(!self.entries.is_empty(), |body| {
                         body.flex_1().overflow_hidden()
                     })
-                    .when(self.entries.is_empty(), |body| body.h(px(40.)).mb(px(32.)))
+                    .when(self.entries.is_empty(), |body| {
+                        body.flex_1()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                    })
                     .px(px(Layout::CONTENT_PADDING))
                     .child(
                         div()
                             .min_w_0()
-                            .h_full()
                             .w_full()
                             .max_w(px(Layout::CONTENT_MAX_WIDTH))
                             .mx_auto()
-                            .overflow_hidden()
+                            .when(!self.entries.is_empty(), |body| {
+                                body.h_full().overflow_hidden()
+                            })
                             .child(body),
                     ),
             )

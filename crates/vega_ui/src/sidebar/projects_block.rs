@@ -457,10 +457,10 @@ impl ProjectsBlock {
                     )
                     .child(
                         div()
-                            .text_size(px(Typography::HEADING_BLOCK))
-                            .font_weight(Typography::HEADING_BLOCK_WEIGHT)
-                            .text_color(colors.text_primary)
-                            .child("项目"),
+                            .text_size(px(Typography::METADATA))
+                            .font_weight(Typography::HEADING_CARD_WEIGHT)
+                            .text_color(colors.text_secondary)
+                            .child("PROJECTS"),
                     )
                     .child(div().text_color(colors.text_tertiary).child(if collapsed {
                         "▸"

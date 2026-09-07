@@ -165,6 +165,7 @@ impl ThreadsBlock {
         let preferences = snapshot.preferences.clone();
         let colors = theme(cx).colors;
 
+        body = body.child(self.section_label("PROJECTS", cx));
         body = body.child(self.organization_control(
             "organization-add-project",
             "+ 添加项目",
@@ -373,7 +374,8 @@ impl ThreadsBlock {
         div()
             .px_2()
             .py_1()
-            .text_size(px(Typography::SIDEBAR))
+            .text_size(px(Typography::METADATA))
+            .font_weight(Typography::HEADING_CARD_WEIGHT)
             .text_color(theme(cx).colors.text_tertiary)
             .child(text.to_string())
             .into_any_element()

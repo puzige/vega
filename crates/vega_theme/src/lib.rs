@@ -60,8 +60,8 @@ pub struct ThemeColors {
 
 /// Light palette (UI spec §2, "Light" column).
 pub const LIGHT: ThemeColors = ThemeColors {
-    bg_base: rgba(0xFAFAFAFF),
-    bg_sidebar: rgba(0xF2F2F2FF),
+    bg_base: rgba(0xFFFFFFFF),
+    bg_sidebar: rgba(0xF3F3F3FF),
     bg_elevated: rgba(0xFFFFFFFF),
     bg_hover: rgba(0xECECECFF),
     bg_active: rgba(0xE8E8E8FF),
@@ -259,13 +259,15 @@ impl Layout {
     /// Radius for ordinary panels and cards.
     pub const PANEL_RADIUS: f32 = 12.0;
     /// Radius for the primary composer surface.
-    pub const COMPOSER_RADIUS: f32 = 16.0;
-    /// Sidebar width from the measured R8 visual specification.
+    pub const COMPOSER_RADIUS: f32 = 20.0;
+    /// Sidebar width from the PI-Desktop reference (260–275px visual range).
     /// Provider selector column inside Settings.
     pub const PROVIDER_LIST_WIDTH: f32 = 180.0;
-    pub const SIDEBAR_WIDTH: f32 = 330.0;
-    /// Sidebar horizontal padding.
-    pub const SIDEBAR_PADDING: f32 = 8.0;
+    pub const SIDEBAR_WIDTH: f32 = 275.0;
+    /// Sidebar horizontal and vertical padding.
+    pub const SIDEBAR_PADDING: f32 = 12.0;
+    /// Composer width cap; the thread column remains wider for readable output.
+    pub const COMPOSER_MAX_WIDTH: f32 = 768.0;
     /// Reserved trailing width for session timestamps and the compact action
     /// menu trigger. Low-frequency actions live in the popover so long
     /// session titles keep the main width of the rail.
@@ -316,12 +318,12 @@ mod tests {
     #[test]
     fn light_tokens_match_ui_spec_table() {
         // Spot-check a few Light column entries from the UI spec §2 table.
-        assert_eq!(u32::from(LIGHT.bg_base), 0xFAFAFAFF);
+        assert_eq!(u32::from(LIGHT.bg_base), 0xFFFFFFFF);
         // Preserve the original semantic-color guards while checking the R4
         // palette refresh around the neutral tokens.
         assert_eq!(u32::from(LIGHT.success), 0x1A7F37FF);
         assert_eq!(u32::from(LIGHT.danger), 0xCF222EFF);
-        assert_eq!(u32::from(LIGHT.bg_sidebar), 0xF2F2F2FF);
+        assert_eq!(u32::from(LIGHT.bg_sidebar), 0xF3F3F3FF);
         assert_eq!(u32::from(LIGHT.code_bg), 0xF6F6F6FF);
     }
 

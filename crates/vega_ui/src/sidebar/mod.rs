@@ -1,5 +1,5 @@
 //! Sidebar (T09 shell + T12 content + T13 session management): the fixed
-//! 330px left column of the main window layout
+//! Compact left column of the main window layout
 //! ([vega-ui-spec.md §1](../../docs/vega-ui-spec.md)).
 //!
 //! Structure per the T12 architect ruling: a small Vega brand row, a light
@@ -482,16 +482,15 @@ impl Sidebar {
     /// Compact functional sidebar toolbar, aligned with the native titlebar.
     fn render_brand(&self, colors: &ThemeColors, cx: &App) -> AnyElement {
         div()
-            .h(px(34.))
+            .h(px(40.))
             .flex()
             .items_center()
-            .justify_between()
+            .justify_end()
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
             .px_2()
-            .pl(px(Layout::TITLEBAR_LEADING_INSET))
-            .text_size(px(Typography::HEADING_PAGE))
+            .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_secondary)
-            .child(crate::navigation::controls(cx, true))
+            .child(crate::navigation::sidebar_toggle(cx, true))
             .into_any_element()
     }
 
@@ -535,25 +534,14 @@ impl Sidebar {
                                 cx.listener(|this, _: &MouseUpEvent, _, cx| this.create_thread(cx)),
                             )
                     })
-                    .child(
-                        div()
-                            .size(px(20.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(if has_project {
-                                colors.text_secondary
-                            } else {
-                                colors.border_subtle
-                            })
-                            .text_size(px(Typography::HEADING_BLOCK))
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::Plus,
-                                colors.text_secondary,
-                            )),
-                    )
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::Plus,
+                        if has_project {
+                            colors.text_secondary
+                        } else {
+                            colors.text_tertiary
+                        },
+                    ))
                     .child("新建任务")
                     .child(div().flex_1())
                     .child(
@@ -634,11 +622,12 @@ impl Render for Sidebar {
                 div()
                     .id("sidebar-search")
                     .debug_selector(|| "sidebar-search".into())
+                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .mx_2()
-                    .px_3()
-                    .py_2()
+                    .px_2()
                     .rounded_md()
                     .flex()
+                    .items_center()
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_secondary)
                     .cursor_pointer()

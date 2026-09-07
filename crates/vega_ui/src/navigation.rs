@@ -127,6 +127,15 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
         .into_any_element()
 }
 
+/// Render only the sidebar visibility control for the compact sidebar chrome.
+///
+/// Back/forward remain available through their keyboard shortcuts and the
+/// collapsed-window toolbar; the visible rail keeps its top row focused on
+/// the three shell controls (new task, search, and sidebar visibility).
+pub fn sidebar_toggle(cx: &App, sidebar_visible: bool) -> AnyElement {
+    sidebar_control(cx, sidebar_visible)
+}
+
 /// Shared titlebar control, mounted whether the sidebar is shown or hidden.
 fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
     let colors = theme(cx).colors;
