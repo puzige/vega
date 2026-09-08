@@ -1,7 +1,7 @@
 # R18 — Vega 品牌 UI 与 Icon 基线
 
-Date: 2026-09-08  
-Status: Implemented on `feat/r18-brand-icons`  
+Date: 2026-09-08
+Status: Implemented on `feat/r18-brand-icons`
 Scope: shared native vector icons, theme tokens, PI sidebar and composer emphasis states.
 
 R18 adopts the approved R17 App Logo as the visual source for product chrome. The
@@ -64,4 +64,3 @@ interactive icon, and adds no runtime dependency. R15 project/session IA,
 storage, navigation, providers, Keychain policy, business behavior and
 accessibility contracts remain unchanged. The App Logo source files are not
 modified by this baseline.
-
