@@ -82,23 +82,56 @@ in the 272px bottom dock; no test-only success path was added.
   now mounts the existing back/forward controls using shared SVG icons. The
   final app-wide run passed 83/83.
 
+## Root-agent macOS acceptance
+
+- verified_at_utc: 2026-09-08T16:09:00Z
+- verified_at_local: 2026-09-09 00:09:00 CST
+- candidate_head: `2c86322` (`docs(R19): record Codex-parity delivery`)
+- packaging: `cargo xtask package` PASS; release build, bundle validation, and
+  ad-hoc signing completed successfully
+- installed candidate: `/Applications/Vega.app`; its executable SHA-256 is
+  `cfdf3db2cab210f62176803349985378beda7b2a53620f0e84f2d1907ef52a52`,
+  identical to the packaged candidate; `codesign --verify --deep --strict`
+  PASS
+- native geometry: the launched standard window reports exactly 1400 x 900
+  logical pixels
+- light-mode interaction: PASS for project-without-task and project-task
+  truthfulness, Environment collapse/reopen, Review replacing Environment,
+  real PTY launch, 272px bottom dock spanning center plus right, right/bottom
+  move, maximize/restore, hide/header-restore, tab close, and unchanged
+  Settings routing
+- responsive interaction: PASS at the exact 1179/1180 logical-pixel boundary;
+  1179 opens the temporary Environment overlay, 1180 restores the wide rail,
+  and an explicit collapse remains collapsed after a 1179 -> 1180 round trip
+- dark appearance: PASS for shell, sidebar, composer, header, and Environment
+  legibility with semantic dark surfaces and borders
+- captured evidence: `vega-r19-candidate-task-light.png`,
+  `vega-r19-candidate-review-light.png`,
+  `vega-r19-candidate-terminal-light.png`,
+  `vega-r19-candidate-1179-overlay.png`, and
+  `vega-r19-candidate-dark.png` under the root agent's temporary directory
+
+The root agent's first independent app-wide replay completed 82/83 because the
+pre-existing diff refresh test observed a transient `GitFailed` retry terminal
+state. The exact test passed immediately in isolation, and a second full
+single-threaded replay passed 83/83. No R19 shell assertion failed in either
+run; the one-off result is recorded rather than hidden.
+
 ## Residuals
 
-- ACCEPTED: the root agent must perform the requested real macOS pixel review.
-  At 1400 × 900 in light appearance, measure sidebar/header/gaps/readable
-  column/composer/Environment card; collapse and reopen Environment; resize
-  through 1179/1180; verify the temporary overlay closes on route/wide changes;
-  open Review and exercise divider/move/maximize/hide/restore/close; open a
-  bottom terminal and verify it spans the full row at a 272px default, then
-  move/resize/maximize/hide/restore/close it; switch among project task,
-  project-without-task, standalone task, and Settings; finally check dark-mode
-  legibility.
+- PASS: the requested real macOS review is complete. Standalone truthfulness
+  remains covered by the mounted production-shell E2E because the host profile
+  contained no standalone task and the review deliberately created no durable
+  test data.
+- LIMIT: the prepared UTM macOS guest booted cleanly to its password-protected
+  `admin` login screen. The root agent did not guess credentials, so an
+  in-guest Vega launch is not claimed; the VM was left paused after the boot
+  check.
 - LIMIT: Cargo prints the pre-existing future-incompatibility note for
   `block v0.1.6`; affected-crate clippy still exits zero under `-D warnings`.
 - INTERRUPTED: the optional full-workspace command had no observed failure in
   its partial output, but it produced no terminal result and is not claimed as
   PASS. It was stopped on the root agent's instruction so independent review
   and handoff could proceed.
-- NOT PERFORMED: no application install, `/Applications/Vega.app` mutation,
-  push, external message, schema/store/runtime change, or reference-app asset
-  extraction occurred.
+- NOT PERFORMED: no push, external message, schema/store/runtime change, or
+  reference-app asset extraction occurred.
