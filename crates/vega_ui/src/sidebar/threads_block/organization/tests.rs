@@ -294,6 +294,7 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
     assert!(visual.debug_bounds("organization-filter").is_none());
     assert!(visual.debug_bounds("organization-collapse-all").is_none());
     assert!(visual.debug_bounds("organization-new-session").is_some());
+    assert!(visual.debug_bounds("organization-sessions-empty").is_some());
     assert!(visual.debug_bounds("organization-add-project").is_some());
     assert!(visual.debug_bounds("project-header-p").is_some());
     assert!(visual.debug_bounds("project-add-p").is_some());
@@ -317,6 +318,7 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
     let standalone_selector: &'static str =
         Box::leak(format!("standalone-thread-row-{standalone_id}").into_boxed_str());
     assert!(visual.debug_bounds(standalone_selector).is_some());
+    assert!(visual.debug_bounds("organization-sessions-empty").is_none());
 
     click(&f, cx, "project-add-p");
     let project_tasks: i64 = store
@@ -355,6 +357,94 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
         snapshot(&f)
             .collapsed
             .contains(&SidebarCollapseTarget::Project("p".into()))
+    );
+}
+
+#[gpui_kit::test]
+async fn r15_archive_filter_hides_and_restores_standalone_task(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    click(&f, cx, "organization-new-session");
+    let standalone_id = cx.update(|cx| cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone());
+    let row_selector: &'static str =
+        Box::leak(format!("standalone-thread-row-{standalone_id}").into_boxed_str());
+    let actions_selector: &'static str =
+        Box::leak(format!("standalone-thread-actions-{standalone_id}").into_boxed_str());
+    let archive_selector: &'static str =
+        Box::leak(format!("standalone-thread-action-{standalone_id}-2").into_boxed_str());
+
+    click(&f, cx, actions_selector);
+    assert!(
+        gpui_kit::VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds(archive_selector)
+            .is_some()
+    );
+    click(&f, cx, archive_selector);
+    let archived = snapshot(&f)
+        .threads
+        .into_iter()
+        .find(|thread| thread.id == standalone_id)
+        .unwrap();
+    assert_eq!(archived.status, ThreadStatus::Archived);
+    assert!(
+        gpui_kit::VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds(row_selector)
+            .is_none(),
+        "archived tasks are hidden by default"
+    );
+
+    click(&f, cx, "organization-session-sort");
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    assert!(visual.debug_bounds("organization-menu-0").is_some());
+    assert!(visual.debug_bounds("organization-menu-1").is_some());
+    assert!(visual.debug_bounds("organization-menu-2").is_some());
+    assert!(visual.debug_bounds("organization-menu-3").is_none());
+    click(&f, cx, "organization-menu-2");
+    assert!(
+        visual.debug_bounds(row_selector).is_some(),
+        "show archived must restore the task to its sessions position"
+    );
+
+    click(&f, cx, actions_selector);
+    click(&f, cx, archive_selector);
+    let restored = snapshot(&f)
+        .threads
+        .into_iter()
+        .find(|thread| thread.id == standalone_id)
+        .unwrap();
+    assert_eq!(restored.status, ThreadStatus::Active);
+    assert!(visual.debug_bounds(row_selector).is_some());
+
+    let project_task_id = snapshot(&f)
+        .threads
+        .into_iter()
+        .find(|thread| thread.project_id == "p" && thread.status == ThreadStatus::Active)
+        .unwrap()
+        .id;
+    let project_actions_selector: &'static str =
+        Box::leak(format!("project-thread-actions-{project_task_id}").into_boxed_str());
+    let project_archive_selector: &'static str =
+        Box::leak(format!("project-thread-action-{project_task_id}-2").into_boxed_str());
+    click(&f, cx, project_actions_selector);
+    click(&f, cx, project_archive_selector);
+    assert_eq!(
+        snapshot(&f)
+            .threads
+            .into_iter()
+            .find(|thread| thread.id == project_task_id)
+            .unwrap()
+            .status,
+        ThreadStatus::Archived
+    );
+    click(&f, cx, project_actions_selector);
+    click(&f, cx, project_archive_selector);
+    assert_eq!(
+        snapshot(&f)
+            .threads
+            .into_iter()
+            .find(|thread| thread.id == project_task_id)
+            .unwrap()
+            .status,
+        ThreadStatus::Active
     );
 }
 

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use vega_conversation::sidebar_organization as service;
 use vega_conversation::types::{
     SidebarCollapseTarget, SidebarGroupColor, SidebarOrganizationAction,
-    SidebarOrganizationOutcome, SidebarOrganizationSnapshot, SidebarProject, SidebarProjectView,
-    SidebarTaskSort, SidebarTimelineBucket, SidebarView,
+    SidebarOrganizationOutcome, SidebarOrganizationSnapshot, SidebarProject, SidebarTaskSort,
+    SidebarTimelineBucket, SidebarView,
 };
 mod menu;
 mod projections;
@@ -46,6 +46,7 @@ enum MenuCommand {
     Rename(String),
     NewTask(String),
     RemoveProject(String),
+    ToggleArchive,
 }
 #[derive(Clone)]
 struct OrganizationDrag {

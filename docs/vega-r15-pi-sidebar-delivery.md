@@ -16,7 +16,7 @@
 - `cargo clippy -p vega_store -p vega_conversation -p vega_ui -p vega --all-targets -- -D warnings` — passed.
 - `cargo test -p vega_store --lib` — 94 passed. Includes the version-4 upgrade preservation check and `PRAGMA foreign_key_check = 0`.
 - `cargo test -p vega_conversation --lib` — 301 passed. Includes standalone NULL binding, restart, and scratch isolation.
-- `cargo test -p vega_ui --lib -- --test-threads=1` — 164 passed, 0 failed, 0 ignored. Superseded R13/R14 group/timeline tests were removed or rewritten as R15 project/task behavior; route, draft, persistence, standalone/project creation, deduplication, and 1200×760/960×600 mount assertions remain covered.
+- `cargo test -p vega_ui --lib -- --test-threads=1` — 167 passed, 0 failed, 0 ignored. Superseded R13/R14 group/timeline tests were removed or rewritten as R15 project/task behavior; route, draft, persistence, standalone/project creation, archive filtering/restoration for standalone and project tasks, standalone file-index fail-closed behavior, deduplication, and 1200×760/960×600 mount assertions remain covered.
 - `rg '#\[ignore' crates/vega_ui crates/vega_conversation crates/vega_store crates/vega` — no matches.
 - `git diff --check` — passed.
 - `cargo test --workspace --no-fail-fast` — not rerun in this handoff; the parent agent is running the full workspace gate independently. A previous checkout run recorded GPUI `Theme` initialization failures in the `vega --bin vega` environment, so that prior result is not represented as a current pass.

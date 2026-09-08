@@ -132,6 +132,16 @@ impl ConversationStream {
     /// re-filter a complete accepted snapshot locally. No token closes and
     /// fences the selector without allowing a late result to reopen it.
     pub(crate) fn sync_at_query(&mut self, input: &Entity<TextInput>, cx: &mut Context<Self>) {
+        if self.thread.is_standalone() {
+            self.file_selector_wanted = false;
+            self.file_selector.close();
+            self.file_index_loading = false;
+            self.file_index_loaded = false;
+            self.file_index_failure = None;
+            self.file_snapshot = FileIndexSnapshot::default();
+            cx.notify();
+            return;
+        }
         let query = input.read(cx).trailing_at_query().map(|(_, query)| query);
         match query {
             None => {

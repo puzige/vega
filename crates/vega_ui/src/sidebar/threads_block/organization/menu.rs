@@ -13,25 +13,6 @@ impl ThreadsBlock {
         let mut items = Vec::new();
         match menu {
             OrganizationMenu::Filter => {
-                for (view, label) in [
-                    (SidebarProjectView::ByProject, "按项目"),
-                    (SidebarProjectView::Timeline, "时间线"),
-                ] {
-                    let mut preferences = snapshot.preferences.clone();
-                    preferences.project_view = view;
-                    preferences.view = SidebarView::Projects;
-                    items.push((
-                        format!(
-                            "{} {label}",
-                            if snapshot.preferences.project_view == view {
-                                "✓"
-                            } else {
-                                "  "
-                            }
-                        ),
-                        MenuCommand::Apply(SidebarOrganizationAction::SetPreferences(preferences)),
-                    ));
-                }
                 for (sort, label) in [
                     (SidebarTaskSort::Updated, "更新时间"),
                     (SidebarTaskSort::Created, "创建时间"),
@@ -50,6 +31,18 @@ impl ThreadsBlock {
                         MenuCommand::Apply(SidebarOrganizationAction::SetPreferences(preferences)),
                     ));
                 }
+                items.push((
+                    format!(
+                        "{} {}",
+                        if org.archive { "✓" } else { "  " },
+                        if org.archive {
+                            "隐藏已归档"
+                        } else {
+                            "显示已归档"
+                        },
+                    ),
+                    MenuCommand::ToggleArchive,
+                ));
             }
             OrganizationMenu::Group(id) => {
                 items.push(("新建任务".into(), MenuCommand::NewTask(id.clone())));
@@ -163,6 +156,11 @@ impl ThreadsBlock {
                     org.projects.update(cx, |p, cx| p.remove_project(&id, cx));
                 }
             }
+            MenuCommand::ToggleArchive => {
+                if let Some(org) = self.organization.as_mut() {
+                    org.archive = !org.archive;
+                }
+            }
         }
         cx.notify();
     }
@@ -173,7 +171,7 @@ impl ThreadsBlock {
         };
         let items = self.organization_menu_items();
         let title = match org.menu {
-            Some(OrganizationMenu::Filter) => "视图与排序",
+            Some(OrganizationMenu::Filter) => "排序与归档",
             Some(OrganizationMenu::Group(_)) => "分组操作",
             _ => "项目操作",
         };

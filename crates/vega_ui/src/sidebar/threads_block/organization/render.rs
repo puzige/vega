@@ -118,7 +118,7 @@ impl ThreadsBlock {
         let label = label.into();
         let aria = match &action {
             Control::CollapseAll => "收起全部".to_string(),
-            Control::Menu(OrganizationMenu::Filter) => "视图与排序".to_string(),
+            Control::Menu(OrganizationMenu::Filter) => "排序与归档".to_string(),
             Control::Menu(_) => "组织操作".to_string(),
             _ => label.clone(),
         };
@@ -187,6 +187,8 @@ impl ThreadsBlock {
                 .child(self.section_label("正在载入", cx))
                 .into_any_element();
         };
+        let show_archived = org.archive;
+        let menu_open = org.menu.is_some();
         let mut body = div()
             .id("sidebar-organization")
             .flex()
@@ -194,8 +196,9 @@ impl ThreadsBlock {
             .gap_2()
             .flex_1()
             .min_h_0();
-        body = body.child(self.render_sessions_pi(&snapshot, cx));
-        body = body.child(self.render_projects_pi(&snapshot, cx));
+        body = body.child(self.render_sessions_pi(&snapshot, show_archived, cx));
+        body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
+        body = body.children(menu_open.then(|| self.render_organization_menu(cx)));
         body = body.children(
             org.projects
                 .read(cx)
@@ -268,6 +271,7 @@ impl ThreadsBlock {
     fn render_sessions_pi(
         &self,
         snapshot: &SidebarOrganizationSnapshot,
+        show_archived: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -277,6 +281,14 @@ impl ThreadsBlock {
             .filter(|thread| thread.is_standalone())
             .cloned()
             .collect();
+        if show_archived {
+            standalone.extend(
+                self.archived
+                    .iter()
+                    .filter(|thread| thread.is_standalone())
+                    .cloned(),
+            );
+        }
         standalone = super::projections::sorted_threads(&standalone, snapshot.preferences.sort);
         let header = div()
             .flex()
@@ -296,9 +308,9 @@ impl ThreadsBlock {
                     .gap_1()
                     .child(self.vector_control(
                         "organization-session-sort",
-                        "切换任务排序",
+                        "任务排序与归档",
                         crate::icons::Icon::ArrowUpDown,
-                        Control::ToggleSort,
+                        Control::Menu(OrganizationMenu::Filter),
                         false,
                         cx,
                     ))
@@ -316,15 +328,29 @@ impl ThreadsBlock {
             .0
             .as_ref()
             .map(|thread| thread.id.clone());
+        let empty = standalone.is_empty();
         let rows = standalone.into_iter().map(|thread| {
+            let archived = thread.status == ThreadStatus::Archived;
             self.render_pi_row(
                 &thread,
                 &opened_id,
-                false,
+                archived,
                 "standalone-thread-row-",
                 true,
                 cx,
             )
+        });
+        let empty = empty.then(|| {
+            div()
+                .id("organization-sessions-empty")
+                .debug_selector(|| "organization-sessions-empty".into())
+                .h(px(30.))
+                .px_3()
+                .flex()
+                .items_center()
+                .text_size(px(Typography::SIDEBAR))
+                .text_color(colors.text_tertiary)
+                .child("暂无独立任务")
         });
         div()
             .id("organization-sessions")
@@ -339,6 +365,7 @@ impl ThreadsBlock {
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
+                    .children(empty)
                     .children(rows),
             )
             .into_any_element()
@@ -347,6 +374,7 @@ impl ThreadsBlock {
     fn render_projects_pi(
         &self,
         snapshot: &SidebarOrganizationSnapshot,
+        show_archived: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -388,7 +416,7 @@ impl ThreadsBlock {
             .min_h_0()
             .overflow_y_scroll();
         for project in ordered {
-            rows = rows.child(self.render_pi_project(project, snapshot, cx));
+            rows = rows.child(self.render_pi_project(project, snapshot, show_archived, cx));
         }
         div()
             .id("organization-projects")
@@ -405,6 +433,7 @@ impl ThreadsBlock {
         &self,
         project: &SidebarProject,
         snapshot: &SidebarOrganizationSnapshot,
+        show_archived: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -507,15 +536,33 @@ impl ThreadsBlock {
                 .filter(|thread| thread.project_id == project.id)
                 .cloned()
                 .collect();
+            if show_archived {
+                tasks.extend(
+                    self.archived
+                        .iter()
+                        .filter(|thread| thread.project_id == project.id)
+                        .cloned(),
+                );
+            }
             tasks = super::projections::sorted_threads(&tasks, snapshot.preferences.sort);
+            let opened_id = cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|thread| thread.id.clone());
             if tasks.is_empty() {
                 section = section.child(self.section_label("暂无任务", cx));
             } else {
-                section = section.children(
-                    tasks
-                        .iter()
-                        .map(|thread| self.render_project_thread(thread, false, cx)),
-                );
+                section = section.children(tasks.iter().map(|thread| {
+                    self.render_pi_row(
+                        thread,
+                        &opened_id,
+                        thread.status == ThreadStatus::Archived,
+                        "project-thread-row-",
+                        true,
+                        cx,
+                    )
+                }));
             }
         }
         section.into_any_element()

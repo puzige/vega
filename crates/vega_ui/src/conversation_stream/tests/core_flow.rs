@@ -226,6 +226,36 @@ async fn file_index_generation_overflow_fails_closed(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+async fn standalone_at_query_stays_plain_text_without_file_index_state(cx: &mut TestAppContext) {
+    let (_window, stream, _) = open_controller_stream(cx, "standalone-reference");
+    let requests = Arc::new(Mutex::new(Vec::<FileIndexRequested>::new()));
+    let captured = requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(&stream, move |_, event: &FileIndexRequested, _| {
+            captured.lock().unwrap().push(event.clone());
+        })
+        .detach();
+    });
+    let input = stream.read_with(cx, |stream, _| stream.composer_input());
+    stream.update(cx, |stream, cx| {
+        stream.thread.project_id.clear();
+        input.update(cx, |input, cx| input.set_text("@", cx));
+        stream.sync_at_query(&input, cx);
+    });
+
+    assert!(requests.lock().unwrap().is_empty());
+    stream.read_with(cx, |stream, cx| {
+        assert_eq!(stream.input.read(cx).text(), "@");
+        assert!(!stream.file_selector_wanted);
+        assert!(!stream.file_index_loading);
+        assert!(!stream.file_index_loaded);
+        assert!(stream.file_index_failure.is_none());
+        assert_eq!(stream.file_index_generation, 0);
+        assert!(stream.file_index_candidates().is_empty());
+    });
+}
+
+#[gpui_kit::test]
 async fn file_index_late_success_is_fenced_after_cancel(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "reference-late-result");
     let input = stream.read_with(cx, |stream, _| stream.composer_input());

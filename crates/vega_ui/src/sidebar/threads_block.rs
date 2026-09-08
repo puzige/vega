@@ -434,8 +434,16 @@ impl ThreadsBlock {
         let Some(thread_id) = self.actions_open.as_ref() else {
             return;
         };
-        let _ = thread_id;
-        let count = 9 + self.organization_actions(thread_id).len() as isize;
+        let Some(thread) = self
+            .threads
+            .iter()
+            .chain(self.archived.iter())
+            .find(|thread| thread.id == *thread_id)
+        else {
+            return;
+        };
+        let base_count = if thread.is_standalone() { 7 } else { 9 };
+        let count = (base_count + self.organization_actions(thread_id).len()) as isize;
         self.actions_highlight =
             (self.actions_highlight as isize + delta).rem_euclid(count) as usize;
         self.actions_scroll.scroll_to_item(self.actions_highlight);
@@ -1506,6 +1514,64 @@ mod task_action_tests {
         block.read_with(cx, |block, _| {
             assert!(block.actions_open.is_some());
             assert_ne!(block.actions_open.as_deref(), Some(target.as_str()));
+        });
+    }
+
+    #[gpui_kit::test]
+    async fn standalone_task_menu_wraps_seven_actions_and_activates_delete(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let (dir, block, _, _) = fixture(cx);
+        let store = Store::open(dir.path().join("owned.db")).unwrap();
+        let standalone = conversation::create_standalone_thread(&store, "mock", "confirm").unwrap();
+        block.update(cx, |block, _| {
+            block.threads = vec![standalone.clone()];
+            block.archived.clear();
+            block.loaded_project = Some("p".into());
+        });
+        cx.update(|cx| {
+            cx.set_global(OpenedThread(Some(standalone.clone())));
+            cx.set_global(PendingDeleteConfirm(None));
+            cx.set_global(vega_theme::Theme::light());
+            cx.set_global(SessionsCollapsed(false));
+        });
+
+        let root = block.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, _| root)
+                .unwrap()
+        });
+        cx.run_until_parked();
+        block.update(cx, |block, _| {
+            block.actions_open = Some(standalone.id.clone());
+            block.actions_highlight = 0;
+        });
+        block.read_with(cx, |block, _| {
+            assert_eq!(block.actions_open.as_deref(), Some(standalone.id.as_str()));
+            assert_eq!(block.actions_highlight, 0);
+        });
+
+        // These are the handlers bound to Up/Down/Enter in ThreadActionsMenu.
+        window
+            .update(cx, |block, window, cx| {
+                block.move_action_highlight(-1, cx);
+                assert_eq!(block.actions_highlight, 6);
+                block.move_action_highlight(1, cx);
+                assert_eq!(block.actions_highlight, 0);
+                block.move_action_highlight(-1, cx);
+                let index = block.actions_highlight;
+                block.activate_action_index(&standalone.id, false, index, window, cx);
+            })
+            .unwrap();
+        block.read_with(cx, |block, _| assert!(block.actions_open.is_none()));
+        cx.update(|cx| {
+            assert_eq!(
+                cx.global::<PendingDeleteConfirm>()
+                    .0
+                    .as_ref()
+                    .map(|thread| &thread.id),
+                Some(&standalone.id)
+            );
         });
     }
 
