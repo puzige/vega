@@ -954,7 +954,7 @@ impl ThreadsBlock {
                 selected || (actions_visible && !editing_this_row),
                 move |row| {
                     row.bg(if selected {
-                        colors.bg_active
+                        colors.brand_soft
                     } else {
                         colors.bg_hover
                     })
@@ -1002,7 +1002,11 @@ impl ThreadsBlock {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_color(colors.text_primary)
+                                .text_color(if selected {
+                                    colors.brand_primary
+                                } else {
+                                    colors.text_primary
+                                })
                                 .when(thread.unread, |title| {
                                     title.font_weight(Typography::HEADING_CARD_WEIGHT)
                                 })

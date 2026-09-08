@@ -484,7 +484,7 @@ impl ProjectsBlock {
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_add_clicked))
                     .child(crate::icons::icon(
                         crate::icons::Icon::FolderPlus,
-                        colors.text_secondary,
+                        colors.brand_primary,
                     )),
             )
             .into_any_element()
@@ -544,10 +544,22 @@ impl ProjectsBlock {
                                     this.select_project(&project_id, cx);
                                 }),
                             )
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::Folder,
+                                if is_selected {
+                                    colors.brand_primary
+                                } else {
+                                    colors.text_secondary
+                                },
+                            ))
                             .child(
                                 div()
                                     .truncate()
-                                    .text_color(colors.text_primary)
+                                    .text_color(if is_selected {
+                                        colors.brand_primary
+                                    } else {
+                                        colors.text_primary
+                                    })
                                     .child(project.name.clone()),
                             )
                             .children(branch.map(|branch| {
@@ -603,7 +615,7 @@ impl ProjectsBlock {
                         .text_size(px(Typography::SIDEBAR))
                         .cursor_pointer()
                         .text_color(if selected {
-                            colors.text_primary
+                            colors.brand_primary
                         } else {
                             colors.text_secondary
                         })

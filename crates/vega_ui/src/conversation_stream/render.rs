@@ -204,7 +204,7 @@ impl ConversationStream {
                         .text_color(colors.text_secondary)
                         .child(crate::icons::icon(
                             crate::icons::Icon::Folder,
-                            colors.text_secondary,
+                            colors.brand_primary,
                         ))
                         .child(self.project_label.clone())
                         .child(self.branch_selector.clone()),
@@ -311,8 +311,11 @@ impl ConversationStream {
                                             .when(can_send, |button| {
                                                 button
                                                     .bg(colors.accent)
-                                                    .text_color(colors.bg_base)
+                                                    .text_color(colors.brand_on_accent)
                                                     .cursor_pointer()
+                                                    .hover(move |style| {
+                                                        style.bg(colors.brand_primary_strong)
+                                                    })
                                                     .on_mouse_up(
                                                         MouseButton::Left,
                                                         cx.listener(Self::on_send_clicked),
@@ -326,7 +329,7 @@ impl ConversationStream {
                                             .child(crate::icons::icon(
                                                 crate::icons::Icon::ArrowUp,
                                                 if can_send {
-                                                    colors.bg_base
+                                                    colors.brand_on_accent
                                                 } else {
                                                     colors.text_tertiary
                                                 },
@@ -402,7 +405,7 @@ impl ConversationStream {
                     .text_color(if permissions {
                         colors.warning
                     } else {
-                        colors.text_secondary
+                        colors.brand_primary
                     })
                     .cursor_pointer()
                     .hover(move |s| s.bg(colors.bg_hover))
@@ -448,11 +451,20 @@ impl ConversationStream {
                                 } else {
                                     crate::icons::Icon::Mode
                                 },
-                                colors.text_secondary,
+                                if permissions {
+                                    colors.warning
+                                } else {
+                                    colors.brand_primary
+                                },
                             ))
                     })
                     .when(!self.compact_workspace, |trigger| {
-                        trigger.child(format!("{label} ▾"))
+                        trigger.flex().items_center().gap_1().child(label).child(
+                            crate::icons::icon(
+                                crate::icons::Icon::ChevronDown,
+                                colors.text_tertiary,
+                            ),
+                        )
                     }),
             )
             .when(open, |root| {
@@ -685,7 +697,7 @@ impl ConversationStream {
                                     }),
                                 )
                                 .text_color(if selected {
-                                    colors.text_primary
+                                    colors.brand_primary
                                 } else {
                                     colors.text_secondary
                                 })
@@ -775,7 +787,17 @@ impl ConversationStream {
                             this.on_activate_model(&ActivateModel, window, cx);
                         }),
                     )
-                    .child(format!("{current} ▾")),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(current.to_owned())
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::ChevronDown,
+                                colors.text_tertiary,
+                            )),
+                    ),
             )
             .when(self.model_selector_open, |root| {
                 root.child(
@@ -805,7 +827,7 @@ impl ConversationStream {
                                 .truncate()
                                 .when(selected, |row| row.bg(colors.bg_active))
                                 .text_color(if current_model {
-                                    colors.success
+                                    colors.brand_primary
                                 } else if selected {
                                     colors.text_primary
                                 } else {
@@ -853,7 +875,7 @@ impl ConversationStream {
             .text_color(if matches!(level, "provider_default" | "disabled") {
                 colors.text_tertiary
             } else {
-                colors.success
+                colors.brand_primary
             })
             .cursor_pointer()
             .hover(move |style| style.bg(colors.bg_hover))
@@ -865,11 +887,23 @@ impl ConversationStream {
             .when(self.compact_workspace, |trigger| {
                 trigger.px_1().child(crate::icons::icon(
                     crate::icons::Icon::Thinking,
-                    colors.text_secondary,
+                    if matches!(level, "provider_default" | "disabled") {
+                        colors.text_secondary
+                    } else {
+                        colors.brand_primary
+                    },
                 ))
             })
             .when(!self.compact_workspace, |trigger| {
-                trigger.child(format!("{label} ▾"))
+                trigger
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(label.to_owned())
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::ChevronDown,
+                        colors.text_tertiary,
+                    ))
             })
             .into_any_element()
     }
@@ -889,7 +923,7 @@ fn segment(
         .text_size(px(Typography::SIDEBAR))
         .when(enabled, |item| item.cursor_pointer())
         .when(selected, |item| {
-            item.bg(colors.bg_active).text_color(colors.text_primary)
+            item.bg(colors.bg_active).text_color(colors.brand_primary)
         })
         .when(!selected && enabled, |item| {
             item.text_color(colors.text_secondary)

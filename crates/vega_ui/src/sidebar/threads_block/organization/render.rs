@@ -140,7 +140,9 @@ impl ThreadsBlock {
             } else {
                 colors.text_secondary
             })
-            .when(selected, |s| s.bg(colors.bg_active))
+            .when(selected, |s| {
+                s.bg(colors.bg_active).text_color(colors.brand_primary)
+            })
             .cursor_pointer()
             .hover(move |s| s.bg(colors.bg_hover))
             .focus_visible(move |s| {
@@ -464,7 +466,13 @@ impl ThreadsBlock {
             .tab_stop(true)
             .cursor_pointer()
             .when(selected, |row| row.bg(colors.bg_active))
-            .hover(move |style| style.bg(colors.bg_hover))
+            .hover(move |style| {
+                if selected {
+                    style.bg(colors.brand_soft)
+                } else {
+                    style.bg(colors.bg_hover)
+                }
+            })
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.set_hovered_project(&project_for_hover, *hovered, cx);
             }))
@@ -488,7 +496,11 @@ impl ThreadsBlock {
             ))
             .child(crate::icons::icon(
                 crate::icons::Icon::Folder,
-                colors.text_secondary,
+                if selected {
+                    colors.brand_primary
+                } else {
+                    colors.text_secondary
+                },
             ))
             .child(
                 div()
@@ -503,7 +515,11 @@ impl ThreadsBlock {
                     .min_w_0()
                     .truncate()
                     .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_primary)
+                    .text_color(if selected {
+                        colors.brand_primary
+                    } else {
+                        colors.text_primary
+                    })
                     .child(project.name.clone()),
             )
             .child(self.vector_control(

@@ -357,16 +357,19 @@ impl ConversationStream {
                     .border_color(colors.border_subtle)
             })
             .children(labels.into_iter().enumerate().map(|(index, label)| {
+                let highlighted = self.actions.highlight == index;
                 div()
                     .id(("composer-action", index))
                     .px_2()
                     .py_1()
                     .rounded_md()
                     .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_primary)
-                    .when(self.actions.highlight == index, |row| {
-                        row.bg(colors.bg_active)
+                    .text_color(if highlighted {
+                        colors.brand_primary
+                    } else {
+                        colors.text_primary
                     })
+                    .when(highlighted, |row| row.bg(colors.bg_active))
                     .cursor_pointer()
                     .hover(move |row| row.bg(colors.bg_hover))
                     .on_mouse_up(

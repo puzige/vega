@@ -321,7 +321,14 @@ pub(crate) fn render_prepared_row(
             })
             .border_b_1()
             .border_color(colors.border_subtle)
-            .child(if expanded { "▾" } else { "▸" })
+            .child(crate::icons::icon(
+                if expanded {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                },
+                colors.text_tertiary,
+            ))
             .child(div().min_w_0().flex_1().truncate().child(label))
             .child(
                 div()

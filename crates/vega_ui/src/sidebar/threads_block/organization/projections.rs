@@ -510,9 +510,19 @@ impl ThreadsBlock {
             .px_3()
             .cursor_pointer()
             .text_size(px(Typography::SIDEBAR))
-            .text_color(colors.text_primary)
+            .text_color(if selected {
+                colors.brand_primary
+            } else {
+                colors.text_primary
+            })
             .when(selected, |row| row.bg(colors.bg_active))
-            .hover(move |style| style.bg(colors.bg_hover))
+            .hover(move |style| {
+                if selected {
+                    style.bg(colors.brand_soft)
+                } else {
+                    style.bg(colors.bg_hover)
+                }
+            })
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| this.open_thread(&thread_id, cx)),

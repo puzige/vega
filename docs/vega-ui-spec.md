@@ -2,7 +2,7 @@
 
 **版本** v0.6 · 2026-09-05 · 关联：[vega-features.md](vega-features.md)
 
-> **设计基线决策**：UI 风格对齐 **Codex Desktop / ZCode 默认风格**——极简、留白充足、浅灰层次、无重边框、内容居中。不发明新设计语言，把精力放在渲染性能和工具卡片信息密度上。
+> **设计基线决策**：UI 风格对齐 **Codex Desktop / ZCode 默认风格**——极简、留白充足、浅灰层次、无重边框、内容居中；R18 在此基础上采用批准的 Vega Logo 几何与宝石蓝/冰蓝品牌强调。品牌蓝只承担 accent、selection 和 Agent/AI 关键动作，工作区主体仍保持中性。
 > 本文件是验收准线：每条都可检查、可测量。S 级 Sprint 验收时逐条过。
 
 > 当前 R8 实测视觉基线见 [R8 ZCode parity](vega-r8-zcode-parity.md)。该任务覆盖下列旧 R4 的几何、浅色中性 token、空态和 composer 分组；安全、数据与性能条款保留。
@@ -41,16 +41,22 @@
 | `bg-sidebar` | #F7F7F7 | #191919 | 侧边栏背景 |
 | `bg-elevated` | #F7F7F7 | #2A2A2A | 卡片/composer |
 | `bg-hover` | #ECECEC | #323232 | 悬停态 |
-| `bg-active` | #E8E8E8 | #303030 | 选中态（当前会话） |
+| `bg-active` | #EAF2FC | #203247 | 选中态（当前会话/项目，低对比品牌洗色） |
 | `border-subtle` | #E8E8E8 | #383838 | 1px 分隔线/卡片边 |
 | `text-primary` | #202020 | #EDEDED | 正文 |
 | `text-secondary` | #676767 | #ABABAB | 辅助信息/时间戳 |
 | `text-tertiary` | #8A8A8A | #828282 | 占位符 |
-| `accent` | #202020 | #EDEDED | 主按钮（黑底白字/反色） |
+| `accent` | #3478D8 | #8FC7FF | 主按钮、主要选中态（Logo sapphire / ice blue） |
 | `success` | #1A7F37 | #3FB950 | 工具成功态、diff 新增 |
 | `danger` | #CF222E | #F85149 | 错误态、diff 删除、危险操作 |
 | `warning` | #9A6700 | #D29922 | 权限确认、预算告警 |
 | `code-bg` | #F6F6F6 | #262626 | 代码块背景 |
+
+R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
+`brand-primary-strong` = `#245AAF` / `#609DE1`，`brand-soft` =
+`#EAF2FC` / `#203247`，`brand-on-accent` = `#FFFFFF` / `#13233A`。
+它们均由 `vega_theme::ThemeColors` 提供，组件禁止写死色值。详见
+[R18 品牌 UI 与 Icon 基线](vega-r18-brand-ui.md)。
 
 > diff 遵循国际惯例（绿增红删）；这不是股票场景。所有颜色必须走 token，禁止组件内写死色值（验收时 grep 检查）。
 
@@ -143,3 +149,4 @@
 - v0.3 (2026-08-30) 人类批准 S5 wire schema 回写：§4.2 固定 write/edit 工具卡只消费 strict 安全成功/失败投影，隐藏 checkpoint ref，并对损坏 shape fail closed。
 - v0.4 (2026-08-31) S8-T42 契约冻结回写：§5 P7/P8 测量语义指向 [vega-s8-sdd.md](vega-s8-sdd.md) C1/C2；P8 阈值单位为 OPEN(OWNER: human)（裁决前按 decimal MB 字面权威，见 SDD §3.1/§10）。
 - v0.5 (2026-09-05) R4 客户端 UI 翻新：依据 [R4 客户端 UI 翻新 SDD](vega-ui-refresh-sdd.md) 同步 Codex / ChatGPT 工作区式层级、Light/Dark token、34px 侧栏行高、15px/1.65 会话排版、20px Composer、两行控件分组与真实空态；S3 演示、跟随诊断和无功能模板移出普通产品流，安全、controller、性能冻结条款保持不变。
+- v0.6 (2026-09-08) R18 品牌 UI 基线：采用批准的 R17 蓝色终端/单星/微笑光标作为产品 UI 与 icon 的几何和强调来源；新增品牌 token，active/selection 改为低对比蓝灰，统一 16px、1.45px 柔角 vector icon；success/danger/warning 语义色与 R15 IA 保持不变。

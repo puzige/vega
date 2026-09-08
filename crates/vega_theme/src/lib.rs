@@ -44,8 +44,16 @@ pub struct ThemeColors {
     pub text_secondary: Rgba,
     /// Placeholders.
     pub text_tertiary: Rgba,
-    /// Primary button (black on white / inverted).
+    /// Primary action and selected-state brand color.
     pub accent: Rgba,
+    /// R18 primary brand color: sapphire in light mode, ice blue in dark.
+    pub brand_primary: Rgba,
+    /// R18 stronger brand color for high-contrast icon or hover emphasis.
+    pub brand_primary_strong: Rgba,
+    /// Low-contrast brand wash used for active/selected surfaces.
+    pub brand_soft: Rgba,
+    /// Foreground color for content rendered on the primary brand surface.
+    pub brand_on_accent: Rgba,
     /// Tool success state and diff additions.
     pub success: Rgba,
     /// Error state, diff deletions, dangerous actions.
@@ -64,12 +72,16 @@ pub const LIGHT: ThemeColors = ThemeColors {
     bg_sidebar: rgba(0xF3F3F3FF),
     bg_elevated: rgba(0xFFFFFFFF),
     bg_hover: rgba(0xECECECFF),
-    bg_active: rgba(0xE8E8E8FF),
+    bg_active: rgba(0xEAF2FCFF),
     border_subtle: rgba(0xE8E8E8FF),
     text_primary: rgba(0x202020FF),
     text_secondary: rgba(0x676767FF),
     text_tertiary: rgba(0x8A8A8AFF),
-    accent: rgba(0x202020FF),
+    accent: rgba(0x3478D8FF),
+    brand_primary: rgba(0x3478D8FF),
+    brand_primary_strong: rgba(0x245AAFFF),
+    brand_soft: rgba(0xEAF2FCFF),
+    brand_on_accent: rgba(0xFFFFFFFF),
     success: rgba(0x1A7F37FF),
     danger: rgba(0xCF222EFF),
     warning: rgba(0x9A6700FF),
@@ -91,12 +103,16 @@ pub const DARK: ThemeColors = ThemeColors {
     bg_sidebar: rgba(0x191919FF),
     bg_elevated: rgba(0x2A2A2AFF),
     bg_hover: rgba(0x323232FF),
-    bg_active: rgba(0x303030FF),
+    bg_active: rgba(0x203247FF),
     border_subtle: rgba(0x383838FF),
     text_primary: rgba(0xEDEDEDFF),
     text_secondary: rgba(0xABABABFF),
     text_tertiary: rgba(0x828282FF),
-    accent: rgba(0xEDEDEDFF),
+    accent: rgba(0x8FC7FFFF),
+    brand_primary: rgba(0x8FC7FFFF),
+    brand_primary_strong: rgba(0x609DE1FF),
+    brand_soft: rgba(0x203247FF),
+    brand_on_accent: rgba(0x13233AFF),
     success: rgba(0x3FB950FF),
     danger: rgba(0xF85149FF),
     warning: rgba(0xD29922FF),
@@ -325,12 +341,29 @@ mod tests {
         assert_eq!(u32::from(LIGHT.danger), 0xCF222EFF);
         assert_eq!(u32::from(LIGHT.bg_sidebar), 0xF3F3F3FF);
         assert_eq!(u32::from(LIGHT.code_bg), 0xF6F6F6FF);
+        assert_eq!(u32::from(LIGHT.accent), 0x3478D8FF);
+        assert_eq!(u32::from(LIGHT.brand_primary_strong), 0x245AAFFF);
+        assert_eq!(u32::from(LIGHT.bg_active), 0xEAF2FCFF);
     }
 
     #[test]
     fn light_and_dark_palettes_differ_on_key_tokens() {
         assert_ne!(u32::from(LIGHT.bg_base), u32::from(DARK.bg_base));
         assert_ne!(u32::from(LIGHT.text_primary), u32::from(DARK.text_primary));
+        assert_ne!(
+            u32::from(LIGHT.brand_primary),
+            u32::from(DARK.brand_primary)
+        );
+        assert_ne!(u32::from(LIGHT.bg_active), u32::from(DARK.bg_active));
+    }
+
+    #[test]
+    fn brand_tokens_match_r17_logo_palette() {
+        assert_eq!(u32::from(LIGHT.brand_primary), 0x3478D8FF);
+        assert_eq!(u32::from(DARK.brand_primary), 0x8FC7FFFF);
+        assert_eq!(u32::from(DARK.brand_primary_strong), 0x609DE1FF);
+        assert_eq!(u32::from(LIGHT.brand_on_accent), 0xFFFFFFFF);
+        assert_eq!(u32::from(DARK.brand_on_accent), 0x13233AFF);
     }
 
     #[test]

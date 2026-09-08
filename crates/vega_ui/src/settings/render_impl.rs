@@ -542,11 +542,14 @@ impl SettingsView {
                         }),
                     )
                     .child(current.clone())
-                    .child(
-                        div()
-                            .text_color(colors.text_tertiary)
-                            .child(if self.mode_open { "▾" } else { "▸" }),
-                    ),
+                    .child(crate::icons::icon(
+                        if self.mode_open {
+                            crate::icons::Icon::ChevronDown
+                        } else {
+                            crate::icons::Icon::ChevronRight
+                        },
+                        colors.text_tertiary,
+                    )),
             )
             .when(self.mode_open, |column| {
                 column.children(PERMISSION_MODES.iter().map(|mode| {
@@ -557,7 +560,9 @@ impl SettingsView {
                         .rounded_md()
                         .text_size(px(Typography::BODY))
                         .cursor_pointer()
-                        .when(selected, move |row| row.bg(colors.bg_active))
+                        .when(selected, move |row| {
+                            row.bg(colors.bg_active).text_color(colors.brand_primary)
+                        })
                         .when(!selected, move |row| {
                             row.hover(move |s| s.bg(colors.bg_hover))
                         })
@@ -608,11 +613,14 @@ impl SettingsView {
                         }),
                     )
                     .child(trigger_label)
-                    .child(
-                        div()
-                            .text_color(colors.text_tertiary)
-                            .child(if self.model_open { "▾" } else { "▸" }),
-                    ),
+                    .child(crate::icons::icon(
+                        if self.model_open {
+                            crate::icons::Icon::ChevronDown
+                        } else {
+                            crate::icons::Icon::ChevronRight
+                        },
+                        colors.text_tertiary,
+                    )),
             )
             .when(self.model_open, |column| {
                 column
@@ -632,7 +640,9 @@ impl SettingsView {
                             .rounded_md()
                             .text_size(px(Typography::BODY))
                             .cursor_pointer()
-                            .when(selected, move |row| row.bg(colors.bg_active))
+                            .when(selected, move |row| {
+                                row.bg(colors.bg_active).text_color(colors.brand_primary)
+                            })
                             .when(!selected, move |row| {
                                 row.hover(move |s| s.bg(colors.bg_hover))
                             })
