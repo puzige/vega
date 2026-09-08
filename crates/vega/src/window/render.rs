@@ -1,4 +1,5 @@
 use super::*;
+use vega_ui::icons::{Icon, icon_button};
 
 impl Render for VegaWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -363,7 +364,26 @@ impl Render for VegaWindow {
         let content = if settings_open {
             content
         } else {
-            self.render_workspace(content, window, cx)
+            let navigation_error = cx
+                .try_global::<vega_ui::navigation::NavigationState>()
+                .and_then(|state| state.error);
+            let main = div()
+                .size_full()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(self.render_main_header(sidebar_visible, window, cx))
+                .children(navigation_error.map(|error| {
+                    div()
+                        .px_3()
+                        .py_1()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_secondary)
+                        .child(error)
+                }))
+                .child(div().flex_1().min_h_0().overflow_hidden().child(content))
+                .into_any_element();
+            self.render_workspace(main, window, cx)
         };
 
         if let Some(palette) = &self.palette.view {
@@ -392,10 +412,11 @@ impl Render for VegaWindow {
                 // Content column host: settings brings its own 820px column,
                 // the empty state is centered by its own layout.
                 div()
+                    .debug_selector(|| "main-content-panel".into())
                     .flex_1()
                     .min_w_0()
-                    .my(px(4.))
-                    .mr(px(4.))
+                    .my(px(Layout::MAIN_CONTENT_GAP))
+                    .mx(px(Layout::MAIN_CONTENT_GAP))
                     .rounded(px(vega_theme::Layout::PANEL_RADIUS))
                     .border_1()
                     .border_color(colors.border_subtle)
@@ -403,7 +424,7 @@ impl Render for VegaWindow {
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .when(!sidebar_visible || settings_open, |column| {
+                    .when(settings_open, |column| {
                         column.child(
                             div()
                                 .pl(px(Layout::TITLEBAR_LEADING_INSET))
@@ -411,16 +432,20 @@ impl Render for VegaWindow {
                         )
                     })
                     .children(
-                        cx.try_global::<vega_ui::navigation::NavigationState>()
-                            .and_then(|state| state.error)
-                            .map(|error| {
-                                div()
-                                    .px_3()
-                                    .py_1()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(colors.text_secondary)
-                                    .child(error)
-                            }),
+                        settings_open
+                            .then(|| {
+                                cx.try_global::<vega_ui::navigation::NavigationState>()
+                                    .and_then(|state| state.error)
+                                    .map(|error| {
+                                        div()
+                                            .px_3()
+                                            .py_1()
+                                            .text_size(px(Typography::METADATA))
+                                            .text_color(colors.text_secondary)
+                                            .child(error)
+                                    })
+                            })
+                            .flatten(),
                     )
                     .child(div().flex_1().min_h_0().child(content)),
             )
@@ -435,6 +460,171 @@ impl Render for VegaWindow {
 }
 
 impl VegaWindow {
+    fn render_main_header(
+        &mut self,
+        sidebar_visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let thread = cx.global::<OpenedThread>().0.clone();
+        let title = thread.as_ref().map_or_else(
+            || "新建任务".to_string(),
+            |thread| {
+                if thread.title.is_empty() {
+                    "未命名任务".to_string()
+                } else {
+                    thread.title.clone()
+                }
+            },
+        );
+        let project_label = self.shell_project_label(cx);
+        let has_project_label = project_label.is_some();
+        let project_route = self.shell_project_id(cx).is_some();
+        let review_available = self.shell_project_thread(cx).is_some();
+        let right_visible = self.persistent_right_workspace_visible(window, cx);
+        let environment_visible = if self.environment_is_wide(window) {
+            !self.environment_collapsed
+        } else {
+            self.environment_overlay_open
+        };
+
+        let mut actions = div().flex_shrink_0().flex().items_center().gap_1();
+        if review_available {
+            actions = actions.child(header_action(
+                "main-header-review",
+                "Review",
+                Icon::Split,
+                true,
+                colors,
+                cx.listener(|this, _, _, cx| {
+                    this.environment_overlay_open = false;
+                    this.workspace_open_diff(cx);
+                    cx.notify();
+                }),
+            ));
+        }
+        if project_route {
+            actions = actions.child(
+                icon_button(
+                    Icon::Terminal,
+                    "切换终端",
+                    colors,
+                    cx.listener(|this, _, window, cx| {
+                        this.environment_overlay_open = false;
+                        this.workspace_toggle_terminal(window, cx)
+                    }),
+                )
+                .debug_selector(|| "main-header-terminal".into()),
+            );
+        }
+        for (index, label, icon, selector) in [
+            (
+                0,
+                "显示右侧面板",
+                Icon::DockRight,
+                "main-header-restore-right",
+            ),
+            (
+                1,
+                "显示底部面板",
+                Icon::DockBottom,
+                "main-header-restore-bottom",
+            ),
+        ] {
+            if self.hidden_workspace_available(index) {
+                actions = actions.child(
+                    icon_button(
+                        icon,
+                        label,
+                        colors,
+                        cx.listener(move |this, _, window, cx| {
+                            this.restore_hidden_workspace(index, window, cx)
+                        }),
+                    )
+                    .debug_selector(move || selector.into()),
+                );
+            }
+        }
+        if project_route && !right_visible {
+            actions = actions.child(
+                icon_button(
+                    Icon::DockRight,
+                    if environment_visible {
+                        "隐藏 Environment"
+                    } else {
+                        "显示 Environment"
+                    },
+                    colors,
+                    cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),
+                )
+                .debug_selector(|| "main-header-environment".into())
+                .when(environment_visible, |button| button.bg(colors.bg_active)),
+            );
+        }
+
+        div()
+            .id("main-header")
+            .debug_selector(|| "main-header".into())
+            .h(px(Layout::MAIN_HEADER_HEIGHT))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .border_b_1()
+            .border_color(colors.border_subtle)
+            .pr_3()
+            .when(!sidebar_visible, |header| {
+                header
+                    .pl(px(Layout::TITLEBAR_LEADING_INSET))
+                    .child(vega_ui::navigation::controls(cx, false))
+            })
+            .when(sidebar_visible, |header| header.pl_3())
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .children(project_label.map(|label| {
+                        div()
+                            .debug_selector(|| "main-header-project".into())
+                            .min_w_0()
+                            .max_w(px(180.))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_size(px(Typography::SIDEBAR))
+                            .text_color(colors.text_secondary)
+                            .child(vega_ui::icons::icon(Icon::Folder, colors.text_secondary))
+                            .child(div().min_w_0().truncate().child(label))
+                    }))
+                    .when(has_project_label, |labels| {
+                        labels.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_tertiary)
+                                .child("/"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .debug_selector(|| "main-header-title".into())
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .text_size(px(Typography::HEADING_PAGE))
+                            .font_weight(Typography::HEADING_PAGE_WEIGHT)
+                            .text_color(colors.text_primary)
+                            .child(title),
+                    ),
+            )
+            .child(actions)
+            .into_any_element()
+    }
+
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         if self.auto_collapsed(window, cx) {
@@ -495,7 +685,7 @@ impl VegaWindow {
         let start_action = if has_project {
             div()
                 .w_full()
-                .h(px(80.))
+                .min_h(px(Layout::COMPOSER_MIN_HEIGHT))
                 .p_3()
                 .rounded(px(Layout::COMPOSER_RADIUS))
                 .border_1()
@@ -515,7 +705,7 @@ impl VegaWindow {
         } else {
             div()
                 .w_full()
-                .h(px(80.))
+                .min_h(px(Layout::COMPOSER_MIN_HEIGHT))
                 .p_3()
                 .rounded(px(Layout::COMPOSER_RADIUS))
                 .border_1()
@@ -604,4 +794,45 @@ impl VegaWindow {
             )
             .into_any_element()
     }
+}
+
+fn header_action(
+    id: &'static str,
+    label: &'static str,
+    icon: Icon,
+    show_label: bool,
+    colors: ThemeColors,
+    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let activate = std::rc::Rc::new(activate);
+    let keyboard = activate.clone();
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .aria_label(label)
+        .focusable()
+        .tab_stop(true)
+        .h(px(28.))
+        .px_2()
+        .rounded_md()
+        .flex()
+        .items_center()
+        .gap_1()
+        .text_size(px(Typography::METADATA))
+        .text_color(colors.text_secondary)
+        .cursor_pointer()
+        .hover(move |style| style.bg(colors.bg_hover))
+        .focus(move |style| style.bg(colors.bg_active))
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
+            activate(&(), window, cx);
+        })
+        .on_key_down(move |event, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                keyboard(&(), window, cx);
+            }
+        })
+        .child(vega_ui::icons::icon(icon, colors.text_secondary))
+        .when(show_label, |button| button.child(label))
 }

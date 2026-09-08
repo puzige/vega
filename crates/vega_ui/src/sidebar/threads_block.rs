@@ -904,7 +904,7 @@ impl ThreadsBlock {
             archived,
             selector_prefix,
             actions_enabled,
-            30.0,
+            Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
     }

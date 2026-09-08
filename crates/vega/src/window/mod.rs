@@ -84,6 +84,12 @@ pub(crate) struct VegaWindow {
     /// Sidebar with the [新建任务] button, projects block, and sessions block.
     pub(crate) sidebar: Entity<Sidebar>,
     workspace: workspace::Workspace,
+    /// Explicit wide-rail choice. Width-driven hiding is derived separately
+    /// from the live viewport so a resize never overwrites the user's choice.
+    environment_collapsed: bool,
+    /// Narrow windows show Environment as a temporary card over the shell.
+    /// Route changes and opening a persistent right workspace close it.
+    environment_overlay_open: bool,
     appearance_subscription: Option<Subscription>,
     /// Cached settings view entity. Kept while settings is open so re-renders
     /// (e.g. the theme toggle) never rebuild the form mid-typing; dropped when
@@ -245,6 +251,8 @@ impl VegaWindow {
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),
             workspace: workspace::Workspace::default(),
+            environment_collapsed: false,
+            environment_overlay_open: false,
             appearance_subscription: None,
             artifact_controller: ArtifactController::default(),
             branch_controller: BranchController::default(),

@@ -11,22 +11,8 @@ impl ConversationStream {
         });
     }
 
-    fn open_diff_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.emit_open_diff(cx);
-    }
-
     fn open_diff_action(&mut self, _: &OpenWorkspaceDiff, _: &mut Window, cx: &mut Context<Self>) {
         self.emit_open_diff(cx);
-    }
-
-    fn open_commit_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.thread.is_standalone() || self.trusted_action_busy {
-            return;
-        }
-        cx.emit(OpenCommitPanelRequested {
-            thread_id: self.thread.id.clone(),
-            project_id: self.thread.project_id.clone(),
-        });
     }
 
     fn on_resume_tail(&mut self, _: &ResumeTail, _: &mut Window, cx: &mut Context<Self>) {
@@ -37,141 +23,40 @@ impl ConversationStream {
         self.resume_tail(cx);
     }
 
-    /// Renders the thread header: title plus lightweight trusted actions.
-    ///
-    /// Benchmark/demo injection remains a public harness entry point, but is
-    /// intentionally absent from the ordinary task surface. Tail-follow state
-    /// is only surfaced when detached, where a direct return action keeps the
-    /// existing scroll contract discoverable.
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// Keeps the existing detached-tail recovery on the conversation surface
+    /// after R19 moves route identity and project actions into the window
+    /// header. This control is backed by the original scroll handler.
+    fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let title = if self.thread.title.is_empty() {
-            "未命名任务".to_string()
-        } else {
-            self.thread.title.clone()
-        };
-        let following = self.following_tail();
-        let project_bound = !self.thread.is_standalone();
         div()
-            .px(px(Layout::CONTENT_PADDING))
-            .py(px(12.))
-            .flex_shrink_0()
-            .border_b_1()
+            .absolute()
+            .top_2()
+            .right_3()
+            .track_focus(&self.resume_tail_focus)
+            .key_context("ResumeTailButton")
+            .on_action(cx.listener(Self::on_resume_tail))
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
             .border_color(colors.border_subtle)
-            .child(
-                div()
-                    .w_full()
-                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
-                    .mx_auto()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(Typography::HEADING_PAGE))
-                            .font_weight(Typography::HEADING_PAGE_WEIGHT)
-                            .text_color(colors.text_primary)
-                            .child(title),
-                    )
-                    .when(project_bound, |row| {
-                        row.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_secondary)
-                                .child(
-                                    div()
-                                        .max_w(px(90.))
-                                        .truncate()
-                                        .child(self.project_label.clone()),
-                                )
-                                .child(self.branch_selector.clone()),
-                        )
-                    })
-                    .when(!following, |row| {
-                        row.child(
-                            div()
-                                .track_focus(&self.resume_tail_focus)
-                                .key_context("ResumeTailButton")
-                                .on_action(cx.listener(Self::on_resume_tail))
-                                .flex_shrink_0()
-                                .px_2()
-                                .py_1()
-                                .rounded_md()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_secondary)
-                                .cursor_pointer()
-                                .hover(move |style| style.bg(colors.bg_hover))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(Self::on_resume_tail_clicked),
-                                )
-                                .child("回到底部"),
-                        )
-                    })
-                    .when(project_bound, |row| {
-                        row.child(
-                            div()
-                                .flex_shrink_0()
-                                .flex()
-                                .flex_row()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .text_size(px(Typography::METADATA))
-                                        .text_color(colors.text_secondary)
-                                        .cursor_pointer()
-                                        .hover(move |style| style.bg(colors.bg_hover))
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(Self::open_diff_clicked),
-                                        )
-                                        .child("更改"),
-                                )
-                                .child(
-                                    div()
-                                        .px_2()
-                                        .py_1()
-                                        .rounded_md()
-                                        .text_size(px(Typography::METADATA))
-                                        .text_color(if self.trusted_action_busy {
-                                            colors.text_tertiary
-                                        } else {
-                                            colors.text_secondary
-                                        })
-                                        .when(!self.trusted_action_busy, |button| {
-                                            button
-                                                .cursor_pointer()
-                                                .hover(move |style| style.bg(colors.bg_hover))
-                                        })
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(Self::open_commit_clicked),
-                                        )
-                                        .child("提交"),
-                                ),
-                        )
-                    }),
-            )
+            .bg(colors.bg_elevated)
+            .shadow_sm()
+            .text_size(px(Typography::METADATA))
+            .text_color(colors.text_secondary)
+            .cursor_pointer()
+            .hover(move |style| style.bg(colors.bg_hover))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_resume_tail_clicked))
+            .child("回到底部")
             .into_any_element()
     }
 
-    /// Renders the Composer (R4 visual revision): input first, a single
-    /// mode/model/thinking/send row, then a lightweight branch/permission/
-    /// meter row. The existing input, selector and send guards remain wired
-    /// through their original handlers.
+    /// Renders the R19 composer: one growing input followed by one action row
+    /// with the existing context, mode, permission, model, thinking and
+    /// send/stop handlers. Project identity and branch controls live in the
+    /// window shell, so this surface never duplicates them or invents state.
     fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let project_bound = !self.thread.is_standalone();
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
         let file_selector_active =
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
@@ -187,33 +72,12 @@ impl ConversationStream {
             .pt(px(12.))
             .pb(px(16.))
             .flex_shrink_0()
-            .when(self.entries.is_empty() && project_bound, |root| {
-                root.child(
-                    div()
-                        .w_full()
-                        .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                        .mx_auto()
-                        .h(px(36.))
-                        .px_3()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .rounded_t(px(Layout::PANEL_RADIUS))
-                        .bg(colors.bg_sidebar)
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child(crate::icons::icon(
-                            crate::icons::Icon::Folder,
-                            colors.brand_primary,
-                        ))
-                        .child(self.project_label.clone())
-                        .child(self.branch_selector.clone()),
-                )
-            })
             .child(
                 div()
+                    .debug_selector(|| "composer-shell".into())
                     .w_full()
                     .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                    .min_h(px(Layout::COMPOSER_MIN_HEIGHT))
                     .mx_auto()
                     // Cmd+Enter 的按键上下文（绑定见 vega_ui::init）。
                     .key_context("Composer")
@@ -265,7 +129,7 @@ impl ConversationStream {
                             })
                             .child(self.render_composer_actions(cx))
                             .child(self.render_file_dropdown(cx))
-                            .min_h(px(48.))
+                            .min_h(px(40.))
                             .child(self.input.clone()),
                     )
                     .child(
@@ -939,9 +803,8 @@ impl Render for ConversationStream {
             self.focus_composer(window, cx);
         }
         let render_t0 = Instant::now();
-        self.branch_selector.update(cx, |selector, _| {
-            selector.set_menu_below(!self.entries.is_empty())
-        });
+        self.branch_selector
+            .update(cx, |selector, _| selector.set_menu_below(true));
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
 
@@ -1055,8 +918,8 @@ impl Render for ConversationStream {
             .on_action(cx.listener(Self::open_diff_action))
             // tech-spec §5.4 动效禁令：流式期间节点无任何入场 opacity/动画
             // （本管线自 T17 起即不引入入场动画，T18 维持）。
-            .when(!self.entries.is_empty(), |root| {
-                root.child(self.render_header(cx))
+            .when(!self.following_tail(), |root| {
+                root.child(self.render_resume_tail(cx))
             })
             .child(
                 div()
@@ -1075,6 +938,7 @@ impl Render for ConversationStream {
                     .px(px(Layout::CONTENT_PADDING))
                     .child(
                         div()
+                            .debug_selector(|| "conversation-column".into())
                             .min_w_0()
                             .w_full()
                             .max_w(px(Layout::CONTENT_MAX_WIDTH))

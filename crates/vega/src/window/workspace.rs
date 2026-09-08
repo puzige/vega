@@ -81,6 +81,7 @@ impl VegaWindow {
             .map(|thread| thread.id.clone());
         let project_route = cx.global::<vega_ui::sidebar::SelectedProject>().0.clone();
         if self.workspace.route != route || self.workspace.project_route != project_route {
+            self.environment_overlay_open = false;
             let same_project = self.workspace.project_route == project_route;
             let terminals = std::mem::take(&mut self.workspace.terminals);
             let terminal_tabs: Vec<_> = terminals
@@ -374,6 +375,28 @@ impl VegaWindow {
         }
     }
 
+    /// Keeps the trusted commit route reachable from the selected Review
+    /// workspace without adding speculative commit state to the R19 main
+    /// header or Environment card.
+    fn workspace_open_commit(&mut self, cx: &mut Context<Self>) {
+        if let (Some(thread), Some((thread_id, stream))) = (
+            cx.global::<OpenedThread>().0.clone(),
+            self.stream_view.clone(),
+        ) {
+            if thread.is_standalone() || thread_id != thread.id {
+                return;
+            }
+            self.open_commit_panel(
+                stream,
+                &OpenCommitPanelRequested {
+                    thread_id: thread.id,
+                    project_id: thread.project_id,
+                },
+                cx,
+            );
+        }
+    }
+
     fn workspace_toggle_menu(&mut self, bottom: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace.menu = !self.workspace.menu;
         self.workspace.menu_bottom = bottom;
@@ -422,6 +445,227 @@ impl VegaWindow {
         }
     }
 
+    /// Returns the selected project only when it is also the current task's
+    /// durable project binding. This is the shell's route fence for every
+    /// project-only header and Environment action.
+    pub(super) fn shell_project_id(&self, cx: &App) -> Option<String> {
+        let selected = cx.global::<vega_ui::sidebar::SelectedProject>().0.clone()?;
+        match cx.global::<OpenedThread>().0.as_ref() {
+            Some(thread) if thread.project_binding() == Some(selected.as_str()) => Some(selected),
+            Some(_) => None,
+            None => Some(selected),
+        }
+    }
+
+    pub(super) fn shell_project_label(&self, cx: &App) -> Option<String> {
+        let project_id = self.shell_project_id(cx)?;
+        self.sidebar.read(cx).project_label(&project_id, cx)
+    }
+
+    pub(super) fn shell_project_thread(&self, cx: &App) -> Option<Thread> {
+        let project_id = self.shell_project_id(cx)?;
+        cx.global::<OpenedThread>()
+            .0
+            .as_ref()
+            .filter(|thread| thread.project_binding() == Some(project_id.as_str()))
+            .cloned()
+    }
+
+    fn workspace_available_width(&self, window: &Window, cx: &App) -> f32 {
+        let sidebar = if !cx.global::<SidebarCollapsed>().0 && !self.auto_collapsed(window, cx) {
+            Layout::SIDEBAR_WIDTH
+        } else {
+            0.
+        };
+        f32::from(window.bounds().size.width) - sidebar - Layout::MAIN_CONTENT_GAP * 2.0
+    }
+
+    pub(super) fn persistent_right_workspace_visible(&self, window: &Window, cx: &App) -> bool {
+        !self.workspace.hidden[0]
+            && self.workspace.selected[0].is_some()
+            && self.workspace_available_width(window, cx) >= 610.
+    }
+
+    pub(super) fn hidden_workspace_available(&self, index: usize) -> bool {
+        self.workspace.selected[index].is_some() && self.workspace.hidden[index]
+    }
+
+    pub(super) fn restore_hidden_workspace(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.hidden_workspace_available(index) {
+            return;
+        }
+        self.workspace.hidden[index] = false;
+        self.workspace.reveal_tabs[index] = true;
+        self.environment_overlay_open = false;
+        self.workspace_focus(index, window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn environment_is_wide(&self, window: &Window) -> bool {
+        window.viewport_size().width >= px(Layout::ENVIRONMENT_BREAKPOINT)
+    }
+
+    pub(super) fn toggle_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.shell_project_id(cx).is_none()
+            || self.persistent_right_workspace_visible(window, cx)
+        {
+            return;
+        }
+        if self.environment_is_wide(window) {
+            self.environment_collapsed = !self.environment_collapsed;
+            self.environment_overlay_open = false;
+        } else {
+            self.environment_overlay_open = !self.environment_overlay_open;
+        }
+        cx.notify();
+    }
+
+    fn render_environment(&mut self, overlay: bool, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        let Some(_) = self.shell_project_id(cx) else {
+            return div().into_any_element();
+        };
+        let project_label = self.shell_project_label(cx);
+        let thread = self.shell_project_thread(cx);
+        let branch_selector = thread.as_ref().and_then(|thread| {
+            self.stream_view
+                .as_ref()
+                .filter(|(thread_id, _)| thread_id == &thread.id)
+                .map(|(_, stream)| stream.read(cx).branch_selector())
+        });
+        if let Some(selector) = &branch_selector {
+            selector.update(cx, |selector, _| selector.set_menu_below(true));
+        }
+        let close = icon_button(
+            Icon::Close,
+            "关闭 Environment",
+            colors,
+            cx.listener(move |this, _, _, cx| {
+                if overlay {
+                    this.environment_overlay_open = false;
+                } else {
+                    this.environment_collapsed = true;
+                }
+                cx.notify();
+            }),
+        )
+        .debug_selector(|| "environment-close".into());
+        let mut card = div()
+            .id(if overlay {
+                "environment-overlay-card"
+            } else {
+                "environment-card"
+            })
+            .debug_selector(move || {
+                if overlay {
+                    "environment-overlay-card".into()
+                } else {
+                    "environment-card".into()
+                }
+            })
+            .w_full()
+            .max_h_full()
+            .p_3()
+            .rounded(px(Layout::ENVIRONMENT_CARD_RADIUS))
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_elevated)
+            .shadow_sm()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_secondary)
+                    .child("Environment")
+                    .child(close),
+            );
+        if let Some(label) = project_label {
+            card = card.child(
+                div()
+                    .debug_selector(|| "environment-project".into())
+                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_primary)
+                    .child(vega_ui::icons::icon(Icon::Folder, colors.brand_primary))
+                    .child(div().min_w_0().flex_1().truncate().child(label)),
+            );
+        }
+        if let Some(selector) = branch_selector {
+            card = card.child(
+                div()
+                    .debug_selector(|| "environment-branch".into())
+                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .child(vega_ui::icons::icon(
+                        Icon::ArrowUpDown,
+                        colors.text_secondary,
+                    ))
+                    .child(div().min_w_0().flex_1().child(selector)),
+            );
+        }
+        if thread.is_some() {
+            card = card.child(environment_action(
+                "environment-review",
+                "Changes / Review",
+                Icon::Split,
+                colors,
+                cx.listener(|this, _, _, cx| {
+                    this.environment_overlay_open = false;
+                    this.workspace_open_diff(cx);
+                    cx.notify();
+                }),
+            ));
+        }
+        card = card.child(environment_action(
+            "environment-terminal",
+            "Local terminal",
+            Icon::Terminal,
+            colors,
+            cx.listener(|this, _, window, cx| {
+                this.environment_overlay_open = false;
+                this.workspace_toggle_terminal(window, cx);
+            }),
+        ));
+        div()
+            .id(if overlay {
+                "environment-overlay"
+            } else {
+                "environment-rail"
+            })
+            .debug_selector(move || {
+                if overlay {
+                    "environment-overlay".into()
+                } else {
+                    "environment-rail".into()
+                }
+            })
+            .w(px(Layout::ENVIRONMENT_RAIL_WIDTH))
+            .h_full()
+            .flex_shrink_0()
+            .pt(px(Layout::ENVIRONMENT_CARD_INSET))
+            .pr(px(Layout::ENVIRONMENT_CARD_INSET))
+            .child(card)
+            .into_any_element()
+    }
+
     fn render_workspace_pane(
         &mut self,
         bottom: bool,
@@ -431,6 +675,7 @@ impl VegaWindow {
         let colors = theme(cx).colors;
         let index = usize::from(bottom);
         let selected = self.workspace.selected[index].clone();
+        let review_selected = selected == Some(TabKey::Diff);
         let tabs = self
             .workspace
             .tabs
@@ -519,7 +764,7 @@ impl VegaWindow {
             .flex()
             .items_center()
             .gap_1()
-            .h(px(40.))
+            .h(px(Layout::WORKSPACE_HEADER_HEIGHT))
             .px_1()
             .border_b_1()
             .border_color(colors.border_subtle)
@@ -532,6 +777,17 @@ impl VegaWindow {
                 }),
             ))
             .child(strip)
+            .when(review_selected, |header| {
+                header.child(
+                    icon_button(
+                        Icon::Document,
+                        "提交更改",
+                        colors,
+                        cx.listener(|this, _, _, cx| this.workspace_open_commit(cx)),
+                    )
+                    .debug_selector(|| "workspace-review-commit".into()),
+                )
+            })
             .child(icon_button(
                 Icon::Plus,
                 "打开工作区标签",
@@ -659,14 +915,9 @@ impl VegaWindow {
             self.workspace.window_size = Some(size);
             self.workspace.reveal_tabs = [true; 2];
         }
-        let sidebar = if !cx.global::<SidebarCollapsed>().0 && !self.auto_collapsed(window, cx) {
-            Layout::SIDEBAR_WIDTH
-        } else {
-            0.
-        };
-        let available = f32::from(size.width) - sidebar;
-        let right =
-            !self.workspace.hidden[0] && self.workspace.selected[0].is_some() && available >= 610.;
+        let available = self.workspace_available_width(window, cx);
+        let right = self.persistent_right_workspace_visible(window, cx);
+        let environment_wide = self.environment_is_wide(window);
         let bottom = !self.workspace.hidden[1]
             && self.workspace.selected[1].is_some()
             && f32::from(size.height) >= 480.;
@@ -679,65 +930,45 @@ impl VegaWindow {
         let height = if self.workspace.maximized[1] {
             f32::from(size.height) - 240.
         } else {
-            self.workspace.height.unwrap_or(240.)
+            self.workspace
+                .height
+                .unwrap_or(Layout::BOTTOM_WORKSPACE_HEIGHT)
         }
         .clamp(150., (f32::from(size.height) - 240.).max(150.));
+        let fullscreen = (0..2).find(|index| {
+            self.workspace.maximized[*index]
+                && !self.workspace.hidden[*index]
+                && self.workspace.selected[*index].is_some()
+        });
+        if right {
+            self.environment_overlay_open = false;
+        }
+        if environment_wide {
+            self.environment_overlay_open = false;
+        }
+        let environment_rail = fullscreen.is_none()
+            && !right
+            && self.shell_project_id(cx).is_some()
+            && environment_wide
+            && !self.environment_collapsed;
+        let environment_overlay = fullscreen.is_none()
+            && !right
+            && self.shell_project_id(cx).is_some()
+            && !environment_wide
+            && self.environment_overlay_open;
         if let Some((_, stream)) = &self.stream_view {
             stream.update(cx, |stream, cx| {
                 stream.set_workspace_width(
                     if right {
                         available - width - 5.
+                    } else if environment_rail {
+                        available - Layout::ENVIRONMENT_RAIL_WIDTH
                     } else {
                         available
                     },
                     cx,
                 )
             });
-        }
-        let fullscreen = (0..2).find(|index| {
-            self.workspace.maximized[*index]
-                && !self.workspace.hidden[*index]
-                && self.workspace.selected[*index].is_some()
-        });
-        let mut toolbar = div()
-            .absolute()
-            .top(px(2.))
-            .right(px(8.))
-            .flex()
-            .items_center()
-            .gap_1()
-            .bg(colors.bg_base);
-        toolbar = toolbar.child(icon_button(
-            Icon::Terminal,
-            "切换终端",
-            colors,
-            cx.listener(|this, _, window, cx| this.workspace_toggle_terminal(window, cx)),
-        ));
-        if !right && !bottom {
-            toolbar = toolbar.child(icon_button(
-                Icon::Plus,
-                "工作区：打开标签",
-                colors,
-                cx.listener(|this, _, window, cx| this.workspace_toggle_menu(false, window, cx)),
-            ));
-        }
-        for (index, label, kind) in [
-            (0, "显示右侧面板", Icon::DockRight),
-            (1, "显示底部面板", Icon::DockBottom),
-        ] {
-            if self.workspace.selected[index].is_some() && self.workspace.hidden[index] {
-                toolbar = toolbar.child(icon_button(
-                    kind,
-                    label,
-                    colors,
-                    cx.listener(move |this, _, window, cx| {
-                        this.workspace.hidden[index] = false;
-                        this.workspace.reveal_tabs[index] = true;
-                        this.workspace_focus(index, window, cx);
-                        cx.notify();
-                    }),
-                ));
-            }
         }
         let mut row = div().flex().flex_1().min_h_0().min_w_0().child(
             div()
@@ -767,11 +998,14 @@ impl VegaWindow {
                 )
                 .child(
                     div()
+                        .debug_selector(|| "right-workspace-pane".into())
                         .w(px(width))
                         .h_full()
                         .flex_shrink_0()
                         .child(self.render_workspace_pane(false, window, cx)),
                 );
+        } else if environment_rail {
+            row = row.child(self.render_environment(false, cx));
         }
         let mut layout = div()
             .size_full()
@@ -802,12 +1036,23 @@ impl VegaWindow {
                 )
                 .child(
                     div()
+                        .debug_selector(|| "bottom-workspace-pane".into())
                         .h(px(height))
                         .flex_shrink_0()
                         .child(self.render_workspace_pane(true, window, cx)),
                 );
         }
-        layout = layout.child(toolbar);
+        if environment_overlay {
+            layout = layout.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .w(px(Layout::ENVIRONMENT_RAIL_WIDTH))
+                    .h_full()
+                    .child(self.render_environment(true, cx)),
+            );
+        }
         if self.workspace.terminal_error {
             layout = layout.child(
                 div()
@@ -1036,15 +1281,298 @@ fn workspace_button(
         .child(label)
 }
 
+fn environment_action(
+    id: &'static str,
+    label: &'static str,
+    icon: Icon,
+    colors: ThemeColors,
+    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let activate = std::rc::Rc::new(activate);
+    let keyboard = activate.clone();
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .aria_label(label)
+        .focusable()
+        .tab_stop(true)
+        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+        .px_2()
+        .rounded_md()
+        .flex()
+        .items_center()
+        .gap_2()
+        .text_size(px(Typography::SIDEBAR))
+        .text_color(colors.text_primary)
+        .cursor_pointer()
+        .hover(move |style| style.bg(colors.bg_hover))
+        .focus(move |style| style.bg(colors.bg_active))
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
+            activate(&(), window, cx);
+        })
+        .on_key_down(move |event, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                keyboard(&(), window, cx);
+            }
+        })
+        .child(vega_ui::icons::icon(icon, colors.text_secondary))
+        .child(div().min_w_0().flex_1().truncate().child(label))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{TabKey, VegaWindow};
     use crate::tests::{diff_controller_repo, install_diff_window_globals};
     use gpui_kit::prelude::*;
-    use gpui_kit::{AppContext, KeyBinding};
+    use gpui_kit::{
+        AppContext, Bounds, KeyBinding, Modifiers, Pixels, TestAppContext, VisualTestContext,
+        WindowBounds, WindowHandle, WindowOptions, point, px, size,
+    };
+    use vega_theme::Layout;
     use vega_ui::diff_view::DiffClosed;
     use vega_ui::settings::{CloseSettings, SettingsOpen, SettingsView};
-    use vega_ui::sidebar::{OpenedThread, PendingDeleteConfirm};
+    use vega_ui::sidebar::{OpenedThread, PendingDeleteConfirm, SelectedProject, SidebarCollapsed};
+
+    fn shell_bounds(
+        window: WindowHandle<VegaWindow>,
+        selector: &'static str,
+        cx: &mut TestAppContext,
+    ) -> Bounds<Pixels> {
+        cx.run_until_parked();
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing R19 shell selector: {selector}"))
+    }
+
+    fn shell_absent(
+        window: WindowHandle<VegaWindow>,
+        selector: &'static str,
+        cx: &mut TestAppContext,
+    ) -> bool {
+        cx.run_until_parked();
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds(selector)
+            .is_none()
+    }
+
+    fn shell_click(
+        window: WindowHandle<VegaWindow>,
+        selector: &'static str,
+        cx: &mut TestAppContext,
+    ) {
+        let bounds = shell_bounds(window, selector, cx);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    fn assert_close(actual: Pixels, expected: f32, label: &str) {
+        let actual = f32::from(actual);
+        assert!(
+            (actual - expected).abs() <= 1.0,
+            "{label}: expected {expected}±1px, got {actual}px"
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn r19_shell_mounts_real_state_and_preserves_responsive_environment_choice(
+        cx: &mut TestAppContext,
+    ) {
+        let repo = diff_controller_repo();
+        let store = vega_store::Store::open(":memory:").expect("owned store");
+        store.migrate().expect("owned migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("fixture path"),
+            "R19 Project",
+            None,
+        )
+        .expect("project");
+        let thread =
+            vega_conversation::threads::create_thread(&store, &project.id, "mock", "confirm")
+                .expect("thread");
+        vega_conversation::threads::rename_thread(&store, &thread.id, "R19 task")
+            .expect("task title");
+        let standalone =
+            vega_conversation::threads::create_standalone_thread(&store, "mock", "confirm")
+                .expect("standalone task");
+        let project_id = project.id.clone();
+        cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        let root = cx.new(VegaWindow::new);
+        let window_root = root.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(1400.), px(900.)),
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| window_root,
+            )
+            .expect("production root window")
+        });
+        cx.run_until_parked();
+
+        let sidebar = shell_bounds(window, "sidebar", cx);
+        let panel = shell_bounds(window, "main-content-panel", cx);
+        let header = shell_bounds(window, "main-header", cx);
+        let rail = shell_bounds(window, "environment-rail", cx);
+        let card = shell_bounds(window, "environment-card", cx);
+        let composer = shell_bounds(window, "composer-shell", cx);
+        let conversation = shell_bounds(window, "conversation-column", cx);
+        assert_close(sidebar.size.width, Layout::SIDEBAR_WIDTH, "sidebar width");
+        assert_close(
+            panel.left() - sidebar.right(),
+            Layout::MAIN_CONTENT_GAP,
+            "main leading gap",
+        );
+        assert_close(
+            header.size.height,
+            Layout::MAIN_HEADER_HEIGHT,
+            "header height",
+        );
+        assert_close(
+            rail.size.width,
+            Layout::ENVIRONMENT_RAIL_WIDTH,
+            "Environment rail width",
+        );
+        assert_close(
+            card.top() - rail.top(),
+            Layout::ENVIRONMENT_CARD_INSET,
+            "Environment card top inset",
+        );
+        assert_close(
+            rail.right() - card.right(),
+            Layout::ENVIRONMENT_CARD_INSET,
+            "Environment card right inset",
+        );
+        assert_close(
+            composer.size.width,
+            Layout::COMPOSER_MAX_WIDTH,
+            "composer width",
+        );
+        assert!(
+            f32::from(composer.size.height) >= Layout::COMPOSER_MIN_HEIGHT,
+            "composer keeps its 100px minimum"
+        );
+        assert!(
+            f32::from(conversation.size.width) <= Layout::CONTENT_MAX_WIDTH + 1.0,
+            "conversation keeps its readable-column cap"
+        );
+        for selector in [
+            "main-header-project",
+            "main-header-review",
+            "main-header-terminal",
+            "main-header-environment",
+            "environment-project",
+            "environment-branch",
+            "environment-review",
+            "environment-terminal",
+        ] {
+            let _ = shell_bounds(window, selector, cx);
+        }
+
+        shell_click(window, "environment-close", cx);
+        assert!(shell_absent(window, "environment-rail", cx));
+        assert!(root.read_with(cx, |root, _| root.environment_collapsed
+            && !root.environment_overlay_open));
+
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1179.), px(900.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize below Environment breakpoint");
+        cx.run_until_parked();
+        assert!(shell_absent(window, "environment-rail", cx));
+        shell_click(window, "main-header-environment", cx);
+        assert_close(
+            shell_bounds(window, "environment-overlay", cx).size.width,
+            Layout::ENVIRONMENT_RAIL_WIDTH,
+            "Environment overlay width",
+        );
+        assert!(root.read_with(cx, |root, _| root.environment_collapsed
+            && root.environment_overlay_open));
+
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1400.), px(900.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize above Environment breakpoint");
+        cx.run_until_parked();
+        assert!(shell_absent(window, "environment-rail", cx));
+        assert!(root.read_with(cx, |root, _| root.environment_collapsed
+            && !root.environment_overlay_open));
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-rail", cx);
+        assert!(root.read_with(cx, |root, _| !root.environment_collapsed
+            && !root.environment_overlay_open));
+
+        shell_click(window, "environment-review", cx);
+        assert!(
+            root.read_with(cx, |root, _| root.diff_controller.active.is_some()
+                && root.workspace.selected[0] == Some(TabKey::Diff))
+        );
+        let _ = shell_bounds(window, "right-workspace-pane", cx);
+        shell_click(window, "workspace-review-commit", cx);
+        assert!(root.read_with(cx, |root, _| root.commit_controller.active.is_some()));
+        assert!(shell_absent(window, "environment-rail", cx));
+
+        cx.update(|cx| {
+            cx.set_global(SidebarCollapsed(true));
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        assert!(shell_absent(window, "sidebar", cx));
+        let _ = shell_bounds(window, "navigation-back", cx);
+
+        cx.update(|cx| {
+            cx.set_global(SelectedProject(Some(project_id.clone())));
+            cx.set_global(OpenedThread(Some(standalone.clone())));
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "main-header-title", cx);
+        for selector in [
+            "main-header-project",
+            "main-header-review",
+            "main-header-terminal",
+            "main-header-environment",
+            "environment-rail",
+        ] {
+            assert!(
+                shell_absent(window, selector, cx),
+                "standalone route must fence {selector}"
+            );
+        }
+
+        cx.update(|cx| {
+            cx.set_global(SidebarCollapsed(false));
+            cx.set_global(SelectedProject(Some(project_id.clone())));
+            cx.set_global(OpenedThread(None));
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "environment-project", cx);
+        let _ = shell_bounds(window, "environment-terminal", cx);
+        assert!(shell_absent(window, "environment-branch", cx));
+        assert!(shell_absent(window, "environment-review", cx));
+        assert!(shell_absent(window, "main-header-review", cx));
+
+        cx.update(|cx| {
+            cx.set_global(SelectedProject(None));
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        assert!(shell_absent(window, "environment-rail", cx));
+        assert!(shell_absent(window, "main-header-terminal", cx));
+        assert!(shell_absent(window, "main-header-environment", cx));
+    }
 
     #[gpui_kit::test]
     async fn workspace_root_preserves_draft_reopens_review_and_fences_task_switch(
@@ -1239,8 +1767,89 @@ mod terminal_tests {
     use super::{TabKey, VegaWindow};
     use crate::tests::install_diff_window_globals;
     use gpui_kit::Focusable;
-    use gpui_kit::{AppContext, TestAppContext};
+    use gpui_kit::{
+        AppContext, Bounds, Modifiers, TestAppContext, VisualTestContext, WindowBounds,
+        WindowOptions, point, px, size,
+    };
+    use vega_theme::Layout;
     use vega_ui::sidebar::SelectedProject;
+
+    #[gpui_kit::test]
+    async fn r19_environment_terminal_action_opens_default_bottom_dock(cx: &mut TestAppContext) {
+        const MARKER: &str = "VEGA_R19_ENVIRONMENT_TERMINAL_CHILD";
+        let Some(path) = std::env::var_os(MARKER) else {
+            let root = tempfile::tempdir().expect("owned terminal home");
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "window::workspace::terminal_tests::r19_environment_terminal_action_opens_default_bottom_dock",
+                    "--nocapture",
+                ])
+                .env(MARKER, root.path())
+                .env("HOME", root.path())
+                .env("ZDOTDIR", root.path())
+                .output()
+                .expect("isolated test process");
+            assert!(
+                output.status.success(),
+                "owned R19 terminal subprocess failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let store = vega_store::Store::open(path.join("test.db")).expect("store");
+        store.migrate().expect("migrations");
+        let project =
+            vega_store::projects::create(store.conn(), path.to_str().unwrap(), "R19", None)
+                .expect("project");
+        let thread =
+            vega_conversation::threads::create_thread(&store, &project.id, "mock", "confirm")
+                .expect("thread");
+        cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        let root = cx.new(VegaWindow::new);
+        let entity = root.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(1400.), px(900.)),
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| entity,
+            )
+            .expect("production root")
+        });
+        cx.run_until_parked();
+        let action = VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("environment-terminal")
+            .expect("truthful Local terminal action");
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(action.center(), Modifiers::default());
+        visual.run_until_parked();
+        root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.terminals.len(), 1);
+            assert!(matches!(
+                root.workspace.selected[1],
+                Some(TabKey::Terminal(_))
+            ));
+            assert!(!root.workspace.hidden[1]);
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let bottom = visual
+            .debug_bounds("bottom-workspace-pane")
+            .expect("bottom terminal dock");
+        assert!(
+            (f32::from(bottom.size.height) - Layout::BOTTOM_WORKSPACE_HEIGHT).abs() <= 1.0,
+            "bottom dock uses the frozen 272px default"
+        );
+        assert!(
+            visual.debug_bounds("environment-rail").is_some(),
+            "bottom dock remains a sibling of center plus Environment"
+        );
+    }
 
     #[gpui_kit::test]
     async fn terminal_workspace_production_handlers_preserve_docking_and_project_isolation(

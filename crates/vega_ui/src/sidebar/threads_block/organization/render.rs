@@ -346,7 +346,7 @@ impl ThreadsBlock {
             div()
                 .id("organization-sessions-empty")
                 .debug_selector(|| "organization-sessions-empty".into())
-                .h(px(30.))
+                .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                 .px_3()
                 .flex()
                 .items_center()
@@ -363,7 +363,7 @@ impl ThreadsBlock {
             .child(
                 div()
                     .id("organization-sessions-scroll")
-                    .max_h(px(30.0 * 5.0))
+                    .max_h(px(Typography::SIDEBAR_LINE_HEIGHT * 5.0))
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
@@ -457,7 +457,7 @@ impl ThreadsBlock {
                 let id = project.id.clone();
                 move || format!("project-header-{id}")
             })
-            .h(px(32.))
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .flex()
             .items_center()
             .gap_1()

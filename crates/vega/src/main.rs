@@ -13,11 +13,9 @@ use vega_ui::sidebar::*;
 
 actions!(vega, [Quit, ToggleTheme]);
 
-/// Initial main window size in logical pixels. Keep this below the common
-/// 1280x800 macOS work area so the first launch has room for the titlebar and
-/// Dock while still giving the three-column shell useful breathing room.
-const WINDOW_INITIAL_WIDTH: f32 = 1200.0;
-const WINDOW_INITIAL_HEIGHT: f32 = 760.0;
+/// Initial main window size in logical pixels (R19 phase-1 shell freeze).
+const WINDOW_INITIAL_WIDTH: f32 = 1400.0;
+const WINDOW_INITIAL_HEIGHT: f32 = 900.0;
 
 /// Minimum main window size in logical pixels (UI spec §1).
 const WINDOW_MIN_WIDTH: f32 = 960.0;

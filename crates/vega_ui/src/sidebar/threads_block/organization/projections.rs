@@ -383,7 +383,7 @@ impl ThreadsBlock {
                 let id = group_id.clone();
                 move || format!("group-empty-{id}")
             })
-            .h(px(30.))
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .px_3()
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_tertiary)

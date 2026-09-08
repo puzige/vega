@@ -83,6 +83,14 @@ pub(crate) use diff::{
 };
 pub(crate) use pricing::CommitPanelHarness;
 
+#[test]
+fn r19_default_window_geometry_is_frozen() {
+    assert_eq!(crate::WINDOW_INITIAL_WIDTH, 1400.0);
+    assert_eq!(crate::WINDOW_INITIAL_HEIGHT, 900.0);
+    assert_eq!(crate::WINDOW_MIN_WIDTH, 960.0);
+    assert_eq!(crate::WINDOW_MIN_HEIGHT, 600.0);
+}
+
 fn pump_test_app(
     cx: &mut gpui_kit::TestAppContext,
     mut ready: impl FnMut(&mut gpui_kit::TestAppContext) -> bool,

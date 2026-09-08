@@ -1,6 +1,6 @@
 //! Window-level navigation actions and shared sidebar/collapsed controls.
 use gpui_kit::{prelude::*, *};
-use vega_theme::{Typography, theme};
+use vega_theme::theme;
 actions!(
     navigation,
     [
@@ -53,11 +53,21 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
         .child(sidebar_control(cx, sidebar_visible))
         .children(
             [
-                (false, state.back, "←", "navigation-back"),
-                (true, state.forward, "→", "navigation-forward"),
+                (
+                    false,
+                    state.back,
+                    crate::icons::Icon::ArrowLeft,
+                    "navigation-back",
+                ),
+                (
+                    true,
+                    state.forward,
+                    crate::icons::Icon::ArrowRight,
+                    "navigation-forward",
+                ),
             ]
             .into_iter()
-            .map(|(forward, enabled, label, id)| {
+            .map(|(forward, enabled, icon, id)| {
                 let focus = cx
                     .try_global::<NavigationControlFocus>()
                     .map(|handles| handles.0[usize::from(forward)].clone())
@@ -94,7 +104,6 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .text_size(px(Typography::HEADING_PAGE))
                     .text_color(if enabled {
                         colors.text_secondary
                     } else {
@@ -121,7 +130,14 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                             }
                         }
                     })
-                    .child(label)
+                    .child(crate::icons::icon(
+                        icon,
+                        if enabled {
+                            colors.text_secondary
+                        } else {
+                            colors.text_tertiary
+                        },
+                    ))
             }),
         )
         .into_any_element()

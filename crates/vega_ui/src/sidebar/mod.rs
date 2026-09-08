@@ -459,7 +459,7 @@ impl Sidebar {
             .px_2()
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_secondary)
-            .child(crate::navigation::sidebar_toggle(cx, true))
+            .child(crate::navigation::controls(cx, true))
             .into_any_element()
     }
 
@@ -532,6 +532,7 @@ impl Render for Sidebar {
         let colors = theme(cx).colors;
         div()
             .id("sidebar")
+            .debug_selector(|| "sidebar".into())
             .flex()
             .flex_col()
             .w(px(Layout::SIDEBAR_WIDTH))

@@ -236,8 +236,8 @@ impl Typography {
     pub const CODE: f32 = 12.5;
     /// Sidebar entry font size: 13px (§3 "侧边栏条目 13px，行高 34px").
     pub const SIDEBAR: f32 = 13.0;
-    /// Sidebar entry row height: 34px absolute (R4 visual revision §2).
-    pub const SIDEBAR_LINE_HEIGHT: f32 = 34.0;
+    /// Sidebar entry row height: 32px absolute (R19 phase-1 shell freeze).
+    pub const SIDEBAR_LINE_HEIGHT: f32 = 32.0;
     /// Compact metadata and status labels: 12px (R4 visual revision §2).
     pub const METADATA: f32 = 12.0;
     /// Empty-state title: 28px semibold (R8 visual parity).
@@ -276,14 +276,32 @@ impl Layout {
     pub const PANEL_RADIUS: f32 = 12.0;
     /// Radius for the primary composer surface.
     pub const COMPOSER_RADIUS: f32 = 20.0;
-    /// Sidebar width from the PI-Desktop reference (260–275px visual range).
+    /// Minimum height of the primary composer shell.
+    pub const COMPOSER_MIN_HEIGHT: f32 = 100.0;
+    /// Height reserved by every non-Settings main route.
+    pub const MAIN_HEADER_HEIGHT: f32 = 46.0;
+    /// Gap between the main content panel and the native window edges/sidebar.
+    pub const MAIN_CONTENT_GAP: f32 = 4.0;
     /// Provider selector column inside Settings.
     pub const PROVIDER_LIST_WIDTH: f32 = 180.0;
-    pub const SIDEBAR_WIDTH: f32 = 275.0;
+    /// Sidebar width from the R19 phase-1 shell freeze.
+    pub const SIDEBAR_WIDTH: f32 = 260.0;
     /// Sidebar horizontal and vertical padding.
     pub const SIDEBAR_PADDING: f32 = 12.0;
     /// Composer width cap; the thread column remains wider for readable output.
-    pub const COMPOSER_MAX_WIDTH: f32 = 768.0;
+    pub const COMPOSER_MAX_WIDTH: f32 = 736.0;
+    /// Fixed wide-screen Environment rail width.
+    pub const ENVIRONMENT_RAIL_WIDTH: f32 = 292.0;
+    /// Top/right inset for the floating Environment card.
+    pub const ENVIRONMENT_CARD_INSET: f32 = 16.0;
+    /// Environment card radius.
+    pub const ENVIRONMENT_CARD_RADIUS: f32 = 18.0;
+    /// Width at which the persistent Environment rail becomes available.
+    pub const ENVIRONMENT_BREAKPOINT: f32 = 1180.0;
+    /// Default bottom workspace height.
+    pub const BOTTOM_WORKSPACE_HEIGHT: f32 = 272.0;
+    /// Workspace tab/header height.
+    pub const WORKSPACE_HEADER_HEIGHT: f32 = 40.0;
     /// Reserved trailing width for session timestamps and the compact action
     /// menu trigger. Low-frequency actions live in the popover so long
     /// session titles keep the main width of the rail.
@@ -364,6 +382,23 @@ mod tests {
         assert_eq!(u32::from(DARK.brand_primary_strong), 0x609DE1FF);
         assert_eq!(u32::from(LIGHT.brand_on_accent), 0xFFFFFFFF);
         assert_eq!(u32::from(DARK.brand_on_accent), 0x13233AFF);
+    }
+
+    #[test]
+    fn r19_phase_one_geometry_is_frozen() {
+        assert_eq!(Typography::SIDEBAR_LINE_HEIGHT, 32.0);
+        assert_eq!(Layout::SIDEBAR_WIDTH, 260.0);
+        assert_eq!(Layout::MAIN_CONTENT_GAP, 4.0);
+        assert_eq!(Layout::MAIN_HEADER_HEIGHT, 46.0);
+        assert_eq!(Layout::CONTENT_MAX_WIDTH, 820.0);
+        assert_eq!(Layout::COMPOSER_MAX_WIDTH, 736.0);
+        assert_eq!(Layout::COMPOSER_MIN_HEIGHT, 100.0);
+        assert_eq!(Layout::ENVIRONMENT_RAIL_WIDTH, 292.0);
+        assert_eq!(Layout::ENVIRONMENT_CARD_INSET, 16.0);
+        assert_eq!(Layout::ENVIRONMENT_CARD_RADIUS, 18.0);
+        assert_eq!(Layout::ENVIRONMENT_BREAKPOINT, 1180.0);
+        assert_eq!(Layout::WORKSPACE_HEADER_HEIGHT, 40.0);
+        assert_eq!(Layout::BOTTOM_WORKSPACE_HEIGHT, 272.0);
     }
 
     #[test]

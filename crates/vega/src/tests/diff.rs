@@ -210,6 +210,10 @@ pub(crate) fn receive_refresh(
 }
 
 pub(crate) fn install_diff_window_globals(store: Store, thread: Thread, cx: &mut App) {
+    // Production initializes the shared component layer before any Vega view
+    // mounts. Root-view tests must do the same now that the complete R19 shell
+    // keeps GPUI Kit controls visible in its first frame.
+    gpui_kit::init(cx);
     cx.set_global(Theme::light());
     cx.set_global(SettingsOpen(false));
     cx.set_global(SidebarCollapsed(false));
