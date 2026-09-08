@@ -117,6 +117,18 @@ state. The exact test passed immediately in isolation, and a second full
 single-threaded replay passed 83/83. No R19 shell assertion failed in either
 run; the one-off result is recorded rather than hidden.
 
+### Post-integration install
+
+After the fast-forward integration, local `master` at `d6f26e6` was packaged
+again and installed over the accepted candidate. The final
+`/Applications/Vega.app` executable SHA-256 is
+`ba431a3102627db93ea728ffa3a982896f1f1e80b04f2a6c542a0d2037582859`,
+identical to the executable in `master/dist/Vega.app`.
+`codesign --verify --deep --strict` passed, the application launched from that
+path, and the standard window again reported 1400 x 900 logical pixels. The
+final installed-state capture is `vega-r19-master-final.png` in the root
+agent's temporary directory.
+
 ## Residuals
 
 - PASS: the requested real macOS review is complete. Standalone truthfulness
