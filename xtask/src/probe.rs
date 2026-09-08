@@ -524,7 +524,8 @@ impl Render for ProbeRoot {
 
 /// Runs the probe app for the parsed mode. Exits when the app quits.
 pub fn run(mode: ProbeMode) {
-    gpui_kit::application().run(move |cx: &mut App| {
+    let app = gpui_kit::application().with_assets(gpui_kit::assets::Assets);
+    app.run(move |cx: &mut App| {
         gpui_kit::init(cx);
         // Production boot path (mirrors the app entry at 429cb2d).
         cx.set_global(vega_theme::Theme::system(cx));

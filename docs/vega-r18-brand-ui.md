@@ -2,7 +2,7 @@
 
 Date: 2026-09-08
 Status: Implemented on `feat/r18-brand-icons`
-Scope: shared native vector icons, theme tokens, PI sidebar and composer emphasis states.
+Scope: shared native SVG icons, theme tokens, PI sidebar and composer emphasis states.
 
 R18 adopts the approved R17 App Logo as the visual source for product chrome. The
 translation is a restrained UI language: the blue terminal mark, one slender
@@ -12,21 +12,31 @@ every control.
 
 ## Foundations
 
-- **Optical grid:** every shared icon is authored on a 16 × 16 optical grid.
-  Strokes are centered on the grid and leave enough breathing room at 1px
-  rendering sizes. The usable drawing area is generally 12 × 12 rather than a
-  mathematically full box.
-- **Stroke and geometry:** the default stroke is 1.45px, within the R18
-  1.4–1.5px range. Endpoints and joins use shallow curves or explicit curve
-  segments. Chevron, plus, more, settings, mode and panel controls share this
-  compact, rounded language.
-- **Folder:** Folder and FolderPlus use a dedicated soft folder outline. The
-  tab and outer frame stay simple; the bottom edge has only a very small upward
-  bow so it reads as a folder silhouette, never a face. A normal folder does
-  not contain a star.
-- **Spark:** the single slender four-point spark is reserved for Agent/AI,
-  Thinking and other key brand actions. Functional meaning remains with the
-  functional icon beside it.
+- **Optical grid:** every shared icon is placed in a fixed 16 × 16 container.
+  The bundled Lucide-style assets keep their 24 × 24 viewBox and are rasterized
+  by GPUI's SVG renderer, so Retina scaling does not depend on fractional
+  `PathBuilder` coordinates.
+- **Stroke and geometry:** the source icons use a 2px stroke at 24px with
+  round caps and joins, producing a consistent approximately 1.4px optical
+  line at the 16px UI size. Chevron, plus, more, settings, mode and panel
+  controls all use the same mature outline language.
+- **Folder:** Folder uses the standard GPUI Kit folder outline. FolderPlus is
+  the same folder with a small Plus asset layered in the fixed 16px container;
+  no smile, star or custom facial detail is added to a functional folder.
+- **Brand spark:** only Agent/AI/Thinking actions may use the spark-like
+  `Asterisk` asset. The App Logo remains the source of the actual brand mark;
+  generic controls retain their familiar functional silhouettes.
+
+### Shared icon source
+
+`vega_ui::icons` maps its stable `Icon` API to `gpui_kit::component::IconName`.
+The `gpui-kit-assets` bundle supplies the layout, action, file, folder,
+disclosure, arrow, settings and AI symbols as embedded Lucide-style SVGs.
+`IconName` elements always render at `px(16.)` and are colorized by the caller's
+semantic theme token. Pin and Shield are the only bundled-set gaps; their
+static Lucide paths go through GPUI's `svg().data(...)` renderer with the same
+viewBox, stroke, cap and join rules. No new runtime asset loader or dependency
+is introduced.
 
 ## Color tokens
 
@@ -59,8 +69,10 @@ introduce hex literals or appearance-specific colors.
 
 ## Constraints
 
-R18 keeps icons local vector/canvas paths, uses no Unicode glyph as an
-interactive icon, and adds no runtime dependency. R15 project/session IA,
-storage, navigation, providers, Keychain policy, business behavior and
+R18 keeps icon semantics in the shared local API, uses no Unicode glyph as an
+interactive icon, and routes all generic geometry through the SVG renderer.
+The only custom geometry permitted here is the approved App Logo itself;
+functional symbols are not hand-drawn with `PathBuilder`. R15 project/session
+IA, storage, navigation, providers, Keychain policy, business behavior and
 accessibility contracts remain unchanged. The App Logo source files are not
 modified by this baseline.

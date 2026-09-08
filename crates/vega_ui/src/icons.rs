@@ -1,7 +1,23 @@
-//! Original monochrome line icons for compact native chrome.
-use gpui_kit::{IntoElement, PathBuilder, Rgba, canvas, point, prelude::*, px};
+//! Shared functional icons for Vega's compact native chrome.
 
-/// Small functional line icons, drawn without platform-dependent glyphs.
+//! Generic UI symbols come from the embedded GPUI Kit icon set. The source
+//! assets are Lucide-style SVGs with a 24px viewBox and round line joins; the
+//! wrapper below keeps every icon on Vega's fixed 16px optical grid. Keeping
+//! the renderer SVG-backed avoids fractional `PathBuilder` geometry at small
+//! sizes. The two symbols that are not present in the bundled set use the
+//! same Lucide SVG grammar through GPUI's inline SVG renderer.
+
+use gpui_kit::{
+    AnyElement, IntoElement, Rgba,
+    component::{Icon as KitIcon, IconName, Sizable as _},
+    div,
+    prelude::*,
+    px, svg,
+};
+
+const ICON_SIZE: f32 = 16.0;
+
+/// The small set of functional symbols shared by Vega's native chrome.
 #[derive(Clone, Copy)]
 pub enum Icon {
     Sidebar,
@@ -30,295 +46,83 @@ pub enum Icon {
     Document,
 }
 
+/// Lucide's pin path is kept inline because gpui-kit 0.6.0 does not ship a
+/// pin asset. It is rendered by GPUI's normal SVG pipeline, rather than by a
+/// bespoke canvas path.
+const PIN_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M5 17h14"/><path d="M8 17V7a4 4 0 0 1 8 0v10"/><path d="M6 7h12"/></svg>"#;
+
+/// Lucide's shield path is kept inline because gpui-kit 0.6.0 does not ship
+/// a shield asset. It uses the same 24px, round-corner grammar as the
+/// embedded icon set.
+const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z"/></svg>"#;
+
+fn icon_name(kind: Icon) -> IconName {
+    match kind {
+        Icon::Sidebar => IconName::PanelLeft,
+        Icon::Plus => IconName::Plus,
+        Icon::ArrowUp => IconName::ArrowUp,
+        Icon::ArrowLeft => IconName::ArrowLeft,
+        Icon::Folder | Icon::FolderPlus => IconName::Folder,
+        Icon::Settings => IconName::Settings,
+        Icon::Close => IconName::Close,
+        Icon::DockBottom => IconName::PanelBottom,
+        Icon::DockRight => IconName::PanelRight,
+        Icon::Maximize => IconName::Maximize,
+        Icon::Minimize => IconName::Minimize,
+        Icon::More => IconName::Ellipsis,
+        Icon::ArrowUpDown => IconName::ChevronsUpDown,
+        Icon::ChevronDown => IconName::ChevronDown,
+        Icon::ChevronRight => IconName::ChevronRight,
+        Icon::ArrowDown => IconName::ArrowDown,
+        Icon::Refresh => IconName::RotateCw,
+        // A panel outline is the closest mature symbol for a split view and
+        // preserves the same visual language as the dock controls.
+        Icon::Split => IconName::PanelLeft,
+        Icon::Mode => IconName::Bot,
+        Icon::Thinking => IconName::Asterisk,
+        Icon::Document => IconName::FileText,
+        Icon::Pin | Icon::Shield => unreachable!("inline SVG icons are handled before mapping"),
+    }
+}
+
+fn kit_icon(kind: Icon, color: Rgba) -> AnyElement {
+    KitIcon::new(icon_name(kind))
+        .with_size(px(ICON_SIZE))
+        .text_color(color)
+        .flex_shrink_0()
+        .into_any_element()
+}
+
+fn inline_icon(data: &'static [u8], color: Rgba) -> AnyElement {
+    svg()
+        .data(data)
+        .size(px(ICON_SIZE))
+        .flex_shrink_0()
+        .text_color(color)
+        .into_any_element()
+}
+
 /// Paints a 16px icon in the caller's semantic text color.
-///
-/// The geometry is deliberately local rather than font-backed: every icon
-/// stays crisp at the 16px optical grid and can share the R18 soft-corner
-/// language without introducing a runtime asset or Unicode glyph dependency.
-pub fn icon(kind: Icon, color: Rgba) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let at = |x: f32, y: f32| bounds.origin + point(px(x), px(y));
-            let mut path = PathBuilder::stroke(px(1.45));
-
-            match kind {
-                Icon::Document => {
-                    path.move_to(at(3.1, 3.0));
-                    path.curve_to(at(3.1, 2.5), at(3.5, 2.2));
-                    path.line_to(at(9.8, 2.2));
-                    path.line_to(at(12.9, 5.2));
-                    path.line_to(at(12.9, 13.2));
-                    path.curve_to(at(12.9, 13.7), at(12.5, 14.0));
-                    path.line_to(at(3.1, 14.0));
-                    path.close();
-                    path.move_to(at(9.8, 2.3));
-                    path.line_to(at(9.8, 5.2));
-                    path.line_to(at(12.7, 5.2));
-                    path.move_to(at(5.0, 8.2));
-                    path.line_to(at(11.0, 8.2));
-                    path.move_to(at(5.0, 11.0));
-                    path.line_to(at(10.0, 11.0));
-                }
-                Icon::Mode => {
-                    path.move_to(at(3.0, 2.8));
-                    path.curve_to(at(2.4, 2.8), at(2.1, 3.1));
-                    path.line_to(at(2.1, 10.4));
-                    path.curve_to(at(2.1, 11.0), at(2.4, 11.3));
-                    path.line_to(at(3.5, 11.3));
-                    path.line_to(at(3.5, 13.5));
-                    path.line_to(at(7.0, 11.3));
-                    path.line_to(at(13.0, 11.3));
-                    path.curve_to(at(13.6, 11.3), at(13.9, 11.0));
-                    path.line_to(at(13.9, 3.5));
-                    path.curve_to(at(13.9, 3.0), at(13.6, 2.8));
-                    path.close();
-                }
-                Icon::Shield => {
-                    path.move_to(at(8.0, 2.0));
-                    path.curve_to(at(8.8, 2.4), at(10.5, 3.2));
-                    path.line_to(at(12.9, 4.2));
-                    path.line_to(at(12.9, 8.0));
-                    path.curve_to(at(12.9, 10.4), at(11.2, 12.4));
-                    path.curve_to(at(10.2, 13.3), at(8.7, 14.0));
-                    path.curve_to(at(8.5, 14.1), at(8.3, 14.1));
-                    path.curve_to(at(8.1, 14.0), at(6.3, 13.3));
-                    path.curve_to(at(4.8, 12.3), at(3.1, 10.2));
-                    path.line_to(at(3.1, 4.2));
-                    path.close();
-                }
-                Icon::Thinking => {
-                    // The sole spark-like functional icon follows the slender
-                    // single-star silhouette from the approved app logo.
-                    path = PathBuilder::fill();
-                    path.move_to(at(8.0, 1.5));
-                    path.curve_to(at(8.4, 3.8), at(8.9, 5.7));
-                    path.curve_to(at(9.9, 6.9), at(11.5, 7.6));
-                    path.curve_to(at(12.7, 7.9), at(13.6, 8.0));
-                    path.curve_to(at(12.4, 8.2), at(11.2, 8.7));
-                    path.curve_to(at(9.8, 9.3), at(9.0, 10.9));
-                    path.curve_to(at(8.6, 12.1), at(8.2, 13.5));
-                    path.curve_to(at(7.8, 12.0), at(7.2, 10.5));
-                    path.curve_to(at(6.4, 9.3), at(4.9, 8.6));
-                    path.curve_to(at(3.6, 8.2), at(2.5, 8.1));
-                    path.curve_to(at(3.7, 7.8), at(5.0, 7.2));
-                    path.curve_to(at(6.5, 6.5), at(7.3, 4.9));
-                    path.curve_to(at(7.7, 3.5), at(7.9, 2.2));
-                    path.close();
-                }
-                Icon::Close => {
-                    path.move_to(at(4.2, 4.2));
-                    path.line_to(at(11.8, 11.8));
-                    path.move_to(at(11.8, 4.2));
-                    path.line_to(at(4.2, 11.8));
-                }
-                Icon::DockBottom => {
-                    path.move_to(at(2.4, 3.2));
-                    path.curve_to(at(2.4, 2.8), at(2.7, 2.5));
-                    path.line_to(at(13.3, 2.5));
-                    path.curve_to(at(13.7, 2.5), at(14.0, 2.8));
-                    path.line_to(at(14.0, 12.8));
-                    path.curve_to(at(14.0, 13.2), at(13.7, 13.5));
-                    path.line_to(at(2.4, 13.5));
-                    path.close();
-                    path.move_to(at(2.4, 9.0));
-                    path.line_to(at(14.0, 9.0));
-                }
-                Icon::DockRight => {
-                    path.move_to(at(2.4, 3.2));
-                    path.curve_to(at(2.4, 2.8), at(2.7, 2.5));
-                    path.line_to(at(13.3, 2.5));
-                    path.curve_to(at(13.7, 2.5), at(14.0, 2.8));
-                    path.line_to(at(14.0, 12.8));
-                    path.curve_to(at(14.0, 13.2), at(13.7, 13.5));
-                    path.line_to(at(2.4, 13.5));
-                    path.close();
-                    path.move_to(at(10.0, 2.7));
-                    path.line_to(at(10.0, 13.3));
-                }
-                Icon::Maximize => {
-                    path.move_to(at(6.0, 3.1));
-                    path.line_to(at(3.2, 3.1));
-                    path.line_to(at(3.2, 6.0));
-                    path.move_to(at(10.0, 3.1));
-                    path.line_to(at(12.8, 3.1));
-                    path.line_to(at(12.8, 6.0));
-                    path.move_to(at(12.8, 10.0));
-                    path.line_to(at(12.8, 12.9));
-                    path.line_to(at(10.0, 12.9));
-                    path.move_to(at(6.0, 12.9));
-                    path.line_to(at(3.2, 12.9));
-                    path.line_to(at(3.2, 10.0));
-                }
-                Icon::Minimize => {
-                    path.move_to(at(3.2, 8.0));
-                    path.curve_to(at(3.2, 7.7), at(3.5, 7.5));
-                    path.line_to(at(12.8, 7.5));
-                    path.curve_to(at(13.1, 7.5), at(13.2, 7.7));
-                }
-                Icon::More => {
-                    path.move_to(at(2.9, 8.0));
-                    path.curve_to(at(2.9, 7.7), at(3.2, 7.5));
-                    path.curve_to(at(3.5, 7.5), at(3.8, 7.7));
-                    path.curve_to(at(3.8, 8.3), at(3.5, 8.5));
-                    path.curve_to(at(3.2, 8.5), at(2.9, 8.3));
-                    path.move_to(at(7.0, 8.0));
-                    path.curve_to(at(7.0, 7.7), at(7.3, 7.5));
-                    path.curve_to(at(7.6, 7.5), at(7.9, 7.7));
-                    path.curve_to(at(7.9, 8.3), at(7.6, 8.5));
-                    path.curve_to(at(7.3, 8.5), at(7.0, 8.3));
-                    path.move_to(at(11.1, 8.0));
-                    path.curve_to(at(11.1, 7.7), at(11.4, 7.5));
-                    path.curve_to(at(11.7, 7.5), at(12.0, 7.7));
-                    path.curve_to(at(12.0, 8.3), at(11.7, 8.5));
-                    path.curve_to(at(11.4, 8.5), at(11.1, 8.3));
-                }
-                Icon::ArrowUpDown => {
-                    path.move_to(at(8.0, 2.5));
-                    path.line_to(at(8.0, 13.5));
-                    path.move_to(at(4.2, 5.9));
-                    path.line_to(at(8.0, 2.5));
-                    path.line_to(at(11.8, 5.9));
-                    path.move_to(at(4.2, 10.1));
-                    path.line_to(at(8.0, 13.5));
-                    path.line_to(at(11.8, 10.1));
-                }
-                Icon::Pin => {
-                    path.move_to(at(8.0, 2.2));
-                    path.line_to(at(11.7, 5.9));
-                    path.line_to(at(10.0, 7.6));
-                    path.line_to(at(10.0, 11.2));
-                    path.line_to(at(6.0, 11.2));
-                    path.line_to(at(6.0, 7.6));
-                    path.line_to(at(4.3, 5.9));
-                    path.close();
-                    path.move_to(at(8.0, 11.5));
-                    path.line_to(at(8.0, 14.8));
-                }
-                Icon::ChevronDown => {
-                    path.move_to(at(4.3, 5.9));
-                    path.curve_to(at(4.5, 5.6), at(4.7, 5.6));
-                    path.line_to(at(7.7, 8.55));
-                    path.curve_to(at(8.0, 8.85), at(8.3, 8.85));
-                    path.line_to(at(11.3, 5.95));
-                    path.curve_to(at(11.5, 5.7), at(11.7, 5.7));
-                }
-                Icon::ChevronRight => {
-                    path.move_to(at(5.25, 4.7));
-                    path.curve_to(at(5.0, 4.9), at(5.0, 5.1));
-                    path.line_to(at(8.0, 7.7));
-                    path.curve_to(at(8.3, 8.0), at(8.3, 8.25));
-                    path.line_to(at(5.25, 10.9));
-                    path.curve_to(at(5.0, 11.1), at(5.0, 11.3));
-                }
-                Icon::ArrowDown => {
-                    path.move_to(at(8.0, 2.8));
-                    path.line_to(at(8.0, 13.2));
-                    path.move_to(at(3.4, 8.6));
-                    path.line_to(at(8.0, 13.2));
-                    path.line_to(at(12.6, 8.6));
-                }
-                Icon::Refresh => {
-                    path.move_to(at(12.2, 5.3));
-                    path.curve_to(at(10.9, 3.5), at(9.6, 3.0));
-                    path.curve_to(at(5.1, 1.4), at(2.4, 4.1));
-                    path.curve_to(at(0.9, 6.0), at(1.5, 10.5));
-                    path.curve_to(at(2.2, 13.0), at(5.3, 13.9));
-                    path.curve_to(at(9.3, 15.1), at(12.2, 12.0));
-                    path.move_to(at(9.1, 5.3));
-                    path.line_to(at(12.2, 5.3));
-                    path.line_to(at(12.2, 2.3));
-                }
-                Icon::Split => {
-                    path.move_to(at(2.4, 3.2));
-                    path.curve_to(at(2.4, 2.8), at(2.7, 2.5));
-                    path.line_to(at(13.3, 2.5));
-                    path.curve_to(at(13.7, 2.5), at(14.0, 2.8));
-                    path.line_to(at(14.0, 12.8));
-                    path.curve_to(at(14.0, 13.2), at(13.7, 13.5));
-                    path.line_to(at(2.4, 13.5));
-                    path.close();
-                    path.move_to(at(8.0, 2.7));
-                    path.line_to(at(8.0, 13.3));
-                }
-                Icon::Sidebar => {
-                    path.move_to(at(2.4, 3.2));
-                    path.curve_to(at(2.4, 2.8), at(2.7, 2.5));
-                    path.line_to(at(13.3, 2.5));
-                    path.curve_to(at(13.7, 2.5), at(14.0, 2.8));
-                    path.line_to(at(14.0, 12.8));
-                    path.curve_to(at(14.0, 13.2), at(13.7, 13.5));
-                    path.line_to(at(2.4, 13.5));
-                    path.close();
-                    path.move_to(at(6.0, 2.7));
-                    path.line_to(at(6.0, 13.3));
-                }
-                Icon::Plus => {
-                    path.move_to(at(3.2, 8.0));
-                    path.line_to(at(12.8, 8.0));
-                    path.move_to(at(8.0, 3.2));
-                    path.line_to(at(8.0, 12.8));
-                }
-                Icon::ArrowUp => {
-                    path.move_to(at(8.0, 13.2));
-                    path.line_to(at(8.0, 2.8));
-                    path.move_to(at(3.4, 7.4));
-                    path.line_to(at(8.0, 2.8));
-                    path.line_to(at(12.6, 7.4));
-                }
-                Icon::ArrowLeft => {
-                    path.move_to(at(13.2, 8.0));
-                    path.line_to(at(2.8, 8.0));
-                    path.move_to(at(7.4, 3.4));
-                    path.line_to(at(2.8, 8.0));
-                    path.line_to(at(7.4, 12.6));
-                }
-                Icon::Folder | Icon::FolderPlus => {
-                    // Soft folder silhouette: the shallow bottom bow is the
-                    // only logo-derived flourish, and remains non-character.
-                    path.move_to(at(2.25, 5.35));
-                    path.line_to(at(2.25, 4.3));
-                    path.curve_to(at(2.25, 3.55), at(2.55, 3.3));
-                    path.line_to(at(5.45, 3.3));
-                    path.curve_to(at(6.0, 3.3), at(6.25, 3.55));
-                    path.line_to(at(7.95, 5.25));
-                    path.line_to(at(12.9, 5.25));
-                    path.curve_to(at(13.7, 5.25), at(13.75, 5.6));
-                    path.line_to(at(13.75, 11.25));
-                    path.curve_to(at(13.75, 12.35), at(13.25, 12.5));
-                    path.curve_to(at(8.0, 13.15), at(3.0, 12.5));
-                    path.curve_to(at(2.25, 12.4), at(2.25, 11.25));
-                    path.close();
-                    if matches!(kind, Icon::FolderPlus) {
-                        path.move_to(at(10.4, 8.8));
-                        path.line_to(at(13.1, 8.8));
-                        path.move_to(at(11.75, 7.45));
-                        path.line_to(at(11.75, 10.15));
-                    }
-                }
-                Icon::Settings => {
-                    path.move_to(at(2.5, 4.2));
-                    path.curve_to(at(2.5, 3.9), at(2.8, 3.7));
-                    path.line_to(at(13.5, 3.7));
-                    path.curve_to(at(13.8, 3.7), at(14.0, 3.9));
-                    path.move_to(at(2.5, 12.3));
-                    path.curve_to(at(2.5, 12.0), at(2.8, 11.8));
-                    path.line_to(at(13.5, 11.8));
-                    path.curve_to(at(13.8, 11.8), at(14.0, 12.0));
-                    path.move_to(at(5.0, 2.4));
-                    path.line_to(at(5.0, 5.9));
-                    path.move_to(at(11.0, 10.1));
-                    path.line_to(at(11.0, 13.6));
-                }
-            }
-
-            if let Ok(path) = path.build() {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .size(px(16.))
-    .flex_shrink_0()
+pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
+    match kind {
+        Icon::Pin => inline_icon(PIN_SVG, color),
+        Icon::Shield => inline_icon(SHIELD_SVG, color),
+        Icon::FolderPlus => div()
+            .relative()
+            .size(px(ICON_SIZE))
+            .flex_shrink_0()
+            .child(kit_icon(Icon::Folder, color))
+            .child(
+                KitIcon::new(IconName::Plus)
+                    .with_size(px(8.))
+                    .text_color(color)
+                    .absolute()
+                    .right_0()
+                    .bottom_0(),
+            )
+            .into_any_element(),
+        _ => kit_icon(kind, color),
+    }
 }
 
 struct IconTooltip(gpui_kit::SharedString);

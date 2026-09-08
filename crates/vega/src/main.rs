@@ -44,14 +44,16 @@ fn main() {
     // S3-T17 隐藏自测量模式：`vega --vega-bench-render <out.json>` 跑完写
     // JSON 后退出（xtask bench render_frame 的数据来源），不进入正常应用。
     if let Some(output) = render_frame_bench::output_path_from_args() {
-        application().run(|cx: &mut App| {
+        let app = application().with_assets(gpui_kit::assets::Assets);
+        app.run(|cx: &mut App| {
             gpui_kit::init(cx);
             render_frame_bench::start(output, cx);
         });
         return;
     }
 
-    application().run(|cx: &mut App| {
+    let app = application().with_assets(gpui_kit::assets::Assets);
+    app.run(|cx: &mut App| {
         // GPUI Kit owns the shared component/base globals before any Vega
         // view can render a Kit control.
         gpui_kit::init(cx);

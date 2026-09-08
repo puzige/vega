@@ -77,4 +77,4 @@ tempfile = "=3.27.0"
 # UI 依赖：GPUI Kit 是唯一入口；它 re-export 了匹配版本的 GPUI、平台层
 # 以及可选的组件层。源码使用 facade crate 的 `gpui_kit::…` 命名空间，
 # 避免 GPUI Kit re-export 的 `gpui` 模块与外层 crate 名发生 glob 冲突。
-gpui_kit = { package = "gpui-kit", version = "=0.6.0", default-features = false, features = ["component", "test-support"] }
+gpui_kit = { package = "gpui-kit", version = "=0.6.0", default-features = false, features = ["component", "test-support", "assets"] }
