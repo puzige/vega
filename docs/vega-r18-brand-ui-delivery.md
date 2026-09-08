@@ -2,11 +2,11 @@
 
 ## Freeze
 
-- verified_at_utc: 2026-09-08T06:34Z–2026-09-08T06:40Z
-- verified_at_local: 2026-09-08 14:34–14:40 CST
+- verified_at_utc: 2026-09-08T09:02Z
+- verified_at_local: 2026-09-08 17:02 CST
 - branch: `feat/r18-brand-icons`
-- implementation_git_head: `5ceb15b` (`fix(R18): render shared icons from SVG assets`)
-- implementation_tracked_diff_sha256: `b9f5f185d9031c852fe77a04508db5376f8f6c605cf7829494c9540e9e6870fe` (tracked diff excluding this delivery record)
+- implementation_git_head: `32e2b18` (`fix(R18): clarify terminal and folder actions`)
+- implementation_tracked_diff_sha256: `a7ba974d156422dd87dd9d173e548e9a8dcdd29b7e6a6fe56c4b4e873fdd9400` (tracked diff excluding this delivery record)
 - task_contract: R18 Vega brand UI/icon baseline; R15 IA and behavior preserved
 - os_arch: macOS arm64
 - rustc: `rustc 1.98.0 (88d9e12ae 2026-08-18)`
