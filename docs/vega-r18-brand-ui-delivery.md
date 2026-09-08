@@ -23,10 +23,10 @@ success/danger/warning colors remain unchanged.
 `gpui_kit::component::{Icon, IconName}`. The embedded `gpui-kit-assets` bundle
 provides Lucide-style 24px SVGs with round caps/joins; the wrapper fixes every
 icon to a 16px optical container. Folder is the standard outline, FolderPlus
-composes that outline with the shared Plus asset, and visible disclosure glyphs
-in the composer, settings and diff controls use shared Chevron SVGs. Pin and
-Shield use static Lucide paths through GPUI's inline SVG data renderer because
-those two names are absent from the 0.6.0 bundle. No generic icon uses the
+uses one static Lucide folder-plus SVG, and visible disclosure glyphs in the
+composer, settings and diff controls use shared Chevron SVGs. Pin and Shield
+also use static Lucide paths through GPUI's inline SVG data renderer because
+those names are absent from the 0.6.0 bundle. No generic icon uses the
 previous fractional `PathBuilder` geometry.
 
 The workspace enables the `gpui-kit` `assets` feature, and normal Vega startup,

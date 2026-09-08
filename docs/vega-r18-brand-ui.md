@@ -20,9 +20,10 @@ every control.
   round caps and joins, producing a consistent approximately 1.4px optical
   line at the 16px UI size. Chevron, plus, more, settings, mode and panel
   controls all use the same mature outline language.
-- **Folder:** Folder uses the standard GPUI Kit folder outline. FolderPlus is
-  the same folder with a small Plus asset layered in the fixed 16px container;
-  no smile, star or custom facial detail is added to a functional folder.
+- **Folder:** Folder uses the standard GPUI Kit folder outline. FolderPlus uses
+  one standard Lucide folder-plus SVG so its add affordance stays legible in a
+  fixed 16px container; no smile, star or custom facial detail is added to a
+  functional folder.
 - **Brand spark:** only Agent/AI/Thinking actions may use the spark-like
   `Asterisk` asset. The App Logo remains the source of the actual brand mark;
   generic controls retain their familiar functional silhouettes.
@@ -33,10 +34,10 @@ every control.
 The `gpui-kit-assets` bundle supplies the layout, action, file, folder,
 disclosure, arrow, settings and AI symbols as embedded Lucide-style SVGs.
 `IconName` elements always render at `px(16.)` and are colorized by the caller's
-semantic theme token. Pin and Shield are the only bundled-set gaps; their
-static Lucide paths go through GPUI's `svg().data(...)` renderer with the same
-viewBox, stroke, cap and join rules. No new runtime asset loader or dependency
-is introduced.
+semantic theme token. FolderPlus, Pin and Shield are the only bundled-set gaps;
+their static Lucide paths go through GPUI's `svg().data(...)` renderer with the
+same viewBox, stroke, cap and join rules. No new runtime asset loader or
+dependency is introduced.
 
 ## Color tokens
 

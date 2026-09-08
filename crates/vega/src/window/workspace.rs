@@ -708,7 +708,7 @@ impl VegaWindow {
             .gap_1()
             .bg(colors.bg_base);
         toolbar = toolbar.child(icon_button(
-            Icon::Mode,
+            Icon::Terminal,
             "切换终端",
             colors,
             cx.listener(|this, _, window, cx| this.workspace_toggle_terminal(window, cx)),
