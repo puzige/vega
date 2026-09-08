@@ -11,6 +11,10 @@ pub(super) enum Control {
     Collapse(SidebarCollapseTarget),
     More(String),
     Project(String),
+    NewStandalone,
+    NewProjectTask(String),
+    ToggleProject(String),
+    ToggleSort,
 }
 impl ThreadsBlock {
     pub(super) fn control_action(
@@ -68,6 +72,34 @@ impl ThreadsBlock {
                 {
                     org.projects
                         .update(cx, |projects, cx| projects.select_project(&id, cx));
+                }
+            }
+            Control::NewStandalone => self.create_task(None, cx),
+            Control::NewProjectTask(id) => self.create_task(Some(id), cx),
+            Control::ToggleProject(id) => {
+                if crate::navigation::allow_task_navigation(None, cx) {
+                    if let Some(org) = &self.organization {
+                        org.projects
+                            .update(cx, |projects, cx| projects.select_project(&id, cx));
+                    }
+                    self.toggle_organization_collapse(SidebarCollapseTarget::Project(id), cx);
+                }
+            }
+            Control::ToggleSort => {
+                if let Some(snapshot) = self
+                    .organization
+                    .as_ref()
+                    .and_then(|organization| organization.snapshot.as_ref())
+                {
+                    let mut preferences = snapshot.preferences.clone();
+                    preferences.sort = match preferences.sort {
+                        SidebarTaskSort::Updated => SidebarTaskSort::Created,
+                        SidebarTaskSort::Created => SidebarTaskSort::Updated,
+                    };
+                    self.submit_organization(
+                        SidebarOrganizationAction::SetPreferences(preferences),
+                        cx,
+                    );
                 }
             }
         }
@@ -152,168 +184,340 @@ impl ThreadsBlock {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child("正在载入…")
+                .child(self.section_label("正在载入", cx))
                 .into_any_element();
         };
-        let preferences = snapshot.preferences.clone();
-        let archive = org.archive;
-        let project_error = org.projects.read(cx).error.clone();
         let mut body = div()
             .id("sidebar-organization")
             .flex()
             .flex_col()
-            .gap_1()
+            .gap_2()
+            .flex_1()
+            .min_h_0();
+        body = body.child(self.render_sessions_pi(&snapshot, cx));
+        body = body.child(self.render_projects_pi(&snapshot, cx));
+        body = body.children(
+            org.projects
+                .read(cx)
+                .error
+                .clone()
+                .map(|message| error_bar(message, &colors)),
+        );
+        body = body.children(
+            self.error
+                .clone()
+                .map(|message| error_bar(message, &colors)),
+        );
+        body.into_any_element()
+    }
+
+    pub(super) fn vector_control(
+        &self,
+        id: impl Into<String>,
+        label: impl Into<String>,
+        kind: crate::icons::Icon,
+        action: Control,
+        hidden_until_hover: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let id = id.into();
+        let label = label.into();
+        let keyboard_action = action.clone();
+        div()
+            .id(ElementId::Name(id.clone().into()))
+            .debug_selector(move || id.clone())
+            .aria_label(label.clone())
+            .focusable()
+            .tab_stop(true)
+            .size(px(24.))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .cursor_pointer()
+            .when(hidden_until_hover, |style| style.opacity(0.))
+            .hover(move |style| style.opacity(1.).bg(colors.bg_hover))
+            .focus_visible(move |style| {
+                style
+                    .opacity(1.)
+                    .bg(colors.bg_active)
+                    .border_1()
+                    .border_color(colors.border_subtle)
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.control_action(action.clone(), window, cx);
+                }),
+            )
             .on_key_down(
-                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "tab"
-                        && this.editing.is_none()
-                        && this
-                            .organization
-                            .as_ref()
-                            .is_none_or(|o| o.editor.is_none())
-                    {
-                        this.close_actions();
-                        if event.keystroke.modifiers.shift {
-                            window.focus_prev(cx);
-                        } else {
-                            window.focus_next(cx);
-                        }
+                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
+                        this.control_action(keyboard_action.clone(), window, cx);
                     }
                 }),
             )
+            .child(crate::icons::icon(kind, colors.text_secondary))
+            .into_any_element()
+    }
+
+    fn render_sessions_pi(
+        &self,
+        snapshot: &SidebarOrganizationSnapshot,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let mut standalone: Vec<_> = self
+            .threads
+            .iter()
+            .filter(|thread| thread.is_standalone())
+            .cloned()
+            .collect();
+        standalone = super::projections::sorted_threads(&standalone, snapshot.preferences.sort);
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .h(px(28.))
             .child(
-                // The organization view is one vertical sidebar with two
-                // independent sections. SESSIONS and PROJECTS retain their
-                // existing focusable controls (and persisted view action),
-                // but they no longer hide each other as a tab strip.
                 div()
-                    .relative()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_tertiary)
+                    .child("SESSIONS"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(self.vector_control(
+                        "organization-session-sort",
+                        "切换任务排序",
+                        crate::icons::Icon::ArrowUpDown,
+                        Control::ToggleSort,
+                        false,
+                        cx,
+                    ))
+                    .child(self.vector_control(
+                        "organization-new-session",
+                        "新建独立任务",
+                        crate::icons::Icon::Plus,
+                        Control::NewStandalone,
+                        false,
+                        cx,
+                    )),
+            );
+        let opened_id = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .map(|thread| thread.id.clone());
+        let rows = standalone.into_iter().map(|thread| {
+            self.render_pi_row(
+                &thread,
+                &opened_id,
+                false,
+                "standalone-thread-row-",
+                true,
+                cx,
+            )
+        });
+        div()
+            .id("organization-sessions")
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .child(header)
+            .child(
+                div()
+                    .id("organization-sessions-scroll")
+                    .max_h(px(30.0 * 5.0))
+                    .overflow_y_scroll()
                     .flex()
                     .flex_col()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_1()
-                            .child(self.organization_control(
-                                "organization-groups",
-                                "SESSIONS",
-                                Control::View(SidebarView::Groups),
-                                preferences.view == SidebarView::Groups,
-                                cx,
-                            ))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(self.organization_control(
-                                        "organization-new-group",
-                                        "+ 新建分组",
-                                        Control::NewGroup,
-                                        false,
-                                        cx,
-                                    ))
-                                    .child(self.organization_control(
-                                        "organization-collapse-all",
-                                        "⌃",
-                                        Control::CollapseAll,
-                                        false,
-                                        cx,
-                                    ))
-                                    .child(self.organization_control(
-                                        "organization-archive",
-                                        "归档",
-                                        Control::Archive,
-                                        archive,
-                                        cx,
-                                    )),
-                            ),
-                    )
-                    .child(if archive {
-                        let mut archived = div().flex().flex_col();
-                        archived = archived.child(self.section_label("已归档", cx));
-                        if self.archived.is_empty() {
-                            archived = archived.child(self.section_label("暂无已归档任务", cx));
-                        }
-                        for thread in self.archived.clone() {
-                            archived = archived.child(
-                                self.organization_thread(&thread, None, true, true, true, cx),
-                            );
-                        }
-                        archived.into_any_element()
-                    } else {
-                        // Groups are the session projection. The PROJECTS
-                        // projection below remains visible at the same time;
-                        // selecting a section still controls the persisted
-                        // view used by Collapse All and keyboard workflows.
-                        self.render_group_projection(&snapshot, cx)
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_1()
-                            .child(self.organization_control(
-                                "organization-projects",
-                                "PROJECTS",
-                                Control::View(SidebarView::Projects),
-                                preferences.view == SidebarView::Projects,
-                                cx,
-                            ))
-                            .child(self.organization_control(
-                                "organization-filter",
-                                "≡",
-                                Control::Menu(OrganizationMenu::Filter),
-                                false,
-                                cx,
-                            )),
-                    )
-                    .child(match preferences.project_view {
-                        SidebarProjectView::ByProject => {
-                            self.render_project_projection(&snapshot, cx)
-                        }
-                        SidebarProjectView::Timeline => {
-                            self.render_timeline_projection(&snapshot, cx)
-                        }
-                    })
-                    .children(
-                        self.organization
-                            .as_ref()
-                            .is_some_and(|o| o.menu.is_some())
-                            .then(|| self.render_organization_menu(cx)),
-                    ),
+                    .children(rows),
             )
-            .children(project_error.map(|message| error_bar(message, &colors)))
-            .children(
-                self.error
-                    .clone()
-                    .map(|message| error_bar(message, &colors)),
-            );
-        if let Some(editor) = self.organization.as_ref().and_then(|o| o.editor.as_ref()) {
-            body = body.child(
+            .into_any_element()
+    }
+
+    fn render_projects_pi(
+        &self,
+        snapshot: &SidebarOrganizationSnapshot,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .h(px(28.))
+            .child(
                 div()
-                    .id("organization-group-editor")
-                    .key_context("ThreadRename")
-                    .track_focus(&editor.input.read(cx).focus_handle(cx))
-                    .on_action(cx.listener(|this, _: &ConfirmRename, _, cx| this.commit_group(cx)))
-                    .on_action(cx.listener(|this, _: &CloseSettings, _, cx| {
-                        if let Some(org) = this.organization.as_mut()
-                            && !org.pending
-                        {
-                            org.editor = None;
-                            this.error = None;
-                        }
-                        cx.stop_propagation();
-                        cx.notify();
-                    }))
-                    .child(editor.input.clone()),
-            );
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_tertiary)
+                    .child("PROJECTS"),
+            )
+            .child(self.vector_control(
+                "organization-add-project",
+                "添加项目文件夹",
+                crate::icons::Icon::FolderPlus,
+                Control::AddProject,
+                false,
+                cx,
+            ));
+        let mut ordered: Vec<_> = snapshot
+            .project_order
+            .iter()
+            .filter_map(|id| snapshot.projects.iter().find(|project| &project.id == id))
+            .collect();
+        ordered.extend(
+            snapshot
+                .projects
+                .iter()
+                .filter(|project| !snapshot.project_order.contains(&project.id)),
+        );
+        let mut rows = div()
+            .id("organization-projects-scroll")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll();
+        for project in ordered {
+            rows = rows.child(self.render_pi_project(project, snapshot, cx));
         }
-        body.into_any_element()
+        div()
+            .id("organization-projects")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(header)
+            .child(rows)
+            .into_any_element()
+    }
+
+    fn render_pi_project(
+        &self,
+        project: &SidebarProject,
+        snapshot: &SidebarOrganizationSnapshot,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let target = SidebarCollapseTarget::Project(project.id.clone());
+        let collapsed = snapshot.collapsed.contains(&target);
+        let project_id = project.id.clone();
+        let project_for_toggle = project.id.clone();
+        let project_for_add = project.id.clone();
+        let project_for_menu = project.id.clone();
+        let selected = cx.global::<SelectedProject>().0.as_deref() == Some(project.id.as_str());
+        let actions_visible =
+            selected || self.hovered_project.as_deref() == Some(project.id.as_str());
+        let project_for_hover = project.id.clone();
+        let row = div()
+            .id(ElementId::Name(
+                format!("project-header-{}", project.id).into(),
+            ))
+            .debug_selector({
+                let id = project.id.clone();
+                move || format!("project-header-{id}")
+            })
+            .h(px(32.))
+            .flex()
+            .items_center()
+            .gap_1()
+            .rounded_md()
+            .focusable()
+            .tab_stop(true)
+            .cursor_pointer()
+            .when(selected, |row| row.bg(colors.bg_active))
+            .hover(move |style| style.bg(colors.bg_hover))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                this.set_hovered_project(&project_for_hover, *hovered, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    this.control_action(
+                        Control::ToggleProject(project_for_toggle.clone()),
+                        window,
+                        cx,
+                    );
+                }),
+            )
+            .child(crate::icons::icon(
+                if collapsed {
+                    crate::icons::Icon::ChevronRight
+                } else {
+                    crate::icons::Icon::ChevronDown
+                },
+                colors.text_tertiary,
+            ))
+            .child(crate::icons::icon(
+                crate::icons::Icon::Folder,
+                colors.text_secondary,
+            ))
+            .child(
+                div()
+                    .id(ElementId::Name(
+                        format!("organization-project-{}", project.id).into(),
+                    ))
+                    .debug_selector({
+                        let id = project.id.clone();
+                        move || format!("organization-project-{id}")
+                    })
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_primary)
+                    .child(project.name.clone()),
+            )
+            .child(self.vector_control(
+                format!("project-add-{}", project.id),
+                format!("在 {} 中新建任务", project.name),
+                crate::icons::Icon::Plus,
+                Control::NewProjectTask(project_for_add),
+                !actions_visible,
+                cx,
+            ))
+            .child(self.vector_control(
+                format!("project-more-{}", project.id),
+                format!("{} 项目操作", project.name),
+                crate::icons::Icon::More,
+                Control::Menu(OrganizationMenu::Project(project_for_menu)),
+                !actions_visible,
+                cx,
+            ));
+        let mut section = div()
+            .id(ElementId::Name(
+                format!("project-section-{}", project_id).into(),
+            ))
+            .flex()
+            .flex_col()
+            .child(row);
+        if !collapsed {
+            let mut tasks: Vec<_> = self
+                .threads
+                .iter()
+                .filter(|thread| thread.project_id == project.id)
+                .cloned()
+                .collect();
+            tasks = super::projections::sorted_threads(&tasks, snapshot.preferences.sort);
+            if tasks.is_empty() {
+                section = section.child(self.section_label("暂无任务", cx));
+            } else {
+                section = section.children(
+                    tasks
+                        .iter()
+                        .map(|thread| self.render_project_thread(thread, false, cx)),
+                );
+            }
+        }
+        section.into_any_element()
     }
 }

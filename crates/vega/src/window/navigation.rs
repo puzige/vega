@@ -31,7 +31,7 @@ impl Projection {
             NavigationRoute::Settings
         } else if let Some(thread) = &self.thread {
             NavigationRoute::Task {
-                project: thread.project_id.clone(),
+                project: thread.project_binding().map(str::to_owned),
                 task: thread.id.clone(),
             }
         } else {
@@ -133,7 +133,7 @@ impl VegaWindow {
     /// Final palette acceptance shares the same draft reservation and visit ordering as history.
     pub(crate) fn accept_palette_thread(&mut self, thread: Thread, cx: &mut Context<Self>) -> bool {
         let destination = Projection {
-            project: Some(thread.project_id.clone()),
+            project: thread.project_binding().map(str::to_owned),
             thread: Some(thread.clone()),
             settings: false,
         };
@@ -467,7 +467,7 @@ impl VegaWindow {
                                     destination.settings = false;
                                 }
                                 NavigationRoute::Task { project, .. } => {
-                                    destination.project = Some(project);
+                                    destination.project = project;
                                     destination.thread = thread;
                                     destination.settings = false;
                                 }

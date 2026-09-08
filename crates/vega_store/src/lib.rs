@@ -66,6 +66,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_plan_review.sql"),
     include_str!("../migrations/0003_token_usage_pricing.sql"),
     include_str!("../migrations/0004_sidebar_organization.sql"),
+    include_str!("../migrations/0005_standalone_threads.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -123,12 +124,24 @@ impl Store {
             if current >= target {
                 continue;
             }
-            // 每个迁移独立事务：SQL 批 + user_version 推进，任一步失败
-            // 事务 drop 即整体回滚，? 直接向上返回
-            let tx = self.conn.unchecked_transaction()?;
-            tx.execute_batch(sql)?;
-            tx.pragma_update(None, "user_version", target)?;
-            tx.commit()?;
+            // SQLite cannot rebuild a table referenced by existing child rows
+            // while FK enforcement is enabled. R15 migration 0005 rebuilds
+            // `threads` and its two child tables as one atomic batch; keep the
+            // outer transaction and restore enforcement before returning.
+            let rebuilds_threads = target == 5;
+            if rebuilds_threads {
+                self.conn.pragma_update(None, "foreign_keys", false)?;
+            }
+            let result = (|| -> Result<(), rusqlite::Error> {
+                let tx = self.conn.unchecked_transaction()?;
+                tx.execute_batch(sql)?;
+                tx.pragma_update(None, "user_version", target)?;
+                tx.commit()
+            })();
+            if rebuilds_threads {
+                self.conn.pragma_update(None, "foreign_keys", true)?;
+            }
+            result?;
         }
         Ok(())
     }
@@ -222,9 +235,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_4() {
+    fn migrated_store_is_wal_at_user_version_5() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 4);
+        assert_eq!(user_version(&store), 5);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -251,7 +264,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 4);
+        assert_eq!(user_version(&store), 5);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -287,7 +300,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 4);
+        assert_eq!(user_version(&store), 5);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -322,6 +335,72 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "lost data from {table}");
         }
+    }
+
+    #[test]
+    fn version_four_database_rebuild_preserves_sidebar_children_and_foreign_keys() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy-r14.db");
+        let store = Store::open(&path).unwrap();
+        store
+            .conn()
+            .execute_batch(concat!(
+                include_str!("../migrations/0001_init.sql"),
+                include_str!("../migrations/0002_plan_review.sql"),
+                include_str!("../migrations/0003_token_usage_pricing.sql"),
+                include_str!("../migrations/0004_sidebar_organization.sql"),
+            ))
+            .unwrap();
+        store
+            .conn()
+            .pragma_update(None, "user_version", 4_u32)
+            .unwrap();
+        store
+            .conn()
+            .execute_batch(
+                "INSERT INTO projects VALUES ('p','/tmp/p-r14','project',NULL,1,2); \
+                 INSERT INTO threads VALUES ('t','p','thread','plan','confirm','mock','active',0,0,3,4); \
+                 INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) \
+                   VALUES ('m','t',1,'assistant','text','kept','done',5); \
+                 INSERT INTO tool_calls (id,thread_id,message_id,seq,tool,input_json,status,created_at) \
+                   VALUES ('c','t','m',1,'read','{}','success',6); \
+                 INSERT INTO token_usage (thread_id,message_id,model,input_tokens,output_tokens,cost_microcents,created_at) \
+                   VALUES ('t','m','mock',1,2,0,7); \
+                 INSERT INTO permissions (project_id,tool,pattern,created_at) VALUES ('p','write','safe',8); \
+                 INSERT INTO sidebar_groups (id,name,color,position) VALUES ('g','legacy','gray',0); \
+                 INSERT INTO sidebar_memberships (thread_id,group_id,position) VALUES ('t','g',0);",
+            )
+            .unwrap();
+
+        store.migrate().unwrap();
+        assert_eq!(user_version(&store), 5);
+        for table in [
+            "messages",
+            "tool_calls",
+            "token_usage",
+            "permissions",
+            "sidebar_memberships",
+        ] {
+            let count: i64 = store
+                .conn()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 1, "lost data from {table}");
+        }
+        let foreign_key_errors: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_key_errors, 0);
+        let foreign_keys: u32 = store
+            .conn()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
     }
 
     #[test]

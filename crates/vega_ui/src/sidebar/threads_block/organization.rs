@@ -1,11 +1,13 @@
+#![allow(dead_code)]
+
 //! R13 cached projections and one revision-checked background organization lane.
 use super::*;
 use std::collections::HashMap;
 use vega_conversation::sidebar_organization as service;
 use vega_conversation::types::{
     SidebarCollapseTarget, SidebarGroupColor, SidebarOrganizationAction,
-    SidebarOrganizationOutcome, SidebarOrganizationSnapshot, SidebarProjectView, SidebarTaskSort,
-    SidebarTimelineBucket, SidebarView,
+    SidebarOrganizationOutcome, SidebarOrganizationSnapshot, SidebarProject, SidebarProjectView,
+    SidebarTaskSort, SidebarTimelineBucket, SidebarView,
 };
 mod menu;
 mod projections;
@@ -304,64 +306,11 @@ impl ThreadsBlock {
         &self,
         thread_id: &str,
     ) -> Vec<(String, SidebarOrganizationAction)> {
-        let Some(snapshot) = self.organization.as_ref().and_then(|o| o.snapshot.as_ref()) else {
-            return Vec::new();
-        };
-        let membership = snapshot
-            .memberships
-            .iter()
-            .find(|m| m.thread_id == thread_id);
-        let mut items = Vec::new();
-        for group in &snapshot.groups {
-            if membership.is_none_or(|m| m.group_id != group.id) {
-                items.push((
-                    format!("移入分组 · {}", group.name),
-                    SidebarOrganizationAction::MoveThread {
-                        thread_id: thread_id.into(),
-                        group_id: Some(group.id.clone()),
-                        before_id: None,
-                    },
-                ));
-            }
-        }
-        if let Some(membership) = membership {
-            items.push((
-                "移出分组".into(),
-                SidebarOrganizationAction::MoveThread {
-                    thread_id: thread_id.into(),
-                    group_id: None,
-                    before_id: None,
-                },
-            ));
-            let members: Vec<_> = snapshot
-                .memberships
-                .iter()
-                .filter(|m| m.group_id == membership.group_id)
-                .collect();
-            if let Some(index) = members.iter().position(|m| m.thread_id == thread_id) {
-                if index > 0 {
-                    items.push((
-                        "组内上移".into(),
-                        SidebarOrganizationAction::MoveThread {
-                            thread_id: thread_id.into(),
-                            group_id: Some(membership.group_id.clone()),
-                            before_id: Some(members[index - 1].thread_id.clone()),
-                        },
-                    ));
-                }
-                if index + 1 < members.len() {
-                    items.push((
-                        "组内下移".into(),
-                        SidebarOrganizationAction::MoveThread {
-                            thread_id: thread_id.into(),
-                            group_id: Some(membership.group_id.clone()),
-                            before_id: members.get(index + 2).map(|m| m.thread_id.clone()),
-                        },
-                    ));
-                }
-            }
-        }
-        items
+        // R15 has exactly two sidebar concepts: project folders and tasks.
+        // Legacy group memberships remain readable for migration compatibility,
+        // but no task action can expose or mutate that retired organization IA.
+        let _ = thread_id;
+        Vec::new()
     }
     fn edit_group(
         &mut self,

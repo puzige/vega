@@ -72,7 +72,7 @@ pub struct RuntimeToolConfig {
     pub run_mode: RuntimeRunMode,
     /// Execute-mode mutation policy.
     pub permission_mode: RuntimePermissionMode,
-    /// Project id used only for checkpoint scope binding.
+    /// Project or internal standalone scope id used only for checkpoint binding.
     pub project_id: String,
     /// Thread id used only for checkpoint scope binding.
     pub thread_id: String,

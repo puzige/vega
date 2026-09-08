@@ -385,7 +385,9 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         let Some(thread) = cx.global::<OpenedThread>().0.clone().filter(|thread| {
-            thread.id == request.thread_id && thread.project_id == request.project_id
+            !thread.is_standalone()
+                && thread.id == request.thread_id
+                && thread.project_id == request.project_id
         }) else {
             return;
         };

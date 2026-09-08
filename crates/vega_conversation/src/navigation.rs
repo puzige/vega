@@ -17,17 +17,18 @@ impl NavigationService {
     pub fn resolve(&self, route: &NavigationRoute) -> Result<Option<Thread>, NavigationError> {
         let project = match route {
             NavigationRoute::Settings | NavigationRoute::Project(None) => return Ok(None),
-            NavigationRoute::Project(Some(project)) | NavigationRoute::Task { project, .. } => {
-                project
-            }
+            NavigationRoute::Project(Some(project)) => Some(project),
+            NavigationRoute::Task { project, .. } => project.as_ref(),
         };
         let store =
             Store::open_read_only(&self.database).map_err(|_| NavigationError::Unavailable)?;
-        let registered = vega_store::projects::find(store.conn(), project)
-            .map_err(|_| NavigationError::Unavailable)?
-            .ok_or(NavigationError::InvalidRoute)?;
-        if !Path::new(&registered.path).is_dir() {
-            return Err(NavigationError::InvalidRoute);
+        if let Some(project) = project {
+            let registered = vega_store::projects::find(store.conn(), project)
+                .map_err(|_| NavigationError::Unavailable)?
+                .ok_or(NavigationError::InvalidRoute)?;
+            if !Path::new(&registered.path).is_dir() {
+                return Err(NavigationError::InvalidRoute);
+            }
         }
         let NavigationRoute::Task { task, .. } = route else {
             return Ok(None);
@@ -35,7 +36,8 @@ impl NavigationService {
         let row = vega_store::threads::find(store.conn(), task)
             .map_err(|_| NavigationError::Unavailable)?
             .ok_or(NavigationError::InvalidRoute)?;
-        if row.project_id != *project || row.status != "active" {
+        let row_project = (!row.project_id.is_empty()).then_some(row.project_id.as_str());
+        if row_project != project.map(String::as_str) || row.status != "active" {
             return Err(NavigationError::InvalidRoute);
         }
         crate::threads::thread_from_row(&row)

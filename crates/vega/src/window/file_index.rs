@@ -68,7 +68,8 @@ fn map_file_index_error(code: vega_tools::reference::FileIndexErrorCode) -> File
 
 impl VegaWindow {
     fn file_index_route_is_current(&self, owner: &FileIndexOwner, cx: &App) -> bool {
-        !cx.global::<SettingsOpen>().0
+        !owner.project_id.is_empty()
+            && !cx.global::<SettingsOpen>().0
             && self.owns_stream_request(&owner.stream, &owner.thread_id, cx)
             && cx
                 .global::<OpenedThread>()
@@ -116,6 +117,12 @@ impl VegaWindow {
         generation: u64,
         cx: &mut Context<Self>,
     ) {
+        // File references are project scoped. A standalone task has a private
+        // scratch root for tools, but must not silently turn that root into a
+        // registered project or enter the project index route.
+        if project_id.is_empty() {
+            return;
+        }
         let owner = FileIndexOwner {
             stream: stream.clone(),
             thread_id: thread_id.to_owned(),

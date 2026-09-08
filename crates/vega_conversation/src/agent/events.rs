@@ -278,13 +278,17 @@ pub(crate) fn persist_runtime_event(
             let approval_json = approval_audit_from_runtime(audit)
                 .to_json()
                 .map_err(|_| safe_audit_error("permission"))?;
-            let remember = remember_rule
-                .as_ref()
-                .map(|target| tool_calls::RememberExactRule {
-                    project_id,
-                    tool: target.tool.as_str(),
-                    pattern: &target.exact_pattern,
-                });
+            let remember = (!project_id.is_empty())
+                .then(|| {
+                    remember_rule
+                        .as_ref()
+                        .map(|target| tool_calls::RememberExactRule {
+                            project_id,
+                            tool: target.tool.as_str(),
+                            pattern: &target.exact_pattern,
+                        })
+                })
+                .flatten();
             tool_calls::approve(store.conn(), call_id, &approval_json, remember, now_ms())
                 .map_err(tool_transition_error)?;
         }
@@ -327,6 +331,7 @@ pub(crate) fn persist_runtime_event(
                     result
                         .remember_rule
                         .as_ref()
+                        .filter(|_| !project_id.is_empty())
                         .map(|target| tool_calls::RememberExactRule {
                             project_id,
                             tool: target.tool.as_str(),

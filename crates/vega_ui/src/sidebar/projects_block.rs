@@ -120,6 +120,7 @@ impl ProjectsBlock {
         self.next_branch_refresh = Instant::now();
     }
 
+    #[allow(dead_code)]
     pub(super) fn organization_branch(&mut self, project_id: &str) -> Option<String> {
         if self.branch_probe {
             self.branch_rendered = true;
@@ -462,11 +463,14 @@ impl ProjectsBlock {
                             .text_color(colors.text_secondary)
                             .child("PROJECTS"),
                     )
-                    .child(div().text_color(colors.text_tertiary).child(if collapsed {
-                        "▸"
-                    } else {
-                        "▾"
-                    })),
+                    .child(crate::icons::icon(
+                        if collapsed {
+                            crate::icons::Icon::ChevronRight
+                        } else {
+                            crate::icons::Icon::ChevronDown
+                        },
+                        colors.text_tertiary,
+                    )),
             )
             .child(
                 // [+] 添加：T10 的系统文件夹选择器逻辑原样复用。
@@ -478,7 +482,10 @@ impl ProjectsBlock {
                     .cursor_pointer()
                     .hover(move |s| s.bg(colors.bg_hover).text_color(colors.text_primary))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::on_add_clicked))
-                    .child("+"),
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::FolderPlus,
+                        colors.text_secondary,
+                    )),
             )
             .into_any_element()
     }
@@ -565,7 +572,10 @@ impl ProjectsBlock {
                                     this.remove_project(&remove_id, cx);
                                 }),
                             )
-                            .child("×"),
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::Close,
+                                colors.text_secondary,
+                            )),
                     )
                     .into_any_element()
             }))

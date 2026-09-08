@@ -68,7 +68,7 @@ impl ThreadsBlock {
                 )
                 .child(self.organization_control(
                     format!("group-collapse-{}", group.id),
-                    if collapsed { "▸" } else { "▾" },
+                    "展开或收起分组",
                     Control::Collapse(target),
                     false,
                     cx,
@@ -84,7 +84,7 @@ impl ThreadsBlock {
                 )
                 .child(self.organization_control(
                     format!("group-menu-{}", group.id),
-                    "…",
+                    "更多分组操作",
                     Control::Menu(OrganizationMenu::Group(group.id.clone())),
                     false,
                     cx,
@@ -245,7 +245,7 @@ impl ThreadsBlock {
                     }))
                     .child(self.organization_control(
                         format!("project-collapse-{}", project.id),
-                        if collapsed { "▸" } else { "▾" },
+                        "展开或收起项目",
                         Control::Collapse(target),
                         false,
                         cx,
@@ -269,7 +269,7 @@ impl ThreadsBlock {
                     }))
                     .child(self.organization_control(
                         format!("project-menu-{}", project.id),
-                        "…",
+                        "更多项目操作",
                         Control::Menu(OrganizationMenu::Project(project.id.clone())),
                         false,
                         cx,
@@ -383,7 +383,7 @@ impl ThreadsBlock {
                 let id = group_id.clone();
                 move || format!("group-empty-{id}")
             })
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+            .h(px(30.))
             .px_3()
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_tertiary)
@@ -484,7 +484,7 @@ impl ThreadsBlock {
     /// row. The full session section owns drag and action-menu interactions;
     /// duplicating those focusable controls in the second projection would
     /// create two hit targets for the same thread.
-    fn render_project_thread(
+    pub(super) fn render_project_thread(
         &self,
         thread: &Thread,
         show_project: bool,
@@ -517,11 +517,11 @@ impl ThreadsBlock {
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| this.open_thread(&thread_id, cx)),
             )
-            .children(
-                thread
-                    .pinned
-                    .then(|| div().flex_shrink_0().text_color(colors.accent).child("▲")),
-            )
+            .children(thread.pinned.then(|| {
+                div()
+                    .flex_shrink_0()
+                    .child(crate::icons::icon(crate::icons::Icon::Pin, colors.accent))
+            }))
             .child(
                 div()
                     .flex_1()
@@ -562,7 +562,7 @@ fn task_time(thread: &Thread, sort: SidebarTaskSort) -> i64 {
         SidebarTaskSort::Created => thread.created_at,
     }
 }
-fn sorted_threads(threads: &[Thread], sort: SidebarTaskSort) -> Vec<Thread> {
+pub(super) fn sorted_threads(threads: &[Thread], sort: SidebarTaskSort) -> Vec<Thread> {
     let mut threads = threads.to_vec();
     threads.sort_by(|a, b| {
         b.pinned

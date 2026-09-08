@@ -63,7 +63,9 @@ impl VegaWindow {
             .global::<OpenedThread>()
             .0
             .as_ref()
-            .is_some_and(|thread| thread.project_id == request.project_id);
+            .is_some_and(|thread| {
+                !thread.is_standalone() && thread.project_id == request.project_id
+            });
         if !project_matches {
             return;
         }

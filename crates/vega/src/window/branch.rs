@@ -55,6 +55,10 @@ impl VegaWindow {
         stream: Entity<ConversationStream>,
         cx: &mut Context<Self>,
     ) {
+        if thread.is_standalone() {
+            self.close_branch_route(GitWorkspaceErrorCode::InvalidRoot, cx);
+            return;
+        }
         let selector = stream.read(cx).branch_selector();
         let current = self
             .branch_controller

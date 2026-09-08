@@ -119,6 +119,28 @@ pub fn create_thread(
     if !exists {
         return Err(ConversationError::NoProject);
     }
+    create_thread_with_binding(store, Some(project_id), model, permission_mode)
+}
+
+/// Creates a persistent task without a project binding.
+///
+/// The row uses a real SQL `NULL`, so standalone sessions never become a
+/// visible or shared synthetic project. Their workspace is resolved lazily by
+/// [`task_workspace_root`] when a run starts.
+pub fn create_standalone_thread(
+    store: &Store,
+    model: &str,
+    permission_mode: &str,
+) -> Result<Thread, ConversationError> {
+    create_thread_with_binding(store, None, model, permission_mode)
+}
+
+fn create_thread_with_binding(
+    store: &Store,
+    project_id: Option<&str>,
+    model: &str,
+    permission_mode: &str,
+) -> Result<Thread, ConversationError> {
     let permission_mode = if permission_mode.is_empty() {
         // DDL 默认（config 缺失模板同值：confirm）。
         PermissionMode::Confirm
@@ -130,7 +152,7 @@ pub fn create_thread(
     let now = now_ms();
     let thread = Thread {
         id: new_thread_id(),
-        project_id: project_id.to_string(),
+        project_id: project_id.unwrap_or_default().to_string(),
         title: String::new(),
         mode: ThreadMode::Execute,
         permission_mode,
@@ -141,23 +163,24 @@ pub fn create_thread(
         created_at: now,
         updated_at: now,
     };
-    store::create(
-        store.conn(),
-        store::NewThread {
-            id: &thread.id,
-            project_id: &thread.project_id,
-            title: &thread.title,
-            mode: thread.mode.as_str(),
-            permission_mode: thread.permission_mode.as_str(),
-            model: &thread.model,
-            status: thread.status.as_str(),
-            pinned: thread.pinned,
-            unread: thread.unread,
-            created_at: thread.created_at,
-            updated_at: thread.updated_at,
-        },
-    )
-    .map_err(store_error)?;
+    let values = store::NewThread {
+        id: &thread.id,
+        project_id: &thread.project_id,
+        title: &thread.title,
+        mode: thread.mode.as_str(),
+        permission_mode: thread.permission_mode.as_str(),
+        model: &thread.model,
+        status: thread.status.as_str(),
+        pinned: thread.pinned,
+        unread: thread.unread,
+        created_at: thread.created_at,
+        updated_at: thread.updated_at,
+    };
+    if project_id.is_some() {
+        store::create(store.conn(), values).map_err(store_error)?;
+    } else {
+        store::create_standalone(store.conn(), values).map_err(store_error)?;
+    }
     Ok(thread)
 }
 
@@ -171,6 +194,16 @@ pub fn list_threads(
     status: Option<ThreadStatus>,
 ) -> Result<Vec<Thread>, ConversationError> {
     let rows = store::list_by_project(store.conn(), project_id, status.map(ThreadStatus::as_str))
+        .map_err(store_error)?;
+    rows.iter().map(thread_from_row).collect()
+}
+
+/// Lists standalone tasks without introducing a fake project scope.
+pub fn list_standalone_threads(
+    store: &Store,
+    status: Option<ThreadStatus>,
+) -> Result<Vec<Thread>, ConversationError> {
+    let rows = store::list_standalone(store.conn(), status.map(ThreadStatus::as_str))
         .map_err(store_error)?;
     rows.iter().map(thread_from_row).collect()
 }
@@ -362,6 +395,44 @@ pub fn task_project_path(
     Ok(path)
 }
 
+/// Resolves the workspace root for a task. Project tasks use the registered
+/// folder; standalone tasks receive an isolated scratch directory scoped by
+/// their thread id.
+pub fn task_workspace_root(
+    store: &Store,
+    thread_id: &str,
+) -> Result<std::path::PathBuf, ConversationError> {
+    // A file-backed store already lives below Application Support/ai.vega in
+    // production and below an owned temp root in tests. Deriving scratch from
+    // it prevents a temp database test from ever writing the user's real data
+    // directory. In-memory stores retain the platform fallback for callers
+    // that cannot provide a durable database root.
+    let data_root = store
+        .database_path()
+        .and_then(std::path::Path::parent)
+        .map(std::path::Path::to_path_buf)
+        .or_else(vega_store::paths::data_dir)
+        .ok_or(ConversationError::NoProject)?;
+    task_workspace_root_at(store, thread_id, &data_root)
+}
+
+/// Resolves a task workspace against an explicit app-data root. Production
+/// callers use [`task_workspace_root`]; the explicit root keeps migration and
+/// restart tests isolated from the user's real Application Support tree.
+fn task_workspace_root_at(
+    store: &Store,
+    thread_id: &str,
+    data_root: &std::path::Path,
+) -> Result<std::path::PathBuf, ConversationError> {
+    let thread = get_thread(store, thread_id)?;
+    if thread.project_id.is_empty() {
+        let root = data_root.join("scratch").join(&thread.id);
+        std::fs::create_dir_all(&root).map_err(store_error)?;
+        return Ok(root);
+    }
+    task_project_path(store, thread_id)
+}
+
 /// Converts a raw store row into the shared [`Thread`], validating the
 /// `mode`/`status` vocabulary.
 pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, ConversationError> {
@@ -390,9 +461,10 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
 #[cfg(test)]
 mod tests {
     use super::{
-        composer_history, create_thread, current_project, delete_thread, list_threads,
-        new_thread_id, open_thread, rename_thread, set_thread_mode, set_thread_permission_mode,
-        set_thread_pinned, set_thread_status, update_thread,
+        composer_history, create_standalone_thread, create_thread, current_project, delete_thread,
+        list_standalone_threads, list_threads, new_thread_id, open_thread, rename_thread,
+        set_thread_mode, set_thread_permission_mode, set_thread_pinned, set_thread_status,
+        task_workspace_root, update_thread,
     };
     use crate::types::{ConversationError, PermissionMode, ThreadMode, ThreadStatus, ThreadUpdate};
     use vega_store::Store;
@@ -583,6 +655,51 @@ mod tests {
         let (store, _dir) = open_store();
         let error = create_thread(&store, "missing", "", "confirm").unwrap_err();
         assert!(matches!(error, ConversationError::NoProject));
+    }
+
+    #[test]
+    fn standalone_task_has_null_binding_survives_restart_and_uses_isolated_scratch() {
+        let (store, dir) = open_store();
+        let thread = create_standalone_thread(&store, "mock", "confirm").unwrap();
+        let other = create_standalone_thread(&store, "mock", "confirm").unwrap();
+        assert!(thread.is_standalone());
+        assert_eq!(thread.project_binding(), None);
+        let project_id: Option<String> = store
+            .conn()
+            .query_row(
+                "SELECT project_id FROM threads WHERE id = ?1",
+                [&thread.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_id, None);
+        assert_eq!(
+            list_standalone_threads(&store, Some(ThreadStatus::Active))
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let scratch_root = dir.path().to_path_buf();
+        let first_root = task_workspace_root(&store, &thread.id).unwrap();
+        let other_root = task_workspace_root(&store, &other.id).unwrap();
+        assert!(first_root.starts_with(&scratch_root));
+        assert_ne!(first_root, other_root);
+        assert!(first_root.is_dir());
+        assert!(other_root.is_dir());
+        std::fs::write(first_root.join("owned.txt"), "thread one").unwrap();
+        assert!(!other_root.join("owned.txt").exists());
+
+        drop(store);
+        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        let loaded = list_standalone_threads(&reopened, Some(ThreadStatus::Active)).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.iter().all(|task| task.is_standalone()));
+        assert_eq!(
+            task_workspace_root(&reopened, &thread.id).unwrap(),
+            first_root
+        );
     }
 
     #[test]

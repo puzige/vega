@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_ten_tables_at_user_version_four() {
+    fn schema_has_ten_tables_at_user_version_five() {
         let store = store();
         let user_version: i64 = store
             .conn()
@@ -287,9 +287,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        // R13 appends migration 0004 with four organization metadata tables.
-        // Existing permission/content tables and their constraints remain intact.
-        assert_eq!(user_version, 4);
+        // R15 appends migration 0005, rebuilding only the nullable task
+        // binding while preserving the same ten logical tables.
+        assert_eq!(user_version, 5);
         assert_eq!(table_count, 10);
     }
 }

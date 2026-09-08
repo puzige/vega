@@ -49,6 +49,9 @@ impl VegaWindow {
         thread: &Thread,
         cx: &App,
     ) -> Result<PathBuf, GitWorkspaceErrorCode> {
+        if thread.is_standalone() {
+            return Err(GitWorkspaceErrorCode::InvalidRoot);
+        }
         let store = cx
             .global::<VegaStore>()
             .0
@@ -109,6 +112,10 @@ impl VegaWindow {
         stream: Entity<ConversationStream>,
         cx: &mut Context<Self>,
     ) {
+        if thread.is_standalone() {
+            self.close_artifact_route(GitWorkspaceErrorCode::InvalidRoot, cx);
+            return;
+        }
         let current = self
             .artifact_controller
             .active

@@ -360,6 +360,9 @@ impl VegaWindow {
             cx.global::<OpenedThread>().0.clone(),
             self.stream_view.clone(),
         ) {
+            if thread.is_standalone() {
+                return;
+            }
             self.open_workspace_diff(
                 stream,
                 &OpenWorkspaceDiffRequested {

@@ -21,7 +21,10 @@ const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, \
 pub struct ThreadRow {
     /// Primary key (ulid).
     pub id: String,
-    /// Owning project id (`projects.id`).
+    /// Owning project id (`projects.id`). An empty value represents a
+    /// standalone task whose database column is `NULL`; the SQL layer keeps
+    /// the nullable shape without forcing the UI/runtime crates to invent a
+    /// project identity.
     pub project_id: String,
     /// Display title.
     pub title: String,
@@ -75,13 +78,26 @@ pub struct NewThread<'a> {
 
 /// Inserts a new thread row.
 pub fn create(conn: &Connection, thread: NewThread) -> Result<(), rusqlite::Error> {
+    insert(conn, Some(thread.project_id), thread)
+}
+
+/// Inserts a standalone task with no project binding.
+pub fn create_standalone(conn: &Connection, thread: NewThread) -> Result<(), rusqlite::Error> {
+    insert(conn, None, thread)
+}
+
+fn insert(
+    conn: &Connection,
+    project_id: Option<&str>,
+    thread: NewThread<'_>,
+) -> Result<(), rusqlite::Error> {
     conn.execute(
         "INSERT INTO threads (id, project_id, title, mode, permission_mode, model, \
          status, pinned, unread, created_at, updated_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             thread.id,
-            thread.project_id,
+            project_id,
             thread.title,
             thread.mode,
             thread.permission_mode,
@@ -94,6 +110,27 @@ pub fn create(conn: &Connection, thread: NewThread) -> Result<(), rusqlite::Erro
         ],
     )?;
     Ok(())
+}
+
+/// Lists standalone tasks whose nullable project binding is `NULL`.
+pub fn list_standalone(
+    conn: &Connection,
+    status: Option<&str>,
+) -> Result<Vec<ThreadRow>, rusqlite::Error> {
+    let mut sql = format!("SELECT {COLUMNS} FROM threads WHERE project_id IS NULL");
+    if status.is_some() {
+        sql.push_str(" AND status = ?1");
+    }
+    sql.push_str(" ORDER BY pinned DESC, updated_at DESC");
+    let mut stmt = conn.prepare(&sql)?;
+    match status {
+        Some(status) => stmt
+            .query_map([status], thread_from_row)?
+            .collect::<Result<Vec<_>, _>>(),
+        None => stmt
+            .query_map([], thread_from_row)?
+            .collect::<Result<Vec<_>, _>>(),
+    }
 }
 
 /// Lists the threads of one project: the pinned group first, then most
@@ -363,7 +400,7 @@ pub fn visit_thread(
 fn thread_from_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadRow> {
     Ok(ThreadRow {
         id: row.get(0)?,
-        project_id: row.get(1)?,
+        project_id: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
         title: row.get(2)?,
         mode: row.get(3)?,
         permission_mode: row.get(4)?,

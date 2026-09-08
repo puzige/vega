@@ -2,6 +2,9 @@ use super::*;
 
 impl ConversationStream {
     fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
+        if self.thread.is_standalone() {
+            return;
+        }
         cx.emit(OpenWorkspaceDiffRequested {
             thread_id: self.thread.id.clone(),
             project_id: self.thread.project_id.clone(),
@@ -17,7 +20,7 @@ impl ConversationStream {
     }
 
     fn open_commit_clicked(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.trusted_action_busy {
+        if self.thread.is_standalone() || self.trusted_action_busy {
             return;
         }
         cx.emit(OpenCommitPanelRequested {
@@ -48,6 +51,7 @@ impl ConversationStream {
             self.thread.title.clone()
         };
         let following = self.following_tail();
+        let project_bound = !self.thread.is_standalone();
         div()
             .px(px(Layout::CONTENT_PADDING))
             .py(px(12.))
@@ -73,21 +77,23 @@ impl ConversationStream {
                             .text_color(colors.text_primary)
                             .child(title),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_secondary)
-                            .child(
-                                div()
-                                    .max_w(px(90.))
-                                    .truncate()
-                                    .child(self.project_label.clone()),
-                            )
-                            .child(self.branch_selector.clone()),
-                    )
+                    .when(project_bound, |row| {
+                        row.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_secondary)
+                                .child(
+                                    div()
+                                        .max_w(px(90.))
+                                        .truncate()
+                                        .child(self.project_label.clone()),
+                                )
+                                .child(self.branch_selector.clone()),
+                        )
+                    })
                     .when(!following, |row| {
                         row.child(
                             div()
@@ -109,50 +115,52 @@ impl ConversationStream {
                                 .child("回到底部"),
                         )
                     })
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_row()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(colors.text_secondary)
-                                    .cursor_pointer()
-                                    .hover(move |style| style.bg(colors.bg_hover))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::open_diff_clicked),
-                                    )
-                                    .child("更改"),
-                            )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(if self.trusted_action_busy {
-                                        colors.text_tertiary
-                                    } else {
-                                        colors.text_secondary
-                                    })
-                                    .when(!self.trusted_action_busy, |button| {
-                                        button
-                                            .cursor_pointer()
-                                            .hover(move |style| style.bg(colors.bg_hover))
-                                    })
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::open_commit_clicked),
-                                    )
-                                    .child("提交"),
-                            ),
-                    ),
+                    .when(project_bound, |row| {
+                        row.child(
+                            div()
+                                .flex_shrink_0()
+                                .flex()
+                                .flex_row()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .text_size(px(Typography::METADATA))
+                                        .text_color(colors.text_secondary)
+                                        .cursor_pointer()
+                                        .hover(move |style| style.bg(colors.bg_hover))
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(Self::open_diff_clicked),
+                                        )
+                                        .child("更改"),
+                                )
+                                .child(
+                                    div()
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_md()
+                                        .text_size(px(Typography::METADATA))
+                                        .text_color(if self.trusted_action_busy {
+                                            colors.text_tertiary
+                                        } else {
+                                            colors.text_secondary
+                                        })
+                                        .when(!self.trusted_action_busy, |button| {
+                                            button
+                                                .cursor_pointer()
+                                                .hover(move |style| style.bg(colors.bg_hover))
+                                        })
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(Self::open_commit_clicked),
+                                        )
+                                        .child("提交"),
+                                ),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -163,6 +171,7 @@ impl ConversationStream {
     /// through their original handlers.
     fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let project_bound = !self.thread.is_standalone();
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
         let file_selector_active =
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
@@ -178,7 +187,7 @@ impl ConversationStream {
             .pt(px(12.))
             .pb(px(16.))
             .flex_shrink_0()
-            .when(self.entries.is_empty(), |root| {
+            .when(self.entries.is_empty() && project_bound, |root| {
                 root.child(
                     div()
                         .w_full()
@@ -983,6 +992,7 @@ impl Render for ConversationStream {
                 .into_any_element()
         };
 
+        let project_bound = !self.thread.is_standalone();
         let element = div()
             .flex_1()
             .min_w_0()
@@ -1042,7 +1052,7 @@ impl Render for ConversationStream {
                     ),
             )
             .child(self.render_composer(cx))
-            .child(self.commit_panel.clone())
+            .when(project_bound, |root| root.child(self.commit_panel.clone()))
             .into_any_element();
         counters.record_render(render_t0);
         element

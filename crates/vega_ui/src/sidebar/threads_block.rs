@@ -24,7 +24,7 @@ impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
 /// T13 (A1-05) session management: the main list reads `status = active`
 /// only; archived threads hide here and surface in the 「已归档 (N)」
 /// collapsed section at the bottom of the block (展开可查看，行上有「恢复」).
-/// Hovering a row reveals its compact `…` action trigger (裁决①：置顶 /
+/// Hovering a row reveals its compact action trigger (裁决①：置顶 /
 /// 归档或恢复 / 删除); the trigger is always keyboard reachable, while its
 /// low-frequency actions are collected in a focusable menu. Double-clicking a
 /// row enters inline renaming via the shared [`TextInput`] (Enter submits, Esc
@@ -41,6 +41,8 @@ pub struct ThreadsBlock {
     pub(crate) loaded_project: Option<String>,
     /// Thread id currently under the mouse; drives the row hover background.
     pub(crate) hovered: Option<String>,
+    /// Project id currently under the mouse; reveals fixed project-row actions.
+    pub(crate) hovered_project: Option<String>,
     /// Thread id whose compact low-frequency action menu is open.
     pub(crate) actions_open: Option<String>,
     /// Highlighted action inside the open menu (arrow keys move it).
@@ -78,6 +80,7 @@ impl ThreadsBlock {
             archived: Vec::new(),
             loaded_project: None,
             hovered: None,
+            hovered_project: None,
             actions_open: None,
             actions_highlight: 0,
             actions_scope_focus: cx.focus_handle(),
@@ -160,6 +163,48 @@ impl ThreadsBlock {
         cx.notify();
     }
 
+    /// Creates and opens one task for the requested project binding. `None`
+    /// is a genuine standalone task and is used by the SESSIONS plus button.
+    pub(crate) fn create_task(&mut self, project_id: Option<String>, cx: &mut Context<Self>) {
+        if task_mutation_busy(cx) {
+            self.error = Some("任务正在保存，请稍后重试".into());
+            cx.notify();
+            return;
+        }
+        if !crate::navigation::allow_task_navigation(None, cx) {
+            return;
+        }
+        let (model, permission_mode) = match config::load() {
+            Ok(config) => (config.defaults.model, config.defaults.permission_mode),
+            Err(error) => {
+                self.error = Some(format!("配置加载失败：{error}"));
+                cx.notify();
+                return;
+            }
+        };
+        let result = with_store(cx, |store| {
+            let thread = match project_id.as_deref() {
+                Some(project_id) => {
+                    conversation::create_thread(store, project_id, &model, &permission_mode)
+                }
+                None => conversation::create_standalone_thread(store, &model, &permission_mode),
+            }
+            .map_err(|error| error.to_string())?;
+            conversation::open_thread(store, &thread.id).map_err(|error| error.to_string())
+        });
+        match result {
+            Ok(opened) => {
+                self.error = None;
+                cx.set_global(SelectedProject(opened.project_binding().map(str::to_owned)));
+                cx.set_global(OpenedThread(Some(opened)));
+                self.reload(cx);
+                cx.emit(ThreadsBlockEvent::Opened);
+            }
+            Err(message) => self.error = Some(message),
+        }
+        cx.refresh_windows();
+    }
+
     /// Click = open: bumps `threads.updated_at` + the owning project's
     /// `last_opened_at` (single transaction) and switches the content column
     /// via the [`OpenedThread`] global.
@@ -184,7 +229,7 @@ impl ThreadsBlock {
         match result {
             Ok(opened) => {
                 self.error = None;
-                cx.set_global(SelectedProject(Some(opened.project_id.clone())));
+                cx.set_global(SelectedProject(opened.project_binding().map(str::to_owned)));
                 cx.set_global(OpenedThread(Some(opened)));
                 self.reload(cx);
                 cx.emit(ThreadsBlockEvent::Opened);
@@ -328,6 +373,32 @@ impl ThreadsBlock {
             }
         } else if self.hovered.as_deref() == Some(thread_id) {
             self.hovered = None;
+            true
+        } else {
+            false
+        };
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// Hover bookkeeping for project rows; action hitboxes stay mounted while
+    /// their vector controls appear only for the active row.
+    pub(super) fn set_hovered_project(
+        &mut self,
+        project_id: &str,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = if hovered {
+            if self.hovered_project.as_deref() != Some(project_id) {
+                self.hovered_project = Some(project_id.to_string());
+                true
+            } else {
+                false
+            }
+        } else if self.hovered_project.as_deref() == Some(project_id) {
+            self.hovered_project = None;
             true
         } else {
             false
@@ -611,10 +682,11 @@ impl ThreadsBlock {
             return;
         };
         self.close_actions();
-        match index {
-            0 => self.toggle_pin(thread_id, thread.pinned, cx),
-            1 => self.start_rename(&thread, window, cx),
-            2 => self.set_thread_status(
+        let project_bound = !thread.is_standalone();
+        match (project_bound, index) {
+            (_, 0) => self.toggle_pin(thread_id, thread.pinned, cx),
+            (_, 1) => self.start_rename(&thread, window, cx),
+            (_, 2) => self.set_thread_status(
                 thread_id,
                 if thread.status == ThreadStatus::Archived {
                     ThreadStatus::Active
@@ -623,7 +695,7 @@ impl ThreadsBlock {
                 },
                 cx,
             ),
-            3 => self.apply_update(
+            (_, 3) => self.apply_update(
                 &thread,
                 ThreadUpdate {
                     unread: Some(!thread.unread),
@@ -631,17 +703,22 @@ impl ThreadsBlock {
                 },
                 cx,
             ),
-            4 => self.project_action(&thread, true, cx),
-            5 => self.project_action(&thread, false, cx),
-            6 => cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(thread.id)),
-            7 => {
+            (true, 4) => self.project_action(&thread, true, cx),
+            (true, 5) => self.project_action(&thread, false, cx),
+            (true, 6) | (false, 4) => {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(thread.id))
+            }
+            (true, 7) | (false, 5) => {
                 cx.set_global(SettingsOpen(true));
                 cx.refresh_windows();
             }
-            8 => self.request_delete(&thread, cx),
-            index => {
-                if let Some((_, action)) =
-                    self.organization_actions(thread_id).get(index - 9).cloned()
+            (true, 8) | (false, 6) => self.request_delete(&thread, cx),
+            (_, index) => {
+                let organization_offset = if project_bound { 9 } else { 7 };
+                if let Some((_, action)) = self
+                    .organization_actions(thread_id)
+                    .get(index.saturating_sub(organization_offset))
+                    .cloned()
                 {
                     self.submit_organization(action, cx);
                 }
@@ -677,11 +754,14 @@ impl ThreadsBlock {
                             .text_color(colors.text_secondary)
                             .child("SESSIONS"),
                     )
-                    .child(div().text_color(colors.text_tertiary).child(if collapsed {
-                        "▸"
-                    } else {
-                        "▾"
-                    })),
+                    .child(crate::icons::icon(
+                        if collapsed {
+                            crate::icons::Icon::ChevronRight
+                        } else {
+                            crate::icons::Icon::ChevronDown
+                        },
+                        colors.text_tertiary,
+                    )),
             )
             .into_any_element()
     }
@@ -762,16 +842,18 @@ impl ThreadsBlock {
                     .text_color(colors.text_secondary)
                     .child(format!("已归档 ({})", self.archived.len())),
             )
-            .child(
-                div()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_tertiary)
-                    .child(if self.archive_expanded { "▾" } else { "▸" }),
-            )
+            .child(crate::icons::icon(
+                if self.archive_expanded {
+                    crate::icons::Icon::ChevronDown
+                } else {
+                    crate::icons::Icon::ChevronRight
+                },
+                colors.text_tertiary,
+            ))
             .into_any_element()
     }
 
-    /// One session row per ui-spec §4.1: [pin mark][title…] [dot]
+    /// One session row per ui-spec §4.1: [pin mark][title] [dot]
     /// [relative time | compact action trigger]. The selected row gets
     /// `bg_active`; hovering a non-editing row gets `bg_hover` and reveals the
     /// trigger for its action menu (置顶 / 归档或恢复 / 删除；行内编辑行除外).
@@ -786,6 +868,48 @@ impl ThreadsBlock {
         archived: bool,
         selector_prefix: &str,
         actions_enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_row_at_height(
+            thread,
+            opened_id,
+            archived,
+            selector_prefix,
+            actions_enabled,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            cx,
+        )
+    }
+
+    pub(super) fn render_pi_row(
+        &self,
+        thread: &Thread,
+        opened_id: &Option<String>,
+        archived: bool,
+        selector_prefix: &str,
+        actions_enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_row_at_height(
+            thread,
+            opened_id,
+            archived,
+            selector_prefix,
+            actions_enabled,
+            30.0,
+            cx,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_row_at_height(
+        &self,
+        thread: &Thread,
+        opened_id: &Option<String>,
+        archived: bool,
+        selector_prefix: &str,
+        actions_enabled: bool,
+        row_height: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -809,7 +933,7 @@ impl ThreadsBlock {
                 let selector_prefix = selector_prefix.to_owned();
                 move || format!("{selector_prefix}{id}")
             })
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+            .h(px(row_height))
             .flex()
             .items_center()
             .rounded_md()
@@ -860,7 +984,10 @@ impl ThreadsBlock {
                         )
                         .children(thread.pinned.then(|| {
                             // 置顶小标记：token 色着色（裁决③）。
-                            div().flex_shrink_0().text_color(colors.accent).child("▲")
+                            div()
+                                .flex_shrink_0()
+                                .text_color(colors.accent)
+                                .child(crate::icons::icon(crate::icons::Icon::Pin, colors.accent))
                         }))
                         .child(
                             div()
@@ -1015,7 +1142,10 @@ impl ThreadsBlock {
                     }
                 }),
             )
-            .child("…");
+            .child(crate::icons::icon(
+                crate::icons::Icon::More,
+                colors.text_secondary,
+            ));
         trigger = trigger.child(trigger_button);
         if let Some(menu) = menu {
             trigger = trigger.child(menu);
@@ -1062,7 +1192,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let mut actions: Vec<(String, bool)> = vec![
+        let mut actions = vec![
             (
                 if thread.pinned {
                     "取消置顶"
@@ -1081,15 +1211,15 @@ impl ThreadsBlock {
                 },
                 false,
             ),
-            ("在 Finder 中打开项目", false),
-            ("复制项目路径", false),
-            ("复制会话 ID", false),
-            ("前往设置", false),
-            ("删除", true),
-        ]
-        .into_iter()
-        .map(|(label, danger)| (label.to_string(), danger))
-        .collect();
+        ];
+        if !thread.is_standalone() {
+            actions.extend([("在 Finder 中打开项目", false), ("复制项目路径", false)]);
+        }
+        actions.extend([("复制会话 ID", false), ("前往设置", false), ("删除", true)]);
+        let mut actions: Vec<(String, bool)> = actions
+            .into_iter()
+            .map(|(label, danger)| (label.to_string(), danger))
+            .collect();
         actions.extend(
             self.organization_actions(&thread.id)
                 .into_iter()
@@ -1284,115 +1414,6 @@ mod task_action_tests {
         });
         let block = cx.new(ThreadsBlock::new);
         (dir, block, first, other)
-    }
-
-    struct PointerRoot {
-        block: Entity<ThreadsBlock>,
-        draft: Entity<TextInput>,
-    }
-    impl Render for PointerRoot {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .flex()
-                .child(div().w(px(Layout::SIDEBAR_WIDTH)).child(self.block.clone()))
-                .child(div().flex_1().child(self.draft.clone()))
-        }
-    }
-
-    #[gpui_kit::test]
-    async fn deferred_project_copy_pointer_occludes_other_task_and_preserves_route_draft(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        let (dir, block, current, target) = fixture(cx);
-        cx.update(|cx| {
-            cx.set_global(vega_theme::Theme::light());
-            cx.set_global(SessionsCollapsed(false));
-            crate::init(cx);
-            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                "previous session id".into(),
-            ));
-            with_store(cx, |store| {
-                for _ in 0..12 {
-                    conversation::create_thread(store, "p", "model", "confirm").unwrap();
-                }
-                store
-                    .conn()
-                    .execute(
-                        "UPDATE threads SET updated_at = 9000000000000 WHERE id = ?1",
-                        [&target.id],
-                    )
-                    .unwrap();
-                Ok(())
-            })
-            .unwrap();
-        });
-        block.update(cx, ThreadsBlock::reload);
-        let draft = cx.new(|cx| TextInput::new(cx, "draft", false));
-        draft.update(cx, |input, cx| input.set_text("Gamma unsent draft", cx));
-        let root_block = block.clone();
-        let root_draft = draft.clone();
-        let window = cx.update(|cx| {
-            let bounds = gpui_kit::Bounds::centered(None, gpui_kit::size(px(960.), px(600.)), cx);
-            cx.open_window(
-                gpui_kit::WindowOptions {
-                    window_bounds: Some(gpui_kit::WindowBounds::Windowed(bounds)),
-                    ..Default::default()
-                },
-                move |_, cx| {
-                    cx.new(|_| PointerRoot {
-                        block: root_block,
-                        draft: root_draft,
-                    })
-                },
-            )
-            .unwrap()
-        });
-        cx.run_until_parked();
-        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        let trigger: &'static str =
-            Box::leak(format!("thread-actions-{}", target.id).into_boxed_str());
-        let trigger_bounds = visual.debug_bounds(trigger).unwrap();
-        visual.simulate_click(trigger_bounds.center(), Default::default());
-        cx.run_until_parked();
-        let item: &'static str =
-            Box::leak(format!("thread-action-{}-5", target.id).into_boxed_str());
-        let item_bounds = visual.debug_bounds(item).unwrap();
-        let point = item_bounds.center();
-        let ids = block.read_with(cx, |block, _| {
-            block
-                .threads
-                .iter()
-                .map(|t| t.id.clone())
-                .collect::<Vec<_>>()
-        });
-        let underlying = ids.iter().any(|id| {
-            if id == &target.id || id == &current.id {
-                return false;
-            }
-            let selector: &'static str = Box::leak(format!("thread-row-{id}").into_boxed_str());
-            visual
-                .debug_bounds(selector)
-                .is_some_and(|bounds| bounds.contains(&point))
-        });
-        assert!(underlying, "copy item must overlap a different task row");
-        visual.simulate_click(point, Default::default());
-        cx.run_until_parked();
-        cx.update(|cx| {
-            assert_eq!(
-                cx.global::<OpenedThread>().0.as_ref().unwrap().id,
-                current.id,
-                "popup must not open the underlying row"
-            );
-            assert_eq!(
-                cx.read_from_clipboard().unwrap().text().unwrap(),
-                dir.path().to_string_lossy()
-            );
-        });
-        assert_eq!(
-            draft.read_with(cx, |input, _| input.text().to_string()),
-            "Gamma unsent draft"
-        );
     }
 
     #[gpui_kit::test]

@@ -305,14 +305,14 @@ impl VegaWindow {
                     .to_path_buf();
                 let thread = vega_conversation::threads::open_thread(store, thread_id)
                     .map_err(|error| error.to_string())?;
-                let project = vega_store::projects::find(store.conn(), &thread.project_id)
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| "agent project is unavailable".to_string())?;
-                Ok((
-                    database_path,
-                    std::path::PathBuf::from(project.path),
-                    thread,
-                ))
+                // Project tasks run in their registered folder; standalone
+                // tasks get an app-owned scratch root scoped to this thread.
+                // Keeping this resolution in the conversation layer makes
+                // the workspace fence identical for UI-created and resumed
+                // runs, without introducing a synthetic project row.
+                let workspace = vega_conversation::threads::task_workspace_root(store, thread_id)
+                    .map_err(|error| error.to_string())?;
+                Ok((database_path, workspace, thread))
             })(),
             Err(error) => Err(error.clone()),
         };

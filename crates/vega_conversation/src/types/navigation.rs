@@ -6,8 +6,15 @@ pub enum NavigationRoute {
     Settings,
     /// Project landing page (including the unselected application landing page).
     Project(Option<String>),
-    /// A task belonging to a registered project.
-    Task { project: String, task: String },
+    /// A task, optionally belonging to a registered project.
+    ///
+    /// `None` is a real standalone task route; it is not a synthetic project
+    /// identifier. Keeping that distinction here prevents navigation from
+    /// reintroducing the legacy empty-string project sentinel.
+    Task {
+        project: Option<String>,
+        task: String,
+    },
 }
 /// Navigation failures distinguish skippable missing routes from service failures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

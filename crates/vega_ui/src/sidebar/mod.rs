@@ -412,9 +412,9 @@ impl Sidebar {
         cx.refresh_windows();
     }
 
-    /// [新建任务] / Cmd+N shared entry point (环境限制：合成键盘事件送不进
-    /// GPUI，按钮与快捷键共用 handler). Creates a thread in the selected
-    /// project from the config defaults and opens it (T11 semantics).
+    /// [新建任务] / Cmd+N shared entry point. An active project owns the new
+    /// task; with no active project the task is standalone and appears only in
+    /// SESSIONS.
     pub fn create_thread(&mut self, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) {
             self.new_task_error = Some("任务正在保存，请稍后重试".into());
@@ -425,37 +425,10 @@ impl Sidebar {
             return;
         }
         self.new_task_error = None;
-        let Some(project_id) = cx.global::<SelectedProject>().0.clone() else {
-            // 无项目：按钮已是禁用态；守卫保证即便触发也无副作用，行内提示。
-            self.new_task_error = Some("暂无项目：先在下方「项目」区添加并选择".into());
-            cx.notify();
-            return;
-        };
-        let (model, permission_mode) = match config::load() {
-            Ok(config) => (config.defaults.model, config.defaults.permission_mode),
-            Err(error) => {
-                self.new_task_error = Some(format!("配置加载失败：{error}"));
-                cx.notify();
-                return;
-            }
-        };
-        let result = with_store(cx, |store| {
-            let thread = conversation::create_thread(store, &project_id, &model, &permission_mode)
-                .map_err(|error| error.to_string())?;
-            // 建后打开：touch thread.updated_at + project.last_opened_at。
-            conversation::open_thread(store, &thread.id).map_err(|error| error.to_string())
-        });
-        match result {
-            Ok(opened) => {
-                self.new_task_error = None;
-                cx.set_global(SettingsOpen(false));
-                cx.set_global(OpenedThread(Some(opened)));
-                self.sessions_block.update(cx, ThreadsBlock::reload);
-                self.projects_block.update(cx, ProjectsBlock::reload);
-            }
-            Err(message) => self.new_task_error = Some(message),
-        }
-        cx.refresh_windows();
+        let project_id = cx.global::<SelectedProject>().0.clone();
+        self.sessions_block
+            .update(cx, |block, cx| block.create_task(project_id, cx));
+        cx.set_global(SettingsOpen(false));
     }
 
     /// Returns an already-loaded project label without store or filesystem IO.
@@ -466,15 +439,6 @@ impl Sidebar {
             .iter()
             .find(|project| project.id == project_id)
             .map(|project| project.name.clone())
-    }
-
-    /// Opens the existing settings route from the persistent sidebar entry.
-    /// The app-level observer owns view creation; this action only changes the
-    /// route global and keeps the sidebar free of settings state.
-    #[cfg(test)]
-    fn open_settings(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        cx.set_global(SettingsOpen(true));
-        cx.refresh_windows();
     }
 
     /// Empty-state entry point for the existing project picker. The block
@@ -499,20 +463,9 @@ impl Sidebar {
             .into_any_element()
     }
 
-    /// The light [新建任务] entry + the no-project inline hint. Disabled
-    /// (inert, tertiary colors) while no project is selected — no modal
-    /// (ui-spec §4.6).
-    fn render_new_task(
-        &mut self,
-        cx: &mut Context<Self>,
-        has_project: bool,
-        colors: &ThemeColors,
-    ) -> AnyElement {
-        let fg = if has_project {
-            colors.text_primary
-        } else {
-            colors.text_tertiary
-        };
+    /// The light [新建任务] entry. It creates a task in the selected project
+    /// or a standalone task when no project is selected.
+    fn render_new_task(&mut self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -528,24 +481,17 @@ impl Sidebar {
                     .gap_2()
                     .px_2()
                     .rounded_md()
-                    .text_color(fg)
+                    .text_color(colors.text_primary)
                     .text_size(px(Typography::SIDEBAR))
-                    .when(has_project, |button| {
-                        button
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(colors.bg_hover))
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| this.create_thread(cx)),
-                            )
-                    })
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(colors.bg_hover))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, _, cx| this.create_thread(cx)),
+                    )
                     .child(crate::icons::icon(
                         crate::icons::Icon::Plus,
-                        if has_project {
-                            colors.text_secondary
-                        } else {
-                            colors.text_tertiary
-                        },
+                        colors.text_secondary,
                     ))
                     .child("新建任务")
                     .child(div().flex_1())
@@ -556,14 +502,6 @@ impl Sidebar {
                             .child("⌘N"),
                     ),
             )
-            .when(!has_project, |hint| {
-                hint.child(
-                    div()
-                        .text_size(px(Typography::SIDEBAR))
-                        .text_color(colors.text_tertiary)
-                        .child("暂无项目：先在下方「项目」区添加"),
-                )
-            })
             .children(
                 self.new_task_error
                     .clone()
@@ -592,7 +530,6 @@ impl Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
-        let has_project = cx.global::<SelectedProject>().0.is_some();
         div()
             .id("sidebar")
             .flex()
@@ -607,7 +544,7 @@ impl Render for Sidebar {
             .gap_3()
             .overflow_hidden()
             .child(self.render_brand(&colors, cx))
-            .child(self.render_new_task(cx, has_project, &colors))
+            .child(self.render_new_task(cx, &colors))
             .child(
                 div()
                     .id("sidebar-search")

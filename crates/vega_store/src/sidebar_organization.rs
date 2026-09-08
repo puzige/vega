@@ -67,6 +67,7 @@ pub fn threads(
     for id in project_ids {
         result.extend(threads::list_by_project(conn, id, None)?);
     }
+    result.extend(threads::list_standalone(conn, None)?);
     Ok(result)
 }
 /// Persists validated metadata. Must be called within the caller's write transaction.

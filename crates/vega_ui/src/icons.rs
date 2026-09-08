@@ -16,7 +16,11 @@ pub enum Icon {
     Maximize,
     Minimize,
     More,
+    ArrowUpDown,
+    Pin,
     ChevronDown,
+    ChevronRight,
+    FolderPlus,
     ArrowDown,
     Refresh,
     Split,
@@ -98,7 +102,26 @@ pub fn icon(kind: Icon, color: Rgba) -> impl IntoElement {
                     &[(7., 8.), (8., 8.)],
                     &[(11., 8.), (12., 8.)],
                 ],
+                Icon::ArrowUpDown => &[
+                    &[(8., 2.), (8., 14.)],
+                    &[(4., 6.), (8., 2.), (12., 6.)],
+                    &[(4., 10.), (8., 14.), (12., 10.)],
+                ],
+                Icon::Pin => &[
+                    &[
+                        (8., 2.),
+                        (12., 6.),
+                        (10., 8.),
+                        (10., 12.),
+                        (6., 12.),
+                        (6., 8.),
+                        (4., 6.),
+                        (8., 2.),
+                    ],
+                    &[(8., 12.), (8., 15.)],
+                ],
                 Icon::ChevronDown => &[&[(4., 6.), (8., 10.), (12., 6.)]],
+                Icon::ChevronRight => &[&[(6., 4.), (10., 8.), (6., 12.)]],
                 Icon::ArrowDown => &[&[(8., 3.), (8., 13.)], &[(3., 8.), (8., 13.), (13., 8.)]],
                 Icon::Refresh => &[
                     &[
@@ -133,6 +156,18 @@ pub fn icon(kind: Icon, color: Rgba) -> impl IntoElement {
                     (14., 13.),
                     (2., 13.),
                 ]],
+                Icon::FolderPlus => &[
+                    &[
+                        (2., 13.),
+                        (2., 3.),
+                        (6., 3.),
+                        (8., 5.),
+                        (14., 5.),
+                        (14., 10.),
+                    ],
+                    &[(8., 9.), (8., 15.)],
+                    &[(5., 12.), (11., 12.)],
+                ],
                 Icon::Settings => &[
                     &[(2., 4.), (14., 4.)],
                     &[(2., 12.), (14., 12.)],

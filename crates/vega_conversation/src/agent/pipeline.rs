@@ -65,31 +65,38 @@ pub(crate) fn prepare_run_with_reasoning(
             ))))
         })?;
     }
-    let exact_rules = permissions::list_exact(&transaction, &thread.project_id)
-        .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
-        .into_iter()
-        .map(|rule| {
-            if rule.pattern.is_empty() {
-                return Err(ConversationError::CorruptRow(
-                    "permission rule has empty exact pattern".to_string(),
-                ));
-            }
-            let tool = match rule.tool.as_str() {
-                "bash" => RuntimeMutatingTool::Bash,
-                "write" => RuntimeMutatingTool::Write,
-                "edit" => RuntimeMutatingTool::Edit,
-                _ => {
+    let exact_rules = if thread.project_id.is_empty() {
+        // Standalone tasks have no project permission namespace. Their
+        // scratch root still participates in the normal runtime prompt, but
+        // remembered project rules must never be loaded by an empty sentinel.
+        Vec::new()
+    } else {
+        permissions::list_exact(&transaction, &thread.project_id)
+            .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
+            .into_iter()
+            .map(|rule| {
+                if rule.pattern.is_empty() {
                     return Err(ConversationError::CorruptRow(
-                        "permission rule has unsupported tool".to_string(),
+                        "permission rule has empty exact pattern".to_string(),
                     ));
                 }
-            };
-            Ok(RuntimeExactRule {
-                tool,
-                pattern: rule.pattern,
+                let tool = match rule.tool.as_str() {
+                    "bash" => RuntimeMutatingTool::Bash,
+                    "write" => RuntimeMutatingTool::Write,
+                    "edit" => RuntimeMutatingTool::Edit,
+                    _ => {
+                        return Err(ConversationError::CorruptRow(
+                            "permission rule has unsupported tool".to_string(),
+                        ));
+                    }
+                };
+                Ok(RuntimeExactRule {
+                    tool,
+                    pattern: rule.pattern,
+                })
             })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+    };
     let now = now_ms();
     if uses_existing_user {
         let existing = messages::find(&transaction, &user_message_id)
@@ -265,7 +272,7 @@ pub(crate) fn prepare_run_with_reasoning(
                     crate::types::PermissionMode::Confirm => RuntimePermissionMode::Confirm,
                     crate::types::PermissionMode::Auto => RuntimePermissionMode::Auto,
                 },
-                thread.project_id,
+                checkpoint_scope_id(&thread.project_id, &thread_id),
                 thread_id,
                 checkpoint_root,
                 exact_rules,
@@ -289,6 +296,7 @@ pub(crate) fn validate_recovered_projection(
     exit_code: Option<i32>,
     duration_ms: Option<u64>,
 ) -> Result<String, ConversationError> {
+    let checkpoint_project_id = checkpoint_scope_id(project_id, thread_id);
     let corrupt = || {
         ConversationError::CorruptRow(format!(
             "terminal tool call {call_id} has invalid safe projection"
@@ -320,12 +328,20 @@ pub(crate) fn validate_recovered_projection(
                     return Err(corrupt());
                 }
                 let output_valid = match status {
-                    RuntimeToolStatus::Success if tool == "write" => {
-                        mutation_success_matches(&valid, project_id, thread_id, call_id, output)
-                    }
-                    RuntimeToolStatus::Success => {
-                        mutation_success_matches(&valid, project_id, thread_id, call_id, output)
-                    }
+                    RuntimeToolStatus::Success if tool == "write" => mutation_success_matches(
+                        &valid,
+                        &checkpoint_project_id,
+                        thread_id,
+                        call_id,
+                        output,
+                    ),
+                    RuntimeToolStatus::Success => mutation_success_matches(
+                        &valid,
+                        &checkpoint_project_id,
+                        thread_id,
+                        call_id,
+                        output,
+                    ),
                     RuntimeToolStatus::Failed => {
                         output == format!("Tool error: {tool} failed")
                             || output == "Tool error: tool worker failed"
@@ -353,13 +369,23 @@ pub(crate) fn validate_recovered_projection(
                         true
                     }
                     RuntimeToolStatus::Cancelled if tool == "write" => {
-                        mutation_success_matches(&valid, project_id, thread_id, call_id, output)
-                            || output == "Tool error: write failed"
+                        mutation_success_matches(
+                            &valid,
+                            &checkpoint_project_id,
+                            thread_id,
+                            call_id,
+                            output,
+                        ) || output == "Tool error: write failed"
                             || output == "Tool error: tool worker failed"
                     }
                     RuntimeToolStatus::Cancelled => {
-                        mutation_success_matches(&valid, project_id, thread_id, call_id, output)
-                            || output == "Tool error: edit failed"
+                        mutation_success_matches(
+                            &valid,
+                            &checkpoint_project_id,
+                            thread_id,
+                            call_id,
+                            output,
+                        ) || output == "Tool error: edit failed"
                             || output == "Tool error: tool worker failed"
                     }
                 };
@@ -500,6 +526,18 @@ pub(crate) fn mutation_success_matches(
                     success.path == *path && success.checkpoint_ref == expected_ref
                 })
         }
+    }
+}
+
+/// Checkpoint IDs need a non-empty first component for standalone tasks. This
+/// internal scope is deliberately distinct from a project row: persistence
+/// and permission records continue to use the real nullable project binding,
+/// while scratch mutations get a stable per-thread fence.
+fn checkpoint_scope_id(project_id: &str, thread_id: &str) -> String {
+    if project_id.is_empty() {
+        format!("standalone:{thread_id}")
+    } else {
+        project_id.to_owned()
     }
 }
 
