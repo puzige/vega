@@ -5,8 +5,8 @@
 - verified_at_utc: 2026-09-08T06:34Z–2026-09-08T06:40Z
 - verified_at_local: 2026-09-08 14:34–14:40 CST
 - branch: `feat/r18-brand-icons`
-- implementation_git_head: `PENDING` (SVG icon renderer follow-up commit)
-- implementation_tracked_diff_sha256: `PENDING` (recomputed after the follow-up commit)
+- implementation_git_head: `5ceb15b` (`fix(R18): render shared icons from SVG assets`)
+- implementation_tracked_diff_sha256: `b9f5f185d9031c852fe77a04508db5376f8f6c605cf7829494c9540e9e6870fe` (tracked diff excluding this delivery record)
 - task_contract: R18 Vega brand UI/icon baseline; R15 IA and behavior preserved
 - os_arch: macOS arm64
 - rustc: `rustc 1.98.0 (88d9e12ae 2026-08-18)`
@@ -43,10 +43,10 @@ navigation and behavior were not changed.
 
 | requirement | evidence class | exact command | result | bounded footer/hash |
 |---|---|---|---|---|
-| Formatting | UNIT/PROPERTY | `cargo fmt --all -- --check` | PENDING | run after SVG follow-up |
-| Theme token assertions | UNIT/PROPERTY | `cargo test -p vega_theme` | PENDING | run after SVG follow-up |
-| UI library tests | E2E-REAL / UNIT/PROPERTY | `cargo test -p vega_ui --lib -- --test-threads=1` | PENDING | run after SVG follow-up |
-| Affected crate lint | UNIT/PROPERTY | `cargo clippy -p vega_theme -p vega_ui --all-targets -- -D warnings` | PENDING | run after SVG follow-up |
+| Formatting | UNIT/PROPERTY | `cargo fmt --all -- --check` | PASS | exit 0; pre-commit hook and direct check |
+| Theme token assertions | UNIT/PROPERTY | `cargo test -p vega_theme` | PASS | `7 passed; 0 failed` |
+| UI library tests | E2E-REAL / UNIT/PROPERTY | `cargo test -p vega_ui --lib -- --test-threads=1` | PASS | `167 passed; 0 failed` |
+| Affected crate lint | UNIT/PROPERTY | `cargo clippy -p vega_theme -p vega_ui --all-targets -- -D warnings` | PASS | exit 0; only dependency future-incompat note |
 | App target compatibility | UNIT/PROPERTY | `cargo check -p vega --all-targets` | PASS | exit 0 after enabling embedded assets |
 | UI color hardcode guard | UNIT/PROPERTY | `rg -n "0x[0-9A-Fa-f]{6,8}|#[0-9A-Fa-f]{6,8}" crates/vega_ui/src || true` | PASS | empty output |
 | Disclosure glyph guard | UNIT/PROPERTY | `rg -n "[▾▸⌃]" crates/vega_ui/src crates/vega/src || true` | PASS | empty output |
