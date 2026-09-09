@@ -473,7 +473,7 @@ impl VegaWindow {
 
     fn workspace_available_width(&self, window: &Window, cx: &App) -> f32 {
         let sidebar = if !cx.global::<SidebarCollapsed>().0 && !self.auto_collapsed(window, cx) {
-            Layout::SIDEBAR_WIDTH
+            vega_ui::sidebar::width(cx) + Layout::SIDEBAR_RESIZE_HIT_AREA
         } else {
             0.
         };
@@ -506,8 +506,17 @@ impl VegaWindow {
         cx.notify();
     }
 
-    pub(super) fn environment_is_wide(&self, window: &Window) -> bool {
-        window.viewport_size().width >= px(Layout::ENVIRONMENT_BREAKPOINT)
+    pub(super) fn environment_breakpoint(&self, window: &Window, cx: &App) -> f32 {
+        let sidebar = if !cx.global::<SidebarCollapsed>().0 && !self.auto_collapsed(window, cx) {
+            vega_ui::sidebar::width(cx)
+        } else {
+            0.0
+        };
+        Layout::ENVIRONMENT_BREAKPOINT + sidebar - Layout::SIDEBAR_WIDTH
+    }
+
+    pub(super) fn environment_is_wide(&self, window: &Window, cx: &App) -> bool {
+        f32::from(window.viewport_size().width) >= self.environment_breakpoint(window, cx)
     }
 
     pub(super) fn toggle_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -516,7 +525,7 @@ impl VegaWindow {
         {
             return;
         }
-        if self.environment_is_wide(window) {
+        if self.environment_is_wide(window, cx) {
             self.environment_collapsed = !self.environment_collapsed;
             self.environment_overlay_open = false;
         } else {
@@ -568,7 +577,8 @@ impl VegaWindow {
                     "environment-card".into()
                 }
             })
-            .w_full()
+            .w(px(Layout::ENVIRONMENT_CARD_WIDTH))
+            .max_w_full()
             .max_h_full()
             .p_3()
             .rounded(px(Layout::ENVIRONMENT_CARD_RADIUS))
@@ -917,7 +927,7 @@ impl VegaWindow {
         }
         let available = self.workspace_available_width(window, cx);
         let right = self.persistent_right_workspace_visible(window, cx);
-        let environment_wide = self.environment_is_wide(window);
+        let environment_wide = self.environment_is_wide(window, cx);
         let bottom = !self.workspace.hidden[1]
             && self.workspace.selected[1].is_some()
             && f32::from(size.height) >= 480.;
@@ -1123,13 +1133,13 @@ impl VegaWindow {
                 .max_h(px(280.))
                 .overflow_y_scroll()
                 .right(px(8.))
-                .w(px(240.))
+                .w(px(Layout::TASK_MENU_WIDTH.min(Layout::MENU_MAX_WIDTH)))
                 .p_2()
-                .rounded_md()
+                .rounded(px(Layout::MENU_RADIUS))
                 .border_1()
                 .border_color(colors.border_subtle)
                 .bg(colors.bg_elevated)
-                .shadow_md()
+                .shadow_sm()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -1260,10 +1270,12 @@ fn workspace_button(
         .aria_label(keyboard_label)
         .focusable()
         .tab_stop(true)
+        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
         .px_2()
-        .py_1()
         .rounded_md()
-        .text_size(px(Typography::METADATA))
+        .flex()
+        .items_center()
+        .text_size(px(Typography::SIDEBAR))
         .text_color(colors.text_secondary)
         .cursor_pointer()
         .hover(move |style| style.bg(colors.bg_hover))
@@ -1327,13 +1339,15 @@ mod tests {
     use crate::tests::{diff_controller_repo, install_diff_window_globals};
     use gpui_kit::prelude::*;
     use gpui_kit::{
-        AppContext, Bounds, KeyBinding, Modifiers, Pixels, TestAppContext, VisualTestContext,
-        WindowBounds, WindowHandle, WindowOptions, point, px, size,
+        AppContext, Bounds, KeyBinding, Modifiers, MouseButton, Pixels, TestAppContext,
+        VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point, px, size,
     };
     use vega_theme::Layout;
     use vega_ui::diff_view::DiffClosed;
     use vega_ui::settings::{CloseSettings, SettingsOpen, SettingsView};
-    use vega_ui::sidebar::{OpenedThread, PendingDeleteConfirm, SelectedProject, SidebarCollapsed};
+    use vega_ui::sidebar::{
+        OpenedThread, PendingDeleteConfirm, SelectedProject, SidebarCollapsed, SidebarWidth,
+    };
 
     fn shell_bounds(
         window: WindowHandle<VegaWindow>,
@@ -1377,7 +1391,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    async fn r19_shell_mounts_real_state_and_preserves_responsive_environment_choice(
+    async fn r21_shell_mounts_resizable_sidebar_and_exact_environment_boundaries(
         cx: &mut TestAppContext,
     ) {
         let repo = diff_controller_repo();
@@ -1407,7 +1421,7 @@ mod tests {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
                         point(px(0.), px(0.)),
-                        size(px(1400.), px(900.)),
+                        size(px(1403.), px(860.)),
                     ))),
                     ..Default::default()
                 },
@@ -1418,6 +1432,7 @@ mod tests {
         cx.run_until_parked();
 
         let sidebar = shell_bounds(window, "sidebar", cx);
+        let resizer = shell_bounds(window, "sidebar-resize-handle", cx);
         let panel = shell_bounds(window, "main-content-panel", cx);
         let header = shell_bounds(window, "main-header", cx);
         let rail = shell_bounds(window, "environment-rail", cx);
@@ -1426,9 +1441,19 @@ mod tests {
         let conversation = shell_bounds(window, "conversation-column", cx);
         assert_close(sidebar.size.width, Layout::SIDEBAR_WIDTH, "sidebar width");
         assert_close(
-            panel.left() - sidebar.right(),
+            resizer.size.width,
+            Layout::SIDEBAR_RESIZE_HIT_AREA,
+            "Sidebar resize target width",
+        );
+        assert_close(
+            resizer.left() - sidebar.right(),
+            0.0,
+            "resize target follows Sidebar",
+        );
+        assert_close(
+            panel.left() - resizer.right(),
             Layout::MAIN_CONTENT_GAP,
-            "main leading gap",
+            "flat main split",
         );
         assert_close(
             header.size.height,
@@ -1449,6 +1474,11 @@ mod tests {
             rail.right() - card.right(),
             Layout::ENVIRONMENT_CARD_INSET,
             "Environment card right inset",
+        );
+        assert_close(
+            card.size.width,
+            Layout::ENVIRONMENT_CARD_WIDTH,
+            "Environment card width",
         );
         assert_close(
             composer.size.width,
@@ -1483,10 +1513,10 @@ mod tests {
 
         window
             .update(cx, |_, window, cx| {
-                window.resize(size(px(1179.), px(900.)));
+                window.resize(size(px(1229.), px(860.)));
                 window.bounds_changed(cx);
             })
-            .expect("resize below Environment breakpoint");
+            .expect("resize to 1229px below default Environment breakpoint");
         cx.run_until_parked();
         assert!(shell_absent(window, "environment-rail", cx));
         shell_click(window, "main-header-environment", cx);
@@ -1500,10 +1530,10 @@ mod tests {
 
         window
             .update(cx, |_, window, cx| {
-                window.resize(size(px(1400.), px(900.)));
+                window.resize(size(px(1230.), px(860.)));
                 window.bounds_changed(cx);
             })
-            .expect("resize above Environment breakpoint");
+            .expect("resize to exact default Environment breakpoint");
         cx.run_until_parked();
         assert!(shell_absent(window, "environment-rail", cx));
         assert!(root.read_with(cx, |root, _| root.environment_collapsed
@@ -1512,6 +1542,92 @@ mod tests {
         let _ = shell_bounds(window, "environment-rail", cx);
         assert!(root.read_with(cx, |root, _| !root.environment_collapsed
             && !root.environment_overlay_open));
+
+        cx.update(|cx| {
+            cx.set_global(SidebarWidth(Layout::SIDEBAR_MAX_WIDTH));
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        assert_close(
+            shell_bounds(window, "sidebar", cx).size.width,
+            Layout::SIDEBAR_MAX_WIDTH,
+            "maximum Sidebar width",
+        );
+        assert!(
+            shell_absent(window, "environment-rail", cx),
+            "1230px is narrow after the Sidebar grows"
+        );
+        assert!(root.read_with(cx, |root, _| !root.environment_collapsed));
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-overlay", cx);
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1290.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize to 1290px below maximum-width breakpoint");
+        let _ = shell_bounds(window, "environment-overlay", cx);
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1291.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize to exact maximum-width breakpoint");
+        let _ = shell_bounds(window, "environment-rail", cx);
+        assert!(shell_absent(window, "environment-overlay", cx));
+
+        cx.update(|cx| {
+            cx.set_global(SidebarWidth(Layout::SIDEBAR_MIN_WIDTH));
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        assert_close(
+            shell_bounds(window, "sidebar", cx).size.width,
+            Layout::SIDEBAR_MIN_WIDTH,
+            "minimum Sidebar width",
+        );
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1165.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize below minimum-width breakpoint");
+        assert!(shell_absent(window, "environment-rail", cx));
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1166.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize to exact minimum-width breakpoint");
+        let _ = shell_bounds(window, "environment-rail", cx);
+
+        cx.update(|cx| {
+            cx.set_global(SidebarCollapsed(true));
+            cx.refresh_windows();
+        });
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(960.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize with collapsed Sidebar");
+        cx.run_until_parked();
+        assert!(shell_absent(window, "sidebar", cx));
+        let _ = shell_bounds(window, "environment-rail", cx);
+
+        cx.update(|cx| {
+            cx.set_global(SidebarWidth(Layout::SIDEBAR_WIDTH));
+            cx.set_global(SidebarCollapsed(false));
+            cx.refresh_windows();
+        });
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1403.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("restore screenshot-parity viewport");
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "environment-rail", cx);
 
         shell_click(window, "environment-review", cx);
         assert!(
@@ -1572,6 +1688,124 @@ mod tests {
         assert!(shell_absent(window, "environment-rail", cx));
         assert!(shell_absent(window, "main-header-terminal", cx));
         assert!(shell_absent(window, "main-header-environment", cx));
+    }
+
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    async fn r21_sidebar_drag_clamps_persists_and_preserves_independent_choices(
+        cx: &mut TestAppContext,
+    ) {
+        const MARKER: &str = "VEGA_R21_SIDEBAR_DRAG_CHILD";
+        let Some(path) = std::env::var_os(MARKER) else {
+            let owned = tempfile::tempdir().expect("owned Sidebar config root");
+            let config_root = owned.path().join("config");
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("current Vega test binary"),
+            )
+            .args([
+                "--exact",
+                "window::workspace::tests::r21_sidebar_drag_clamps_persists_and_preserves_independent_choices",
+                "--nocapture",
+            ])
+            .env(MARKER, owned.path())
+            .env("HOME", owned.path())
+            .env("XDG_CONFIG_HOME", config_root)
+            .output()
+            .expect("isolated Sidebar drag test process");
+            assert!(
+                output.status.success(),
+                "owned R21 Sidebar drag subprocess failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let repo = diff_controller_repo();
+        let store = vega_store::Store::open(path.join("test.db")).expect("owned store");
+        store.migrate().expect("owned migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("fixture path"),
+            "R21 drag",
+            None,
+        )
+        .expect("project");
+        let thread =
+            vega_conversation::threads::create_thread(&store, &project.id, "mock", "confirm")
+                .expect("thread");
+        cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        let root = cx.new(VegaWindow::new);
+        let window_root = root.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(1403.), px(860.)),
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| window_root,
+            )
+            .expect("production root window")
+        });
+        cx.run_until_parked();
+        let environment_choice = root.read_with(cx, |root, _| {
+            (root.environment_collapsed, root.environment_overlay_open)
+        });
+
+        let drag_to = |target: f32, cx: &mut TestAppContext| {
+            let handle = shell_bounds(window, "sidebar-resize-handle", cx);
+            let destination = point(px(target), handle.center().y);
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(destination, Some(MouseButton::Left), Modifiers::default());
+            visual.simulate_mouse_up(destination, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+        };
+
+        drag_to(999.0, cx);
+        assert_close(
+            shell_bounds(window, "sidebar", cx).size.width,
+            Layout::SIDEBAR_MAX_WIDTH,
+            "dragged maximum Sidebar width",
+        );
+        assert_eq!(
+            vega_store::config::load()
+                .expect("persisted maximum Sidebar width")
+                .ui
+                .sidebar_width,
+            Layout::SIDEBAR_MAX_WIDTH
+        );
+        assert!(!cx.update(|cx| cx.global::<SidebarCollapsed>().0));
+        assert_eq!(
+            root.read_with(cx, |root, _| {
+                (root.environment_collapsed, root.environment_overlay_open)
+            }),
+            environment_choice
+        );
+
+        drag_to(100.0, cx);
+        assert_close(
+            shell_bounds(window, "sidebar", cx).size.width,
+            Layout::SIDEBAR_MIN_WIDTH,
+            "dragged minimum Sidebar width",
+        );
+        assert_eq!(
+            vega_store::config::load()
+                .expect("persisted minimum Sidebar width")
+                .ui
+                .sidebar_width,
+            Layout::SIDEBAR_MIN_WIDTH
+        );
+        assert!(!cx.update(|cx| cx.global::<SidebarCollapsed>().0));
+        assert_eq!(
+            root.read_with(cx, |root, _| {
+                (root.environment_collapsed, root.environment_overlay_open)
+            }),
+            environment_choice
+        );
     }
 
     #[gpui_kit::test]

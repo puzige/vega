@@ -145,7 +145,7 @@ impl SettingsView {
             {
                 3
             } else {
-                0
+                1
             },
             usage: Default::default(),
             usage_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),

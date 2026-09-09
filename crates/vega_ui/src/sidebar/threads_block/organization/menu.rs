@@ -188,11 +188,11 @@ impl ThreadsBlock {
             .flex_col()
             .gap_1()
             .p_1()
-            .rounded_md()
+            .rounded(px(Layout::MENU_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
             .bg(colors.bg_elevated)
-            .shadow_md()
+            .shadow_sm()
             .on_mouse_down(MouseButton::Left, |_, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
@@ -296,7 +296,7 @@ impl ThreadsBlock {
                     .anchor(Anchor::TopRight)
                     .position_mode(AnchoredPositionMode::Local)
                     .position(point(
-                        px(Layout::SIDEBAR_WIDTH - 16.),
+                        px(crate::sidebar::width(cx) - 16.),
                         px(Typography::SIDEBAR_LINE_HEIGHT),
                     ))
                     .snap_to_window_with_margin(px(8.))

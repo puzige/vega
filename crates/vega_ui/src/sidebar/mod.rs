@@ -97,6 +97,37 @@ pub struct SidebarCollapsed(pub bool);
 
 impl Global for SidebarCollapsed {}
 
+/// Persisted user-selected Sidebar width. The value is normalized by
+/// `vega_store::config` before it reaches the layout.
+pub struct SidebarWidth(pub f32);
+
+impl Global for SidebarWidth {}
+
+/// Returns the effective stored Sidebar width, falling back to the R21
+/// default for isolated embedders that have not installed the global yet.
+pub fn width(cx: &App) -> f32 {
+    cx.try_global::<SidebarWidth>()
+        .map_or(Layout::SIDEBAR_WIDTH, |width| {
+            config::clamp_sidebar_width(width.0)
+        })
+}
+
+/// Updates only the in-memory Sidebar width during a pointer drag.
+pub fn set_width(width: f32, cx: &mut App) {
+    cx.set_global(SidebarWidth(config::clamp_sidebar_width(width)));
+    cx.refresh_windows();
+}
+
+/// Persists the accepted width when a pointer drag completes.
+pub fn persist_width(cx: &mut App) {
+    let width = width(cx);
+    persist_ui(
+        |config| config.ui.sidebar_width = width,
+        "sidebar_width",
+        cx,
+    );
+}
+
 /// Explicit reveal overrides automatic narrow-window collapse for this app session.
 #[derive(Default)]
 pub struct SidebarExplicitlyShown(pub bool);
@@ -176,6 +207,17 @@ pub fn load_collapsed() -> bool {
     }
 }
 
+/// Loads the persisted R21 Sidebar width, using the finite default on error.
+pub fn load_width() -> f32 {
+    match config::load() {
+        Ok(config) => config::clamp_sidebar_width(config.ui.sidebar_width),
+        Err(error) => {
+            tracing::error!(%error, "failed to read sidebar_width from config.toml");
+            Layout::SIDEBAR_WIDTH
+        }
+    }
+}
+
 /// Cmd+B handler: flips the preference, persists it to `config.toml`, and
 /// refreshes windows. Persistence failures degrade to in-memory state
 /// (ui-spec §4.6: no modals); the next successful toggle rewrites the file.
@@ -214,6 +256,7 @@ pub fn init(cx: &mut App) {
     cx.set_global(SessionsCollapsed(sessions_collapsed));
     cx.set_global(OpenedThread(None));
     cx.set_global(PendingDeleteConfirm(None));
+    cx.set_global(SidebarWidth(load_width()));
 }
 
 /// Opens and migrates `vega.db` under the platform data root (tech-spec §6).
@@ -535,7 +578,7 @@ impl Render for Sidebar {
             .debug_selector(|| "sidebar".into())
             .flex()
             .flex_col()
-            .w(px(Layout::SIDEBAR_WIDTH))
+            .w(px(width(cx)))
             .h_full()
             .flex_shrink_0()
             .bg(colors.bg_sidebar)

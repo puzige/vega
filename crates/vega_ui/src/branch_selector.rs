@@ -11,7 +11,7 @@ use gpui_kit::{
     uniform_list,
 };
 use vega_conversation::types::{BranchId, BranchItem, BranchSnapshot, GitWorkspaceErrorCode};
-use vega_theme::{Typography, theme};
+use vega_theme::{Layout, Typography, theme};
 
 actions!(
     vega_branch_selector,
@@ -23,7 +23,7 @@ actions!(
     ]
 );
 
-pub const BRANCH_ROW_HEIGHT: f32 = 24.0;
+pub const BRANCH_ROW_HEIGHT: f32 = Typography::SIDEBAR_LINE_HEIGHT;
 pub const BRANCH_LIMIT: usize = 10_000;
 
 fn branch_count_allowed(count: usize) -> bool {
@@ -679,11 +679,12 @@ impl Render for BranchSelector {
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .rounded_md()
+                    .rounded(px(Layout::MENU_RADIUS))
                     .border_1()
                     .border_color(colors.border_subtle)
                     .bg(colors.bg_elevated)
                     .text_color(colors.text_primary)
+                    .shadow_sm()
                     .when_some(
                         match self.model.status {
                             SelectorStatus::Failed(code) if row_count > 0 => Some(code),
@@ -816,6 +817,7 @@ fn render_branch_row(
             row.child(
                 div()
                     .flex_shrink_0()
+                    .text_size(px(Typography::METADATA))
                     .text_color(colors.success)
                     .child("Current"),
             )
@@ -852,7 +854,7 @@ mod tests {
 
     #[test]
     fn branch_selector_fixed_geometry_and_limit_are_exact() {
-        assert_eq!(BRANCH_ROW_HEIGHT, 24.0);
+        assert_eq!(BRANCH_ROW_HEIGHT, 32.0);
         assert_eq!(BRANCH_LIMIT, 10_000);
         assert!(branch_count_allowed(10_000));
         assert!(!branch_count_allowed(10_001));

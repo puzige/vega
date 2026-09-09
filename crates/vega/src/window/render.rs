@@ -403,34 +403,24 @@ impl Render for VegaWindow {
             .flex()
             .flex_row()
             .relative()
-            .bg(colors.bg_sidebar)
+            .bg(colors.bg_base)
             .text_color(colors.text_primary)
             .when(sidebar_visible && !cx.global::<SettingsOpen>().0, |row| {
                 row.child(self.sidebar.clone())
+                    .child(self.render_sidebar_resizer(colors, cx))
             })
             .child(
-                // Content column host: settings brings its own 820px column,
-                // the empty state is centered by its own layout.
+                // R21 uses a flat split shell. Settings brings its own full-height
+                // navigation rail and content column; conversation/empty routes
+                // share this flush white surface.
                 div()
                     .debug_selector(|| "main-content-panel".into())
                     .flex_1()
                     .min_w_0()
-                    .my(px(Layout::MAIN_CONTENT_GAP))
-                    .mx(px(Layout::MAIN_CONTENT_GAP))
-                    .rounded(px(vega_theme::Layout::PANEL_RADIUS))
-                    .border_1()
-                    .border_color(colors.border_subtle)
                     .bg(colors.bg_base)
                     .overflow_hidden()
                     .flex()
                     .flex_col()
-                    .when(settings_open, |column| {
-                        column.child(
-                            div()
-                                .pl(px(Layout::TITLEBAR_LEADING_INSET))
-                                .child(vega_ui::navigation::controls(cx, sidebar_visible)),
-                        )
-                    })
                     .children(
                         settings_open
                             .then(|| {
@@ -449,6 +439,8 @@ impl Render for VegaWindow {
                     )
                     .child(div().flex_1().min_h_0().child(content)),
             )
+            .on_mouse_move(cx.listener(Self::resize_sidebar))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_sidebar_resize))
             .children(self.palette.view.clone())
             // T13 删除确认弹层：最后绘制以覆盖全窗口；遮罩点击 / Esc 取消。
             .children(
@@ -460,6 +452,53 @@ impl Render for VegaWindow {
 }
 
 impl VegaWindow {
+    fn render_sidebar_resizer(&self, colors: ThemeColors, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("sidebar-resize-handle")
+            .debug_selector(|| "sidebar-resize-handle".into())
+            .w(px(Layout::SIDEBAR_RESIZE_HIT_AREA))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .justify_center()
+            .cursor_col_resize()
+            .child(div().w(px(1.)).h_full().bg(colors.border_subtle))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::begin_sidebar_resize))
+            .into_any_element()
+    }
+
+    fn begin_sidebar_resize(
+        &mut self,
+        _: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.prevent_default();
+        cx.stop_propagation();
+        self.sidebar_resize_dragging = true;
+        cx.notify();
+    }
+
+    fn resize_sidebar(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.sidebar_resize_dragging {
+            return;
+        }
+        if event.pressed_button != Some(MouseButton::Left) {
+            self.sidebar_resize_dragging = false;
+            vega_ui::sidebar::persist_width(cx);
+            return;
+        }
+        vega_ui::sidebar::set_width(f32::from(event.position.x), cx);
+    }
+
+    fn finish_sidebar_resize(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.sidebar_resize_dragging {
+            self.sidebar_resize_dragging = false;
+            vega_ui::sidebar::persist_width(cx);
+            cx.notify();
+        }
+    }
+
     fn render_main_header(
         &mut self,
         sidebar_visible: bool,
@@ -483,7 +522,7 @@ impl VegaWindow {
         let project_route = self.shell_project_id(cx).is_some();
         let review_available = self.shell_project_thread(cx).is_some();
         let right_visible = self.persistent_right_workspace_visible(window, cx);
-        let environment_visible = if self.environment_is_wide(window) {
+        let environment_visible = if self.environment_is_wide(window, cx) {
             !self.environment_collapsed
         } else {
             self.environment_overlay_open

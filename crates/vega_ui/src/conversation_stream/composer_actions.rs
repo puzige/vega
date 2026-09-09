@@ -351,17 +351,20 @@ impl ConversationStream {
             .when(!labels.is_empty(), |menu| {
                 menu.p_2()
                     .mb_2()
-                    .rounded_md()
+                    .rounded(px(Layout::MENU_RADIUS))
                     .bg(colors.bg_elevated)
                     .border_1()
                     .border_color(colors.border_subtle)
+                    .shadow_sm()
             })
             .children(labels.into_iter().enumerate().map(|(index, label)| {
                 let highlighted = self.actions.highlight == index;
                 div()
                     .id(("composer-action", index))
+                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .px_2()
-                    .py_1()
+                    .flex()
+                    .items_center()
                     .rounded_md()
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(if highlighted {
@@ -390,24 +393,30 @@ impl ConversationStream {
             .debug_selector(|| "composer-stop".into())
             .track_focus(&self.action_focus[1])
             .tab_stop(true)
+            .aria_label(if self.actions.stopping {
+                "正在停止"
+            } else {
+                "停止"
+            })
             .key_context("ComposerStop")
             .on_action(cx.listener(Self::stop_composer_action))
-            .px_3()
-            .py_1()
-            .rounded_md()
+            .size(px(Layout::COMPOSER_SEND_SIZE))
+            .flex_shrink_0()
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
             .bg(colors.bg_hover)
-            .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_primary)
             .when(!self.actions.stopping, |button| button.cursor_pointer())
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.request_composer_stop(cx)),
             )
-            .child(if self.actions.stopping {
-                "停止中…"
-            } else {
-                "停止"
-            })
+            .child(crate::icons::icon(
+                crate::icons::Icon::Close,
+                colors.text_primary,
+            ))
             .into_any_element()
     }
 

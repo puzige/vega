@@ -167,11 +167,17 @@ impl ConversationStream {
                                 |row| {
                                     row.child(
                                         div()
+                                            .id("composer-send")
+                                            .debug_selector(|| "composer-send".into())
+                                            .aria_label("发送")
+                                            .track_focus(&self.action_focus[1])
+                                            .tab_stop(true)
                                             .flex_shrink_0()
-                                            .px_3()
-                                            .py_1()
-                                            .rounded_md()
-                                            .text_size(px(Typography::SIDEBAR))
+                                            .size(px(Layout::COMPOSER_SEND_SIZE))
+                                            .rounded_full()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
                                             .when(can_send, |button| {
                                                 button
                                                     .bg(colors.accent)
@@ -338,8 +344,9 @@ impl ConversationStream {
                         .absolute()
                         .bottom(px(32.))
                         .left_0()
+                        .w(px(180.).min(px(Layout::MENU_MAX_WIDTH)))
                         .p_1()
-                        .rounded_md()
+                        .rounded(px(Layout::MENU_RADIUS))
                         .border_1()
                         .border_color(colors.border_subtle)
                         .bg(colors.bg_elevated)
@@ -359,10 +366,7 @@ impl ConversationStream {
         let enabled = self.model_selection_pending.is_none();
         div()
             .flex()
-            .flex_row()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
+            .flex_col()
             .child(
                 segment(
                     "Ask",
@@ -416,7 +420,7 @@ impl ConversationStream {
         let enabled = self.model_selection_pending.is_none();
         div()
             .flex()
-            .flex_row()
+            .flex_col()
             .child(
                 segment(
                     "只读",
@@ -579,17 +583,17 @@ impl ConversationStream {
                 .bottom(gpui_kit::relative(1.0))
                 .mb_2()
                 .left_0()
-                .w(px(360.))
+                .w(px(Layout::MENU_MAX_WIDTH))
                 .max_w_full()
                 .occlude()
                 .flex()
                 .flex_col()
-                .rounded_md()
+                .rounded(px(Layout::MENU_RADIUS))
                 .border_1()
                 .border_color(colors.border_subtle)
                 .bg(colors.bg_elevated)
                 .text_color(colors.text_primary)
-                .shadow_md()
+                .shadow_sm()
                 .child(content),
         )
         .with_priority(2)
@@ -673,20 +677,22 @@ impl ConversationStream {
                         .max_w_full()
                         .flex()
                         .flex_col()
-                        .rounded_md()
+                        .rounded(px(Layout::MENU_RADIUS))
                         .border_1()
                         .border_color(colors.border_subtle)
                         .bg(colors.bg_elevated)
                         .text_color(colors.text_primary)
-                        .shadow_md()
+                        .shadow_sm()
                         .children(self.model_options.iter().enumerate().map(|(index, model)| {
                             let selected = index == self.model_selector_highlight;
                             let current_model = *model == self.composer_defaults.model;
                             let model = model.clone();
                             let label = model.clone();
                             div()
+                                .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                                 .px_2()
-                                .py_1()
+                                .flex()
+                                .items_center()
                                 .text_size(px(Typography::SIDEBAR))
                                 .truncate()
                                 .when(selected, |row| row.bg(colors.bg_active))
@@ -782,8 +788,12 @@ fn segment(
 ) -> gpui_kit::Div {
     div()
         .track_focus(&focus)
+        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+        .w_full()
         .px_2()
-        .py_1()
+        .flex()
+        .items_center()
+        .rounded_md()
         .text_size(px(Typography::SIDEBAR))
         .when(enabled, |item| item.cursor_pointer())
         .when(selected, |item| {

@@ -27,6 +27,7 @@ impl SettingsView {
             patch!(defaults.permission_mode);
             patch!(ui.theme);
             patch!(ui.sidebar_collapsed);
+            patch!(ui.sidebar_width);
             patch!(ui.projects_collapsed);
             patch!(ui.sessions_collapsed);
             edit.save().map_err(|_| "配置保存失败")?;

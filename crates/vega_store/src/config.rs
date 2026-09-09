@@ -14,6 +14,39 @@ static EDIT_LOCK: Mutex<()> = Mutex::new(());
 
 use serde::{Deserialize, Serialize};
 
+/// Persisted Sidebar geometry. These storage-layer bounds mirror the R21
+/// visual tokens without introducing a UI dependency into `vega_store`.
+pub const SIDEBAR_WIDTH_DEFAULT: f32 = 304.0;
+pub const SIDEBAR_WIDTH_MIN: f32 = 240.0;
+pub const SIDEBAR_WIDTH_MAX: f32 = 365.0;
+
+/// Normalizes untrusted persisted or caller-provided Sidebar widths.
+pub fn clamp_sidebar_width(width: f32) -> f32 {
+    if width.is_finite() {
+        width.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)
+    } else {
+        SIDEBAR_WIDTH_DEFAULT
+    }
+}
+
+fn sidebar_width_default() -> f32 {
+    SIDEBAR_WIDTH_DEFAULT
+}
+
+fn deserialize_sidebar_width<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    f32::deserialize(deserializer).map(clamp_sidebar_width)
+}
+
+fn serialize_sidebar_width<S>(width: &f32, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_f32(clamp_sidebar_width(*width))
+}
+
 /// Error raised while loading or saving [`AppConfig`].
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -109,6 +142,14 @@ pub struct UiPrefs {
     /// serde default keeps configs written before this field loadable.
     #[serde(default)]
     pub sidebar_collapsed: bool,
+    /// User-selected Sidebar width. Legacy configs resolve to the R21
+    /// default; both deserialization and serialization clamp invalid values.
+    #[serde(
+        default = "sidebar_width_default",
+        deserialize_with = "deserialize_sidebar_width",
+        serialize_with = "serialize_sidebar_width"
+    )]
+    pub sidebar_width: f32,
     /// Whether the sidebar 「项目」 block is collapsed (T12). Defaults to
     /// `false`; serde default keeps older configs loadable.
     #[serde(default)]
@@ -124,6 +165,7 @@ impl Default for UiPrefs {
         Self {
             theme: "dark".to_string(),
             sidebar_collapsed: false,
+            sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             projects_collapsed: false,
             sessions_collapsed: false,
         }
@@ -161,6 +203,7 @@ const FILE_HEADER: &str = "\
 # [ui]
 #   theme              - UI theme (default: \"dark\")
 #   sidebar_collapsed  - whether the sidebar starts collapsed (default: false)
+#   sidebar_width      - Sidebar width in logical pixels (240..365; default: 304)
 #   projects_collapsed - whether the sidebar 「项目」 block starts collapsed
 #                        (default: false)
 #   sessions_collapsed - whether the sidebar 「会话」 block starts collapsed
@@ -319,6 +362,7 @@ mod tests {
             ui: UiPrefs {
                 theme: "dark".to_string(),
                 sidebar_collapsed: false,
+                sidebar_width: SIDEBAR_WIDTH_DEFAULT,
                 projects_collapsed: false,
                 sessions_collapsed: false,
             },
@@ -370,7 +414,46 @@ mod tests {
         .unwrap();
         let legacy = load_from(&legacy_path).unwrap();
         assert!(!legacy.ui.sidebar_collapsed);
+        assert_eq!(legacy.ui.sidebar_width, SIDEBAR_WIDTH_DEFAULT);
         assert_eq!(legacy.ui.theme, "dark");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn sidebar_width_round_trips_clamps_and_defaults_for_legacy_config() {
+        let dir = temp_dir("sidebar-width");
+        let path = dir.join("config.toml");
+        let mut config = sample_config();
+        config.ui.sidebar_width = 348.5;
+        config.save_to(&path).unwrap();
+        assert_eq!(load_from(&path).unwrap().ui.sidebar_width, 348.5);
+
+        config.ui.sidebar_width = f32::INFINITY;
+        config.save_to(&path).unwrap();
+        assert_eq!(
+            load_from(&path).unwrap().ui.sidebar_width,
+            SIDEBAR_WIDTH_DEFAULT
+        );
+
+        fs::write(
+            &path,
+            "providers = []\n\n[defaults]\nmodel = \"\"\npermission_mode = \"confirm\"\n\n[ui]\ntheme = \"dark\"\nsidebar_width = 999.0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            load_from(&path).unwrap().ui.sidebar_width,
+            SIDEBAR_WIDTH_MAX
+        );
+
+        fs::write(
+            &path,
+            "providers = []\n\n[defaults]\nmodel = \"\"\npermission_mode = \"confirm\"\n\n[ui]\ntheme = \"dark\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            load_from(&path).unwrap().ui.sidebar_width,
+            SIDEBAR_WIDTH_DEFAULT
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

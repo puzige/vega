@@ -38,6 +38,119 @@ fn provider(name: &str, models: &[&str]) -> ProviderConfig {
     }
 }
 
+fn assert_pixel_close(actual: gpui_kit::Pixels, expected: f32, label: &str) {
+    let actual = f32::from(actual);
+    assert!(
+        (actual - expected).abs() <= 1.0,
+        "{label}: expected {expected}±1px, got {actual}px"
+    );
+}
+
+#[gpui_kit::test]
+async fn r21_settings_shell_opens_general_and_tracks_sidebar_width(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        cx.set_global(crate::sidebar::SidebarWidth(Layout::SIDEBAR_WIDTH));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    assert_eq!(view.read_with(cx, |view, _| view.section), 1);
+    let root = view.clone();
+    let window: WindowHandle<SettingsHarness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1403.), px(860.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| {
+                    cx.new(|_| SettingsHarness {
+                        view: root,
+                        closes: Arc::new(AtomicUsize::new(0)),
+                    })
+                },
+            )
+        })
+        .expect("R21 Settings window");
+    cx.run_until_parked();
+
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let nav = visual
+            .debug_bounds("settings-navigation")
+            .expect("Settings navigation");
+        let content = visual
+            .debug_bounds("settings-content-column")
+            .expect("Settings content column");
+        assert_pixel_close(nav.size.width, Layout::SIDEBAR_WIDTH, "Settings rail width");
+        assert_pixel_close(
+            content.size.width,
+            Layout::SETTINGS_CONTENT_MAX_WIDTH,
+            "Settings content cap",
+        );
+        assert!(visual.debug_bounds("settings-page-general").is_some());
+        let rows = [
+            "settings-nav-general",
+            "settings-nav-providers",
+            "settings-nav-reasoning",
+            "settings-nav-pricing",
+            "settings-nav-usage",
+        ]
+        .map(|selector| {
+            visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("missing {selector}"))
+        });
+        for row in rows {
+            assert_pixel_close(
+                row.size.height,
+                Typography::SIDEBAR_LINE_HEIGHT,
+                "Settings navigation row height",
+            );
+        }
+        assert!(rows.windows(2).all(|pair| pair[0].top() <= pair[1].top()));
+
+        let providers = visual
+            .debug_bounds("settings-nav-providers")
+            .expect("Providers navigation");
+        visual.simulate_click(providers.center(), Default::default());
+    }
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.section), 0);
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("settings-page-providers")
+            .is_some()
+    );
+
+    cx.update(|cx| crate::sidebar::set_width(Layout::SIDEBAR_MAX_WIDTH, cx));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert_pixel_close(
+        visual
+            .debug_bounds("settings-navigation")
+            .expect("resized Settings navigation")
+            .size
+            .width,
+        Layout::SIDEBAR_MAX_WIDTH,
+        "resized Settings rail width",
+    );
+    assert_pixel_close(
+        visual
+            .debug_bounds("settings-content-column")
+            .expect("resized Settings content")
+            .size
+            .width,
+        Layout::SETTINGS_CONTENT_MAX_WIDTH,
+        "resized Settings content cap",
+    );
+}
+
 #[test]
 fn form_rejects_empty_fields() {
     assert!(!form_is_submittable("", "https://x", "k"));
@@ -318,6 +431,15 @@ async fn provider_form_focus_and_edit_action_follow_the_real_ui_path(cx: &mut Te
 
     {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let providers = visual
+            .debug_bounds("settings-nav-providers")
+            .expect("providers navigation");
+        visual.simulate_click(providers.center(), Default::default());
+    }
+    cx.run_until_parked();
+
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
         let edit = visual.debug_bounds("provider-edit").expect("edit button");
         visual.simulate_click(edit.center(), Default::default());
     }
@@ -451,6 +573,11 @@ async fn provider_models_frame_reserves_rows_and_keeps_tail_visible(cx: &mut Tes
     cx.run_until_parked();
 
     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let providers = visual
+        .debug_bounds("settings-nav-providers")
+        .expect("providers navigation");
+    visual.simulate_click(providers.center(), Default::default());
+    cx.run_until_parked();
     let bounds = |visual: &mut VisualTestContext, selector: &'static str| {
         visual
             .debug_bounds(selector)

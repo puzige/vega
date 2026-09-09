@@ -2,7 +2,7 @@
 use crate::text_input::TextInput;
 use gpui_kit::{prelude::*, *};
 use vega_conversation::types::*;
-use vega_theme::{Typography, theme};
+use vega_theme::{Layout, Typography, theme};
 
 actions!(
     vega_palette,
@@ -218,15 +218,15 @@ impl Render for CommandPalette {
                     .id("command-palette")
                     .debug_selector(|| "command-palette".into())
                     .key_context("CommandPalette")
-                    .w(px(620.).min(window.viewport_size().width - px(32.)))
+                    .w(px(Layout::MENU_MAX_WIDTH).min(window.viewport_size().width - px(32.)))
                     .max_h((window.viewport_size().height - px(108.)).max(px(160.)))
                     .flex()
                     .flex_col()
-                    .rounded_lg()
+                    .rounded(px(Layout::MENU_RADIUS))
                     .bg(colors.bg_elevated)
                     .border_1()
                     .border_color(colors.border_subtle)
-                    .shadow_lg()
+                    .shadow_sm()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_action(cx.listener(Self::next))
                     .on_action(cx.listener(Self::previous))
@@ -281,9 +281,10 @@ impl Render for CommandPalette {
                                     div()
                                         .id(("palette-result", index))
                                         .debug_selector(move || format!("palette-result-{index}"))
-                                        .px_4()
-                                        .py_2()
+                                        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                                        .px_3()
                                         .flex()
+                                        .items_center()
                                         .gap_3()
                                         .bg(if selected == index {
                                             colors.bg_hover

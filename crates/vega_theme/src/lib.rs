@@ -69,12 +69,12 @@ pub struct ThemeColors {
 /// Light palette (UI spec §2, "Light" column).
 pub const LIGHT: ThemeColors = ThemeColors {
     bg_base: rgba(0xFFFFFFFF),
-    bg_sidebar: rgba(0xF3F3F3FF),
+    bg_sidebar: rgba(0xFAF9F9FF),
     bg_elevated: rgba(0xFFFFFFFF),
     bg_hover: rgba(0xECECECFF),
     bg_active: rgba(0xEAF2FCFF),
     border_subtle: rgba(0xE8E8E8FF),
-    text_primary: rgba(0x202020FF),
+    text_primary: rgba(0x191C1FFF),
     text_secondary: rgba(0x676767FF),
     text_tertiary: rgba(0x8A8A8AFF),
     accent: rgba(0x3478D8FF),
@@ -281,23 +281,39 @@ impl Layout {
     /// Height reserved by every non-Settings main route.
     pub const MAIN_HEADER_HEIGHT: f32 = 46.0;
     /// Gap between the main content panel and the native window edges/sidebar.
-    pub const MAIN_CONTENT_GAP: f32 = 4.0;
+    pub const MAIN_CONTENT_GAP: f32 = 0.0;
     /// Provider selector column inside Settings.
     pub const PROVIDER_LIST_WIDTH: f32 = 180.0;
-    /// Sidebar width from the R19 phase-1 shell freeze.
-    pub const SIDEBAR_WIDTH: f32 = 260.0;
+    /// Default Sidebar width for a new or legacy configuration.
+    pub const SIDEBAR_WIDTH: f32 = 304.0;
+    /// Minimum user-resizable Sidebar width.
+    pub const SIDEBAR_MIN_WIDTH: f32 = 240.0;
+    /// Maximum user-resizable Sidebar width.
+    pub const SIDEBAR_MAX_WIDTH: f32 = 365.0;
+    /// Pointer hit area at the trailing edge of the Sidebar.
+    pub const SIDEBAR_RESIZE_HIT_AREA: f32 = 5.0;
     /// Sidebar horizontal and vertical padding.
     pub const SIDEBAR_PADDING: f32 = 12.0;
     /// Composer width cap; the thread column remains wider for readable output.
     pub const COMPOSER_MAX_WIDTH: f32 = 736.0;
-    /// Fixed wide-screen Environment rail width.
-    pub const ENVIRONMENT_RAIL_WIDTH: f32 = 292.0;
+    /// Fixed wide-screen Environment rail width (304px card + 16px inset).
+    pub const ENVIRONMENT_RAIL_WIDTH: f32 = 320.0;
+    /// Width of the Environment card inside its rail.
+    pub const ENVIRONMENT_CARD_WIDTH: f32 = 304.0;
     /// Top/right inset for the floating Environment card.
     pub const ENVIRONMENT_CARD_INSET: f32 = 16.0;
     /// Environment card radius.
     pub const ENVIRONMENT_CARD_RADIUS: f32 = 18.0;
     /// Width at which the persistent Environment rail becomes available.
-    pub const ENVIRONMENT_BREAKPOINT: f32 = 1180.0;
+    pub const ENVIRONMENT_BREAKPOINT: f32 = 1230.0;
+    /// Maximum width of the Settings content column.
+    pub const SETTINGS_CONTENT_MAX_WIDTH: f32 = 744.0;
+    /// Maximum width of a multi-section floating menu.
+    pub const MENU_MAX_WIDTH: f32 = 350.0;
+    /// Radius shared by large floating menus and popovers.
+    pub const MENU_RADIUS: f32 = 18.0;
+    /// Exact circular send/stop control size.
+    pub const COMPOSER_SEND_SIZE: f32 = 28.0;
     /// Default bottom workspace height.
     pub const BOTTOM_WORKSPACE_HEIGHT: f32 = 272.0;
     /// Workspace tab/header height.
@@ -357,7 +373,8 @@ mod tests {
         // palette refresh around the neutral tokens.
         assert_eq!(u32::from(LIGHT.success), 0x1A7F37FF);
         assert_eq!(u32::from(LIGHT.danger), 0xCF222EFF);
-        assert_eq!(u32::from(LIGHT.bg_sidebar), 0xF3F3F3FF);
+        assert_eq!(u32::from(LIGHT.bg_sidebar), 0xFAF9F9FF);
+        assert_eq!(u32::from(LIGHT.text_primary), 0x191C1FFF);
         assert_eq!(u32::from(LIGHT.code_bg), 0xF6F6F6FF);
         assert_eq!(u32::from(LIGHT.accent), 0x3478D8FF);
         assert_eq!(u32::from(LIGHT.brand_primary_strong), 0x245AAFFF);
@@ -385,18 +402,27 @@ mod tests {
     }
 
     #[test]
-    fn r19_phase_one_geometry_is_frozen() {
+    fn r21_phase_two_geometry_is_frozen() {
         assert_eq!(Typography::SIDEBAR_LINE_HEIGHT, 32.0);
-        assert_eq!(Layout::SIDEBAR_WIDTH, 260.0);
-        assert_eq!(Layout::MAIN_CONTENT_GAP, 4.0);
+        assert_eq!(Layout::SIDEBAR_WIDTH, 304.0);
+        assert_eq!(Layout::SIDEBAR_MIN_WIDTH, 240.0);
+        assert_eq!(Layout::SIDEBAR_MAX_WIDTH, 365.0);
+        assert_eq!(Layout::SIDEBAR_RESIZE_HIT_AREA, 5.0);
+        assert_eq!(Layout::MAIN_CONTENT_GAP, 0.0);
         assert_eq!(Layout::MAIN_HEADER_HEIGHT, 46.0);
         assert_eq!(Layout::CONTENT_MAX_WIDTH, 820.0);
         assert_eq!(Layout::COMPOSER_MAX_WIDTH, 736.0);
+        assert_eq!(Layout::COMPOSER_RADIUS, 20.0);
         assert_eq!(Layout::COMPOSER_MIN_HEIGHT, 100.0);
-        assert_eq!(Layout::ENVIRONMENT_RAIL_WIDTH, 292.0);
+        assert_eq!(Layout::ENVIRONMENT_RAIL_WIDTH, 320.0);
+        assert_eq!(Layout::ENVIRONMENT_CARD_WIDTH, 304.0);
         assert_eq!(Layout::ENVIRONMENT_CARD_INSET, 16.0);
         assert_eq!(Layout::ENVIRONMENT_CARD_RADIUS, 18.0);
-        assert_eq!(Layout::ENVIRONMENT_BREAKPOINT, 1180.0);
+        assert_eq!(Layout::ENVIRONMENT_BREAKPOINT, 1230.0);
+        assert_eq!(Layout::SETTINGS_CONTENT_MAX_WIDTH, 744.0);
+        assert_eq!(Layout::MENU_MAX_WIDTH, 350.0);
+        assert_eq!(Layout::MENU_RADIUS, 18.0);
+        assert_eq!(Layout::COMPOSER_SEND_SIZE, 28.0);
         assert_eq!(Layout::WORKSPACE_HEADER_HEIGHT, 40.0);
         assert_eq!(Layout::BOTTOM_WORKSPACE_HEIGHT, 272.0);
     }

@@ -1256,12 +1256,12 @@ impl ThreadsBlock {
             .flex()
             .flex_col()
             .gap_1()
-            .rounded_md()
+            .rounded(px(Layout::MENU_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
             .bg(colors.bg_elevated)
             .p_1()
-            .shadow_md()
+            .shadow_sm()
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, cx| {

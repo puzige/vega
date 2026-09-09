@@ -950,7 +950,10 @@ async fn branch_selector_real_projection_keyboard_first_wins_and_visible_range(
         assert_eq!(visible.len(), 8);
         assert_eq!(visible.first().map(|row| row.0), Some(4_321));
         assert_eq!(visible.last().map(|row| row.0), Some(4_328));
-        assert_eq!(vega_ui::branch_selector::BRANCH_ROW_HEIGHT, 24.0);
+        assert_eq!(
+            vega_ui::branch_selector::BRANCH_ROW_HEIGHT,
+            Typography::SIDEBAR_LINE_HEIGHT
+        );
     });
     cx.simulate_keystrokes(window.into(), "space");
     let space_pending = selector

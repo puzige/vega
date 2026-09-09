@@ -217,6 +217,7 @@ pub(crate) fn install_diff_window_globals(store: Store, thread: Thread, cx: &mut
     cx.set_global(Theme::light());
     cx.set_global(SettingsOpen(false));
     cx.set_global(SidebarCollapsed(false));
+    cx.set_global(SidebarWidth(Layout::SIDEBAR_WIDTH));
     cx.set_global(vega_ui::sidebar::SelectedProject(Some(
         thread.project_id.clone(),
     )));

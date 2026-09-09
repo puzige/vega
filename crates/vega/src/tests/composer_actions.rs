@@ -110,6 +110,25 @@ fn click(f: &Fixture, selector: &'static str, cx: &mut gpui_kit::TestAppContext)
     visual.run_until_parked();
 }
 
+fn assert_composer_control_size(
+    f: &Fixture,
+    selector: &'static str,
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.run_until_parked();
+    let bounds = VisualTestContext::from_window(f.window.into(), cx)
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    for (axis, actual) in [("width", bounds.size.width), ("height", bounds.size.height)] {
+        let actual = f32::from(actual);
+        assert!(
+            (actual - Layout::COMPOSER_SEND_SIZE).abs() <= 1.0,
+            "{selector} {axis}: expected {}±1px, got {actual}px",
+            Layout::COMPOSER_SEND_SIZE
+        );
+    }
+}
+
 fn assert_terminal(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
     pump_test_app(cx, |cx| {
         f.root
@@ -205,12 +224,14 @@ async fn r11_composer_stream_stop_retains_partial_and_next_draft(
     ]));
     let f = fixture(cx, provider.clone());
     edit(&f, "start cancellable stream", cx);
+    assert_composer_control_size(&f, "composer-send", cx);
     cx.simulate_keystrokes(f.window.into(), "cmd-enter");
     pump_test_app(cx, |_| {
         f.store.conn().query_row("SELECT count(*) FROM messages WHERE role = 'assistant' AND content LIKE '%retained partial text%'", [], |row| row.get::<_, i64>(0)).expect("partial persistence") == 1
     });
     assert_eq!(draft(&f, cx), "", "durable start accepted submitted text");
     edit(&f, "unsent next draft", cx);
+    assert_composer_control_size(&f, "composer-stop", cx);
     click(&f, "composer-stop", cx);
     assert_terminal(&f, cx);
     assert_eq!(draft(&f, cx), "unsent next draft");

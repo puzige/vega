@@ -13,9 +13,9 @@ use vega_ui::sidebar::*;
 
 actions!(vega, [Quit, ToggleTheme]);
 
-/// Initial main window size in logical pixels (R19 phase-1 shell freeze).
-const WINDOW_INITIAL_WIDTH: f32 = 1400.0;
-const WINDOW_INITIAL_HEIGHT: f32 = 900.0;
+/// Initial main window size in logical pixels (R21 screenshot-parity target).
+const WINDOW_INITIAL_WIDTH: f32 = 1403.0;
+const WINDOW_INITIAL_HEIGHT: f32 = 860.0;
 
 /// Minimum main window size in logical pixels (UI spec §1).
 const WINDOW_MIN_WIDTH: f32 = 960.0;

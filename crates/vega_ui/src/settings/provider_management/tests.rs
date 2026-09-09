@@ -102,6 +102,7 @@ async fn pointer_settings_uses_real_service_config_and_loopback_transport(cx: &m
         })
         .unwrap();
     cx.run_until_parked();
+    click(cx, window, "settings-nav-providers");
     click(cx, window, "provider-down");
     let saved = config::read_from(&path).unwrap();
     assert_eq!(
@@ -209,6 +210,7 @@ async fn pointer_credential_recovery_patch_and_reload_clear_obsolete_network_res
         })
         .unwrap();
     cx.run_until_parked();
+    click(cx, window, "settings-nav-providers");
     click(cx, window, "model-test-0");
     assert!(view.read_with(cx, |view, _| {
         view.provider_management
@@ -283,13 +285,6 @@ async fn small_provider_detail_retains_url_height_with_multiple_models(cx: &mut 
         crate::init(cx);
     });
     let view = cx.new(|cx| SettingsView::from_path(Some(path), cx));
-    // Seed a rendered error projection; transport behavior is tested separately above.
-    view.update(cx, |view, _| {
-        view.provider_management.message = Some("本地凭据不存在，请重新保存 API Key".into());
-        view.provider_management
-            .statuses
-            .insert("owned-model".into(), "本地凭据不存在".into());
-    });
     let window = cx
         .update(|cx| {
             cx.open_window(
@@ -305,6 +300,17 @@ async fn small_provider_detail_retains_url_height_with_multiple_models(cx: &mut 
             )
         })
         .unwrap();
+    cx.run_until_parked();
+    click(cx, window, "settings-nav-providers");
+    // Seed after navigation because changing settings pages intentionally cancels and clears
+    // transient provider operations.
+    view.update(cx, |view, cx| {
+        view.provider_management.message = Some("本地凭据不存在，请重新保存 API Key".into());
+        view.provider_management
+            .statuses
+            .insert("owned-model".into(), "本地凭据不存在".into());
+        cx.notify();
+    });
     cx.run_until_parked();
     for dark in [false, true] {
         cx.update(|cx| {
@@ -364,14 +370,6 @@ async fn pointer_stop_clears_pending_connection_projection(cx: &mut TestAppConte
         )
     });
     let token = CancellationToken::new();
-    // Seed only an in-flight UI projection: real transport cancellation has D/root evidence.
-    view.update(cx, |view, _| {
-        view.provider_management.cancel = Some(token.clone());
-        view.provider_management.message = Some("正在连接…".into());
-        view.provider_management
-            .statuses
-            .insert("owned-model".into(), "正在测试…".into());
-    });
     let window = cx
         .update(|cx| {
             cx.open_window(
@@ -387,6 +385,18 @@ async fn pointer_stop_clears_pending_connection_projection(cx: &mut TestAppConte
             )
         })
         .unwrap();
+    cx.run_until_parked();
+    click(cx, window, "settings-nav-providers");
+    // Seed only an in-flight UI projection after navigation; real transport cancellation has
+    // D/root evidence and page changes intentionally cancel transient provider operations.
+    view.update(cx, |view, cx| {
+        view.provider_management.cancel = Some(token.clone());
+        view.provider_management.message = Some("正在连接…".into());
+        view.provider_management
+            .statuses
+            .insert("owned-model".into(), "正在测试…".into());
+        cx.notify();
+    });
     cx.run_until_parked();
     click(cx, window, "provider-cancel");
     assert!(token.is_cancelled());

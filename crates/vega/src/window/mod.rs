@@ -74,8 +74,8 @@ impl ModelSelectionRefresh {
     }
 }
 
-/// Root view of the main window: the A1 layout shell — a sidebar (260px,
-/// collapsible) next to a content column (max 820px, centered) that hosts
+/// Root view of the main window: the A1 layout shell — a persisted resizable
+/// sidebar next to a content column (max 820px, centered) that hosts
 /// either the settings view (Cmd+, / Esc), the opened session
 /// ([`ConversationStream`], S3-T17), or the ui-spec §4.6 empty state.
 pub(crate) struct VegaWindow {
@@ -90,6 +90,9 @@ pub(crate) struct VegaWindow {
     /// Narrow windows show Environment as a temporary card over the shell.
     /// Route changes and opening a persistent right workspace close it.
     environment_overlay_open: bool,
+    /// Pointer drag state for the R21 Sidebar separator. The accepted width
+    /// is persisted only when the drag completes.
+    sidebar_resize_dragging: bool,
     appearance_subscription: Option<Subscription>,
     /// Cached settings view entity. Kept while settings is open so re-renders
     /// (e.g. the theme toggle) never rebuild the form mid-typing; dropped when
@@ -253,6 +256,7 @@ impl VegaWindow {
             workspace: workspace::Workspace::default(),
             environment_collapsed: false,
             environment_overlay_open: false,
+            sidebar_resize_dragging: false,
             appearance_subscription: None,
             artifact_controller: ArtifactController::default(),
             branch_controller: BranchController::default(),

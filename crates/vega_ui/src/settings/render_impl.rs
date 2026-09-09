@@ -392,6 +392,7 @@ impl SettingsView {
         if let Some(sidebar) = cx.try_global::<crate::sidebar::SidebarCollapsed>() {
             candidate.ui.sidebar_collapsed = sidebar.0;
         }
+        candidate.ui.sidebar_width = crate::sidebar::width(cx);
         self.save_preferences(candidate, cx);
     }
 
@@ -681,6 +682,7 @@ impl Render for SettingsView {
         if let Some(sidebar) = cx.try_global::<crate::sidebar::SidebarCollapsed>() {
             self.config.ui.sidebar_collapsed = sidebar.0;
         }
+        self.config.ui.sidebar_width = crate::sidebar::width(cx);
         if let Some(projects) = cx.try_global::<crate::sidebar::ProjectsCollapsed>() {
             self.config.ui.projects_collapsed = projects.0;
         }
@@ -688,6 +690,20 @@ impl Render for SettingsView {
             self.config.ui.sessions_collapsed = sessions.0;
         }
         let colors = theme(cx).colors;
+        let (page_title, page_selector) = match self.section {
+            0 => ("Providers", "settings-page-providers"),
+            1 => ("General", "settings-page-general"),
+            2 => ("Reasoning", "settings-page-reasoning"),
+            3 => ("Pricing", "settings-page-pricing"),
+            _ => ("Usage", "settings-page-usage"),
+        };
+        let navigation = [
+            (1, "General", "settings-nav-general"),
+            (0, "Providers", "settings-nav-providers"),
+            (2, "Reasoning", "settings-nav-reasoning"),
+            (3, "Pricing", "settings-nav-pricing"),
+            (4, "Usage", "settings-nav-usage"),
+        ];
         div()
             .id("settings-page")
             .key_context("PricingSettings")
@@ -699,62 +715,126 @@ impl Render for SettingsView {
             .on_action(cx.listener(Self::previous_pricing_action))
             .size_full()
             .flex()
-            .flex_col()
+            .flex_row()
             .bg(colors.bg_base)
             .text_color(colors.text_primary)
             .text_size(px(Typography::BODY))
             .line_height(relative(Typography::BODY_LINE_HEIGHT))
             .child(
                 div()
+                    .id("settings-navigation")
+                    .debug_selector(|| "settings-navigation".into())
+                    .w(px(crate::sidebar::width(cx)))
+                    .h_full()
+                    .flex_shrink_0()
                     .flex()
-                    .size_full()
+                    .flex_col()
+                    .pt(px(Layout::MAIN_HEADER_HEIGHT))
+                    .px(px(Layout::SIDEBAR_PADDING))
+                    .border_r_1()
+                    .border_color(colors.border_subtle)
+                    .bg(colors.bg_sidebar)
                     .child(
                         div()
-                            .w(px(64.))
-                            .h_full()
-                            .flex_shrink_0()
-                            .pt(px(56.))
-                            .px_3()
-                            .bg(colors.bg_sidebar)
-                            .child(
-                                div()
-                                    .id("settings-back")
-                                    .size(px(38.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_lg()
-                                    .text_size(px(Typography::HEADING_PAGE))
-                                    .cursor_pointer()
-                                    .hover(move |s| s.bg(colors.bg_hover))
-                                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_back))
-                                    .child(crate::icons::icon(
-                                        crate::icons::Icon::ArrowLeft,
-                                        colors.text_primary,
-                                    )),
-                            ),
+                            .id("settings-back")
+                            .debug_selector(|| "settings-back".into())
+                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .rounded_md()
+                            .focusable()
+                            .tab_stop(true)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(colors.bg_hover))
+                            .on_key_down(cx.listener(
+                                |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        this.cancel_provider_operation(cx);
+                                        window.dispatch_action(Box::new(CloseSettings), cx);
+                                        cx.stop_propagation();
+                                    }
+                                },
+                            ))
+                            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_back))
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::ArrowLeft,
+                                colors.text_primary,
+                            ))
+                            .child("Back to app"),
                     )
+                    .child(div().h(px(24.)).flex_shrink_0())
+                    .children(navigation.into_iter().map(|(index, label, selector)| {
+                        div()
+                            .id(("settings-section", index))
+                            .debug_selector(move || selector.into())
+                            .track_focus(&self.section_focuses[index])
+                            .tab_stop(true)
+                            .focus_visible(move |style| {
+                                style.border_1().border_color(colors.brand_primary)
+                            })
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                        this.cancel_provider_operation(cx);
+                                        this.section = index;
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .rounded_md()
+                            .when(self.section == index, |row| row.bg(colors.bg_hover))
+                            .cursor_pointer()
+                            .hover(move |row| row.bg(colors.bg_hover))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.cancel_provider_operation(cx);
+                                    this.section = index;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(label)
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .bg(colors.bg_base)
+                    .px(px(24.))
+                    .pt(px(if window.viewport_size().height > px(700.) {
+                        68.
+                    } else {
+                        48.
+                    }))
+                    .pb(px(24.))
+                    .flex()
+                    .flex_col()
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
+                            .id("settings-content-column")
+                            .debug_selector(|| "settings-content-column".into())
+                            .w_full()
+                            .max_w(px(Layout::SETTINGS_CONTENT_MAX_WIDTH))
                             .h_full()
+                            .mx_auto()
                             .flex()
                             .flex_col()
-                            .px_4()
-                            .pt(px(if window.viewport_size().height > px(700.) { 104. } else { 58. }))
-                            .pb_4()
                             .gap_4()
                             .child(
                                 div()
+                                    .debug_selector(move || page_selector.into())
                                     .text_size(px(Typography::SETTINGS_TITLE))
                                     .font_weight(Typography::HEADING_PAGE_WEIGHT)
-                                    .child("设置"),
-                            )
-                            .child(
-                                div()
-                                    .text_color(colors.text_secondary)
-                                    .child("管理模型、权限与使用偏好"),
+                                    .child(page_title),
                             )
                             .children(
                                 self.error
@@ -763,90 +843,31 @@ impl Render for SettingsView {
                             )
                             .child(
                                 div()
-                                    .flex()
+                                    .id("settings-section-content")
+                                    .debug_selector(|| "settings-section-content".into())
                                     .flex_1()
                                     .min_h_0()
-                                    .rounded(px(Layout::PANEL_RADIUS))
-                                    .border_1()
-                                    .border_color(colors.border_subtle)
-                                    .bg(colors.bg_elevated)
-                                    .overflow_hidden()
-                                    .child(
-                                        div()
-                                            .w(px(160.))
-                                            .flex_shrink_0()
-                                            .h_full()
-                                            .p_3()
-                                            .border_r_1()
-                                            .border_color(colors.border_subtle)
-                                            .children(
-                                                ["模型供应商", "默认设置", "思考能力", "模型定价", "使用统计"]
-                                                    .into_iter()
-                                                    .enumerate()
-                                                    .map(|(index, label)| {
-                                                        div()
-                                                            .id(("settings-section", index))
-                                                .track_focus(&self.section_focuses[index])
-                                                .tab_stop(true)
-                                                .focus_visible(move |style| style.bg(colors.bg_hover))
-                                                .on_key_down(cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                                                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                                        this.cancel_provider_operation(cx);
-                                                        this.section = index;
-                                                        cx.stop_propagation();
-                                                        cx.notify();
-                                                    }
-                                                }))
-                                                            .h(px(34.))
-                                                            .px_2()
-                                                            .flex()
-                                                            .items_center()
-                                                            .rounded_md()
-                                                            .when(self.section == index, |s| {
-                                                                s.bg(colors.bg_active)
-                                                            })
-                                                            .cursor_pointer()
-                                                            .hover(move |s| s.bg(colors.bg_hover))
-                                                            .on_mouse_up(
-                                                                MouseButton::Left,
-                                                                cx.listener(
-                                                                    move |this, _, _, cx| {
-                                                                        this.cancel_provider_operation(cx);
-                                                        this.section = index;
-                                                                        cx.notify();
-                                                                    },
-                                                                ),
-                                                            )
-                                                            .child(label)
-                                                    }),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("settings-section-content")
-                                            .flex_1()
-                                            .min_w_0()
-                                            .h_full()
-                                            .when(self.section != 0, |body| body.overflow_y_scroll())
-                                            .when(self.section == 0, |body| body.overflow_hidden())
-                                            .p_4()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_4()
-                                            .when(self.section == 0, |body| {
-                                                body.child(self.render_provider_management(cx))
-                                            })
-                                            .when(self.section == 1, |body| {
-                                                body.child(self.render_defaults(cx))
-                                            })
-                                            .when(self.section == 2, |body| {
-                                                body.child(self.render_reasoning(cx))
-                                            })
-                                            .when(self.section == 3, |body| {
-                                                body.child(self.render_pricing(cx))
-                                            })
-                                            .when(self.section == 4, |body| body.child(self.render_usage(cx))),
-                                    ),
+                                    .min_w_0()
+                                    .when(self.section != 0, |body| body.overflow_y_scroll())
+                                    .when(self.section == 0, |body| body.overflow_hidden())
+                                    .flex()
+                                    .flex_col()
+                                    .gap_4()
+                                    .when(self.section == 0, |body| {
+                                        body.child(self.render_provider_management(cx))
+                                    })
+                                    .when(self.section == 1, |body| {
+                                        body.child(self.render_defaults(cx))
+                                    })
+                                    .when(self.section == 2, |body| {
+                                        body.child(self.render_reasoning(cx))
+                                    })
+                                    .when(self.section == 3, |body| {
+                                        body.child(self.render_pricing(cx))
+                                    })
+                                    .when(self.section == 4, |body| {
+                                        body.child(self.render_usage(cx))
+                                    }),
                             ),
                     ),
             )
