@@ -1,6 +1,6 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.7 · 2026-09-10 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.8 · 2026-09-10 · 关联：[vega-features.md](vega-features.md)
 
 > **规范分层**：跨任务的视觉语言、语义 token 与新 UI 默认规则以
 > [Vega 设计守则](vega-design-guidelines.md)为入口；本文件继续承载组件行为和
@@ -17,7 +17,7 @@
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ Sidebar (260px)  │  Thread View (flex, max 820px 居中) │
+│ Sidebar (304px*) │  Thread View (flex, max 820px 居中) │
 │  - 新建任务       │   ┌──────────────────────────┐     │
 │  - 搜索           │   │ 消息流（滚动区）           │     │
 │  - 自动化(P3)     │   │  - 用户消息                │     │
@@ -31,12 +31,12 @@
 
 | 项 | 规格 |
 |---|---|
-| 侧边栏宽度 | 260px，可折叠至 0（Cmd+B）；折叠状态记忆 |
+| 侧边栏宽度 | 默认 304px，可拖拽于 240–365px，可折叠至 0（Cmd+B）；宽度与折叠状态分别记忆 |
 | 主 Header | 46px；底部 1px 分隔线 |
 | 会话内容列 | max-width 820px，水平居中，左右留白 ≥16px |
-| Composer | 底部固定，max-width 736px、min-height 100px、bottom inset 16px；圆角 20px，边框 1px（不使用阴影堆叠） |
-| Environment | 宽屏 rail 292px；卡片 inset 16px、圆角 18px；1180px 以下自动改为临时 overlay |
-| 窗口最小尺寸 | 960×600；侧边栏由用户独立折叠（Cmd+B），Environment 的宽度自适应不覆盖用户选择 |
+| Composer | 底部固定，max-width 736px、min-height 100px、bottom inset 16px；圆角 20px，边框 1px + 单层克制阴影；发送/停止 28×28px |
+| Environment | 宽屏 rail 320px，内含 304px 卡片与 16px 右 inset，圆角 18px；默认 Sidebar 下 1229/1230px 切换 overlay/rail，断点随有效 Sidebar 宽度一对一移动 |
+| 窗口最小尺寸 | 960×600；Sidebar 用户折叠、宽度驱动自动折叠与 Environment 选择彼此独立 |
 | 触控栏/标题栏 | 原生 macOS 标题栏透明融合（traffic lights 内嵌），不自绘 |
 
 ## 2. 色彩 Token（Light / Dark 双套）
@@ -44,12 +44,12 @@
 | Token | Light | Dark | 用途 |
 |---|---|---|---|
 | `bg-base` | #FFFFFF | #202020 | 主区背景 |
-| `bg-sidebar` | #F3F3F3 | #191919 | 侧边栏背景 |
+| `bg-sidebar` | #FAF9F9 | #191919 | 侧边栏背景 |
 | `bg-elevated` | #FFFFFF | #2A2A2A | 卡片/composer |
 | `bg-hover` | #ECECEC | #323232 | 悬停态 |
 | `bg-active` | #EAF2FC | #203247 | 选中态（当前会话/项目，低对比品牌洗色） |
 | `border-subtle` | #E8E8E8 | #383838 | 1px 分隔线/卡片边 |
-| `text-primary` | #202020 | #EDEDED | 正文 |
+| `text-primary` | #191C1F | #EDEDED | 正文 |
 | `text-secondary` | #676767 | #ABABAB | 辅助信息/时间戳 |
 | `text-tertiary` | #8A8A8A | #828282 | 占位符 |
 | `accent` | #3478D8 | #8FC7FF | 主按钮、主要选中态（Logo sapphire / ice blue） |
@@ -157,3 +157,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.5 (2026-09-05) R4 客户端 UI 翻新：依据 [R4 客户端 UI 翻新 SDD](vega-ui-refresh-sdd.md) 同步 Codex / ChatGPT 工作区式层级、Light/Dark token、34px 侧栏行高、15px/1.65 会话排版、20px Composer、两行控件分组与真实空态；S3 演示、跟随诊断和无功能模板移出普通产品流，安全、controller、性能冻结条款保持不变。
 - v0.6 (2026-09-08) R18 品牌 UI 基线：采用批准的 R17 蓝色终端/单星/微笑光标作为产品 UI 与 icon 的几何和强调来源；新增品牌 token，active/selection 改为低对比蓝灰，统一 16px、1.45px 柔角 vector icon；success/danger/warning 语义色与 R15 IA 保持不变。
 - v0.7 (2026-09-10) R20 设计守则收口：以 [Vega 设计守则](vega-design-guidelines.md)、[R19 主窗口壳层](vega-r19-codex-parity.md)与 `vega_theme` 当前值校正 Light 表面色、32px Sidebar、28px 空态、壳层几何及单操作行 Composer；外部解包 token 不作为输入。
+- v0.8 (2026-09-10) R21 当前截图对标：Sidebar 改为默认 304px、240–365px 可拖拽并独立记忆；主壳层采用平直分栏，Environment rail 320px，Settings 使用同宽导航 rail 与 744px 内容列；Composer 冻结 736px 与 28px 发送/停止控件。精确状态与证据见 [R21 screenshot parity](vega-r21-screenshot-parity.md)。

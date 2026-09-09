@@ -30,6 +30,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-features.md](docs/vega-features.md) | 96 个功能点全表（Phase 1 P0 ×38） |
 | [vega-design-guidelines.md](docs/vega-design-guidelines.md) | Vega 原生设计守则：视觉语言、语义 token、状态与 UI 变更检查表 |
 | [vega-ui-spec.md](docs/vega-ui-spec.md) | UI 规格与可测量验收准线 |
+| [vega-r21-screenshot-parity.md](docs/vega-r21-screenshot-parity.md) | 当前 Codex 截图像素对标：可变 Sidebar、Environment、Settings、Composer 与浮层 |
 | [vega-tech-spec-p1.md](docs/vega-tech-spec-p1.md) | Phase 1 SDD 技术规格（DDL/trait/状态机） |
 | [vega-tech-risks.md](docs/vega-tech-risks.md) | 五大技术难点攻坚方案 |
 | [vega-exec-guide.md](docs/vega-exec-guide.md) | 执行宪法（红线/白名单/验收协议） |

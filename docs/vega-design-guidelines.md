@@ -1,6 +1,6 @@
 # Vega 设计守则
 
-**版本** v1.1 · 2026-09-10
+**版本** v1.2 · 2026-09-10
 
 **状态** 当前视觉语言与设计 token 的规范入口
 
@@ -24,7 +24,7 @@
 Vega 的设计与实现按以下顺序判定：
 
 1. 产品行为、安全、数据真实性与平台约束，以 PRD、技术规格和执行宪法为准。
-2. 已冻结任务规格对其范围内的精确几何和行为拥有优先级，例如 [R18 品牌 UI](vega-r18-brand-ui.md) 与 [R19 主窗口壳层](vega-r19-codex-parity.md)。
+2. 已冻结任务规格对其范围内的精确几何和行为拥有优先级，例如 [R18 品牌 UI](vega-r18-brand-ui.md)、[R19 主窗口壳层](vega-r19-codex-parity.md) 与更新的 [R21 当前截图对标](vega-r21-screenshot-parity.md)。
 3. 本文件统一跨任务的视觉语言、token 使用方式和新界面的默认决策。
 4. [`vega_theme`](../crates/vega_theme/src/lib.rs) 中的 `ThemeColors`、`Typography` 与 `Layout` 是“已经实现”的代码真值。文档新增值在进入类型化 token 并通过测试前，不得宣称已落地。
 
@@ -80,12 +80,12 @@ Vega Logo 的连续终端折角、单颗细长星与轻微笑意，是产品的�
 | Token | Light | Dark | 用途 |
 |---|---:|---:|---|
 | `bg_base` | `#FFFFFF` | `#202020` | 主内容背景 |
-| `bg_sidebar` | `#F3F3F3` | `#191919` | 侧栏背景 |
+| `bg_sidebar` | `#FAF9F9` | `#191919` | 侧栏背景 |
 | `bg_elevated` | `#FFFFFF` | `#2A2A2A` | 卡片、Composer、浮起表面 |
 | `bg_hover` | `#ECECEC` | `#323232` | 中性 hover |
 | `bg_active` | `#EAF2FC` | `#203247` | 当前项目、任务与选中控件 |
 | `border_subtle` | `#E8E8E8` | `#383838` | 1px 分隔线与细边框 |
-| `text_primary` | `#202020` | `#EDEDED` | 正文与主要标签 |
+| `text_primary` | `#191C1F` | `#EDEDED` | 正文与主要标签 |
 | `text_secondary` | `#676767` | `#ABABAB` | 辅助信息、时间与次级标签 |
 | `text_tertiary` | `#8A8A8A` | `#828282` | 占位符与弱提示 |
 | `accent` / `brand_primary` | `#3478D8` | `#8FC7FF` | 主操作、选中图标、品牌重点 |
@@ -129,19 +129,21 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 | 区域 | Token / 目标值 | 说明 |
 |---|---:|---|
 | 原生标题栏前导留白 | 96px | 为 macOS traffic lights 保留 |
-| Sidebar | 260px | 内边距 12px；行高 32px |
-| 主内容外间隙 | 4px | Sidebar、主面板与窗口边缘之间 |
+| Sidebar | default 304px / 240–365px | 内边距 12px；行高 32px；拖拽宽度持久化 |
+| 主内容外间隙 | 0px | R21 平直分栏；Sidebar 与主面板用 1px 分隔 |
 | 主 Header | 46px | 底部 1px 分隔线 |
 | 可读内容列 | max 820px | 居中；最小水平内边距 16px |
 | Composer | max 736px / min-height 100px | 圆角 20px，内容可因多行或错误增长 |
 | 普通 Panel / Card | radius 12px | 默认容器圆角 |
-| Environment rail | 292px | ≥1180px 时可持久显示 |
-| Environment card | inset 16px / radius 18px | 轻边框，必要时使用克制小阴影 |
+| Environment rail | 320px | 304px card + 16px right inset；≥1230px 时可持久显示 |
+| Environment card | 304px / inset 16px / radius 18px | 轻边框，必要时使用克制小阴影 |
+| Settings 内容列 | max 744px | 与剩余主区域水平居中 |
+| 大型浮层 | max 350px / radius 18px | 小型菜单按内容收窄，不强制拉伸 |
 | Workspace header | 40px | 右侧或底部工作区共享 |
 | 底部 Workspace | default 272px | 保留现有最小值和拖拽行为 |
 | 右侧 Workspace | 43% / min 270px | 用户 resize 结果持久化 |
 
-主窗口设计与截图验收使用 1400×900；应用最小窗口为 960×600。响应式验收必须覆盖 1179px 与 1180px 两侧，确保 Environment 的 overlay/rail 切换不会丢失用户折叠状态或真实操作。
+主窗口设计与截图验收使用 1403×860，并回归 1400×900；应用最小窗口为 960×600。响应式验收必须覆盖 1229px 与 1230px 两侧，确保 Environment 的 overlay/rail 切换不会丢失用户折叠状态或真实操作。
 
 ### 6.2 圆角与表面
 
@@ -187,8 +189,8 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 ┌────────────────────────────────────────────────────────────┐
 │ native titlebar / main header 46                           │
 ├──────────────┬──────────────────────────────┬──────────────┤
-│ Sidebar 260  │ Center · readable max 820    │ Environment  │
-│              │ Composer max 736             │ 292 / overlay│
+│ Sidebar 304* │ Center · readable max 820    │ Environment  │
+│ 240–365      │ Composer max 736             │ 320 / overlay│
 ├──────────────┴──────────────────────────────┴──────────────┤
 │ optional bottom workspace · header 40 · default 272        │
 └────────────────────────────────────────────────────────────┘
@@ -196,8 +198,8 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 - Environment 只在有真实 project authority 时出现；standalone task 不显示 project-only rail。
 - 持久右侧 workspace 打开后替代 Environment rail；底部 workspace 横跨 center 与 right。
-- 用户手动折叠和宽度触发的自动隐藏是两个独立状态，resize 不得覆盖用户选择。
-- Settings 当前不属于 R19 主壳层 parity 范围；沿用已实现布局，后续另行冻结。
+- Sidebar 宽度、用户手动折叠和窗口触发的自动隐藏是三个独立状态，resize 不得覆盖另外两者。
+- Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
 
 ## 11. 动效与可访问性
 
@@ -215,7 +217,7 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 - [ ] 有对应 spec；没有在组件里写死颜色、字体、圆角或共享几何。
 - [ ] 同时检查 Light 与 Dark，不依赖浅色阴影修复深色边界。
-- [ ] 在 1400×900、1200×760、960×600 验证布局，并覆盖 1179/1180 响应式边界。
+- [ ] 在 1403×860、1200×760、960×600 验证布局，并覆盖 1229/1230 响应式边界。
 - [ ] hover、pressed、selected、focus-visible、disabled、loading 与 error 状态符合真实 controller。
 - [ ] 图标来自共享 16×16 SVG API，没有 Unicode 交互符号或未经批准的品牌装饰。
 - [ ] 键盘操作、焦点可见性、Reduce Motion 与图标可访问名称已检查。
@@ -228,12 +230,12 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 |---|---|
 | Light/Dark 语义颜色、品牌蓝、状态色 | 已进入 `ThemeColors` 并有 token 测试 |
 | 正文、消息、代码、标题、Sidebar 字体层级 | 已进入 `Typography` |
-| R19 壳层、Composer、Environment、Workspace 几何 | 已进入 `Layout` 并有冻结测试 |
+| R19 壳层、Composer、Environment、Workspace 几何 | 已进入 `Layout` 并有冻结测试；R21 数值以其实现提交为准 |
 | 共享 16×16 GPUI Kit/Lucide 图标规则 | R18 已落地 |
-| 真实主壳层与 1180px Environment 响应式 | R19 已落地并完成真实 macOS 验收 |
+| 真实主壳层与 Environment 响应式 | R19 的 1180px 基线已验收；R21 的 1230px 基线待实现 |
 | 完整 focus/pressed/disabled 状态视觉审计 | 待专项验收 |
 | Reduce Motion 全应用审计 | 待专项验收 |
-| Settings 视觉统一 | R19 明确留待后续阶段 |
+| Settings 视觉统一 | R21 已冻结，待实现与真实 macOS 验收 |
 
 ## 14. 变更方式
 
@@ -250,3 +252,4 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 - v1.0 (2026-09-09)：建立 Vega 原生视觉语言、语义 token、组件状态与验收检查表。
 - v1.1 (2026-09-10)：明确 clean-room 来源边界，并与 R19/当前主题实现同步校正 UI 验收规格。
+- v1.2 (2026-09-10)：纳入 R21 用户可见截图测量所得的 Sidebar、Environment、Settings 与菜单几何，并冻结 1229/1230px 响应式边界。
