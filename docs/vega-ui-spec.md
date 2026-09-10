@@ -1,6 +1,6 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.6 · 2026-09-05 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.7 · 2026-09-10 · 关联：[vega-features.md](vega-features.md)
 
 > **规范分层**：跨任务的视觉语言、语义 token 与新 UI 默认规则以
 > [Vega 设计守则](vega-design-guidelines.md)为入口；本文件继续承载组件行为和
@@ -32,9 +32,11 @@
 | 项 | 规格 |
 |---|---|
 | 侧边栏宽度 | 260px，可折叠至 0（Cmd+B）；折叠状态记忆 |
-| 会话内容列 | max-width 820px，水平居中，左右留白 ≥24px |
-| Composer | 底部固定，与会话列同宽；圆角 20px，边框 1px（不使用阴影堆叠） |
-| 窗口最小尺寸 | 960×600；小于此时侧边栏自动折叠 |
+| 主 Header | 46px；底部 1px 分隔线 |
+| 会话内容列 | max-width 820px，水平居中，左右留白 ≥16px |
+| Composer | 底部固定，max-width 736px、min-height 100px、bottom inset 16px；圆角 20px，边框 1px（不使用阴影堆叠） |
+| Environment | 宽屏 rail 292px；卡片 inset 16px、圆角 18px；1180px 以下自动改为临时 overlay |
+| 窗口最小尺寸 | 960×600；侧边栏由用户独立折叠（Cmd+B），Environment 的宽度自适应不覆盖用户选择 |
 | 触控栏/标题栏 | 原生 macOS 标题栏透明融合（traffic lights 内嵌），不自绘 |
 
 ## 2. 色彩 Token（Light / Dark 双套）
@@ -42,8 +44,8 @@
 | Token | Light | Dark | 用途 |
 |---|---|---|---|
 | `bg-base` | #FFFFFF | #202020 | 主区背景 |
-| `bg-sidebar` | #F7F7F7 | #191919 | 侧边栏背景 |
-| `bg-elevated` | #F7F7F7 | #2A2A2A | 卡片/composer |
+| `bg-sidebar` | #F3F3F3 | #191919 | 侧边栏背景 |
+| `bg-elevated` | #FFFFFF | #2A2A2A | 卡片/composer |
 | `bg-hover` | #ECECEC | #323232 | 悬停态 |
 | `bg-active` | #EAF2FC | #203247 | 选中态（当前会话/项目，低对比品牌洗色） |
 | `border-subtle` | #E8E8E8 | #383838 | 1px 分隔线/卡片边 |
@@ -71,9 +73,9 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 | 正文字体 | 系统字体（SF Pro），13px/1.55 行高 |
 | 会话消息正文 | 15px/1.65 |
 | 代码字体 | SF Mono / JetBrains Mono，12.5px，等宽对齐 |
-| 侧边栏条目 | 13px，行高 34px，超出省略号 |
+| 侧边栏条目 | 13px，行高 32px，超出省略号 |
 | 标题层级 | 仅三级：页面 16px 600 / 区块 14px 600 / 卡片 13px 500 |
-| 空态主标题 | 26px / 500 |
+| 空态主标题 | 28px / 600 |
 | 说明 / 元数据 | 12px |
 | CJK 混排 | 中英文之间自动 1/4 字距（盘古之白）；CJK 渲染无豆腐块（验收用混排样本文本） |
 
@@ -106,10 +108,10 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 
 ### 4.4 Composer
 - 多行自适应（1~8 行，超出内滚）；placeholder `描述任务，或用 @ 引用文件`
-- 主输入区在上；第一操作行保留 Ask/Plan/Execute、模型、thinking，发送位于右侧，同一行空间不足可换行
-- 第二行只放分支、权限（只读 / 确认 / 自动）与 token / 成本计数，权限当前值持续可见
-- 模式胶囊：Ask/Plan/Execute 三态 segmented control，状态全局可见（不只藏在菜单）
-- token 计数器：右侧常驻 `12.4k tok · ¥0.17`，流式期间实时跳动
+- 主输入区在上；下方只有一行真实操作：添加上下文、Ask/Plan/Execute、权限（只读 / 确认 / 自动）、模型、thinking 与 send/stop；空间不足时允许自适应收紧或换行
+- 模式与权限当前值持续可见；菜单、键盘路径、loading/error 和提交 guard 继续使用真实 controller 状态
+- branch 只在 project-backed task 的 Environment 中显示，并使用 live branch projection；普通 Composer 不重复放分支选择器
+- 普通 Composer 不显示常驻 token / 成本仪表；用量只在拥有真实计数或账单来源的专门界面中展示
 
 ### 4.5 Diff 视图
 - 统一视图（unified）默认，可切左右分栏
@@ -154,3 +156,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.4 (2026-08-31) S8-T42 契约冻结回写：§5 P7/P8 测量语义指向 [vega-s8-sdd.md](vega-s8-sdd.md) C1/C2；P8 阈值单位为 OPEN(OWNER: human)（裁决前按 decimal MB 字面权威，见 SDD §3.1/§10）。
 - v0.5 (2026-09-05) R4 客户端 UI 翻新：依据 [R4 客户端 UI 翻新 SDD](vega-ui-refresh-sdd.md) 同步 Codex / ChatGPT 工作区式层级、Light/Dark token、34px 侧栏行高、15px/1.65 会话排版、20px Composer、两行控件分组与真实空态；S3 演示、跟随诊断和无功能模板移出普通产品流，安全、controller、性能冻结条款保持不变。
 - v0.6 (2026-09-08) R18 品牌 UI 基线：采用批准的 R17 蓝色终端/单星/微笑光标作为产品 UI 与 icon 的几何和强调来源；新增品牌 token，active/selection 改为低对比蓝灰，统一 16px、1.45px 柔角 vector icon；success/danger/warning 语义色与 R15 IA 保持不变。
+- v0.7 (2026-09-10) R20 设计守则收口：以 [Vega 设计守则](vega-design-guidelines.md)、[R19 主窗口壳层](vega-r19-codex-parity.md)与 `vega_theme` 当前值校正 Light 表面色、32px Sidebar、28px 空态、壳层几何及单操作行 Composer；外部解包 token 不作为输入。
