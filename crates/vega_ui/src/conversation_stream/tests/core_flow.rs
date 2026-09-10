@@ -75,6 +75,89 @@ async fn settings_keyboard_emits_scoped_requests_without_optimistic_state(cx: &m
 }
 
 #[gpui_kit::test]
+async fn r21_composer_popovers_are_exclusive_and_model_labels_keep_menu_width(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "composer-popovers");
+    stream.update(cx, |stream, cx| {
+        stream.apply_model_options(vec!["mock".into(), "deepseek-v4-flash".into()], cx);
+    });
+    cx.run_until_parked();
+
+    let click = |selector: &'static str, cx: &mut TestAppContext| {
+        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+    };
+
+    click("composer-model", cx);
+    let model_menu = gpui_kit::VisualTestContext::from_window(window.into(), cx)
+        .debug_bounds("composer-model-menu")
+        .expect("model menu");
+    assert_eq!(
+        f32::from(model_menu.size.width),
+        Layout::MENU_MAX_WIDTH,
+        "model menu must not collapse to its trigger width"
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, _| (
+            stream.model_selector_open,
+            stream.mode_menu_open,
+            stream.permission_menu_open,
+        )),
+        (true, false, false)
+    );
+
+    click("composer-mode", cx);
+    assert!(
+        gpui_kit::VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-model-menu")
+            .is_none()
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, _| (
+            stream.model_selector_open,
+            stream.mode_menu_open,
+            stream.permission_menu_open,
+        )),
+        (false, true, false)
+    );
+
+    click("composer-model", cx);
+    assert!(
+        gpui_kit::VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-mode-menu")
+            .is_none()
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, _| (
+            stream.model_selector_open,
+            stream.mode_menu_open,
+            stream.permission_menu_open,
+        )),
+        (true, false, false)
+    );
+
+    click("composer-permission", cx);
+    assert!(
+        gpui_kit::VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-model-menu")
+            .is_none()
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, _| (
+            stream.model_selector_open,
+            stream.mode_menu_open,
+            stream.permission_menu_open,
+        )),
+        (false, false, true)
+    );
+}
+
+#[gpui_kit::test]
 async fn multiline_history_continues_and_is_thread_scoped(cx: &mut TestAppContext) {
     let (first_window, first, _) = open_controller_stream(cx, "history-a");
     let (_second_window, second, _) = open_controller_stream(cx, "history-b");

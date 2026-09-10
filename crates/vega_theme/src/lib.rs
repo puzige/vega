@@ -308,6 +308,10 @@ impl Layout {
     pub const ENVIRONMENT_BREAKPOINT: f32 = 1230.0;
     /// Maximum width of the Settings content column.
     pub const SETTINGS_CONTENT_MAX_WIDTH: f32 = 744.0;
+    /// Width of a Settings boolean switch.
+    pub const SETTINGS_SWITCH_WIDTH: f32 = 32.0;
+    /// Height of a Settings boolean switch.
+    pub const SETTINGS_SWITCH_HEIGHT: f32 = 20.0;
     /// Maximum width of a multi-section floating menu.
     pub const MENU_MAX_WIDTH: f32 = 350.0;
     /// Radius shared by large floating menus and popovers.
@@ -420,6 +424,8 @@ mod tests {
         assert_eq!(Layout::ENVIRONMENT_CARD_RADIUS, 18.0);
         assert_eq!(Layout::ENVIRONMENT_BREAKPOINT, 1230.0);
         assert_eq!(Layout::SETTINGS_CONTENT_MAX_WIDTH, 744.0);
+        assert_eq!(Layout::SETTINGS_SWITCH_WIDTH, 32.0);
+        assert_eq!(Layout::SETTINGS_SWITCH_HEIGHT, 20.0);
         assert_eq!(Layout::MENU_MAX_WIDTH, 350.0);
         assert_eq!(Layout::MENU_RADIUS, 18.0);
         assert_eq!(Layout::COMPOSER_SEND_SIZE, 28.0);

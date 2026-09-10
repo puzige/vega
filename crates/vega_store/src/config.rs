@@ -454,6 +454,12 @@ mod tests {
             load_from(&path).unwrap().ui.sidebar_width,
             SIDEBAR_WIDTH_DEFAULT
         );
+
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(clamp_sidebar_width(invalid), SIDEBAR_WIDTH_DEFAULT);
+        }
+        assert_eq!(clamp_sidebar_width(-1.0), SIDEBAR_WIDTH_MIN);
+        assert_eq!(clamp_sidebar_width(10_000.0), SIDEBAR_WIDTH_MAX);
         fs::remove_dir_all(&dir).unwrap();
     }
 

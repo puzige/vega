@@ -239,6 +239,16 @@ impl ConversationStream {
 
     fn render_compact_settings(&self, permissions: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let trigger_selector = if permissions {
+            "composer-permission"
+        } else {
+            "composer-mode"
+        };
+        let menu_selector = if permissions {
+            "composer-permission-menu"
+        } else {
+            "composer-mode-menu"
+        };
         let (label, open, index) = if permissions {
             (
                 match self.thread.permission_mode {
@@ -265,6 +275,7 @@ impl ConversationStream {
             .child(
                 div()
                     .id(("composer-settings", index))
+                    .debug_selector(move || trigger_selector.into())
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .track_focus(&self.compact_focus[index])
                     .tab_stop(true)
@@ -283,12 +294,16 @@ impl ConversationStream {
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
                             this.compact_focus[index].focus(window, cx);
-                            if permissions {
-                                this.mode_menu_open = false;
-                                this.permission_menu_open = !this.permission_menu_open;
+                            let open = if permissions {
+                                !this.permission_menu_open
                             } else {
-                                this.permission_menu_open = false;
-                                this.mode_menu_open = !this.mode_menu_open;
+                                !this.mode_menu_open
+                            };
+                            this.close_composer_popovers(cx);
+                            if permissions {
+                                this.permission_menu_open = open;
+                            } else {
+                                this.mode_menu_open = open;
                             }
                             cx.notify();
                         }),
@@ -296,12 +311,16 @@ impl ConversationStream {
                     .on_key_down(
                         cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                if permissions {
-                                    this.mode_menu_open = false;
-                                    this.permission_menu_open = !this.permission_menu_open;
+                                let open = if permissions {
+                                    !this.permission_menu_open
                                 } else {
-                                    this.permission_menu_open = false;
-                                    this.mode_menu_open = !this.mode_menu_open;
+                                    !this.mode_menu_open
+                                };
+                                this.close_composer_popovers(cx);
+                                if permissions {
+                                    this.permission_menu_open = open;
+                                } else {
+                                    this.mode_menu_open = open;
                                 }
                                 cx.stop_propagation();
                                 cx.notify();
@@ -340,6 +359,7 @@ impl ConversationStream {
             .when(open, |root| {
                 root.child(
                     div()
+                        .debug_selector(move || menu_selector.into())
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .absolute()
                         .bottom(px(32.))
@@ -622,6 +642,9 @@ impl ConversationStream {
             .relative()
             .child(
                 div()
+                    .id("composer-model")
+                    .debug_selector(|| "composer-model".into())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .track_focus(&self.model_focus)
                     .key_context("ModelSelector")
                     .on_action(cx.listener(Self::on_activate_model))
@@ -670,11 +693,13 @@ impl ConversationStream {
             .when(self.model_selector_open, |root| {
                 root.child(
                     div()
+                        .debug_selector(|| "composer-model-menu".into())
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .absolute()
                         .bottom(px(28.))
-                        .left_0()
-                        .w(px(320.))
-                        .max_w_full()
+                        .right_0()
+                        .w(px(Layout::MENU_MAX_WIDTH))
+                        .occlude()
                         .flex()
                         .flex_col()
                         .rounded(px(Layout::MENU_RADIUS))
@@ -918,9 +943,11 @@ impl Render for ConversationStream {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.mode_menu_open || this.permission_menu_open {
+                    if this.mode_menu_open || this.permission_menu_open || this.model_selector_open
+                    {
                         this.mode_menu_open = false;
                         this.permission_menu_open = false;
+                        this.model_selector_open = false;
                         cx.notify();
                     }
                 }),

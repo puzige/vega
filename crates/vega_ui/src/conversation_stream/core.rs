@@ -727,6 +727,7 @@ impl ConversationStream {
             return;
         }
         if !self.model_selector_open {
+            self.close_composer_popovers(cx);
             self.model_selector_open = true;
             self.model_selector_highlight = self
                 .model_options

@@ -1,7 +1,7 @@
 # Vega R21 current Codex screenshot parity — phase 2 freeze
 
-**Status:** implementation contract  
-**Frozen:** 2026-09-09 (Asia/Shanghai)  
+**Status:** implementation contract
+**Frozen:** 2026-09-09 (Asia/Shanghai)
 **Scope:** current main-window shell, Settings shell, Composer chrome, and the
 shared geometry of transient menus. Vega keeps its own brand, information
 architecture, controllers, and native GPUI implementation.

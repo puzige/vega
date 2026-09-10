@@ -398,6 +398,9 @@ impl SettingsView {
 
     pub(crate) fn render_defaults(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let sidebar_visible = !cx
+            .try_global::<crate::sidebar::SidebarCollapsed>()
+            .is_some_and(|sidebar| sidebar.0);
         div()
             .flex()
             .flex_col()
@@ -451,27 +454,55 @@ impl SettingsView {
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
-                    .child(field_label("侧栏", colors.text_secondary))
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(field_label("侧栏", colors.text_primary))
+                            .child(
+                                div()
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(colors.text_secondary)
+                                    .child("在主窗口中显示侧栏"),
+                            ),
+                    )
                     .child(
                         div()
                             .id("settings-sidebar-visibility")
+                            .debug_selector(|| "settings-sidebar-switch".into())
+                            .aria_label(if sidebar_visible {
+                                "隐藏侧栏"
+                            } else {
+                                "显示侧栏"
+                            })
                             .focusable()
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(colors.bg_elevated)
+                            .tab_stop(true)
+                            .w(px(Layout::SETTINGS_SWITCH_WIDTH))
+                            .h(px(Layout::SETTINGS_SWITCH_HEIGHT))
+                            .p(px(2.))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(if sidebar_visible {
+                                colors.brand_primary
+                            } else {
+                                colors.border_subtle
+                            })
+                            .bg(if sidebar_visible {
+                                colors.brand_primary
+                            } else {
+                                colors.bg_hover
+                            })
+                            .flex()
+                            .items_center()
+                            .when(sidebar_visible, |switch| switch.justify_end())
+                            .when(!sidebar_visible, |switch| switch.justify_start())
                             .cursor_pointer()
-                            .child(
-                                if cx
-                                    .try_global::<crate::sidebar::SidebarCollapsed>()
-                                    .is_some_and(|sidebar| sidebar.0)
-                                {
-                                    "显示侧栏"
-                                } else {
-                                    "隐藏侧栏"
-                                },
-                            )
+                            .focus_visible(move |switch| {
+                                switch.border_2().border_color(colors.brand_primary_strong)
+                            })
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|_, _, window, cx| {
@@ -491,7 +522,8 @@ impl SettingsView {
                                         cx.stop_propagation();
                                     }
                                 },
-                            )),
+                            ))
+                            .child(div().size(px(16.)).rounded_full().bg(colors.bg_elevated)),
                     ),
             )
             .child(section_title("默认项", colors.text_primary))

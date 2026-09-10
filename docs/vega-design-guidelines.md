@@ -138,6 +138,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 | Environment rail | 320px | 304px card + 16px right inset；≥1230px 时可持久显示 |
 | Environment card | 304px / inset 16px / radius 18px | 轻边框，必要时使用克制小阴影 |
 | Settings 内容列 | max 744px | 与剩余主区域水平居中 |
+| Settings boolean switch | 32×20px | 只绑定真实布尔设置，不为对标截图造状态 |
 | 大型浮层 | max 350px / radius 18px | 小型菜单按内容收窄，不强制拉伸 |
 | Workspace header | 40px | 右侧或底部工作区共享 |
 | 底部 Workspace | default 272px | 保留现有最小值和拖拽行为 |
@@ -232,10 +233,10 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 | 正文、消息、代码、标题、Sidebar 字体层级 | 已进入 `Typography` |
 | R19 壳层、Composer、Environment、Workspace 几何 | 已进入 `Layout` 并有冻结测试；R21 数值以其实现提交为准 |
 | 共享 16×16 GPUI Kit/Lucide 图标规则 | R18 已落地 |
-| 真实主壳层与 Environment 响应式 | R19 的 1180px 基线已验收；R21 的 1230px 基线待实现 |
+| 真实主壳层与 Environment 响应式 | R21 的 1230px 基线已实现并通过自动化；待真实 macOS 视觉验收 |
 | 完整 focus/pressed/disabled 状态视觉审计 | 待专项验收 |
 | Reduce Motion 全应用审计 | 待专项验收 |
-| Settings 视觉统一 | R21 已冻结，待实现与真实 macOS 验收 |
+| Settings 视觉统一 | R21 五页壳层与真实 Sidebar switch 已实现并通过自动化；待真实 macOS 视觉验收 |
 
 ## 14. 变更方式
 

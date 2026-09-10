@@ -44,6 +44,18 @@ impl ComposerActions {
 }
 
 impl ConversationStream {
+    /// Closes every transient Composer surface before another one opens.
+    /// Their controller state stays untouched; this only prevents overlapping
+    /// action, file, mode, permission, and model menus.
+    pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
+        self.actions.menu = false;
+        self.actions.slash = None;
+        self.mode_menu_open = false;
+        self.permission_menu_open = false;
+        self.model_selector_open = false;
+        self.close_file_selector_and_cancel(cx);
+    }
+
     /// Projects worker ownership, including preparation before a durable message exists.
     pub fn begin_composer_run(&mut self, cx: &mut Context<Self>) {
         self.actions.running = true;
@@ -143,13 +155,10 @@ impl ConversationStream {
         if self.input.read(cx).is_composing() {
             return;
         }
-        self.actions.menu = !self.actions.menu;
-        self.actions.slash = None;
+        let open = !self.actions.menu;
+        self.close_composer_popovers(cx);
+        self.actions.menu = open;
         self.actions.highlight = 0;
-        self.mode_menu_open = false;
-        self.permission_menu_open = false;
-        self.model_selector_open = false;
-        self.close_file_selector_and_cancel(cx);
         self.focus_composer(window, cx);
         cx.notify();
     }

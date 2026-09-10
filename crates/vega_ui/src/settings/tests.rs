@@ -94,6 +94,19 @@ async fn r21_settings_shell_opens_general_and_tracks_sidebar_width(cx: &mut Test
             "Settings content cap",
         );
         assert!(visual.debug_bounds("settings-page-general").is_some());
+        let sidebar_switch = visual
+            .debug_bounds("settings-sidebar-switch")
+            .expect("Settings Sidebar switch");
+        assert_pixel_close(
+            sidebar_switch.size.width,
+            Layout::SETTINGS_SWITCH_WIDTH,
+            "Settings switch width",
+        );
+        assert_pixel_close(
+            sidebar_switch.size.height,
+            Layout::SETTINGS_SWITCH_HEIGHT,
+            "Settings switch height",
+        );
         let rows = [
             "settings-nav-general",
             "settings-nav-providers",
