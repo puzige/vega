@@ -153,6 +153,11 @@ fn snapshot(f: &Fixture) -> SidebarOrganizationSnapshot {
     service::snapshot(&Store::open(f.dir.path().join("organization.db")).unwrap()).unwrap()
 }
 
+fn sessions(f: &Fixture, cx: &gpui_kit::TestAppContext) -> Entity<ThreadsBlock> {
+    f.sidebar
+        .read_with(cx, |sidebar, _| sidebar.sessions_block.clone())
+}
+
 #[gpui_kit::test]
 async fn r15_route_guard_preserves_draft_and_switches_project_tasks(
     cx: &mut gpui_kit::TestAppContext,
@@ -312,7 +317,7 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
     assert!(visual.debug_bounds("organization-filter").is_none());
     assert!(visual.debug_bounds("organization-collapse-all").is_none());
     assert!(visual.debug_bounds("organization-new-session").is_some());
-    assert!(visual.debug_bounds("organization-sessions-empty").is_some());
+    assert!(visual.debug_bounds("organization-recents-empty").is_some());
     assert!(visual.debug_bounds("organization-add-project").is_some());
     assert!(visual.debug_bounds("project-header-p").is_some());
     assert!(visual.debug_bounds("project-add-p").is_some());
@@ -352,7 +357,7 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
     let standalone_selector: &'static str =
         Box::leak(format!("standalone-thread-row-{standalone_id}").into_boxed_str());
     assert!(visual.debug_bounds(standalone_selector).is_some());
-    assert!(visual.debug_bounds("organization-sessions-empty").is_none());
+    assert!(visual.debug_bounds("organization-recents-empty").is_none());
 
     click(&f, cx, "project-add-p");
     let project_tasks: i64 = store
@@ -402,6 +407,204 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
     click(&f, cx, "project-header-p");
     let _ = bounds(&f, cx, "project-folder-p-open");
     let _ = bounds(&f, cx, format!("project-thread-row-title-{}", f.first.id));
+}
+
+#[gpui_kit::test]
+async fn r26_sidebar_projects_each_task_once_and_reveals_contextual_actions(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let pinned_standalone =
+        conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    let recent = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    conversation::set_thread_pinned(&store, &pinned_standalone.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let pinned = bounds(&f, cx, "organization-section-pinned");
+    let projects = bounds(&f, cx, "organization-section-projects");
+    let recents = bounds(&f, cx, "organization-section-recents");
+    assert!(pinned.top() < projects.top() && projects.top() < recents.top());
+
+    assert!(!absent(
+        &f,
+        cx,
+        format!("pinned-thread-row-{}", pinned_standalone.id)
+    ));
+    assert!(absent(
+        &f,
+        cx,
+        format!("standalone-thread-row-{}", pinned_standalone.id)
+    ));
+    assert!(!absent(&f, cx, format!("pinned-thread-row-{}", f.first.id)));
+    assert!(!absent(
+        &f,
+        cx,
+        format!("pinned-thread-row-project-{}", f.first.id)
+    ));
+    assert!(absent(&f, cx, format!("project-thread-row-{}", f.first.id)));
+    assert!(!absent(
+        &f,
+        cx,
+        format!("standalone-thread-row-{}", recent.id)
+    ));
+    assert!(absent(&f, cx, format!("pinned-thread-row-{}", recent.id)));
+
+    // Selected project rows remain quiet, while all controls stay mounted.
+    assert!(!absent(&f, cx, "project-add-p"));
+    assert!(!absent(&f, cx, "project-more-p"));
+    assert!(!absent(&f, cx, "project-actions-p-rest"));
+    assert!(!absent(&f, cx, "organization-projects-actions-rest"));
+    assert!(!absent(&f, cx, "organization-recents-actions-rest"));
+    assert!(!absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-rest", recent.id)
+    ));
+    assert!(!absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
+    let projects_actions_rest = bounds(&f, cx, "organization-projects-actions-rest");
+    let project_actions_rest = bounds(&f, cx, "project-actions-p-rest");
+    let task_actions_rest = bounds(&f, cx, format!("thread-actions-state-{}-rest", recent.id));
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    let projects_header = visual.debug_bounds("organization-header-projects").unwrap();
+    visual.simulate_mouse_move(
+        projects_header.center(),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    assert!(!absent(&f, cx, "organization-projects-actions-visible"));
+    assert_eq!(
+        bounds(&f, cx, "organization-projects-actions-visible").size,
+        projects_actions_rest.size
+    );
+
+    let project_row = bounds(&f, cx, "project-header-p");
+    visual.simulate_mouse_move(project_row.center(), None, gpui_kit::Modifiers::default());
+    assert!(!absent(&f, cx, "project-actions-p-visible"));
+    assert_eq!(
+        bounds(&f, cx, "project-actions-p-visible").size,
+        project_actions_rest.size
+    );
+
+    let task_row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
+    visual.simulate_mouse_move(task_row.center(), None, gpui_kit::Modifiers::default());
+    assert!(!absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-visible", recent.id)
+    ));
+    assert_eq!(
+        bounds(
+            &f,
+            cx,
+            format!("thread-actions-state-{}-visible", recent.id)
+        )
+        .size,
+        task_actions_rest.size
+    );
+    assert!(absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
+
+    visual.simulate_click(project_row.center(), gpui_kit::Modifiers::default());
+    visual.simulate_mouse_move(
+        gpui_kit::point(gpui_kit::px(900.), gpui_kit::px(700.)),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    assert!(!absent(&f, cx, "project-actions-p-rest"));
+    f.window
+        .update(cx, |_, window, cx| window.focus_next(cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!absent(&f, cx, "project-actions-p-visible"));
+
+    let recents_focus =
+        sessions(&f, cx).read_with(cx, |block, _| block.recents_header_focus.clone());
+    f.window
+        .update(cx, |_, window, cx| recents_focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!absent(&f, cx, "organization-recents-actions-visible"));
+
+    let task_focus = sessions(&f, cx).read_with(cx, |block, _| {
+        block.thread_action_focuses.get(&recent.id).unwrap().clone()
+    });
+    visual.simulate_mouse_move(
+        gpui_kit::point(gpui_kit::px(900.), gpui_kit::px(700.)),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    assert!(!absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-rest", recent.id)
+    ));
+    assert!(!absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
+    f.window
+        .update(cx, |_, window, cx| task_focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-visible", recent.id)
+    ));
+    assert!(absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
+
+    click(&f, cx, "project-more-p");
+    assert!(!absent(&f, cx, "organization-menu"));
+    assert!(!absent(&f, cx, "project-actions-p-visible"));
+}
+
+#[gpui_kit::test]
+async fn r26_empty_pinned_section_is_absent(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    assert!(absent(&f, cx, "organization-section-pinned"));
+    assert!(!absent(&f, cx, "organization-section-projects"));
+    assert!(!absent(&f, cx, "organization-section-recents"));
+}
+
+#[gpui_kit::test]
+async fn r26_pin_mutation_persists_and_reprojects_between_pinned_and_project(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    click(&f, cx, format!("pinned-thread-actions-{}", f.first.id));
+    click(&f, cx, format!("pinned-thread-action-{}-0", f.first.id));
+    assert!(
+        !snapshot(&f)
+            .threads
+            .iter()
+            .find(|thread| thread.id == f.first.id)
+            .unwrap()
+            .pinned
+    );
+    assert!(absent(&f, cx, format!("pinned-thread-row-{}", f.first.id)));
+    assert!(!absent(
+        &f,
+        cx,
+        format!("project-thread-row-{}", f.first.id)
+    ));
+
+    click(&f, cx, format!("project-thread-actions-{}", f.first.id));
+    click(&f, cx, format!("project-thread-action-{}-0", f.first.id));
+    assert!(
+        snapshot(&f)
+            .threads
+            .iter()
+            .find(|thread| thread.id == f.first.id)
+            .unwrap()
+            .pinned
+    );
+    assert!(!absent(&f, cx, format!("pinned-thread-row-{}", f.first.id)));
+    assert!(absent(&f, cx, format!("project-thread-row-{}", f.first.id)));
 }
 
 #[gpui_kit::test]

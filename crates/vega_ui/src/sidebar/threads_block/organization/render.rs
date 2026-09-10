@@ -208,8 +208,9 @@ impl ThreadsBlock {
             .gap_2()
             .flex_1()
             .min_h_0();
-        body = body.child(self.render_sessions_pi(&snapshot, show_archived, cx));
+        body = body.children(self.render_pinned_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
+        body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
         body = body.children(menu_open.then(|| self.render_organization_menu(cx)));
         body = body.children(
             org.projects
@@ -280,7 +281,85 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    fn render_sessions_pi(
+    fn eligible_threads(&self, show_archived: bool) -> Vec<Thread> {
+        let mut threads = self.threads.clone();
+        if show_archived {
+            threads.extend(self.archived.iter().cloned());
+        }
+        threads
+    }
+
+    fn render_pinned_pi(
+        &self,
+        snapshot: &SidebarOrganizationSnapshot,
+        show_archived: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let colors = theme(cx).colors;
+        let mut pinned: Vec<_> = self
+            .eligible_threads(show_archived)
+            .into_iter()
+            .filter(|thread| thread.pinned)
+            .collect();
+        pinned = super::projections::sorted_threads(&pinned, snapshot.preferences.sort);
+        if pinned.is_empty() {
+            return None;
+        }
+        let opened_id = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .map(|thread| thread.id.clone());
+        Some(
+            div()
+                .id("organization-pinned")
+                .debug_selector(|| "organization-section-pinned".into())
+                .flex()
+                .flex_col()
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .debug_selector(|| "organization-header-pinned".into())
+                        .h(px(28.))
+                        .flex()
+                        .items_center()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_tertiary)
+                        .child("PINNED"),
+                )
+                .child(
+                    div()
+                        .id("organization-pinned-scroll")
+                        .max_h(px(Typography::SIDEBAR_LINE_HEIGHT * 5.0))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .children(pinned.iter().map(|thread| {
+                            let archived = thread.status == ThreadStatus::Archived;
+                            let project = (!thread.is_standalone())
+                                .then(|| {
+                                    snapshot
+                                        .projects
+                                        .iter()
+                                        .find(|project| project.id == thread.project_id)
+                                        .map(|project| project.name.clone())
+                                })
+                                .flatten();
+                            self.render_pi_row_with_metadata(
+                                thread,
+                                &opened_id,
+                                archived,
+                                "pinned-thread-row-",
+                                project,
+                                cx,
+                            )
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_recents_pi(
         &self,
         snapshot: &SidebarOrganizationSnapshot,
         show_archived: bool,
@@ -290,19 +369,27 @@ impl ThreadsBlock {
         let mut standalone: Vec<_> = self
             .threads
             .iter()
-            .filter(|thread| thread.is_standalone())
+            .filter(|thread| thread.is_standalone() && !thread.pinned)
             .cloned()
             .collect();
         if show_archived {
             standalone.extend(
                 self.archived
                     .iter()
-                    .filter(|thread| thread.is_standalone())
+                    .filter(|thread| thread.is_standalone() && !thread.pinned)
                     .cloned(),
             );
         }
         standalone = super::projections::sorted_threads(&standalone, snapshot.preferences.sort);
+        let header_actions_visible = self.hovered_section == Some(OrganizationSection::Recents)
+            || self.focused_section == Some(OrganizationSection::Recents)
+            || self.organization.as_ref().is_some_and(|organization| {
+                matches!(organization.menu, Some(OrganizationMenu::Filter))
+            });
         let header = div()
+            .id("organization-recents-header")
+            .debug_selector(|| "organization-header-recents".into())
+            .track_focus(&self.recents_header_focus)
             .flex()
             .items_center()
             .justify_between()
@@ -311,10 +398,20 @@ impl ThreadsBlock {
                 div()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
-                    .child("SESSIONS"),
+                    .child("RECENTS"),
             )
             .child(
                 div()
+                    .debug_selector(move || {
+                        format!(
+                            "organization-recents-actions-{}",
+                            if header_actions_visible {
+                                "visible"
+                            } else {
+                                "rest"
+                            }
+                        )
+                    })
                     .flex()
                     .items_center()
                     .gap_1()
@@ -323,7 +420,7 @@ impl ThreadsBlock {
                         "任务排序与归档",
                         crate::icons::Icon::ArrowUpDown,
                         Control::Menu(OrganizationMenu::Filter),
-                        false,
+                        !header_actions_visible,
                         cx,
                     ))
                     .child(self.vector_control(
@@ -331,10 +428,13 @@ impl ThreadsBlock {
                         "新建独立任务",
                         crate::icons::Icon::Plus,
                         Control::NewStandalone,
-                        false,
+                        !header_actions_visible,
                         cx,
                     )),
-            );
+            )
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                this.set_hovered_section(OrganizationSection::Recents, *hovered, cx);
+            }));
         let opened_id = cx
             .global::<OpenedThread>()
             .0
@@ -354,25 +454,26 @@ impl ThreadsBlock {
         });
         let empty = empty.then(|| {
             div()
-                .id("organization-sessions-empty")
-                .debug_selector(|| "organization-sessions-empty".into())
+                .id("organization-recents-empty")
+                .debug_selector(|| "organization-recents-empty".into())
                 .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                 .px_3()
                 .flex()
                 .items_center()
                 .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.text_tertiary)
-                .child("暂无独立任务")
+                .child("暂无最近任务")
         });
         div()
-            .id("organization-sessions")
+            .id("organization-recents")
+            .debug_selector(|| "organization-section-recents".into())
             .flex()
             .flex_col()
             .flex_shrink_0()
             .child(header)
             .child(
                 div()
-                    .id("organization-sessions-scroll")
+                    .id("organization-recents-scroll")
                     .max_h(px(Typography::SIDEBAR_LINE_HEIGHT * 5.0))
                     .overflow_y_scroll()
                     .flex()
@@ -390,7 +491,12 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
+        let header_actions_visible = self.hovered_section == Some(OrganizationSection::Projects)
+            || self.focused_section == Some(OrganizationSection::Projects);
         let header = div()
+            .id("organization-projects-header")
+            .debug_selector(|| "organization-header-projects".into())
+            .track_focus(&self.projects_header_focus)
             .flex()
             .items_center()
             .justify_between()
@@ -401,14 +507,30 @@ impl ThreadsBlock {
                     .text_color(colors.text_tertiary)
                     .child("PROJECTS"),
             )
-            .child(self.vector_control(
-                "organization-add-project",
-                "添加项目文件夹",
-                crate::icons::Icon::FolderPlus,
-                Control::AddProject,
-                false,
-                cx,
-            ));
+            .child(
+                div()
+                    .debug_selector(move || {
+                        format!(
+                            "organization-projects-actions-{}",
+                            if header_actions_visible {
+                                "visible"
+                            } else {
+                                "rest"
+                            }
+                        )
+                    })
+                    .child(self.vector_control(
+                        "organization-add-project",
+                        "添加项目文件夹",
+                        crate::icons::Icon::FolderPlus,
+                        Control::AddProject,
+                        !header_actions_visible,
+                        cx,
+                    )),
+            )
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                this.set_hovered_section(OrganizationSection::Projects, *hovered, cx);
+            }));
         let mut ordered: Vec<_> = snapshot
             .project_order
             .iter()
@@ -432,6 +554,7 @@ impl ThreadsBlock {
         }
         div()
             .id("organization-projects")
+            .debug_selector(|| "organization-section-projects".into())
             .flex()
             .flex_col()
             .flex_1()
@@ -457,8 +580,14 @@ impl ThreadsBlock {
         let project_for_add = project.id.clone();
         let project_for_menu = project.id.clone();
         let selected = cx.global::<SelectedProject>().0.as_deref() == Some(project.id.as_str());
-        let actions_visible =
-            selected || self.hovered_project.as_deref() == Some(project.id.as_str());
+        let actions_visible = self.hovered_project.as_deref() == Some(project.id.as_str())
+            || self.focused_project.as_deref() == Some(project.id.as_str())
+            || self.organization.as_ref().is_some_and(|organization| {
+                matches!(
+                    organization.menu.as_ref(),
+                    Some(OrganizationMenu::Project(id)) if id == &project.id
+                )
+            });
         let project_for_hover = project.id.clone();
         let row = div()
             .id(ElementId::Name(
@@ -573,22 +702,36 @@ impl ThreadsBlock {
                     .text_color(colors.text_primary)
                     .child(project.name.clone()),
             )
-            .child(self.vector_control(
-                format!("project-add-{}", project.id),
-                format!("在 {} 中新建任务", project.name),
-                crate::icons::Icon::Plus,
-                Control::NewProjectTask(project_for_add),
-                !actions_visible,
-                cx,
-            ))
-            .child(self.vector_control(
-                format!("project-more-{}", project.id),
-                format!("{} 项目操作", project.name),
-                crate::icons::Icon::More,
-                Control::Menu(OrganizationMenu::Project(project_for_menu)),
-                !actions_visible,
-                cx,
-            ));
+            .child(
+                div()
+                    .when_some(self.project_focuses.get(&project.id), |actions, focus| {
+                        actions.track_focus(focus)
+                    })
+                    .debug_selector({
+                        let id = project.id.clone();
+                        let state = if actions_visible { "visible" } else { "rest" };
+                        move || format!("project-actions-{id}-{state}")
+                    })
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(self.vector_control(
+                        format!("project-add-{}", project.id),
+                        format!("在 {} 中新建任务", project.name),
+                        crate::icons::Icon::Plus,
+                        Control::NewProjectTask(project_for_add),
+                        !actions_visible,
+                        cx,
+                    ))
+                    .child(self.vector_control(
+                        format!("project-more-{}", project.id),
+                        format!("{} 项目操作", project.name),
+                        crate::icons::Icon::More,
+                        Control::Menu(OrganizationMenu::Project(project_for_menu)),
+                        !actions_visible,
+                        cx,
+                    )),
+            );
         let mut section = div()
             .id(ElementId::Name(
                 format!("project-section-{}", project_id).into(),
@@ -601,6 +744,7 @@ impl ThreadsBlock {
                 .threads
                 .iter()
                 .filter(|thread| thread.project_id == project.id)
+                .filter(|thread| !thread.pinned)
                 .cloned()
                 .collect();
             if show_archived {
@@ -608,16 +752,21 @@ impl ThreadsBlock {
                     self.archived
                         .iter()
                         .filter(|thread| thread.project_id == project.id)
+                        .filter(|thread| !thread.pinned)
                         .cloned(),
                 );
             }
             tasks = super::projections::sorted_threads(&tasks, snapshot.preferences.sort);
+            let has_pinned = self
+                .eligible_threads(show_archived)
+                .iter()
+                .any(|thread| thread.project_id == project.id && thread.pinned);
             let opened_id = cx
                 .global::<OpenedThread>()
                 .0
                 .as_ref()
                 .map(|thread| thread.id.clone());
-            if tasks.is_empty() {
+            if tasks.is_empty() && !has_pinned {
                 section = section.child(self.section_label("暂无任务", cx));
             } else {
                 section = section.children(tasks.iter().map(|thread| {

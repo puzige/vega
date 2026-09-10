@@ -41,7 +41,10 @@
 //! The viewport auto-collapse rule (ui-spec §1) is applied by the window
 //! root at render time.
 
-use std::path::Path;
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use gpui_kit::component::{
     Sizable,

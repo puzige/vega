@@ -1,7 +1,7 @@
 use super::*;
 use vega_conversation::types::ThreadUpdate;
 mod organization;
-use organization::Organization;
+use organization::{Organization, OrganizationSection};
 
 /// Events emitted by the session block.
 pub enum ThreadsBlockEvent {
@@ -11,9 +11,9 @@ pub enum ThreadsBlockEvent {
 
 impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
 
-/// Shared task rows/actions. R13 enables all-project organization projections
-/// with a background metadata cache; standalone legacy consumers retain the
-/// selected-project block below.
+/// Shared task rows/actions. The production organization projection renders
+/// pinned tasks, project folders, and recent standalone tasks exactly once;
+/// standalone legacy consumers retain the selected-project block below.
 ///
 /// The 「会话」 block: the selected project's threads, pinned group first,
 /// then `updated_at` desc (store ordering, ui-spec §4.1 置顶组优先). Rows =
@@ -43,6 +43,17 @@ pub struct ThreadsBlock {
     pub(crate) hovered: Option<String>,
     /// Project id currently under the mouse; reveals fixed project-row actions.
     pub(crate) hovered_project: Option<String>,
+    /// Section header currently under the pointer; its fixed action rail is
+    /// revealed without adding or removing controls.
+    pub(crate) hovered_section: Option<OrganizationSection>,
+    /// Focus scopes keep quiet controls visible for keyboard users.
+    pub(crate) projects_header_focus: FocusHandle,
+    pub(crate) recents_header_focus: FocusHandle,
+    pub(crate) project_focuses: HashMap<String, FocusHandle>,
+    pub(crate) thread_action_focuses: HashMap<String, FocusHandle>,
+    pub(crate) focused_project: Option<String>,
+    pub(crate) focused_thread_action: Option<String>,
+    pub(crate) focused_section: Option<OrganizationSection>,
     /// Thread id whose compact low-frequency action menu is open.
     pub(crate) actions_open: Option<String>,
     /// Highlighted action inside the open menu (arrow keys move it).
@@ -81,6 +92,14 @@ impl ThreadsBlock {
             loaded_project: None,
             hovered: None,
             hovered_project: None,
+            hovered_section: None,
+            projects_header_focus: cx.focus_handle(),
+            recents_header_focus: cx.focus_handle(),
+            project_focuses: HashMap::new(),
+            thread_action_focuses: HashMap::new(),
+            focused_project: None,
+            focused_thread_action: None,
+            focused_section: None,
             actions_open: None,
             actions_highlight: 0,
             actions_scope_focus: cx.focus_handle(),
@@ -406,6 +425,74 @@ impl ThreadsBlock {
         if changed {
             cx.notify();
         }
+    }
+
+    pub(super) fn set_hovered_section(
+        &mut self,
+        section: OrganizationSection,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = if hovered {
+            self.hovered_section.replace(section) != Some(section)
+        } else if self.hovered_section == Some(section) {
+            self.hovered_section = None;
+            true
+        } else {
+            false
+        };
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn sync_contextual_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let thread_ids: HashSet<_> = self
+            .threads
+            .iter()
+            .chain(self.archived.iter())
+            .map(|thread| thread.id.clone())
+            .collect();
+        self.thread_action_focuses
+            .retain(|id, _| thread_ids.contains(id));
+        for thread in self.threads.iter().chain(self.archived.iter()) {
+            self.thread_action_focuses
+                .entry(thread.id.clone())
+                .or_insert_with(|| cx.focus_handle());
+        }
+        if let Some(snapshot) = self
+            .organization
+            .as_ref()
+            .and_then(|organization| organization.snapshot.as_ref())
+        {
+            let project_ids: HashSet<_> = snapshot
+                .projects
+                .iter()
+                .map(|project| project.id.clone())
+                .collect();
+            self.project_focuses
+                .retain(|id, _| project_ids.contains(id));
+            for project in &snapshot.projects {
+                self.project_focuses
+                    .entry(project.id.clone())
+                    .or_insert_with(|| cx.focus_handle());
+            }
+        }
+        self.focused_project = self
+            .project_focuses
+            .iter()
+            .find_map(|(id, focus)| focus.contains_focused(window, cx).then(|| id.clone()));
+        self.focused_thread_action = self
+            .thread_action_focuses
+            .iter()
+            .find_map(|(id, focus)| focus.contains_focused(window, cx).then(|| id.clone()));
+        self.focused_section = if self.projects_header_focus.contains_focused(window, cx) {
+            Some(OrganizationSection::Projects)
+        } else if self.recents_header_focus.contains_focused(window, cx) {
+            Some(OrganizationSection::Recents)
+        } else {
+            None
+        };
     }
 
     /// Opens or closes the compact action menu for one thread. The trigger
@@ -884,6 +971,7 @@ impl ThreadsBlock {
             archived,
             selector_prefix,
             actions_enabled,
+            None,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -904,6 +992,28 @@ impl ThreadsBlock {
             archived,
             selector_prefix,
             actions_enabled,
+            None,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            cx,
+        )
+    }
+
+    pub(super) fn render_pi_row_with_metadata(
+        &self,
+        thread: &Thread,
+        opened_id: &Option<String>,
+        archived: bool,
+        selector_prefix: &str,
+        project: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_row_at_height(
+            thread,
+            opened_id,
+            archived,
+            selector_prefix,
+            true,
+            project,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -917,6 +1027,7 @@ impl ThreadsBlock {
         archived: bool,
         selector_prefix: &str,
         actions_enabled: bool,
+        project: Option<String>,
         row_height: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -929,7 +1040,8 @@ impl ThreadsBlock {
             .filter(|session| session.thread_id == thread.id);
         let editing_this_row = editing_session.is_some();
         let actions_visible = row_shows_actions(hovered, editing_this_row)
-            || self.actions_open.as_deref() == Some(thread.id.as_str());
+            || self.actions_open.as_deref() == Some(thread.id.as_str())
+            || self.focused_thread_action.as_deref() == Some(thread.id.as_str());
         let thread_id = thread.id.clone();
         let row_thread = thread.clone();
         let mut row = div()
@@ -1015,7 +1127,20 @@ impl ThreadsBlock {
                                     title.font_weight(Typography::HEADING_CARD_WEIGHT)
                                 })
                                 .child(thread_title(thread)),
-                        ),
+                        )
+                        .children(project.map(|project| {
+                            div()
+                                .debug_selector({
+                                    let id = thread.id.clone();
+                                    let selector_prefix = selector_prefix.to_owned();
+                                    move || format!("{selector_prefix}project-{id}")
+                                })
+                                .max_w(px(85.))
+                                .truncate()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_tertiary)
+                                .child(project)
+                        })),
                 )
                 // 未读圆点（数据恒 0 至 S3；显示逻辑本卡落地）。
                 .children(
@@ -1074,6 +1199,12 @@ impl ThreadsBlock {
             .aria_label("会话操作")
             .focusable()
             .tab_stop(true)
+            .when_some(
+                self.organization
+                    .as_ref()
+                    .and_then(|_| self.thread_action_focuses.get(&thread.id)),
+                |trigger, focus| trigger.track_focus(focus),
+            )
             .focus_visible(|style| {
                 style
                     .opacity(1.)
@@ -1168,6 +1299,11 @@ impl ThreadsBlock {
         }
 
         let mut group = div()
+            .debug_selector({
+                let id = thread.id.clone();
+                let state = if actions_visible { "visible" } else { "rest" };
+                move || format!("thread-actions-state-{id}-{state}")
+            })
             .relative()
             .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
             .flex()
@@ -1181,6 +1317,10 @@ impl ThreadsBlock {
         if !actions_visible {
             group = group.child(
                 div()
+                    .debug_selector({
+                        let id = thread.id.clone();
+                        move || format!("thread-timestamp-{id}")
+                    })
                     .flex_1()
                     .min_w_0()
                     .text_right()
@@ -1346,6 +1486,7 @@ impl ThreadsBlock {
 
 impl Render for ThreadsBlock {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_contextual_focus(window, cx);
         self.menu_height =
             (window.viewport_size().height - px(16.)).max(px(Typography::SIDEBAR_LINE_HEIGHT));
         if self.actions_focus_subscription.is_none() {

@@ -16,7 +16,7 @@ mod render;
 mod tests;
 
 pub(super) struct Organization {
-    snapshot: Option<SidebarOrganizationSnapshot>,
+    pub(super) snapshot: Option<SidebarOrganizationSnapshot>,
     projects: Entity<ProjectsBlock>,
     pending: bool,
     refresh_queued: bool,
@@ -39,6 +39,11 @@ enum OrganizationMenu {
     Filter,
     Group(String),
     Project(String),
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OrganizationSection {
+    Projects,
+    Recents,
 }
 #[derive(Clone)]
 enum MenuCommand {
