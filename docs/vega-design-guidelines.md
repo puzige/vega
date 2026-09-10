@@ -1,6 +1,6 @@
 # Vega 设计守则
 
-**版本** v1.3 · 2026-09-10
+**版本** v1.6 · 2026-09-10
 
 **状态** 当前视觉语言与设计 token 的规范入口
 
@@ -129,7 +129,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 | 区域 | Token / 目标值 | 说明 |
 |---|---:|---|
 | 原生标题栏前导留白 | 96px | 为 macOS traffic lights 保留 |
-| Sidebar | default 304px / 240–365px | 内边距 12px；行高 32px；拖拽宽度持久化 |
+| Sidebar | default 304px / 240–365px | 内边距 12px；行高 32px；导航行圆角 8px；拖拽宽度持久化 |
 | 主内容外间隙 | 0px | R21 平直分栏；Sidebar 与主面板用 1px 分隔 |
 | 主 Header | 46px | 底部 1px 分隔线 |
 | 可读内容列 | max 820px | 居中；最小水平内边距 16px |
@@ -159,8 +159,8 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - 所有共享功能图标使用固定 16×16 容器，通过 `vega_ui::icons` 映射 GPUI Kit / Lucide 风格 SVG。
 - 图标采用统一 outline 语言：24×24 viewBox 的 2px 源描边、round cap、round join，在 16px UI 尺寸下保持一致光学重量。
 - 禁止用 Unicode 字符、emoji、文本加号或手写 `PathBuilder` 代替交互图标。批准的 App Logo 是唯一默认允许的自定义品牌几何。
-- Folder、Plus、Chevron、More、Settings 等保持熟悉的功能轮廓。不要给每个图标加笑脸、星星或品牌装饰。
-- 图标颜色由调用方传入语义 token；普通态为次级文字色，hover 提升对比，选中态使用品牌色，危险操作使用 `danger`。
+- Folder、Plus、Chevron、More、Settings 等保持熟悉的功能轮廓。项目展开状态由打开/闭合 Folder 自身表达，不再叠加一个独立 Chevron。不要给每个图标加笑脸、星星或品牌装饰。
+- 图标颜色由调用方传入语义 token；普通导航图标和选中导航图标均保持中性，hover 提升对比，危险操作使用 `danger`。品牌色只用于主操作、焦点和明确的品牌/Agent 语义。
 
 ## 8. 组件状态
 
@@ -168,7 +168,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 |---|---|
 | Rest | 保持中性表面与明确标签，不依赖 hover 才能理解主要功能 |
 | Hover | 使用 `bg_hover` 或提高图标对比；hitbox、文字位置和行高不发生跳动 |
-| Selected | 使用 `brand_soft` / `bg_active`，关键文字或图标使用 `brand_primary`；不增加重色左边条 |
+| Selected | 普通导航使用中性 `bg_active` + `text_primary`，不染品牌色且不增加重色左边条；只有明确的主操作或品牌/Agent 状态才使用 `brand_soft` / `brand_primary` |
 | Pressed | 在同一语义色族内短暂提高对比；操作仍只触发一次 |
 | Focus visible | 键盘焦点必须清晰可见，推荐 2px `accent` 焦点环；不得只靠 hover 表达焦点 |
 | Disabled | 降低强调并阻止操作；保持足够可读性，必要时说明禁用原因 |
@@ -203,7 +203,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Workspace header 只承载标签与 pane 级操作；内容级工具栏单独成行，并把相关操作收进同一尾部按钮组，禁止用三个同级 `space-between` 元素把中间操作推到面板中央。
 - Terminal 内容在状态栏下使用一致内边距；PTY 行列数以扣除 chrome 和内边距后的真实 canvas bounds 为准。
 - Sidebar 宽度、用户手动折叠和窗口触发的自动隐藏是三个独立状态，resize 不得覆盖另外两者。
-- Sidebar 的常驻 footer action 使用完整 32px 导航行高，左右铺满 rail 并贴住底边；普通内容仍保持 12px 内边距。footer 是无独立圆角的底部条带，不得缩成内容列内的胶囊或使用固定宽度。
+- Sidebar 的常驻 Settings action 使用完整 32px 导航行高，位于 12px 左右与底部 inset 内，并使用与其他导航行一致的 8px 圆角。它是侧栏内容栅格中的普通导航行，不是贴住窗口边缘的 footer 条带。
 - Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
 
 ## 11. 动效与可访问性
@@ -261,3 +261,4 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 - v1.3 (2026-09-10)：冻结 R22 Workspace/Terminal Panel 的职责分层、32px 内容工具栏、尾部操作分组与终端内容留白。
 - v1.4 (2026-09-10)：冻结 R23 Sidebar 常驻 footer action 的 32px 行高、内容列满宽与单层 12px 水平内边距。
 - v1.5 (2026-09-10)：按用户复验纠正 R23 的“占满”解释：Settings footer 改为 rail 左右与底部 edge-to-edge，12px inset 仅约束普通 Sidebar 内容。
+- v1.6 (2026-09-10)：再次按用户原生复验纠正 R24：Settings 回归 12px 内容栅格；侧栏导航采用中性灰选中态与 8px 圆角；项目移除独立 Chevron，由 Folder open/closed 图标表达展开状态。精确规格见 [R25 Sidebar navigation](vega-r25-sidebar-navigation.md)。

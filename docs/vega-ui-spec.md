@@ -1,12 +1,12 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.8 · 2026-09-10 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.11 · 2026-09-10 · 关联：[vega-features.md](vega-features.md)
 
 > **规范分层**：跨任务的视觉语言、语义 token 与新 UI 默认规则以
 > [Vega 设计守则](vega-design-guidelines.md)为入口；本文件继续承载组件行为和
 > 可测量验收。遇到历史数值冲突时，以更新、更具体的冻结规格为准，并在实施任务中同步修订。
 
-> **设计基线决策**：UI 风格对齐 **Codex Desktop / ZCode 默认风格**——极简、留白充足、浅灰层次、无重边框、内容居中；R18 在此基础上采用批准的 Vega Logo 几何与宝石蓝/冰蓝品牌强调。品牌蓝只承担 accent、selection 和 Agent/AI 关键动作，工作区主体仍保持中性。
+> **设计基线决策**：UI 风格对齐 **Codex Desktop / ZCode 默认风格**——极简、留白充足、浅灰层次、无重边框、内容居中；Vega Logo 的宝石蓝/冰蓝保留给主操作、焦点和 Agent/AI 品牌语义。普通导航的 hover/selected 均使用中性灰，不用品牌色标记当前位置。
 > 本文件是验收准线：每条都可检查、可测量。S 级 Sprint 验收时逐条过。
 
 > 当前 R8 实测视觉基线见 [R8 ZCode parity](vega-r8-zcode-parity.md)。该任务覆盖下列旧 R4 的几何、浅色中性 token、空态和 composer 分组；安全、数据与性能条款保留。
@@ -46,8 +46,8 @@
 | `bg-base` | #FFFFFF | #202020 | 主区背景 |
 | `bg-sidebar` | #FAF9F9 | #191919 | 侧边栏背景 |
 | `bg-elevated` | #FFFFFF | #2A2A2A | 卡片/composer |
-| `bg-hover` | #ECECEC | #323232 | 悬停态 |
-| `bg-active` | #EAF2FC | #203247 | 选中态（当前会话/项目，低对比品牌洗色） |
+| `bg-hover` | #F3F3F3 | #282828 | 中性悬停态 |
+| `bg-active` | #EDEDED | #303030 | 中性选中态（当前会话/项目/普通导航） |
 | `border-subtle` | #E8E8E8 | #383838 | 1px 分隔线/卡片边 |
 | `text-primary` | #191C1F | #EDEDED | 正文 |
 | `text-secondary` | #676767 | #ABABAB | 辅助信息/时间戳 |
@@ -82,9 +82,10 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 ## 4. 核心组件规格
 
 ### 4.1 侧边栏会话条目
-- 单行：会话标题（省略号截断）+ 右侧相对时间（"2h"）；选中态 `bg-active` + 主色标题，不增加重色左边条
+- 单行：会话标题（省略号截断）+ 右侧相对时间（"2h"）；选中态 `bg-active` + `text-primary`，不使用品牌色标题或重色左边条
 - 未读：标题 500 字重 + 右侧圆点
-- 项目分组可折叠，折叠状态记忆
+- 项目分组可折叠，折叠状态记忆；项目行不显示独立 disclosure Chevron，使用 Folder / FolderOpen 图标直接表达收起与展开
+- 项目、会话和 Settings 导航行使用 8px 圆角；Settings 保持 32px 高并位于 Sidebar 的 12px 左右/底部 inset 中
 
 ### 4.2 工具调用卡片（信息密度核心）
 ```
@@ -160,3 +161,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.8 (2026-09-10) R21 当前截图对标：Sidebar 改为默认 304px、240–365px 可拖拽并独立记忆；主壳层采用平直分栏，Environment rail 320px，Settings 使用同宽导航 rail 与 744px 内容列；Composer 冻结 736px 与 28px 发送/停止控件。精确状态与证据见 [R21 screenshot parity](vega-r21-screenshot-parity.md)。
 - v0.9 (2026-09-10) R23 Sidebar footer 修正：常驻设置入口使用完整 32px 行高并铺满 Sidebar 的 12px 内边距内容列；不得叠加额外水平缩进或固定宽度。精确验收见 [R23 Sidebar footer fill](vega-r23-sidebar-footer-fill.md)。
 - v0.10 (2026-09-10) R24 Sidebar footer 复验修正：用户确认 R23 视觉未解决；设置入口保持 32px，但 hover/点击面改为与 Sidebar 左右及底部 edge-to-edge，普通内容继续保留 12px inset。精确验收见 [R24 Sidebar footer edge-to-edge](vega-r24-sidebar-footer-edge-to-edge.md)。
+- v0.11 (2026-09-10) R25 Sidebar 导航复验修正：普通 hover/selected token 改为中性灰；项目行去除独立 Chevron 并以 Folder open/closed 表达展开状态；导航行圆角统一为 8px；Settings 撤销 edge-to-edge 条带并回归 12px inset。精确验收见 [R25 Sidebar navigation](vega-r25-sidebar-navigation.md)。
