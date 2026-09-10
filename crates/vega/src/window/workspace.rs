@@ -1452,22 +1452,59 @@ mod tests {
     }
 
     fn assert_sidebar_footer_geometry(window: WindowHandle<VegaWindow>, cx: &mut TestAppContext) {
+        let sidebar = shell_bounds(window, "sidebar", cx);
         let new_task = shell_bounds(window, "sidebar-new-task", cx);
-        let settings = shell_bounds(window, "sidebar-settings", cx);
+        let surface = shell_bounds(window, "sidebar-settings-surface", cx);
+        let button = shell_bounds(window, "sidebar-settings", cx);
         assert_close(
-            settings.left() - new_task.left(),
+            surface.left() - sidebar.left(),
             0.0,
-            "Settings aligns with New Task on the left",
+            "painted Settings surface aligns with Sidebar on the left",
         );
         assert_close(
-            settings.right() - new_task.right(),
+            surface.right() - sidebar.right(),
             0.0,
-            "Settings aligns with New Task on the right",
+            "painted Settings surface aligns with Sidebar on the right",
         );
         assert_close(
-            settings.size.height,
+            surface.bottom() - sidebar.bottom(),
+            0.0,
+            "painted Settings surface aligns with Sidebar on the bottom",
+        );
+        assert_close(
+            surface.size.height,
             Typography::SIDEBAR_LINE_HEIGHT,
-            "Settings Sidebar row height",
+            "painted Settings surface height",
+        );
+        assert_close(
+            button.left() - surface.left(),
+            0.0,
+            "interactive Settings button fills the surface on the left",
+        );
+        assert_close(
+            button.right() - surface.right(),
+            0.0,
+            "interactive Settings button fills the surface on the right",
+        );
+        assert_close(
+            button.top() - surface.top(),
+            0.0,
+            "interactive Settings button fills the surface on the top",
+        );
+        assert_close(
+            button.bottom() - surface.bottom(),
+            0.0,
+            "interactive Settings button fills the surface on the bottom",
+        );
+        assert_close(
+            new_task.left() - sidebar.left(),
+            Layout::SIDEBAR_PADDING,
+            "New Task keeps the Sidebar left inset",
+        );
+        assert_close(
+            sidebar.right() - new_task.right(),
+            Layout::SIDEBAR_PADDING,
+            "New Task keeps the Sidebar right inset",
         );
     }
 
@@ -1522,6 +1559,16 @@ mod tests {
         let conversation = shell_bounds(window, "conversation-column", cx);
         assert_close(sidebar.size.width, Layout::SIDEBAR_WIDTH, "sidebar width");
         assert_sidebar_footer_geometry(window, cx);
+        shell_click(window, "sidebar-settings", cx);
+        assert!(
+            cx.update(|cx| cx.global::<SettingsOpen>().0),
+            "Settings footer keeps its production General Settings route"
+        );
+        cx.update(|cx| {
+            cx.set_global(SettingsOpen(false));
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
         assert_close(
             resizer.size.width,
             Layout::SIDEBAR_RESIZE_HIT_AREA,

@@ -45,7 +45,7 @@ use std::path::Path;
 
 use gpui_kit::component::{
     Sizable,
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonRounded, ButtonVariants},
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -555,20 +555,35 @@ impl Sidebar {
 
     /// Stable low-frequency settings entry. It stays in the rail even when
     /// project/session blocks grow or collapse, so the route is discoverable.
-    fn render_settings_entry(&self) -> AnyElement {
-        Button::new("sidebar-settings")
-            .debug_selector(|| "sidebar-settings".into())
-            .ghost()
-            .small()
+    fn render_settings_entry(&self, colors: &ThemeColors) -> AnyElement {
+        const HOVER_GROUP: &str = "sidebar-settings-control";
+
+        div()
+            .id("sidebar-settings-surface")
+            .debug_selector(|| "sidebar-settings-surface".into())
+            .group(HOVER_GROUP)
             .w_full()
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .label("设置")
-            .accessibility_label("设置 (⌘,)")
-            .tooltip("设置 (⌘,)")
-            .on_click(|_, _, cx| {
-                cx.set_global(SettingsOpen(true));
-                cx.refresh_windows();
-            })
+            .flex_shrink_0()
+            .group_hover(HOVER_GROUP, move |style| style.bg(colors.bg_hover))
+            .group_active(HOVER_GROUP, move |style| style.bg(colors.bg_active))
+            .child(
+                Button::new("sidebar-settings")
+                    .debug_selector(|| "sidebar-settings".into())
+                    .group(HOVER_GROUP)
+                    .text()
+                    .small()
+                    .rounded(ButtonRounded::None)
+                    .w_full()
+                    .h_full()
+                    .label("设置")
+                    .accessibility_label("设置 (⌘,)")
+                    .tooltip("设置 (⌘,)")
+                    .on_click(|_, _, cx| {
+                        cx.set_global(SettingsOpen(true));
+                        cx.refresh_windows();
+                    }),
+            )
             .into_any_element()
     }
 }
@@ -585,46 +600,56 @@ impl Render for Sidebar {
             .h_full()
             .flex_shrink_0()
             .bg(colors.bg_sidebar)
-            .px(px(Layout::SIDEBAR_PADDING))
-            .pt(px(Layout::SIDEBAR_PADDING))
-            .pb(px(Layout::SIDEBAR_PADDING))
-            .gap_3()
             .overflow_hidden()
-            .child(self.render_brand(&colors, cx))
-            .child(self.render_new_task(cx, &colors))
             .child(
                 div()
-                    .id("sidebar-search")
-                    .debug_selector(|| "sidebar-search".into())
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .mx_2()
-                    .px_2()
-                    .rounded_md()
-                    .flex()
-                    .items_center()
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(colors.text_secondary)
-                    .cursor_pointer()
-                    .child("搜索")
-                    .child(div().flex_1())
-                    .child("⌘K")
-                    .on_mouse_up(MouseButton::Left, |_, window, cx| {
-                        window.dispatch_action(Box::new(crate::command_palette::OpenPalette), cx)
-                    }),
-            )
-            .child(
-                div()
-                    .id("sidebar-scroll")
-                    .debug_selector(|| "sidebar-scroll".into())
-                    .flex_1()
-                    .min_h_0()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .px(px(Layout::SIDEBAR_PADDING))
+                    .pt(px(Layout::SIDEBAR_PADDING))
+                    .pb(px(Layout::SIDEBAR_PADDING))
                     .gap_3()
-                    .overflow_y_scroll()
-                    .child(self.sessions_block.clone()),
+                    .child(self.render_brand(&colors, cx))
+                    .child(self.render_new_task(cx, &colors))
+                    .child(
+                        div()
+                            .id("sidebar-search")
+                            .debug_selector(|| "sidebar-search".into())
+                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                            .mx_2()
+                            .px_2()
+                            .rounded_md()
+                            .flex()
+                            .items_center()
+                            .text_size(px(Typography::SIDEBAR))
+                            .text_color(colors.text_secondary)
+                            .cursor_pointer()
+                            .child("搜索")
+                            .child(div().flex_1())
+                            .child("⌘K")
+                            .on_mouse_up(MouseButton::Left, |_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(crate::command_palette::OpenPalette),
+                                    cx,
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .id("sidebar-scroll")
+                            .debug_selector(|| "sidebar-scroll".into())
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .overflow_y_scroll()
+                            .child(self.sessions_block.clone()),
+                    ),
             )
-            .child(self.render_settings_entry())
+            .child(self.render_settings_entry(&colors))
             .into_any_element()
     }
 }
