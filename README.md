@@ -34,6 +34,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-r22-workspace-panel-polish.md](docs/vega-r22-workspace-panel-polish.md) | Workspace / Terminal Panel 工具栏分组、间距与对齐修复 |
 | [vega-r22-workspace-panel-polish-delivery.md](docs/vega-r22-workspace-panel-polish-delivery.md) | R22 自动化、原生视觉验收与残余记录 |
 | [vega-r23-sidebar-footer-fill.md](docs/vega-r23-sidebar-footer-fill.md) | Sidebar 底部设置入口的 32px 行高与内容列满宽修正 |
+| [vega-r23-sidebar-footer-fill-delivery.md](docs/vega-r23-sidebar-footer-fill-delivery.md) | R23 自动化、打包安装与 Light/Dark 原生验收记录 |
 | [vega-tech-spec-p1.md](docs/vega-tech-spec-p1.md) | Phase 1 SDD 技术规格（DDL/trait/状态机） |
 | [vega-tech-risks.md](docs/vega-tech-risks.md) | 五大技术难点攻坚方案 |
 | [vega-exec-guide.md](docs/vega-exec-guide.md) | 执行宪法（红线/白名单/验收协议） |
