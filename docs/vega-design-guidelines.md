@@ -1,6 +1,6 @@
 # Vega 设计守则
 
-**版本** v1.2 · 2026-09-10
+**版本** v1.3 · 2026-09-10
 
 **状态** 当前视觉语言与设计 token 的规范入口
 
@@ -141,6 +141,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 | Settings boolean switch | 32×20px | 只绑定真实布尔设置，不为对标截图造状态 |
 | 大型浮层 | max 350px / radius 18px | 小型菜单按内容收窄，不强制拉伸 |
 | Workspace header | 40px | 右侧或底部工作区共享 |
+| Terminal toolbar | 32px | 状态靠左，终端操作组成右侧紧凑按钮组 |
 | 底部 Workspace | default 272px | 保留现有最小值和拖拽行为 |
 | 右侧 Workspace | 43% / min 270px | 用户 resize 结果持久化 |
 
@@ -199,6 +200,8 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 - Environment 只在有真实 project authority 时出现；standalone task 不显示 project-only rail。
 - 持久右侧 workspace 打开后替代 Environment rail；底部 workspace 横跨 center 与 right。
+- Workspace header 只承载标签与 pane 级操作；内容级工具栏单独成行，并把相关操作收进同一尾部按钮组，禁止用三个同级 `space-between` 元素把中间操作推到面板中央。
+- Terminal 内容在状态栏下使用一致内边距；PTY 行列数以扣除 chrome 和内边距后的真实 canvas bounds 为准。
 - Sidebar 宽度、用户手动折叠和窗口触发的自动隐藏是三个独立状态，resize 不得覆盖另外两者。
 - Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
 
@@ -254,3 +257,4 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 - v1.0 (2026-09-09)：建立 Vega 原生视觉语言、语义 token、组件状态与验收检查表。
 - v1.1 (2026-09-10)：明确 clean-room 来源边界，并与 R19/当前主题实现同步校正 UI 验收规格。
 - v1.2 (2026-09-10)：纳入 R21 用户可见截图测量所得的 Sidebar、Environment、Settings 与菜单几何，并冻结 1229/1230px 响应式边界。
+- v1.3 (2026-09-10)：冻结 R22 Workspace/Terminal Panel 的职责分层、32px 内容工具栏、尾部操作分组与终端内容留白。
