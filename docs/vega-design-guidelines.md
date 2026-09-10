@@ -203,7 +203,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Workspace header 只承载标签与 pane 级操作；内容级工具栏单独成行，并把相关操作收进同一尾部按钮组，禁止用三个同级 `space-between` 元素把中间操作推到面板中央。
 - Terminal 内容在状态栏下使用一致内边距；PTY 行列数以扣除 chrome 和内边距后的真实 canvas bounds 为准。
 - Sidebar 宽度、用户手动折叠和窗口触发的自动隐藏是三个独立状态，resize 不得覆盖另外两者。
-- Sidebar 的常驻 footer action 使用完整 32px 导航行高并铺满 12px 内边距形成的内容列；不得套用 24px `small` 尺寸、第二层水平缩进或固定宽度。
+- Sidebar 的常驻 footer action 使用完整 32px 导航行高，左右铺满 rail 并贴住底边；普通内容仍保持 12px 内边距。footer 是无独立圆角的底部条带，不得缩成内容列内的胶囊或使用固定宽度。
 - Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
 
 ## 11. 动效与可访问性
@@ -260,3 +260,4 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 - v1.2 (2026-09-10)：纳入 R21 用户可见截图测量所得的 Sidebar、Environment、Settings 与菜单几何，并冻结 1229/1230px 响应式边界。
 - v1.3 (2026-09-10)：冻结 R22 Workspace/Terminal Panel 的职责分层、32px 内容工具栏、尾部操作分组与终端内容留白。
 - v1.4 (2026-09-10)：冻结 R23 Sidebar 常驻 footer action 的 32px 行高、内容列满宽与单层 12px 水平内边距。
+- v1.5 (2026-09-10)：按用户复验纠正 R23 的“占满”解释：Settings footer 改为 rail 左右与底部 edge-to-edge，12px inset 仅约束普通 Sidebar 内容。
