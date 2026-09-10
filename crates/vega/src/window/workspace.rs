@@ -1403,7 +1403,7 @@ mod tests {
         AppContext, Bounds, KeyBinding, Modifiers, MouseButton, Pixels, TestAppContext,
         VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point, px, size,
     };
-    use vega_theme::Layout;
+    use vega_theme::{Layout, Typography};
     use vega_ui::diff_view::DiffClosed;
     use vega_ui::settings::{CloseSettings, SettingsOpen, SettingsView};
     use vega_ui::sidebar::{
@@ -1448,6 +1448,26 @@ mod tests {
         assert!(
             (actual - expected).abs() <= 1.0,
             "{label}: expected {expected}±1px, got {actual}px"
+        );
+    }
+
+    fn assert_sidebar_footer_geometry(window: WindowHandle<VegaWindow>, cx: &mut TestAppContext) {
+        let new_task = shell_bounds(window, "sidebar-new-task", cx);
+        let settings = shell_bounds(window, "sidebar-settings", cx);
+        assert_close(
+            settings.left() - new_task.left(),
+            0.0,
+            "Settings aligns with New Task on the left",
+        );
+        assert_close(
+            settings.right() - new_task.right(),
+            0.0,
+            "Settings aligns with New Task on the right",
+        );
+        assert_close(
+            settings.size.height,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            "Settings Sidebar row height",
         );
     }
 
@@ -1501,6 +1521,7 @@ mod tests {
         let composer = shell_bounds(window, "composer-shell", cx);
         let conversation = shell_bounds(window, "conversation-column", cx);
         assert_close(sidebar.size.width, Layout::SIDEBAR_WIDTH, "sidebar width");
+        assert_sidebar_footer_geometry(window, cx);
         assert_close(
             resizer.size.width,
             Layout::SIDEBAR_RESIZE_HIT_AREA,
@@ -1614,6 +1635,7 @@ mod tests {
             Layout::SIDEBAR_MAX_WIDTH,
             "maximum Sidebar width",
         );
+        assert_sidebar_footer_geometry(window, cx);
         assert!(
             shell_absent(window, "environment-rail", cx),
             "1230px is narrow after the Sidebar grows"
@@ -1647,6 +1669,7 @@ mod tests {
             Layout::SIDEBAR_MIN_WIDTH,
             "minimum Sidebar width",
         );
+        assert_sidebar_footer_geometry(window, cx);
         window
             .update(cx, |_, window, cx| {
                 window.resize(size(px(1165.), px(860.)));

@@ -557,8 +557,11 @@ impl Sidebar {
     /// project/session blocks grow or collapse, so the route is discoverable.
     fn render_settings_entry(&self) -> AnyElement {
         Button::new("sidebar-settings")
+            .debug_selector(|| "sidebar-settings".into())
             .ghost()
             .small()
+            .w_full()
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .label("设置")
             .accessibility_label("设置 (⌘,)")
             .tooltip("设置 (⌘,)")
