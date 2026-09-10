@@ -10,7 +10,7 @@ use vega_conversation::{
     terminal::TerminalSession,
     types::{TerminalColor, TerminalSnapshot, TerminalStatus, TerminalTarget},
 };
-use vega_theme::{Typography, theme};
+use vega_theme::{Layout, Typography, theme};
 
 /// A live terminal session, retained by the workspace across hide/move operations.
 pub struct TerminalView {
@@ -194,6 +194,7 @@ impl Render for TerminalView {
         let view = cx.entity();
         div()
             .id("terminal-view")
+            .debug_selector(|| "terminal-view".into())
             .key_context("Terminal")
             .track_focus(&self.focus)
             .size_full()
@@ -222,28 +223,52 @@ impl Render for TerminalView {
             }))
             .child(
                 div()
+                    .debug_selector(|| "terminal-toolbar".into())
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .px_2()
-                    .py_1()
+                    .flex_shrink_0()
+                    .h(px(Layout::TERMINAL_TOOLBAR_HEIGHT))
+                    .px_3()
+                    .border_b_1()
+                    .border_color(colors.border_subtle)
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
-                    .child(label)
-                    .child(icon_button(
-                        Icon::Document,
-                        "复制当前终端屏幕（⌘C）",
-                        colors,
-                        cx.listener(|this, _, window, cx| {
-                            this.copy_screen(&text_input::Copy, window, cx)
-                        }),
-                    ))
-                    .child(icon_button(
-                        Icon::Refresh,
-                        "重启终端",
-                        colors,
-                        cx.listener(|this, _, _, cx| this.restart(cx)),
-                    )),
+                    .child(
+                        div()
+                            .debug_selector(|| "terminal-status".into())
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "terminal-actions".into())
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .flex_shrink_0()
+                            .child(
+                                icon_button(
+                                    Icon::Document,
+                                    "复制当前终端屏幕（⌘C）",
+                                    colors,
+                                    cx.listener(|this, _, window, cx| {
+                                        this.copy_screen(&text_input::Copy, window, cx)
+                                    }),
+                                )
+                                .debug_selector(|| "terminal-copy".into()),
+                            )
+                            .child(
+                                icon_button(
+                                    Icon::Refresh,
+                                    "重启终端",
+                                    colors,
+                                    cx.listener(|this, _, _, cx| this.restart(cx)),
+                                )
+                                .debug_selector(|| "terminal-restart".into()),
+                            ),
+                    ),
             )
             .when(self.input_error, |view| {
                 view.child(
@@ -254,14 +279,31 @@ impl Render for TerminalView {
                 )
             })
             .child(
-                canvas(
-                    |_, _, _| (),
-                    move |bounds, _, window, cx| {
-                        paint_terminal(&view, bounds, window, cx);
-                    },
-                )
-                .flex_1()
-                .w_full(),
+                div()
+                    .debug_selector(|| "terminal-canvas-frame".into())
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .flex()
+                    .px_3()
+                    .py_2()
+                    .child(
+                        div()
+                            .debug_selector(|| "terminal-canvas".into())
+                            .flex()
+                            .min_h_0()
+                            .min_w_0()
+                            .flex_1()
+                            .child(
+                                canvas(
+                                    |_, _, _| (),
+                                    move |bounds, _, window, cx| {
+                                        paint_terminal(&view, bounds, window, cx);
+                                    },
+                                )
+                                .size_full(),
+                            ),
+                    ),
             )
     }
 }
@@ -453,8 +495,20 @@ impl EntityInputHandler for TerminalView {
 #[cfg(all(test, unix))]
 mod tests {
     use super::{Duration, Entity, PathBuf, TerminalStatus, TerminalView};
-    use gpui_kit::{AppContext, EntityInputHandler, TestAppContext};
+    use gpui_kit::{
+        AppContext, Bounds, EntityInputHandler, Modifiers, TestAppContext, VisualTestContext,
+        WindowBounds, WindowOptions, point, px, size,
+    };
     use std::{process::Command, time::Instant};
+    use vega_theme::{Layout, Typography};
+
+    fn assert_pixel_close(actual: gpui_kit::Pixels, expected: f32, label: &str) {
+        let actual = f32::from(actual);
+        assert!(
+            (actual - expected).abs() <= 1.0,
+            "{label}: expected {expected}±1px, got {actual}px"
+        );
+    }
 
     fn wait_ui(
         view: &Entity<TerminalView>,
@@ -503,8 +557,17 @@ mod tests {
         let view = cx.new(|cx| TerminalView::new(root.clone(), cx));
         let entity = view.clone();
         let window = cx.update(|cx| {
-            cx.open_window(Default::default(), move |_, _| entity)
-                .unwrap()
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(640.), px(400.)),
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| entity,
+            )
+            .unwrap()
         });
         cx.run_until_parked();
         window
@@ -515,6 +578,102 @@ mod tests {
                 .as_ref()
                 .is_some_and(|s| s.status == TerminalStatus::Running)
         });
+        let initial_size = view.read_with(cx, |view, _| view.size);
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let terminal = visual
+                .debug_bounds("terminal-view")
+                .expect("mounted terminal surface");
+            let toolbar = visual
+                .debug_bounds("terminal-toolbar")
+                .expect("mounted terminal toolbar");
+            let status = visual
+                .debug_bounds("terminal-status")
+                .expect("bounded terminal status");
+            let actions = visual
+                .debug_bounds("terminal-actions")
+                .expect("terminal trailing actions");
+            let copy = visual
+                .debug_bounds("terminal-copy")
+                .expect("terminal copy action");
+            let restart = visual
+                .debug_bounds("terminal-restart")
+                .expect("terminal restart action");
+            let canvas = visual
+                .debug_bounds("terminal-canvas")
+                .expect("inset terminal canvas");
+
+            assert_pixel_close(
+                toolbar.size.height,
+                Layout::TERMINAL_TOOLBAR_HEIGHT,
+                "terminal toolbar height",
+            );
+            assert_pixel_close(
+                status.left() - toolbar.left(),
+                12.0,
+                "terminal status leading inset",
+            );
+            assert!(
+                status.right() <= actions.left(),
+                "status truncates before the trailing actions"
+            );
+            assert_pixel_close(
+                toolbar.right() - actions.right(),
+                12.0,
+                "terminal actions trailing inset",
+            );
+            assert_pixel_close(actions.size.width, 52.0, "compact terminal action group");
+            for (bounds, label) in [(copy, "copy hitbox"), (restart, "restart hitbox")] {
+                assert_pixel_close(bounds.size.width, 24.0, label);
+                assert_pixel_close(bounds.size.height, 24.0, label);
+            }
+            assert_pixel_close(restart.left() - copy.right(), 4.0, "terminal action gap");
+            assert_pixel_close(
+                canvas.left() - terminal.left(),
+                12.0,
+                "terminal canvas left inset",
+            );
+            assert_pixel_close(
+                terminal.right() - canvas.right(),
+                12.0,
+                "terminal canvas right inset",
+            );
+            assert_pixel_close(
+                canvas.top() - toolbar.bottom(),
+                8.0,
+                "terminal canvas top inset",
+            );
+            assert_pixel_close(
+                terminal.bottom() - canvas.bottom(),
+                8.0,
+                "terminal canvas bottom inset",
+            );
+            let expected_rows = (f32::from(canvas.size.height) / (Typography::CODE * 1.5))
+                .floor()
+                .clamp(2.0, 240.0) as u16;
+            assert_eq!(initial_size.0, expected_rows);
+            assert!(
+                initial_size.1 >= 2,
+                "PTY receives the measured canvas width"
+            );
+        }
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(720.), px(480.)));
+                window.bounds_changed(cx);
+            })
+            .unwrap();
+        wait_ui(&view, cx, |view| view.size != initial_size);
+        let resized_canvas = VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("terminal-canvas")
+            .expect("resized terminal canvas");
+        let resized_size = view.read_with(cx, |view, _| view.size);
+        let expected_rows = (f32::from(resized_canvas.size.height) / (Typography::CODE * 1.5))
+            .floor()
+            .clamp(2.0, 240.0) as u16;
+        assert_eq!(resized_size.0, expected_rows);
+        assert!(resized_size.0 > initial_size.0);
+        assert!(resized_size.1 > initial_size.1);
         window
             .update(cx, |view, window, cx| {
                 view.replace_text_in_range(None, "printf ui-ok > ui-markerX", window, cx)
@@ -535,6 +694,55 @@ mod tests {
             std::fs::read_to_string(root.join("ui-marker")).unwrap(),
             "ui-ok"
         );
+        wait_ui(&view, cx, |view| {
+            view.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .cells
+                    .iter()
+                    .flatten()
+                    .any(|cell| !cell.text.is_empty())
+            })
+        });
+        let expected_copy = view.read_with(cx, |view, _| {
+            view.snapshot
+                .as_ref()
+                .map(|snapshot| {
+                    snapshot
+                        .cells
+                        .iter()
+                        .map(|row| {
+                            row.iter()
+                                .filter(|cell| !cell.continuation)
+                                .map(|cell| {
+                                    if cell.text.is_empty() {
+                                        " "
+                                    } else {
+                                        &cell.text
+                                    }
+                                })
+                                .collect::<String>()
+                                .trim_end()
+                                .to_string()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default()
+        });
+        assert!(!expected_copy.is_empty(), "real PTY screen is copyable");
+        let copy = VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("terminal-copy")
+            .expect("copy action after PTY output");
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(copy.center(), Modifiers::default());
+        visual.run_until_parked();
+        let copied = cx
+            .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+            .unwrap_or_default();
+        assert_eq!(
+            copied, expected_copy,
+            "mounted copy action copies the visible PTY screen"
+        );
         window
             .update(cx, |view, window, cx| {
                 view.replace_text_in_range(None, "sleep 30", window, cx)
@@ -554,7 +762,12 @@ mod tests {
                 .as_ref()
                 .is_some_and(|s| s.status == TerminalStatus::Exited(9))
         });
-        view.update(cx, |view, cx| view.restart(cx));
+        let restart = VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("terminal-restart")
+            .expect("restart action after terminal exit");
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(restart.center(), Modifiers::default());
+        visual.run_until_parked();
         wait_ui(&view, cx, |view| {
             view.snapshot
                 .as_ref()

@@ -322,6 +322,8 @@ impl Layout {
     pub const BOTTOM_WORKSPACE_HEIGHT: f32 = 272.0;
     /// Workspace tab/header height.
     pub const WORKSPACE_HEADER_HEIGHT: f32 = 40.0;
+    /// Terminal content toolbar height below the workspace tab header.
+    pub const TERMINAL_TOOLBAR_HEIGHT: f32 = 32.0;
     /// Reserved trailing width for session timestamps and the compact action
     /// menu trigger. Low-frequency actions live in the popover so long
     /// session titles keep the main width of the rail.
@@ -431,6 +433,11 @@ mod tests {
         assert_eq!(Layout::COMPOSER_SEND_SIZE, 28.0);
         assert_eq!(Layout::WORKSPACE_HEADER_HEIGHT, 40.0);
         assert_eq!(Layout::BOTTOM_WORKSPACE_HEIGHT, 272.0);
+    }
+
+    #[test]
+    fn r22_terminal_toolbar_height_is_frozen() {
+        assert_eq!(Layout::TERMINAL_TOOLBAR_HEIGHT, 32.0);
     }
 
     #[test]

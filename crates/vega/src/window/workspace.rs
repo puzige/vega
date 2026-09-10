@@ -702,8 +702,45 @@ impl VegaWindow {
             }
             self.workspace.reveal_tabs[index] = false;
         }
+        let tabs_selector = if bottom { "bottom-tabs" } else { "right-tabs" };
+        let header_selector = if bottom {
+            "bottom-workspace-header"
+        } else {
+            "right-workspace-header"
+        };
+        let all_tabs_selector = if bottom {
+            "bottom-workspace-all-tabs"
+        } else {
+            "right-workspace-all-tabs"
+        };
+        let actions_selector = if bottom {
+            "bottom-workspace-actions"
+        } else {
+            "right-workspace-actions"
+        };
+        let add_selector = if bottom {
+            "bottom-workspace-add"
+        } else {
+            "right-workspace-add"
+        };
+        let dock_selector = if bottom {
+            "bottom-workspace-dock"
+        } else {
+            "right-workspace-dock"
+        };
+        let maximize_selector = if bottom {
+            "bottom-workspace-maximize"
+        } else {
+            "right-workspace-maximize"
+        };
+        let hide_selector = if bottom {
+            "bottom-workspace-hide"
+        } else {
+            "right-workspace-hide"
+        };
         let mut strip = div()
-            .id(if bottom { "bottom-tabs" } else { "right-tabs" })
+            .id(tabs_selector)
+            .debug_selector(move || tabs_selector.into())
             .flex()
             .flex_1()
             .min_w_0()
@@ -770,7 +807,85 @@ impl VegaWindow {
                     )),
             );
         }
+        let mut actions = div()
+            .debug_selector(move || actions_selector.into())
+            .flex()
+            .items_center()
+            .gap_1()
+            .flex_shrink_0();
+        if review_selected {
+            actions = actions.child(
+                icon_button(
+                    Icon::Document,
+                    "提交更改",
+                    colors,
+                    cx.listener(|this, _, _, cx| this.workspace_open_commit(cx)),
+                )
+                .debug_selector(|| "workspace-review-commit".into()),
+            );
+        }
+        let actions = actions
+            .child(
+                icon_button(
+                    Icon::Plus,
+                    "打开工作区标签",
+                    colors,
+                    cx.listener(move |this, _, window, cx| {
+                        this.workspace_toggle_menu(bottom, window, cx)
+                    }),
+                )
+                .debug_selector(move || add_selector.into()),
+            )
+            .child(
+                icon_button(
+                    if bottom {
+                        Icon::DockRight
+                    } else {
+                        Icon::DockBottom
+                    },
+                    if bottom {
+                        "移到右侧"
+                    } else {
+                        "移到底部"
+                    },
+                    colors,
+                    cx.listener(move |this, _, window, cx| {
+                        this.workspace_move_selected(index, window, cx);
+                    }),
+                )
+                .debug_selector(move || dock_selector.into()),
+            )
+            .child(
+                icon_button(
+                    Icon::Maximize,
+                    if self.workspace.maximized[index] {
+                        "还原工作区"
+                    } else {
+                        "最大化工作区"
+                    },
+                    colors,
+                    cx.listener(move |this, _, window, cx| {
+                        this.workspace.maximized[index] = !this.workspace.maximized[index];
+                        this.workspace.reveal_tabs[index] = true;
+                        this.workspace_focus(index, window, cx);
+                        cx.notify();
+                    }),
+                )
+                .debug_selector(move || maximize_selector.into()),
+            )
+            .child(
+                icon_button(
+                    Icon::Minimize,
+                    "隐藏面板",
+                    colors,
+                    cx.listener(move |this, _, window, cx| {
+                        this.workspace_hide(index, window, cx);
+                    }),
+                )
+                .debug_selector(move || hide_selector.into()),
+            );
         let header = div()
+            .debug_selector(move || header_selector.into())
             .flex()
             .items_center()
             .gap_1()
@@ -778,73 +893,19 @@ impl VegaWindow {
             .px_1()
             .border_b_1()
             .border_color(colors.border_subtle)
-            .child(icon_button(
-                Icon::ChevronDown,
-                "所有工作区标签",
-                colors,
-                cx.listener(move |this, _, window, cx| {
-                    this.workspace_toggle_menu(bottom, window, cx)
-                }),
-            ))
-            .child(strip)
-            .when(review_selected, |header| {
-                header.child(
-                    icon_button(
-                        Icon::Document,
-                        "提交更改",
-                        colors,
-                        cx.listener(|this, _, _, cx| this.workspace_open_commit(cx)),
-                    )
-                    .debug_selector(|| "workspace-review-commit".into()),
+            .child(
+                icon_button(
+                    Icon::ChevronDown,
+                    "所有工作区标签",
+                    colors,
+                    cx.listener(move |this, _, window, cx| {
+                        this.workspace_toggle_menu(bottom, window, cx)
+                    }),
                 )
-            })
-            .child(icon_button(
-                Icon::Plus,
-                "打开工作区标签",
-                colors,
-                cx.listener(move |this, _, window, cx| {
-                    this.workspace_toggle_menu(bottom, window, cx)
-                }),
-            ))
-            .child(icon_button(
-                if bottom {
-                    Icon::DockRight
-                } else {
-                    Icon::DockBottom
-                },
-                if bottom {
-                    "移到右侧"
-                } else {
-                    "移到底部"
-                },
-                colors,
-                cx.listener(move |this, _, window, cx| {
-                    this.workspace_move_selected(index, window, cx);
-                }),
-            ))
-            .child(icon_button(
-                Icon::Maximize,
-                if self.workspace.maximized[index] {
-                    "还原工作区"
-                } else {
-                    "最大化工作区"
-                },
-                colors,
-                cx.listener(move |this, _, window, cx| {
-                    this.workspace.maximized[index] = !this.workspace.maximized[index];
-                    this.workspace.reveal_tabs[index] = true;
-                    this.workspace_focus(index, window, cx);
-                    cx.notify();
-                }),
-            ))
-            .child(icon_button(
-                Icon::Minimize,
-                "隐藏面板",
-                colors,
-                cx.listener(move |this, _, window, cx| {
-                    this.workspace_hide(index, window, cx);
-                }),
-            ));
+                .debug_selector(move || all_tabs_selector.into()),
+            )
+            .child(strip)
+            .child(actions);
         let body = match selected {
             Some(TabKey::File(id)) => self
                 .workspace
@@ -1635,6 +1696,14 @@ mod tests {
                 && root.workspace.selected[0] == Some(TabKey::Diff))
         );
         let _ = shell_bounds(window, "right-workspace-pane", cx);
+        let actions = shell_bounds(window, "right-workspace-actions", cx);
+        let commit = shell_bounds(window, "workspace-review-commit", cx);
+        assert_close(actions.size.width, 136.0, "Review workspace trailing group");
+        assert_close(
+            commit.left() - actions.left(),
+            0.0,
+            "Review commit begins the trailing group",
+        );
         shell_click(window, "workspace-review-commit", cx);
         assert!(root.read_with(cx, |root, _| root.commit_controller.active.is_some()));
         assert!(shell_absent(window, "environment-rail", cx));
@@ -2008,6 +2077,14 @@ mod terminal_tests {
     use vega_theme::Layout;
     use vega_ui::sidebar::SelectedProject;
 
+    fn assert_pixel_close(actual: gpui_kit::Pixels, expected: f32, label: &str) {
+        let actual = f32::from(actual);
+        assert!(
+            (actual - expected).abs() <= 1.0,
+            "{label}: expected {expected}±1px, got {actual}px"
+        );
+    }
+
     #[gpui_kit::test]
     async fn r19_environment_terminal_action_opens_default_bottom_dock(cx: &mut TestAppContext) {
         const MARKER: &str = "VEGA_R19_ENVIRONMENT_TERMINAL_CHILD";
@@ -2151,6 +2228,62 @@ mod terminal_tests {
                 root.workspace_open_terminal(false, window, cx)
             })
             .unwrap();
+        cx.run_until_parked();
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let header = visual
+                .debug_bounds("right-workspace-header")
+                .expect("right workspace header");
+            let all_tabs = visual
+                .debug_bounds("right-workspace-all-tabs")
+                .expect("all-tabs control");
+            let strip = visual
+                .debug_bounds("right-tabs")
+                .expect("scrollable tab strip");
+            let actions = visual
+                .debug_bounds("right-workspace-actions")
+                .expect("workspace trailing actions");
+            let buttons = [
+                visual
+                    .debug_bounds("right-workspace-add")
+                    .expect("workspace add action"),
+                visual
+                    .debug_bounds("right-workspace-dock")
+                    .expect("workspace dock action"),
+                visual
+                    .debug_bounds("right-workspace-maximize")
+                    .expect("workspace maximize action"),
+                visual
+                    .debug_bounds("right-workspace-hide")
+                    .expect("workspace hide action"),
+            ];
+            assert_pixel_close(
+                header.size.height,
+                Layout::WORKSPACE_HEADER_HEIGHT,
+                "workspace header height",
+            );
+            assert!(
+                all_tabs.right() <= strip.left(),
+                "all-tabs control stays outside the scrollable strip"
+            );
+            assert!(
+                strip.right() <= actions.left(),
+                "pane actions stay outside the scrollable strip"
+            );
+            assert_pixel_close(
+                header.right() - actions.right(),
+                4.0,
+                "workspace actions trailing inset",
+            );
+            assert_pixel_close(actions.size.width, 108.0, "workspace trailing group");
+            for (index, button) in buttons.iter().enumerate() {
+                assert_pixel_close(button.size.width, 24.0, "workspace action hitbox");
+                assert_pixel_close(button.size.height, 24.0, "workspace action hitbox");
+                if let Some(next) = buttons.get(index + 1) {
+                    assert_pixel_close(next.left() - button.right(), 4.0, "workspace action gap");
+                }
+            }
+        }
         let (key, entity_id) = root.read_with(cx, |root, _| {
             let key = root.workspace.selected[0].clone().unwrap();
             let TabKey::Terminal(id) = key else {
@@ -2179,6 +2312,28 @@ mod terminal_tests {
             })
             .unwrap();
         cx.run_until_parked();
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let header = visual
+                .debug_bounds("bottom-workspace-header")
+                .expect("bottom workspace header");
+            let strip = visual
+                .debug_bounds("bottom-tabs")
+                .expect("bottom scrollable tabs");
+            let actions = visual
+                .debug_bounds("bottom-workspace-actions")
+                .expect("bottom trailing actions");
+            assert_pixel_close(
+                header.size.height,
+                Layout::WORKSPACE_HEADER_HEIGHT,
+                "bottom workspace header height",
+            );
+            assert!(
+                strip.right() <= actions.left(),
+                "bottom actions stay outside the scrollable strip"
+            );
+            assert_pixel_close(actions.size.width, 108.0, "bottom trailing group");
+        }
         window
             .update(cx, |root, window, cx| {
                 root.workspace_move_selected(1, window, cx)
