@@ -131,7 +131,7 @@ impl ThreadsBlock {
             .aria_label(aria)
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .px_2()
-            .rounded_md()
+            .rounded_lg()
             .flex()
             .items_center()
             .text_size(px(Typography::SIDEBAR))
@@ -141,14 +141,24 @@ impl ThreadsBlock {
                 colors.text_secondary
             })
             .when(selected, |s| {
-                s.bg(colors.bg_active).text_color(colors.brand_primary)
+                s.bg(colors.bg_active).text_color(colors.text_primary)
             })
             .cursor_pointer()
-            .hover(move |s| s.bg(colors.bg_hover))
+            .hover(move |s| {
+                s.bg(if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_hover
+                })
+            })
             .focus_visible(move |s| {
-                s.bg(colors.bg_hover)
-                    .border_1()
-                    .border_color(colors.border_subtle)
+                s.bg(if selected {
+                    colors.bg_active
+                } else {
+                    colors.bg_hover
+                })
+                .border_1()
+                .border_color(colors.border_subtle)
             })
             .on_mouse_up(
                 MouseButton::Left,
@@ -443,6 +453,7 @@ impl ThreadsBlock {
         let collapsed = snapshot.collapsed.contains(&target);
         let project_id = project.id.clone();
         let project_for_toggle = project.id.clone();
+        let project_for_keyboard = project.id.clone();
         let project_for_add = project.id.clone();
         let project_for_menu = project.id.clone();
         let selected = cx.global::<SelectedProject>().0.as_deref() == Some(project.id.as_str());
@@ -461,17 +472,35 @@ impl ThreadsBlock {
             .flex()
             .items_center()
             .gap_1()
-            .rounded_md()
+            .px_2()
+            .rounded_lg()
             .focusable()
             .tab_stop(true)
+            .role(gpui_kit::Role::Button)
+            .aria_label(format!(
+                "{}，{}",
+                project.name,
+                if collapsed { "已收起" } else { "已展开" }
+            ))
+            .aria_expanded(!collapsed)
             .cursor_pointer()
             .when(selected, |row| row.bg(colors.bg_active))
             .hover(move |style| {
-                if selected {
-                    style.bg(colors.brand_soft)
+                style.bg(if selected {
+                    colors.bg_active
                 } else {
-                    style.bg(colors.bg_hover)
-                }
+                    colors.bg_hover
+                })
+            })
+            .focus_visible(move |style| {
+                style
+                    .bg(if selected {
+                        colors.bg_active
+                    } else {
+                        colors.bg_hover
+                    })
+                    .border_1()
+                    .border_color(colors.border_subtle)
             })
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.set_hovered_project(&project_for_hover, *hovered, cx);
@@ -486,22 +515,48 @@ impl ThreadsBlock {
                     );
                 }),
             )
-            .child(crate::icons::icon(
-                if collapsed {
-                    crate::icons::Icon::ChevronRight
-                } else {
-                    crate::icons::Icon::ChevronDown
-                },
-                colors.text_tertiary,
-            ))
-            .child(crate::icons::icon(
-                crate::icons::Icon::Folder,
-                if selected {
-                    colors.brand_primary
-                } else {
-                    colors.text_secondary
-                },
-            ))
+            .on_key_down(
+                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        this.control_action(
+                            Control::ToggleProject(project_for_keyboard.clone()),
+                            window,
+                            cx,
+                        );
+                    }
+                }),
+            )
+            .child(
+                div()
+                    .id(ElementId::Name(
+                        format!(
+                            "project-folder-{}-{}",
+                            project.id,
+                            if collapsed { "closed" } else { "open" }
+                        )
+                        .into(),
+                    ))
+                    .debug_selector({
+                        let id = project.id.clone();
+                        move || {
+                            format!(
+                                "project-folder-{id}-{}",
+                                if collapsed { "closed" } else { "open" }
+                            )
+                        }
+                    })
+                    .size(px(16.))
+                    .flex_shrink_0()
+                    .child(crate::icons::icon(
+                        if collapsed {
+                            crate::icons::Icon::Folder
+                        } else {
+                            crate::icons::Icon::FolderOpen
+                        },
+                        colors.text_secondary,
+                    )),
+            )
             .child(
                 div()
                     .id(ElementId::Name(
@@ -515,11 +570,7 @@ impl ThreadsBlock {
                     .min_w_0()
                     .truncate()
                     .text_size(px(Typography::SIDEBAR))
-                    .text_color(if selected {
-                        colors.brand_primary
-                    } else {
-                        colors.text_primary
-                    })
+                    .text_color(colors.text_primary)
                     .child(project.name.clone()),
             )
             .child(self.vector_control(

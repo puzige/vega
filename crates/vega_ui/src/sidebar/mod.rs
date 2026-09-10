@@ -45,7 +45,7 @@ use std::path::Path;
 
 use gpui_kit::component::{
     Sizable,
-    button::{Button, ButtonRounded, ButtonVariants},
+    button::{Button, ButtonVariants},
 };
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -523,7 +523,7 @@ impl Sidebar {
                     .items_center()
                     .gap_2()
                     .px_2()
-                    .rounded_md()
+                    .rounded_lg()
                     .text_color(colors.text_primary)
                     .text_size(px(Typography::SIDEBAR))
                     .cursor_pointer()
@@ -559,30 +559,51 @@ impl Sidebar {
         const HOVER_GROUP: &str = "sidebar-settings-control";
 
         div()
-            .id("sidebar-settings-surface")
-            .debug_selector(|| "sidebar-settings-surface".into())
-            .group(HOVER_GROUP)
             .w_full()
-            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .flex_shrink_0()
-            .group_hover(HOVER_GROUP, move |style| style.bg(colors.bg_hover))
-            .group_active(HOVER_GROUP, move |style| style.bg(colors.bg_active))
+            .px(px(Layout::SIDEBAR_PADDING))
+            .pb(px(Layout::SIDEBAR_PADDING))
             .child(
-                Button::new("sidebar-settings")
-                    .debug_selector(|| "sidebar-settings".into())
+                div()
+                    .id("sidebar-settings-surface")
+                    .debug_selector(|| "sidebar-settings-surface".into())
                     .group(HOVER_GROUP)
-                    .text()
-                    .small()
-                    .rounded(ButtonRounded::None)
                     .w_full()
-                    .h_full()
-                    .label("设置")
-                    .accessibility_label("设置 (⌘,)")
-                    .tooltip("设置 (⌘,)")
-                    .on_click(|_, _, cx| {
-                        cx.set_global(SettingsOpen(true));
-                        cx.refresh_windows();
-                    }),
+                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                    .rounded_lg()
+                    .overflow_hidden()
+                    .group_hover(HOVER_GROUP, move |style| style.bg(colors.bg_hover))
+                    .group_active(HOVER_GROUP, move |style| style.bg(colors.bg_active))
+                    .child(
+                        Button::new("sidebar-settings")
+                            .debug_selector(|| "sidebar-settings".into())
+                            .group(HOVER_GROUP)
+                            .text()
+                            .small()
+                            .w_full()
+                            .h_full()
+                            .rounded_lg()
+                            .px_2()
+                            .text_color(colors.text_primary)
+                            .accessibility_label("设置 (⌘,)")
+                            .tooltip("设置 (⌘,)")
+                            .on_click(|_, _, cx| {
+                                cx.set_global(SettingsOpen(true));
+                                cx.refresh_windows();
+                            })
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::Settings,
+                                colors.text_secondary,
+                            ))
+                            .child("设置")
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(colors.text_tertiary)
+                                    .child("⌘,"),
+                            ),
+                    ),
             )
             .into_any_element()
     }
@@ -620,7 +641,7 @@ impl Render for Sidebar {
                             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                             .mx_2()
                             .px_2()
-                            .rounded_md()
+                            .rounded_lg()
                             .flex()
                             .items_center()
                             .text_size(px(Typography::SIDEBAR))

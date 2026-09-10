@@ -131,6 +131,24 @@ fn click(f: &Fixture, cx: &mut gpui_kit::TestAppContext, selector: impl Into<Str
     cx.run_until_parked();
 }
 
+fn bounds(
+    f: &Fixture,
+    cx: &mut gpui_kit::TestAppContext,
+    selector: impl Into<String>,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    let selector: &'static str = Box::leak(selector.into().into_boxed_str());
+    gpui_kit::VisualTestContext::from_window(f.window.into(), cx)
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"))
+}
+
+fn absent(f: &Fixture, cx: &mut gpui_kit::TestAppContext, selector: impl Into<String>) -> bool {
+    let selector: &'static str = Box::leak(selector.into().into_boxed_str());
+    gpui_kit::VisualTestContext::from_window(f.window.into(), cx)
+        .debug_bounds(selector)
+        .is_none()
+}
+
 fn snapshot(f: &Fixture) -> SidebarOrganizationSnapshot {
     service::snapshot(&Store::open(f.dir.path().join("organization.db")).unwrap()).unwrap()
 }
@@ -300,6 +318,22 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
     assert!(visual.debug_bounds("project-add-p").is_some());
     assert!(visual.debug_bounds("project-more-p").is_some());
 
+    let project_row = bounds(&f, cx, "project-header-p");
+    let project_folder = bounds(&f, cx, "project-folder-p-open");
+    let project_label = bounds(&f, cx, "organization-project-p");
+    let task_title = bounds(&f, cx, format!("project-thread-row-title-{}", f.first.id));
+    assert!(absent(&f, cx, "project-folder-p-closed"));
+    assert!(
+        (f32::from(project_folder.left() - project_row.left()) - 8.0).abs() <= 1.0,
+        "folder must start at the content inset without a Chevron slot"
+    );
+    assert!(
+        f32::from(project_label.left() - task_title.left()).abs() <= 1.0,
+        "project label and child task title must share the same content column"
+    );
+    assert_eq!(f32::from(bounds(&f, cx, "project-add-p").size.width), 24.0);
+    assert_eq!(f32::from(bounds(&f, cx, "project-more-p").size.width), 24.0);
+
     click(&f, cx, "organization-new-session");
     let standalone_id = cx.update(|cx| {
         assert!(cx.global::<SelectedProject>().0.is_none());
@@ -358,6 +392,16 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
             .collapsed
             .contains(&SidebarCollapseTarget::Project("p".into()))
     );
+    let _ = bounds(&f, cx, "project-folder-p-closed");
+    assert!(absent(&f, cx, "project-folder-p-open"));
+    assert!(absent(
+        &f,
+        cx,
+        format!("project-thread-row-title-{}", f.first.id)
+    ));
+    click(&f, cx, "project-header-p");
+    let _ = bounds(&f, cx, "project-folder-p-open");
+    let _ = bounds(&f, cx, format!("project-thread-row-title-{}", f.first.id));
 }
 
 #[gpui_kit::test]

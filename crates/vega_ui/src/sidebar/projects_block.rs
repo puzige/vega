@@ -519,7 +519,7 @@ impl ProjectsBlock {
                     .flex()
                     .items_center()
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .rounded_md()
+                    .rounded_lg()
                     .overflow_hidden()
                     .text_size(px(Typography::SIDEBAR))
                     .when(is_selected, move |row| row.bg(colors.bg_active))
@@ -546,20 +546,12 @@ impl ProjectsBlock {
                             )
                             .child(crate::icons::icon(
                                 crate::icons::Icon::Folder,
-                                if is_selected {
-                                    colors.brand_primary
-                                } else {
-                                    colors.text_secondary
-                                },
+                                colors.text_secondary,
                             ))
                             .child(
                                 div()
                                     .truncate()
-                                    .text_color(if is_selected {
-                                        colors.brand_primary
-                                    } else {
-                                        colors.text_primary
-                                    })
+                                    .text_color(colors.text_primary)
                                     .child(project.name.clone()),
                             )
                             .children(branch.map(|branch| {

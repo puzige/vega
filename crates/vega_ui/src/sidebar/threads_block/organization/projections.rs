@@ -192,88 +192,163 @@ impl ThreadsBlock {
             });
             let before = project.id.clone();
             let context_project = project.id.clone();
+            let toggle_project = project.id.clone();
+            let keyboard_project = project.id.clone();
+            let selected = cx.global::<SelectedProject>().0.as_ref() == Some(&project.id);
             let drag = OrganizationDrag {
                 kind: DragKind::Project(project.id.clone()),
                 label: project.name.clone(),
             };
-            let header =
-                div()
-                    .on_children_prepainted(move |bounds, window, _| {
-                        if let Some(requested) = &reveal
-                            && requested.get()
-                            && let Some(bounds) = bounds.first()
-                        {
-                            requested.set(false);
-                            window.request_autoscroll(*bounds);
-                        }
-                    })
-                    .id(ElementId::Name(
-                        format!("project-header-{}", project.id).into(),
-                    ))
-                    .debug_selector({
-                        let id = project.id.clone();
-                        move || format!("project-header-{id}")
-                    })
-                    .flex()
-                    .items_center()
-                    .on_mouse_up(
-                        MouseButton::Right,
-                        cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.control_action(
-                                Control::Menu(OrganizationMenu::Project(context_project.clone())),
-                                window,
-                                cx,
-                            );
-                        }),
-                    )
-                    .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
-                    .drag_over::<OrganizationDrag>(move |s, _, _, _| s.bg(colors.bg_active))
-                    .on_drop(cx.listener(move |this, drag: &OrganizationDrag, _, cx| {
-                        if let DragKind::Project(id) = &drag.kind
-                            && id != &before
-                        {
-                            this.submit_organization(
-                                SidebarOrganizationAction::MoveProject {
-                                    project_id: id.clone(),
-                                    before_id: Some(before.clone()),
-                                },
-                                cx,
-                            );
-                        }
+            let header = div()
+                .on_children_prepainted(move |bounds, window, _| {
+                    if let Some(requested) = &reveal
+                        && requested.get()
+                        && let Some(bounds) = bounds.first()
+                    {
+                        requested.set(false);
+                        window.request_autoscroll(*bounds);
+                    }
+                })
+                .id(ElementId::Name(
+                    format!("project-header-{}", project.id).into(),
+                ))
+                .debug_selector({
+                    let id = project.id.clone();
+                    move || format!("project-header-{id}")
+                })
+                .flex()
+                .items_center()
+                .on_mouse_up(
+                    MouseButton::Right,
+                    cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                    }))
-                    .child(self.organization_control(
-                        format!("project-collapse-{}", project.id),
-                        "展开或收起项目",
-                        Control::Collapse(target),
-                        false,
-                        cx,
-                    ))
-                    .child(div().flex_1().min_w_0().overflow_hidden().child(
-                        self.organization_control(
-                            format!("organization-project-{}", project.id),
-                            project.name.clone(),
-                            Control::Project(project.id.clone()),
-                            cx.global::<SelectedProject>().0.as_ref() == Some(&project.id),
+                        this.control_action(
+                            Control::Menu(OrganizationMenu::Project(context_project.clone())),
+                            window,
                             cx,
-                        ),
-                    ))
-                    .children(branch.map(|branch| {
-                        div()
-                            .max_w(px(85.))
-                            .truncate()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_tertiary)
-                            .child(branch)
-                    }))
-                    .child(self.organization_control(
-                        format!("project-menu-{}", project.id),
-                        "更多项目操作",
-                        Control::Menu(OrganizationMenu::Project(project.id.clone())),
-                        false,
-                        cx,
-                    ));
+                        );
+                    }),
+                )
+                .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                .drag_over::<OrganizationDrag>(move |s, _, _, _| s.bg(colors.bg_active))
+                .on_drop(cx.listener(move |this, drag: &OrganizationDrag, _, cx| {
+                    if let DragKind::Project(id) = &drag.kind
+                        && id != &before
+                    {
+                        this.submit_organization(
+                            SidebarOrganizationAction::MoveProject {
+                                project_id: id.clone(),
+                                before_id: Some(before.clone()),
+                            },
+                            cx,
+                        );
+                    }
+                    cx.stop_propagation();
+                }))
+                .child(
+                    div()
+                        .id(ElementId::Name(
+                            format!("organization-project-{}", project.id).into(),
+                        ))
+                        .debug_selector({
+                            let id = project.id.clone();
+                            move || format!("organization-project-{id}")
+                        })
+                        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                        .px_2()
+                        .rounded_lg()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .flex_1()
+                        .min_w_0()
+                        .focusable()
+                        .tab_stop(true)
+                        .role(gpui_kit::Role::Button)
+                        .aria_label(format!(
+                            "{}，{}",
+                            project.name,
+                            if collapsed { "已收起" } else { "已展开" }
+                        ))
+                        .aria_expanded(!collapsed)
+                        .cursor_pointer()
+                        .when(selected, |row| row.bg(colors.bg_active))
+                        .hover(move |row| {
+                            row.bg(if selected {
+                                colors.bg_active
+                            } else {
+                                colors.bg_hover
+                            })
+                        })
+                        .focus_visible(move |row| {
+                            row.bg(if selected {
+                                colors.bg_active
+                            } else {
+                                colors.bg_hover
+                            })
+                            .border_1()
+                            .border_color(colors.border_subtle)
+                        })
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                if cx.has_active_drag() {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                this.control_action(
+                                    Control::ToggleProject(toggle_project.clone()),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
+                        .on_key_down(cx.listener(
+                            move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    cx.stop_propagation();
+                                    this.control_action(
+                                        Control::ToggleProject(keyboard_project.clone()),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            },
+                        ))
+                        .child(crate::icons::icon(
+                            if collapsed {
+                                crate::icons::Icon::Folder
+                            } else {
+                                crate::icons::Icon::FolderOpen
+                            },
+                            colors.text_secondary,
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(Typography::SIDEBAR))
+                                .text_color(colors.text_primary)
+                                .child(project.name.clone()),
+                        )
+                        .children(branch.map(|branch| {
+                            div()
+                                .max_w(px(85.))
+                                .truncate()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_tertiary)
+                                .child(branch)
+                        })),
+                )
+                .child(self.vector_control(
+                    format!("project-menu-{}", project.id),
+                    "更多项目操作",
+                    crate::icons::Icon::More,
+                    Control::Menu(OrganizationMenu::Project(project.id.clone())),
+                    false,
+                    cx,
+                ));
             body = body.child(header);
             if !collapsed {
                 let rows: Vec<_> = sorted_threads(&self.threads, preferences.sort)
@@ -506,22 +581,19 @@ impl ThreadsBlock {
             .flex()
             .items_center()
             .gap_1()
-            .rounded_md()
-            .px_3()
+            .rounded_lg()
+            .pl(px(28.))
+            .pr_3()
             .cursor_pointer()
             .text_size(px(Typography::SIDEBAR))
-            .text_color(if selected {
-                colors.brand_primary
-            } else {
-                colors.text_primary
-            })
+            .text_color(colors.text_primary)
             .when(selected, |row| row.bg(colors.bg_active))
             .hover(move |style| {
-                if selected {
-                    style.bg(colors.brand_soft)
+                style.bg(if selected {
+                    colors.bg_active
                 } else {
-                    style.bg(colors.bg_hover)
-                }
+                    colors.bg_hover
+                })
             })
             .on_mouse_up(
                 MouseButton::Left,

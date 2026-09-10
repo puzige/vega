@@ -71,8 +71,8 @@ pub const LIGHT: ThemeColors = ThemeColors {
     bg_base: rgba(0xFFFFFFFF),
     bg_sidebar: rgba(0xFAF9F9FF),
     bg_elevated: rgba(0xFFFFFFFF),
-    bg_hover: rgba(0xECECECFF),
-    bg_active: rgba(0xEAF2FCFF),
+    bg_hover: rgba(0xF3F3F3FF),
+    bg_active: rgba(0xEDEDEDFF),
     border_subtle: rgba(0xE8E8E8FF),
     text_primary: rgba(0x191C1FFF),
     text_secondary: rgba(0x676767FF),
@@ -102,8 +102,8 @@ pub const DARK: ThemeColors = ThemeColors {
     bg_base: rgba(0x202020FF),
     bg_sidebar: rgba(0x191919FF),
     bg_elevated: rgba(0x2A2A2AFF),
-    bg_hover: rgba(0x323232FF),
-    bg_active: rgba(0x203247FF),
+    bg_hover: rgba(0x282828FF),
+    bg_active: rgba(0x303030FF),
     border_subtle: rgba(0x383838FF),
     text_primary: rgba(0xEDEDEDFF),
     text_secondary: rgba(0xABABABFF),
@@ -369,6 +369,8 @@ mod tests {
         assert_eq!(u32::from(DARK.bg_base), 0x202020FF);
         assert_eq!(u32::from(DARK.text_primary), 0xEDEDEDFF);
         assert_eq!(u32::from(DARK.code_bg), 0x262626FF);
+        assert_eq!(u32::from(DARK.bg_hover), 0x282828FF);
+        assert_eq!(u32::from(DARK.bg_active), 0x303030FF);
     }
 
     #[test]
@@ -384,7 +386,8 @@ mod tests {
         assert_eq!(u32::from(LIGHT.code_bg), 0xF6F6F6FF);
         assert_eq!(u32::from(LIGHT.accent), 0x3478D8FF);
         assert_eq!(u32::from(LIGHT.brand_primary_strong), 0x245AAFFF);
-        assert_eq!(u32::from(LIGHT.bg_active), 0xEAF2FCFF);
+        assert_eq!(u32::from(LIGHT.bg_hover), 0xF3F3F3FF);
+        assert_eq!(u32::from(LIGHT.bg_active), 0xEDEDEDFF);
     }
 
     #[test]

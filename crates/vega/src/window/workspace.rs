@@ -1458,18 +1458,18 @@ mod tests {
         let button = shell_bounds(window, "sidebar-settings", cx);
         assert_close(
             surface.left() - sidebar.left(),
-            0.0,
-            "painted Settings surface aligns with Sidebar on the left",
+            Layout::SIDEBAR_PADDING,
+            "painted Settings surface keeps the Sidebar left inset",
         );
         assert_close(
-            surface.right() - sidebar.right(),
-            0.0,
-            "painted Settings surface aligns with Sidebar on the right",
+            sidebar.right() - surface.right(),
+            Layout::SIDEBAR_PADDING,
+            "painted Settings surface keeps the Sidebar right inset",
         );
         assert_close(
-            surface.bottom() - sidebar.bottom(),
-            0.0,
-            "painted Settings surface aligns with Sidebar on the bottom",
+            sidebar.bottom() - surface.bottom(),
+            Layout::SIDEBAR_PADDING,
+            "painted Settings surface keeps the Sidebar bottom inset",
         );
         assert_close(
             surface.size.height,

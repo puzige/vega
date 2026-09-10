@@ -834,7 +834,7 @@ impl ThreadsBlock {
             .items_center()
             .gap_1()
             .px_1()
-            .rounded_md()
+            .rounded_lg()
             .cursor_pointer()
             .hover(move |s| s.bg(colors.bg_hover))
             .on_mouse_up(
@@ -944,7 +944,7 @@ impl ThreadsBlock {
             .h(px(row_height))
             .flex()
             .items_center()
-            .rounded_md()
+            .rounded_lg()
             .overflow_hidden()
             .text_size(px(Typography::SIDEBAR))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -954,7 +954,7 @@ impl ThreadsBlock {
                 selected || (actions_visible && !editing_this_row),
                 move |row| {
                     row.bg(if selected {
-                        colors.brand_soft
+                        colors.bg_active
                     } else {
                         colors.bg_hover
                     })
@@ -999,14 +999,18 @@ impl ThreadsBlock {
                         }))
                         .child(
                             div()
+                                .id(ElementId::Name(
+                                    format!("{selector_prefix}title-{}", thread.id).into(),
+                                ))
+                                .debug_selector({
+                                    let id = thread.id.clone();
+                                    let selector_prefix = selector_prefix.to_owned();
+                                    move || format!("{selector_prefix}title-{id}")
+                                })
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_color(if selected {
-                                    colors.brand_primary
-                                } else {
-                                    colors.text_primary
-                                })
+                                .text_color(colors.text_primary)
                                 .when(thread.unread, |title| {
                                     title.font_weight(Typography::HEADING_CARD_WEIGHT)
                                 })
