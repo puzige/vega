@@ -38,6 +38,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-r24-sidebar-footer-edge-to-edge.md](docs/vega-r24-sidebar-footer-edge-to-edge.md) | 用户复验修正：Sidebar 设置 footer 铺满 rail 左右与底部边界 |
 | [vega-r24-sidebar-footer-edge-to-edge-delivery.md](docs/vega-r24-sidebar-footer-edge-to-edge-delivery.md) | R24 可见 surface 自动化、打包重装与 Light/Dark 原生验收记录 |
 | [vega-r25-sidebar-navigation.md](docs/vega-r25-sidebar-navigation.md) | Codex 风格中性侧栏：文件夹状态图标、灰色选中态、柔和圆角与内嵌设置行 |
+| [vega-r25-sidebar-navigation-delivery.md](docs/vega-r25-sidebar-navigation-delivery.md) | R25 自动化、打包重装与 Light/Dark 原生验收记录 |
 | [vega-tech-spec-p1.md](docs/vega-tech-spec-p1.md) | Phase 1 SDD 技术规格（DDL/trait/状态机） |
 | [vega-tech-risks.md](docs/vega-tech-risks.md) | 五大技术难点攻坚方案 |
 | [vega-exec-guide.md](docs/vega-exec-guide.md) | 执行宪法（红线/白名单/验收协议） |
