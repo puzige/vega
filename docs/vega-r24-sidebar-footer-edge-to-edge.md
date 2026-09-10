@@ -1,7 +1,7 @@
 # Vega R24 Sidebar footer edge-to-edge correction — implementation contract
 
-**Status:** implementation contract  
-**Frozen:** 2026-09-10 (Asia/Shanghai)  
+**Status:** implementation contract
+**Frozen:** 2026-09-10 (Asia/Shanghai)
 **Scope:** the persistent Settings footer at the bottom of the main Sidebar.
 
 ## 1. Correction to R23
@@ -27,7 +27,7 @@ authoritative.
   of that content wrapper.
 - Keep 12px breathing room between the scrollable content region and the footer
   without restoring side or bottom margins around the footer.
-- Shared ghost-button hover, pressed, focus, Light/Dark colors, centered label,
+- Existing Vega hover/pressed/focus tokens, Light/Dark colors, centered label,
   and accessibility behavior remain authoritative. No color literal or new
   geometry number may be introduced.
 
@@ -36,16 +36,18 @@ authoritative.
 - The Sidebar root owns the full rail bounds and clipping.
 - A dedicated inner content column owns the existing 12px top/horizontal/bottom
   padding and the current vertical gaps for every non-footer child.
-- The Settings button is a direct sibling of that inner column and fills the
-  full root width. Do not rely on negative margins or a hard-coded width.
+- A painted Settings surface is a direct sibling of that inner column and fills
+  the full root width. Its interactive button fills the surface. Do not rely on
+  negative margins or a hard-coded width.
 
 ## 4. Acceptance
 
-1. The production-mounted GPUI test measures `sidebar-settings.left ==
-   sidebar.left`, `sidebar-settings.right == sidebar.right`, and
-   `sidebar-settings.bottom == sidebar.bottom`, each within ±1px.
-2. The footer is 32px high while `sidebar-new-task` remains inset by 12px on
-   both sides.
+1. The production-mounted GPUI test measures
+   `sidebar-settings-surface.left == sidebar.left`,
+   `sidebar-settings-surface.right == sidebar.right`, and
+   `sidebar-settings-surface.bottom == sidebar.bottom`, each within ±1px.
+2. The painted surface is 32px high, `sidebar-settings` fills all four of its
+   bounds, and `sidebar-new-task` remains inset by 12px on both sides.
 3. Those assertions pass at 240px, 304px, and 365px Sidebar widths.
 4. Clicking the footer still opens General Settings; `Cmd+,`, tooltip, focus,
    Sidebar resize/collapse, and scroll behavior are unchanged.
