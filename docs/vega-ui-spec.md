@@ -158,3 +158,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.6 (2026-09-08) R18 品牌 UI 基线：采用批准的 R17 蓝色终端/单星/微笑光标作为产品 UI 与 icon 的几何和强调来源；新增品牌 token，active/selection 改为低对比蓝灰，统一 16px、1.45px 柔角 vector icon；success/danger/warning 语义色与 R15 IA 保持不变。
 - v0.7 (2026-09-10) R20 设计守则收口：以 [Vega 设计守则](vega-design-guidelines.md)、[R19 主窗口壳层](vega-r19-codex-parity.md)与 `vega_theme` 当前值校正 Light 表面色、32px Sidebar、28px 空态、壳层几何及单操作行 Composer；外部解包 token 不作为输入。
 - v0.8 (2026-09-10) R21 当前截图对标：Sidebar 改为默认 304px、240–365px 可拖拽并独立记忆；主壳层采用平直分栏，Environment rail 320px，Settings 使用同宽导航 rail 与 744px 内容列；Composer 冻结 736px 与 28px 发送/停止控件。精确状态与证据见 [R21 screenshot parity](vega-r21-screenshot-parity.md)。
+- v0.9 (2026-09-10) R23 Sidebar footer 修正：常驻设置入口使用完整 32px 行高并铺满 Sidebar 的 12px 内边距内容列；不得叠加额外水平缩进或固定宽度。精确验收见 [R23 Sidebar footer fill](vega-r23-sidebar-footer-fill.md)。
