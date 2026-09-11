@@ -1,6 +1,6 @@
 # Vega 设计守则
 
-**版本** v1.28 · 2026-09-12
+**版本** v1.29 · 2026-09-12
 
 **状态** 当前视觉语言与设计 token 的规范入口
 
@@ -212,7 +212,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Sidebar 对话行静止时只展示标题，不展示相对时间；Pinned 行也不重复展示所属项目。尾部菜单触发器仅在 hover、键盘聚焦或菜单打开时显现，并保持固定命中区避免布局跳动。每个展开项目默认显示 5 条非置顶任务，超出时使用独立的 `Show More / Show Less` 渐进展开，控件与 32px 项目子任务内容列对齐。
 - 全局搜索入口使用窗口顶部共享控制组中的放大镜按钮，紧邻 Sidebar 显隐按钮并位于 Back / Forward 之前；Sidebar 展开或隐藏时位置和数量都保持稳定。按钮带“搜索 (⌘K)”可访问名称与提示，点击或键盘激活打开现有搜索面板；保留 Command-K，Sidebar 内容区不再重复渲染搜索入口。此规则取代 R39 的 Sidebar 局部位置，精确规格见 [R41 Titlebar Search adjacency](vega-r41-titlebar-search.md)。
 - 窗口顶部 `Sidebar / Search / Back / Forward` 四个控制统一使用 28×28px 方形交互面、16px 居中图标和 4px 相邻间隔；禁用的历史按钮也保留同尺寸槽位，保证四个图标中心恒定相隔 32px。精确规格见 [R43 Titlebar control spacing](vega-r43-titlebar-control-spacing.md)。
-- 主头部尾部是恰好三个永久槽位（切换环境 / 切换终端 ⌘J / 切换右侧面板），统一 28×28 交互面、16px 居中图标与 6px 相邻间隔；每槽只表达一个全局布局表面，选中态由该表面真实 rendered 可见性驱动（`hidden == false` 不算可见），禁用时保留占位、图标降为 tertiary、不回流；R43 的 4px 间隔规则仍只适用于前导 Sidebar/Search/Back/Forward 组。Environment overlay（<1230px）支持 Esc 与点击卡片外部关闭并回焦 Composer，rail 模式无 Esc 契约。精确规格见 [R45 Header shell controls and Composer alignment](vega-r45-shell-controls-composer.md)。
+- 主头部尾部是恰好三个永久槽位（切换环境 / 切换终端 ⌘J / 切换右侧面板），统一 28×28 交互面、16px 居中图标与 6px 相邻间隔；每槽只表达一个全局布局表面，选中态由该表面真实 rendered 可见性驱动（`hidden == false` 不算可见），禁用时保留占位、图标降为 tertiary、不回流；R43 的 4px 间隔规则仍只适用于前导 Sidebar/Search/Back/Forward 组。三个槽位窗口锚定在窗口右上角（不属于会话列、rail 或任何 pane），任何面板开合都不得改变其坐标；凡占据窗口顶部条带的面板头部（右面板、任一面板最大化）都预留同一尾部槽位带，让面板自身尾部动作排在槽位左侧，底仓头部不预留。Environment rail 与 overlay 卡片从 header 行下方开始，不覆盖控件。Environment overlay（<1230px）支持 Esc 与点击卡片外部关闭并回焦 Composer，rail 模式无 Esc 契约。精确规格见 [R45 Header shell controls and Composer alignment](vega-r45-shell-controls-composer.md)，几何归属与顶部条带归属由 [R46 Window-anchored shell slots](vega-r46-window-anchored-shell-slots.md) 取代。
 - 全局搜索面板使用独立于紧凑菜单的 520px 宽度与 480px 最大高度 token；宽度在窄窗口保留左右各 16px，短窗口按既有顶部和底部安全区收缩。输入、范围切换与键盘提示保持可见，长结果只在结果区内部滚动，禁止让面板随结果延伸成接近整窗的窄长列。精确规格见 [R40 Search palette geometry](vega-r40-search-palette-geometry.md)。
 - `Pinned` 存在时，其最后一条任务与后续 `Projects` 标题之间使用 12px 分组间距（基础 8px 区块间距加一个 4px 节奏单位）；这一补偿只属于 Pinned→Projects，不改变其他区块距离或任务行选中背景。
 - Pinned 任务标题继续与 `Pinned` 区块标题和顶层 Recents 标题落在同一内容列；其选中、hover 与焦点表面向该内容列左侧扩展 8px，并在表面内部保留等量的 8px 前导 padding，避免文字贴住圆角背景且不移动标题列。
@@ -270,6 +270,7 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 ## 15. 变更记录
 
+- v1.29 (2026-09-12)：主头部三个壳层槽位改为窗口锚定（窗口右上角绝对定位，垂直居中于 46px header band），任何面板开合不再改变槽位坐标；占据窗口顶部条带的面板头部（右面板、任一面板最大化）预留同一尾部槽位带，面板自身尾部动作排在槽位左侧，底仓头部不预留；Environment rail 与 overlay 卡片从 header 行下方开始，不再覆盖控件。R45 的三槽位语义、禁用保位、选中态规则与 Composer 几何全部不变。精确规格见 [R46 Window-anchored shell slots](vega-r46-window-anchored-shell-slots.md)。
 - v1.28 (2026-09-12)：主头部尾部收敛为三个永久 28×28 槽位（环境 / 终端 ⌘J / 右侧），6px 间隔、真实 rendered 可见性驱动选中态、禁用保位；Environment overlay 增加 Esc 与点击外部关闭并回焦 Composer；Composer 包裹列 12/16px padding token 化（值不变）。精确规格见 [R45 Header shell controls and Composer alignment](vega-r45-shell-controls-composer.md)。
 - v1.27 (2026-09-11)：冻结窄窗口下不可见 right terminal 的恢复规则：全局入口首次操作即迁移同一 tab/PTY 到 bottom，不能先隐藏幽灵 pane 或新建终端。
 - v1.26 (2026-09-11)：区分 Workspace 布局动作的焦点语义：Dock 保留 Composer 焦点，Maximize/Restore 激活当前所选内容，避免最大化后输入落入已卸载 Composer。
