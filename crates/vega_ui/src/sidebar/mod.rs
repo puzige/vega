@@ -506,29 +506,6 @@ impl Sidebar {
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_secondary)
             .child(crate::navigation::controls(cx, true))
-            .child(
-                div()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(
-                        Button::new("sidebar-search-button")
-                            .debug_selector(|| "sidebar-search-button".into())
-                            .text()
-                            .small()
-                            .accessibility_label("搜索 (⌘K)")
-                            .tooltip("搜索 (⌘K)")
-                            .on_click(|_, window, cx| {
-                                cx.stop_propagation();
-                                window.dispatch_action(
-                                    Box::new(crate::command_palette::OpenPalette),
-                                    cx,
-                                );
-                            })
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::Search,
-                                colors.text_secondary,
-                            )),
-                    ),
-            )
             .into_any_element()
     }
 

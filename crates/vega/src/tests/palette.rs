@@ -51,8 +51,46 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
         .unwrap();
     cx.run_until_parked();
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let search = visual.debug_bounds("sidebar-search-button").unwrap();
+    let sidebar = visual.debug_bounds("toggle-sidebar").unwrap();
+    let search = visual.debug_bounds("titlebar-search-button").unwrap();
+    let back = visual.debug_bounds("navigation-back").unwrap();
+    let forward = visual.debug_bounds("navigation-forward").unwrap();
+    assert_eq!(f32::from(search.left() - sidebar.right()), 4.0);
+    assert_eq!(f32::from(back.left() - search.right()), 4.0);
+    assert_eq!(f32::from(forward.left() - back.right()), 4.0);
+    assert!(visual.debug_bounds("sidebar-search-button").is_none());
     visual.simulate_click(search.center(), Default::default());
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.palette.view.is_some())
+    });
+    cx.simulate_keystrokes(window.into(), "escape");
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.palette.view.is_none())
+    });
+    cx.update(|cx| {
+        cx.set_global(SidebarCollapsed(true));
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    let mut hidden_visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let hidden_sidebar = hidden_visual.debug_bounds("toggle-sidebar").unwrap();
+    let hidden_search = hidden_visual
+        .debug_bounds("titlebar-search-button")
+        .unwrap();
+    let hidden_back = hidden_visual.debug_bounds("navigation-back").unwrap();
+    let hidden_forward = hidden_visual.debug_bounds("navigation-forward").unwrap();
+    assert_eq!(
+        f32::from(hidden_search.left() - hidden_sidebar.right()),
+        4.0
+    );
+    assert_eq!(f32::from(hidden_back.left() - hidden_search.right()), 4.0);
+    assert_eq!(f32::from(hidden_forward.left() - hidden_back.right()), 4.0);
+    assert!(
+        hidden_visual
+            .debug_bounds("sidebar-search-button")
+            .is_none()
+    );
+    hidden_visual.simulate_click(hidden_search.center(), Default::default());
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| root.palette.view.is_some())
     });

@@ -1,4 +1,8 @@
 //! Window-level navigation actions and shared sidebar/collapsed controls.
+use gpui_kit::component::{
+    Sizable,
+    button::{Button, ButtonVariants},
+};
 use gpui_kit::{prelude::*, *};
 use vega_theme::theme;
 actions!(
@@ -51,6 +55,7 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
         .items_center()
         .gap_1()
         .child(sidebar_control(cx, sidebar_visible))
+        .child(search_control(cx))
         .children(
             [
                 (
@@ -143,11 +148,34 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
         .into_any_element()
 }
 
-/// Render only the sidebar visibility control for the compact sidebar chrome.
+/// Shared Search control, adjacent to Sidebar in either window layout.
+fn search_control(cx: &App) -> AnyElement {
+    let colors = theme(cx).colors;
+    div()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            Button::new("titlebar-search-button")
+                .debug_selector(|| "titlebar-search-button".into())
+                .text()
+                .small()
+                .accessibility_label("搜索 (⌘K)")
+                .tooltip("搜索 (⌘K)")
+                .on_click(|_, window, cx| {
+                    cx.stop_propagation();
+                    window.dispatch_action(Box::new(crate::command_palette::OpenPalette), cx);
+                })
+                .child(crate::icons::icon(
+                    crate::icons::Icon::Search,
+                    colors.text_secondary,
+                )),
+        )
+        .into_any_element()
+}
+
+/// Render only the Sidebar visibility control for callers that need it alone.
 ///
-/// Back/forward remain available through their keyboard shortcuts and the
-/// collapsed-window toolbar; the visible rail keeps its top row focused on
-/// the three shell controls (new task, search, and sidebar visibility).
+/// Window titlebars should use [`controls`] so Search and history stay in the
+/// shared, stable order.
 pub fn sidebar_toggle(cx: &App, sidebar_visible: bool) -> AnyElement {
     sidebar_control(cx, sidebar_visible)
 }
@@ -267,4 +295,59 @@ pub fn finish_task_mutation(cx: &mut App) {
     state.epoch = state.epoch.wrapping_add(1);
     state.pending = state.pending.saturating_sub(1);
     cx.set_global(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Context, KeyDownEvent, KeyUpEvent, Keystroke, Render, Window, div};
+
+    use super::search_control;
+
+    struct SearchControlHarness;
+
+    impl Render for SearchControlHarness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().tab_group().child(search_control(cx))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn shared_search_control_keyboard_activation_dispatches_open_palette(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let activations = Arc::new(AtomicUsize::new(0));
+        let observed = activations.clone();
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            crate::init(cx);
+            cx.set_global(vega_theme::Theme::light());
+            cx.on_action(move |_: &crate::command_palette::OpenPalette, _| {
+                observed.fetch_add(1, Ordering::SeqCst);
+            });
+        });
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| cx.new(|_| SearchControlHarness))
+                .expect("search control window")
+        });
+        cx.run_until_parked();
+        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.focus_next(cx);
+        });
+        let keystroke = Keystroke::parse("space").expect("Space keystroke");
+        visual.simulate_event(KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        visual.simulate_event(KeyUpEvent { keystroke });
+        assert_eq!(activations.load(Ordering::SeqCst), 1);
+    }
 }

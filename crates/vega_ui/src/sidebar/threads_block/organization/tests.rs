@@ -1092,14 +1092,19 @@ async fn r31_sidebar_typography_restores_compact_mounted_sizes(cx: &mut gpui_kit
 }
 
 #[gpui_kit::test]
-async fn r39_search_uses_toolbar_and_releases_navigation_row_space(
+async fn r41_search_uses_shared_titlebar_controls_and_releases_navigation_row_space(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     fn assert_geometry(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
         let new_task = bounds(f, cx, "sidebar-new-task");
-        let search = bounds(f, cx, "sidebar-search-button");
+        let sidebar = bounds(f, cx, "toggle-sidebar");
+        let search = bounds(f, cx, "titlebar-search-button");
+        let back = bounds(f, cx, "navigation-back");
         assert!(search.bottom() < new_task.top());
         assert!(search.size.width < new_task.size.width);
+        assert_eq!(f32::from(search.left() - sidebar.right()), 4.0);
+        assert_eq!(f32::from(back.left() - search.right()), 4.0);
+        assert!(absent(f, cx, "sidebar-search-button"));
         assert!(absent(f, cx, "sidebar-search"));
         let organization = bounds(f, cx, "sidebar-scroll");
         assert_eq!(f32::from(organization.top() - new_task.bottom()), 12.0);
