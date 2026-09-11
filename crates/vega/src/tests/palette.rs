@@ -10,6 +10,45 @@ impl Render for PaletteHarness {
     }
 }
 
+fn assert_titlebar_control_grid(visual: &mut gpui_kit::VisualTestContext) {
+    let controls = [
+        ("toggle-sidebar", "titlebar-sidebar-icon"),
+        ("titlebar-search-button", "titlebar-search-icon"),
+        ("navigation-back", "titlebar-back-icon"),
+        ("navigation-forward", "titlebar-forward-icon"),
+    ];
+    let mut previous: Option<gpui_kit::Bounds<gpui_kit::Pixels>> = None;
+    for (surface_selector, icon_selector) in controls {
+        let surface = visual.debug_bounds(surface_selector).unwrap();
+        let icon = visual.debug_bounds(icon_selector).unwrap();
+        assert_eq!(
+            f32::from(surface.size.width),
+            Layout::TITLEBAR_CONTROL_SIZE,
+            "unexpected width for {surface_selector}"
+        );
+        assert_eq!(
+            f32::from(surface.size.height),
+            Layout::TITLEBAR_CONTROL_SIZE,
+            "unexpected height for {surface_selector}"
+        );
+        assert_eq!(f32::from(icon.size.width), 16.0);
+        assert_eq!(f32::from(icon.size.height), 16.0);
+        assert_eq!(icon.center(), surface.center());
+        if let Some(previous_surface) = previous {
+            assert_eq!(
+                f32::from(surface.left() - previous_surface.right()),
+                Layout::TITLEBAR_CONTROL_GAP
+            );
+            assert_eq!(
+                f32::from(surface.center().x - previous_surface.center().x),
+                Layout::TITLEBAR_CONTROL_SIZE + Layout::TITLEBAR_CONTROL_GAP
+            );
+            assert_eq!(surface.center().y, previous_surface.center().y);
+        }
+        previous = Some(surface);
+    }
+}
+
 #[gpui_kit::test]
 async fn production_root_palette_escape_preserves_composer_and_settings_action(
     cx: &mut gpui_kit::TestAppContext,
@@ -50,14 +89,14 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
         })
         .unwrap();
     cx.run_until_parked();
+    cx.update(|cx| {
+        let state = cx.global::<vega_ui::navigation::NavigationState>();
+        assert!(!state.back);
+        assert!(!state.forward);
+    });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let sidebar = visual.debug_bounds("toggle-sidebar").unwrap();
     let search = visual.debug_bounds("titlebar-search-button").unwrap();
-    let back = visual.debug_bounds("navigation-back").unwrap();
-    let forward = visual.debug_bounds("navigation-forward").unwrap();
-    assert_eq!(f32::from(search.left() - sidebar.right()), 4.0);
-    assert_eq!(f32::from(back.left() - search.right()), 4.0);
-    assert_eq!(f32::from(forward.left() - back.right()), 4.0);
+    assert_titlebar_control_grid(&mut visual);
     assert!(visual.debug_bounds("sidebar-search-button").is_none());
     visual.simulate_click(search.center(), Default::default());
     pump_test_app(cx, |cx| {
@@ -67,24 +106,14 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| root.palette.view.is_none())
     });
-    cx.update(|cx| {
-        cx.set_global(SidebarCollapsed(true));
-        cx.refresh_windows();
-    });
-    cx.run_until_parked();
+    let sidebar = visual.debug_bounds("toggle-sidebar").unwrap();
+    visual.simulate_click(sidebar.center(), Default::default());
+    pump_test_app(cx, |cx| cx.update(|cx| cx.global::<SidebarCollapsed>().0));
     let mut hidden_visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let hidden_sidebar = hidden_visual.debug_bounds("toggle-sidebar").unwrap();
     let hidden_search = hidden_visual
         .debug_bounds("titlebar-search-button")
         .unwrap();
-    let hidden_back = hidden_visual.debug_bounds("navigation-back").unwrap();
-    let hidden_forward = hidden_visual.debug_bounds("navigation-forward").unwrap();
-    assert_eq!(
-        f32::from(hidden_search.left() - hidden_sidebar.right()),
-        4.0
-    );
-    assert_eq!(f32::from(hidden_back.left() - hidden_search.right()), 4.0);
-    assert_eq!(f32::from(hidden_forward.left() - hidden_back.right()), 4.0);
+    assert_titlebar_control_grid(&mut hidden_visual);
     assert!(
         hidden_visual
             .debug_bounds("sidebar-search-button")
@@ -98,6 +127,14 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| root.palette.view.is_none())
     });
+    let hidden_sidebar = hidden_visual.debug_bounds("toggle-sidebar").unwrap();
+    hidden_visual.simulate_click(hidden_sidebar.center(), Default::default());
+    pump_test_app(cx, |cx| cx.update(|cx| !cx.global::<SidebarCollapsed>().0));
+    window
+        .update(cx, |_, window, cx| {
+            window.focus(&input.read(cx).focus_handle(cx), cx)
+        })
+        .unwrap();
     cx.simulate_keystrokes(window.into(), "cmd-k");
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| root.palette.view.is_some())
@@ -184,6 +221,40 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
                 .0
                 .as_ref()
                 .is_some_and(|thread| thread.id == destination.id)
+        })
+    });
+    cx.update(|cx| {
+        let state = cx.global::<vega_ui::navigation::NavigationState>();
+        assert!(state.back);
+        assert!(!state.forward);
+    });
+    let mut enabled_visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert_titlebar_control_grid(&mut enabled_visual);
+    let back = enabled_visual.debug_bounds("navigation-back").unwrap();
+    enabled_visual.simulate_click(back.center(), Default::default());
+    pump_test_app(cx, |cx| {
+        cx.update(|cx| {
+            cx.global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|opened| opened.id == thread.id)
+        })
+    });
+    cx.update(|cx| {
+        let state = cx.global::<vega_ui::navigation::NavigationState>();
+        assert!(!state.back);
+        assert!(state.forward);
+    });
+    let mut forward_visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert_titlebar_control_grid(&mut forward_visual);
+    let forward = forward_visual.debug_bounds("navigation-forward").unwrap();
+    forward_visual.simulate_click(forward.center(), Default::default());
+    pump_test_app(cx, |cx| {
+        cx.update(|cx| {
+            cx.global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|opened| opened.id == destination.id)
         })
     });
     cx.simulate_keystrokes(window.into(), "cmd-k s e t t i n g s");

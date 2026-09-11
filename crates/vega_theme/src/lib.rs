@@ -268,6 +268,10 @@ pub struct Layout;
 impl Layout {
     /// Leading space reserved for native macOS titlebar controls.
     pub const TITLEBAR_LEADING_INSET: f32 = 96.0;
+    /// Exact interactive surface used by shared titlebar controls.
+    pub const TITLEBAR_CONTROL_SIZE: f32 = 28.0;
+    /// Gap between adjacent shared titlebar control surfaces.
+    pub const TITLEBAR_CONTROL_GAP: f32 = 4.0;
     /// Maximum readable width for conversation, settings, and diff content.
     pub const CONTENT_MAX_WIDTH: f32 = 820.0;
     /// Minimum horizontal page padding around a readable content column.
@@ -466,6 +470,16 @@ mod tests {
             Layout::COMMAND_PALETTE_WIDTH,
             Layout::MENU_MAX_WIDTH,
             "the global search palette must not inherit compact menu geometry"
+        );
+    }
+
+    #[test]
+    fn r43_titlebar_control_geometry_is_frozen() {
+        assert_eq!(Layout::TITLEBAR_CONTROL_SIZE, 28.0);
+        assert_eq!(Layout::TITLEBAR_CONTROL_GAP, 4.0);
+        assert_eq!(
+            Layout::TITLEBAR_CONTROL_SIZE + Layout::TITLEBAR_CONTROL_GAP,
+            32.0
         );
     }
 

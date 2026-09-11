@@ -4,7 +4,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
 };
 use gpui_kit::{prelude::*, *};
-use vega_theme::theme;
+use vega_theme::{Layout, theme};
 actions!(
     navigation,
     [
@@ -53,7 +53,7 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .gap_1()
+        .gap(px(Layout::TITLEBAR_CONTROL_GAP))
         .child(sidebar_control(cx, sidebar_visible))
         .child(search_control(cx))
         .children(
@@ -106,8 +106,10 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                         }
                     })
                     .debug_selector(move || id.into())
-                    .px_2()
-                    .py_1()
+                    .size(px(Layout::TITLEBAR_CONTROL_SIZE))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded_md()
                     .text_color(if enabled {
                         colors.text_secondary
@@ -135,14 +137,24 @@ pub fn controls(cx: &App, sidebar_visible: bool) -> AnyElement {
                             }
                         }
                     })
-                    .child(crate::icons::icon(
-                        icon,
-                        if enabled {
-                            colors.text_secondary
-                        } else {
-                            colors.text_tertiary
-                        },
-                    ))
+                    .child(
+                        div()
+                            .debug_selector(move || {
+                                if forward {
+                                    "titlebar-forward-icon".into()
+                                } else {
+                                    "titlebar-back-icon".into()
+                                }
+                            })
+                            .child(crate::icons::icon(
+                                icon,
+                                if enabled {
+                                    colors.text_secondary
+                                } else {
+                                    colors.text_tertiary
+                                },
+                            )),
+                    )
             }),
         )
         .into_any_element()
@@ -158,16 +170,22 @@ fn search_control(cx: &App) -> AnyElement {
                 .debug_selector(|| "titlebar-search-button".into())
                 .text()
                 .small()
+                .size(px(Layout::TITLEBAR_CONTROL_SIZE))
+                .p_0()
                 .accessibility_label("搜索 (⌘K)")
                 .tooltip("搜索 (⌘K)")
                 .on_click(|_, window, cx| {
                     cx.stop_propagation();
                     window.dispatch_action(Box::new(crate::command_palette::OpenPalette), cx);
                 })
-                .child(crate::icons::icon(
-                    crate::icons::Icon::Search,
-                    colors.text_secondary,
-                )),
+                .child(
+                    div()
+                        .debug_selector(|| "titlebar-search-icon".into())
+                        .child(crate::icons::icon(
+                            crate::icons::Icon::Search,
+                            colors.text_secondary,
+                        )),
+                ),
         )
         .into_any_element()
 }
@@ -198,8 +216,10 @@ fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
         .track_focus(&focus)
         .tab_stop(true)
         .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
-        .px_2()
-        .py_1()
+        .size(px(Layout::TITLEBAR_CONTROL_SIZE))
+        .flex()
+        .items_center()
+        .justify_center()
         .rounded_md()
         .cursor_pointer()
         .hover(move |s| s.bg(colors.bg_hover))
@@ -224,10 +244,14 @@ fn sidebar_control(cx: &App, sidebar_visible: bool) -> AnyElement {
                 window.dispatch_action(Box::new(crate::sidebar::ToggleSidebar), cx);
             }
         })
-        .child(crate::icons::icon(
-            crate::icons::Icon::Sidebar,
-            colors.text_secondary,
-        ))
+        .child(
+            div()
+                .debug_selector(|| "titlebar-sidebar-icon".into())
+                .child(crate::icons::icon(
+                    crate::icons::Icon::Sidebar,
+                    colors.text_secondary,
+                )),
+        )
         .into_any_element()
 }
 

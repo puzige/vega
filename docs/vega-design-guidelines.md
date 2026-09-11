@@ -209,6 +209,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Sidebar 区块按内容自然高度连续排列，不以 Projects 撑满剩余空间。Projects 默认显示 5 个顶层项目、Recents 默认显示 10 个任务；有更多内容时使用对齐内容列的 `Show More / Show Less` 在当前会话内渐进展开，外层 Sidebar 统一承担溢出滚动。
 - Sidebar 对话行静止时只展示标题，不展示相对时间；Pinned 行也不重复展示所属项目。尾部菜单触发器仅在 hover、键盘聚焦或菜单打开时显现，并保持固定命中区避免布局跳动。每个展开项目默认显示 5 条非置顶任务，超出时使用独立的 `Show More / Show Less` 渐进展开，控件与 32px 项目子任务内容列对齐。
 - 全局搜索入口使用窗口顶部共享控制组中的放大镜按钮，紧邻 Sidebar 显隐按钮并位于 Back / Forward 之前；Sidebar 展开或隐藏时位置和数量都保持稳定。按钮带“搜索 (⌘K)”可访问名称与提示，点击或键盘激活打开现有搜索面板；保留 Command-K，Sidebar 内容区不再重复渲染搜索入口。此规则取代 R39 的 Sidebar 局部位置，精确规格见 [R41 Titlebar Search adjacency](vega-r41-titlebar-search.md)。
+- 窗口顶部 `Sidebar / Search / Back / Forward` 四个控制统一使用 28×28px 方形交互面、16px 居中图标和 4px 相邻间隔；禁用的历史按钮也保留同尺寸槽位，保证四个图标中心恒定相隔 32px。精确规格见 [R43 Titlebar control spacing](vega-r43-titlebar-control-spacing.md)。
 - 全局搜索面板使用独立于紧凑菜单的 520px 宽度与 480px 最大高度 token；宽度在窄窗口保留左右各 16px，短窗口按既有顶部和底部安全区收缩。输入、范围切换与键盘提示保持可见，长结果只在结果区内部滚动，禁止让面板随结果延伸成接近整窗的窄长列。精确规格见 [R40 Search palette geometry](vega-r40-search-palette-geometry.md)。
 - `Pinned` 存在时，其最后一条任务与后续 `Projects` 标题之间使用 12px 分组间距（基础 8px 区块间距加一个 4px 节奏单位）；这一补偿只属于 Pinned→Projects，不改变其他区块距离或任务行选中背景。
 - Pinned 任务标题继续与 `Pinned` 区块标题和顶层 Recents 标题落在同一内容列；其选中、hover 与焦点表面向该内容列左侧扩展 8px，并在表面内部保留等量的 8px 前导 padding，避免文字贴住圆角背景且不移动标题列。
@@ -266,6 +267,7 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 ## 15. 变更记录
 
+- v1.24 (2026-09-11)：统一 Sidebar、Search、Back、Forward 的 28px 方形命中框与 4px 间距，消除混用按钮内边距造成的视觉不等距。
 - v1.23 (2026-09-11)：项目与其活动任务不再同时高亮；任务选中态优先于外层项目选中态。
 - v1.22 (2026-09-11)：搜索按钮进入共享窗口控制组，固定紧邻 Sidebar 显隐按钮并位于 Back / Forward 之前。
 - v1.21 (2026-09-11)：全局搜索面板改用 520px 独立宽度和 480px 最大高度，长结果在面板内部滚动。
