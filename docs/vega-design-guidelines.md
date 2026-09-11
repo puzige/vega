@@ -1,6 +1,6 @@
 # Vega 设计守则
 
-**版本** v1.20 · 2026-09-11
+**版本** v1.25 · 2026-09-11
 
 **状态** 当前视觉语言与设计 token 的规范入口
 
@@ -202,6 +202,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - 持久右侧 workspace 打开后替代 Environment rail；底部 workspace 横跨 center 与 right。
 - Workspace header 只承载标签与 pane 级操作；内容级工具栏单独成行，并把相关操作收进同一尾部按钮组，禁止用三个同级 `space-between` 元素把中间操作推到面板中央。
 - Terminal 内容在状态栏下使用一致内边距；PTY 行列数以扣除 chrome 和内边距后的真实 canvas bounds 为准。
+- Workspace header 的前导 Chevron 是唯一的 pane 隐藏入口；尾部 Plus 只打开创建菜单，菜单不重复列出已有标签、预览恢复或“关闭全部终端”。尾部不再重复渲染 Minimize。全局 Terminal 入口显示或隐藏当前项目终端，但显示动作不自动夺取任务 Composer 焦点；只有显式选择终端标签、终端画布或“新建终端”才把键盘输入交给 PTY。隐藏终端不再同时获得通用 Restore 与 Terminal 两个恢复入口。精确规格见 [R44 Terminal panel interaction model](vega-r44-terminal-panel-logic.md)。
 - Sidebar 宽度、用户手动折叠和窗口触发的自动隐藏是三个独立状态，resize 不得覆盖另外两者。
 - Sidebar 的常驻 Settings action 使用完整 32px 导航行高，位于 12px 左右与底部 inset 内，并使用与其他导航行一致的 8px 圆角。它是侧栏内容栅格中的普通导航行，不是贴住窗口边缘的 footer 条带。
 - Sidebar 的任务信息架构按 `Pinned / Projects / Recents` 排列，区块标题使用普通首字母大写而非全大写；任务在三个投影位置中只能出现一次。区块标题和项目行的辅助操作默认保持安静，仅在所属标题/行 hover、键盘聚焦或菜单打开时显现，且显隐不得造成布局跳动。
@@ -267,6 +268,7 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 ## 15. 变更记录
 
+- v1.25 (2026-09-11)：收敛 Workspace/Terminal 状态：Chevron 单独负责隐藏，Plus 菜单只负责创建；全局显示终端不抢占 Composer 焦点，并移除隐藏终端的重复 Restore 入口。精确规格见 [R44 Terminal panel interaction model](vega-r44-terminal-panel-logic.md)。
 - v1.24 (2026-09-11)：统一 Sidebar、Search、Back、Forward 的 28px 方形命中框与 4px 间距，消除混用按钮内边距造成的视觉不等距。
 - v1.23 (2026-09-11)：项目与其活动任务不再同时高亮；任务选中态优先于外层项目选中态。
 - v1.22 (2026-09-11)：搜索按钮进入共享窗口控制组，固定紧邻 Sidebar 显隐按钮并位于 Back / Forward 之前。
