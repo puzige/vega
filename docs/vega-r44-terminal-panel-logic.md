@@ -57,15 +57,20 @@ rather than adding more conditionals to the current menu.
 ### External entry points
 
 - The main-header Terminal button is the single global terminal toggle. If the
-  current project's most recent terminal is visible and selected, it hides the
-  pane. Otherwise it reveals that same terminal, or creates the first terminal
-  if none exists.
+  current project's most recent terminal is actually rendered and selected, it
+  hides the pane. Otherwise it reveals that same terminal, or creates the first
+  terminal if none exists. `hidden == false` alone is not proof of visibility.
+- If that terminal belongs to the right pane but the responsive width guard no
+  longer renders the pane, the first global toggle migrates the same terminal
+  tab to the bottom pane and reveals it immediately. This unavailable-right
+  recovery is a reveal, never a hide, and must not create a replacement PTY.
 - Revealing or creating a terminal through the main-header button or `Command-J`
   keeps the task composer focused. Merely making a shell visible is not consent
   to route subsequent task text into the shell.
 - `Environment > Local terminal` is idempotent: it reveals the current
   project's most recent terminal, or creates the first one, but never hides an
-  already-visible terminal. It also keeps the task composer focused.
+  already-visible terminal. It uses the same unavailable-right recovery and
+  keeps the task composer focused.
 - A hidden pane whose selected tab is a terminal does not receive an additional
   generic main-header restore button. The Terminal button is its sole global
   restore path. Generic restore remains available for hidden Review, file and
@@ -90,7 +95,9 @@ rather than adding more conditionals to the current menu.
 - Moving, maximizing, restoring, hiding or revealing a pane must preserve the
   selected tab entity and terminal process. Docking preserves composer focus;
   maximizing and restoring activate the selected visible Workspace content.
-  No layout action may create a replacement PTY.
+  Responsive recovery from an unrendered right pane moves only the existing
+  terminal tab to the bottom pane and preserves composer focus. No layout
+  action may create a replacement PTY.
 - Project isolation, the eight-terminal cap, route fences, close cleanup and
   in-memory-only terminal content remain unchanged.
 
@@ -119,6 +126,7 @@ assets.
 | Hidden terminal | no duplicate generic restore action | main header |
 | Explicit activation | terminal tab/canvas focus accepts a harmless PTY probe | focused terminal canvas |
 | Right dock | same terminal entity/process and right-pointing hide control | right panel header |
+| Narrow right recovery | after 1404x860 right dock then 960x600 resize, the first global toggle and Environment reveal each show the same terminal in bottom with composer focus and the same PTY | recovered bottom panel |
 | Maximized/restored | same selected entity through both transitions; selected content owns focus and accepts input in both states | maximized and restored views |
 | Multi-tab close | adjacent sibling becomes selected | tab strip before/after close |
 

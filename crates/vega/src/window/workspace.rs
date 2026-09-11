@@ -2,6 +2,9 @@ use super::*;
 use vega_ui::artifact_card::ArtifactCard;
 use vega_ui::icons::{Icon, icon_button};
 
+const MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH: f32 = 610.;
+const MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT: f32 = 480.;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum TabKey {
     Diff,
@@ -273,12 +276,10 @@ impl VegaWindow {
             .cloned();
         if let Some((key, bottom)) = terminal {
             let index = usize::from(bottom);
-            if !self.workspace.hidden[index] && self.workspace.selected[index] == Some(key.clone())
-            {
+            if self.workspace_terminal_is_rendered(&key, bottom, window, cx) {
                 self.workspace_hide(index, window, cx);
             } else {
-                self.workspace.open(key);
-                self.workspace_focus_composer(window, cx);
+                self.workspace_reveal_terminal_tab(key, bottom, window, cx);
             }
         } else {
             self.workspace_create_terminal(true, false, window, cx);
@@ -289,7 +290,7 @@ impl VegaWindow {
     /// Idempotently reveal the current project's terminal without activating its PTY.
     fn workspace_reveal_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_workspace_route(cx);
-        if let Some((key, _)) = self
+        if let Some((key, bottom)) = self
             .workspace
             .tabs
             .iter()
@@ -297,12 +298,59 @@ impl VegaWindow {
             .find(|(key, _)| matches!(key, TabKey::Terminal(_)))
             .cloned()
         {
-            self.workspace.open(key);
-            self.workspace_focus_composer(window, cx);
+            self.workspace_reveal_terminal_tab(key, bottom, window, cx);
         } else {
             self.workspace_create_terminal(true, false, window, cx);
         }
         cx.notify();
+    }
+
+    fn workspace_terminal_is_rendered(
+        &self,
+        key: &TabKey,
+        bottom: bool,
+        window: &Window,
+        cx: &App,
+    ) -> bool {
+        let index = usize::from(bottom);
+        if self.workspace.hidden[index] || self.workspace.selected[index].as_ref() != Some(key) {
+            return false;
+        }
+        self.workspace.maximized[index]
+            || if bottom {
+                f32::from(window.bounds().size.height) >= MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT
+            } else {
+                self.workspace_available_width(window, cx) >= MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH
+            }
+    }
+
+    fn workspace_reveal_terminal_tab(
+        &mut self,
+        key: TabKey,
+        bottom: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let unavailable_right = !bottom
+            && !self.workspace.maximized[0]
+            && self.workspace_available_width(window, cx) < MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH;
+        if unavailable_right {
+            self.workspace.close(&key);
+            self.workspace.tabs.push((key.clone(), true));
+            if let TabKey::Terminal(id) = &key
+                && let Some(terminal) = self.workspace.terminals.get_mut(id)
+            {
+                terminal.bottom = true;
+            }
+            self.workspace.selected[1] = Some(key);
+            self.workspace.reveal_tabs[1] = true;
+            self.workspace.hidden[1] = false;
+            self.workspace.maximized[1] = false;
+            self.workspace.menu = false;
+        } else {
+            self.workspace.open(key);
+        }
+        self.workspace_focus_composer(window, cx);
     }
 
     /// Restore an existing preview or show the workspace menu when no preview exists.
@@ -548,7 +596,7 @@ impl VegaWindow {
     pub(super) fn persistent_right_workspace_visible(&self, window: &Window, cx: &App) -> bool {
         !self.workspace.hidden[0]
             && self.workspace.selected[0].is_some()
-            && self.workspace_available_width(window, cx) >= 610.
+            && self.workspace_available_width(window, cx) >= MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH
     }
 
     pub(super) fn hidden_workspace_available(&self, index: usize) -> bool {
@@ -1051,7 +1099,7 @@ impl VegaWindow {
         let environment_wide = self.environment_is_wide(window, cx);
         let bottom = !self.workspace.hidden[1]
             && self.workspace.selected[1].is_some()
-            && f32::from(size.height) >= 480.;
+            && f32::from(size.height) >= MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT;
         let width = if self.workspace.maximized[0] {
             available - 300.
         } else {
@@ -2163,7 +2211,7 @@ mod terminal_tests {
     use std::time::{Duration, Instant};
     use vega_theme::Layout;
     use vega_ui::settings::CloseSettings;
-    use vega_ui::sidebar::SelectedProject;
+    use vega_ui::sidebar::{SelectedProject, SidebarWidth};
 
     fn assert_pixel_close(actual: gpui_kit::Pixels, expected: f32, label: &str) {
         let actual = f32::from(actual);
@@ -2486,8 +2534,127 @@ mod terminal_tests {
                 root.workspace.terminals[&id].view.entity_id()
             })
         );
-        click_mounted(window, "right-workspace-dock", cx);
+        cx.update(|cx| {
+            cx.set_global(SidebarWidth(Layout::SIDEBAR_MAX_WIDTH));
+            cx.refresh_windows();
+        });
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(960.), px(600.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize below persistent right workspace width");
+        cx.run_until_parked();
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("right-workspace-pane")
+                .is_none(),
+            "narrow responsive layout no longer renders the right pane"
+        );
+        root.read_with(cx, |root, _| {
+            assert!(!root.workspace.hidden[0]);
+            assert_eq!(root.workspace.selected[0], Some(first_key.clone()));
+        });
+        cx.simulate_keystrokes(window.into(), "cmd-j");
+        cx.run_until_parked();
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.terminals.len(), 1);
+            assert_eq!(root.workspace.selected[1], Some(first_key.clone()));
+            assert!(
+                root.workspace
+                    .tabs
+                    .iter()
+                    .any(|(key, bottom)| key == &first_key && *bottom)
+            );
+            assert_eq!(
+                root.workspace
+                    .terminals
+                    .values()
+                    .next()
+                    .expect("same responsive terminal")
+                    .view
+                    .entity_id(),
+                first_view.entity_id()
+            );
+        });
         assert!(focus_is(window, input_focus.clone(), cx));
+
+        let tab_bounds = VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds(tab_selector)
+            .expect("responsive terminal tab");
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(tab_bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(focus_is(window, terminal_focus.clone(), cx));
+        window
+            .update(cx, |_, window, cx| {
+                first_view.update(cx, |view, cx| {
+                    view.replace_text_in_range(None, "printf $$ > r44-pid-responsive", window, cx)
+                });
+            })
+            .expect("type responsive PTY identity probe");
+        cx.simulate_keystrokes(window.into(), "enter");
+        let pid_responsive = path.join("r44-pid-responsive");
+        let until = Instant::now() + Duration::from_secs(8);
+        while !pid_responsive.exists() {
+            assert!(
+                Instant::now() < until,
+                "responsive PTY identity probe timed out"
+            );
+            cx.executor().advance_clock(Duration::from_millis(30));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        assert_eq!(
+            std::fs::read_to_string(&pid_before).expect("PID before responsive recovery"),
+            std::fs::read_to_string(&pid_responsive).expect("PID after responsive recovery"),
+            "narrow right recovery preserves the terminal process"
+        );
+
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx);
+                window.resize(size(px(1404.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("restore wide window before Environment recovery");
+        cx.run_until_parked();
+        click_mounted(window, "bottom-workspace-dock", cx);
+        let _ = mounted_bounds(window, "right-workspace-pane", cx);
+        assert!(focus_is(window, input_focus.clone(), cx));
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(960.), px(600.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize Environment recovery below right workspace width");
+        cx.run_until_parked();
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("right-workspace-pane")
+                .is_none()
+        );
+        click_mounted(window, "main-header-environment", cx);
+        let _ = mounted_bounds(window, "environment-overlay", cx);
+        click_mounted(window, "environment-terminal", cx);
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.terminals.len(), 1);
+            assert_eq!(root.workspace.selected[1], Some(first_key.clone()));
+            assert_eq!(
+                root.workspace
+                    .terminals
+                    .values()
+                    .next()
+                    .expect("same Environment terminal")
+                    .view
+                    .entity_id(),
+                first_view.entity_id()
+            );
+        });
+        assert!(focus_is(window, input_focus.clone(), cx));
+
         click_mounted(window, "bottom-workspace-hide", cx);
         assert!(root.read_with(cx, |root, _| root.workspace.hidden[1]));
         assert!(
