@@ -10,6 +10,12 @@ pub(super) enum TabKey {
     Artifact(ArtifactCardId),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceCreateAction {
+    Review,
+    NewTerminal,
+}
+
 struct TerminalTab {
     project_id: String,
     view: Entity<vega_ui::terminal::TerminalView>,
@@ -58,16 +64,27 @@ impl Workspace {
     }
 
     pub(super) fn close(&mut self, key: &TabKey) {
-        self.tabs.retain(|(tab, _)| tab != key);
-        for index in 0..2 {
-            if self.selected[index].as_ref() == Some(key) {
-                self.reveal_tabs[index] = true;
-                self.selected[index] = self
-                    .tabs
-                    .iter()
-                    .find(|(_, bottom)| usize::from(*bottom) == index)
-                    .map(|(tab, _)| tab.clone());
-            }
+        let Some(position) = self.tabs.iter().position(|(tab, _)| tab == key) else {
+            return;
+        };
+        let pane = usize::from(self.tabs[position].1);
+        let pane_position = self.tabs[..position]
+            .iter()
+            .filter(|(_, bottom)| usize::from(*bottom) == pane)
+            .count();
+        self.tabs.remove(position);
+        if self.selected[pane].as_ref() == Some(key) {
+            self.reveal_tabs[pane] = true;
+            let mut siblings = self
+                .tabs
+                .iter()
+                .filter(|(_, bottom)| usize::from(*bottom) == pane)
+                .map(|(tab, _)| tab);
+            self.selected[pane] = siblings
+                .clone()
+                .nth(pane_position)
+                .or_else(|| siblings.next_back())
+                .cloned();
         }
     }
 }
@@ -148,6 +165,16 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.workspace_create_terminal(bottom, true, window, cx);
+    }
+
+    fn workspace_create_terminal(
+        &mut self,
+        bottom: bool,
+        activate_terminal: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.sync_workspace_route(cx);
         let project_id = cx.global::<vega_ui::sidebar::SelectedProject>().0.clone();
         let target = project_id.clone().zip(self.file_backed_store_path(cx));
@@ -183,7 +210,11 @@ impl VegaWindow {
         self.workspace.tabs.push((TabKey::Terminal(id), bottom));
         self.workspace.open(TabKey::Terminal(id));
         self.workspace.terminal_error = false;
-        self.workspace_focus(usize::from(bottom), window, cx);
+        if activate_terminal {
+            self.workspace_focus(usize::from(bottom), window, cx);
+        } else {
+            self.workspace_focus_composer(window, cx);
+        }
         cx.notify();
     }
 
@@ -232,6 +263,7 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.sync_workspace_route(cx);
         let terminal = self
             .workspace
             .tabs
@@ -246,10 +278,29 @@ impl VegaWindow {
                 self.workspace_hide(index, window, cx);
             } else {
                 self.workspace.open(key);
-                self.workspace_focus(index, window, cx);
+                self.workspace_focus_composer(window, cx);
             }
         } else {
-            self.workspace_open_terminal(true, window, cx);
+            self.workspace_create_terminal(true, false, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Idempotently reveal the current project's terminal without activating its PTY.
+    fn workspace_reveal_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_workspace_route(cx);
+        if let Some((key, _)) = self
+            .workspace
+            .tabs
+            .iter()
+            .rev()
+            .find(|(key, _)| matches!(key, TabKey::Terminal(_)))
+            .cloned()
+        {
+            self.workspace.open(key);
+            self.workspace_focus_composer(window, cx);
+        } else {
+            self.workspace_create_terminal(true, false, window, cx);
         }
         cx.notify();
     }
@@ -303,7 +354,7 @@ impl VegaWindow {
     fn workspace_move_selected(
         &mut self,
         index: usize,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(key) = self.workspace.selected[index].clone() {
@@ -318,7 +369,6 @@ impl VegaWindow {
             self.workspace.reveal_tabs[1 - index] = true;
             self.workspace.hidden[1 - index] = false;
             self.workspace.maximized[index] = false;
-            self.workspace_focus(1 - index, window, cx);
         }
         cx.notify();
     }
@@ -408,9 +458,23 @@ impl VegaWindow {
         if self.workspace.menu {
             window.focus(&focus, cx);
         } else {
-            self.workspace_focus(usize::from(bottom), window, cx);
+            self.workspace_focus_composer(window, cx);
         }
         cx.notify();
+    }
+
+    fn workspace_creation_actions(&self, cx: &App) -> Vec<WorkspaceCreateAction> {
+        let mut actions = Vec::with_capacity(2);
+        if self.shell_project_thread(cx).is_some() {
+            actions.push(WorkspaceCreateAction::Review);
+        }
+        if self.shell_project_id(cx).is_some()
+            && self.file_backed_store_path(cx).is_some()
+            && self.workspace.terminals.len() < 8
+        {
+            actions.push(WorkspaceCreateAction::NewTerminal);
+        }
+        actions
     }
 
     fn workspace_focus(&self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -487,7 +551,10 @@ impl VegaWindow {
     }
 
     pub(super) fn hidden_workspace_available(&self, index: usize) -> bool {
-        self.workspace.selected[index].is_some() && self.workspace.hidden[index]
+        self.workspace.hidden[index]
+            && self.workspace.selected[index]
+                .as_ref()
+                .is_some_and(|selected| !matches!(selected, TabKey::Terminal(_)))
     }
 
     pub(super) fn restore_hidden_workspace(
@@ -651,7 +718,7 @@ impl VegaWindow {
             colors,
             cx.listener(|this, _, window, cx| {
                 this.environment_overlay_open = false;
-                this.workspace_toggle_terminal(window, cx);
+                this.workspace_reveal_terminal(window, cx);
             }),
         ));
         div()
@@ -708,11 +775,6 @@ impl VegaWindow {
         } else {
             "right-workspace-header"
         };
-        let all_tabs_selector = if bottom {
-            "bottom-workspace-all-tabs"
-        } else {
-            "right-workspace-all-tabs"
-        };
         let actions_selector = if bottom {
             "bottom-workspace-actions"
         } else {
@@ -752,9 +814,12 @@ impl VegaWindow {
             let close_key = key.clone();
             let keyboard_key = key.clone();
             let active = selected.as_ref() == Some(&key);
+            let tab_selector = SharedString::from(format!("workspace-tab-{key:?}"));
+            let close_selector = SharedString::from(format!("workspace-tab-close-{key:?}"));
             strip = strip.child(
                 div()
-                    .id(SharedString::from(format!("workspace-tab-{key:?}")))
+                    .id(tab_selector.clone())
+                    .debug_selector(move || tab_selector.to_string())
                     .aria_label(label.clone())
                     .flex_shrink_0()
                     .max_w_full()
@@ -797,14 +862,17 @@ impl VegaWindow {
                             .truncate()
                             .child(label),
                     )
-                    .child(icon_button(
-                        Icon::Close,
-                        format!("关闭 {}", self.workspace_label(&close_key, cx)),
-                        colors,
-                        cx.listener(move |this, _, window, cx| {
-                            this.workspace_close_tab(&close_key, window, cx);
-                        }),
-                    )),
+                    .child(
+                        icon_button(
+                            Icon::Close,
+                            format!("关闭 {}", self.workspace_label(&close_key, cx)),
+                            colors,
+                            cx.listener(move |this, _, window, cx| {
+                                this.workspace_close_tab(&close_key, window, cx);
+                            }),
+                        )
+                        .debug_selector(move || close_selector.to_string()),
+                    ),
             );
         }
         let mut actions = div()
@@ -828,7 +896,7 @@ impl VegaWindow {
             .child(
                 icon_button(
                     Icon::Plus,
-                    "打开工作区标签",
+                    "新建工作区标签",
                     colors,
                     cx.listener(move |this, _, window, cx| {
                         this.workspace_toggle_menu(bottom, window, cx)
@@ -864,25 +932,13 @@ impl VegaWindow {
                         "最大化工作区"
                     },
                     colors,
-                    cx.listener(move |this, _, window, cx| {
+                    cx.listener(move |this, _, _, cx| {
                         this.workspace.maximized[index] = !this.workspace.maximized[index];
                         this.workspace.reveal_tabs[index] = true;
-                        this.workspace_focus(index, window, cx);
                         cx.notify();
                     }),
                 )
                 .debug_selector(move || maximize_selector.into()),
-            )
-            .child(
-                icon_button(
-                    Icon::Minimize,
-                    "隐藏面板",
-                    colors,
-                    cx.listener(move |this, _, window, cx| {
-                        this.workspace_hide(index, window, cx);
-                    }),
-                )
-                .debug_selector(move || hide_selector.into()),
             );
         let header = div()
             .debug_selector(move || header_selector.into())
@@ -895,14 +951,16 @@ impl VegaWindow {
             .border_color(colors.border_subtle)
             .child(
                 icon_button(
-                    Icon::ChevronDown,
-                    "所有工作区标签",
+                    if bottom {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    "隐藏面板",
                     colors,
-                    cx.listener(move |this, _, window, cx| {
-                        this.workspace_toggle_menu(bottom, window, cx)
-                    }),
+                    cx.listener(move |this, _, window, cx| this.workspace_hide(index, window, cx)),
                 )
-                .debug_selector(move || all_tabs_selector.into()),
+                .debug_selector(move || hide_selector.into()),
             )
             .child(strip)
             .child(actions);
@@ -1135,6 +1193,7 @@ impl VegaWindow {
             );
         }
         if self.workspace.menu {
+            let creation_actions = self.workspace_creation_actions(cx);
             let focus = self
                 .workspace
                 .menu_focus
@@ -1142,9 +1201,10 @@ impl VegaWindow {
                 .clone();
             let mut menu = div()
                 .id("workspace-add-menu")
+                .debug_selector(|| "workspace-add-menu".into())
                 .track_focus(&focus)
                 .key_context("WorkspaceMenu")
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                .on_key_down(cx.listener(|_this, event: &KeyDownEvent, window, cx| {
                     match event.keystroke.key.as_str() {
                         "tab" | "down" => {
                             if event.keystroke.modifiers.shift {
@@ -1158,29 +1218,18 @@ impl VegaWindow {
                             window.focus_prev(cx);
                             cx.stop_propagation();
                         }
-                        "enter"
-                            if this
-                                .workspace
-                                .menu_focus
-                                .as_ref()
-                                .is_some_and(|focus| focus.is_focused(window)) =>
-                        {
-                            this.workspace_open_diff(cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
                         _ => {}
                     }
                 }))
                 .on_action(cx.listener(|this, _: &CloseSettings, window, cx| {
                     this.workspace.menu = false;
-                    this.workspace_focus(usize::from(this.workspace.menu_bottom), window, cx);
+                    this.workspace_focus_composer(window, cx);
                     cx.stop_propagation();
                     cx.notify();
                 }))
                 .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     this.workspace.menu = false;
-                    this.workspace_focus(usize::from(this.workspace.menu_bottom), window, cx);
+                    this.workspace_focus_composer(window, cx);
                     cx.notify();
                 }))
                 .absolute()
@@ -1203,87 +1252,28 @@ impl VegaWindow {
                 .shadow_sm()
                 .flex()
                 .flex_col()
-                .gap_1()
-                .child(workspace_button(
-                    "Review · 工作区变更",
-                    colors,
-                    cx.listener(|this, _, _, cx| {
-                        this.workspace_open_diff(cx);
-                        this.workspace.menu = false;
-                        cx.notify();
-                    }),
-                ));
-            menu = menu.child(workspace_button(
-                "终端 · 新建登录 shell",
-                colors,
-                cx.listener(|this, _, window, cx| {
-                    this.workspace_open_terminal(this.workspace.menu_bottom, window, cx);
-                }),
-            ));
-            if self.workspace_has_preview() {
-                menu = menu.child(workspace_button(
-                    "预览 · 恢复已打开内容",
-                    colors,
-                    cx.listener(|this, _, window, cx| this.workspace_open_preview(window, cx)),
-                ));
-            }
-            if !self.workspace.terminals.is_empty() {
-                menu = menu.child(workspace_button(
-                    "关闭所有终端（含其他项目）",
-                    colors,
-                    cx.listener(|this, _, window, cx| {
-                        let keys = this
-                            .workspace
-                            .tabs
-                            .iter()
-                            .filter(|(key, _)| matches!(key, TabKey::Terminal(_)))
-                            .map(|(key, _)| key.clone())
-                            .collect::<Vec<_>>();
-                        for key in keys {
-                            this.workspace_close_tab(&key, window, cx);
-                        }
-                        this.workspace.terminals.clear();
-                        this.workspace.terminal_error = false;
-                        this.workspace.menu = false;
-                        cx.notify();
-                    }),
-                ));
-            }
-            for (key, bottom) in self.workspace.tabs.clone() {
-                let label = format!(
-                    "{} · {}",
-                    self.workspace_label(&key, cx),
-                    if bottom { "底部" } else { "右侧" }
-                );
-                menu = menu.child(workspace_button(
-                    label,
-                    colors,
-                    cx.listener(move |this, _, window, cx| {
-                        this.workspace.open(key.clone());
-                        this.workspace_focus(usize::from(bottom), window, cx);
-                        cx.notify();
-                    }),
-                ));
-            }
-            let cards = self
-                .artifact_controller
-                .active
-                .as_ref()
-                .map(|active| active.cards.values().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
-            for card in cards {
-                if card.read(cx).projection().preview_available {
-                    let label = card.read(cx).projection().label.clone();
-                    menu = menu.child(workspace_button(
-                        label,
+                .gap_1();
+            for action in creation_actions {
+                menu = match action {
+                    WorkspaceCreateAction::Review => menu.child(workspace_button(
+                        "workspace-add-review",
+                        "Review · 工作区变更",
                         colors,
-                        cx.listener(move |this, _, _, cx| {
-                            card.update(cx, ArtifactCard::preview);
+                        cx.listener(|this, _, _, cx| {
+                            this.workspace_open_diff(cx);
                             this.workspace.menu = false;
                             cx.notify();
                         }),
-                    ));
-                }
+                    )),
+                    WorkspaceCreateAction::NewTerminal => menu.child(workspace_button(
+                        "workspace-add-terminal",
+                        "终端 · 新建登录 shell",
+                        colors,
+                        cx.listener(|this, _, window, cx| {
+                            this.workspace_open_terminal(this.workspace.menu_bottom, window, cx);
+                        }),
+                    )),
+                };
             }
             layout = layout.child(menu);
         }
@@ -1318,6 +1308,7 @@ impl VegaWindow {
 }
 
 fn workspace_button(
+    selector: &'static str,
     label: impl Into<SharedString>,
     colors: ThemeColors,
     activate: impl Fn(&(), &mut Window, &mut App) + 'static,
@@ -1328,6 +1319,7 @@ fn workspace_button(
     let keyboard = activate.clone();
     div()
         .id(label.clone())
+        .debug_selector(move || selector.into())
         .aria_label(keyboard_label)
         .focusable()
         .tab_stop(true)
@@ -1396,7 +1388,7 @@ fn environment_action(
 
 #[cfg(test)]
 mod tests {
-    use super::{TabKey, VegaWindow};
+    use super::{TabKey, VegaWindow, Workspace};
     use crate::tests::{diff_controller_repo, install_diff_window_globals};
     use gpui_kit::prelude::*;
     use gpui_kit::{
@@ -1449,6 +1441,28 @@ mod tests {
             (actual - expected).abs() <= 1.0,
             "{label}: expected {expected}±1px, got {actual}px"
         );
+    }
+
+    #[test]
+    fn r44_closing_selected_tab_chooses_the_nearest_same_pane_sibling() {
+        let mut workspace = Workspace {
+            tabs: vec![
+                (TabKey::Terminal(1), false),
+                (TabKey::Terminal(20), true),
+                (TabKey::Terminal(2), false),
+                (TabKey::Terminal(3), false),
+            ],
+            selected: [Some(TabKey::Terminal(2)), Some(TabKey::Terminal(20))],
+            ..Default::default()
+        };
+
+        workspace.close(&TabKey::Terminal(2));
+        assert_eq!(workspace.selected[0], Some(TabKey::Terminal(3)));
+        assert_eq!(workspace.selected[1], Some(TabKey::Terminal(20)));
+
+        workspace.close(&TabKey::Terminal(3));
+        assert_eq!(workspace.selected[0], Some(TabKey::Terminal(1)));
+        assert_eq!(workspace.selected[1], Some(TabKey::Terminal(20)));
     }
 
     fn assert_sidebar_footer_geometry(window: WindowHandle<VegaWindow>, cx: &mut TestAppContext) {
@@ -1768,7 +1782,7 @@ mod tests {
         let _ = shell_bounds(window, "right-workspace-pane", cx);
         let actions = shell_bounds(window, "right-workspace-actions", cx);
         let commit = shell_bounds(window, "workspace-review-commit", cx);
-        assert_close(actions.size.width, 136.0, "Review workspace trailing group");
+        assert_close(actions.size.width, 108.0, "Review workspace trailing group");
         assert_close(
             commit.left() - actions.left(),
             0.0,
@@ -2137,14 +2151,16 @@ mod tests {
 
 #[cfg(all(test, unix))]
 mod terminal_tests {
-    use super::{TabKey, VegaWindow};
+    use super::{TabKey, VegaWindow, WorkspaceCreateAction};
     use crate::tests::install_diff_window_globals;
     use gpui_kit::Focusable;
     use gpui_kit::{
-        AppContext, Bounds, Modifiers, TestAppContext, VisualTestContext, WindowBounds,
-        WindowOptions, point, px, size,
+        AppContext, Bounds, EntityInputHandler, FocusHandle, KeyBinding, Modifiers, TestAppContext,
+        VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point, px, size,
     };
+    use std::time::{Duration, Instant};
     use vega_theme::Layout;
+    use vega_ui::settings::CloseSettings;
     use vega_ui::sidebar::SelectedProject;
 
     fn assert_pixel_close(actual: gpui_kit::Pixels, expected: f32, label: &str) {
@@ -2155,15 +2171,49 @@ mod terminal_tests {
         );
     }
 
+    fn mounted_bounds(
+        window: WindowHandle<VegaWindow>,
+        selector: &'static str,
+        cx: &mut TestAppContext,
+    ) -> Bounds<gpui_kit::Pixels> {
+        cx.run_until_parked();
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing mounted selector: {selector}"))
+    }
+
+    fn click_mounted(
+        window: WindowHandle<VegaWindow>,
+        selector: &'static str,
+        cx: &mut TestAppContext,
+    ) {
+        let bounds = mounted_bounds(window, selector, cx);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    fn focus_is(
+        window: WindowHandle<VegaWindow>,
+        focus: FocusHandle,
+        cx: &mut TestAppContext,
+    ) -> bool {
+        window
+            .update(cx, |_, window, _| focus.is_focused(window))
+            .expect("mounted window focus")
+    }
+
     #[gpui_kit::test]
-    async fn r19_environment_terminal_action_opens_default_bottom_dock(cx: &mut TestAppContext) {
-        const MARKER: &str = "VEGA_R19_ENVIRONMENT_TERMINAL_CHILD";
+    async fn r44_terminal_entry_points_and_creation_menu_preserve_explicit_focus(
+        cx: &mut TestAppContext,
+    ) {
+        const MARKER: &str = "VEGA_R44_TERMINAL_INTERACTION_CHILD";
         let Some(path) = std::env::var_os(MARKER) else {
             let root = tempfile::tempdir().expect("owned terminal home");
             let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
                 .args([
                     "--exact",
-                    "window::workspace::terminal_tests::r19_environment_terminal_action_opens_default_bottom_dock",
+                    "window::workspace::terminal_tests::r44_terminal_entry_points_and_creation_menu_preserve_explicit_focus",
                     "--nocapture",
                 ])
                 .env(MARKER, root.path())
@@ -2173,7 +2223,7 @@ mod terminal_tests {
                 .expect("isolated test process");
             assert!(
                 output.status.success(),
-                "owned R19 terminal subprocess failed: {}",
+                "owned R44 terminal subprocess failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
             return;
@@ -2182,12 +2232,19 @@ mod terminal_tests {
         let store = vega_store::Store::open(path.join("test.db")).expect("store");
         store.migrate().expect("migrations");
         let project =
-            vega_store::projects::create(store.conn(), path.to_str().unwrap(), "R19", None)
+            vega_store::projects::create(store.conn(), path.to_str().unwrap(), "R44", None)
                 .expect("project");
         let thread =
             vega_conversation::threads::create_thread(&store, &project.id, "mock", "confirm")
                 .expect("thread");
-        cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        cx.update(|cx| {
+            install_diff_window_globals(store, thread, cx);
+            cx.bind_keys([KeyBinding::new(
+                "escape",
+                CloseSettings,
+                Some("WorkspaceMenu"),
+            )]);
+        });
         let root = cx.new(VegaWindow::new);
         let entity = root.clone();
         let window = cx.update(|cx| {
@@ -2204,20 +2261,37 @@ mod terminal_tests {
             .expect("production root")
         });
         cx.run_until_parked();
-        let action = VisualTestContext::from_window(window.into(), cx)
-            .debug_bounds("environment-terminal")
-            .expect("truthful Local terminal action");
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        visual.simulate_click(action.center(), Modifiers::default());
-        visual.run_until_parked();
-        root.read_with(cx, |root, _| {
-            assert_eq!(root.workspace.terminals.len(), 1);
-            assert!(matches!(
-                root.workspace.selected[1],
-                Some(TabKey::Terminal(_))
-            ));
-            assert!(!root.workspace.hidden[1]);
+        let input = root.read_with(cx, |root, cx| {
+            root.stream_view
+                .as_ref()
+                .expect("conversation")
+                .1
+                .read(cx)
+                .composer_input()
         });
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("focus task composer");
+
+        click_mounted(window, "main-header-terminal", cx);
+        let (first_key, first_view) = root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.terminals.len(), 1);
+            let key = root.workspace.selected[1]
+                .clone()
+                .expect("selected terminal");
+            let TabKey::Terminal(id) = key else {
+                panic!("terminal key")
+            };
+            assert!(!root.workspace.hidden[1]);
+            let view = root.workspace.terminals[&id].view.clone();
+            (TabKey::Terminal(id), view)
+        });
+        let input_focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+        let terminal_focus = first_view.read_with(cx, |view, cx| view.focus_handle(cx));
+        assert!(focus_is(window, input_focus.clone(), cx));
+        assert!(!focus_is(window, terminal_focus.clone(), cx));
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         let bottom = visual
             .debug_bounds("bottom-workspace-pane")
@@ -2230,6 +2304,251 @@ mod terminal_tests {
             visual.debug_bounds("environment-rail").is_some(),
             "bottom dock remains a sibling of center plus Environment"
         );
+
+        click_mounted(window, "main-header-terminal", cx);
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("bottom-workspace-pane")
+                .is_none(),
+            "main-header Terminal hides its visible selected terminal"
+        );
+        click_mounted(window, "environment-terminal", cx);
+        root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.terminals.len(), 1);
+            assert_eq!(root.workspace.selected[1], Some(first_key.clone()));
+            assert!(!root.workspace.hidden[1]);
+            assert_eq!(
+                root.workspace
+                    .terminals
+                    .values()
+                    .next()
+                    .expect("same terminal")
+                    .view
+                    .entity_id(),
+                first_view.entity_id()
+            );
+        });
+        assert!(focus_is(window, input_focus.clone(), cx));
+        click_mounted(window, "environment-terminal", cx);
+        root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.terminals.len(), 1);
+            assert_eq!(root.workspace.selected[1], Some(first_key.clone()));
+            assert!(!root.workspace.hidden[1]);
+        });
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        cx.simulate_keystrokes(window.into(), "cmd-j");
+        cx.run_until_parked();
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("bottom-workspace-pane")
+                .is_none(),
+            "global terminal toggle hides the visible selected terminal"
+        );
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("main-header-restore-bottom")
+                .is_none(),
+            "hidden terminal has no duplicate generic restore action"
+        );
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        click_mounted(window, "main-header-terminal", cx);
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.selected[1], Some(first_key.clone()));
+            assert_eq!(root.workspace.terminals.len(), 1);
+        });
+        assert!(focus_is(window, input_focus.clone(), cx));
+        assert!(!focus_is(window, terminal_focus.clone(), cx));
+        cx.simulate_keystrokes(window.into(), "s a f e");
+        assert_eq!(
+            input.read_with(cx, |input, _| input.text().to_string()),
+            "safe"
+        );
+
+        let tab_selector = match first_key {
+            TabKey::Terminal(1) => "workspace-tab-Terminal(1)",
+            TabKey::Terminal(id) => panic!("expected first terminal id 1, got {id}"),
+            _ => unreachable!(),
+        };
+        let tab_bounds = VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds(tab_selector)
+            .expect("mounted terminal tab");
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(tab_bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(focus_is(window, terminal_focus, cx));
+
+        window
+            .update(cx, |_, window, cx| {
+                first_view.update(cx, |view, cx| {
+                    view.replace_text_in_range(
+                        None,
+                        "printf explicit-focus > r44-explicit-focus; printf $$ > r44-pid-before",
+                        window,
+                        cx,
+                    )
+                });
+            })
+            .expect("type explicit PTY probe");
+        cx.simulate_keystrokes(window.into(), "enter");
+        let marker = path.join("r44-explicit-focus");
+        let until = Instant::now() + Duration::from_secs(8);
+        while !marker.exists() {
+            assert!(Instant::now() < until, "explicit PTY focus probe timed out");
+            cx.executor().advance_clock(Duration::from_millis(30));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        assert_eq!(
+            std::fs::read_to_string(marker).expect("PTY marker"),
+            "explicit-focus"
+        );
+        let pid_before = path.join("r44-pid-before");
+        let until = Instant::now() + Duration::from_secs(8);
+        while !pid_before.exists() {
+            assert!(Instant::now() < until, "PTY identity probe timed out");
+            cx.executor().advance_clock(Duration::from_millis(30));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(15));
+        }
+
+        click_mounted(window, "bottom-workspace-maximize", cx);
+        assert!(root.read_with(cx, |root, _| root.workspace.maximized[1]));
+        assert_eq!(
+            first_view.entity_id(),
+            root.read_with(cx, |root, _| {
+                let TabKey::Terminal(id) = root.workspace.selected[1]
+                    .clone()
+                    .expect("maximized terminal")
+                else {
+                    panic!("terminal key")
+                };
+                root.workspace.terminals[&id].view.entity_id()
+            })
+        );
+        click_mounted(window, "bottom-workspace-maximize", cx);
+        assert!(!root.read_with(cx, |root, _| root.workspace.maximized[1]));
+        click_mounted(window, "bottom-workspace-dock", cx);
+        let _ = mounted_bounds(window, "right-workspace-hide", cx);
+        assert_eq!(
+            first_view.entity_id(),
+            root.read_with(cx, |root, _| {
+                let TabKey::Terminal(id) =
+                    root.workspace.selected[0].clone().expect("right terminal")
+                else {
+                    panic!("terminal key")
+                };
+                root.workspace.terminals[&id].view.entity_id()
+            })
+        );
+        click_mounted(window, "right-workspace-dock", cx);
+        click_mounted(window, "bottom-workspace-hide", cx);
+        assert!(root.read_with(cx, |root, _| root.workspace.hidden[1]));
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("main-header-restore-bottom")
+                .is_none(),
+            "leading hide keeps Terminal as the sole restore path"
+        );
+        cx.simulate_keystrokes(window.into(), "cmd-j");
+        cx.run_until_parked();
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        assert!(focus_is(
+            window,
+            input.read_with(cx, |input, cx| input.focus_handle(cx)),
+            cx
+        ));
+        let tab_bounds = VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds(tab_selector)
+            .expect("restored terminal tab");
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(tab_bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        window
+            .update(cx, |_, window, cx| {
+                first_view.update(cx, |view, cx| {
+                    view.replace_text_in_range(None, "printf $$ > r44-pid-after", window, cx)
+                });
+            })
+            .expect("type post-layout PTY identity probe");
+        cx.simulate_keystrokes(window.into(), "enter");
+        let pid_after = path.join("r44-pid-after");
+        let until = Instant::now() + Duration::from_secs(8);
+        while !pid_after.exists() {
+            assert!(
+                Instant::now() < until,
+                "post-layout PTY identity probe timed out"
+            );
+            cx.executor().advance_clock(Duration::from_millis(30));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        assert_eq!(
+            std::fs::read_to_string(pid_before).expect("PID before layout changes"),
+            std::fs::read_to_string(pid_after).expect("PID after layout changes"),
+            "move, maximize, hide, and reveal preserve the terminal process"
+        );
+
+        click_mounted(window, "bottom-workspace-add", cx);
+        assert_eq!(
+            root.read_with(cx, |root, cx| root.workspace_creation_actions(cx)),
+            vec![
+                WorkspaceCreateAction::Review,
+                WorkspaceCreateAction::NewTerminal,
+            ],
+            "creation menu has no existing tabs, preview restore, or destructive close-all action"
+        );
+        let menu = mounted_bounds(window, "workspace-add-menu", cx);
+        let _ = mounted_bounds(window, "workspace-add-review", cx);
+        let _ = mounted_bounds(window, "workspace-add-terminal", cx);
+        assert!(
+            f32::from(menu.size.height) <= 88.0,
+            "creation menu contains only its two truthful rows"
+        );
+        cx.simulate_keystrokes(window.into(), "escape");
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("workspace-add-menu")
+                .is_none()
+        );
+        assert!(focus_is(window, input_focus, cx));
+
+        click_mounted(window, "bottom-workspace-add", cx);
+        click_mounted(window, "workspace-add-terminal", cx);
+        let new_view = root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.terminals.len(), 2);
+            let selected = root.workspace.selected[1]
+                .as_ref()
+                .expect("new terminal selected");
+            assert_ne!(selected, &first_key);
+            let TabKey::Terminal(id) = selected else {
+                panic!("new terminal key")
+            };
+            root.workspace.terminals[id].view.clone()
+        });
+        let new_focus = new_view.read_with(cx, |view, cx| view.focus_handle(cx));
+        assert!(focus_is(window, new_focus, cx));
+
+        click_mounted(window, "bottom-workspace-add", cx);
+        click_mounted(window, "workspace-add-terminal", cx);
+        assert_eq!(
+            root.read_with(cx, |root, _| root.workspace.selected[1].clone()),
+            Some(TabKey::Terminal(3))
+        );
+        click_mounted(window, "workspace-tab-Terminal(2)", cx);
+        click_mounted(window, "workspace-tab-close-Terminal(2)", cx);
+        root.read_with(cx, |root, _| {
+            assert_eq!(
+                root.workspace.selected[1],
+                Some(TabKey::Terminal(3)),
+                "closing a selected middle tab activates its next sibling"
+            );
+            assert!(!root.workspace.terminals.contains_key(&2));
+            assert_eq!(root.workspace.terminals.len(), 2);
+        });
+        let _ = mounted_bounds(window, "workspace-tab-Terminal(3)", cx);
     }
 
     #[gpui_kit::test]
@@ -2304,9 +2623,9 @@ mod terminal_tests {
             let header = visual
                 .debug_bounds("right-workspace-header")
                 .expect("right workspace header");
-            let all_tabs = visual
-                .debug_bounds("right-workspace-all-tabs")
-                .expect("all-tabs control");
+            let hide = visual
+                .debug_bounds("right-workspace-hide")
+                .expect("leading pane hide control");
             let strip = visual
                 .debug_bounds("right-tabs")
                 .expect("scrollable tab strip");
@@ -2323,9 +2642,6 @@ mod terminal_tests {
                 visual
                     .debug_bounds("right-workspace-maximize")
                     .expect("workspace maximize action"),
-                visual
-                    .debug_bounds("right-workspace-hide")
-                    .expect("workspace hide action"),
             ];
             assert_pixel_close(
                 header.size.height,
@@ -2333,8 +2649,8 @@ mod terminal_tests {
                 "workspace header height",
             );
             assert!(
-                all_tabs.right() <= strip.left(),
-                "all-tabs control stays outside the scrollable strip"
+                hide.right() <= strip.left(),
+                "leading hide control stays outside the scrollable strip"
             );
             assert!(
                 strip.right() <= actions.left(),
@@ -2345,7 +2661,7 @@ mod terminal_tests {
                 4.0,
                 "workspace actions trailing inset",
             );
-            assert_pixel_close(actions.size.width, 108.0, "workspace trailing group");
+            assert_pixel_close(actions.size.width, 80.0, "workspace trailing group");
             for (index, button) in buttons.iter().enumerate() {
                 assert_pixel_close(button.size.width, 24.0, "workspace action hitbox");
                 assert_pixel_close(button.size.height, 24.0, "workspace action hitbox");
@@ -2373,7 +2689,18 @@ mod terminal_tests {
                 };
                 assert_eq!(root.workspace.terminals[&id].view.entity_id(), entity_id);
                 assert!(
-                    root.workspace.terminals[&id]
+                    root.stream_view
+                        .as_ref()
+                        .expect("conversation")
+                        .1
+                        .read(cx)
+                        .composer_input()
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                );
+                assert!(
+                    !root.workspace.terminals[&id]
                         .view
                         .read(cx)
                         .focus_handle(cx)
@@ -2402,7 +2729,7 @@ mod terminal_tests {
                 strip.right() <= actions.left(),
                 "bottom actions stay outside the scrollable strip"
             );
-            assert_pixel_close(actions.size.width, 108.0, "bottom trailing group");
+            assert_pixel_close(actions.size.width, 80.0, "bottom trailing group");
         }
         window
             .update(cx, |root, window, cx| {
