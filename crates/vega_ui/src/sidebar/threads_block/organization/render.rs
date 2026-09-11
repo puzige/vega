@@ -337,21 +337,11 @@ impl ThreadsBlock {
                         .flex_col()
                         .children(pinned.iter().map(|thread| {
                             let archived = thread.status == ThreadStatus::Archived;
-                            let project = (!thread.is_standalone())
-                                .then(|| {
-                                    snapshot
-                                        .projects
-                                        .iter()
-                                        .find(|project| project.id == thread.project_id)
-                                        .map(|project| project.name.clone())
-                                })
-                                .flatten();
-                            self.render_pinned_row_with_metadata(
+                            self.render_pinned_row(
                                 thread,
                                 &opened_id,
                                 archived,
                                 "pinned-thread-row-",
-                                project,
                                 cx,
                             )
                         })),
@@ -656,6 +646,72 @@ impl ThreadsBlock {
         cx.notify();
     }
 
+    fn render_project_progressive_control(
+        &self,
+        project_id: &str,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let state_name = if expanded { "less" } else { "more" };
+        let label = if expanded { "Show Less" } else { "Show More" };
+        let id = format!("project-{project_id}-show-{state_name}");
+        let label_id = format!("project-{project_id}-progressive-label");
+        let mouse_project_id = project_id.to_owned();
+        let keyboard_project_id = project_id.to_owned();
+        div()
+            .id(ElementId::Name(id.clone().into()))
+            .debug_selector(move || id.clone())
+            .focusable()
+            .tab_stop(true)
+            .role(gpui_kit::Role::Button)
+            .aria_label(label)
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+            .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
+            .rounded_lg()
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .text_size(px(Typography::SIDEBAR))
+            .text_color(colors.text_tertiary)
+            .hover(move |style| style.bg(colors.bg_hover).text_color(colors.text_secondary))
+            .focus_visible(move |style| {
+                style
+                    .bg(colors.bg_active)
+                    .text_color(colors.text_primary)
+                    .border_1()
+                    .border_color(colors.border_subtle)
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_project_progressive(&mouse_project_id, cx);
+                }),
+            )
+            .on_key_down(
+                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        this.toggle_project_progressive(&keyboard_project_id, cx);
+                    }
+                }),
+            )
+            .child(div().debug_selector(move || label_id.clone()).child(label))
+            .into_any_element()
+    }
+
+    fn toggle_project_progressive(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        if let Some(organization) = self.organization.as_mut()
+            && !organization.project_threads_expanded.remove(project_id)
+        {
+            organization
+                .project_threads_expanded
+                .insert(project_id.to_owned());
+        }
+        cx.notify();
+    }
+
     fn render_pi_project(
         &self,
         project: &SidebarProject,
@@ -849,6 +905,11 @@ impl ThreadsBlock {
                 );
             }
             tasks = super::projections::sorted_threads(&tasks, snapshot.preferences.sort);
+            let expanded = self.organization.as_ref().is_some_and(|organization| {
+                organization.project_threads_expanded.contains(&project.id)
+            });
+            let has_hidden = tasks.len() > 5;
+            let visible_count = if expanded { tasks.len() } else { 5 };
             let has_pinned = self
                 .eligible_threads(show_archived)
                 .iter()
@@ -861,7 +922,7 @@ impl ThreadsBlock {
             if tasks.is_empty() && !has_pinned {
                 section = section.child(self.section_label("暂无任务", cx));
             } else {
-                section = section.children(tasks.iter().map(|thread| {
+                section = section.children(tasks.iter().take(visible_count).map(|thread| {
                     self.render_pi_row(
                         thread,
                         &opened_id,
@@ -871,6 +932,13 @@ impl ThreadsBlock {
                         cx,
                     )
                 }));
+                if has_hidden {
+                    section = section.child(self.render_project_progressive_control(
+                        &project.id,
+                        expanded,
+                        cx,
+                    ));
+                }
             }
         }
         section.into_any_element()

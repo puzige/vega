@@ -17,7 +17,7 @@ impl EventEmitter<ThreadsBlockEvent> for ThreadsBlock {}
 ///
 /// The 「会话」 block: the selected project's threads, pinned group first,
 /// then `updated_at` desc (store ordering, ui-spec §4.1 置顶组优先). Rows =
-/// truncated title + relative time ("2h" style); the selected row gets
+/// truncated title; the selected row gets
 /// `bg_active`; unread rows render medium weight + a dot (the field stays 0
 /// until S3 produces unread state).
 ///
@@ -958,8 +958,8 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    /// One session row per ui-spec §4.1: [pin mark][title] [dot]
-    /// [relative time | compact action trigger]. The selected row gets
+    /// One session row per ui-spec §4.1: [pin mark][title] [dot] plus a compact
+    /// action trigger. The selected row gets
     /// `bg_active`; hovering a non-editing row gets `bg_hover` and reveals the
     /// trigger for its action menu (置顶 / 归档或恢复 / 删除；行内编辑行除外).
     ///
@@ -981,7 +981,7 @@ impl ThreadsBlock {
             archived,
             selector_prefix,
             actions_enabled,
-            None,
+            true,
             true,
             Layout::SIDEBAR_NAV_CONTENT_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
@@ -1004,8 +1004,8 @@ impl ThreadsBlock {
             archived,
             selector_prefix,
             actions_enabled,
-            None,
             true,
+            false,
             Layout::SIDEBAR_NAV_CONTENT_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
@@ -1027,21 +1027,20 @@ impl ThreadsBlock {
             archived,
             selector_prefix,
             actions_enabled,
-            None,
             true,
+            false,
             0.0,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
     }
 
-    pub(super) fn render_pinned_row_with_metadata(
+    pub(super) fn render_pinned_row(
         &self,
         thread: &Thread,
         opened_id: &Option<String>,
         archived: bool,
         selector_prefix: &str,
-        project: Option<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.render_row_at_height(
@@ -1050,7 +1049,7 @@ impl ThreadsBlock {
             archived,
             selector_prefix,
             true,
-            project,
+            false,
             false,
             0.0,
             Typography::SIDEBAR_LINE_HEIGHT,
@@ -1066,8 +1065,8 @@ impl ThreadsBlock {
         archived: bool,
         selector_prefix: &str,
         actions_enabled: bool,
-        project: Option<String>,
         show_pin_indicator: bool,
+        show_timestamp_at_rest: bool,
         content_inset: f32,
         row_height: f32,
         cx: &mut Context<Self>,
@@ -1173,21 +1172,7 @@ impl ThreadsBlock {
                                     title.font_weight(Typography::HEADING_CARD_WEIGHT)
                                 })
                                 .child(thread_title(thread)),
-                        )
-                        .children(project.map(|project| {
-                            div()
-                                .debug_selector({
-                                    let id = thread.id.clone();
-                                    let selector_prefix = selector_prefix.to_owned();
-                                    move || format!("{selector_prefix}project-{id}")
-                                })
-                                .w(px(Layout::SIDEBAR_PROJECT_METADATA_WIDTH))
-                                .flex_shrink_0()
-                                .truncate()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_tertiary)
-                                .child(project)
-                        })),
+                        ),
                 )
                 // 未读圆点（数据恒 0 至 S3；显示逻辑本卡落地）。
                 .children(
@@ -1200,6 +1185,7 @@ impl ThreadsBlock {
                     thread,
                     archived,
                     actions_visible,
+                    show_timestamp_at_rest,
                     selector_prefix,
                     cx,
                 ))
@@ -1210,15 +1196,16 @@ impl ThreadsBlock {
         row.into_any_element()
     }
 
-    /// The fixed-width row tail. A timestamp remains visible at rest; hover
-    /// (or keyboard focus) reveals one compact action trigger. The actual
-    /// operations are rendered in a deferred anchored menu so the row and
-    /// sidebar scroll masks cannot clip the popup.
+    /// The fixed-width row tail. Production organization rows are quiet at
+    /// rest; hover (or keyboard focus) reveals one compact action trigger. The
+    /// actual operations are rendered in a deferred anchored menu so the row
+    /// and sidebar scroll masks cannot clip the popup.
     fn render_row_actions(
         &self,
         thread: &Thread,
         archived: bool,
         actions_visible: bool,
+        show_timestamp_at_rest: bool,
         selector_prefix: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1361,7 +1348,7 @@ impl ThreadsBlock {
         if menu_open {
             group = group.track_focus(&self.actions_scope_focus);
         }
-        if !actions_visible {
+        if !actions_visible && show_timestamp_at_rest {
             group = group.child(
                 div()
                     .debug_selector({

@@ -48,7 +48,7 @@ fn fixture_with_size(cx: &mut gpui_kit::TestAppContext, width: f32, height: f32)
             .unwrap();
     }
     let first = conversation::create_thread(&store, "p", "model", "confirm").unwrap();
-    for _ in 0..5 {
+    for _ in 0..4 {
         conversation::create_thread(&store, "p", "model", "confirm").unwrap();
     }
     let other = conversation::create_thread(&store, "q", "model", "confirm").unwrap();
@@ -163,7 +163,7 @@ async fn r15_route_guard_preserves_draft_and_switches_project_tasks(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
-    assert_eq!(snapshot(&f).threads.len(), 7);
+    assert_eq!(snapshot(&f).threads.len(), 6);
     assert_eq!(
         f.draft.read_with(cx, |draft, _| draft.text().to_string()),
         "owned unsent draft"
@@ -368,7 +368,7 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(project_tasks, 7);
+    assert_eq!(project_tasks, 6);
     assert_eq!(
         store
             .conn()
@@ -388,6 +388,9 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
         Box::leak(format!("project-thread-row-{project_task_id}").into_boxed_str());
     let standalone_project_selector: &'static str =
         Box::leak(format!("standalone-thread-row-{project_task_id}").into_boxed_str());
+    if !absent(&f, cx, "project-p-show-more") {
+        click(&f, cx, "project-p-show-more");
+    }
     assert!(visual.debug_bounds(project_selector).is_some());
     assert!(visual.debug_bounds(standalone_project_selector).is_none());
 
@@ -439,7 +442,7 @@ async fn r26_sidebar_projects_each_task_once_and_reveals_contextual_actions(
         format!("standalone-thread-row-{}", pinned_standalone.id)
     ));
     assert!(!absent(&f, cx, format!("pinned-thread-row-{}", f.first.id)));
-    assert!(!absent(
+    assert!(absent(
         &f,
         cx,
         format!("pinned-thread-row-project-{}", f.first.id)
@@ -463,7 +466,7 @@ async fn r26_sidebar_projects_each_task_once_and_reveals_contextual_actions(
         cx,
         format!("thread-actions-state-{}-rest", recent.id)
     ));
-    assert!(!absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
+    assert!(absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
     let projects_actions_rest = bounds(&f, cx, "organization-projects-actions-rest");
     let project_actions_rest = bounds(&f, cx, "project-actions-p-rest");
     let task_actions_rest = bounds(&f, cx, format!("thread-actions-state-{}-rest", recent.id));
@@ -541,7 +544,7 @@ async fn r26_sidebar_projects_each_task_once_and_reveals_contextual_actions(
         cx,
         format!("thread-actions-state-{}-rest", recent.id)
     ));
-    assert!(!absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
+    assert!(absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
     f.window
         .update(cx, |_, window, cx| task_focus.focus(window, cx))
         .unwrap();
@@ -638,14 +641,16 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
     assert_eq!(f32::from(label.left() - folder.right()), 8.0);
     assert_eq!(f32::from(label.left() - project_row.left()), 32.0);
 
-    let short_metadata = bounds(&f, cx, format!("pinned-thread-row-project-{}", f.first.id));
-    let long_metadata = bounds(&f, cx, format!("pinned-thread-row-project-{}", f.other.id));
-    assert_eq!(
-        f32::from(short_metadata.size.width),
-        Layout::SIDEBAR_PROJECT_METADATA_WIDTH
-    );
-    assert_eq!(short_metadata.size.width, long_metadata.size.width);
-    assert_eq!(short_metadata.left(), long_metadata.left());
+    assert!(absent(
+        &f,
+        cx,
+        format!("pinned-thread-row-project-{}", f.first.id)
+    ));
+    assert!(absent(
+        &f,
+        cx,
+        format!("pinned-thread-row-project-{}", f.other.id)
+    ));
 
     let rest_tail = bounds(&f, cx, format!("thread-actions-state-{}-rest", f.first.id));
     let long_tail = bounds(&f, cx, format!("thread-actions-state-{}-rest", f.other.id));
@@ -655,18 +660,15 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
     );
     assert_eq!(rest_tail.left(), long_tail.left());
     let rest_title = pinned_title;
-    let rest_metadata = short_metadata;
     let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
     visual.simulate_mouse_move(pinned_row.center(), None, gpui_kit::Modifiers::default());
     let hover_title = bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id));
-    let hover_metadata = bounds(&f, cx, format!("pinned-thread-row-project-{}", f.first.id));
     let hover_tail = bounds(
         &f,
         cx,
         format!("thread-actions-state-{}-visible", f.first.id),
     );
     assert_eq!(rest_title.origin, hover_title.origin);
-    assert_eq!(rest_metadata.origin, hover_metadata.origin);
     assert_eq!(rest_tail.origin, hover_tail.origin);
 
     cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
@@ -686,10 +688,11 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
         ),
         Layout::SIDEBAR_NAV_CONTENT_INSET
     );
-    assert_eq!(
-        bounds(&f, cx, format!("pinned-thread-row-project-{}", f.first.id)).origin,
-        rest_metadata.origin
-    );
+    assert!(absent(
+        &f,
+        cx,
+        format!("pinned-thread-row-project-{}", f.first.id)
+    ));
     assert_eq!(
         bounds(
             &f,
@@ -699,6 +702,160 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
         .origin,
         hover_tail.origin
     );
+}
+
+#[gpui_kit::test]
+async fn r33_production_task_rows_are_quiet_and_keep_stable_actions(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let recent = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let child = snapshot(&f)
+        .threads
+        .into_iter()
+        .find(|thread| thread.project_id == "p" && !thread.pinned)
+        .unwrap();
+    for thread_id in [&f.first.id, &child.id, &recent.id] {
+        assert!(absent(&f, cx, format!("thread-timestamp-{thread_id}")));
+    }
+    assert!(absent(
+        &f,
+        cx,
+        format!("pinned-thread-row-project-{}", f.first.id)
+    ));
+
+    let row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
+    let title_rest = bounds(&f, cx, format!("standalone-thread-row-title-{}", recent.id));
+    let tail_rest = bounds(&f, cx, format!("thread-actions-state-{}-rest", recent.id));
+    let trigger_rest = bounds(&f, cx, format!("standalone-thread-actions-{}", recent.id));
+    assert_eq!(
+        f32::from(tail_rest.size.width),
+        Layout::SIDEBAR_ACTIONS_WIDTH
+    );
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(row.center(), None, gpui_kit::Modifiers::default());
+    let title_hover = bounds(&f, cx, format!("standalone-thread-row-title-{}", recent.id));
+    let tail_hover = bounds(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-visible", recent.id),
+    );
+    let trigger_hover = bounds(&f, cx, format!("standalone-thread-actions-{}", recent.id));
+    assert_eq!(title_rest.origin, title_hover.origin);
+    assert_eq!(tail_rest, tail_hover);
+    assert_eq!(trigger_rest, trigger_hover);
+    assert!(absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
+
+    drop(visual);
+    click(&f, cx, format!("standalone-thread-actions-{}", recent.id));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
+        Some(recent.id.clone())
+    );
+    assert_eq!(
+        bounds(&f, cx, format!("standalone-thread-actions-{}", recent.id)),
+        trigger_rest
+    );
+    assert!(absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
+}
+
+#[gpui_kit::test]
+async fn r33_project_tasks_expand_independently_and_preserve_mounted_state(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    for _ in 0..3 {
+        conversation::create_thread(&store, "p", "model", "confirm").unwrap();
+    }
+    let newest_p = conversation::create_thread(&store, "p", "model", "confirm").unwrap();
+    conversation::set_thread_status(&store, &newest_p.id, ThreadStatus::Archived).unwrap();
+    conversation::set_thread_pinned(&store, &f.other.id, true).unwrap();
+    for _ in 0..6 {
+        conversation::create_thread(&store, "q", "model", "confirm").unwrap();
+    }
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let state = snapshot(&f);
+    let active_ids = |project_id: &str| {
+        state
+            .threads
+            .iter()
+            .filter(|thread| {
+                thread.project_id == project_id
+                    && thread.status == ThreadStatus::Active
+                    && !thread.pinned
+            })
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let p_ids = active_ids("p");
+    let q_ids = active_ids("q");
+    assert_eq!(p_ids.len(), 7);
+    assert_eq!(q_ids.len(), 6);
+    let mounted = |ids: &[String], cx: &mut gpui_kit::TestAppContext| {
+        ids.iter()
+            .filter(|id| !absent(&f, cx, format!("project-thread-row-{id}")))
+            .count()
+    };
+    assert_eq!(mounted(&p_ids, cx), 5);
+    assert_eq!(mounted(&q_ids, cx), 5);
+    assert!(absent(&f, cx, format!("project-thread-row-{}", f.first.id)));
+    assert!(absent(&f, cx, format!("project-thread-row-{}", f.other.id)));
+    assert!(absent(
+        &f,
+        cx,
+        format!("project-thread-row-{}", newest_p.id)
+    ));
+
+    let more = bounds(&f, cx, "project-p-show-more");
+    let more_label = bounds(&f, cx, "project-p-progressive-label");
+    assert_eq!(
+        f32::from(more_label.left() - more.left()),
+        Layout::SIDEBAR_NAV_CONTENT_INSET
+    );
+    click(&f, cx, "project-p-show-more");
+    assert_eq!(mounted(&p_ids, cx), p_ids.len());
+    assert_eq!(mounted(&q_ids, cx), 5);
+    assert!(!absent(&f, cx, "project-p-show-less"));
+    assert!(!absent(&f, cx, "project-q-show-more"));
+
+    click(&f, cx, "project-header-p");
+    assert_eq!(mounted(&p_ids, cx), 0);
+    click(&f, cx, "project-header-p");
+    assert_eq!(mounted(&p_ids, cx), p_ids.len());
+    assert!(!absent(&f, cx, "project-p-show-less"));
+
+    click(&f, cx, "project-p-show-less");
+    assert_eq!(mounted(&p_ids, cx), 5);
+    assert_eq!(mounted(&q_ids, cx), 5);
+
+    sessions(&f, cx).update(cx, |block, _| {
+        block
+            .organization
+            .as_mut()
+            .unwrap()
+            .project_threads_expanded
+            .insert("removed-project".into());
+    });
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+    assert!(sessions(&f, cx).read_with(cx, |block, _| {
+        !block
+            .organization
+            .as_ref()
+            .unwrap()
+            .project_threads_expanded
+            .contains("removed-project")
+    }));
 }
 
 #[gpui_kit::test]
@@ -900,8 +1057,6 @@ async fn r31_sidebar_typography_restores_compact_mounted_sizes(cx: &mut gpui_kit
         "organization-section-label-Pinned".to_string(),
         "organization-section-label-Projects".to_string(),
         "organization-section-label-Recents".to_string(),
-        format!("pinned-thread-row-project-{}", f.first.id),
-        format!("thread-timestamp-{}", recent.id),
     ] {
         let height = bounds(&f, cx, &selector).size.height;
         assert_eq!(height, metadata_height, "unexpected height for {selector}");
@@ -936,12 +1091,7 @@ async fn r31_sidebar_typography_restores_compact_mounted_sizes(cx: &mut gpui_kit
             .height,
         metadata_height
     );
-    assert_eq!(
-        bounds(&f, cx, format!("thread-timestamp-{}", recent.id))
-            .size
-            .height,
-        metadata_height
-    );
+    assert!(absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
 }
 
 #[gpui_kit::test]

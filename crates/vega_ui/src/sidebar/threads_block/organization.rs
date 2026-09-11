@@ -2,7 +2,7 @@
 
 //! R13 cached projections and one revision-checked background organization lane.
 use super::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use vega_conversation::sidebar_organization as service;
 use vega_conversation::types::{
     SidebarCollapseTarget, SidebarGroupColor, SidebarOrganizationAction,
@@ -22,6 +22,7 @@ pub(super) struct Organization {
     refresh_queued: bool,
     generation: u64,
     more: HashMap<String, usize>,
+    project_threads_expanded: HashSet<String>,
     editor: Option<GroupEditor>,
     menu: Option<OrganizationMenu>,
     menu_focus: FocusHandle,
@@ -95,6 +96,7 @@ impl ThreadsBlock {
             refresh_queued: false,
             generation: 0,
             more: HashMap::new(),
+            project_threads_expanded: HashSet::new(),
             editor: None,
             menu: None,
             menu_focus: cx.focus_handle(),
@@ -262,6 +264,12 @@ impl ThreadsBlock {
                             .as_ref()
                             .is_none_or(|old| old.revision <= snapshot.revision)
                         {
+                            org.project_threads_expanded.retain(|project_id| {
+                                snapshot
+                                    .projects
+                                    .iter()
+                                    .any(|project| &project.id == project_id)
+                            });
                             if !metadata_stale {
                                 this.threads = snapshot
                                     .threads
