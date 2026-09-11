@@ -452,7 +452,7 @@ impl ThreadsBlock {
         };
         let rows = standalone.into_iter().take(visible_count).map(|thread| {
             let archived = thread.status == ThreadStatus::Archived;
-            self.render_pi_row(
+            self.render_recent_row(
                 &thread,
                 &opened_id,
                 archived,

@@ -559,7 +559,7 @@ async fn r26_sidebar_projects_each_task_once_and_reveals_contextual_actions(
 }
 
 #[gpui_kit::test]
-async fn r31_pinned_rows_align_to_heading_while_other_rows_keep_the_content_grid(
+async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_keep_the_grid(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
@@ -601,6 +601,7 @@ async fn r31_pinned_rows_align_to_heading_while_other_rows_keep_the_content_grid
     let pinned_row = bounds(&f, cx, format!("pinned-thread-row-{}", f.first.id));
     let pinned_title = bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id));
     let pinned_heading = bounds(&f, cx, "organization-section-label-Pinned");
+    let recents_heading = bounds(&f, cx, "organization-section-label-Recents");
     let child_row = bounds(&f, cx, format!("project-thread-row-{}", child.id));
     let child_title = bounds(&f, cx, format!("project-thread-row-title-{}", child.id));
     let recent_row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
@@ -612,13 +613,13 @@ async fn r31_pinned_rows_align_to_heading_while_other_rows_keep_the_content_grid
         );
     }
     assert_eq!(pinned_title.left(), pinned_row.left());
-    for (row, title) in [(child_row, child_title), (recent_row, recent_title)] {
-        assert_eq!(
-            f32::from(title.left() - row.left()),
-            Layout::SIDEBAR_NAV_CONTENT_INSET
-        );
-    }
-    assert_eq!(child_title.left(), recent_title.left());
+    assert_eq!(recent_title.left(), recents_heading.left());
+    assert_eq!(recent_title.left(), recent_row.left());
+    assert_eq!(
+        f32::from(child_title.left() - child_row.left()),
+        Layout::SIDEBAR_NAV_CONTENT_INSET
+    );
+    assert_ne!(child_title.left(), recent_title.left());
     assert!(absent(
         &f,
         cx,
@@ -673,6 +674,17 @@ async fn r31_pinned_rows_align_to_heading_while_other_rows_keep_the_content_grid
     assert_eq!(
         bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id)).left(),
         bounds(&f, cx, "organization-section-label-Pinned").left()
+    );
+    assert_eq!(
+        bounds(&f, cx, format!("standalone-thread-row-title-{}", recent.id)).left(),
+        bounds(&f, cx, "organization-section-label-Recents").left()
+    );
+    assert_eq!(
+        f32::from(
+            bounds(&f, cx, format!("project-thread-row-title-{}", child.id)).left()
+                - bounds(&f, cx, format!("project-thread-row-{}", child.id)).left()
+        ),
+        Layout::SIDEBAR_NAV_CONTENT_INSET
     );
     assert_eq!(
         bounds(&f, cx, format!("pinned-thread-row-project-{}", f.first.id)).origin,

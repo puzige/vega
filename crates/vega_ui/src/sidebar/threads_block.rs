@@ -1012,6 +1012,29 @@ impl ThreadsBlock {
         )
     }
 
+    pub(super) fn render_recent_row(
+        &self,
+        thread: &Thread,
+        opened_id: &Option<String>,
+        archived: bool,
+        selector_prefix: &str,
+        actions_enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_row_at_height(
+            thread,
+            opened_id,
+            archived,
+            selector_prefix,
+            actions_enabled,
+            None,
+            true,
+            0.0,
+            Typography::SIDEBAR_LINE_HEIGHT,
+            cx,
+        )
+    }
+
     pub(super) fn render_pinned_row_with_metadata(
         &self,
         thread: &Thread,
