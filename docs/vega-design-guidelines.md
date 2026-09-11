@@ -204,8 +204,8 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Terminal 内容在状态栏下使用一致内边距；PTY 行列数以扣除 chrome 和内边距后的真实 canvas bounds 为准。
 - Sidebar 宽度、用户手动折叠和窗口触发的自动隐藏是三个独立状态，resize 不得覆盖另外两者。
 - Sidebar 的常驻 Settings action 使用完整 32px 导航行高，位于 12px 左右与底部 inset 内，并使用与其他导航行一致的 8px 圆角。它是侧栏内容栅格中的普通导航行，不是贴住窗口边缘的 footer 条带。
-- Sidebar 的任务信息架构按 `PINNED / PROJECTS / RECENTS` 排列；任务在三个投影位置中只能出现一次。区块标题和项目行的辅助操作默认保持安静，仅在所属标题/行 hover、键盘聚焦或菜单打开时显现，且显隐不得造成布局跳动。
-- `PINNED` 标题本身已表达置顶语义，区内任务行不重复渲染 Pin 图标或空占位。项目 Folder 与名称保持 8px 间距，项目名称、项目子任务、Pinned 与 Recents 任务标题统一落在距行左侧 32px 的内容列；项目归属元数据使用稳定列宽。
+- Sidebar 的任务信息架构按 `Pinned / Projects / Recents` 排列，区块标题使用普通首字母大写而非全大写；任务在三个投影位置中只能出现一次。区块标题和项目行的辅助操作默认保持安静，仅在所属标题/行 hover、键盘聚焦或菜单打开时显现，且显隐不得造成布局跳动。
+- `Pinned` 标题本身已表达置顶语义，区内任务行不重复渲染 Pin 图标或空占位。项目 Folder 与名称保持 8px 间距，项目名称、项目子任务、Pinned 与 Recents 任务标题统一落在距行左侧 32px 的内容列；项目归属元数据使用稳定列宽。
 - Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
 
 ## 11. 动效与可访问性
@@ -266,3 +266,4 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 - v1.6 (2026-09-10)：再次按用户原生复验纠正 R24：Settings 回归 12px 内容栅格；侧栏导航采用中性灰选中态与 8px 圆角；项目移除独立 Chevron，由 Folder open/closed 图标表达展开状态。精确规格见 [R25 Sidebar navigation](vega-r25-sidebar-navigation.md)。
 - v1.7 (2026-09-10)：侧栏信息架构改为 `PINNED / PROJECTS / RECENTS`，并冻结 section/project/task 辅助操作的 hover/focus/menu-open 显现规则。精确规格见 [R26 Sidebar sections](vega-r26-sidebar-sections-hover.md)。
 - v1.8 (2026-09-11)：移除 Pinned 行内重复的 Pin 图标，统一任务标题内容列；项目 Folder 与名称间距改为 8px，并固定 Pinned 项目元数据列。精确规格见 [R27 Sidebar row alignment](vega-r27-sidebar-row-alignment.md)。
+- v1.9 (2026-09-11)：Sidebar 区块标题统一为 `Pinned / Projects / Recents` 普通首字母大写，保留既有弱化层级、顺序与交互。精确规格见 [R28 Sidebar heading case](vega-r28-sidebar-heading-case.md)。
