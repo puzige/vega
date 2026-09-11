@@ -615,7 +615,7 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
             pinned_heading.left()
         );
     }
-    assert_eq!(pinned_title.left(), pinned_row.left());
+    assert_eq!(f32::from(pinned_title.left() - pinned_row.left()), 8.0);
     assert_eq!(recent_title.left(), recents_heading.left());
     assert_eq!(recent_title.left(), recent_row.left());
     assert_eq!(
@@ -1198,6 +1198,96 @@ async fn r35_projects_starts_without_a_pinned_only_spacer_across_themes(
     cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
     cx.run_until_parked();
     assert_geometry(&f, cx);
+}
+
+#[gpui_kit::test]
+async fn r36_pinned_surfaces_add_leading_padding_without_moving_content(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    fn assert_geometry(
+        f: &Fixture,
+        recent: &Thread,
+        child: &Thread,
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let heading = bounds(f, cx, "organization-section-label-Pinned");
+        let recents_heading = bounds(f, cx, "organization-section-label-Recents");
+        let selected_row = bounds(f, cx, format!("pinned-thread-row-{}", f.first.id));
+        let selected_title = bounds(f, cx, format!("pinned-thread-row-title-{}", f.first.id));
+        let rest_row = bounds(f, cx, format!("pinned-thread-row-{}", f.other.id));
+        let rest_title = bounds(f, cx, format!("pinned-thread-row-title-{}", f.other.id));
+        let recent_row = bounds(f, cx, format!("standalone-thread-row-{}", recent.id));
+        let recent_title = bounds(f, cx, format!("standalone-thread-row-title-{}", recent.id));
+        let project_row = bounds(f, cx, "project-header-p");
+        let child_row = bounds(f, cx, format!("project-thread-row-{}", child.id));
+        let child_title = bounds(f, cx, format!("project-thread-row-title-{}", child.id));
+
+        for (row, title) in [(selected_row, selected_title), (rest_row, rest_title)] {
+            assert_eq!(title.left(), heading.left());
+            assert_eq!(f32::from(title.left() - row.left()), 8.0);
+            assert_eq!(row.right(), recent_row.right());
+            assert_eq!(f32::from(row.size.height), Typography::SIDEBAR_LINE_HEIGHT);
+        }
+
+        assert_eq!(selected_row.left(), rest_row.left());
+        assert_eq!(selected_row.right(), rest_row.right());
+        assert_eq!(recent_title.left(), recents_heading.left());
+        assert_eq!(recent_title.left(), recent_row.left());
+        assert_eq!(project_row.left(), recent_row.left());
+        assert_eq!(project_row.right(), recent_row.right());
+        assert_eq!(
+            f32::from(child_title.left() - child_row.left()),
+            Layout::SIDEBAR_NAV_CONTENT_INSET
+        );
+
+        let pinned_section = bounds(f, cx, "organization-section-pinned");
+        let projects_header = bounds(f, cx, "organization-header-projects");
+        assert_eq!(
+            f32::from(projects_header.top() - pinned_section.bottom()),
+            12.0
+        );
+    }
+
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let recent = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    conversation::set_thread_pinned(&store, &f.other.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+    let child = snapshot(&f)
+        .threads
+        .into_iter()
+        .find(|thread| thread.project_id == "p" && !thread.pinned)
+        .unwrap();
+
+    assert_geometry(&f, &recent, &child, cx);
+
+    let rest_row = bounds(&f, cx, format!("pinned-thread-row-{}", f.other.id));
+    let rest_title = bounds(&f, cx, format!("pinned-thread-row-title-{}", f.other.id));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(rest_row.center(), None, gpui_kit::Modifiers::default());
+    assert_eq!(
+        bounds(&f, cx, format!("pinned-thread-row-{}", f.other.id)),
+        rest_row
+    );
+    assert_eq!(
+        bounds(&f, cx, format!("pinned-thread-row-title-{}", f.other.id)),
+        rest_title
+    );
+    click(&f, cx, format!("pinned-thread-actions-{}", f.other.id));
+    assert_eq!(
+        bounds(&f, cx, format!("pinned-thread-row-{}", f.other.id)),
+        rest_row
+    );
+    assert_eq!(
+        bounds(&f, cx, format!("pinned-thread-row-title-{}", f.other.id)),
+        rest_title
+    );
+
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_geometry(&f, &recent, &child, cx);
 }
 
 #[gpui_kit::test]

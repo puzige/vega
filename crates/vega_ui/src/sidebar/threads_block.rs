@@ -983,6 +983,7 @@ impl ThreadsBlock {
             actions_enabled,
             true,
             true,
+            0.0,
             Layout::SIDEBAR_NAV_CONTENT_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
@@ -1006,6 +1007,7 @@ impl ThreadsBlock {
             actions_enabled,
             true,
             false,
+            0.0,
             Layout::SIDEBAR_NAV_CONTENT_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
@@ -1030,6 +1032,7 @@ impl ThreadsBlock {
             true,
             false,
             0.0,
+            0.0,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1051,7 +1054,8 @@ impl ThreadsBlock {
             true,
             false,
             false,
-            0.0,
+            8.0,
+            8.0,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1067,6 +1071,7 @@ impl ThreadsBlock {
         actions_enabled: bool,
         show_pin_indicator: bool,
         show_timestamp_at_rest: bool,
+        surface_leading_outset: f32,
         content_inset: f32,
         row_height: f32,
         cx: &mut Context<Self>,
@@ -1094,6 +1099,7 @@ impl ThreadsBlock {
                 move || format!("{selector_prefix}{id}")
             })
             .h(px(row_height))
+            .ml(px(-surface_leading_outset))
             .flex()
             .items_center()
             .rounded_lg()
