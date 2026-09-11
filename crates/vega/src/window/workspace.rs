@@ -755,9 +755,10 @@ impl VegaWindow {
     }
 
     /// The dock index currently rendered as fullscreen chrome (R44), if any.
-    /// While a dock is fullscreen the R44 shell unmounts the header row, so
-    /// the R46 window-anchored cluster unmounts with it: the maximized pane's
-    /// own trailing controls own the window's top-right corner then.
+    /// A fullscreen dock replaces the whole workspace layout, so its own
+    /// header row opens the window's top band (see
+    /// [`Self::workspace_pane_header_in_top_band`]); the R46 window-anchored
+    /// cluster stays mounted and that header reserves its trailing band.
     pub(super) fn workspace_fullscreen_index(&self) -> Option<usize> {
         (0..2).find(|index| {
             self.workspace.maximized[*index]
