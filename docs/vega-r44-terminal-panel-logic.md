@@ -47,9 +47,12 @@ rather than adding more conditionals to the current menu.
 - Existing tabs, preview restoration and Close all terminals do not appear in
   the creation menu. Existing tabs are selected and closed in the tab strip;
   destructive multi-terminal management is outside this compact menu.
-- Dock and maximize/restore retain their existing meanings and entity identity.
-  The trailing group therefore contains Plus, Dock and Maximize/Restore, plus
-  the existing Review-specific commit action when Review is selected.
+- Dock retains its existing meaning and entity identity while preserving the
+  task composer focus. Maximize/Restore also preserves entity identity, but it
+  explicitly focuses the selected Workspace content after the layout change;
+  a maximized pane must never leave focus on an unmounted composer. The
+  trailing group therefore contains Plus, Dock and Maximize/Restore, plus the
+  existing Review-specific commit action when Review is selected.
 
 ### External entry points
 
@@ -84,8 +87,10 @@ rather than adding more conditionals to the current menu.
 - Closing the selected tab chooses its nearest surviving sibling in the same
   pane: the next tab at the same index, otherwise the previous tab. It must not
   jump to the first tab merely because that tab was inserted first.
-- Moving, maximizing, hiding or revealing a pane must preserve the selected tab
-  entity and terminal process. No layout action may create a replacement PTY.
+- Moving, maximizing, restoring, hiding or revealing a pane must preserve the
+  selected tab entity and terminal process. Docking preserves composer focus;
+  maximizing and restoring activate the selected visible Workspace content.
+  No layout action may create a replacement PTY.
 - Project isolation, the eight-terminal cap, route fences, close cleanup and
   in-memory-only terminal content remain unchanged.
 
@@ -114,7 +119,7 @@ assets.
 | Hidden terminal | no duplicate generic restore action | main header |
 | Explicit activation | terminal tab/canvas focus accepts a harmless PTY probe | focused terminal canvas |
 | Right dock | same terminal entity/process and right-pointing hide control | right panel header |
-| Maximized/restored | same selected entity through both transitions | maximized and restored views |
+| Maximized/restored | same selected entity through both transitions; selected content owns focus and accepts input in both states | maximized and restored views |
 | Multi-tab close | adjacent sibling becomes selected | tab strip before/after close |
 
 Focused tests must exercise the production handlers and mounted production

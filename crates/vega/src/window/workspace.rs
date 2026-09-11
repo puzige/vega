@@ -936,7 +936,7 @@ impl VegaWindow {
                     cx.listener(move |this, _, window, cx| {
                         this.workspace.maximized[index] = !this.workspace.maximized[index];
                         this.workspace.reveal_tabs[index] = true;
-                        this.workspace_focus_composer(window, cx);
+                        this.workspace_focus(index, window, cx);
                         cx.notify();
                     }),
                 )
@@ -2380,7 +2380,7 @@ mod terminal_tests {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         visual.simulate_click(tab_bounds.center(), Modifiers::default());
         visual.run_until_parked();
-        assert!(focus_is(window, terminal_focus, cx));
+        assert!(focus_is(window, terminal_focus.clone(), cx));
 
         window
             .update(cx, |_, window, cx| {
@@ -2422,7 +2422,7 @@ mod terminal_tests {
             })
             .expect("return to composer before layout actions");
         click_mounted(window, "bottom-workspace-maximize", cx);
-        assert!(focus_is(window, input_focus.clone(), cx));
+        assert!(focus_is(window, terminal_focus.clone(), cx));
         assert!(root.read_with(cx, |root, _| root.workspace.maximized[1]));
         assert_eq!(
             first_view.entity_id(),
@@ -2436,9 +2436,42 @@ mod terminal_tests {
                 root.workspace.terminals[&id].view.entity_id()
             })
         );
+        window
+            .update(cx, |_, window, cx| {
+                first_view.update(cx, |view, cx| {
+                    view.replace_text_in_range(
+                        None,
+                        "printf maximized-focus > r44-maximized-focus",
+                        window,
+                        cx,
+                    )
+                });
+            })
+            .expect("type maximized PTY focus probe");
+        cx.simulate_keystrokes(window.into(), "enter");
+        let maximized_marker = path.join("r44-maximized-focus");
+        let until = Instant::now() + Duration::from_secs(8);
+        while !maximized_marker.exists() {
+            assert!(
+                Instant::now() < until,
+                "maximized PTY focus probe timed out"
+            );
+            cx.executor().advance_clock(Duration::from_millis(30));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        assert_eq!(
+            std::fs::read_to_string(maximized_marker).expect("maximized PTY marker"),
+            "maximized-focus"
+        );
         click_mounted(window, "bottom-workspace-maximize", cx);
-        assert!(focus_is(window, input_focus.clone(), cx));
+        assert!(focus_is(window, terminal_focus.clone(), cx));
         assert!(!root.read_with(cx, |root, _| root.workspace.maximized[1]));
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("return to composer before dock");
         click_mounted(window, "bottom-workspace-dock", cx);
         assert!(focus_is(window, input_focus.clone(), cx));
         let _ = mounted_bounds(window, "right-workspace-hide", cx);
