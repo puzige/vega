@@ -1126,6 +1126,16 @@ impl ThreadsBlock {
                 // 打开会话（双击序列的第一次单击仍会先打开，属预期）。
                 .child(
                     div()
+                        .debug_selector({
+                            let id = thread.id.clone();
+                            let selector_prefix = selector_prefix.to_owned();
+                            move || {
+                                format!(
+                                    "{selector_prefix}surface-{id}-{}",
+                                    if selected { "active" } else { "rest" }
+                                )
+                            }
+                        })
                         .flex()
                         .items_center()
                         .gap_1()

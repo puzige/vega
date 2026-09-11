@@ -214,6 +214,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Pinned 任务标题继续与 `Pinned` 区块标题和顶层 Recents 标题落在同一内容列；其选中、hover 与焦点表面向该内容列左侧扩展 8px，并在表面内部保留等量的 8px 前导 padding，避免文字贴住圆角背景且不移动标题列。
 - Pinned 的内层与 Sidebar 外层滚动视口必须包含上述完整表面，不能裁掉前导 padding 或左侧圆角；验收须查看真实绘制结果，不能只依赖行布局坐标。精确规格见 [R37 Pinned clip](vega-r37-pinned-clip.md)。
 - Sidebar 的 `Pinned / Projects / Recents` 组织内容列与应用边缘保留 8px 逻辑内缩；三组标题、任务与项目行共用同一前导列，内容列右边缘固定，避免选中表面贴住窗口边缘。精确规格见 [R38 Sidebar content inset](vega-r38-sidebar-content-inset.md)。
+- Sidebar 持久选中态只标识最具体的活动目标：打开选中项目内的任务时，仅任务行使用中性 active 背景，外层项目行保持静止并以 Folder open 图标表达展开；只有项目被选中且没有打开该项目任务时，项目行才保留 active 背景。Pinned 中的项目任务遵循同一优先级。精确规格见 [R42 Single selection highlight](vega-r42-single-selection-highlight.md)。
 - Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
 
 ## 11. 动效与可访问性
@@ -265,6 +266,7 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 ## 15. 变更记录
 
+- v1.23 (2026-09-11)：项目与其活动任务不再同时高亮；任务选中态优先于外层项目选中态。
 - v1.22 (2026-09-11)：搜索按钮进入共享窗口控制组，固定紧邻 Sidebar 显隐按钮并位于 Back / Forward 之前。
 - v1.21 (2026-09-11)：全局搜索面板改用 520px 独立宽度和 480px 最大高度，长结果在面板内部滚动。
 - v1.20 (2026-09-11)：搜索改为 Sidebar 顶部工具栏的放大镜按钮，移除整行搜索入口并保留原有搜索动作与快捷键。

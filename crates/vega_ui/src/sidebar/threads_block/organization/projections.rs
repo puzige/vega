@@ -194,7 +194,7 @@ impl ThreadsBlock {
             let context_project = project.id.clone();
             let toggle_project = project.id.clone();
             let keyboard_project = project.id.clone();
-            let selected = cx.global::<SelectedProject>().0.as_ref() == Some(&project.id);
+            let selected = project_row_is_active(&project.id, cx);
             let drag = OrganizationDrag {
                 kind: DragKind::Project(project.id.clone()),
                 label: project.name.clone(),

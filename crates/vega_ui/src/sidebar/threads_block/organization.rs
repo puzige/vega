@@ -65,6 +65,15 @@ enum DragKind {
     Group(String),
     Thread(String),
 }
+
+fn project_row_is_active(project_id: &str, cx: &App) -> bool {
+    cx.global::<SelectedProject>().0.as_deref() == Some(project_id)
+        && cx
+            .try_global::<OpenedThread>()
+            .and_then(|opened| opened.0.as_ref())
+            .is_none_or(|thread| thread.project_binding() != Some(project_id))
+}
+
 impl Render for OrganizationDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;

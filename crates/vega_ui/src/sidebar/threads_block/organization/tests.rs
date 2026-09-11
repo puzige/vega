@@ -1360,6 +1360,88 @@ async fn r38_organization_content_keeps_eight_pixel_edge_inset_across_themes_and
 }
 
 #[gpui_kit::test]
+async fn r42_mounted_sidebar_prefers_the_active_task_surface_in_light_and_dark(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    fn assert_child_active(f: &Fixture, row_prefix: &str, cx: &mut gpui_kit::TestAppContext) {
+        assert!(!absent(f, cx, "project-persistent-surface-p-rest"));
+        assert!(absent(f, cx, "project-persistent-surface-p-active"));
+        assert!(!absent(
+            f,
+            cx,
+            format!("{row_prefix}surface-{}-active", f.first.id)
+        ));
+        assert!(absent(
+            f,
+            cx,
+            format!("{row_prefix}surface-{}-rest", f.first.id)
+        ));
+    }
+
+    fn assert_project_only_active(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
+        assert!(!absent(f, cx, "project-persistent-surface-p-active"));
+        assert!(absent(f, cx, "project-persistent-surface-p-rest"));
+        assert!(!absent(
+            f,
+            cx,
+            format!("pinned-thread-row-surface-{}-rest", f.first.id)
+        ));
+    }
+
+    let f = fixture(cx);
+
+    assert_child_active(&f, "project-thread-row-", cx);
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_child_active(&f, "project-thread-row-", cx);
+
+    // Temporary project-row states keep their existing behavior without
+    // restoring the suppressed persistent ancestor selection.
+    let project_row = bounds(&f, cx, "project-header-p");
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(project_row.center(), None, gpui_kit::Modifiers::default());
+    assert!(!absent(&f, cx, "project-actions-p-visible"));
+    assert!(!absent(&f, cx, "project-persistent-surface-p-rest"));
+    let project_actions_focus = sessions(&f, cx).read_with(cx, |block, _| {
+        block.project_focuses.get("p").unwrap().clone()
+    });
+    f.window
+        .update(cx, |_, window, cx| project_actions_focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(!absent(&f, cx, "project-actions-p-visible"));
+    assert!(!absent(&f, cx, "project-persistent-surface-p-rest"));
+
+    click(&f, cx, "project-header-p");
+    assert!(!absent(&f, cx, "project-folder-p-closed"));
+    assert!(absent(&f, cx, format!("project-thread-row-{}", f.first.id)));
+    assert!(!absent(&f, cx, "project-persistent-surface-p-rest"));
+    click(&f, cx, "project-header-p");
+    assert!(!absent(&f, cx, "project-folder-p-open"));
+    assert_child_active(&f, "project-thread-row-", cx);
+
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+    assert_child_active(&f, "pinned-thread-row-", cx);
+    assert!(absent(&f, cx, format!("project-thread-row-{}", f.first.id)));
+    cx.update(|cx| cx.set_global(vega_theme::Theme::light()));
+    cx.run_until_parked();
+    assert_child_active(&f, "pinned-thread-row-", cx);
+
+    cx.update(|cx| {
+        cx.set_global(OpenedThread(None));
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    assert_project_only_active(&f, cx);
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_project_only_active(&f, cx);
+}
+
+#[gpui_kit::test]
 async fn r26_empty_pinned_section_is_absent(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     assert!(absent(&f, cx, "organization-section-pinned"));

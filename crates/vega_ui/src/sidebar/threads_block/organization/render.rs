@@ -737,7 +737,7 @@ impl ThreadsBlock {
         let project_for_keyboard = project.id.clone();
         let project_for_add = project.id.clone();
         let project_for_menu = project.id.clone();
-        let selected = cx.global::<SelectedProject>().0.as_deref() == Some(project.id.as_str());
+        let selected = project_row_is_active(&project.id, cx);
         let actions_visible = self.hovered_project.as_deref() == Some(project.id.as_str())
             || self.focused_project.as_deref() == Some(project.id.as_str())
             || self.organization.as_ref().is_some_and(|organization| {
@@ -894,6 +894,15 @@ impl ThreadsBlock {
             .id(ElementId::Name(
                 format!("project-section-{}", project_id).into(),
             ))
+            .debug_selector({
+                let project_id = project_id.clone();
+                move || {
+                    format!(
+                        "project-persistent-surface-{project_id}-{}",
+                        if selected { "active" } else { "rest" }
+                    )
+                }
+            })
             .flex()
             .flex_col()
             .child(row);
