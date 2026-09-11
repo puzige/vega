@@ -354,7 +354,7 @@ impl VegaWindow {
     fn workspace_move_selected(
         &mut self,
         index: usize,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(key) = self.workspace.selected[index].clone() {
@@ -369,6 +369,7 @@ impl VegaWindow {
             self.workspace.reveal_tabs[1 - index] = true;
             self.workspace.hidden[1 - index] = false;
             self.workspace.maximized[index] = false;
+            self.workspace_focus_composer(window, cx);
         }
         cx.notify();
     }
@@ -932,9 +933,10 @@ impl VegaWindow {
                         "最大化工作区"
                     },
                     colors,
-                    cx.listener(move |this, _, _, cx| {
+                    cx.listener(move |this, _, window, cx| {
                         this.workspace.maximized[index] = !this.workspace.maximized[index];
                         this.workspace.reveal_tabs[index] = true;
+                        this.workspace_focus_composer(window, cx);
                         cx.notify();
                     }),
                 )
@@ -2414,7 +2416,13 @@ mod terminal_tests {
             std::thread::sleep(Duration::from_millis(15));
         }
 
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("return to composer before layout actions");
         click_mounted(window, "bottom-workspace-maximize", cx);
+        assert!(focus_is(window, input_focus.clone(), cx));
         assert!(root.read_with(cx, |root, _| root.workspace.maximized[1]));
         assert_eq!(
             first_view.entity_id(),
@@ -2429,8 +2437,10 @@ mod terminal_tests {
             })
         );
         click_mounted(window, "bottom-workspace-maximize", cx);
+        assert!(focus_is(window, input_focus.clone(), cx));
         assert!(!root.read_with(cx, |root, _| root.workspace.maximized[1]));
         click_mounted(window, "bottom-workspace-dock", cx);
+        assert!(focus_is(window, input_focus.clone(), cx));
         let _ = mounted_bounds(window, "right-workspace-hide", cx);
         assert_eq!(
             first_view.entity_id(),
@@ -2444,6 +2454,7 @@ mod terminal_tests {
             })
         );
         click_mounted(window, "right-workspace-dock", cx);
+        assert!(focus_is(window, input_focus.clone(), cx));
         click_mounted(window, "bottom-workspace-hide", cx);
         assert!(root.read_with(cx, |root, _| root.workspace.hidden[1]));
         assert!(
