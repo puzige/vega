@@ -1201,9 +1201,7 @@ async fn r35_projects_starts_without_a_pinned_only_spacer_across_themes(
 }
 
 #[gpui_kit::test]
-async fn r36_pinned_surfaces_add_leading_padding_without_moving_content(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+async fn r37_pinned_surfaces_keep_padding_inside_scroll_clips(cx: &mut gpui_kit::TestAppContext) {
     fn assert_geometry(
         f: &Fixture,
         recent: &Thread,
@@ -1221,12 +1219,18 @@ async fn r36_pinned_surfaces_add_leading_padding_without_moving_content(
         let project_row = bounds(f, cx, "project-header-p");
         let child_row = bounds(f, cx, format!("project-thread-row-{}", child.id));
         let child_title = bounds(f, cx, format!("project-thread-row-title-{}", child.id));
+        let pinned_viewport = bounds(f, cx, "organization-pinned-scroll");
+        let sidebar_viewport = bounds(f, cx, "sidebar-scroll");
 
         for (row, title) in [(selected_row, selected_title), (rest_row, rest_title)] {
             assert_eq!(title.left(), heading.left());
             assert_eq!(f32::from(title.left() - row.left()), 8.0);
             assert_eq!(row.right(), recent_row.right());
             assert_eq!(f32::from(row.size.height), Typography::SIDEBAR_LINE_HEIGHT);
+            for viewport in [pinned_viewport, sidebar_viewport] {
+                assert!(viewport.left() <= row.left());
+                assert!(viewport.right() >= row.right());
+            }
         }
 
         assert_eq!(selected_row.left(), rest_row.left());

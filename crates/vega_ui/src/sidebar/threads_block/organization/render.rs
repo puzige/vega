@@ -337,6 +337,10 @@ impl ThreadsBlock {
                 .child(
                     div()
                         .id("organization-pinned-scroll")
+                        .debug_selector(|| "organization-pinned-scroll".into())
+                        // Include the row surface outset inside the scroll clip.
+                        .ml(px(-8.0))
+                        .pl_2()
                         .max_h(px(Typography::SIDEBAR_LINE_HEIGHT * 5.0))
                         .overflow_y_scroll()
                         .flex()

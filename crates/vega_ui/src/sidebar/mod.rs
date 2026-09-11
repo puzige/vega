@@ -682,6 +682,9 @@ impl Render for Sidebar {
                         div()
                             .id("sidebar-scroll")
                             .debug_selector(|| "sidebar-scroll".into())
+                            // Pinned row surfaces extend left of the title column.
+                            .ml(px(-8.0))
+                            .pl_2()
                             .flex_1()
                             .min_h_0()
                             .flex()
