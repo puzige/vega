@@ -372,7 +372,7 @@ impl Render for VegaWindow {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .child(self.render_main_header(sidebar_visible, window, cx))
+                .child(self.render_main_header(sidebar_visible, cx))
                 .children(navigation_error.map(|error| {
                     div()
                         .px_3()
@@ -440,6 +440,14 @@ impl Render for VegaWindow {
                     )
                     .child(div().flex_1().min_h_0().child(content)),
             )
+            // R46 §2.1: the shell slots belong to the window, not to a column.
+            // They paint after every sidebar/rail/pane so they stay on top,
+            // and before the palette and the delete-confirm overlay so those
+            // full-window surfaces keep their precedence. Maximizing a dock
+            // keeps them mounted (its x must not change); that pane's header
+            // reserves the cluster's trailing band per §2.1.1. Settings keeps
+            // its own full-height chrome and hides the shell header entirely.
+            .children((!settings_open).then(|| self.render_shell_slot_cluster(window, cx)))
             .on_mouse_move(cx.listener(Self::resize_sidebar))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_sidebar_resize))
             .children(self.palette.view.clone())
@@ -500,12 +508,84 @@ impl VegaWindow {
         }
     }
 
-    fn render_main_header(
+    /// R46 §2.1: the three shell slots are a window-level trailing cluster.
+    /// They pin to the window's top-right corner, outside every column, rail
+    /// and pane, so no panel state can move their x coordinate. The cluster
+    /// keeps R45's frozen internals: three 28×28 controls, 6px gaps, fixed
+    /// Environment → Terminal(⌘J) → Right order, and disabled slots keeping
+    /// their grid. Vertical placement centers it in the 46px main header band,
+    /// on the same 12px trailing inset the header reserves.
+    fn render_shell_slot_cluster(
         &mut self,
-        sidebar_visible: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let project_route = self.shell_project_id(cx).is_some();
+        let right_visible = self.persistent_right_workspace_visible(window, cx);
+        let environment_visible = if self.environment_is_wide(window, cx) {
+            !self.environment_collapsed
+        } else {
+            self.environment_overlay_open
+        };
+        div()
+            .debug_selector(|| "main-header-shell-slots".into())
+            .absolute()
+            .top_0()
+            .right_0()
+            .h(px(Layout::MAIN_HEADER_HEIGHT))
+            .pr_3()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            // The cluster is window chrome and owns its pixels. Anchoring it to
+            // the window's top-right corner puts it over the right pane's own
+            // trailing controls, and without this a press on a *disabled* slot
+            // would fall through and activate whatever sits underneath instead
+            // of staying inert (R45: activation ignored, grid kept). It also
+            // keeps the narrow Environment overlay's full-window dismissal
+            // backdrop from racing slot 1's own toggle.
+            .occlude()
+            .child(
+                shell_icon_button(
+                    Icon::Summary,
+                    "切换环境",
+                    None,
+                    environment_visible,
+                    project_route && !right_visible,
+                    colors,
+                    cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),
+                )
+                .debug_selector(|| "main-header-environment".into()),
+            )
+            .child(
+                shell_icon_button(
+                    Icon::DockBottom,
+                    "切换终端",
+                    Some("⌘J".into()),
+                    self.workspace_recent_terminal_is_rendered(window, cx),
+                    project_route,
+                    colors,
+                    cx.listener(|this, _, window, cx| this.workspace_toggle_bottom(window, cx)),
+                )
+                .debug_selector(|| "main-header-terminal".into()),
+            )
+            .child(
+                shell_icon_button(
+                    Icon::DockRight,
+                    "切换右侧面板",
+                    None,
+                    self.right_workspace_rendered_non_terminal(window, cx),
+                    self.right_workspace_slot_available(window, cx),
+                    colors,
+                    cx.listener(|this, _, window, cx| this.workspace_toggle_right(window, cx)),
+                )
+                .debug_selector(|| "main-header-workspace-right".into()),
+            )
+            .into_any_element()
+    }
+
+    fn render_main_header(&mut self, sidebar_visible: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let thread = cx.global::<OpenedThread>().0.clone();
         let title = thread.as_ref().map_or_else(
@@ -520,56 +600,6 @@ impl VegaWindow {
         );
         let project_label = self.shell_project_label(cx);
         let has_project_label = project_label.is_some();
-        let project_route = self.shell_project_id(cx).is_some();
-        let right_visible = self.persistent_right_workspace_visible(window, cx);
-        let environment_visible = if self.environment_is_wide(window, cx) {
-            !self.environment_collapsed
-        } else {
-            self.environment_overlay_open
-        };
-
-        // R45 shell slots: the trailing cluster is always exactly three
-        // 28x28 controls on 6px gaps. Each slot owns one global layout
-        // surface, keeps its geometry while disabled, and lights its
-        // persistent active surface from the real rendered visibility of
-        // that surface (never from `hidden == false` alone).
-        let mut actions = div().flex_shrink_0().flex().items_center().gap(px(6.));
-        actions = actions.child(
-            shell_icon_button(
-                Icon::Summary,
-                "切换环境",
-                None,
-                environment_visible,
-                project_route && !right_visible,
-                colors,
-                cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),
-            )
-            .debug_selector(|| "main-header-environment".into()),
-        );
-        actions = actions.child(
-            shell_icon_button(
-                Icon::DockBottom,
-                "切换终端",
-                Some("⌘J".into()),
-                self.workspace_recent_terminal_is_rendered(window, cx),
-                project_route,
-                colors,
-                cx.listener(|this, _, window, cx| this.workspace_toggle_bottom(window, cx)),
-            )
-            .debug_selector(|| "main-header-terminal".into()),
-        );
-        actions = actions.child(
-            shell_icon_button(
-                Icon::DockRight,
-                "切换右侧面板",
-                None,
-                self.right_workspace_rendered_non_terminal(window, cx),
-                self.right_workspace_slot_available(window, cx),
-                colors,
-                cx.listener(|this, _, window, cx| this.workspace_toggle_right(window, cx)),
-            )
-            .debug_selector(|| "main-header-workspace-right".into()),
-        );
 
         div()
             .id("main-header")
@@ -581,7 +611,11 @@ impl VegaWindow {
             .gap_2()
             .border_b_1()
             .border_color(colors.border_subtle)
-            .pr_3()
+            // R46: the window-anchored slot cluster no longer renders inside
+            // this element, so reserve its exact trailing width (3×28px slots
+            // on 2×6px gaps plus the shared 12px inset) to keep the title
+            // clear of it. No negative margin and no coordinate special case.
+            .pr(px(Layout::SHELL_SLOT_CLUSTER_RESERVE))
             .when(!sidebar_visible, |header| {
                 header
                     .pl(px(Layout::TITLEBAR_LEADING_INSET))
@@ -629,7 +663,6 @@ impl VegaWindow {
                             .child(title),
                     ),
             )
-            .child(actions)
             .into_any_element()
     }
 

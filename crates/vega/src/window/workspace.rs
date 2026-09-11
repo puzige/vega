@@ -754,6 +754,28 @@ impl VegaWindow {
         f32::from(window.viewport_size().width) >= self.environment_breakpoint(window, cx)
     }
 
+    /// The dock index currently rendered as fullscreen chrome (R44), if any.
+    /// While a dock is fullscreen the R44 shell unmounts the header row, so
+    /// the R46 window-anchored cluster unmounts with it: the maximized pane's
+    /// own trailing controls own the window's top-right corner then.
+    pub(super) fn workspace_fullscreen_index(&self) -> Option<usize> {
+        (0..2).find(|index| {
+            self.workspace.maximized[*index]
+                && !self.workspace.hidden[*index]
+                && self.workspace.selected[*index].is_some()
+        })
+    }
+
+    /// Whether this dock's header row is rendered inside the window's 46px top
+    /// band (R46 §2.1.1). The docked right pane spans the full window height
+    /// beside the conversation column, so its header opens the top band; a
+    /// maximized dock replaces the whole workspace layout, so its header is in
+    /// the top band too. The bottom-docked pane header sits in the bottom band.
+    /// Top-band headers must reserve the shell slot cluster's trailing band.
+    pub(super) fn workspace_pane_header_in_top_band(&self, bottom: bool) -> bool {
+        !bottom || self.workspace_fullscreen_index() == Some(usize::from(bottom))
+    }
+
     pub(super) fn toggle_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.shell_project_id(cx).is_none()
             || self.persistent_right_workspace_visible(window, cx)
@@ -905,7 +927,13 @@ impl VegaWindow {
             .w(px(Layout::ENVIRONMENT_RAIL_WIDTH))
             .h_full()
             .flex_shrink_0()
-            .pt(px(Layout::ENVIRONMENT_CARD_INSET))
+            // R46 §2.2: rail and overlay share one top offset, so neither card
+            // can paint over the 46px main header band (or the window-anchored
+            // shell slots inside it). The R21 16px card inset is preserved
+            // below that band instead of from the raw column top.
+            .pt(px(
+                Layout::MAIN_HEADER_HEIGHT + Layout::ENVIRONMENT_CARD_INSET
+            ))
             .pr(px(Layout::ENVIRONMENT_CARD_INSET))
             .child(card)
             .into_any_element()
@@ -1109,6 +1137,12 @@ impl VegaWindow {
                 )
                 .debug_selector(move || maximize_selector.into()),
             );
+        // R46 §2.1.1: a pane header that opens the window's 46px top band
+        // reserves the window-anchored slot cluster's trailing band, so the
+        // pane's own trailing actions (commit / add / dock / maximize) lay out
+        // to the left of the slots instead of underneath them. The reserved
+        // width is the same token `main-header` uses. The bottom-docked pane
+        // header lives in the bottom band and reserves nothing.
         let header = div()
             .debug_selector(move || header_selector.into())
             .flex()
@@ -1116,6 +1150,9 @@ impl VegaWindow {
             .gap_1()
             .h(px(Layout::WORKSPACE_HEADER_HEIGHT))
             .px_1()
+            .when(self.workspace_pane_header_in_top_band(bottom), |header| {
+                header.pr(px(Layout::SHELL_SLOT_CLUSTER_RESERVE))
+            })
             .border_b_1()
             .border_color(colors.border_subtle)
             .child(
@@ -1233,11 +1270,9 @@ impl VegaWindow {
                 .unwrap_or(Layout::BOTTOM_WORKSPACE_HEIGHT)
         }
         .clamp(150., (f32::from(size.height) - 240.).max(150.));
-        let fullscreen = (0..2).find(|index| {
-            self.workspace.maximized[*index]
-                && !self.workspace.hidden[*index]
-                && self.workspace.selected[*index].is_some()
-        });
+        // R46 §2.1.1 keeps one owner for "which dock is fullscreen chrome":
+        // the same helper decides the pane header's top-band reservation.
+        let fullscreen = self.workspace_fullscreen_index();
         if right {
             self.environment_overlay_open = false;
         }
@@ -1800,10 +1835,19 @@ mod tests {
             Layout::ENVIRONMENT_RAIL_WIDTH,
             "Environment rail width",
         );
+        // R46 §2.2 updates this R21 assertion: the rail card keeps its 16px
+        // card inset, but that inset now measures from the header band's
+        // bottom border instead of the raw column top, so the card can no
+        // longer paint over the 46px header row (or the shell slots in it).
         assert_close(
             card.top() - rail.top(),
+            Layout::MAIN_HEADER_HEIGHT + Layout::ENVIRONMENT_CARD_INSET,
+            "Environment card top inset below the header band",
+        );
+        assert_close(
+            card.top() - header.bottom(),
             Layout::ENVIRONMENT_CARD_INSET,
-            "Environment card top inset",
+            "Environment card keeps its R21 16px inset below the header",
         );
         assert_close(
             rail.right() - card.right(),
@@ -2139,6 +2183,446 @@ mod tests {
             right.center().x - terminal.center().x,
             34.0,
             "terminal→right center distance",
+        );
+    }
+
+    /// R46 §2.1: the three slots are a window-level trailing cluster, so every
+    /// panel state must leave them at the exact same coordinates. Returns the
+    /// three bounds so callers can compare states against each other.
+    fn r46_shell_slot_bounds(
+        window: WindowHandle<VegaWindow>,
+        cx: &mut TestAppContext,
+    ) -> [Bounds<Pixels>; 3] {
+        [
+            shell_bounds(window, "main-header-environment", cx),
+            shell_bounds(window, "main-header-terminal", cx),
+            shell_bounds(window, "main-header-workspace-right", cx),
+        ]
+    }
+
+    fn r46_assert_slots_identical(
+        expected: &[Bounds<Pixels>; 3],
+        actual: &[Bounds<Pixels>; 3],
+        state: &str,
+    ) {
+        for (index, (expected, actual)) in expected.iter().zip(actual.iter()).enumerate() {
+            for (axis, expected, actual) in [
+                ("left", expected.left(), actual.left()),
+                ("right", expected.right(), actual.right()),
+                ("top", expected.top(), actual.top()),
+                ("bottom", expected.bottom(), actual.bottom()),
+            ] {
+                assert_close(
+                    actual,
+                    f32::from(expected),
+                    &format!(
+                        "slot {} {axis} must not move in the {state} state",
+                        index + 1
+                    ),
+                );
+            }
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn r46_slot_cluster_is_window_anchored(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R46 anchored", 1403., 860., cx);
+
+        // a) No panel: the baseline the five other states must match exactly.
+        let baseline = r46_shell_slot_bounds(window, cx);
+        r45_assert_three_shell_slots(window, cx);
+
+        // b) Environment rail open. The wide project route renders the 320px
+        // rail by default, so closing and reopening it proves the rail's own
+        // open/close transition cannot drag the cluster.
+        shell_click(window, "main-header-environment", cx);
+        assert!(shell_absent(window, "environment-rail", cx));
+        r46_assert_slots_identical(
+            &baseline,
+            &r46_shell_slot_bounds(window, cx),
+            "Environment rail closed",
+        );
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-rail", cx);
+        r46_assert_slots_identical(
+            &baseline,
+            &r46_shell_slot_bounds(window, cx),
+            "Environment rail open",
+        );
+
+        // c) Right pane open (Review diff).
+        root.update(cx, |root, cx| root.workspace_open_diff(cx));
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "right-workspace-pane", cx);
+        r46_assert_slots_identical(
+            &baseline,
+            &r46_shell_slot_bounds(window, cx),
+            "right pane open",
+        );
+
+        // d) Bottom dock open: move the Review tab down, then restore the
+        // right pane so the states stay independent.
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_move_selected(0, window, cx)
+            })
+            .expect("move the Review tab to the bottom dock");
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "bottom-workspace-pane", cx);
+        assert!(shell_absent(window, "right-workspace-pane", cx));
+        r46_assert_slots_identical(
+            &baseline,
+            &r46_shell_slot_bounds(window, cx),
+            "bottom dock open",
+        );
+
+        // e) Right and bottom docks open together: the file preview joins the
+        // right dock while the Review tab stays docked at the bottom.
+        window
+            .update(cx, |root, window, cx| {
+                let file = cx.new(|cx| {
+                    vega_ui::file_preview::FilePreview::new(
+                        vega_conversation::types::PaletteFilePreview {
+                            relative_path: "README.md".into(),
+                            content: "owned read-only preview".into(),
+                        },
+                        cx,
+                    )
+                });
+                root.workspace_open_file(file, window, cx);
+            })
+            .expect("open both docks");
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "right-workspace-pane", cx);
+        let _ = shell_bounds(window, "bottom-workspace-pane", cx);
+        r46_assert_slots_identical(
+            &baseline,
+            &r46_shell_slot_bounds(window, cx),
+            "right and bottom docks open",
+        );
+
+        // f) Environment overlay: only reachable below the breakpoint, so the
+        // narrow window keeps its own baseline and the overlay must not move
+        // the cluster relative to that window's closed state. The docks are
+        // closed first because a rendered right pane replaces the Environment
+        // surface entirely (R21).
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_hide(0, window, cx);
+                root.workspace_hide(1, window, cx);
+            })
+            .expect("close both docks");
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1100.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize below the Environment breakpoint");
+        cx.run_until_parked();
+        assert!(shell_absent(window, "environment-rail", cx));
+        let narrow_baseline = r46_shell_slot_bounds(window, cx);
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-overlay", cx);
+        r46_assert_slots_identical(
+            &narrow_baseline,
+            &r46_shell_slot_bounds(window, cx),
+            "Environment overlay open",
+        );
+        shell_click(window, "main-header-environment", cx);
+        assert!(shell_absent(window, "environment-overlay", cx));
+        r46_assert_slots_identical(
+            &narrow_baseline,
+            &r46_shell_slot_bounds(window, cx),
+            "Environment overlay closed",
+        );
+
+        // §2.1 narrow clause: the trailing inset is the only geometry input,
+        // so the distance from the window's right edge must be size-invariant.
+        let trailing = |slots: &[Bounds<Pixels>; 3], width: f32| {
+            slots
+                .iter()
+                .map(|slot| width - f32::from(slot.right()))
+                .collect::<Vec<_>>()
+        };
+        let wide_trailing = trailing(&baseline, 1403.);
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(960.), px(600.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize to the minimum window size");
+        cx.run_until_parked();
+        let narrow = r46_shell_slot_bounds(window, cx);
+        r45_assert_three_shell_slots(window, cx);
+        assert_close(
+            narrow[2].right(),
+            960.0 - wide_trailing[2],
+            "960×600 keeps the 1403×860 trailing inset",
+        );
+        for (index, (wide, narrow)) in wide_trailing
+            .iter()
+            .zip(trailing(&narrow, 960.))
+            .enumerate()
+        {
+            assert_close(
+                px(narrow),
+                *wide,
+                &format!("slot {} trailing inset is size-invariant", index + 1),
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn r46_overlay_and_rail_start_below_header_band(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R46 header band", 1403., 860., cx);
+        let _ = root;
+        let header = shell_bounds(window, "main-header", cx);
+        assert_close(
+            header.size.height,
+            Layout::MAIN_HEADER_HEIGHT,
+            "main header keeps its 46px band",
+        );
+        let slots = r46_shell_slot_bounds(window, cx);
+
+        // Wide rail: the card hangs below the header band and clears the
+        // window-anchored cluster entirely.
+        let rail_card = shell_bounds(window, "environment-card", cx);
+        assert!(
+            rail_card.top() >= header.bottom(),
+            "rail card top ({:?}) must not cross the header bottom ({:?})",
+            rail_card.top(),
+            header.bottom()
+        );
+        assert!(
+            !rail_card.intersects(&slots[2]),
+            "rail card must not intersect the shell slots"
+        );
+        for (index, slot) in slots.iter().enumerate() {
+            assert!(
+                !rail_card.intersects(slot),
+                "rail card must not intersect slot {} in a wide window",
+                index + 1
+            );
+        }
+
+        // Narrow overlay: the card starts below the same band and clears the
+        // cluster, even though both are pinned to the window's right edge.
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1100.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize below the Environment breakpoint");
+        cx.run_until_parked();
+        shell_click(window, "main-header-environment", cx);
+        let overlay = shell_bounds(window, "environment-overlay", cx);
+        let overlay_card = shell_bounds(window, "environment-overlay-card", cx);
+        assert!(
+            overlay_card.top() >= header.bottom(),
+            "overlay card top ({:?}) must not cross the header bottom ({:?})",
+            overlay_card.top(),
+            header.bottom()
+        );
+        assert_close(
+            overlay_card.top() - overlay.top(),
+            Layout::MAIN_HEADER_HEIGHT + Layout::ENVIRONMENT_CARD_INSET,
+            "overlay card keeps the R21 16px inset below the header band",
+        );
+        let narrow_slots = r46_shell_slot_bounds(window, cx);
+        for (index, slot) in narrow_slots.iter().enumerate() {
+            assert!(
+                !overlay_card.intersects(slot),
+                "overlay card must not intersect slot {} in a narrow window",
+                index + 1
+            );
+        }
+        // The backdrop keeps its full-window dismissal semantics.
+        let backdrop = shell_bounds(window, "environment-overlay-backdrop", cx);
+        assert_close(backdrop.top(), 0.0, "overlay backdrop keeps the window top");
+        assert_close(
+            backdrop.size.height,
+            860.0,
+            "overlay backdrop keeps the full window height",
+        );
+    }
+
+    /// R46 §2.1.1: every pane header that occupies the window's top band
+    /// reserves the window-anchored cluster's trailing band, so its own
+    /// trailing actions lay out to the left of the slots. The bottom band
+    /// reserves nothing because the cluster never occupies it.
+    #[gpui_kit::test]
+    async fn r46_top_band_headers_reserve_the_cluster(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R46 top band", 1403., 860., cx);
+        let _ = root;
+
+        // The docked right pane opens the top band, so its trailing actions
+        // must end at or before the cluster's left edge.
+        root.update(cx, |root, cx| root.workspace_open_diff(cx));
+        cx.run_until_parked();
+        let slots = r46_shell_slot_bounds(window, cx);
+        let pane_actions = [
+            "workspace-review-commit",
+            "right-workspace-add",
+            "right-workspace-dock",
+            "right-workspace-maximize",
+        ];
+        for selector in pane_actions {
+            let action = shell_bounds(window, selector, cx);
+            assert!(
+                action.right() <= slots[0].left() + px(1.),
+                "{selector} right ({:?}) must sit left of the reserved cluster band ({:?})",
+                action.right(),
+                slots[0].left()
+            );
+            assert!(
+                !slots.iter().any(|slot| slot.intersects(&action)),
+                "{selector} must not intersect any shell slot"
+            );
+        }
+        // The reserved band is exactly the shared token, measured from the
+        // pane header's own trailing edge.
+        let header = shell_bounds(window, "right-workspace-header", cx);
+        let actions = shell_bounds(window, "right-workspace-actions", cx);
+        assert_close(
+            header.right() - actions.right(),
+            Layout::SHELL_SLOT_CLUSTER_RESERVE,
+            "right pane header reserves the shared cluster token",
+        );
+
+        // A maximized pane keeps the cluster mounted and reserves the same
+        // band: maximizing must not move the slots (R46 §2.1).
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace.maximized[0] = true;
+                root.workspace.reveal_tabs[0] = true;
+                cx.notify();
+                let _ = window;
+            })
+            .expect("maximize the right pane");
+        cx.run_until_parked();
+        let maximized_slots = r46_shell_slot_bounds(window, cx);
+        r46_assert_slots_identical(&slots, &maximized_slots, "right pane maximized");
+        let maximized_header = shell_bounds(window, "right-workspace-header", cx);
+        let maximized_actions = shell_bounds(window, "right-workspace-actions", cx);
+        assert!(
+            maximized_actions.right() <= maximized_slots[0].left() + px(1.),
+            "maximized pane actions right ({:?}) must sit left of the reserved band ({:?})",
+            maximized_actions.right(),
+            maximized_slots[0].left()
+        );
+        assert_close(
+            maximized_header.right() - maximized_actions.right(),
+            Layout::SHELL_SLOT_CLUSTER_RESERVE,
+            "maximized pane header reserves the shared cluster token",
+        );
+        // The maximized header opens the same 46px band as `main-header`.
+        assert_close(
+            maximized_header.top(),
+            0.0,
+            "maximized pane header opens the window's top band",
+        );
+
+        // The bottom band is not reserved: a bottom-docked pane header keeps
+        // its own compact trailing inset and clears the cluster by being in a
+        // different band entirely.
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace.maximized[0] = false;
+                root.workspace_move_selected(0, window, cx);
+            })
+            .expect("dock the Review tab to the bottom");
+        cx.run_until_parked();
+        let bottom_header = shell_bounds(window, "bottom-workspace-header", cx);
+        let bottom_actions = shell_bounds(window, "bottom-workspace-actions", cx);
+        assert!(
+            bottom_header.top() > px(Layout::MAIN_HEADER_HEIGHT),
+            "bottom pane header must not open the top band"
+        );
+        assert_close(
+            bottom_header.right() - bottom_actions.right(),
+            4.0,
+            "bottom band pane keeps its compact trailing inset",
+        );
+        for (index, slot) in r46_shell_slot_bounds(window, cx).iter().enumerate() {
+            assert!(
+                !slot.intersects(&bottom_actions),
+                "bottom band pane actions must not intersect slot {}",
+                index + 1
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn r46_overlay_open_slot_clicks_still_work(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R46 overlay slots", 1100., 860., cx);
+        let _ = shell_bounds(window, "main-header-shell-slots", cx);
+
+        // While the overlay is open its dismissal backdrop covers the whole
+        // window; the window-anchored cluster paints above it, so slot 1 must
+        // still receive the click and close the surface it owns.
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-overlay", cx);
+        assert!(root.read_with(cx, |root, _| root.environment_overlay_open));
+        shell_click(window, "main-header-environment", cx);
+        assert!(shell_absent(window, "environment-overlay", cx));
+        assert!(
+            !root.read_with(cx, |root, _| root.environment_overlay_open),
+            "slot 1 must close the overlay even though the backdrop is painted"
+        );
+
+        // Re-open, then prove slot 2 also receives its press. The mount uses
+        // an in-memory store, so the terminal branch reports the production
+        // "no file-backed project" error instead of spawning a PTY — a
+        // deterministic observable of the handler having run. Had the
+        // backdrop swallowed the press it would have dismissed the overlay
+        // instead and this error would stay false.
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-overlay", cx);
+        assert!(!root.read_with(cx, |root, _| root.workspace.terminal_error));
+        shell_click(window, "main-header-terminal", cx);
+        assert!(
+            root.read_with(cx, |root, _| root.workspace.terminal_error),
+            "slot 2 must receive its press while the overlay backdrop is painted"
+        );
+        assert!(
+            root.read_with(cx, |root, _| root.environment_overlay_open),
+            "a slot press must not be handled as an outside dismissal"
+        );
+        shell_click(window, "main-header-environment", cx);
+        assert!(shell_absent(window, "environment-overlay", cx));
+
+        // The R45 dismissal contract is unchanged: an outside press still
+        // closes the overlay and returns focus to the Composer.
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("focus the task composer");
+        let input = root.read_with(cx, |root, cx| {
+            root.stream_view
+                .as_ref()
+                .expect("conversation")
+                .1
+                .read(cx)
+                .composer_input()
+        });
+        let input_focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-overlay", cx);
+        let title = shell_bounds(window, "main-header-title", cx);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(title.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(shell_absent(window, "environment-overlay", cx));
+        assert!(
+            window
+                .update(cx, |_, window, _| input_focus.is_focused(window))
+                .expect("composer focus after outside click"),
+            "an outside click must still return focus to the Composer"
         );
     }
 
@@ -3556,10 +4040,15 @@ mod terminal_tests {
                 strip.right() <= actions.left(),
                 "pane actions stay outside the scrollable strip"
             );
+            // R46 §2.1.1 updates this assertion: the right pane's header opens
+            // the window's top band, so it now reserves the window-anchored
+            // slot cluster's trailing band instead of the former 4px `px_1`
+            // inset. This is the "absolute x of a right-pane trailing action
+            // that now sits left of the reserved band" case §3 names.
             assert_pixel_close(
                 header.right() - actions.right(),
-                4.0,
-                "workspace actions trailing inset",
+                Layout::SHELL_SLOT_CLUSTER_RESERVE,
+                "top-band pane actions reserve the shell slot cluster",
             );
             assert_pixel_close(actions.size.width, 80.0, "workspace trailing group");
             for (index, button) in buttons.iter().enumerate() {

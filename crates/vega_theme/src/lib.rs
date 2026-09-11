@@ -272,6 +272,12 @@ impl Layout {
     pub const TITLEBAR_CONTROL_SIZE: f32 = 28.0;
     /// Gap between adjacent shared titlebar control surfaces.
     pub const TITLEBAR_CONTROL_GAP: f32 = 4.0;
+    /// Trailing width `main-header` must reserve for the R46 window-anchored
+    /// shell slot cluster: three 28px slots on the frozen 6px gaps (96px) plus
+    /// the shared 12px header trailing inset the cluster itself also uses.
+    /// The cluster pins to the window's top-right corner with that inset, so
+    /// no column, rail or pane can move it.
+    pub const SHELL_SLOT_CLUSTER_RESERVE: f32 = 108.0;
     /// Maximum readable width for conversation, settings, and diff content.
     pub const CONTENT_MAX_WIDTH: f32 = 820.0;
     /// Minimum horizontal page padding around a readable content column.
