@@ -854,7 +854,7 @@ impl ThreadsBlock {
                     )
                     .child(
                         div()
-                            .text_size(px(Typography::SIDEBAR_SECTION))
+                            .text_size(px(Typography::METADATA))
                             .font_weight(Typography::HEADING_CARD_WEIGHT)
                             .text_color(colors.text_secondary)
                             .child("SESSIONS"),
@@ -886,7 +886,7 @@ impl ThreadsBlock {
                 .flex()
                 .items_center()
                 .px_1()
-                .text_size(px(Typography::SIDEBAR_PRIMARY))
+                .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.text_tertiary)
                 .child(message)
                 .into_any_element()
@@ -943,7 +943,7 @@ impl ThreadsBlock {
             )
             .child(
                 div()
-                    .text_size(px(Typography::SIDEBAR_PRIMARY))
+                    .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_secondary)
                     .child(format!("已归档 ({})", self.archived.len())),
             )
@@ -983,6 +983,7 @@ impl ThreadsBlock {
             actions_enabled,
             None,
             true,
+            Layout::SIDEBAR_NAV_CONTENT_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1005,6 +1006,7 @@ impl ThreadsBlock {
             actions_enabled,
             None,
             true,
+            Layout::SIDEBAR_NAV_CONTENT_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1027,6 +1029,7 @@ impl ThreadsBlock {
             true,
             project,
             false,
+            0.0,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1042,6 +1045,7 @@ impl ThreadsBlock {
         actions_enabled: bool,
         project: Option<String>,
         show_pin_indicator: bool,
+        content_inset: f32,
         row_height: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1072,7 +1076,7 @@ impl ThreadsBlock {
             .items_center()
             .rounded_lg()
             .overflow_hidden()
-            .text_size(px(Typography::SIDEBAR_PRIMARY))
+            .text_size(px(Typography::SIDEBAR))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.set_hovered(&thread_id, *hovered, cx);
             }))
@@ -1100,7 +1104,7 @@ impl ThreadsBlock {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
+                        .pl(px(content_inset))
                         .pr_2()
                         .cursor_pointer()
                         .on_mouse_up(
@@ -1157,7 +1161,7 @@ impl ThreadsBlock {
                                 .w(px(Layout::SIDEBAR_PROJECT_METADATA_WIDTH))
                                 .flex_shrink_0()
                                 .truncate()
-                                .text_size(px(Typography::SIDEBAR_META))
+                                .text_size(px(Typography::METADATA))
                                 .text_color(colors.text_tertiary)
                                 .child(project)
                         })),
@@ -1344,7 +1348,7 @@ impl ThreadsBlock {
                     .flex_1()
                     .min_w_0()
                     .text_right()
-                    .text_size(px(Typography::SIDEBAR_META))
+                    .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
                     .child(relative_time(thread.updated_at)),
             );

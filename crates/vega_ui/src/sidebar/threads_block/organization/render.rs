@@ -318,7 +318,7 @@ impl ThreadsBlock {
                         .h(px(28.))
                         .flex()
                         .items_center()
-                        .text_size(px(Typography::SIDEBAR_SECTION))
+                        .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
                         .child(
                             div()
@@ -399,7 +399,7 @@ impl ThreadsBlock {
             .child(
                 div()
                     .debug_selector(move || format!("organization-section-label-{label}"))
-                    .text_size(px(Typography::SIDEBAR_SECTION))
+                    .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
                     .child(label),
             )
@@ -469,7 +469,7 @@ impl ThreadsBlock {
                 .px_3()
                 .flex()
                 .items_center()
-                .text_size(px(Typography::SIDEBAR_PRIMARY))
+                .text_size(px(Typography::SIDEBAR))
                 .text_color(colors.text_tertiary)
                 .child("暂无最近任务")
         });
@@ -519,7 +519,7 @@ impl ThreadsBlock {
             .child(
                 div()
                     .debug_selector(move || format!("organization-section-label-{label}"))
-                    .text_size(px(Typography::SIDEBAR_SECTION))
+                    .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
                     .child(label),
             )
@@ -619,7 +619,7 @@ impl ThreadsBlock {
             .flex()
             .items_center()
             .cursor_pointer()
-            .text_size(px(Typography::SIDEBAR_PRIMARY))
+            .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_tertiary)
             .hover(move |style| style.bg(colors.bg_hover).text_color(colors.text_secondary))
             .focus_visible(move |style| {
@@ -790,7 +790,7 @@ impl ThreadsBlock {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(Typography::SIDEBAR_PRIMARY))
+                    .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_primary)
                     .child(project.name.clone()),
             )

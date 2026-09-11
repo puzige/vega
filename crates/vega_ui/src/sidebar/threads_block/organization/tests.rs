@@ -559,7 +559,7 @@ async fn r26_sidebar_projects_each_task_once_and_reveals_contextual_actions(
 }
 
 #[gpui_kit::test]
-async fn r27_sidebar_rows_share_title_origin_and_keep_stable_metadata_columns(
+async fn r31_pinned_rows_align_to_heading_while_other_rows_keep_the_content_grid(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
@@ -600,21 +600,24 @@ async fn r27_sidebar_rows_share_title_origin_and_keep_stable_metadata_columns(
         .unwrap();
     let pinned_row = bounds(&f, cx, format!("pinned-thread-row-{}", f.first.id));
     let pinned_title = bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id));
+    let pinned_heading = bounds(&f, cx, "organization-section-label-Pinned");
     let child_row = bounds(&f, cx, format!("project-thread-row-{}", child.id));
     let child_title = bounds(&f, cx, format!("project-thread-row-title-{}", child.id));
     let recent_row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
     let recent_title = bounds(&f, cx, format!("standalone-thread-row-title-{}", recent.id));
-    for (row, title) in [
-        (pinned_row, pinned_title),
-        (child_row, child_title),
-        (recent_row, recent_title),
-    ] {
+    for id in [&f.first.id, &f.other.id, &pinned_standalone.id] {
+        assert_eq!(
+            bounds(&f, cx, format!("pinned-thread-row-title-{id}")).left(),
+            pinned_heading.left()
+        );
+    }
+    assert_eq!(pinned_title.left(), pinned_row.left());
+    for (row, title) in [(child_row, child_title), (recent_row, recent_title)] {
         assert_eq!(
             f32::from(title.left() - row.left()),
             Layout::SIDEBAR_NAV_CONTENT_INSET
         );
     }
-    assert_eq!(pinned_title.left(), child_title.left());
     assert_eq!(child_title.left(), recent_title.left());
     assert!(absent(
         &f,
@@ -664,6 +667,26 @@ async fn r27_sidebar_rows_share_title_origin_and_keep_stable_metadata_columns(
     assert_eq!(rest_title.origin, hover_title.origin);
     assert_eq!(rest_metadata.origin, hover_metadata.origin);
     assert_eq!(rest_tail.origin, hover_tail.origin);
+
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_eq!(
+        bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id)).left(),
+        bounds(&f, cx, "organization-section-label-Pinned").left()
+    );
+    assert_eq!(
+        bounds(&f, cx, format!("pinned-thread-row-project-{}", f.first.id)).origin,
+        rest_metadata.origin
+    );
+    assert_eq!(
+        bounds(
+            &f,
+            cx,
+            format!("thread-actions-state-{}-visible", f.first.id)
+        )
+        .origin,
+        hover_tail.origin
+    );
 }
 
 #[gpui_kit::test]
@@ -841,9 +864,7 @@ async fn r29_progressive_controls_are_absent_without_hidden_items(
 }
 
 #[gpui_kit::test]
-async fn r30_sidebar_typography_uses_scoped_sizes_without_changing_row_geometry(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+async fn r31_sidebar_typography_restores_compact_mounted_sizes(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     let store = Store::open(f.dir.path().join("organization.db")).unwrap();
     conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
@@ -861,26 +882,19 @@ async fn r30_sidebar_typography_uses_scoped_sizes_without_changing_row_geometry(
         assert_eq!(bounds(&f, cx, selector).size.height, primary_height);
     }
 
-    let section_height = bounds(&f, cx, "organization-section-label-Pinned")
-        .size
-        .height;
-    for selector in [
-        "organization-section-label-Projects",
-        "organization-section-label-Recents",
-    ] {
-        assert_eq!(bounds(&f, cx, selector).size.height, section_height);
-    }
-
-    let meta_height = bounds(&f, cx, "sidebar-new-task-shortcut").size.height;
+    let metadata_height = bounds(&f, cx, "sidebar-new-task-shortcut").size.height;
     for selector in [
         "sidebar-search-shortcut".to_string(),
+        "organization-section-label-Pinned".to_string(),
+        "organization-section-label-Projects".to_string(),
+        "organization-section-label-Recents".to_string(),
         format!("pinned-thread-row-project-{}", f.first.id),
         format!("thread-timestamp-{}", recent.id),
     ] {
-        assert_eq!(bounds(&f, cx, selector).size.height, meta_height);
+        let height = bounds(&f, cx, &selector).size.height;
+        assert_eq!(height, metadata_height, "unexpected height for {selector}");
     }
-    assert!(primary_height > section_height);
-    assert_eq!(section_height, meta_height);
+    assert!(primary_height > metadata_height);
     assert!(!absent(&f, cx, "sidebar-settings-label"));
     assert!(!absent(&f, cx, "sidebar-settings-shortcut"));
 
@@ -908,13 +922,13 @@ async fn r30_sidebar_typography_uses_scoped_sizes_without_changing_row_geometry(
         bounds(&f, cx, "organization-section-label-Projects")
             .size
             .height,
-        section_height
+        metadata_height
     );
     assert_eq!(
         bounds(&f, cx, format!("thread-timestamp-{}", recent.id))
             .size
             .height,
-        meta_height
+        metadata_height
     );
 }
 

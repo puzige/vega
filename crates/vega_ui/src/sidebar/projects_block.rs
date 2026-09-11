@@ -460,7 +460,7 @@ impl ProjectsBlock {
                     .child(
                         div()
                             .debug_selector(move || format!("projects-section-label-{label}"))
-                            .text_size(px(Typography::SIDEBAR_SECTION))
+                            .text_size(px(Typography::METADATA))
                             .font_weight(Typography::HEADING_CARD_WEIGHT)
                             .text_color(colors.text_secondary)
                             .child(label),
@@ -506,7 +506,7 @@ impl ProjectsBlock {
                     .flex()
                     .items_center()
                     .px_1()
-                    .text_size(px(Typography::SIDEBAR_PRIMARY))
+                    .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_tertiary)
                     .child("点击 [+] 添加文件夹")
                     .into_any_element()
@@ -523,7 +523,7 @@ impl ProjectsBlock {
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .rounded_lg()
                     .overflow_hidden()
-                    .text_size(px(Typography::SIDEBAR_PRIMARY))
+                    .text_size(px(Typography::SIDEBAR))
                     .when(is_selected, move |row| row.bg(colors.bg_active))
                     .child(
                         // 可点击主体与移除按钮是兄弟节点，避免嵌套命中
@@ -559,7 +559,6 @@ impl ProjectsBlock {
                             .children(branch.map(|branch| {
                                 div()
                                     .flex_shrink_0()
-                                    .text_size(px(Typography::SIDEBAR_META))
                                     .text_color(colors.text_tertiary)
                                     .child(branch)
                             })),

@@ -528,7 +528,7 @@ impl Sidebar {
                     .px_2()
                     .rounded_lg()
                     .text_color(colors.text_primary)
-                    .text_size(px(Typography::SIDEBAR_PRIMARY))
+                    .text_size(px(Typography::SIDEBAR))
                     .cursor_pointer()
                     .hover(move |style| style.bg(colors.bg_hover))
                     .on_mouse_up(
@@ -548,7 +548,7 @@ impl Sidebar {
                     .child(
                         div()
                             .debug_selector(|| "sidebar-new-task-shortcut".into())
-                            .text_size(px(Typography::SIDEBAR_META))
+                            .text_size(px(Typography::METADATA))
                             .text_color(colors.text_tertiary)
                             .child("⌘N"),
                     ),
@@ -606,14 +606,13 @@ impl Sidebar {
                             .child(
                                 div()
                                     .debug_selector(|| "sidebar-settings-label".into())
-                                    .text_size(px(Typography::SIDEBAR_PRIMARY))
                                     .child("设置"),
                             )
                             .child(div().flex_1())
                             .child(
                                 div()
                                     .debug_selector(|| "sidebar-settings-shortcut".into())
-                                    .text_size(px(Typography::SIDEBAR_META))
+                                    .text_size(px(Typography::METADATA))
                                     .text_color(colors.text_tertiary)
                                     .child("⌘,"),
                             ),
@@ -658,7 +657,7 @@ impl Render for Sidebar {
                             .rounded_lg()
                             .flex()
                             .items_center()
-                            .text_size(px(Typography::SIDEBAR_PRIMARY))
+                            .text_size(px(Typography::SIDEBAR))
                             .text_color(colors.text_secondary)
                             .cursor_pointer()
                             .child(
@@ -670,7 +669,7 @@ impl Render for Sidebar {
                             .child(
                                 div()
                                     .debug_selector(|| "sidebar-search-shortcut".into())
-                                    .text_size(px(Typography::SIDEBAR_META))
+                                    .text_size(px(Typography::METADATA))
                                     .child("⌘K"),
                             )
                             .on_mouse_up(MouseButton::Left, |_, window, cx| {
