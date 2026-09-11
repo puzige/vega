@@ -259,7 +259,7 @@ impl ThreadsBlock {
                         .rounded_lg()
                         .flex()
                         .items_center()
-                        .gap_1()
+                        .gap_2()
                         .flex_1()
                         .min_w_0()
                         .focusable()
@@ -334,7 +334,8 @@ impl ThreadsBlock {
                         )
                         .children(branch.map(|branch| {
                             div()
-                                .max_w(px(85.))
+                                .w(px(Layout::SIDEBAR_PROJECT_METADATA_WIDTH))
+                                .flex_shrink_0()
                                 .truncate()
                                 .text_size(px(Typography::METADATA))
                                 .text_color(colors.text_tertiary)
@@ -546,7 +547,7 @@ impl ThreadsBlock {
         {
             row = row.child(
                 div()
-                    .pl(px(28.))
+                    .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
                     .child(project.name.clone()),
@@ -582,7 +583,7 @@ impl ThreadsBlock {
             .items_center()
             .gap_1()
             .rounded_lg()
-            .pl(px(28.))
+            .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
             .pr_3()
             .cursor_pointer()
             .text_size(px(Typography::SIDEBAR))
@@ -628,7 +629,8 @@ impl ThreadsBlock {
         {
             row = row.child(
                 div()
-                    .max_w(px(85.))
+                    .w(px(Layout::SIDEBAR_PROJECT_METADATA_WIDTH))
+                    .flex_shrink_0()
                     .truncate()
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)

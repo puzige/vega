@@ -345,7 +345,7 @@ impl ThreadsBlock {
                                         .map(|project| project.name.clone())
                                 })
                                 .flatten();
-                            self.render_pi_row_with_metadata(
+                            self.render_pinned_row_with_metadata(
                                 thread,
                                 &opened_id,
                                 archived,
@@ -600,7 +600,7 @@ impl ThreadsBlock {
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .flex()
             .items_center()
-            .gap_1()
+            .gap_2()
             .px_2()
             .rounded_lg()
             .focusable()

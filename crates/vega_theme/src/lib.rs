@@ -294,6 +294,10 @@ impl Layout {
     pub const SIDEBAR_RESIZE_HIT_AREA: f32 = 5.0;
     /// Sidebar horizontal and vertical padding.
     pub const SIDEBAR_PADDING: f32 = 12.0;
+    /// Shared leading origin for Sidebar navigation row titles.
+    pub const SIDEBAR_NAV_CONTENT_INSET: f32 = 32.0;
+    /// Stable width reserved for project metadata in pinned task rows.
+    pub const SIDEBAR_PROJECT_METADATA_WIDTH: f32 = 85.0;
     /// Composer width cap; the thread column remains wider for readable output.
     pub const COMPOSER_MAX_WIDTH: f32 = 736.0;
     /// Fixed wide-screen Environment rail width (304px card + 16px inset).
@@ -441,6 +445,12 @@ mod tests {
     #[test]
     fn r22_terminal_toolbar_height_is_frozen() {
         assert_eq!(Layout::TERMINAL_TOOLBAR_HEIGHT, 32.0);
+    }
+
+    #[test]
+    fn r27_sidebar_row_geometry_is_frozen() {
+        assert_eq!(Layout::SIDEBAR_NAV_CONTENT_INSET, 32.0);
+        assert_eq!(Layout::SIDEBAR_PROJECT_METADATA_WIDTH, 85.0);
     }
 
     #[test]

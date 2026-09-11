@@ -972,6 +972,7 @@ impl ThreadsBlock {
             selector_prefix,
             actions_enabled,
             None,
+            true,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -993,12 +994,13 @@ impl ThreadsBlock {
             selector_prefix,
             actions_enabled,
             None,
+            true,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
     }
 
-    pub(super) fn render_pi_row_with_metadata(
+    pub(super) fn render_pinned_row_with_metadata(
         &self,
         thread: &Thread,
         opened_id: &Option<String>,
@@ -1014,6 +1016,7 @@ impl ThreadsBlock {
             selector_prefix,
             true,
             project,
+            false,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
@@ -1028,6 +1031,7 @@ impl ThreadsBlock {
         selector_prefix: &str,
         actions_enabled: bool,
         project: Option<String>,
+        show_pin_indicator: bool,
         row_height: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1086,7 +1090,7 @@ impl ThreadsBlock {
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .pl(px(28.))
+                        .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
                         .pr_2()
                         .cursor_pointer()
                         .on_mouse_up(
@@ -1102,9 +1106,14 @@ impl ThreadsBlock {
                                 }
                             }),
                         )
-                        .children(thread.pinned.then(|| {
+                        .children((show_pin_indicator && thread.pinned).then(|| {
                             // 置顶小标记：token 色着色（裁决③）。
                             div()
+                                .debug_selector({
+                                    let id = thread.id.clone();
+                                    let selector_prefix = selector_prefix.to_owned();
+                                    move || format!("{selector_prefix}pin-{id}")
+                                })
                                 .flex_shrink_0()
                                 .text_color(colors.accent)
                                 .child(crate::icons::icon(crate::icons::Icon::Pin, colors.accent))
@@ -1135,7 +1144,8 @@ impl ThreadsBlock {
                                     let selector_prefix = selector_prefix.to_owned();
                                     move || format!("{selector_prefix}project-{id}")
                                 })
-                                .max_w(px(85.))
+                                .w(px(Layout::SIDEBAR_PROJECT_METADATA_WIDTH))
+                                .flex_shrink_0()
                                 .truncate()
                                 .text_size(px(Typography::METADATA))
                                 .text_color(colors.text_tertiary)

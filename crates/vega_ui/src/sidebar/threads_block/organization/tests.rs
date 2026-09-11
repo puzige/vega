@@ -559,6 +559,114 @@ async fn r26_sidebar_projects_each_task_once_and_reveals_contextual_actions(
 }
 
 #[gpui_kit::test]
+async fn r27_sidebar_rows_share_title_origin_and_keep_stable_metadata_columns(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    store
+        .conn()
+        .execute("UPDATE projects SET name = 'P' WHERE id = 'p'", [])
+        .unwrap();
+    store
+        .conn()
+        .execute(
+            "UPDATE projects SET name = 'a-very-long-project-name' WHERE id = 'q'",
+            [],
+        )
+        .unwrap();
+    let pinned_standalone =
+        conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    let recent = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    conversation::set_thread_pinned(&store, &f.other.id, true).unwrap();
+    conversation::set_thread_pinned(&store, &pinned_standalone.id, true).unwrap();
+    conversation::update_thread(
+        &store,
+        &f.other.id,
+        &ThreadUpdate {
+            unread: Some(false),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let child = snapshot(&f)
+        .threads
+        .into_iter()
+        .find(|thread| thread.project_id == "p" && !thread.pinned)
+        .unwrap();
+    let pinned_row = bounds(&f, cx, format!("pinned-thread-row-{}", f.first.id));
+    let pinned_title = bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id));
+    let child_row = bounds(&f, cx, format!("project-thread-row-{}", child.id));
+    let child_title = bounds(&f, cx, format!("project-thread-row-title-{}", child.id));
+    let recent_row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
+    let recent_title = bounds(&f, cx, format!("standalone-thread-row-title-{}", recent.id));
+    for (row, title) in [
+        (pinned_row, pinned_title),
+        (child_row, child_title),
+        (recent_row, recent_title),
+    ] {
+        assert_eq!(
+            f32::from(title.left() - row.left()),
+            Layout::SIDEBAR_NAV_CONTENT_INSET
+        );
+    }
+    assert_eq!(pinned_title.left(), child_title.left());
+    assert_eq!(child_title.left(), recent_title.left());
+    assert!(absent(
+        &f,
+        cx,
+        format!("pinned-thread-row-pin-{}", f.first.id)
+    ));
+    assert!(absent(
+        &f,
+        cx,
+        format!("pinned-thread-row-pin-{}", pinned_standalone.id)
+    ));
+
+    let project_row = bounds(&f, cx, "project-header-p");
+    let folder = bounds(&f, cx, "project-folder-p-open");
+    let label = bounds(&f, cx, "organization-project-p");
+    assert_eq!(f32::from(folder.left() - project_row.left()), 8.0);
+    assert_eq!(f32::from(label.left() - folder.right()), 8.0);
+    assert_eq!(f32::from(label.left() - project_row.left()), 32.0);
+
+    let short_metadata = bounds(&f, cx, format!("pinned-thread-row-project-{}", f.first.id));
+    let long_metadata = bounds(&f, cx, format!("pinned-thread-row-project-{}", f.other.id));
+    assert_eq!(
+        f32::from(short_metadata.size.width),
+        Layout::SIDEBAR_PROJECT_METADATA_WIDTH
+    );
+    assert_eq!(short_metadata.size.width, long_metadata.size.width);
+    assert_eq!(short_metadata.left(), long_metadata.left());
+
+    let rest_tail = bounds(&f, cx, format!("thread-actions-state-{}-rest", f.first.id));
+    let long_tail = bounds(&f, cx, format!("thread-actions-state-{}-rest", f.other.id));
+    assert_eq!(
+        f32::from(rest_tail.size.width),
+        Layout::SIDEBAR_ACTIONS_WIDTH
+    );
+    assert_eq!(rest_tail.left(), long_tail.left());
+    let rest_title = pinned_title;
+    let rest_metadata = short_metadata;
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(pinned_row.center(), None, gpui_kit::Modifiers::default());
+    let hover_title = bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id));
+    let hover_metadata = bounds(&f, cx, format!("pinned-thread-row-project-{}", f.first.id));
+    let hover_tail = bounds(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-visible", f.first.id),
+    );
+    assert_eq!(rest_title.origin, hover_title.origin);
+    assert_eq!(rest_metadata.origin, hover_metadata.origin);
+    assert_eq!(rest_tail.origin, hover_tail.origin);
+}
+
+#[gpui_kit::test]
 async fn r26_empty_pinned_section_is_absent(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     assert!(absent(&f, cx, "organization-section-pinned"));
