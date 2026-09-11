@@ -1,6 +1,6 @@
 # Vega 设计守则
 
-**版本** v1.13 · 2026-09-11
+**版本** v1.14 · 2026-09-11
 
 **状态** 当前视觉语言与设计 token 的规范入口
 
@@ -205,8 +205,9 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Sidebar 宽度、用户手动折叠和窗口触发的自动隐藏是三个独立状态，resize 不得覆盖另外两者。
 - Sidebar 的常驻 Settings action 使用完整 32px 导航行高，位于 12px 左右与底部 inset 内，并使用与其他导航行一致的 8px 圆角。它是侧栏内容栅格中的普通导航行，不是贴住窗口边缘的 footer 条带。
 - Sidebar 的任务信息架构按 `Pinned / Projects / Recents` 排列，区块标题使用普通首字母大写而非全大写；任务在三个投影位置中只能出现一次。区块标题和项目行的辅助操作默认保持安静，仅在所属标题/行 hover、键盘聚焦或菜单打开时显现，且显隐不得造成布局跳动。
-- `Pinned` 标题本身已表达置顶语义，区内任务行不重复渲染 Pin 图标或空占位。无前导图标的 Pinned 与顶层 Recents 任务标题和各自区块标题左对齐；项目 Folder 与名称保持 8px 间距，项目子任务继续落在距行左侧 32px 的内容列以表达层级。项目归属元数据使用稳定列宽。
+- `Pinned` 标题本身已表达置顶语义，区内任务行不重复渲染 Pin 图标、所属项目或空占位。无前导图标的 Pinned 与顶层 Recents 任务标题和各自区块标题左对齐；项目 Folder 与名称保持 8px 间距，项目子任务继续落在距行左侧 32px 的内容列以表达层级。
 - Sidebar 区块按内容自然高度连续排列，不以 Projects 撑满剩余空间。Projects 默认显示 5 个顶层项目、Recents 默认显示 10 个任务；有更多内容时使用对齐内容列的 `Show More / Show Less` 在当前会话内渐进展开，外层 Sidebar 统一承担溢出滚动。
+- Sidebar 对话行静止时只展示标题，不展示相对时间；Pinned 行也不重复展示所属项目。尾部菜单触发器仅在 hover、键盘聚焦或菜单打开时显现，并保持固定命中区避免布局跳动。每个展开项目默认显示 5 条非置顶任务，超出时使用独立的 `Show More / Show Less` 渐进展开，控件与 32px 项目子任务内容列对齐。
 - Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
 
 ## 11. 动效与可访问性
@@ -272,3 +273,4 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 - v1.11 (2026-09-11)：Sidebar 导航建立独立字号层级：主条目 15px、分组标题与辅助信息 13px，保留 32px 行高且不放大全局正文或菜单。精确规格见 [R30 Sidebar typography](vega-r30-sidebar-typography.md)。
 - v1.12 (2026-09-11)：按用户原生复验回退 R30 字号，Sidebar 恢复主条目 13px、分组与辅助信息 12px；Pinned 行移除遗留的 32px 空缩进并与分组标题左对齐。精确规格见 [R31 Sidebar rollback and Pinned leading edge](vega-r31-sidebar-typography-revert-pinned-leading.md)。
 - v1.13 (2026-09-11)：把无图标顶层任务的零前导缩进扩展到 Recents，使 Pinned 与 Recents 标题分别和区块标题左对齐；项目子任务保留 32px 层级缩进。精确规格见 [R32 Sidebar Recents leading edge](vega-r32-sidebar-recents-leading.md)。
+- v1.14 (2026-09-11)：Sidebar 对话行移除静止时间，Pinned 同时移除项目归属；每个展开项目默认显示 5 条任务，并提供独立的 `Show More / Show Less`。精确规格见 [R33 quiet thread rows](vega-r33-sidebar-quiet-thread-rows.md)。
