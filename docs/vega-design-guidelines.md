@@ -111,8 +111,10 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 | 角色 | 当前值 | 规则 |
 |---|---:|---|
-| 元数据 | 12px | 时间、状态、说明；不得承载主要操作 |
-| 正文 / 控件 / 侧栏 | 13px | 正文行高 1.55；侧栏行高 32px |
+| 元数据 | 12px | 非导航区域的时间、状态、说明；不得承载主要操作 |
+| 正文 / 控件 | 13px | 正文行高 1.55 |
+| Sidebar 分组 / 辅助信息 | 13px | 分组标题、项目归属、相对时间与快捷键 |
+| Sidebar 主条目 | 15px | 项目、任务与导航动作；保持 32px 行高 |
 | 代码 | 12.5px | 等宽；保留空白与对齐 |
 | 区块标题 | 14px / 600 | 一个页面内的主要分组 |
 | 会话消息 | 15px | 行高 1.65，优先阅读舒适度 |
@@ -269,3 +271,4 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 - v1.8 (2026-09-11)：移除 Pinned 行内重复的 Pin 图标，统一任务标题内容列；项目 Folder 与名称间距改为 8px，并固定 Pinned 项目元数据列。精确规格见 [R27 Sidebar row alignment](vega-r27-sidebar-row-alignment.md)。
 - v1.9 (2026-09-11)：Sidebar 区块标题统一为 `Pinned / Projects / Recents` 普通首字母大写，保留既有弱化层级、顺序与交互。精确规格见 [R28 Sidebar heading case](vega-r28-sidebar-heading-case.md)。
 - v1.10 (2026-09-11)：Sidebar 区块改为内容自然排列；Projects 默认 5 个、Recents 默认 10 个，并以 `Show More / Show Less` 渐进展开，消除 Projects 与 Recents 之间的弹性空白。精确规格见 [R29 Sidebar progressive lists](vega-r29-sidebar-progressive-lists.md)。
+- v1.11 (2026-09-11)：Sidebar 导航建立独立字号层级：主条目 15px、分组标题与辅助信息 13px，保留 32px 行高且不放大全局正文或菜单。精确规格见 [R30 Sidebar typography](vega-r30-sidebar-typography.md)。
