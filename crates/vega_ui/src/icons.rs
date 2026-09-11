@@ -19,6 +19,7 @@ const ICON_SIZE: f32 = 16.0;
 /// The small set of functional symbols shared by Vega's native chrome.
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Search,
     Sidebar,
     Plus,
     ArrowUp,
@@ -65,6 +66,7 @@ const FOLDER_PLUS_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewB
 
 fn icon_name(kind: Icon) -> IconName {
     match kind {
+        Icon::Search => IconName::Search,
         Icon::Sidebar => IconName::PanelLeft,
         Icon::Plus => IconName::Plus,
         Icon::ArrowUp => IconName::ArrowUp,

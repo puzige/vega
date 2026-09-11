@@ -50,6 +50,16 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
         })
         .unwrap();
     cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let search = visual.debug_bounds("sidebar-search-button").unwrap();
+    visual.simulate_click(search.center(), Default::default());
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.palette.view.is_some())
+    });
+    cx.simulate_keystrokes(window.into(), "escape");
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.palette.view.is_none())
+    });
     cx.simulate_keystrokes(window.into(), "cmd-k");
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| root.palette.view.is_some())

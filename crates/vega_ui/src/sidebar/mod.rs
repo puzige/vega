@@ -506,6 +506,29 @@ impl Sidebar {
             .text_size(px(Typography::SIDEBAR))
             .text_color(colors.text_secondary)
             .child(crate::navigation::controls(cx, true))
+            .child(
+                div()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Button::new("sidebar-search-button")
+                            .debug_selector(|| "sidebar-search-button".into())
+                            .text()
+                            .small()
+                            .accessibility_label("搜索 (⌘K)")
+                            .tooltip("搜索 (⌘K)")
+                            .on_click(|_, window, cx| {
+                                cx.stop_propagation();
+                                window.dispatch_action(
+                                    Box::new(crate::command_palette::OpenPalette),
+                                    cx,
+                                );
+                            })
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::Search,
+                                colors.text_secondary,
+                            )),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -647,37 +670,6 @@ impl Render for Sidebar {
                     .gap_3()
                     .child(self.render_brand(&colors, cx))
                     .child(self.render_new_task(cx, &colors))
-                    .child(
-                        div()
-                            .id("sidebar-search")
-                            .debug_selector(|| "sidebar-search".into())
-                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                            .px_2()
-                            .rounded_lg()
-                            .flex()
-                            .items_center()
-                            .text_size(px(Typography::SIDEBAR))
-                            .text_color(colors.text_secondary)
-                            .cursor_pointer()
-                            .child(
-                                div()
-                                    .debug_selector(|| "sidebar-search-label".into())
-                                    .child("搜索"),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .debug_selector(|| "sidebar-search-shortcut".into())
-                                    .text_size(px(Typography::METADATA))
-                                    .child("⌘K"),
-                            )
-                            .on_mouse_up(MouseButton::Left, |_, window, cx| {
-                                window.dispatch_action(
-                                    Box::new(crate::command_palette::OpenPalette),
-                                    cx,
-                                )
-                            }),
-                    )
                     .child(
                         div()
                             .id("sidebar-scroll")
