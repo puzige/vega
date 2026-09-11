@@ -282,6 +282,10 @@ impl Layout {
     pub const COMPOSER_RADIUS: f32 = 20.0;
     /// Minimum height of the primary composer shell.
     pub const COMPOSER_MIN_HEIGHT: f32 = 100.0;
+    /// Top padding of the Composer wrapper column inside the conversation.
+    pub const COMPOSER_PADDING_TOP: f32 = 12.0;
+    /// Bottom padding of the Composer wrapper column inside the conversation.
+    pub const COMPOSER_PADDING_BOTTOM: f32 = 16.0;
     /// Height reserved by every non-Settings main route.
     pub const MAIN_HEADER_HEIGHT: f32 = 46.0;
     /// Gap between the main content panel and the native window edges/sidebar.
@@ -456,6 +460,12 @@ mod tests {
         assert_eq!(Layout::COMPOSER_SEND_SIZE, 28.0);
         assert_eq!(Layout::WORKSPACE_HEADER_HEIGHT, 40.0);
         assert_eq!(Layout::BOTTOM_WORKSPACE_HEIGHT, 272.0);
+    }
+
+    #[test]
+    fn r45_composer_padding_tokens_are_frozen() {
+        assert_eq!(Layout::COMPOSER_PADDING_TOP, 12.0);
+        assert_eq!(Layout::COMPOSER_PADDING_BOTTOM, 16.0);
     }
 
     #[test]

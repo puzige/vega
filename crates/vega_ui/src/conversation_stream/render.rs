@@ -69,8 +69,8 @@ impl ConversationStream {
             && self.model_selection_pending.is_none();
         div()
             .px(px(Layout::CONTENT_PADDING))
-            .pt(px(12.))
-            .pb(px(16.))
+            .pt(px(Layout::COMPOSER_PADDING_TOP))
+            .pb(px(Layout::COMPOSER_PADDING_BOTTOM))
             .flex_shrink_0()
             .child(
                 div()
