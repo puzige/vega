@@ -1,5 +1,5 @@
 use super::*;
-use vega_ui::icons::{Icon, icon_button};
+use vega_ui::icons::{Icon, shell_icon_button};
 
 impl Render for VegaWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -399,6 +399,7 @@ impl Render for VegaWindow {
             .on_action(cx.listener(Self::open_palette))
             .on_action(cx.listener(Self::palette_open_workspace))
             .on_action(cx.listener(Self::palette_toggle_terminal))
+            .on_action(cx.listener(Self::dismiss_environment_overlay))
             .size_full()
             .flex()
             .flex_row()
@@ -520,7 +521,6 @@ impl VegaWindow {
         let project_label = self.shell_project_label(cx);
         let has_project_label = project_label.is_some();
         let project_route = self.shell_project_id(cx).is_some();
-        let review_available = self.shell_project_thread(cx).is_some();
         let right_visible = self.persistent_right_workspace_visible(window, cx);
         let environment_visible = if self.environment_is_wide(window, cx) {
             !self.environment_collapsed
@@ -528,79 +528,48 @@ impl VegaWindow {
             self.environment_overlay_open
         };
 
-        let mut actions = div().flex_shrink_0().flex().items_center().gap_1();
-        if review_available {
-            actions = actions.child(header_action(
-                "main-header-review",
-                "Review",
-                Icon::Split,
-                true,
+        // R45 shell slots: the trailing cluster is always exactly three
+        // 28x28 controls on 6px gaps. Each slot owns one global layout
+        // surface, keeps its geometry while disabled, and lights its
+        // persistent active surface from the real rendered visibility of
+        // that surface (never from `hidden == false` alone).
+        let mut actions = div().flex_shrink_0().flex().items_center().gap(px(6.));
+        actions = actions.child(
+            shell_icon_button(
+                Icon::Summary,
+                "切换环境",
+                None,
+                environment_visible,
+                project_route && !right_visible,
                 colors,
-                cx.listener(|this, _, _, cx| {
-                    this.environment_overlay_open = false;
-                    this.workspace_open_diff(cx);
-                    cx.notify();
-                }),
-            ));
-        }
-        if project_route {
-            actions = actions.child(
-                icon_button(
-                    Icon::Terminal,
-                    "切换终端",
-                    colors,
-                    cx.listener(|this, _, window, cx| {
-                        this.environment_overlay_open = false;
-                        this.workspace_toggle_terminal(window, cx)
-                    }),
-                )
-                .debug_selector(|| "main-header-terminal".into()),
-            );
-        }
-        for (index, label, icon, selector) in [
-            (
-                0,
-                "显示右侧面板",
-                Icon::DockRight,
-                "main-header-restore-right",
-            ),
-            (
-                1,
-                "显示底部面板",
+                cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),
+            )
+            .debug_selector(|| "main-header-environment".into()),
+        );
+        actions = actions.child(
+            shell_icon_button(
                 Icon::DockBottom,
-                "main-header-restore-bottom",
-            ),
-        ] {
-            if self.hidden_workspace_available(index) {
-                actions = actions.child(
-                    icon_button(
-                        icon,
-                        label,
-                        colors,
-                        cx.listener(move |this, _, window, cx| {
-                            this.restore_hidden_workspace(index, window, cx)
-                        }),
-                    )
-                    .debug_selector(move || selector.into()),
-                );
-            }
-        }
-        if project_route && !right_visible {
-            actions = actions.child(
-                icon_button(
-                    Icon::DockRight,
-                    if environment_visible {
-                        "隐藏 Environment"
-                    } else {
-                        "显示 Environment"
-                    },
-                    colors,
-                    cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),
-                )
-                .debug_selector(|| "main-header-environment".into())
-                .when(environment_visible, |button| button.bg(colors.bg_active)),
-            );
-        }
+                "切换终端",
+                Some("⌘J".into()),
+                self.workspace_recent_terminal_is_rendered(window, cx),
+                project_route,
+                colors,
+                cx.listener(|this, _, window, cx| this.workspace_toggle_bottom(window, cx)),
+            )
+            .debug_selector(|| "main-header-terminal".into()),
+        );
+        actions = actions.child(
+            shell_icon_button(
+                Icon::DockRight,
+                "切换右侧面板",
+                None,
+                self.right_workspace_rendered_non_terminal(window, cx),
+                self.right_workspace_slot_available(window, cx),
+                colors,
+                cx.listener(|this, _, window, cx| this.workspace_toggle_right(window, cx)),
+            )
+            .debug_selector(|| "main-header-workspace-right".into()),
+        );
 
         div()
             .id("main-header")
@@ -833,45 +802,4 @@ impl VegaWindow {
             )
             .into_any_element()
     }
-}
-
-fn header_action(
-    id: &'static str,
-    label: &'static str,
-    icon: Icon,
-    show_label: bool,
-    colors: ThemeColors,
-    activate: impl Fn(&(), &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    let activate = std::rc::Rc::new(activate);
-    let keyboard = activate.clone();
-    div()
-        .id(id)
-        .debug_selector(move || id.into())
-        .aria_label(label)
-        .focusable()
-        .tab_stop(true)
-        .h(px(28.))
-        .px_2()
-        .rounded_md()
-        .flex()
-        .items_center()
-        .gap_1()
-        .text_size(px(Typography::METADATA))
-        .text_color(colors.text_secondary)
-        .cursor_pointer()
-        .hover(move |style| style.bg(colors.bg_hover))
-        .focus(move |style| style.bg(colors.bg_active))
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-            cx.stop_propagation();
-            activate(&(), window, cx);
-        })
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                keyboard(&(), window, cx);
-            }
-        })
-        .child(vega_ui::icons::icon(icon, colors.text_secondary))
-        .when(show_label, |button| button.child(label))
 }

@@ -260,30 +260,149 @@ impl VegaWindow {
             .any(|(key, _)| matches!(key, TabKey::Artifact(_) | TabKey::File(_)))
     }
 
-    /// Restore/hide an existing project terminal, or explicitly create its first one.
-    pub(crate) fn workspace_toggle_terminal(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Whether the current project's most recent terminal tab is actually
+    /// rendered in its dock (R44 rendered predicate, maximized included).
+    /// Drives the selected surface of the R45 bottom-dock shell slot.
+    pub(super) fn workspace_recent_terminal_is_rendered(&self, window: &Window, cx: &App) -> bool {
+        self.workspace
+            .tabs
+            .iter()
+            .rev()
+            .find(|(key, _)| matches!(key, TabKey::Terminal(_)))
+            .is_some_and(|(key, bottom)| {
+                self.workspace_terminal_is_rendered(key, *bottom, window, cx)
+            })
+    }
+
+    /// Whether the bottom dock's selected tab is actually rendered (maximized
+    /// counts as rendered, a narrow window below the bottom minimum does not),
+    /// regardless of whether the tab is a terminal or workspace content.
+    pub(super) fn bottom_workspace_selected_is_rendered(&self, window: &Window) -> bool {
+        !self.workspace.hidden[1]
+            && self.workspace.selected[1].is_some()
+            && (self.workspace.maximized[1]
+                || f32::from(window.bounds().size.height) >= MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT)
+    }
+
+    /// Whether the right dock could render its selected tab at the current
+    /// responsive width.
+    fn right_workspace_renderable(&self, window: &Window, cx: &App) -> bool {
+        self.workspace.maximized[0]
+            || self.workspace_available_width(window, cx) >= MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH
+    }
+
+    /// Whether the right dock is actually rendered at all (R44 rendered
+    /// predicate: not hidden, a selected tab present, and the responsive
+    /// width guard satisfied or maximized).
+    fn right_workspace_rendered(&self, window: &Window, cx: &App) -> bool {
+        !self.workspace.hidden[0]
+            && self.workspace.selected[0].is_some()
+            && self.right_workspace_renderable(window, cx)
+    }
+
+    /// Whether the right dock's selected tab is actually rendered and is not
+    /// a terminal. A rendered right terminal is owned by the bottom-dock
+    /// shell slot, so the right slot must never act on it.
+    pub(super) fn right_workspace_rendered_non_terminal(&self, window: &Window, cx: &App) -> bool {
+        !self.workspace.selected[0]
+            .as_ref()
+            .is_some_and(|selected| matches!(selected, TabKey::Terminal(_)))
+            && self.right_workspace_rendered(window, cx)
+    }
+
+    /// Whether the R45 right-dock shell slot can act at all: hide a rendered
+    /// non-terminal selection, restore a hidden non-terminal tab, or open the
+    /// Review diff when the dock is idle and renderable. Mirrors the branch
+    /// order of [`VegaWindow::workspace_toggle_right`].
+    pub(super) fn right_workspace_slot_available(&self, window: &Window, cx: &App) -> bool {
+        self.right_workspace_rendered_non_terminal(window, cx)
+            || self.hidden_workspace_available(0)
+            || (self.shell_project_thread(cx).is_some()
+                && !self.right_workspace_rendered(window, cx)
+                && self.right_workspace_renderable(window, cx))
+    }
+
+    /// One deterministic bottom-dock toggle behind the R45 shell slot and
+    /// ⌘J: hide the rendered selection, reveal a hidden selected tab, apply
+    /// the R44 terminal reveal/migration, or create the first terminal. Every
+    /// branch keeps the R44 focus contract (Composer stays focused).
+    pub(crate) fn workspace_toggle_bottom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_workspace_route(cx);
-        let terminal = self
+        if self.bottom_workspace_selected_is_rendered(window) {
+            self.workspace_hide(1, window, cx);
+            return;
+        }
+        if self.workspace.hidden[1] && self.workspace.selected[1].is_some() {
+            self.environment_overlay_open = false;
+            self.workspace.hidden[1] = false;
+            self.workspace.reveal_tabs[1] = true;
+            self.workspace_focus_composer(window, cx);
+            cx.notify();
+            return;
+        }
+        if let Some((key, bottom)) = self
             .workspace
             .tabs
             .iter()
             .rev()
             .find(|(key, _)| matches!(key, TabKey::Terminal(_)))
-            .cloned();
-        if let Some((key, bottom)) = terminal {
-            let index = usize::from(bottom);
+            .cloned()
+        {
+            // R44 terminal toggle semantics, verbatim: a rendered terminal
+            // hides its pane; otherwise the same tab (and PTY) reveals,
+            // migrating an unavailable-right terminal to the bottom dock.
             if self.workspace_terminal_is_rendered(&key, bottom, window, cx) {
-                self.workspace_hide(index, window, cx);
+                self.workspace_hide(usize::from(bottom), window, cx);
             } else {
                 self.workspace_reveal_terminal_tab(key, bottom, window, cx);
             }
         } else {
             self.workspace_create_terminal(true, false, window, cx);
         }
+        cx.notify();
+    }
+
+    /// One deterministic right-dock toggle behind the R45 shell slot: hide a
+    /// rendered non-terminal selection, restore a hidden non-terminal tab, or
+    /// open the Review diff for the current project thread. A rendered right
+    /// terminal is owned by the bottom-dock slot and leaves this no-op.
+    pub(crate) fn workspace_toggle_right(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_workspace_route(cx);
+        if self.right_workspace_rendered_non_terminal(window, cx) {
+            self.workspace_hide(0, window, cx);
+            return;
+        }
+        if self.hidden_workspace_available(0) {
+            self.restore_hidden_workspace(0, window, cx);
+            return;
+        }
+        if self.shell_project_thread(cx).is_some()
+            && !self.right_workspace_rendered(window, cx)
+            && self.right_workspace_renderable(window, cx)
+        {
+            self.environment_overlay_open = false;
+            self.workspace_open_diff(cx);
+            cx.notify();
+        }
+    }
+
+    /// Escape dismissal of the narrow Environment overlay (R45): closes the
+    /// card and returns focus to the Composer. The rail modality has no
+    /// Escape path, and a closed overlay never consumes the key so scoped
+    /// component escapes keep their precedence.
+    pub(super) fn dismiss_environment_overlay(
+        &mut self,
+        _: &vega_ui::DismissEnvironmentOverlay,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.environment_is_wide(window, cx) || !self.environment_overlay_open {
+            cx.propagate();
+            return;
+        }
+        self.environment_overlay_open = false;
+        self.workspace_focus_composer(window, cx);
+        cx.stop_propagation();
         cx.notify();
     }
 
@@ -1222,15 +1341,38 @@ impl VegaWindow {
                 );
         }
         if environment_overlay {
-            layout = layout.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .w(px(Layout::ENVIRONMENT_RAIL_WIDTH))
-                    .h_full()
-                    .child(self.render_environment(true, cx)),
-            );
+            layout = layout
+                .child(
+                    // R45 dismissal backdrop: transparent, painted under the
+                    // overlay card but over the rest of the shell. A left
+                    // press outside the card closes the overlay and returns
+                    // focus to the Composer; the press itself keeps
+                    // propagating so the underlying control still works.
+                    div()
+                        .debug_selector(|| "environment-overlay-backdrop".into())
+                        .absolute()
+                        .inset_0()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.environment_overlay_open = false;
+                                this.workspace_focus_composer(window, cx);
+                                cx.notify();
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .w(px(Layout::ENVIRONMENT_RAIL_WIDTH))
+                        .h_full()
+                        // Keep card presses off the dismissal backdrop so
+                        // in-card rows keep their R44 mouse-up activation.
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(self.render_environment(true, cx)),
+                );
         }
         if self.workspace.terminal_error {
             layout = layout.child(
@@ -1442,7 +1584,7 @@ mod tests {
     use crate::tests::{diff_controller_repo, install_diff_window_globals};
     use gpui_kit::prelude::*;
     use gpui_kit::{
-        AppContext, Bounds, KeyBinding, Modifiers, MouseButton, Pixels, TestAppContext,
+        AppContext, Bounds, Focusable, KeyBinding, Modifiers, MouseButton, Pixels, TestAppContext,
         VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point, px, size,
     };
     use vega_theme::{Layout, Typography};
@@ -1688,9 +1830,9 @@ mod tests {
         );
         for selector in [
             "main-header-project",
-            "main-header-review",
             "main-header-terminal",
             "main-header-environment",
+            "main-header-workspace-right",
             "environment-project",
             "environment-branch",
             "environment-review",
@@ -1857,18 +1999,35 @@ mod tests {
         });
         cx.run_until_parked();
         let _ = shell_bounds(window, "main-header-title", cx);
-        for selector in [
-            "main-header-project",
-            "main-header-review",
-            "main-header-terminal",
-            "main-header-environment",
-            "environment-rail",
-        ] {
+        for selector in ["main-header-project", "environment-rail"] {
             assert!(
                 shell_absent(window, selector, cx),
                 "standalone route must fence {selector}"
             );
         }
+        // R45 slot model supersedes conditional header membership: the three
+        // shell slots render at every route, and on a standalone route they
+        // render disabled, so clicking them changes no workspace state.
+        for selector in [
+            "main-header-environment",
+            "main-header-terminal",
+            "main-header-workspace-right",
+        ] {
+            let _ = shell_bounds(window, selector, cx);
+        }
+        shell_click(window, "main-header-terminal", cx);
+        shell_click(window, "main-header-environment", cx);
+        shell_click(window, "main-header-workspace-right", cx);
+        assert!(
+            root.read_with(cx, |root, _| {
+                root.workspace.terminals.is_empty()
+                    && root.workspace.selected[1].is_none()
+                    && root.workspace.hidden == [false, false]
+                    && !root.environment_overlay_open
+                    && root.diff_controller.active.is_none()
+            }),
+            "standalone route must keep the disabled shell slots inert"
+        );
 
         cx.update(|cx| {
             cx.set_global(SidebarCollapsed(false));
@@ -1889,8 +2048,480 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(shell_absent(window, "environment-rail", cx));
-        assert!(shell_absent(window, "main-header-terminal", cx));
-        assert!(shell_absent(window, "main-header-environment", cx));
+        // R45: the shell slots survive project-less routes as disabled
+        // placeholders whose clicks change no workspace state.
+        for selector in [
+            "main-header-environment",
+            "main-header-terminal",
+            "main-header-workspace-right",
+        ] {
+            let _ = shell_bounds(window, selector, cx);
+        }
+        shell_click(window, "main-header-terminal", cx);
+        shell_click(window, "main-header-environment", cx);
+        assert!(
+            root.read_with(cx, |root, _| root.workspace.terminals.is_empty()
+                && !root.environment_overlay_open),
+            "project-less route must keep the disabled shell slots inert"
+        );
+    }
+
+    fn r45_mount_project_window(
+        repo: &tempfile::TempDir,
+        label: &str,
+        width: f32,
+        height: f32,
+        cx: &mut TestAppContext,
+    ) -> (gpui_kit::Entity<VegaWindow>, WindowHandle<VegaWindow>) {
+        let store = vega_store::Store::open(":memory:").expect("owned store");
+        store.migrate().expect("owned migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            repo.path().to_str().expect("fixture path"),
+            label,
+            None,
+        )
+        .expect("project");
+        let thread =
+            vega_conversation::threads::create_thread(&store, &project.id, "mock", "confirm")
+                .expect("thread");
+        cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        let root = cx.new(VegaWindow::new);
+        let window_root = root.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(width), px(height)),
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| window_root,
+            )
+            .expect("production root window")
+        });
+        cx.run_until_parked();
+        (root, window)
+    }
+
+    fn r45_assert_three_shell_slots(window: WindowHandle<VegaWindow>, cx: &mut TestAppContext) {
+        let environment = shell_bounds(window, "main-header-environment", cx);
+        let terminal = shell_bounds(window, "main-header-terminal", cx);
+        let right = shell_bounds(window, "main-header-workspace-right", cx);
+        for (name, bounds) in [
+            ("environment", environment),
+            ("terminal", terminal),
+            ("workspace-right", right),
+        ] {
+            assert_close(
+                bounds.size.width,
+                Layout::TITLEBAR_CONTROL_SIZE,
+                &format!("{name} slot width"),
+            );
+            assert_close(
+                bounds.size.height,
+                Layout::TITLEBAR_CONTROL_SIZE,
+                &format!("{name} slot height"),
+            );
+        }
+        assert!(
+            environment.left() < terminal.left() && terminal.left() < right.left(),
+            "slots keep the environment → terminal → right order"
+        );
+        // Codex-measured 34px centers = one 28px slot plus one 6px gap.
+        assert_close(
+            terminal.center().x - environment.center().x,
+            34.0,
+            "environment→terminal center distance",
+        );
+        assert_close(
+            right.center().x - terminal.center().x,
+            34.0,
+            "terminal→right center distance",
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn r45_header_cluster_renders_three_stable_slots(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R45 slots", 1403., 860., cx);
+        let _ = root;
+        r45_assert_three_shell_slots(window, cx);
+
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(960.), px(600.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize to the minimum window size");
+        cx.run_until_parked();
+        r45_assert_three_shell_slots(window, cx);
+    }
+
+    #[gpui_kit::test]
+    async fn r45_environment_overlay_esc_and_outside_click_close_with_composer_focus(
+        cx: &mut TestAppContext,
+    ) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R45 overlay", 1100., 860., cx);
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("focus the task composer");
+        let input = root.read_with(cx, |root, cx| {
+            root.stream_view
+                .as_ref()
+                .expect("conversation")
+                .1
+                .read(cx)
+                .composer_input()
+        });
+        let input_focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+
+        // Below the breakpoint, slot 1 opens the overlay card.
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-overlay", cx);
+        assert!(root.read_with(cx, |root, _| root.environment_overlay_open));
+
+        // Escape closes the overlay and returns focus to the Composer.
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        assert!(shell_absent(window, "environment-overlay", cx));
+        assert!(!root.read_with(cx, |root, _| root.environment_overlay_open));
+        assert!(
+            window
+                .update(cx, |_, window, _| input_focus.is_focused(window))
+                .expect("composer focus after escape"),
+            "escape must return focus to the Composer"
+        );
+
+        // Reopening and pressing on a neutral header surface outside the
+        // card dismisses it and again returns focus to the Composer.
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-overlay", cx);
+        let title = shell_bounds(window, "main-header-title", cx);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(title.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(shell_absent(window, "environment-overlay", cx));
+        assert!(
+            window
+                .update(cx, |_, window, _| input_focus.is_focused(window))
+                .expect("composer focus after outside click"),
+            "an outside click must return focus to the Composer"
+        );
+
+        // The wide rail modality has no Escape contract.
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1400.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize to a wide viewport");
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "environment-rail", cx);
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "environment-rail", cx);
+        assert!(!root.read_with(cx, |root, _| root.environment_collapsed));
+    }
+
+    #[gpui_kit::test]
+    async fn r45_environment_slot_tracks_rendered_state(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R45 env slot", 1403., 860., cx);
+        // The wide rail is rendered by default, so slot 1 owns a visible
+        // surface. The painted bg_active surface itself is covered by the
+        // native acceptance screenshot (R45 §4, 04-env-rail.png); these
+        // assertions pin the rendered state that drives it.
+        let _ = shell_bounds(window, "environment-rail", cx);
+        assert!(root.read_with(cx, |root, _| !root.environment_collapsed
+            && !root.environment_overlay_open));
+        shell_click(window, "main-header-environment", cx);
+        assert!(shell_absent(window, "environment-rail", cx));
+        assert!(root.read_with(cx, |root, _| root.environment_collapsed));
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-rail", cx);
+        assert!(root.read_with(cx, |root, _| !root.environment_collapsed));
+
+        // With the right dock rendered, the Environment surface is replaced:
+        // slot 1 renders disabled and clicking it changes nothing.
+        root.update(cx, |root, cx| root.workspace_open_diff(cx));
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "right-workspace-pane", cx);
+        let collapsed = root.read_with(cx, |root, _| root.environment_collapsed);
+        shell_click(window, "main-header-environment", cx);
+        assert_eq!(
+            root.read_with(cx, |root, _| root.environment_collapsed),
+            collapsed,
+            "slot 1 must stay disabled while the right dock replaces the rail"
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn r45_right_toggle_hide_restore_open_diff_priority(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R45 right slot", 1400., 900., cx);
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("focus the task composer");
+        let input = root.read_with(cx, |root, cx| {
+            root.stream_view
+                .as_ref()
+                .expect("conversation")
+                .1
+                .read(cx)
+                .composer_input()
+        });
+        let input_focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+
+        // Branch c: idle dock with Review available → open the diff pane.
+        shell_click(window, "main-header-workspace-right", cx);
+        let _ = shell_bounds(window, "right-workspace-pane", cx);
+        assert!(root.read_with(cx, |root, _| {
+            root.workspace.selected[0] == Some(TabKey::Diff) && !root.workspace.hidden[0]
+        }));
+
+        // Branch a: rendered non-terminal selection → hide, Composer focus.
+        shell_click(window, "main-header-workspace-right", cx);
+        assert!(shell_absent(window, "right-workspace-pane", cx));
+        assert!(root.read_with(cx, |root, _| root.workspace.hidden[0]));
+        assert!(
+            window
+                .update(cx, |_, window, _| input_focus.is_focused(window))
+                .expect("composer focus after hide"),
+            "hiding returns focus to the Composer"
+        );
+
+        // Branch b: hidden non-terminal tab → restore with pane activation.
+        shell_click(window, "main-header-workspace-right", cx);
+        let _ = shell_bounds(window, "right-workspace-pane", cx);
+        assert!(!root.read_with(cx, |root, _| root.workspace.hidden[0]));
+        let diff_focus = root.read_with(cx, |root, cx| {
+            root.diff_controller
+                .active
+                .as_ref()
+                .expect("diff route")
+                .view
+                .read(cx)
+                .focus_handle(cx)
+        });
+        assert!(
+            window
+                .update(cx, |_, window, _| diff_focus.is_focused(window))
+                .expect("diff focus after restore"),
+            "generic restore activates the pane content"
+        );
+
+        // Branch c again: with the hidden tab closed, the slot opens Review.
+        shell_click(window, "main-header-workspace-right", cx);
+        assert!(root.read_with(cx, |root, _| root.workspace.hidden[0]));
+        root.update(cx, |root, _| {
+            root.workspace.close(&TabKey::Diff);
+            root.diff_controller.close();
+        });
+        cx.run_until_parked();
+        shell_click(window, "main-header-workspace-right", cx);
+        assert!(root.read_with(cx, |root, _| {
+            root.diff_controller.active.is_some()
+                && root.workspace.selected[0] == Some(TabKey::Diff)
+        }));
+    }
+
+    #[gpui_kit::test]
+    async fn r45_toggle_surfaces_track_rendered_visibility(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R45 surfaces", 1400., 900., cx);
+        // Slot 3's selected surface follows the real rendered predicate.
+        root.update(cx, |root, cx| root.workspace_open_diff(cx));
+        cx.run_until_parked();
+        window
+            .update(cx, |root, window, cx| {
+                assert!(root.right_workspace_rendered_non_terminal(window, cx));
+            })
+            .expect("an open right dock counts as rendered");
+        shell_click(window, "main-header-workspace-right", cx);
+        window
+            .update(cx, |root, window, cx| {
+                assert!(root.workspace.hidden[0]);
+                assert!(!root.right_workspace_rendered_non_terminal(window, cx));
+            })
+            .expect("a hidden dock is not rendered");
+
+        // Restore, then shrink below the responsive guard with a widened
+        // Sidebar: hidden == false alone must not light the slot.
+        shell_click(window, "main-header-workspace-right", cx);
+        cx.update(|cx| cx.set_global(SidebarWidth(Layout::SIDEBAR_MAX_WIDTH)));
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(960.), px(600.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize below the right-dock guard");
+        cx.run_until_parked();
+        window
+            .update(cx, |root, window, cx| {
+                assert!(!root.workspace.hidden[0]);
+                assert!(root.workspace.selected[0].is_some());
+                assert!(
+                    !root.right_workspace_rendered_non_terminal(window, cx),
+                    "an unmounted right dock must not count as rendered"
+                );
+            })
+            .expect("unmounted predicate");
+
+        // Maximized bottom dock: rendered even below the bottom minimum, and
+        // slot 2 then takes the hide branch.
+        window
+            .update(cx, |root, window, cx| {
+                window.resize(size(px(1400.), px(900.)));
+                window.bounds_changed(cx);
+                root.workspace_move_selected(0, window, cx);
+            })
+            .expect("move Review to the bottom dock");
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(960.), px(400.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize below the bottom minimum");
+        cx.run_until_parked();
+        window
+            .update(cx, |root, window, _| {
+                assert!(!root.bottom_workspace_selected_is_rendered(window));
+                // White-box stand-in for the maximize control, which is not
+                // mounted while the dock is unrendered at this height.
+                root.workspace.maximized[1] = true;
+                assert!(root.bottom_workspace_selected_is_rendered(window));
+            })
+            .expect("maximized bottom dock counts as rendered");
+        // A maximized pane unmounts the header row (R44 fullscreen chrome),
+        // so the hide branch runs through the production handler here.
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_toggle_bottom(window, cx);
+                assert!(root.workspace.hidden[1]);
+            })
+            .expect("slot 2 takes the hide branch on a maximized bottom dock");
+    }
+
+    #[gpui_kit::test]
+    async fn r45_composer_centering_and_geometry(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (_root, window) = r45_mount_project_window(&repo, "R45 composer", 1403., 860., cx);
+        let panel = shell_bounds(window, "main-content-panel", cx);
+        let rail = shell_bounds(window, "environment-rail", cx);
+        let composer = shell_bounds(window, "composer-shell", cx);
+        // Conversation column with the rail open: [panel.left, rail.left].
+        assert_close(
+            composer.center().x,
+            (f32::from(panel.left()) + f32::from(rail.left())) / 2.0,
+            "composer centers on the conversation column with the rail open",
+        );
+        assert_close(
+            composer.size.width,
+            Layout::COMPOSER_MAX_WIDTH,
+            "composer width cap",
+        );
+        assert!(
+            f32::from(composer.size.height) >= Layout::COMPOSER_MIN_HEIGHT,
+            "composer keeps its 100px minimum"
+        );
+
+        // Closing the rail re-centers the composer on the full column.
+        shell_click(window, "main-header-environment", cx);
+        let composer = shell_bounds(window, "composer-shell", cx);
+        assert_close(
+            composer.center().x,
+            (f32::from(panel.left()) + f32::from(panel.right())) / 2.0,
+            "composer re-centers after the rail closes",
+        );
+        assert_close(
+            composer.size.width,
+            Layout::COMPOSER_MAX_WIDTH,
+            "composer width cap without the rail",
+        );
+
+        // Opening the right dock re-centers and never overlaps the pane.
+        window
+            .update(cx, |root, window, cx| {
+                let file = cx.new(|cx| {
+                    vega_ui::file_preview::FilePreview::new(
+                        vega_conversation::types::PaletteFilePreview {
+                            relative_path: "README.md".into(),
+                            content: "owned read-only preview".into(),
+                        },
+                        cx,
+                    )
+                });
+                root.workspace_open_file(file, window, cx);
+            })
+            .expect("open the file preview in the right dock");
+        cx.run_until_parked();
+        let pane = shell_bounds(window, "right-workspace-pane", cx);
+        let composer = shell_bounds(window, "composer-shell", cx);
+        assert_close(
+            composer.center().x,
+            (f32::from(panel.left()) + f32::from(pane.left()) - Layout::SIDEBAR_RESIZE_HIT_AREA)
+                / 2.0,
+            "composer re-centers beside the right dock",
+        );
+        assert!(
+            composer.right() <= pane.left(),
+            "composer must not overlap the right dock"
+        );
+
+        // Bottom dock: no vertical overlap either.
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_move_selected(0, window, cx)
+            })
+            .expect("move the preview to the bottom dock");
+        cx.run_until_parked();
+        let bottom = shell_bounds(window, "bottom-workspace-pane", cx);
+        let composer = shell_bounds(window, "composer-shell", cx);
+        assert!(
+            composer.bottom() <= bottom.top(),
+            "composer must not overlap the bottom dock"
+        );
+
+        // Minimum window: the composer shrinks with the padded column.
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(960.), px(600.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize to the minimum window");
+        cx.run_until_parked();
+        let panel = shell_bounds(window, "main-content-panel", cx);
+        let composer = shell_bounds(window, "composer-shell", cx);
+        assert_close(
+            composer.center().x,
+            (f32::from(panel.left()) + f32::from(panel.right())) / 2.0,
+            "composer centers in the narrow column",
+        );
+        assert_close(
+            composer.size.width,
+            f32::from(panel.size.width) - 2.0 * Layout::CONTENT_PADDING,
+            "narrow composer fills the padded column",
+        );
+        assert!(
+            f32::from(composer.left() - panel.left()) >= Layout::CONTENT_PADDING,
+            "left padding stays at least 16px"
+        );
+        assert!(
+            f32::from(panel.right() - composer.right()) >= Layout::CONTENT_PADDING,
+            "right padding stays at least 16px"
+        );
+        assert!(
+            f32::from(composer.size.height) >= Layout::COMPOSER_MIN_HEIGHT,
+            "narrow composer keeps its 100px minimum"
+        );
     }
 
     #[cfg(unix)]
@@ -2251,6 +2882,64 @@ mod terminal_tests {
         window
             .update(cx, |_, window, _| focus.is_focused(window))
             .expect("mounted window focus")
+    }
+
+    fn wait_for_marker(path: &std::path::Path, cx: &mut TestAppContext) {
+        let until = Instant::now() + Duration::from_secs(8);
+        while !path.exists() {
+            assert!(
+                Instant::now() < until,
+                "PTY probe timed out waiting for {}",
+                path.display()
+            );
+            cx.executor().advance_clock(Duration::from_millis(30));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    fn r45_terminal_window(
+        path: &std::path::Path,
+        cx: &mut TestAppContext,
+    ) -> (
+        gpui_kit::Entity<VegaWindow>,
+        WindowHandle<VegaWindow>,
+        gpui_kit::Entity<vega_ui::text_input::TextInput>,
+    ) {
+        let store = vega_store::Store::open(path.join("test.db")).expect("store");
+        store.migrate().expect("migrations");
+        let project =
+            vega_store::projects::create(store.conn(), path.to_str().unwrap(), "R45", None)
+                .expect("project");
+        let thread =
+            vega_conversation::threads::create_thread(&store, &project.id, "mock", "confirm")
+                .expect("thread");
+        cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        let root = cx.new(VegaWindow::new);
+        let entity = root.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(1400.), px(900.)),
+                    ))),
+                    ..Default::default()
+                },
+                move |_, _| entity,
+            )
+            .expect("production root")
+        });
+        cx.run_until_parked();
+        let input = root.read_with(cx, |root, cx| {
+            root.stream_view
+                .as_ref()
+                .expect("conversation")
+                .1
+                .read(cx)
+                .composer_input()
+        });
+        (root, window, input)
     }
 
     #[gpui_kit::test]
@@ -2893,7 +3582,7 @@ mod terminal_tests {
                 root.workspace_move_selected(0, window, cx);
                 assert_eq!(root.workspace.selected[1], Some(key.clone()));
                 root.workspace_hide(1, window, cx);
-                root.workspace_toggle_terminal(window, cx);
+                root.workspace_toggle_bottom(window, cx);
                 assert!(!root.workspace.hidden[1]);
                 let TabKey::Terminal(id) = key else {
                     panic!("terminal tab")
@@ -3010,5 +3699,373 @@ mod terminal_tests {
             .unwrap();
         cx.run_until_parked();
         std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    #[gpui_kit::test]
+    async fn r45_bottom_toggle_unified_priority_and_cmd_j_parity(cx: &mut TestAppContext) {
+        const MARKER: &str = "VEGA_R45_BOTTOM_TOGGLE_CHILD";
+        let Some(path) = std::env::var_os(MARKER) else {
+            let root = tempfile::tempdir().expect("owned terminal home");
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "window::workspace::terminal_tests::r45_bottom_toggle_unified_priority_and_cmd_j_parity",
+                    "--nocapture",
+                ])
+                .env(MARKER, root.path())
+                .env("HOME", root.path())
+                .env("ZDOTDIR", root.path())
+                .output()
+                .expect("isolated test process");
+            assert!(
+                output.status.success(),
+                "owned R45 bottom toggle subprocess failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let (root, window, input) = r45_terminal_window(&path, cx);
+        let input_focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("focus the task composer");
+
+        // Branch d (⌘J): with no tabs, the unified toggle creates the first
+        // terminal and keeps the Composer focused.
+        cx.simulate_keystrokes(window.into(), "cmd-j");
+        cx.run_until_parked();
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        let first_view = root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.terminals.len(), 1);
+            let key = root.workspace.selected[1]
+                .clone()
+                .expect("selected terminal");
+            let TabKey::Terminal(id) = &key else {
+                panic!("terminal key")
+            };
+            assert!(!root.workspace.hidden[1]);
+            root.workspace.terminals[id].view.clone()
+        });
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        // Branch a (slot click): the rendered selection hides.
+        click_mounted(window, "main-header-terminal", cx);
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("bottom-workspace-pane")
+                .is_none(),
+            "slot 2 hides its rendered bottom dock"
+        );
+        assert!(root.read_with(cx, |root, _| root.workspace.hidden[1]));
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        // Branch b (slot click): the hidden selected tab reveals with the
+        // same terminal entity and Composer focus.
+        click_mounted(window, "main-header-terminal", cx);
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        root.read_with(cx, |root, _| {
+            assert!(!root.workspace.hidden[1]);
+            assert_eq!(root.workspace.terminals.len(), 1);
+            assert_eq!(
+                root.workspace
+                    .terminals
+                    .values()
+                    .next()
+                    .expect("same terminal")
+                    .view
+                    .entity_id(),
+                first_view.entity_id()
+            );
+        });
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        // ⌘J parity for branches a and b.
+        cx.simulate_keystrokes(window.into(), "cmd-j");
+        cx.run_until_parked();
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("bottom-workspace-pane")
+                .is_none(),
+            "⌘J hides the rendered bottom dock like slot 2"
+        );
+        assert!(root.read_with(cx, |root, _| root.workspace.hidden[1]));
+        assert!(focus_is(window, input_focus.clone(), cx));
+        cx.simulate_keystrokes(window.into(), "cmd-j");
+        cx.run_until_parked();
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        assert!(!root.read_with(cx, |root, _| root.workspace.hidden[1]));
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        // Branch c with a terminal present: a hidden bottom file tab reveals
+        // with the same entity while the terminal stays untouched.
+        window
+            .update(cx, |root, window, cx| {
+                let file = cx.new(|cx| {
+                    vega_ui::file_preview::FilePreview::new(
+                        vega_conversation::types::PaletteFilePreview {
+                            relative_path: "README.md".into(),
+                            content: "owned read-only preview".into(),
+                        },
+                        cx,
+                    )
+                });
+                root.workspace_open_file(file, window, cx);
+            })
+            .expect("open the file preview");
+        cx.run_until_parked();
+        let file_view = root.read_with(cx, |root, _| {
+            root.workspace
+                .files
+                .values()
+                .next()
+                .expect("file preview")
+                .clone()
+        });
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_move_selected(0, window, cx)
+            })
+            .expect("move the preview to the bottom dock");
+        window
+            .update(cx, |root, window, cx| root.workspace_hide(1, window, cx))
+            .expect("hide the bottom dock");
+        cx.run_until_parked();
+        click_mounted(window, "main-header-terminal", cx);
+        root.read_with(cx, |root, _| {
+            assert!(!root.workspace.hidden[1]);
+            assert!(matches!(root.workspace.selected[1], Some(TabKey::File(_))));
+            assert_eq!(root.workspace.terminals.len(), 1);
+            assert_eq!(
+                root.workspace
+                    .files
+                    .values()
+                    .next()
+                    .expect("same file")
+                    .entity_id(),
+                file_view.entity_id()
+            );
+        });
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        // Branch c without any terminal (⌘J parity): closing the terminal
+        // still leaves the reveal branch for the hidden file tab.
+        click_mounted(window, "workspace-tab-close-Terminal(1)", cx);
+        cx.run_until_parked();
+        assert!(root.read_with(cx, |root, _| root.workspace.terminals.is_empty()));
+        window
+            .update(cx, |root, window, cx| root.workspace_hide(1, window, cx))
+            .expect("hide the bottom dock");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "cmd-j");
+        cx.run_until_parked();
+        root.read_with(cx, |root, _| {
+            assert!(!root.workspace.hidden[1]);
+            assert!(matches!(root.workspace.selected[1], Some(TabKey::File(_))));
+            assert!(root.workspace.terminals.is_empty());
+            assert_eq!(
+                root.workspace
+                    .files
+                    .values()
+                    .next()
+                    .expect("same file")
+                    .entity_id(),
+                file_view.entity_id()
+            );
+        });
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        // Branch d (slot click) parity: with every tab closed, the slot
+        // creates the next terminal.
+        click_mounted(window, "workspace-tab-close-File(1)", cx);
+        cx.run_until_parked();
+        click_mounted(window, "main-header-terminal", cx);
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        assert_eq!(
+            root.read_with(cx, |root, _| root.workspace.terminals.len()),
+            1
+        );
+        assert!(focus_is(window, input_focus, cx));
+    }
+
+    #[gpui_kit::test]
+    async fn r45_terminal_owns_bottom_and_right_hide_paths(cx: &mut TestAppContext) {
+        const MARKER: &str = "VEGA_R45_TERMINAL_OWNERSHIP_CHILD";
+        let Some(path) = std::env::var_os(MARKER) else {
+            let root = tempfile::tempdir().expect("owned terminal home");
+            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    "window::workspace::terminal_tests::r45_terminal_owns_bottom_and_right_hide_paths",
+                    "--nocapture",
+                ])
+                .env(MARKER, root.path())
+                .env("HOME", root.path())
+                .env("ZDOTDIR", root.path())
+                .output()
+                .expect("isolated test process");
+            assert!(
+                output.status.success(),
+                "owned R45 terminal ownership subprocess failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let (root, window, input) = r45_terminal_window(&path, cx);
+        let input_focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("focus the task composer");
+
+        // Create the first terminal in the bottom dock and take a PTY probe.
+        cx.simulate_keystrokes(window.into(), "cmd-j");
+        cx.run_until_parked();
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        let (first_key, first_view) = root.read_with(cx, |root, _| {
+            let key = root.workspace.selected[1]
+                .clone()
+                .expect("selected terminal");
+            let TabKey::Terminal(id) = &key else {
+                panic!("terminal key")
+            };
+            (key.clone(), root.workspace.terminals[id].view.clone())
+        });
+        click_mounted(window, "workspace-tab-Terminal(1)", cx);
+        window
+            .update(cx, |_, window, cx| {
+                first_view.update(cx, |view, cx| {
+                    view.replace_text_in_range(None, "printf $$ > r45-own-pid-before", window, cx)
+                });
+            })
+            .expect("type the pre-migration PTY probe");
+        cx.simulate_keystrokes(window.into(), "enter");
+        let pid_before = path.join("r45-own-pid-before");
+        wait_for_marker(&pid_before, cx);
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("return to the composer");
+
+        // Dock the terminal to the right pane (rendered at this width).
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_move_selected(1, window, cx)
+            })
+            .expect("dock the terminal right");
+        cx.run_until_parked();
+        let _ = mounted_bounds(window, "right-workspace-pane", cx);
+
+        // Slot 3 is disabled while the right dock shows a terminal: the
+        // click must not change any state.
+        let state = |root: &VegaWindow, _: &gpui_kit::App| {
+            (
+                root.workspace.hidden,
+                root.workspace.selected.clone(),
+                root.workspace.terminals.len(),
+                root.diff_controller.active.is_none(),
+            )
+        };
+        let before = root.read_with(cx, state);
+        click_mounted(window, "main-header-workspace-right", cx);
+        assert_eq!(
+            before,
+            root.read_with(cx, state),
+            "slot 3 must stay inert while a right terminal is rendered"
+        );
+        let _ = mounted_bounds(window, "right-workspace-pane", cx);
+
+        // Slot 2 owns the hide path for the rendered right terminal.
+        click_mounted(window, "main-header-terminal", cx);
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("right-workspace-pane")
+                .is_none(),
+            "slot 2 hides the rendered right terminal"
+        );
+        assert!(root.read_with(cx, |root, _| root.workspace.hidden[0]));
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        // Re-reveal (wide), then shrink below the responsive guard so the
+        // right terminal unmounts while hidden == false.
+        click_mounted(window, "main-header-terminal", cx);
+        let _ = mounted_bounds(window, "right-workspace-pane", cx);
+        assert!(focus_is(window, input_focus.clone(), cx));
+        cx.update(|cx| cx.set_global(SidebarWidth(Layout::SIDEBAR_MAX_WIDTH)));
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(960.), px(600.)));
+                window.bounds_changed(cx);
+            })
+            .expect("resize below the right-dock guard");
+        cx.run_until_parked();
+        assert!(
+            VisualTestContext::from_window(window.into(), cx)
+                .debug_bounds("right-workspace-pane")
+                .is_none(),
+            "the narrow layout no longer renders the right terminal"
+        );
+        root.read_with(cx, |root, _| {
+            assert!(!root.workspace.hidden[0]);
+            assert_eq!(root.workspace.selected[0], Some(first_key.clone()));
+        });
+
+        // Slot 3 stays disabled for the unmounted right terminal...
+        let before = root.read_with(cx, state);
+        click_mounted(window, "main-header-workspace-right", cx);
+        assert_eq!(
+            before,
+            root.read_with(cx, state),
+            "slot 3 must stay inert while the right terminal is unmounted"
+        );
+
+        // ...and slot 2 performs the R44 migration: same tab, same PTY,
+        // bottom dock, Composer focus.
+        click_mounted(window, "main-header-terminal", cx);
+        let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
+        root.read_with(cx, |root, _| {
+            assert_eq!(root.workspace.terminals.len(), 1);
+            assert_eq!(root.workspace.selected[1], Some(first_key.clone()));
+            assert!(
+                root.workspace
+                    .tabs
+                    .iter()
+                    .any(|(key, bottom)| key == &first_key && *bottom)
+            );
+            assert_eq!(
+                root.workspace
+                    .terminals
+                    .values()
+                    .next()
+                    .expect("same terminal")
+                    .view
+                    .entity_id(),
+                first_view.entity_id()
+            );
+        });
+        assert!(focus_is(window, input_focus.clone(), cx));
+
+        // PTY identity: the migrated terminal is the same process.
+        click_mounted(window, "workspace-tab-Terminal(1)", cx);
+        window
+            .update(cx, |_, window, cx| {
+                first_view.update(cx, |view, cx| {
+                    view.replace_text_in_range(None, "printf $$ > r45-own-pid-after", window, cx)
+                });
+            })
+            .expect("type the post-migration PTY probe");
+        cx.simulate_keystrokes(window.into(), "enter");
+        let pid_after = path.join("r45-own-pid-after");
+        wait_for_marker(&pid_after, cx);
+        assert_eq!(
+            std::fs::read_to_string(&pid_before).expect("PID before migration"),
+            std::fs::read_to_string(&pid_after).expect("PID after migration"),
+            "the R44 migration preserves the terminal process"
+        );
     }
 }

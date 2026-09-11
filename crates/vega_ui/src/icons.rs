@@ -47,6 +47,7 @@ pub enum Icon {
     Shield,
     Thinking,
     Document,
+    Summary,
 }
 
 /// Lucide's pin path is kept inline because gpui-kit 0.6.0 does not ship a
@@ -63,6 +64,12 @@ const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 /// remains legible at 16px without relying on two independently laid out
 /// elements.
 const FOLDER_PLUS_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>"#;
+
+/// Lucide's list silhouette is kept inline because gpui-kit 0.6.0 does not
+/// ship a list asset. Three rules with three leading dots read as a summary
+/// surface at 16px and reuse the same 24px, round-corner grammar as the
+/// embedded icon set.
+const SUMMARY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h.01"/><path d="M8 6h13"/><path d="M3 12h.01"/><path d="M8 12h13"/><path d="M3 18h.01"/><path d="M8 18h13"/></svg>"#;
 
 fn icon_name(kind: Icon) -> IconName {
     match kind {
@@ -94,7 +101,9 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Terminal => IconName::SquareTerminal,
         Icon::Thinking => IconName::Asterisk,
         Icon::Document => IconName::FileText,
-        Icon::Pin | Icon::Shield => unreachable!("inline SVG icons are handled before mapping"),
+        Icon::Pin | Icon::Shield | Icon::Summary => {
+            unreachable!("inline SVG icons are handled before mapping")
+        }
     }
 }
 
@@ -121,11 +130,15 @@ pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
         Icon::Pin => inline_icon(PIN_SVG, color),
         Icon::Shield => inline_icon(SHIELD_SVG, color),
         Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color),
+        Icon::Summary => inline_icon(SUMMARY_SVG, color),
         _ => kit_icon(kind, color),
     }
 }
 
-struct IconTooltip(gpui_kit::SharedString);
+/// Native tooltip body: a label plus an optional shortcut keycap chip. The
+/// chip reuses existing semantic tokens (`bg_hover`, `border_subtle`,
+/// `METADATA`, `text_secondary`) so no new color or font size is introduced.
+struct IconTooltip(gpui_kit::SharedString, Option<gpui_kit::SharedString>);
 impl gpui_kit::Render for IconTooltip {
     fn render(
         &mut self,
@@ -133,7 +146,11 @@ impl gpui_kit::Render for IconTooltip {
         cx: &mut gpui_kit::Context<Self>,
     ) -> impl IntoElement {
         let colors = vega_theme::theme(cx).colors;
+        let shortcut = self.1.clone();
         gpui_kit::div()
+            .flex()
+            .items_center()
+            .gap_1()
             .px_2()
             .py_1()
             .rounded_md()
@@ -143,6 +160,17 @@ impl gpui_kit::Render for IconTooltip {
             .text_size(px(vega_theme::Typography::METADATA))
             .text_color(colors.text_primary)
             .child(self.0.clone())
+            .children(shortcut.map(|shortcut| {
+                gpui_kit::div()
+                    .px_1()
+                    .rounded_md()
+                    .bg(colors.bg_hover)
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .text_size(px(vega_theme::Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .child(shortcut)
+            }))
     }
 }
 
@@ -173,7 +201,7 @@ pub fn icon_button(
         .cursor_pointer()
         .hover(move |style| style.bg(colors.bg_hover))
         .focus(move |style| style.bg(colors.bg_active))
-        .tooltip(move |_, cx| cx.new(|_| IconTooltip(tooltip_label.clone())).into())
+        .tooltip(move |_, cx| cx.new(|_| IconTooltip(tooltip_label.clone(), None)).into())
         .on_mouse_up(MouseButton::Left, move |_, window, cx| {
             cx.stop_propagation();
             activate(&(), window, cx);
@@ -193,5 +221,70 @@ pub fn tooltip(
     cx: &mut gpui_kit::App,
 ) -> gpui_kit::AnyView {
     let label = label.into();
-    cx.new(|_| IconTooltip(label)).into()
+    cx.new(|_| IconTooltip(label, None)).into()
+}
+
+/// Permanent 28x28 shell control (R45 main-header slots): a 16px centered
+/// icon on the frozen titlebar hitbox with a persistent selected surface,
+/// hover only while unselected, a disabled presentation that keeps its
+/// geometry, and a tooltip that can carry a shortcut keycap. Selection wins
+/// over hover: the hover surface is only attached while unselected, so the
+/// two states can never be confused.
+pub fn shell_icon_button(
+    kind: Icon,
+    label: impl Into<gpui_kit::SharedString>,
+    shortcut: Option<gpui_kit::SharedString>,
+    selected: bool,
+    enabled: bool,
+    colors: vega_theme::ThemeColors,
+    activate: impl Fn(&(), &mut gpui_kit::Window, &mut gpui_kit::App) + 'static,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::{MouseButton, div};
+    let label = label.into();
+    let tooltip_label = label.clone();
+    let accessible_label = label;
+    let activate = std::rc::Rc::new(activate);
+    let keyboard = activate.clone();
+    div()
+        .id(tooltip_label.clone())
+        .aria_label(accessible_label)
+        .focusable()
+        .tab_stop(enabled)
+        .size(px(vega_theme::Layout::TITLEBAR_CONTROL_SIZE))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .when(selected, |button| button.bg(colors.bg_active))
+        .when(enabled && !selected, |button| {
+            button
+                .cursor_pointer()
+                .hover(move |style| style.bg(colors.bg_hover))
+                .focus(move |style| style.bg(colors.bg_active))
+        })
+        .tooltip(move |_, cx| {
+            cx.new(|_| IconTooltip(tooltip_label.clone(), shortcut.clone()))
+                .into()
+        })
+        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+            if enabled {
+                cx.stop_propagation();
+                activate(&(), window, cx);
+            }
+        })
+        .on_key_down(move |event, window, cx| {
+            if enabled && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                keyboard(&(), window, cx);
+            }
+        })
+        .child(icon(
+            kind,
+            if enabled {
+                colors.text_secondary
+            } else {
+                colors.text_tertiary
+            },
+        ))
 }

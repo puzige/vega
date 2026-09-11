@@ -24,6 +24,8 @@ pub mod tool_card;
 
 use gpui_kit::{App, KeyBinding};
 
+gpui_kit::actions!(vega_ui, [DismissEnvironmentOverlay]);
+
 /// Registers the key bindings required by the vega_ui input components
 /// (editing keys for [`text_input::TextInput`]), the T13 inline-rename
 /// submit key (scoped to the `ThreadRename` key context so it cannot clash
@@ -38,6 +40,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-k", command_palette::OpenPalette, None),
         KeyBinding::new("cmd-o", command_palette::OpenWorkspacePicker, None),
         KeyBinding::new("cmd-j", command_palette::ToggleWorkspaceTerminal, None),
+        // R45 Environment overlay dismissal. The handler consumes the action
+        // only while the narrow overlay is open and otherwise propagates, so
+        // scoped component escapes (palette, file selector, menus) keep their
+        // turns in the binding order.
+        KeyBinding::new("escape", DismissEnvironmentOverlay, None),
         KeyBinding::new("down", command_palette::PaletteNext, Some("CommandPalette")),
         KeyBinding::new(
             "up",
