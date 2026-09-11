@@ -318,6 +318,18 @@ impl Layout {
     pub const SETTINGS_SWITCH_HEIGHT: f32 = 20.0;
     /// Maximum width of a multi-section floating menu.
     pub const MENU_MAX_WIDTH: f32 = 350.0;
+    /// Preferred width of the global command/search palette.
+    pub const COMMAND_PALETTE_WIDTH: f32 = 520.0;
+    /// Maximum height of the global command/search palette.
+    pub const COMMAND_PALETTE_MAX_HEIGHT: f32 = 480.0;
+    /// Horizontal clearance retained between the palette and each viewport edge.
+    pub const COMMAND_PALETTE_SIDE_INSET: f32 = 16.0;
+    /// Existing top offset for the global command/search palette.
+    pub const COMMAND_PALETTE_TOP_OFFSET: f32 = 76.0;
+    /// Combined vertical space reserved above and below the palette.
+    pub const COMMAND_PALETTE_VERTICAL_RESERVE: f32 = 108.0;
+    /// Defensive minimum palette height in unusually short viewports.
+    pub const COMMAND_PALETTE_MIN_HEIGHT: f32 = 160.0;
     /// Radius shared by large floating menus and popovers.
     pub const MENU_RADIUS: f32 = 18.0;
     /// Exact circular send/stop control size.
@@ -440,6 +452,21 @@ mod tests {
         assert_eq!(Layout::COMPOSER_SEND_SIZE, 28.0);
         assert_eq!(Layout::WORKSPACE_HEADER_HEIGHT, 40.0);
         assert_eq!(Layout::BOTTOM_WORKSPACE_HEIGHT, 272.0);
+    }
+
+    #[test]
+    fn r40_command_palette_geometry_is_frozen() {
+        assert_eq!(Layout::COMMAND_PALETTE_WIDTH, 520.0);
+        assert_eq!(Layout::COMMAND_PALETTE_MAX_HEIGHT, 480.0);
+        assert_eq!(Layout::COMMAND_PALETTE_SIDE_INSET, 16.0);
+        assert_eq!(Layout::COMMAND_PALETTE_TOP_OFFSET, 76.0);
+        assert_eq!(Layout::COMMAND_PALETTE_VERTICAL_RESERVE, 108.0);
+        assert_eq!(Layout::COMMAND_PALETTE_MIN_HEIGHT, 160.0);
+        assert_ne!(
+            Layout::COMMAND_PALETTE_WIDTH,
+            Layout::MENU_MAX_WIDTH,
+            "the global search palette must not inherit compact menu geometry"
+        );
     }
 
     #[test]

@@ -207,7 +207,7 @@ impl Render for CommandPalette {
             .flex()
             .justify_center()
             .items_start()
-            .pt(px(76.))
+            .pt(px(Layout::COMMAND_PALETTE_TOP_OFFSET))
             .bg(colors.bg_sidebar.opacity(0.85))
             .on_mouse_down(
                 MouseButton::Left,
@@ -218,8 +218,16 @@ impl Render for CommandPalette {
                     .id("command-palette")
                     .debug_selector(|| "command-palette".into())
                     .key_context("CommandPalette")
-                    .w(px(Layout::MENU_MAX_WIDTH).min(window.viewport_size().width - px(32.)))
-                    .max_h((window.viewport_size().height - px(108.)).max(px(160.)))
+                    .w(px(Layout::COMMAND_PALETTE_WIDTH).min(
+                        window.viewport_size().width - px(Layout::COMMAND_PALETTE_SIDE_INSET * 2.0),
+                    ))
+                    .max_h(
+                        px(Layout::COMMAND_PALETTE_MAX_HEIGHT).min(
+                            (window.viewport_size().height
+                                - px(Layout::COMMAND_PALETTE_VERTICAL_RESERVE))
+                            .max(px(Layout::COMMAND_PALETTE_MIN_HEIGHT)),
+                        ),
+                    )
                     .flex()
                     .flex_col()
                     .rounded(px(Layout::MENU_RADIUS))
@@ -233,46 +241,58 @@ impl Render for CommandPalette {
                     .on_action(cx.listener(Self::accept))
                     .on_action(cx.listener(Self::dismiss))
                     .on_action(cx.listener(Self::scope_next))
-                    .child(div().p_3().child(self.input.clone()))
                     .child(
-                        div().flex().gap_2().px_3().pb_2().children(
-                            [
-                                (PaletteScope::All, "全部"),
-                                (PaletteScope::Actions, "操作"),
-                                (PaletteScope::Tasks, "任务"),
-                                (PaletteScope::Files, "文件"),
-                            ]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, (scope, label))| {
-                                div()
-                                    .id(("palette-scope", index))
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .text_size(px(Typography::METADATA))
-                                    .bg(if self.scope == scope {
-                                        colors.bg_hover
-                                    } else {
-                                        colors.bg_elevated
-                                    })
-                                    .cursor_pointer()
-                                    .child(label.replace(['\n', '\r'], " "))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.scope = scope;
-                                            this.selected = 0;
-                                            this.scroll.scroll_to_item(0);
-                                            cx.notify();
-                                        }),
-                                    )
-                            }),
-                        ),
+                        div()
+                            .debug_selector(|| "palette-input".into())
+                            .p_3()
+                            .child(self.input.clone()),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "palette-scopes".into())
+                            .flex()
+                            .gap_2()
+                            .px_3()
+                            .pb_2()
+                            .children(
+                                [
+                                    (PaletteScope::All, "全部"),
+                                    (PaletteScope::Actions, "操作"),
+                                    (PaletteScope::Tasks, "任务"),
+                                    (PaletteScope::Files, "文件"),
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, (scope, label))| {
+                                    div()
+                                        .id(("palette-scope", index))
+                                        .px_3()
+                                        .py_1()
+                                        .rounded_md()
+                                        .text_size(px(Typography::METADATA))
+                                        .bg(if self.scope == scope {
+                                            colors.bg_hover
+                                        } else {
+                                            colors.bg_elevated
+                                        })
+                                        .cursor_pointer()
+                                        .child(label.replace(['\n', '\r'], " "))
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.scope = scope;
+                                                this.selected = 0;
+                                                this.scroll.scroll_to_item(0);
+                                                cx.notify();
+                                            }),
+                                        )
+                                }),
+                            ),
                     )
                     .child(
                         div()
                             .id("palette-results")
+                            .debug_selector(|| "palette-results".into())
                             .track_scroll(&self.scroll)
                             .overflow_y_scroll()
                             .min_h_0()
@@ -329,6 +349,7 @@ impl Render for CommandPalette {
                         |view| {
                             view.child(
                                 div()
+                                    .debug_selector(|| "palette-status".into())
                                     .px_4()
                                     .py_2()
                                     .text_color(colors.text_secondary)
@@ -370,6 +391,7 @@ impl Render for CommandPalette {
                     })
                     .child(
                         div()
+                            .debug_selector(|| "palette-footer".into())
                             .px_4()
                             .py_2()
                             .border_t_1()
@@ -386,7 +408,212 @@ impl Render for CommandPalette {
 mod tests {
     use super::*;
     use core::prelude::v1::test;
+    use gpui_kit::{
+        Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point, size,
+    };
     use std::sync::{Arc, Mutex};
+
+    fn long_search() -> PaletteSearch {
+        PaletteSearch {
+            tasks: (0..30)
+                .map(|index| PaletteTask {
+                    id: format!("task-{index}"),
+                    project_id: "project".into(),
+                    title: format!("Task {index}"),
+                    project_name: "Project".into(),
+                })
+                .collect(),
+            files: (0..30)
+                .map(|index| format!("src/result-{index}.rs"))
+                .collect(),
+            files_unavailable: true,
+        }
+    }
+
+    fn open_long_palette(
+        viewport_width: f32,
+        viewport_height: f32,
+        cx: &mut TestAppContext,
+    ) -> WindowHandle<CommandPalette> {
+        let palette = cx.new(|cx| CommandPalette::new(vec![PaletteAction::NewTask], cx));
+        palette.update(cx, |palette, cx| palette.apply(Ok(long_search()), cx));
+        let root = palette.clone();
+        cx.update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.0), px(0.0)),
+                        size(px(viewport_width), px(viewport_height)),
+                    ))),
+                    ..Default::default()
+                },
+                move |window, cx| {
+                    window.focus(&root.read(cx).focus_handle(cx), cx);
+                    root
+                },
+            )
+            .expect("production command palette window")
+        })
+    }
+
+    fn assert_pixel_close(actual: Pixels, expected: f32, label: &str) {
+        let actual = f32::from(actual);
+        assert!(
+            (actual - expected).abs() <= 1.0,
+            "{label}: expected {expected}±1px, got {actual}px"
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn production_palette_mounts_roomy_responsive_and_bounded_geometry(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            crate::init(cx);
+        });
+
+        let roomy = open_long_palette(1403.0, 860.0, cx);
+        cx.run_until_parked();
+        let mut roomy_visual = VisualTestContext::from_window(roomy.into(), cx);
+        let palette = roomy_visual
+            .debug_bounds("command-palette")
+            .expect("mounted command palette");
+        let input = roomy_visual
+            .debug_bounds("palette-input")
+            .expect("fixed palette input");
+        let scopes = roomy_visual
+            .debug_bounds("palette-scopes")
+            .expect("fixed palette scopes");
+        let results = roomy_visual
+            .debug_bounds("palette-results")
+            .expect("scrollable palette results");
+        let footer = roomy_visual
+            .debug_bounds("palette-footer")
+            .expect("fixed palette footer");
+        let status = roomy_visual
+            .debug_bounds("palette-status")
+            .expect("fixed palette status");
+        assert_pixel_close(
+            palette.size.width,
+            Layout::COMMAND_PALETTE_WIDTH,
+            "roomy palette width",
+        );
+        assert_pixel_close(
+            palette.size.height,
+            Layout::COMMAND_PALETTE_MAX_HEIGHT,
+            "long roomy palette height",
+        );
+        assert_pixel_close(
+            palette.top(),
+            Layout::COMMAND_PALETTE_TOP_OFFSET,
+            "palette top offset",
+        );
+        assert!(input.bottom() <= scopes.top());
+        assert!(scopes.bottom() <= results.top());
+        assert!(results.bottom() <= status.top());
+        assert!(status.bottom() <= footer.top());
+        assert!(footer.bottom() <= palette.bottom());
+        assert!(
+            f32::from(results.size.height) < 61.0 * Typography::SIDEBAR_LINE_HEIGHT,
+            "long results stay inside their bounded scroll region"
+        );
+        let input_top = input.top();
+        let footer_top = footer.top();
+        assert_pixel_close(
+            roomy
+                .update(cx, |palette, _, _| palette.scroll.offset().y)
+                .expect("palette scroll offset"),
+            0.0,
+            "initial result scroll offset",
+        );
+        roomy_visual.simulate_event(ScrollWheelEvent {
+            position: results.center(),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-240.0))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        cx.run_until_parked();
+        assert!(
+            roomy
+                .update(cx, |palette, _, _| palette.scroll.offset().y)
+                .expect("scrolled palette offset")
+                < px(0.0),
+            "the long production result region consumes wheel scrolling"
+        );
+        let mut scrolled_visual = VisualTestContext::from_window(roomy.into(), cx);
+        assert_pixel_close(
+            scrolled_visual
+                .debug_bounds("palette-input")
+                .expect("input after result scroll")
+                .top(),
+            f32::from(input_top),
+            "result scrolling keeps input fixed",
+        );
+        assert_pixel_close(
+            scrolled_visual
+                .debug_bounds("palette-footer")
+                .expect("footer after result scroll")
+                .top(),
+            f32::from(footer_top),
+            "result scrolling keeps footer fixed",
+        );
+
+        let minimum = open_long_palette(960.0, 600.0, cx);
+        cx.run_until_parked();
+        let minimum_palette = VisualTestContext::from_window(minimum.into(), cx)
+            .debug_bounds("command-palette")
+            .expect("minimum-window command palette");
+        assert_pixel_close(
+            minimum_palette.size.width,
+            Layout::COMMAND_PALETTE_WIDTH,
+            "minimum-window palette width",
+        );
+        assert_pixel_close(
+            minimum_palette.size.height,
+            Layout::COMMAND_PALETTE_MAX_HEIGHT,
+            "minimum-window palette height",
+        );
+
+        let narrow = open_long_palette(400.0, 860.0, cx);
+        cx.run_until_parked();
+        let narrow_palette = VisualTestContext::from_window(narrow.into(), cx)
+            .debug_bounds("command-palette")
+            .expect("narrow command palette");
+        assert_pixel_close(
+            narrow_palette.left(),
+            Layout::COMMAND_PALETTE_SIDE_INSET,
+            "narrow palette leading clearance",
+        );
+        assert_pixel_close(
+            px(400.0) - narrow_palette.right(),
+            Layout::COMMAND_PALETTE_SIDE_INSET,
+            "narrow palette trailing clearance",
+        );
+
+        let short = open_long_palette(960.0, 320.0, cx);
+        cx.run_until_parked();
+        let short_palette = VisualTestContext::from_window(short.into(), cx)
+            .debug_bounds("command-palette")
+            .expect("short command palette");
+        assert_pixel_close(
+            short_palette.size.height,
+            320.0 - Layout::COMMAND_PALETTE_VERTICAL_RESERVE,
+            "short palette viewport allowance",
+        );
+
+        let defensive = open_long_palette(960.0, 200.0, cx);
+        cx.run_until_parked();
+        let defensive_palette = VisualTestContext::from_window(defensive.into(), cx)
+            .debug_bounds("command-palette")
+            .expect("defensively bounded command palette");
+        assert_pixel_close(
+            defensive_palette.size.height,
+            Layout::COMMAND_PALETTE_MIN_HEIGHT,
+            "very short palette defensive floor",
+        );
+    }
+
     #[gpui_kit::test]
     async fn production_palette_keyboard_queries_scopes_activate_and_ime_guard(
         cx: &mut TestAppContext,
