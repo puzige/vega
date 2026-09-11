@@ -1295,6 +1295,83 @@ async fn r37_pinned_surfaces_keep_padding_inside_scroll_clips(cx: &mut gpui_kit:
 }
 
 #[gpui_kit::test]
+async fn r38_organization_content_keeps_eight_pixel_edge_inset_across_themes_and_widths(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    fn assert_geometry(
+        f: &Fixture,
+        recent: &Thread,
+        child: &Thread,
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let sidebar = bounds(f, cx, "sidebar");
+        let sidebar_scroll = bounds(f, cx, "sidebar-scroll");
+        let pinned_heading = bounds(f, cx, "organization-section-label-Pinned");
+        let projects_heading = bounds(f, cx, "organization-section-label-Projects");
+        let recents_heading = bounds(f, cx, "organization-section-label-Recents");
+        let pinned_row = bounds(f, cx, format!("pinned-thread-row-{}", f.first.id));
+        let pinned_title = bounds(f, cx, format!("pinned-thread-row-title-{}", f.first.id));
+        let project_row = bounds(f, cx, "project-header-p");
+        let child_row = bounds(f, cx, format!("project-thread-row-{}", child.id));
+        let child_title = bounds(f, cx, format!("project-thread-row-title-{}", child.id));
+        let recent_row = bounds(f, cx, format!("standalone-thread-row-{}", recent.id));
+        let recent_title = bounds(f, cx, format!("standalone-thread-row-title-{}", recent.id));
+
+        assert_eq!(
+            f32::from(pinned_row.left() - sidebar.left()),
+            8.0,
+            "Pinned surface must keep an 8px application-edge inset"
+        );
+        assert_eq!(pinned_title.left(), pinned_heading.left());
+        assert_eq!(pinned_title.left(), projects_heading.left());
+        assert_eq!(pinned_title.left(), recents_heading.left());
+        assert_eq!(pinned_title.left(), recent_title.left());
+        assert_eq!(
+            f32::from(child_title.left() - recent_title.left()),
+            Layout::SIDEBAR_NAV_CONTENT_INSET
+        );
+        assert_eq!(project_row.left(), recent_row.left());
+        assert_eq!(child_row.left(), recent_row.left());
+
+        for row in [pinned_row, project_row, recent_row] {
+            assert_eq!(row.right(), sidebar_scroll.right());
+            assert_eq!(f32::from(row.size.height), Typography::SIDEBAR_LINE_HEIGHT);
+        }
+        assert_eq!(
+            f32::from(pinned_title.left() - pinned_row.left()),
+            8.0,
+            "Pinned title padding must remain 8px inside the surface"
+        );
+    }
+
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let recent = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+    let child = snapshot(&f)
+        .threads
+        .into_iter()
+        .find(|thread| thread.project_id == "p" && !thread.pinned)
+        .unwrap();
+
+    assert_geometry(&f, &recent, &child, cx);
+
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_geometry(&f, &recent, &child, cx);
+
+    cx.update(|cx| cx.set_global(SidebarWidth(Layout::SIDEBAR_MIN_WIDTH)));
+    cx.run_until_parked();
+    assert_geometry(&f, &recent, &child, cx);
+
+    cx.update(|cx| cx.set_global(vega_theme::Theme::light()));
+    cx.run_until_parked();
+    assert_geometry(&f, &recent, &child, cx);
+}
+
+#[gpui_kit::test]
 async fn r26_empty_pinned_section_is_absent(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     assert!(absent(&f, cx, "organization-section-pinned"));

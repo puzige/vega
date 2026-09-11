@@ -1,6 +1,6 @@
 # Vega 设计守则
 
-**版本** v1.18 · 2026-09-11
+**版本** v1.19 · 2026-09-11
 
 **状态** 当前视觉语言与设计 token 的规范入口
 
@@ -212,6 +212,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - `Pinned` 存在时，其最后一条任务与后续 `Projects` 标题之间使用 12px 分组间距（基础 8px 区块间距加一个 4px 节奏单位）；这一补偿只属于 Pinned→Projects，不改变其他区块距离或任务行选中背景。
 - Pinned 任务标题继续与 `Pinned` 区块标题和顶层 Recents 标题落在同一内容列；其选中、hover 与焦点表面向该内容列左侧扩展 8px，并在表面内部保留等量的 8px 前导 padding，避免文字贴住圆角背景且不移动标题列。
 - Pinned 的内层与 Sidebar 外层滚动视口必须包含上述完整表面，不能裁掉前导 padding 或左侧圆角；验收须查看真实绘制结果，不能只依赖行布局坐标。精确规格见 [R37 Pinned clip](vega-r37-pinned-clip.md)。
+- Sidebar 的 `Pinned / Projects / Recents` 组织内容列与应用边缘保留 8px 逻辑内缩；三组标题、任务与项目行共用同一前导列，内容列右边缘固定，避免选中表面贴住窗口边缘。精确规格见 [R38 Sidebar content inset](vega-r38-sidebar-content-inset.md)。
 - Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
 
 ## 11. 动效与可访问性
