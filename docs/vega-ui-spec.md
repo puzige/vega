@@ -165,3 +165,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.12 (2026-09-10) R26 Sidebar 分组与渐进显现：生产投影固定为 `PINNED / PROJECTS / RECENTS`，任务只出现一次；section、project 与 task 的辅助操作仅在所属区域 hover、键盘 focus 或菜单打开时可见，且保持既有 hitbox 与无布局跳动。精确验收见 [R26 Sidebar sections](vega-r26-sidebar-sections-hover.md)。
 - v0.13 (2026-09-11) R27 Sidebar 行栅格修正：Pinned 行移除重复 Pin 图标与空槽；项目 Folder 到名称使用 8px gap；项目名称与所有任务标题统一 32px 内容 inset；Pinned 项目元数据固定 85px 列宽。精确验收见 [R27 Sidebar row alignment](vega-r27-sidebar-row-alignment.md)。
 - v0.14 (2026-09-11) R28 Sidebar 标题大小写：生产区块标题由全大写收敛为 `Pinned / Projects / Recents`，其余字体 token、层级、顺序、几何与渐进显现规则不变。精确验收见 [R28 Sidebar heading case](vega-r28-sidebar-heading-case.md)。
+- v0.15 (2026-09-11) R29 Sidebar 渐进列表：区块按自然高度排列，Projects/Recents 初始分别展示 5/10 条，超出时提供独立的 `Show More / Show Less`；外层 Sidebar 统一滚动，既有排序与投影语义不变。精确验收见 [R29 Sidebar progressive lists](vega-r29-sidebar-progressive-lists.md)。
