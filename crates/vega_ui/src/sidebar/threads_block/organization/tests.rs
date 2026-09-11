@@ -1139,6 +1139,68 @@ async fn r34_top_navigation_rows_share_shortcut_column_across_widths_and_themes(
 }
 
 #[gpui_kit::test]
+async fn r35_pinned_to_projects_gap_uses_one_extra_rhythm_step_across_themes(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    fn assert_geometry(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
+        let pinned_row = bounds(f, cx, format!("pinned-thread-row-{}", f.first.id));
+        let pinned_section = bounds(f, cx, "organization-section-pinned");
+        let projects_header = bounds(f, cx, "organization-header-projects");
+
+        assert_eq!(pinned_section.bottom(), pinned_row.bottom());
+        assert_eq!(f32::from(projects_header.top() - pinned_row.bottom()), 12.0);
+        assert_eq!(
+            f32::from(pinned_row.size.height),
+            Typography::SIDEBAR_LINE_HEIGHT
+        );
+        assert_eq!(f32::from(projects_header.size.height), 28.0);
+        assert_eq!(
+            projects_header.left(),
+            bounds(f, cx, "organization-section-label-Projects").left()
+        );
+    }
+
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    assert_geometry(&f, cx);
+
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_geometry(&f, cx);
+}
+
+#[gpui_kit::test]
+async fn r35_projects_starts_without_a_pinned_only_spacer_across_themes(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    fn assert_geometry(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
+        assert!(absent(f, cx, "organization-section-pinned"));
+        let organization = bounds(f, cx, "sidebar-organization");
+        let projects = bounds(f, cx, "organization-section-projects");
+        let projects_header = bounds(f, cx, "organization-header-projects");
+
+        assert_eq!(projects.top(), organization.top());
+        assert_eq!(projects_header.top(), organization.top());
+        assert_eq!(f32::from(projects_header.size.height), 28.0);
+        assert_eq!(
+            projects_header.left(),
+            bounds(f, cx, "organization-section-label-Projects").left()
+        );
+    }
+
+    let f = fixture(cx);
+    assert_geometry(&f, cx);
+
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_geometry(&f, cx);
+}
+
+#[gpui_kit::test]
 async fn r26_empty_pinned_section_is_absent(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     assert!(absent(&f, cx, "organization-section-pinned"));

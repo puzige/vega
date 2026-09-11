@@ -201,7 +201,12 @@ impl ThreadsBlock {
         };
         let show_archived = org.archive;
         let menu_open = org.menu.is_some();
-        let mut body = div().id("sidebar-organization").flex().flex_col().gap_2();
+        let mut body = div()
+            .id("sidebar-organization")
+            .debug_selector(|| "sidebar-organization".into())
+            .flex()
+            .flex_col()
+            .gap_2();
         body = body.children(self.render_pinned_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
@@ -312,6 +317,7 @@ impl ThreadsBlock {
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
+                .mb_1()
                 .child(
                     div()
                         .debug_selector(|| "organization-header-pinned".into())
