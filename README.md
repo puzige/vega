@@ -42,6 +42,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-r26-sidebar-sections-hover.md](docs/vega-r26-sidebar-sections-hover.md) | Pinned / Projects / Recents 分组与 hover/focus 菜单渐进显现契约 |
 | [vega-r26-sidebar-sections-hover-delivery.md](docs/vega-r26-sidebar-sections-hover-delivery.md) | R26 自动化、打包安装与 Light/Dark 原生 hover 验收记录 |
 | [vega-r27-sidebar-row-alignment.md](docs/vega-r27-sidebar-row-alignment.md) | Pinned 去重图标、固定任务列与 Folder 8px 间距修正契约 |
+| [vega-r27-sidebar-row-alignment-delivery.md](docs/vega-r27-sidebar-row-alignment-delivery.md) | R27 侧栏行对齐、原生验收与安装交付记录 |
 | [vega-tech-spec-p1.md](docs/vega-tech-spec-p1.md) | Phase 1 SDD 技术规格（DDL/trait/状态机） |
 | [vega-tech-risks.md](docs/vega-tech-risks.md) | 五大技术难点攻坚方案 |
 | [vega-exec-guide.md](docs/vega-exec-guide.md) | 执行宪法（红线/白名单/验收协议） |
