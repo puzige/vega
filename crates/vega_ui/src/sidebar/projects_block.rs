@@ -438,6 +438,7 @@ impl ProjectsBlock {
     /// Block header: collapsible title (chevron shows the state) + [+].
     fn render_header(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
         let collapsed = cx.global::<ProjectsCollapsed>().0;
+        let label = "Projects";
         div()
             .flex()
             .items_center()
@@ -458,10 +459,11 @@ impl ProjectsBlock {
                     )
                     .child(
                         div()
+                            .debug_selector(move || format!("projects-section-label-{label}"))
                             .text_size(px(Typography::METADATA))
                             .font_weight(Typography::HEADING_CARD_WEIGHT)
                             .text_color(colors.text_secondary)
-                            .child("PROJECTS"),
+                            .child(label),
                     )
                     .child(crate::icons::icon(
                         if collapsed {

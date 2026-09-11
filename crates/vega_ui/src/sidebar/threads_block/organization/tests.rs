@@ -667,6 +667,37 @@ async fn r27_sidebar_rows_share_title_origin_and_keep_stable_metadata_columns(
 }
 
 #[gpui_kit::test]
+async fn r28_sidebar_section_labels_use_title_case(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let mut headings = Vec::new();
+    for label in ["Pinned", "Projects", "Recents"] {
+        assert!(!absent(
+            &f,
+            cx,
+            format!("organization-section-label-{label}")
+        ));
+        headings.push(bounds(
+            &f,
+            cx,
+            format!("organization-section-label-{label}"),
+        ));
+    }
+    assert!(headings[0].top() < headings[1].top() && headings[1].top() < headings[2].top());
+    for label in ["PINNED", "PROJECTS", "RECENTS"] {
+        assert!(absent(
+            &f,
+            cx,
+            format!("organization-section-label-{label}")
+        ));
+    }
+}
+
+#[gpui_kit::test]
 async fn r26_empty_pinned_section_is_absent(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     assert!(absent(&f, cx, "organization-section-pinned"));

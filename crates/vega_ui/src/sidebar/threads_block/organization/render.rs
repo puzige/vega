@@ -296,6 +296,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let colors = theme(cx).colors;
+        let label = "Pinned";
         let mut pinned: Vec<_> = self
             .eligible_threads(show_archived)
             .into_iter()
@@ -325,7 +326,13 @@ impl ThreadsBlock {
                         .items_center()
                         .text_size(px(Typography::METADATA))
                         .text_color(colors.text_tertiary)
-                        .child("PINNED"),
+                        .child(
+                            div()
+                                .debug_selector(move || {
+                                    format!("organization-section-label-{label}")
+                                })
+                                .child(label),
+                        ),
                 )
                 .child(
                     div()
@@ -366,6 +373,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
+        let label = "Recents";
         let mut standalone: Vec<_> = self
             .threads
             .iter()
@@ -396,9 +404,10 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
+                    .debug_selector(move || format!("organization-section-label-{label}"))
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
-                    .child("RECENTS"),
+                    .child(label),
             )
             .child(
                 div()
@@ -491,6 +500,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
+        let label = "Projects";
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Projects)
             || self.focused_section == Some(OrganizationSection::Projects);
         let header = div()
@@ -503,9 +513,10 @@ impl ThreadsBlock {
             .h(px(28.))
             .child(
                 div()
+                    .debug_selector(move || format!("organization-section-label-{label}"))
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
-                    .child("PROJECTS"),
+                    .child(label),
             )
             .child(
                 div()

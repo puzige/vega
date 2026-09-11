@@ -77,9 +77,20 @@ async fn production_sidebar_refreshes_real_checkout_and_rejects_removed_results(
     });
     let view = cx.new(ProjectsBlock::new);
     let visible = view.clone();
-    let _window = cx
+    let window = cx
         .update(|cx| cx.open_window(Default::default(), move |_, _| visible))
         .unwrap();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert!(
+        visual
+            .debug_bounds("projects-section-label-Projects")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("projects-section-label-PROJECTS")
+            .is_none()
+    );
     wait_for_suffix(&view, &project.id, Some("main"), cx);
     git(&root, &["checkout", "-b", "other"]);
     // Periodic production poll discovers this actual external checkout, with no reload/label injection.
