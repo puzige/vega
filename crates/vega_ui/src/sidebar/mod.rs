@@ -652,7 +652,6 @@ impl Render for Sidebar {
                             .id("sidebar-search")
                             .debug_selector(|| "sidebar-search".into())
                             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                            .mx_2()
                             .px_2()
                             .rounded_lg()
                             .flex()

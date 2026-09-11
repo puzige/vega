@@ -1095,6 +1095,50 @@ async fn r31_sidebar_typography_restores_compact_mounted_sizes(cx: &mut gpui_kit
 }
 
 #[gpui_kit::test]
+async fn r34_top_navigation_rows_share_shortcut_column_across_widths_and_themes(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    fn assert_geometry(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
+        let new_task = bounds(f, cx, "sidebar-new-task");
+        let search = bounds(f, cx, "sidebar-search");
+        let new_task_shortcut = bounds(f, cx, "sidebar-new-task-shortcut");
+        let search_shortcut = bounds(f, cx, "sidebar-search-shortcut");
+        let search_label = bounds(f, cx, "sidebar-search-label");
+
+        assert_eq!(new_task.left(), search.left());
+        assert_eq!(new_task.right(), search.right());
+        assert_eq!(new_task.size.width, search.size.width);
+        assert_eq!(new_task_shortcut.right(), search_shortcut.right());
+        assert_eq!(f32::from(search_label.left() - new_task.left()), 8.0);
+        assert_eq!(f32::from(new_task.right() - new_task_shortcut.right()), 8.0);
+        assert_eq!(f32::from(search.right() - search_shortcut.right()), 8.0);
+        assert_eq!(
+            f32::from(new_task.size.height),
+            Typography::SIDEBAR_LINE_HEIGHT
+        );
+        assert_eq!(
+            f32::from(search.size.height),
+            Typography::SIDEBAR_LINE_HEIGHT
+        );
+    }
+
+    let f = fixture(cx);
+    assert_geometry(&f, cx);
+
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_geometry(&f, cx);
+
+    cx.update(|cx| cx.set_global(SidebarWidth(Layout::SIDEBAR_MIN_WIDTH)));
+    cx.run_until_parked();
+    assert_geometry(&f, cx);
+
+    cx.update(|cx| cx.set_global(vega_theme::Theme::light()));
+    cx.run_until_parked();
+    assert_geometry(&f, cx);
+}
+
+#[gpui_kit::test]
 async fn r26_empty_pinned_section_is_absent(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     assert!(absent(&f, cx, "organization-section-pinned"));
