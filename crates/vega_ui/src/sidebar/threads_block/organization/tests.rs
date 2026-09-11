@@ -698,6 +698,137 @@ async fn r28_sidebar_section_labels_use_title_case(cx: &mut gpui_kit::TestAppCon
 }
 
 #[gpui_kit::test]
+async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    click(&f, cx, "project-header-p");
+    click(&f, cx, "project-header-q");
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let mut project_ids = vec!["p".to_string(), "q".to_string()];
+    for index in 0..7 {
+        let id = format!("r29-project-{index}");
+        store
+            .conn()
+            .execute(
+                "INSERT INTO projects(id,path,name,created_at,last_opened_at) VALUES(?1,?2,?1,0,?3)",
+                (
+                    &id,
+                    f.dir.path().join(&id).to_string_lossy().to_string(),
+                    10 + index,
+                ),
+            )
+            .unwrap();
+        project_ids.push(id);
+    }
+    let mut recent_ids = Vec::new();
+    for _ in 0..11 {
+        recent_ids.push(
+            conversation::create_standalone_thread(&store, "model", "confirm")
+                .unwrap()
+                .id,
+        );
+    }
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    assert_eq!(
+        project_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("project-header-{id}")))
+            .count(),
+        5
+    );
+    assert!(!absent(&f, cx, "organization-projects-show-more"));
+    assert!(absent(&f, cx, "organization-projects-show-less"));
+    let projects_control = bounds(&f, cx, "organization-projects-show-more");
+    let projects_label = bounds(&f, cx, "organization-projects-progressive-label");
+    assert_eq!(
+        f32::from(projects_label.left() - projects_control.left()),
+        Layout::SIDEBAR_NAV_CONTENT_INSET
+    );
+    assert_eq!(
+        f32::from(
+            bounds(&f, cx, "organization-section-recents").top()
+                - bounds(&f, cx, "organization-section-projects").bottom()
+        ),
+        8.0
+    );
+    assert_eq!(
+        recent_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
+            .count(),
+        10
+    );
+    assert!(!absent(&f, cx, "organization-recents-show-more"));
+
+    click(&f, cx, "organization-projects-show-more");
+    assert_eq!(
+        project_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("project-header-{id}")))
+            .count(),
+        9
+    );
+    assert!(!absent(&f, cx, "organization-projects-show-less"));
+    assert!(!absent(&f, cx, "organization-recents-show-more"));
+    click(&f, cx, "organization-projects-show-less");
+    assert_eq!(
+        project_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("project-header-{id}")))
+            .count(),
+        5
+    );
+
+    let projects_focus =
+        sessions(&f, cx).read_with(cx, |block, _| block.projects_progressive_focus.clone());
+    f.window
+        .update(cx, |_, window, cx| projects_focus.focus(window, cx))
+        .unwrap();
+    cx.simulate_keystrokes(f.window.into(), "enter");
+    assert!(!absent(&f, cx, "organization-projects-show-less"));
+
+    let recents_focus =
+        sessions(&f, cx).read_with(cx, |block, _| block.recents_progressive_focus.clone());
+    f.window
+        .update(cx, |_, window, cx| recents_focus.focus(window, cx))
+        .unwrap();
+    cx.simulate_keystrokes(f.window.into(), "enter");
+    assert_eq!(
+        recent_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
+            .count(),
+        11
+    );
+    assert!(!absent(&f, cx, "organization-recents-show-less"));
+    assert!(!absent(&f, cx, "organization-projects-show-less"));
+    cx.simulate_keystrokes(f.window.into(), "space");
+    assert_eq!(
+        recent_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
+            .count(),
+        10
+    );
+    assert!(!absent(&f, cx, "organization-recents-show-more"));
+    assert!(!absent(&f, cx, "organization-projects-show-less"));
+}
+
+#[gpui_kit::test]
+async fn r29_progressive_controls_are_absent_without_hidden_items(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    assert!(absent(&f, cx, "organization-projects-show-more"));
+    assert!(absent(&f, cx, "organization-projects-show-less"));
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
+}
+
+#[gpui_kit::test]
 async fn r26_empty_pinned_section_is_absent(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
     assert!(absent(&f, cx, "organization-section-pinned"));

@@ -201,13 +201,7 @@ impl ThreadsBlock {
         };
         let show_archived = org.archive;
         let menu_open = org.menu.is_some();
-        let mut body = div()
-            .id("sidebar-organization")
-            .flex()
-            .flex_col()
-            .gap_2()
-            .flex_1()
-            .min_h_0();
+        let mut body = div().id("sidebar-organization").flex().flex_col().gap_2();
         body = body.children(self.render_pinned_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
@@ -450,7 +444,13 @@ impl ThreadsBlock {
             .as_ref()
             .map(|thread| thread.id.clone());
         let empty = standalone.is_empty();
-        let rows = standalone.into_iter().map(|thread| {
+        let has_hidden = standalone.len() > 10;
+        let visible_count = if self.recents_expanded {
+            standalone.len()
+        } else {
+            10
+        };
+        let rows = standalone.into_iter().take(visible_count).map(|thread| {
             let archived = thread.status == ThreadStatus::Archived;
             self.render_pi_row(
                 &thread,
@@ -483,12 +483,17 @@ impl ThreadsBlock {
             .child(
                 div()
                     .id("organization-recents-scroll")
-                    .max_h(px(Typography::SIDEBAR_LINE_HEIGHT * 5.0))
-                    .overflow_y_scroll()
                     .flex()
                     .flex_col()
                     .children(empty)
-                    .children(rows),
+                    .children(rows)
+                    .children(has_hidden.then(|| {
+                        self.render_progressive_control(
+                            OrganizationSection::Recents,
+                            self.recents_expanded,
+                            cx,
+                        )
+                    })),
             )
             .into_any_element()
     }
@@ -553,26 +558,102 @@ impl ThreadsBlock {
                 .iter()
                 .filter(|project| !snapshot.project_order.contains(&project.id)),
         );
-        let mut rows = div()
-            .id("organization-projects-scroll")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll();
-        for project in ordered {
+        let has_hidden = ordered.len() > 5;
+        let visible_count = if self.projects_expanded {
+            ordered.len()
+        } else {
+            5
+        };
+        let mut rows = div().id("organization-projects-scroll").flex().flex_col();
+        for project in ordered.into_iter().take(visible_count) {
             rows = rows.child(self.render_pi_project(project, snapshot, show_archived, cx));
         }
+        rows = rows.children(has_hidden.then(|| {
+            self.render_progressive_control(
+                OrganizationSection::Projects,
+                self.projects_expanded,
+                cx,
+            )
+        }));
         div()
             .id("organization-projects")
             .debug_selector(|| "organization-section-projects".into())
             .flex()
             .flex_col()
-            .flex_1()
-            .min_h_0()
             .child(header)
             .child(rows)
             .into_any_element()
+    }
+
+    fn render_progressive_control(
+        &self,
+        section: OrganizationSection,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let section_name = match section {
+            OrganizationSection::Projects => "projects",
+            OrganizationSection::Recents => "recents",
+        };
+        let state_name = if expanded { "less" } else { "more" };
+        let label = if expanded { "Show Less" } else { "Show More" };
+        let id = format!("organization-{section_name}-show-{state_name}");
+        let label_id = format!("organization-{section_name}-progressive-label");
+        let keyboard_section = section;
+        let focus = match section {
+            OrganizationSection::Projects => &self.projects_progressive_focus,
+            OrganizationSection::Recents => &self.recents_progressive_focus,
+        };
+        div()
+            .id(ElementId::Name(id.clone().into()))
+            .debug_selector(move || id.clone())
+            .track_focus(focus)
+            .focusable()
+            .tab_stop(true)
+            .role(gpui_kit::Role::Button)
+            .aria_label(label)
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+            .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
+            .rounded_lg()
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .text_size(px(Typography::SIDEBAR))
+            .text_color(colors.text_tertiary)
+            .hover(move |style| style.bg(colors.bg_hover).text_color(colors.text_secondary))
+            .focus_visible(move |style| {
+                style
+                    .bg(colors.bg_active)
+                    .text_color(colors.text_primary)
+                    .border_1()
+                    .border_color(colors.border_subtle)
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_progressive_section(section, cx);
+                }),
+            )
+            .on_key_down(
+                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        this.toggle_progressive_section(keyboard_section, cx);
+                    }
+                }),
+            )
+            .child(div().debug_selector(move || label_id.clone()).child(label))
+            .into_any_element()
+    }
+
+    fn toggle_progressive_section(&mut self, section: OrganizationSection, cx: &mut Context<Self>) {
+        match section {
+            OrganizationSection::Projects => self.projects_expanded = !self.projects_expanded,
+            OrganizationSection::Recents => self.recents_expanded = !self.recents_expanded,
+        }
+        cx.notify();
     }
 
     fn render_pi_project(

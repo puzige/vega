@@ -54,6 +54,12 @@ pub struct ThreadsBlock {
     pub(crate) focused_project: Option<String>,
     pub(crate) focused_thread_action: Option<String>,
     pub(crate) focused_section: Option<OrganizationSection>,
+    /// In-memory progressive-list state; each section starts compact and
+    /// expands independently for the lifetime of this block.
+    pub(crate) projects_expanded: bool,
+    pub(crate) recents_expanded: bool,
+    pub(crate) projects_progressive_focus: FocusHandle,
+    pub(crate) recents_progressive_focus: FocusHandle,
     /// Thread id whose compact low-frequency action menu is open.
     pub(crate) actions_open: Option<String>,
     /// Highlighted action inside the open menu (arrow keys move it).
@@ -100,6 +106,10 @@ impl ThreadsBlock {
             focused_project: None,
             focused_thread_action: None,
             focused_section: None,
+            projects_expanded: false,
+            recents_expanded: false,
+            projects_progressive_focus: cx.focus_handle(),
+            recents_progressive_focus: cx.focus_handle(),
             actions_open: None,
             actions_highlight: 0,
             actions_scope_focus: cx.focus_handle(),
