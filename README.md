@@ -48,6 +48,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-r29-sidebar-progressive-lists.md](docs/vega-r29-sidebar-progressive-lists.md) | Projects 5 条、Recents 10 条的 Show More 渐进列表与自然区块布局 |
 | [vega-r29-sidebar-progressive-lists-delivery.md](docs/vega-r29-sidebar-progressive-lists-delivery.md) | R29 渐进列表、间距、测试与原生安装验收记录 |
 | [vega-r30-sidebar-typography.md](docs/vega-r30-sidebar-typography.md) | Sidebar 主条目 15px、分组与辅助信息 13px 的字号对齐契约 |
+| [vega-r30-sidebar-typography-delivery.md](docs/vega-r30-sidebar-typography-delivery.md) | R30 侧栏字号、回归测试与原生安装验收记录 |
 | [vega-tech-spec-p1.md](docs/vega-tech-spec-p1.md) | Phase 1 SDD 技术规格（DDL/trait/状态机） |
 | [vega-tech-risks.md](docs/vega-tech-risks.md) | 五大技术难点攻坚方案 |
 | [vega-exec-guide.md](docs/vega-exec-guide.md) | 执行宪法（红线/白名单/验收协议） |
