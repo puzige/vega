@@ -73,7 +73,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 | 正文字体 | 系统字体（SF Pro），13px/1.55 行高 |
 | 会话消息正文 | 15px/1.65 |
 | 代码字体 | SF Mono / JetBrains Mono，12.5px，等宽对齐 |
-| 侧边栏条目 | 主条目 15px；分组标题与辅助信息 13px；行高 32px，超出省略号 |
+| 侧边栏条目 | 主条目 13px；分组标题与辅助信息 12px；行高 32px，超出省略号 |
 | 标题层级 | 仅三级：页面 16px 600 / 区块 14px 600 / 卡片 13px 500 |
 | 空态主标题 | 28px / 600 |
 | 说明 / 元数据 | 12px |
@@ -167,3 +167,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.14 (2026-09-11) R28 Sidebar 标题大小写：生产区块标题由全大写收敛为 `Pinned / Projects / Recents`，其余字体 token、层级、顺序、几何与渐进显现规则不变。精确验收见 [R28 Sidebar heading case](vega-r28-sidebar-heading-case.md)。
 - v0.15 (2026-09-11) R29 Sidebar 渐进列表：区块按自然高度排列，Projects/Recents 初始分别展示 5/10 条，超出时提供独立的 `Show More / Show Less`；外层 Sidebar 统一滚动，既有排序与投影语义不变。精确验收见 [R29 Sidebar progressive lists](vega-r29-sidebar-progressive-lists.md)。
 - v0.16 (2026-09-11) R30 Sidebar 字号：导航主条目提升为 15px，分组标题、项目归属、相对时间与快捷键提升为 13px；32px 行高和非 Sidebar typography 保持不变。精确验收见 [R30 Sidebar typography](vega-r30-sidebar-typography.md)。
+- v0.17 (2026-09-11) R31 Sidebar 字号回退与 Pinned 左缘：按用户原生复验恢复主条目 13px、分组与辅助信息 12px；无图标的 Pinned 标题不再保留 32px 空槽，直接与 Pinned 分组标题左对齐，其余导航栅格不变。精确验收见 [R31 Sidebar rollback and Pinned leading edge](vega-r31-sidebar-typography-revert-pinned-leading.md)。
