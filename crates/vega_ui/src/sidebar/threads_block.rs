@@ -854,7 +854,7 @@ impl ThreadsBlock {
                     )
                     .child(
                         div()
-                            .text_size(px(Typography::METADATA))
+                            .text_size(px(Typography::SIDEBAR_SECTION))
                             .font_weight(Typography::HEADING_CARD_WEIGHT)
                             .text_color(colors.text_secondary)
                             .child("SESSIONS"),
@@ -886,7 +886,7 @@ impl ThreadsBlock {
                 .flex()
                 .items_center()
                 .px_1()
-                .text_size(px(Typography::SIDEBAR))
+                .text_size(px(Typography::SIDEBAR_PRIMARY))
                 .text_color(colors.text_tertiary)
                 .child(message)
                 .into_any_element()
@@ -943,7 +943,7 @@ impl ThreadsBlock {
             )
             .child(
                 div()
-                    .text_size(px(Typography::SIDEBAR))
+                    .text_size(px(Typography::SIDEBAR_PRIMARY))
                     .text_color(colors.text_secondary)
                     .child(format!("已归档 ({})", self.archived.len())),
             )
@@ -1072,7 +1072,7 @@ impl ThreadsBlock {
             .items_center()
             .rounded_lg()
             .overflow_hidden()
-            .text_size(px(Typography::SIDEBAR))
+            .text_size(px(Typography::SIDEBAR_PRIMARY))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.set_hovered(&thread_id, *hovered, cx);
             }))
@@ -1157,7 +1157,7 @@ impl ThreadsBlock {
                                 .w(px(Layout::SIDEBAR_PROJECT_METADATA_WIDTH))
                                 .flex_shrink_0()
                                 .truncate()
-                                .text_size(px(Typography::METADATA))
+                                .text_size(px(Typography::SIDEBAR_META))
                                 .text_color(colors.text_tertiary)
                                 .child(project)
                         })),
@@ -1344,6 +1344,7 @@ impl ThreadsBlock {
                     .flex_1()
                     .min_w_0()
                     .text_right()
+                    .text_size(px(Typography::SIDEBAR_META))
                     .text_color(colors.text_secondary)
                     .child(relative_time(thread.updated_at)),
             );

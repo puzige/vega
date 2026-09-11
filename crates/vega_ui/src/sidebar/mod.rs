@@ -528,7 +528,7 @@ impl Sidebar {
                     .px_2()
                     .rounded_lg()
                     .text_color(colors.text_primary)
-                    .text_size(px(Typography::SIDEBAR))
+                    .text_size(px(Typography::SIDEBAR_PRIMARY))
                     .cursor_pointer()
                     .hover(move |style| style.bg(colors.bg_hover))
                     .on_mouse_up(
@@ -539,11 +539,16 @@ impl Sidebar {
                         crate::icons::Icon::Plus,
                         colors.text_secondary,
                     ))
-                    .child("新建任务")
+                    .child(
+                        div()
+                            .debug_selector(|| "sidebar-new-task-label".into())
+                            .child("新建任务"),
+                    )
                     .child(div().flex_1())
                     .child(
                         div()
-                            .text_size(px(Typography::METADATA))
+                            .debug_selector(|| "sidebar-new-task-shortcut".into())
+                            .text_size(px(Typography::SIDEBAR_META))
                             .text_color(colors.text_tertiary)
                             .child("⌘N"),
                     ),
@@ -598,11 +603,17 @@ impl Sidebar {
                                 crate::icons::Icon::Settings,
                                 colors.text_secondary,
                             ))
-                            .child("设置")
+                            .child(
+                                div()
+                                    .debug_selector(|| "sidebar-settings-label".into())
+                                    .text_size(px(Typography::SIDEBAR_PRIMARY))
+                                    .child("设置"),
+                            )
                             .child(div().flex_1())
                             .child(
                                 div()
-                                    .text_size(px(Typography::METADATA))
+                                    .debug_selector(|| "sidebar-settings-shortcut".into())
+                                    .text_size(px(Typography::SIDEBAR_META))
                                     .text_color(colors.text_tertiary)
                                     .child("⌘,"),
                             ),
@@ -647,12 +658,21 @@ impl Render for Sidebar {
                             .rounded_lg()
                             .flex()
                             .items_center()
-                            .text_size(px(Typography::SIDEBAR))
+                            .text_size(px(Typography::SIDEBAR_PRIMARY))
                             .text_color(colors.text_secondary)
                             .cursor_pointer()
-                            .child("搜索")
+                            .child(
+                                div()
+                                    .debug_selector(|| "sidebar-search-label".into())
+                                    .child("搜索"),
+                            )
                             .child(div().flex_1())
-                            .child("⌘K")
+                            .child(
+                                div()
+                                    .debug_selector(|| "sidebar-search-shortcut".into())
+                                    .text_size(px(Typography::SIDEBAR_META))
+                                    .child("⌘K"),
+                            )
                             .on_mouse_up(MouseButton::Left, |_, window, cx| {
                                 window.dispatch_action(
                                     Box::new(crate::command_palette::OpenPalette),

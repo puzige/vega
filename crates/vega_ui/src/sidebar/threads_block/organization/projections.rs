@@ -328,7 +328,7 @@ impl ThreadsBlock {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(px(Typography::SIDEBAR))
+                                .text_size(px(Typography::SIDEBAR_PRIMARY))
                                 .text_color(colors.text_primary)
                                 .child(project.name.clone()),
                         )
@@ -337,7 +337,7 @@ impl ThreadsBlock {
                                 .w(px(Layout::SIDEBAR_PROJECT_METADATA_WIDTH))
                                 .flex_shrink_0()
                                 .truncate()
-                                .text_size(px(Typography::METADATA))
+                                .text_size(px(Typography::SIDEBAR_META))
                                 .text_color(colors.text_tertiary)
                                 .child(branch)
                         })),
@@ -445,7 +445,7 @@ impl ThreadsBlock {
         div()
             .px_2()
             .py_1()
-            .text_size(px(Typography::METADATA))
+            .text_size(px(Typography::SIDEBAR_PRIMARY))
             .font_weight(Typography::HEADING_CARD_WEIGHT)
             .text_color(theme(cx).colors.text_tertiary)
             .child(text.to_string())
@@ -461,7 +461,7 @@ impl ThreadsBlock {
             })
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
             .px_3()
-            .text_size(px(Typography::SIDEBAR))
+            .text_size(px(Typography::SIDEBAR_PRIMARY))
             .text_color(colors.text_tertiary)
             .child("拖入任务，或通过任务菜单移入")
             .drag_over::<OrganizationDrag>(move |s, _, _, _| s.bg(colors.bg_active))
@@ -548,7 +548,7 @@ impl ThreadsBlock {
             row = row.child(
                 div()
                     .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
-                    .text_size(px(Typography::METADATA))
+                    .text_size(px(Typography::SIDEBAR_META))
                     .text_color(colors.text_tertiary)
                     .child(project.name.clone()),
             );
@@ -586,7 +586,7 @@ impl ThreadsBlock {
             .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
             .pr_3()
             .cursor_pointer()
-            .text_size(px(Typography::SIDEBAR))
+            .text_size(px(Typography::SIDEBAR_PRIMARY))
             .text_color(colors.text_primary)
             .when(selected, |row| row.bg(colors.bg_active))
             .hover(move |style| {
@@ -632,7 +632,7 @@ impl ThreadsBlock {
                     .w(px(Layout::SIDEBAR_PROJECT_METADATA_WIDTH))
                     .flex_shrink_0()
                     .truncate()
-                    .text_size(px(Typography::METADATA))
+                    .text_size(px(Typography::SIDEBAR_META))
                     .text_color(colors.text_tertiary)
                     .child(project.name.clone()),
             );

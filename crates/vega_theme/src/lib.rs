@@ -234,8 +234,14 @@ impl Typography {
     pub const MESSAGE_LINE_HEIGHT: f32 = 1.65;
     /// Code font size: 12.5px, monospace (§3 "代码字体 SF Mono / JetBrains Mono，12.5px").
     pub const CODE: f32 = 12.5;
-    /// Sidebar entry font size: 13px (§3 "侧边栏条目 13px，行高 34px").
+    /// Legacy/general Sidebar text size retained for non-navigation surfaces.
     pub const SIDEBAR: f32 = 13.0;
+    /// Primary Sidebar navigation labels and task/project titles.
+    pub const SIDEBAR_PRIMARY: f32 = 15.0;
+    /// Sidebar section headings such as Pinned, Projects, and Recents.
+    pub const SIDEBAR_SECTION: f32 = 13.0;
+    /// Sidebar ownership, timestamps, and keyboard shortcuts.
+    pub const SIDEBAR_META: f32 = 13.0;
     /// Sidebar entry row height: 32px absolute (R19 phase-1 shell freeze).
     pub const SIDEBAR_LINE_HEIGHT: f32 = 32.0;
     /// Compact metadata and status labels: 12px (R4 visual revision §2).
@@ -440,6 +446,16 @@ mod tests {
         assert_eq!(Layout::COMPOSER_SEND_SIZE, 28.0);
         assert_eq!(Layout::WORKSPACE_HEADER_HEIGHT, 40.0);
         assert_eq!(Layout::BOTTOM_WORKSPACE_HEIGHT, 272.0);
+    }
+
+    #[test]
+    fn r30_sidebar_typography_is_scoped_and_frozen() {
+        assert_eq!(Typography::SIDEBAR_PRIMARY, 15.0);
+        assert_eq!(Typography::SIDEBAR_SECTION, 13.0);
+        assert_eq!(Typography::SIDEBAR_META, 13.0);
+        assert_eq!(Typography::SIDEBAR, 13.0);
+        assert_eq!(Typography::METADATA, 12.0);
+        assert_eq!(Typography::SIDEBAR_LINE_HEIGHT, 32.0);
     }
 
     #[test]

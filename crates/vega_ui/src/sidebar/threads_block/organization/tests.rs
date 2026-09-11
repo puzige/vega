@@ -773,6 +773,18 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
     );
     assert!(!absent(&f, cx, "organization-projects-show-less"));
     assert!(!absent(&f, cx, "organization-recents-show-more"));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    let sidebar_scroll = visual.debug_bounds("sidebar-scroll").unwrap();
+    visual.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: sidebar_scroll.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+            gpui_kit::px(0.),
+            gpui_kit::px(-400.),
+        )),
+        modifiers: gpui_kit::Modifiers::default(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    cx.run_until_parked();
     click(&f, cx, "organization-projects-show-less");
     assert_eq!(
         project_ids
@@ -826,6 +838,84 @@ async fn r29_progressive_controls_are_absent_without_hidden_items(
     assert!(absent(&f, cx, "organization-projects-show-less"));
     assert!(absent(&f, cx, "organization-recents-show-more"));
     assert!(absent(&f, cx, "organization-recents-show-less"));
+}
+
+#[gpui_kit::test]
+async fn r30_sidebar_typography_uses_scoped_sizes_without_changing_row_geometry(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    let recent = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let primary_height = bounds(&f, cx, "sidebar-new-task-label").size.height;
+    for selector in [
+        "sidebar-search-label".to_string(),
+        "organization-project-p".to_string(),
+        format!("pinned-thread-row-title-{}", f.first.id),
+        format!("standalone-thread-row-title-{}", recent.id),
+    ] {
+        assert_eq!(bounds(&f, cx, selector).size.height, primary_height);
+    }
+
+    let section_height = bounds(&f, cx, "organization-section-label-Pinned")
+        .size
+        .height;
+    for selector in [
+        "organization-section-label-Projects",
+        "organization-section-label-Recents",
+    ] {
+        assert_eq!(bounds(&f, cx, selector).size.height, section_height);
+    }
+
+    let meta_height = bounds(&f, cx, "sidebar-new-task-shortcut").size.height;
+    for selector in [
+        "sidebar-search-shortcut".to_string(),
+        format!("pinned-thread-row-project-{}", f.first.id),
+        format!("thread-timestamp-{}", recent.id),
+    ] {
+        assert_eq!(bounds(&f, cx, selector).size.height, meta_height);
+    }
+    assert!(primary_height > section_height);
+    assert_eq!(section_height, meta_height);
+    assert!(!absent(&f, cx, "sidebar-settings-label"));
+    assert!(!absent(&f, cx, "sidebar-settings-shortcut"));
+
+    for selector in [
+        "sidebar-new-task".to_string(),
+        "sidebar-search".to_string(),
+        "sidebar-settings-surface".to_string(),
+        "project-header-p".to_string(),
+        format!("pinned-thread-row-{}", f.first.id),
+        format!("standalone-thread-row-{}", recent.id),
+    ] {
+        assert_eq!(
+            f32::from(bounds(&f, cx, selector).size.height),
+            Typography::SIDEBAR_LINE_HEIGHT
+        );
+    }
+
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_eq!(
+        bounds(&f, cx, "sidebar-new-task-label").size.height,
+        primary_height
+    );
+    assert_eq!(
+        bounds(&f, cx, "organization-section-label-Projects")
+            .size
+            .height,
+        section_height
+    );
+    assert_eq!(
+        bounds(&f, cx, format!("thread-timestamp-{}", recent.id))
+            .size
+            .height,
+        meta_height
+    );
 }
 
 #[gpui_kit::test]
