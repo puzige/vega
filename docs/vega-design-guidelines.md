@@ -1,6 +1,6 @@
 # Vega 设计守则
 
-**版本** v1.30 · 2026-09-12
+**版本** v1.31 · 2026-09-12
 
 **状态** 当前视觉语言与设计 token 的规范入口
 
@@ -207,9 +207,9 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Sidebar 宽度、用户手动折叠和窗口触发的自动隐藏是三个独立状态，resize 不得覆盖另外两者。
 - Sidebar 的常驻 Settings action 使用完整 32px 导航行高，位于 12px 左右与底部 inset 内，并使用与其他导航行一致的 8px 圆角。它是侧栏内容栅格中的普通导航行，不是贴住窗口边缘的 footer 条带。
 - Sidebar 的任务信息架构按 `Pinned / Projects / Recents` 排列，区块标题使用普通首字母大写而非全大写；任务在三个投影位置中只能出现一次。区块标题和项目行的辅助操作默认保持安静，仅在所属标题/行 hover、键盘聚焦或菜单打开时显现，且显隐不得造成布局跳动。
-- `Pinned` 标题本身已表达置顶语义，区内任务行不重复渲染 Pin 图标、所属项目或空占位。无前导图标的 Pinned 与顶层 Recents 任务标题和各自区块标题左对齐；项目 Folder 与名称保持 8px 间距，项目子任务继续落在距行左侧 32px 的内容列以表达层级。
+- `Pinned` 标题本身已表达置顶语义，区内任务行不重复渲染 Pin 图标、所属项目或空占位。无前导图标的 Pinned 与顶层 Recents 任务标题和各自区块标题左对齐；项目 Folder 与名称保持 8px 间距，项目 Folder 图标与区块标题同列，项目子任务落在 `base + SIDEBAR_ROW_INSET(24)` 的共享文本列以表达层级（R48 起取代旧的 32px 内容列）。
 - Sidebar 区块按内容自然高度连续排列，不以 Projects 撑满剩余空间。Projects 默认显示 5 个顶层项目、Recents 默认显示 10 个任务；有更多内容时使用对齐内容列的 `Show More / Show Less` 在当前会话内渐进展开，外层 Sidebar 统一承担溢出滚动。
-- Sidebar 对话行静止时只展示标题，不展示相对时间；Pinned 行也不重复展示所属项目。尾部菜单触发器仅在 hover、键盘聚焦或菜单打开时显现，并保持固定命中区避免布局跳动。每个展开项目默认显示 5 条非置顶任务，超出时使用独立的 `Show More / Show Less` 渐进展开，控件与 32px 项目子任务内容列对齐。
+- Sidebar 对话行静止时只展示标题，不展示相对时间；Pinned 行也不重复展示所属项目。尾部菜单触发器仅在 hover、键盘聚焦或菜单打开时显现，并保持固定命中区避免布局跳动。每个展开项目默认显示 5 条非置顶任务，超出时使用独立的 `Show More / Show Less` 渐进展开，控件与项目子任务共享同一文本列（`base + SIDEBAR_ROW_INSET`）。
 - 全局搜索入口使用窗口顶部共享控制组中的放大镜按钮，紧邻 Sidebar 显隐按钮并位于 Back / Forward 之前；Sidebar 展开或隐藏时位置和数量都保持稳定。按钮带“搜索 (⌘K)”可访问名称与提示，点击或键盘激活打开现有搜索面板；保留 Command-K，Sidebar 内容区不再重复渲染搜索入口。此规则取代 R39 的 Sidebar 局部位置，精确规格见 [R41 Titlebar Search adjacency](vega-r41-titlebar-search.md)。
 - 窗口顶部 `Sidebar / Search / Back / Forward` 四个控制统一使用 28×28px 方形交互面、16px 居中图标和 4px 相邻间隔；禁用的历史按钮也保留同尺寸槽位，保证四个图标中心恒定相隔 32px。精确规格见 [R43 Titlebar control spacing](vega-r43-titlebar-control-spacing.md)。
 - 主头部尾部是恰好三个永久槽位（切换环境 / 切换终端 ⌘J / 切换右侧面板），统一 28×28 交互面、16px 居中图标与 6px 相邻间隔；每槽只表达一个全局布局表面，选中态由该表面真实 rendered 可见性驱动（`hidden == false` 不算可见），禁用时保留占位、图标降为 tertiary、不回流；R43 的 4px 间隔规则仍只适用于前导 Sidebar/Search/Back/Forward 组。三个槽位窗口锚定在窗口右上角（不属于会话列、rail 或任何 pane），任何面板开合都不得改变其坐标；凡占据窗口顶部条带的面板头部（右面板、任一面板最大化）都预留同一尾部槽位带，让面板自身尾部动作排在槽位左侧，底仓头部不预留。Environment rail 与 overlay 卡片从 header 行下方开始，不覆盖控件。Environment overlay（<1230px）支持 Esc 与点击卡片外部关闭并回焦 Composer，rail 模式无 Esc 契约。精确规格见 [R45 Header shell controls and Composer alignment](vega-r45-shell-controls-composer.md)，几何归属与顶部条带归属由 [R46 Window-anchored shell slots](vega-r46-window-anchored-shell-slots.md) 取代。
@@ -219,6 +219,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Pinned 任务标题继续与 `Pinned` 区块标题和顶层 Recents 标题落在同一内容列；其选中、hover 与焦点表面向该内容列左侧扩展 8px，并在表面内部保留等量的 8px 前导 padding，避免文字贴住圆角背景且不移动标题列。
 - Pinned 的内层与 Sidebar 外层滚动视口必须包含上述完整表面，不能裁掉前导 padding 或左侧圆角；验收须查看真实绘制结果，不能只依赖行布局坐标。精确规格见 [R37 Pinned clip](vega-r37-pinned-clip.md)。
 - Sidebar 的 `Pinned / Projects / Recents` 组织内容列与应用边缘保留 8px 逻辑内缩；三组标题、任务与项目行共用同一前导列，内容列右边缘固定，避免选中表面贴住窗口边缘。精确规格见 [R38 Sidebar content inset](vega-r38-sidebar-content-inset.md)。
+- Sidebar 缩进阶梯（R48）：以导航内容原点 base 为基准，`base` = 标签列 = folder 图标列，`base + SIDEBAR_ROW_INSET(24)` = 项目名称列 = 项目子任务文本列 = `Show More / Show Less` 列。`SIDEBAR_ROW_INSET` 是导出量而非独立参数，等于 folder 图标 16px 加项目行 `gap_2` 8px；项目行自身不设前导内边距，只靠图标 + 间距自然落到文本列，无图标的行直接消费该 token，因此改动图标尺寸或行间距必须同步更新 token，否则两列重新错位。section 标签通过 `SIDEBAR_LABEL_INSET`(0) 显式表达其贴 base 的列，不再隐式继承容器。真值来源为 Codex 实机 AX 控件盒与原生 2x 像素测量（标签 17.5 / folder 图标 16.5 / folder 文本 41.0 / child 文本 40.5，Vega 收敛为 base 16 与文本列 40）。精确规格见 [R48 Sidebar indent ladder](vega-r48-sidebar-indent-ladder.md)。
 - Sidebar 持久选中态只标识最具体的活动目标：打开选中项目内的任务时，仅任务行使用中性 active 背景，外层项目行保持静止并以 Folder open 图标表达展开；只有项目被选中且没有打开该项目任务时，项目行才保留 active 背景。Pinned 中的项目任务遵循同一优先级。精确规格见 [R42 Single selection highlight](vega-r42-single-selection-highlight.md)。
 - Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
 
@@ -271,6 +272,7 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 ## 15. 变更记录
 
+- v1.31 (2026-09-12)：R48 Sidebar 缩进阶梯对齐 Codex：§7 侧边栏明确 `base(16) = 标签列 = folder 图标列`，`base + SIDEBAR_ROW_INSET(24) = 文本列 = 项目子任务文本列 = Show More 列`；新增 `SIDEBAR_LABEL_INSET`(0) 与 `SIDEBAR_ROW_INSET`(24) 两个 token，后者是 folder 图标 16 + `gap_2` 8 的导出量（冻结测试断言该恒等式），项目行去掉多余的前导 8px 内边距，子任务行与渐进控件改用共享文本列 token。真值来源为 Codex 实机 AX 控件盒与原生 2x 像素测量（标签 17.5 / folder 图标 16.5 / folder 文本 41.0 / child 文本 40.5）。精确规格见 [R48 Sidebar indent ladder](vega-r48-sidebar-indent-ladder.md)。
 - v1.30 (2026-09-12)：R47 面板结构对齐 Codex：工具条尾随 inset 收敛为 8px（Codex `--padding-toolbar`，取代 12px），槽位中心恒定于窗口右缘 −22/−56/−90，主头部尾随预留改为 104px；顶部条带 pane 头部在槽位带外增加 32px 归属 gutter（预留合计 136px），pane 本地 dock 动作改用 DockMove 图标与槽位图形去重；终端 body 改用 surface（`bg_base`，light = #ffffff）而非 `code_bg`，画布文本左缘 ≈16px；终端状态行仅异常态渲染（Running 态不渲染，复制走 ⌘C action）；workspace pane header 移除下边框，终端面板只保留顶边框一条分隔线。真值来源为 Codex WebView token 源码与原生 2x/AX 实测。精确规格见 [R47 Panel structure alignment](vega-r47-panel-structure-alignment.md)。
 - v1.29 (2026-09-12)：主头部三个壳层槽位改为窗口锚定（窗口右上角绝对定位，垂直居中于 46px header band），任何面板开合不再改变槽位坐标；占据窗口顶部条带的面板头部（右面板、任一面板最大化）预留同一尾部槽位带，面板自身尾部动作排在槽位左侧，底仓头部不预留；Environment rail 与 overlay 卡片从 header 行下方开始，不再覆盖控件。R45 的三槽位语义、禁用保位、选中态规则与 Composer 几何全部不变。精确规格见 [R46 Window-anchored shell slots](vega-r46-window-anchored-shell-slots.md)。
 - v1.28 (2026-09-12)：主头部尾部收敛为三个永久 28×28 槽位（环境 / 终端 ⌘J / 右侧），6px 间隔、真实 rendered 可见性驱动选中态、禁用保位；Environment overlay 增加 Esc 与点击外部关闭并回焦 Composer；Composer 包裹列 12/16px padding token 化（值不变）。精确规格见 [R45 Header shell controls and Composer alignment](vega-r45-shell-controls-composer.md)。
