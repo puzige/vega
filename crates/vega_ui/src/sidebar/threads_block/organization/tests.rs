@@ -328,9 +328,12 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
     let project_label = bounds(&f, cx, "organization-project-p");
     let task_title = bounds(&f, cx, format!("project-thread-row-title-{}", f.first.id));
     assert!(absent(&f, cx, "project-folder-p-closed"));
+    // R48: the project row keeps no leading inset, so the folder icon starts on
+    // the row's own leading edge (the shared label column) without a Chevron
+    // slot. The text column is reached by icon + gap instead.
     assert!(
-        (f32::from(project_folder.left() - project_row.left()) - 8.0).abs() <= 1.0,
-        "folder must start at the content inset without a Chevron slot"
+        f32::from(project_folder.left() - project_row.left()) <= 1.0,
+        "folder must start at the row's leading edge without a Chevron slot"
     );
     assert!(
         f32::from(project_label.left() - task_title.left()).abs() <= 1.0,
@@ -620,7 +623,7 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
     assert_eq!(recent_title.left(), recent_row.left());
     assert_eq!(
         f32::from(child_title.left() - child_row.left()),
-        Layout::SIDEBAR_NAV_CONTENT_INSET
+        Layout::SIDEBAR_ROW_INSET
     );
     assert_ne!(child_title.left(), recent_title.left());
     assert!(absent(
@@ -637,9 +640,14 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
     let project_row = bounds(&f, cx, "project-header-p");
     let folder = bounds(&f, cx, "project-folder-p-open");
     let label = bounds(&f, cx, "organization-project-p");
-    assert_eq!(f32::from(folder.left() - project_row.left()), 8.0);
+    // R48: the folder icon shares the section label column (row leading edge);
+    // the project name sits one ladder step further at the text column.
+    assert_eq!(f32::from(folder.left() - project_row.left()), 0.0);
     assert_eq!(f32::from(label.left() - folder.right()), 8.0);
-    assert_eq!(f32::from(label.left() - project_row.left()), 32.0);
+    assert_eq!(
+        f32::from(label.left() - project_row.left()),
+        Layout::SIDEBAR_ROW_INSET
+    );
 
     assert!(absent(
         &f,
@@ -686,7 +694,7 @@ async fn r32_pinned_and_recents_rows_align_to_headings_while_project_children_ke
             bounds(&f, cx, format!("project-thread-row-title-{}", child.id)).left()
                 - bounds(&f, cx, format!("project-thread-row-{}", child.id)).left()
         ),
-        Layout::SIDEBAR_NAV_CONTENT_INSET
+        Layout::SIDEBAR_ROW_INSET
     );
     assert!(absent(
         &f,
@@ -820,7 +828,7 @@ async fn r33_project_tasks_expand_independently_and_preserve_mounted_state(
     let more_label = bounds(&f, cx, "project-p-progressive-label");
     assert_eq!(
         f32::from(more_label.left() - more.left()),
-        Layout::SIDEBAR_NAV_CONTENT_INSET
+        Layout::SIDEBAR_ROW_INSET
     );
     click(&f, cx, "project-p-show-more");
     assert_eq!(mounted(&p_ids, cx), p_ids.len());
@@ -937,7 +945,7 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
     let projects_label = bounds(&f, cx, "organization-projects-progressive-label");
     assert_eq!(
         f32::from(projects_label.left() - projects_control.left()),
-        Layout::SIDEBAR_NAV_CONTENT_INSET
+        Layout::SIDEBAR_ROW_INSET
     );
     assert_eq!(
         f32::from(
@@ -1229,7 +1237,7 @@ async fn r37_pinned_surfaces_keep_padding_inside_scroll_clips(cx: &mut gpui_kit:
         assert_eq!(project_row.right(), recent_row.right());
         assert_eq!(
             f32::from(child_title.left() - child_row.left()),
-            Layout::SIDEBAR_NAV_CONTENT_INSET
+            Layout::SIDEBAR_ROW_INSET
         );
 
         let pinned_section = bounds(f, cx, "organization-section-pinned");
@@ -1316,7 +1324,7 @@ async fn r38_organization_content_keeps_eight_pixel_edge_inset_across_themes_and
         assert_eq!(pinned_title.left(), recent_title.left());
         assert_eq!(
             f32::from(child_title.left() - recent_title.left()),
-            Layout::SIDEBAR_NAV_CONTENT_INSET
+            Layout::SIDEBAR_ROW_INSET
         );
         assert_eq!(project_row.left(), recent_row.left());
         assert_eq!(child_row.left(), recent_row.left());
@@ -1585,4 +1593,61 @@ async fn r15_sidebar_mounts_at_minimum_viewport(cx: &mut gpui_kit::TestAppContex
     assert!(visual.debug_bounds("organization-new-session").is_some());
     assert!(visual.debug_bounds("organization-add-project").is_some());
     assert!(visual.debug_bounds("project-header-p").is_some());
+}
+
+/// R48 t1/t2/t5: the Sidebar indent ladder in the mounted production tree.
+///
+/// One state per test: the folder icon shares the section label column, the
+/// project name shares the child text column, and the folder icon keeps that
+/// column in both collapsed and expanded states.
+#[gpui_kit::test]
+async fn r48_project_folder_shares_the_section_label_column(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let folder = bounds(&f, cx, "project-folder-p-open");
+    let label = bounds(&f, cx, "organization-section-label-Projects");
+    assert!(
+        (f32::from(folder.left() - label.left())).abs() <= 1.0,
+        "folder icon ({}) must share the section label column ({})",
+        f32::from(folder.left()),
+        f32::from(label.left())
+    );
+}
+
+#[gpui_kit::test]
+async fn r48_project_name_shares_the_child_text_column(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let child = snapshot(&f)
+        .threads
+        .into_iter()
+        .find(|thread| thread.project_id == "p" && !thread.pinned)
+        .unwrap();
+    let project_name = bounds(&f, cx, "organization-project-p");
+    let child_row = bounds(&f, cx, format!("project-thread-row-{}", child.id));
+    let child_title = bounds(&f, cx, format!("project-thread-row-title-{}", child.id));
+    assert!(
+        (f32::from(project_name.left() - child_title.left())).abs() <= 1.0,
+        "project name ({}) must share the child text column ({})",
+        f32::from(project_name.left()),
+        f32::from(child_title.left())
+    );
+    assert_eq!(
+        f32::from(child_title.left() - child_row.left()),
+        Layout::SIDEBAR_ROW_INSET,
+        "the child text column must be the ladder's text step"
+    );
+}
+
+#[gpui_kit::test]
+async fn r48_folder_icon_keeps_its_column_when_the_project_collapses(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let expanded = bounds(&f, cx, "project-folder-p-open");
+    click(&f, cx, "project-header-p");
+    let collapsed = bounds(&f, cx, "project-folder-p-closed");
+    assert_eq!(
+        collapsed.left(),
+        expanded.left(),
+        "collapsing a project must not move the folder icon column"
+    );
 }
