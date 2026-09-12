@@ -272,12 +272,23 @@ impl Layout {
     pub const TITLEBAR_CONTROL_SIZE: f32 = 28.0;
     /// Gap between adjacent shared titlebar control surfaces.
     pub const TITLEBAR_CONTROL_GAP: f32 = 4.0;
+    /// Trailing inset of toolbar chrome pinned to the window's right edge
+    /// (R47): the Codex WebView `--padding-toolbar` token (`spacing * 2` = 8px,
+    /// AX-verified against the real app). The shell slot cluster paints its
+    /// slots with this inset instead of a generic 12px padding.
+    pub const TOOLBAR_TRAILING_INSET: f32 = 8.0;
     /// Trailing width `main-header` must reserve for the R46 window-anchored
     /// shell slot cluster: three 28px slots on the frozen 6px gaps (96px) plus
-    /// the shared 12px header trailing inset the cluster itself also uses.
-    /// The cluster pins to the window's top-right corner with that inset, so
-    /// no column, rail or pane can move it.
-    pub const SHELL_SLOT_CLUSTER_RESERVE: f32 = 108.0;
+    /// the shared [`Layout::TOOLBAR_TRAILING_INSET`] the cluster itself also
+    /// uses. The cluster pins to the window's top-right corner with that
+    /// inset, so no column, rail or pane can move it.
+    pub const SHELL_SLOT_CLUSTER_RESERVE: f32 = 104.0;
+    /// Ownership gutter between a top-band pane's own trailing actions and the
+    /// window-anchored shell slot band (R47): the pane header reserves
+    /// [`Layout::SHELL_SLOT_CLUSTER_RESERVE`] plus this gutter, so the two
+    /// layers (pane content vs window layout) never read as one button row.
+    /// Codex native measurement puts the gap at ≈32px.
+    pub const SHELL_SLOT_GUTTER: f32 = 32.0;
     /// Maximum readable width for conversation, settings, and diff content.
     pub const CONTENT_MAX_WIDTH: f32 = 820.0;
     /// Minimum horizontal page padding around a readable content column.
@@ -502,6 +513,25 @@ mod tests {
     #[test]
     fn r22_terminal_toolbar_height_is_frozen() {
         assert_eq!(Layout::TERMINAL_TOOLBAR_HEIGHT, 32.0);
+    }
+
+    #[test]
+    fn r47_panel_alignment_tokens_are_frozen() {
+        // Codex `--padding-toolbar` (spacing * 2), AX-verified at 8px.
+        assert_eq!(Layout::TOOLBAR_TRAILING_INSET, 8.0);
+        // 3×28 slots + 2×6 gaps + the 8px trailing inset.
+        assert_eq!(Layout::SHELL_SLOT_CLUSTER_RESERVE, 104.0);
+        assert_eq!(
+            Layout::SHELL_SLOT_CLUSTER_RESERVE,
+            3.0 * Layout::TITLEBAR_CONTROL_SIZE + 2.0 * 6.0 + Layout::TOOLBAR_TRAILING_INSET
+        );
+        // Pane actions vs. window slot band ownership gutter (Codex ≈32px);
+        // top-band pane headers reserve both together.
+        assert_eq!(Layout::SHELL_SLOT_GUTTER, 32.0);
+        assert_eq!(
+            Layout::SHELL_SLOT_CLUSTER_RESERVE + Layout::SHELL_SLOT_GUTTER,
+            136.0
+        );
     }
 
     #[test]

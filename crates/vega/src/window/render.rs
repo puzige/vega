@@ -514,7 +514,8 @@ impl VegaWindow {
     /// keeps R45's frozen internals: three 28×28 controls, 6px gaps, fixed
     /// Environment → Terminal(⌘J) → Right order, and disabled slots keeping
     /// their grid. Vertical placement centers it in the 46px main header band,
-    /// on the same 12px trailing inset the header reserves.
+    /// on the Codex `--padding-toolbar` trailing inset (8px) that the
+    /// `SHELL_SLOT_CLUSTER_RESERVE` token also builds on.
     fn render_shell_slot_cluster(
         &mut self,
         window: &mut Window,
@@ -534,7 +535,7 @@ impl VegaWindow {
             .top_0()
             .right_0()
             .h(px(Layout::MAIN_HEADER_HEIGHT))
-            .pr_3()
+            .pr(px(Layout::TOOLBAR_TRAILING_INSET))
             .flex()
             .items_center()
             .gap(px(6.))
@@ -613,8 +614,10 @@ impl VegaWindow {
             .border_color(colors.border_subtle)
             // R46: the window-anchored slot cluster no longer renders inside
             // this element, so reserve its exact trailing width (3×28px slots
-            // on 2×6px gaps plus the shared 12px inset) to keep the title
-            // clear of it. No negative margin and no coordinate special case.
+            // on 2×6px gaps plus the shared 8px toolbar trailing inset) to
+            // keep the title clear of it. No negative margin and no coordinate
+            // special case. The main header hosts no local actions, so it does
+            // not add the pane-header ownership gutter (R47 §2.1).
             .pr(px(Layout::SHELL_SLOT_CLUSTER_RESERVE))
             .when(!sidebar_visible, |header| {
                 header

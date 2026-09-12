@@ -31,6 +31,7 @@ pub enum Icon {
     Close,
     DockBottom,
     DockRight,
+    DockMove,
     Maximize,
     Minimize,
     More,
@@ -71,6 +72,16 @@ const FOLDER_PLUS_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewB
 /// embedded icon set.
 const SUMMARY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h.01"/><path d="M8 6h13"/><path d="M3 12h.01"/><path d="M8 12h13"/><path d="M3 18h.01"/><path d="M8 18h13"/></svg>"#;
 
+/// Vega's pane-move glyph (R47 §2.2) is kept inline because the bundled icon
+/// set only offers the shell-slot dock shapes (panel + bottom/right bar), and
+/// reusing one of them for the pane-local "move dock" action read as the same
+/// control twice in one header. The glyph is a panel rectangle offset toward
+/// the trailing edge plus one arrow entering it from outside, on the same
+/// 24px viewBox, stroke-2, currentColor grammar as the other inline icons. At
+/// 16px it stays clearly distinct from `DockBottom` (rect + bottom bar) and
+/// `DockRight` (rect + right bar): neither carries an arrow.
+const DOCK_MOVE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="5" width="14" height="14" rx="2"/><path d="M2 12h9"/><path d="m8 9 3 3-3 3"/></svg>"#;
+
 fn icon_name(kind: Icon) -> IconName {
     match kind {
         Icon::Search => IconName::Search,
@@ -101,7 +112,7 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Terminal => IconName::SquareTerminal,
         Icon::Thinking => IconName::Asterisk,
         Icon::Document => IconName::FileText,
-        Icon::Pin | Icon::Shield | Icon::Summary => {
+        Icon::Pin | Icon::Shield | Icon::Summary | Icon::DockMove => {
             unreachable!("inline SVG icons are handled before mapping")
         }
     }
@@ -131,6 +142,7 @@ pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
         Icon::Shield => inline_icon(SHIELD_SVG, color),
         Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color),
         Icon::Summary => inline_icon(SUMMARY_SVG, color),
+        Icon::DockMove => inline_icon(DOCK_MOVE_SVG, color),
         _ => kit_icon(kind, color),
     }
 }

@@ -772,7 +772,8 @@ impl VegaWindow {
     /// beside the conversation column, so its header opens the top band; a
     /// maximized dock replaces the whole workspace layout, so its header is in
     /// the top band too. The bottom-docked pane header sits in the bottom band.
-    /// Top-band headers must reserve the shell slot cluster's trailing band.
+    /// Top-band headers must reserve the shell slot cluster's trailing band
+    /// plus the R47 ownership gutter.
     pub(super) fn workspace_pane_header_in_top_band(&self, bottom: bool) -> bool {
         !bottom || self.workspace_fullscreen_index() == Some(usize::from(bottom))
     }
@@ -1103,11 +1104,7 @@ impl VegaWindow {
             )
             .child(
                 icon_button(
-                    if bottom {
-                        Icon::DockRight
-                    } else {
-                        Icon::DockBottom
-                    },
+                    Icon::DockMove,
                     if bottom {
                         "移到右侧"
                     } else {
@@ -1138,12 +1135,13 @@ impl VegaWindow {
                 )
                 .debug_selector(move || maximize_selector.into()),
             );
-        // R46 §2.1.1: a pane header that opens the window's 46px top band
-        // reserves the window-anchored slot cluster's trailing band, so the
-        // pane's own trailing actions (commit / add / dock / maximize) lay out
-        // to the left of the slots instead of underneath them. The reserved
-        // width is the same token `main-header` uses. The bottom-docked pane
-        // header lives in the bottom band and reserves nothing.
+        // R46 §2.1.1 / R47 §2.2: a pane header that opens the window's 46px
+        // top band reserves the window-anchored slot cluster's trailing band
+        // plus the ownership gutter, so the pane's own trailing actions
+        // (commit / add / dock / maximize) lay out to the left of the slots —
+        // separated by an intentional 32px blank gap — instead of underneath
+        // them or flush against them. The bottom-docked pane header lives in
+        // the bottom band and keeps its compact `px_1` trailing inset.
         let header = div()
             .debug_selector(move || header_selector.into())
             .flex()
@@ -1152,10 +1150,10 @@ impl VegaWindow {
             .h(px(Layout::WORKSPACE_HEADER_HEIGHT))
             .px_1()
             .when(self.workspace_pane_header_in_top_band(bottom), |header| {
-                header.pr(px(Layout::SHELL_SLOT_CLUSTER_RESERVE))
+                header.pr(px(
+                    Layout::SHELL_SLOT_CLUSTER_RESERVE + Layout::SHELL_SLOT_GUTTER
+                ))
             })
-            .border_b_1()
-            .border_color(colors.border_subtle)
             .child(
                 icon_button(
                     if bottom {
@@ -2225,6 +2223,26 @@ mod tests {
         }
     }
 
+    /// R47 §2.1: with the Codex `--padding-toolbar` trailing inset (8px), the
+    /// three slot centers sit at the window's right edge minus 22 / 56 / 90
+    /// (one 14px half-slot + the 8px inset on the frozen 34px pitch). The
+    /// expectation is derived from the cluster's own right edge, so it never
+    /// hardcodes a window width.
+    fn r47_assert_slot_centers(window: WindowHandle<VegaWindow>, cx: &mut TestAppContext) {
+        let cluster = shell_bounds(window, "main-header-shell-slots", cx);
+        for (index, (slot, trailing)) in r46_shell_slot_bounds(window, cx)
+            .iter()
+            .zip([90.0, 56.0, 22.0])
+            .enumerate()
+        {
+            assert_close(
+                slot.center().x,
+                f32::from(cluster.right()) - trailing,
+                &format!("slot {} center trails the window edge", index + 1),
+            );
+        }
+    }
+
     #[gpui_kit::test]
     async fn r46_slot_cluster_is_window_anchored(cx: &mut TestAppContext) {
         let repo = diff_controller_repo();
@@ -2233,6 +2251,10 @@ mod tests {
         // a) No panel: the baseline the five other states must match exactly.
         let baseline = r46_shell_slot_bounds(window, cx);
         r45_assert_three_shell_slots(window, cx);
+        // R47 §2.1: the cluster uses the 8px `--padding-toolbar` trailing
+        // inset, so its centers sit at the window's right edge minus
+        // 22/56/90 — and stay there in every state below.
+        r47_assert_slot_centers(window, cx);
 
         // b) Environment rail open. The wide project route renders the 320px
         // rail by default, so closing and reopening it proves the rail's own
@@ -2356,6 +2378,9 @@ mod tests {
         cx.run_until_parked();
         let narrow = r46_shell_slot_bounds(window, cx);
         r45_assert_three_shell_slots(window, cx);
+        // R47 §2.1: the centers stay on the same right-edge offsets at 960px
+        // too, because they are derived from the edge rather than a width.
+        r47_assert_slot_centers(window, cx);
         assert_close(
             narrow[2].right(),
             960.0 - wide_trailing[2],
@@ -2449,9 +2474,10 @@ mod tests {
         );
     }
 
-    /// R46 §2.1.1: every pane header that occupies the window's top band
-    /// reserves the window-anchored cluster's trailing band, so its own
-    /// trailing actions lay out to the left of the slots. The bottom band
+    /// R46 §2.1.1, updated by R47 §2.2: every pane header that occupies the
+    /// window's top band reserves the window-anchored cluster's trailing band
+    /// plus the ownership gutter, so its own trailing actions lay out to the
+    /// left of the slots behind an intentional blank gap. The bottom band
     /// reserves nothing because the cluster never occupies it.
     #[gpui_kit::test]
     async fn r46_top_band_headers_reserve_the_cluster(cx: &mut TestAppContext) {
@@ -2483,14 +2509,15 @@ mod tests {
                 "{selector} must not intersect any shell slot"
             );
         }
-        // The reserved band is exactly the shared token, measured from the
-        // pane header's own trailing edge.
+        // The reserved band is the shared cluster token plus the ownership
+        // gutter (R47 §2.2), measured from the pane header's own trailing
+        // edge.
         let header = shell_bounds(window, "right-workspace-header", cx);
         let actions = shell_bounds(window, "right-workspace-actions", cx);
         assert_close(
             header.right() - actions.right(),
-            Layout::SHELL_SLOT_CLUSTER_RESERVE,
-            "right pane header reserves the shared cluster token",
+            Layout::SHELL_SLOT_CLUSTER_RESERVE + Layout::SHELL_SLOT_GUTTER,
+            "right pane header reserves the cluster token plus the gutter",
         );
 
         // A maximized pane keeps the cluster mounted and reserves the same
@@ -2516,8 +2543,8 @@ mod tests {
         );
         assert_close(
             maximized_header.right() - maximized_actions.right(),
-            Layout::SHELL_SLOT_CLUSTER_RESERVE,
-            "maximized pane header reserves the shared cluster token",
+            Layout::SHELL_SLOT_CLUSTER_RESERVE + Layout::SHELL_SLOT_GUTTER,
+            "maximized pane header reserves the cluster token plus the gutter",
         );
         // The maximized header opens the same 46px band as `main-header`.
         assert_close(
@@ -2554,6 +2581,36 @@ mod tests {
                 index + 1
             );
         }
+    }
+
+    /// R47 §2.2 (acceptance t2): with the right pane open on its Review tab,
+    /// the pane's last trailing action ends a full ownership gutter (32±2px)
+    /// before the window-anchored slot band begins, so pane actions and shell
+    /// slots never read as one continuous button row.
+    #[gpui_kit::test]
+    async fn r47_top_band_pane_actions_keep_the_slot_gutter(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) =
+            r45_mount_project_window(&repo, "R47 top band gutter", 1403., 860., cx);
+        root.update(cx, |root, cx| root.workspace_open_diff(cx));
+        cx.run_until_parked();
+
+        let slots = r46_shell_slot_bounds(window, cx);
+        let maximize = shell_bounds(window, "right-workspace-maximize", cx);
+        let gutter = f32::from(slots[0].left()) - f32::from(maximize.right());
+        assert!(
+            (gutter - Layout::SHELL_SLOT_GUTTER).abs() <= 2.0,
+            "pane trailing action to slot band gap: expected 32±2px, got {gutter}px"
+        );
+        // The whole reserved band is exactly the cluster token plus the
+        // gutter, measured from the header's trailing edge.
+        let header = shell_bounds(window, "right-workspace-header", cx);
+        let actions = shell_bounds(window, "right-workspace-actions", cx);
+        assert_close(
+            header.right() - actions.right(),
+            Layout::SHELL_SLOT_CLUSTER_RESERVE + Layout::SHELL_SLOT_GUTTER,
+            "top-band pane header reserves the cluster band plus the gutter",
+        );
     }
 
     #[gpui_kit::test]
@@ -4045,10 +4102,11 @@ mod terminal_tests {
             // the window's top band, so it now reserves the window-anchored
             // slot cluster's trailing band instead of the former 4px `px_1`
             // inset. This is the "absolute x of a right-pane trailing action
-            // that now sits left of the reserved band" case §3 names.
+            // that now sits left of the reserved band" case §3 names. R47 §2.2
+            // extends the reservation with the ownership gutter.
             assert_pixel_close(
                 header.right() - actions.right(),
-                Layout::SHELL_SLOT_CLUSTER_RESERVE,
+                Layout::SHELL_SLOT_CLUSTER_RESERVE + Layout::SHELL_SLOT_GUTTER,
                 "top-band pane actions reserve the shell slot cluster",
             );
             assert_pixel_close(actions.size.width, 80.0, "workspace trailing group");
