@@ -325,6 +325,7 @@ pub struct BranchSelector {
     model: BranchSelectorModel,
     disabled: bool,
     menu_below: bool,
+    chip_chrome: bool,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
 }
@@ -362,6 +363,9 @@ impl BranchSelector {
             model: BranchSelectorModel::default(),
             disabled: false,
             menu_below: false,
+            // Default stays the bordered pill every existing mount point
+            // (Environment card, tests) already renders.
+            chip_chrome: false,
             focus: cx.focus_handle().tab_stop(true),
             scroll: UniformListScrollHandle::new(),
         }
@@ -370,6 +374,14 @@ impl BranchSelector {
     /// Places the popup below a header trigger, or above a composer trigger.
     pub fn set_menu_below(&mut self, below: bool) {
         self.menu_below = below;
+    }
+
+    /// Switches the trigger chrome to the R49 composer utility-bar chip
+    /// (borderless, transparent, hover surface only). Only the trigger's
+    /// decoration changes: open/close, switching, pending, error codes,
+    /// focus, scrolling and popup anchoring are untouched.
+    pub fn set_chip_chrome(&mut self, chip: bool) {
+        self.chip_chrome = chip;
     }
 
     pub fn route(&self) -> (&str, &str) {
@@ -654,20 +666,53 @@ impl Render for BranchSelector {
                     .max_w(px(180.0))
                     .min_w_0()
                     .overflow_hidden()
-                    .px_2()
                     .flex()
                     .items_center()
                     .rounded_md()
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .text_size(px(Typography::SIDEBAR))
-                    .text_color(if disabled {
-                        colors.text_tertiary
-                    } else {
-                        colors.text_secondary
+                    // R49: the R19 bordered pill is the default chrome; the
+                    // composer utility bar mounts the same selector as a
+                    // borderless chip, so the mount point decides. The
+                    // disabled affordance (§8) is identical in both.
+                    .when(!self.chip_chrome, |trigger| {
+                        trigger.px_2().border_1().border_color(colors.border_subtle)
                     })
-                    .when(!disabled, |trigger| trigger.cursor_pointer())
+                    .when(self.chip_chrome, |trigger| {
+                        trigger.gap_2().text_color(if disabled {
+                            colors.text_tertiary
+                        } else {
+                            colors.text_primary
+                        })
+                    })
+                    .text_size(px(Typography::SIDEBAR))
+                    .when(!self.chip_chrome, |trigger| {
+                        trigger.text_color(if disabled {
+                            colors.text_tertiary
+                        } else {
+                            colors.text_secondary
+                        })
+                    })
+                    .when(self.chip_chrome && !disabled, |trigger| {
+                        trigger
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(colors.bg_hover).rounded_md())
+                    })
+                    .when(!self.chip_chrome && !disabled, |trigger| {
+                        trigger.cursor_pointer()
+                    })
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::toggle))
+                    .when(self.chip_chrome, |trigger| {
+                        // R49 §2.3 chip structure: 16px icon in the secondary
+                        // ink, label in the primary ink (tertiary while
+                        // disabled, matching the pill's §8 degradation).
+                        trigger.child(crate::icons::icon(
+                            crate::icons::Icon::ArrowUpDown,
+                            if disabled {
+                                colors.text_tertiary
+                            } else {
+                                colors.text_secondary
+                            },
+                        ))
+                    })
                     .child(label),
             )
             .when(open, |root| {

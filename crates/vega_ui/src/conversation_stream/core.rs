@@ -96,6 +96,12 @@ pub struct ConversationStream {
     pub(crate) mode_menu_open: bool,
     pub(crate) compact_workspace: bool,
     pub(crate) project_label: String,
+    /// R49 utility-bar project menu rows (`(id, name)`), loaded from the same
+    /// store query the sidebar's `ProjectsBlock` renders and only while the
+    /// folder chip's menu is being opened — never during a frame.
+    pub(crate) utility_projects: Vec<(String, String)>,
+    /// Whether the R49 folder chip's project menu is visible.
+    pub(crate) utility_projects_open: bool,
     pub(crate) permission_menu_open: bool,
     pub(crate) compact_focus: [FocusHandle; 2],
     pub(crate) model_selector_highlight: usize,
@@ -166,8 +172,14 @@ impl ConversationStream {
     ) -> Self {
         let input =
             cx.new(|cx| TextInput::new_multiline(cx, "描述任务，或用 @ 引用文件", COMPOSER_ROWS));
-        let branch_selector =
-            cx.new(|cx| BranchSelector::new(thread.id.clone(), thread.project_id.clone(), cx));
+        let branch_selector = cx.new(|cx| {
+            let mut selector =
+                BranchSelector::new(thread.id.clone(), thread.project_id.clone(), cx);
+            // R49: the composer utility bar is this selector's only mount
+            // point, so it always renders the borderless chip chrome.
+            selector.set_chip_chrome(true);
+            selector
+        });
         let commit_panel =
             cx.new(|cx| CommitPanel::new(thread.id.clone(), thread.project_id.clone(), cx));
         // 空输入禁用发送 + `@` 触发的文件选择跟随输入内容变化：输入内容
@@ -266,6 +278,8 @@ impl ConversationStream {
             mode_menu_open: false,
             compact_workspace: false,
             project_label: String::new(),
+            utility_projects: Vec::new(),
+            utility_projects_open: false,
             permission_menu_open: false,
             compact_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             model_selector_highlight: 0,

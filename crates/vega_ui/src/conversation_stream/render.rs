@@ -72,6 +72,12 @@ impl ConversationStream {
             .pt(px(Layout::COMPOSER_PADDING_TOP))
             .pb(px(Layout::COMPOSER_PADDING_BOTTOM))
             .flex_shrink_0()
+            // R49: the utility bar is a real sibling above the card on the
+            // new-task page (zero overlap, no negative margin). The session
+            // page renders the card alone, exactly like Codex.
+            .when(self.utility_bar_visible(cx), |column| {
+                column.child(self.render_composer_utility_bar(cx))
+            })
             .child(
                 div()
                     .debug_selector(|| "composer-shell".into())

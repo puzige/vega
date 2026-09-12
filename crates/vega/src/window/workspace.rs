@@ -800,15 +800,6 @@ impl VegaWindow {
         };
         let project_label = self.shell_project_label(cx);
         let thread = self.shell_project_thread(cx);
-        let branch_selector = thread.as_ref().and_then(|thread| {
-            self.stream_view
-                .as_ref()
-                .filter(|(thread_id, _)| thread_id == &thread.id)
-                .map(|(_, stream)| stream.read(cx).branch_selector())
-        });
-        if let Some(selector) = &branch_selector {
-            selector.update(cx, |selector, _| selector.set_menu_below(true));
-        }
         let close = icon_button(
             Icon::Close,
             "关闭 Environment",
@@ -872,22 +863,6 @@ impl VegaWindow {
                     .text_color(colors.text_primary)
                     .child(vega_ui::icons::icon(Icon::Folder, colors.brand_primary))
                     .child(div().min_w_0().flex_1().truncate().child(label)),
-            );
-        }
-        if let Some(selector) = branch_selector {
-            card = card.child(
-                div()
-                    .debug_selector(|| "environment-branch".into())
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_2()
-                    .child(vega_ui::icons::icon(
-                        Icon::ArrowUpDown,
-                        colors.text_secondary,
-                    ))
-                    .child(div().min_w_0().flex_1().child(selector)),
             );
         }
         if thread.is_some() {

@@ -276,6 +276,7 @@ mod file_reference;
 mod model;
 mod render;
 mod render_rows;
+mod utility_bar;
 
 #[cfg(test)]
 mod tests;
