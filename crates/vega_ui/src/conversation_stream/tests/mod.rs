@@ -26,6 +26,7 @@ mod hydration;
 mod model_markdown;
 mod permissions_cards;
 mod scroll_follow;
+mod utility_bar;
 mod variable_height;
 
 struct StreamHarness {

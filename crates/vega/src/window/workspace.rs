@@ -1852,12 +1852,14 @@ mod tests {
             "main-header-environment",
             "main-header-workspace-right",
             "environment-project",
-            "environment-branch",
             "environment-review",
             "environment-terminal",
         ] {
             let _ = shell_bounds(window, selector, cx);
         }
+        // R49 §2.6 (human ruling 2): the branch entry moved to the composer
+        // utility bar, so the Environment card must not carry it any more.
+        assert!(shell_absent(window, "environment-branch", cx));
 
         shell_click(window, "environment-close", cx);
         assert!(shell_absent(window, "environment-rail", cx));
@@ -3039,6 +3041,168 @@ mod tests {
             f32::from(composer.size.height) >= Layout::COMPOSER_MIN_HEIGHT,
             "narrow composer keeps its 100px minimum"
         );
+    }
+
+    /// R49 §2.2/§2.4: on the new-task page the utility bar mounts as a real
+    /// sibling above the composer card at the frozen geometry; once the
+    /// conversation has a message the whole bar is unmounted.
+    #[gpui_kit::test]
+    async fn r49_utility_bar_mounts_above_the_card_only_on_the_new_task_page(
+        cx: &mut TestAppContext,
+    ) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R49 utility bar", 1403., 860., cx);
+        let card = shell_bounds(window, "composer-shell", cx);
+        let bar = shell_bounds(window, "composer-utility-bar", cx);
+        assert_close(
+            bar.size.height,
+            Layout::COMPOSER_UTILITY_BAR_HEIGHT,
+            "utility bar height",
+        );
+        assert_close(
+            bar.left() - card.left(),
+            Layout::COMPOSER_UTILITY_BAR_INSET,
+            "utility bar left inset from the card",
+        );
+        assert_close(
+            card.right() - bar.right(),
+            Layout::COMPOSER_UTILITY_BAR_INSET,
+            "utility bar right inset from the card",
+        );
+        assert!(
+            (f32::from(bar.bottom()) - f32::from(card.top())).abs() <= 1.0,
+            "utility bar meets the card top: bar bottom {:?}, card top {:?}",
+            bar.bottom(),
+            card.top()
+        );
+        let folder = shell_bounds(window, "composer-utility-project-chip", cx);
+        let branch = shell_bounds(window, "composer-utility-branch-chip", cx);
+        assert_close(
+            folder.left() - bar.left(),
+            Layout::COMPOSER_UTILITY_CHIP_INSET,
+            "first chip inset from the bar's left edge",
+        );
+        assert_close(
+            branch.left() - folder.right(),
+            Layout::COMPOSER_UTILITY_CHIP_GAP,
+            "chip gap",
+        );
+
+        // A durable user message (the route-open hydration projection) turns
+        // this into a session page: the bar is gone, the card is untouched.
+        let stream = root.read_with(cx, |root, _| {
+            root.stream_view.as_ref().expect("mounted stream").1.clone()
+        });
+        stream.update(cx, |stream, cx| {
+            stream.apply_history_page(
+                vega_conversation::history::HistoryPage {
+                    entries: vec![vega_conversation::history::HistoryEntry::UserText {
+                        seq: 1,
+                        content: "first message".into(),
+                    }],
+                    older_cursor: None,
+                    newest_seq: Some(1),
+                },
+                cx,
+            );
+        });
+        assert!(shell_absent(window, "composer-utility-bar", cx));
+        assert_close(
+            shell_bounds(window, "composer-shell", cx).size.width,
+            Layout::COMPOSER_MAX_WIDTH,
+            "session composer keeps its 736px cap",
+        );
+    }
+
+    /// R49 §2.6 / human ruling 2: the Environment card no longer carries the
+    /// branch row while its remaining rows stay exactly as before, and the
+    /// branch entry now lives in the composer utility bar.
+    #[gpui_kit::test]
+    async fn r49_environment_card_drops_the_branch_row(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (_root, window) = r45_mount_project_window(&repo, "R49 environment", 1403., 860., cx);
+        for selector in [
+            "environment-project",
+            "environment-review",
+            "environment-terminal",
+        ] {
+            let _ = shell_bounds(window, selector, cx);
+        }
+        assert!(shell_absent(window, "environment-branch", cx));
+        let _ = shell_bounds(window, "composer-utility-branch-chip", cx);
+    }
+
+    /// R49 §2.6: the migrated branch chip drives the same selector entity and
+    /// the same production open/close path the Environment card used, and the
+    /// opened list reaches a terminal projection through the real worker.
+    ///
+    /// The fixture repo intentionally carries an uncommitted modification, so
+    /// the terminal projection here is the typed `BranchDirty` refusal — the
+    /// switch-capable path itself stays covered by the existing branch suite.
+    #[gpui_kit::test]
+    async fn r49_branch_chip_opens_and_closes_the_selector_from_the_composer(
+        cx: &mut TestAppContext,
+    ) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R49 branch chip", 1403., 860., cx);
+        // The mounted route subscribes the selector to the real branch worker,
+        // so every click must be allowed to reach its terminal state: the
+        // in-flight list fence holds the route's entity handles until then.
+        // The worker is a real OS thread doing real Git work, so the loop
+        // advances the poll clock and also yields real wall time.
+        let settle = |cx: &mut TestAppContext, ready: &dyn Fn(&mut TestAppContext) -> bool| {
+            for _ in 0..400 {
+                cx.executor()
+                    .advance_clock(std::time::Duration::from_millis(4));
+                cx.run_until_parked();
+                if ready(cx) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        let selector_open = |root: &gpui_kit::Entity<VegaWindow>, cx: &mut TestAppContext| {
+            root.read_with(cx, |root, cx| {
+                root.stream_view
+                    .as_ref()
+                    .expect("mounted stream")
+                    .1
+                    .read(cx)
+                    .branch_selector()
+                    .read(cx)
+                    .is_open()
+            })
+        };
+        let list_terminal = |root: &gpui_kit::Entity<VegaWindow>, cx: &mut TestAppContext| {
+            root.read_with(cx, |root, _| {
+                root.branch_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| {
+                        active.list_sequence > 0
+                            && active.list_fence.is_none()
+                            && active.list_cancel.is_none()
+                    })
+            })
+        };
+        assert!(!selector_open(&root, cx));
+        assert!(!list_terminal(&root, cx));
+        shell_click(window, "composer-utility-branch-chip", cx);
+        assert!(
+            selector_open(&root, cx),
+            "the composer branch chip opens the real selector"
+        );
+        settle(cx, &|cx| list_terminal(&root, cx));
+        assert!(
+            list_terminal(&root, cx),
+            "the opened list reached its terminal projection"
+        );
+        shell_click(window, "composer-utility-branch-chip", cx);
+        assert!(
+            !selector_open(&root, cx),
+            "a second click closes the selector"
+        );
+        settle(cx, &|cx| !selector_open(&root, cx));
     }
 
     #[cfg(unix)]
