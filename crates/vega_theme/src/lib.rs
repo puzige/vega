@@ -303,6 +303,26 @@ impl Layout {
     pub const COMPOSER_PADDING_TOP: f32 = 12.0;
     /// Bottom padding of the Composer wrapper column inside the conversation.
     pub const COMPOSER_PADDING_BOTTOM: f32 = 16.0;
+    /// R49 utility bar height, from the Codex native 2x capture of the new-task
+    /// composer (`bar top 707 .. bottom 744`). The bar sits above the composer
+    /// card with zero overlap, so its bottom edge equals the card top.
+    pub const COMPOSER_UTILITY_BAR_HEIGHT: f32 = 37.0;
+    /// R49 utility bar horizontal inset relative to the composer card: the bar
+    /// is 19px narrower on each side (`bar 510.0 .. 1219.5` vs
+    /// `card 497.0 .. 1232.5`), which is what makes it read as a tab strip
+    /// tucked under the card.
+    pub const COMPOSER_UTILITY_BAR_INSET: f32 = 19.0;
+    /// R49 utility bar top corner radius. Codex's captured transition measures
+    /// 8..12; 12 is taken so the bar reads as one layer below the 20px card.
+    /// The bottom corners stay square — the card continues the surface.
+    pub const COMPOSER_UTILITY_BAR_RADIUS: f32 = 12.0;
+    /// R49 gap between adjacent utility-bar chips. Codex measured 28.0 between
+    /// the folder and environment chips and 29.5 before the branch chip; the
+    /// tighter of the two is frozen.
+    pub const COMPOSER_UTILITY_CHIP_GAP: f32 = 28.0;
+    /// R49 leading inset of the first utility-bar chip from the bar's left
+    /// edge (Codex `chip1 left 524.5 - bar left 510.0`).
+    pub const COMPOSER_UTILITY_CHIP_INSET: f32 = 14.5;
     /// Height reserved by every non-Settings main route.
     pub const MAIN_HEADER_HEIGHT: f32 = 46.0;
     /// Gap between the main content panel and the native window edges/sidebar.
@@ -501,6 +521,26 @@ mod tests {
     fn r45_composer_padding_tokens_are_frozen() {
         assert_eq!(Layout::COMPOSER_PADDING_TOP, 12.0);
         assert_eq!(Layout::COMPOSER_PADDING_BOTTOM, 16.0);
+    }
+
+    #[test]
+    fn r49_composer_utility_bar_tokens_are_frozen() {
+        // Codex native 2x capture: bar 510.0..1219.5 (h 37) over card
+        // 497.0..1232.5, chips at 524.5 / 601.5 / 683.0.
+        assert_eq!(Layout::COMPOSER_UTILITY_BAR_HEIGHT, 37.0);
+        assert_eq!(Layout::COMPOSER_UTILITY_BAR_INSET, 19.0);
+        assert_eq!(Layout::COMPOSER_UTILITY_BAR_RADIUS, 12.0);
+        assert_eq!(Layout::COMPOSER_UTILITY_CHIP_GAP, 28.0);
+        assert_eq!(Layout::COMPOSER_UTILITY_CHIP_INSET, 14.5);
+        // The bar is a narrower, tighter layer above the card, never a
+        // replacement: its inset is non-zero and its top radius stays below
+        // the card's 20px so the two surfaces read as separate layers.
+        assert_ne!(Layout::COMPOSER_UTILITY_BAR_INSET, 0.0);
+        assert_ne!(
+            Layout::COMPOSER_UTILITY_BAR_RADIUS,
+            Layout::COMPOSER_RADIUS,
+            "the utility bar must not reuse the composer card radius"
+        );
     }
 
     #[test]
