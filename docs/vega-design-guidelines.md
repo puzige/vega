@@ -1,6 +1,6 @@
 # Vega 设计守则
 
-**版本** v1.31 · 2026-09-12
+**版本** v1.32 · 2026-09-13
 
 **状态** 当前视觉语言与设计 token 的规范入口
 
@@ -134,6 +134,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 | 主 Header | 46px | 底部 1px 分隔线 |
 | 可读内容列 | max 820px | 居中；最小水平内边距 16px |
 | Composer | max 736px / min-height 100px | 圆角 20px，内容可因多行或错误增长；包裹列上下 padding 12/16px（`Layout::COMPOSER_PADDING_TOP/BOTTOM`，值不变，R45 起 token 化） |
+| Composer utility bar | h 37px / inset 19px / radius 12px（顶部） | 仅新建任务页；宽 = 卡片宽 − 2×19，`mx_auto` 共用卡片中轴；bar 底 == 卡片顶（零重叠）；chip gap 28px、首 chip inset 14.5px |
 | 普通 Panel / Card | radius 12px | 默认容器圆角 |
 | Environment rail | 320px | 304px card + 16px right inset；≥1230px 时可持久显示 |
 | Environment card | 304px / inset 16px / radius 18px | 轻边框，必要时使用克制小阴影 |
@@ -149,7 +150,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 ### 6.2 圆角与表面
 
-- 普通卡片默认 12px；Composer 20px；Environment 18px。小型按钮使用共享组件既有尺度，不为单个页面新造圆角档位。
+- 普通卡片默认 12px；Composer 20px；Environment 18px；Composer utility bar 顶部 12px 且底部无圆角（被卡片接续）。小型按钮使用共享组件既有尺度，不为单个页面新造圆角档位。
 - GPUI 当前使用普通原生圆角，不模拟 CSS `corner-shape` / superellipse。未来若增加 squircle，必须形成共享 renderer 和视觉回归，不做组件级渐进增强。
 - 主内容与 Sidebar 依靠中性色差和细分隔表达层级。浮层、菜单、临时 Environment 卡片可以使用轻阴影；常驻卡片默认不叠加阴影阶梯。
 - 不使用 blur/半透明玻璃作为可读性的必要条件。任何材质效果都必须在无 blur 时仍有清晰边界。
@@ -181,6 +182,10 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 - Composer 是单个主表面：增长输入区在上，一行真实操作在下；不要再套多层卡片或装饰性工具栏。
 - 当前壳层使用 max-width 736px、min-height 100px、radius 20px、底部 inset 16px。
+- utility bar（R49）：**仅新建任务页渲染** —— 有项目上下文且当前会话无消息时，卡片上方多一条 utility bar；已发出第一条消息的会话页只渲染卡片本体，谓词必须是真实渲染可见性，不得用 `hidden()` 或零高度占位。bar 只做两格（文件夹 / 分支），Codex 的 `Local`（执行环境）不移植、不占位、不置灰。
+- utility bar 几何（R49，Codex 实机 2x 实测）：bar 高 37px、相对卡片左右各内缩 19px 并共用卡片中轴、顶部圆角 12px 而底部无圆角；bar 底边与卡片顶边**零重叠**（`bar bottom == card top`），靠父列顺序堆叠形成「标签页压在卡片上」的层叠观感，不使用负 margin。bar 内 chip 间距 28px，首个 chip 距 bar 左缘 14.5px。
+- utility bar chip 样式：`icon(16px, text_secondary)` + `label(Typography::SIDEBAR, text_primary)`、`gap_2`；**无边框、无背景、无圆角药丸**，hover 时才出现 `bg_hover` + `rounded_md` 与 pointer 光标。文件夹 chip tooltip「切换项目」、分支 chip tooltip「切换分支」。
+- 文件夹 chip 打开项目下拉（列出 sidebar 已有项目），选中后写共享 `SelectedProject` 并 `refresh_windows`；复用既有项目数据源，不新建数据管道。分支 chip 复用既有 `BranchSelector`（open/close/切换/pending/错误码/focus/滚动语义不变），仅由挂载点切换 trigger chrome（`set_chip_chrome`），非 git 项目按既有 `NonGit` 语义隐藏。
 - Context、mode、permission、model、thinking 与 send/stop 必须连接已有 controller 和 guard。状态缺失时隐藏或禁用，不造假。
 - 不显示装饰性的 token/cost 仪表。成本信息只在有真实账单/计数来源的产品位置展示。
 - 默认使用实色语义表面。玻璃、blur、Web `data-composer-*` 变体和单行 44px 胶囊不属于当前 GPUI 契约；若产品确需新增，必须单独 spec。
@@ -199,6 +204,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 ```
 
 - Environment 只在有真实 project authority 时出现；standalone task 不显示 project-only rail。
+- Environment 卡片不再承载分支入口（R49 人类裁决）：`environment-branch` 行已删除，分支入口唯一化到 composer utility bar，符合「同一动作只有一个入口」。卡片其余行（标题、项目行、Changes / Review、Local terminal）保持不变。
 - 持久右侧 workspace 打开后替代 Environment rail；底部 workspace 横跨 center 与 right。
 - Workspace header 只承载标签与 pane 级操作；内容级工具栏单独成行，并把相关操作收进同一尾部按钮组，禁止用三个同级 `space-between` 元素把中间操作推到面板中央。
 - Terminal 内容在状态栏下使用一致内边距；PTY 行列数以扣除 chrome 和内边距后的真实 canvas bounds 为准。
@@ -271,6 +277,8 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 本文件不以“搬运更多 token”为目标；只有被 Vega 产品需要、能形成语义、可由实现和测试约束的值，才进入设计系统。
 
 ## 15. 变更记录
+
+- v1.32 (2026-09-13)：R49 Composer utility bar 对齐 Codex：§9 明确 utility bar 仅新建任务页渲染（有项目上下文且会话无消息，真实渲染可见性谓词），只做文件夹/分支两格，几何 bar 高 37、左右各内缩 19、顶部圆角 12 而底部无圆角、chip 间距 28、首 chip inset 14.5，bar 底与卡片顶零重叠形成层叠；chip 为无框 16px 图标 + 文字，hover 才出 `bg_hover` + `rounded_md`；文件夹 chip 复用 sidebar 项目数据源打开项目下拉，分支 chip 复用既有 `BranchSelector` 并由挂载点切换 trigger chrome。§10 记录 Environment 卡片不再承载分支入口（`environment-branch` 删除），分支入口唯一在 composer。新增 `COMPOSER_UTILITY_BAR_HEIGHT/INSET/RADIUS`、`COMPOSER_UTILITY_CHIP_GAP/INSET` 五个 token 并有冻结测试；会话 composer 几何（736/100/28/20）不变。真值来源为 Codex 实机原生 2x 抓帧（bar 510.0..1219.5、card 497.0..1232.5、chip 524.5/601.5/683.0）。精确规格见 [R49 Composer utility bar](vega-r49-composer-utility-bar.md)。
 
 - v1.31 (2026-09-12)：R48 Sidebar 缩进阶梯对齐 Codex：§7 侧边栏明确 `base(16) = 标签列 = folder 图标列`，`base + SIDEBAR_ROW_INSET(24) = 文本列 = 项目子任务文本列 = Show More 列`；新增 `SIDEBAR_LABEL_INSET`(0) 与 `SIDEBAR_ROW_INSET`(24) 两个 token，后者是 folder 图标 16 + `gap_2` 8 的导出量（冻结测试断言该恒等式），项目行去掉多余的前导 8px 内边距，子任务行与渐进控件改用共享文本列 token。真值来源为 Codex 实机 AX 控件盒与原生 2x 像素测量（标签 17.5 / folder 图标 16.5 / folder 文本 41.0 / child 文本 40.5）。精确规格见 [R48 Sidebar indent ladder](vega-r48-sidebar-indent-ladder.md)。
 - v1.30 (2026-09-12)：R47 面板结构对齐 Codex：工具条尾随 inset 收敛为 8px（Codex `--padding-toolbar`，取代 12px），槽位中心恒定于窗口右缘 −22/−56/−90，主头部尾随预留改为 104px；顶部条带 pane 头部在槽位带外增加 32px 归属 gutter（预留合计 136px），pane 本地 dock 动作改用 DockMove 图标与槽位图形去重；终端 body 改用 surface（`bg_base`，light = #ffffff）而非 `code_bg`，画布文本左缘 ≈16px；终端状态行仅异常态渲染（Running 态不渲染，复制走 ⌘C action）；workspace pane header 移除下边框，终端面板只保留顶边框一条分隔线。真值来源为 Codex WebView token 源码与原生 2x/AX 实测。精确规格见 [R47 Panel structure alignment](vega-r47-panel-structure-alignment.md)。
