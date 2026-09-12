@@ -321,6 +321,24 @@ impl Layout {
     pub const SIDEBAR_PADDING: f32 = 12.0;
     /// Shared leading origin for Sidebar navigation row titles.
     pub const SIDEBAR_NAV_CONTENT_INSET: f32 = 32.0;
+    /// R48 indent ladder, label column: extra leading inset a Sidebar section
+    /// label adds on top of the navigation content origin. Zero keeps
+    /// `Pinned / Projects / Recents` on the content origin itself, which is the
+    /// column the project folder icon shares (Codex AX: label 17.5, folder icon
+    /// 16.5 in the same coordinate system).
+    pub const SIDEBAR_LABEL_INSET: f32 = 0.0;
+    /// R48 indent ladder, text column: leading inset that lands Sidebar row
+    /// **text** on the shared text column, measured from the navigation content
+    /// origin.
+    ///
+    /// This is a **derived value**, not an independent parameter: it is the
+    /// project row's folder icon (16px) plus its `gap_2` (8px), i.e.
+    /// `16.0 + 8.0`. Rows without an icon (project child tasks, Show More /
+    /// Show Less controls) use it directly so they land on the same column the
+    /// project row reaches by laying out icon + gap. Changing the icon size or
+    /// the row gap without updating this token re-splits the two columns, which
+    /// is exactly what the frozen test below guards.
+    pub const SIDEBAR_ROW_INSET: f32 = 24.0;
     /// Stable width reserved for project metadata in pinned task rows.
     pub const SIDEBAR_PROJECT_METADATA_WIDTH: f32 = 85.0;
     /// Composer width cap; the thread column remains wider for readable output.
@@ -538,6 +556,24 @@ mod tests {
     fn r27_sidebar_row_geometry_is_frozen() {
         assert_eq!(Layout::SIDEBAR_NAV_CONTENT_INSET, 32.0);
         assert_eq!(Layout::SIDEBAR_PROJECT_METADATA_WIDTH, 85.0);
+    }
+
+    #[test]
+    fn r48_sidebar_indent_ladder_is_frozen() {
+        // The label column adds nothing on top of the navigation content
+        // origin, so section labels share the column with the project folder
+        // icon.
+        assert_eq!(Layout::SIDEBAR_LABEL_INSET, 0.0);
+        // The text column is a derived value: folder icon (16) + row gap (8).
+        // Rows without an icon use the token directly, so the two columns stay
+        // merged only while this identity holds.
+        assert_eq!(Layout::SIDEBAR_ROW_INSET, 16.0 + 8.0);
+        assert_eq!(Layout::SIDEBAR_ROW_INSET, 24.0);
+        assert_ne!(
+            Layout::SIDEBAR_ROW_INSET,
+            Layout::SIDEBAR_NAV_CONTENT_INSET,
+            "the R48 text column must not silently reuse the legacy 32px session inset"
+        );
     }
 
     #[test]

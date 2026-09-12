@@ -583,7 +583,9 @@ impl ThreadsBlock {
             .items_center()
             .gap_1()
             .rounded_lg()
-            .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
+            // R48: no leading icon, so the row uses the ladder's text column
+            // directly (base + SIDEBAR_ROW_INSET).
+            .pl(px(Layout::SIDEBAR_ROW_INSET))
             .pr_3()
             .cursor_pointer()
             .text_size(px(Typography::SIDEBAR))

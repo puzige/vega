@@ -331,6 +331,10 @@ impl ThreadsBlock {
                                 .debug_selector(move || {
                                     format!("organization-section-label-{label}")
                                 })
+                                // R48: the label column is an explicit ladder
+                                // step (base + SIDEBAR_LABEL_INSET) instead of
+                                // an implicit inheritance from the container.
+                                .pl(px(Layout::SIDEBAR_LABEL_INSET))
                                 .child(label),
                         ),
                 )
@@ -401,6 +405,8 @@ impl ThreadsBlock {
                     .debug_selector(move || format!("organization-section-label-{label}"))
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
+                    // R48: explicit label ladder step (base + LABEL_INSET).
+                    .pl(px(Layout::SIDEBAR_LABEL_INSET))
                     .child(label),
             )
             .child(
@@ -521,6 +527,8 @@ impl ThreadsBlock {
                     .debug_selector(move || format!("organization-section-label-{label}"))
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_tertiary)
+                    // R48: explicit label ladder step (base + LABEL_INSET).
+                    .pl(px(Layout::SIDEBAR_LABEL_INSET))
                     .child(label),
             )
             .child(
@@ -614,7 +622,8 @@ impl ThreadsBlock {
             .role(gpui_kit::Role::Button)
             .aria_label(label)
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
+            // R48: Show More / Show Less shares the child text column.
+            .pl(px(Layout::SIDEBAR_ROW_INSET))
             .rounded_lg()
             .flex()
             .items_center()
@@ -677,7 +686,8 @@ impl ThreadsBlock {
             .role(gpui_kit::Role::Button)
             .aria_label(label)
             .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-            .pl(px(Layout::SIDEBAR_NAV_CONTENT_INSET))
+            // R48: per-project Show More / Show Less shares the child column.
+            .pl(px(Layout::SIDEBAR_ROW_INSET))
             .rounded_lg()
             .flex()
             .items_center()
@@ -759,7 +769,11 @@ impl ThreadsBlock {
             .flex()
             .items_center()
             .gap_2()
-            .px_2()
+            // R48: the row surface starts at the navigation content origin, so
+            // the folder icon shares the section label column (base + LABEL
+            // INSET). Only the trailing padding remains; the text column is
+            // reached by icon (16) + gap_2 (8) = SIDEBAR_ROW_INSET.
+            .pr_2()
             .rounded_lg()
             .focusable()
             .tab_stop(true)

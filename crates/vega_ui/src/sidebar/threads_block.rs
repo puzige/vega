@@ -1008,7 +1008,10 @@ impl ThreadsBlock {
             true,
             false,
             0.0,
-            Layout::SIDEBAR_NAV_CONTENT_INSET,
+            // R48: a project child row has no leading icon, so it uses the
+            // ladder's text column directly (base + SIDEBAR_ROW_INSET), landing
+            // on the same column as its project row's name.
+            Layout::SIDEBAR_ROW_INSET,
             Typography::SIDEBAR_LINE_HEIGHT,
             cx,
         )
