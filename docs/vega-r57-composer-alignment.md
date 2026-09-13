@@ -90,12 +90,30 @@ defaultReasoningEffort: 'medium'
 e.supportedReasoningEfforts.some(({reasoningEffort: t}) => t === e.reasoningEffort)
 ```
 
-**档位不被支持时的降级**（重要）：
+**档位不被支持时的降级** —— 参考实现里有**两种**，不是一种：
+
+**主流路径（4+ 处使用，`Fxt` 函数）**：
+```js
+function Fxt({model, reasoningEffort}) {
+  let n = model?.supportedReasoningEfforts ?? [];
+  return (reasoningEffort != null && n.some(e => e.reasoningEffort === reasoningEffort))
+    ? reasoningEffort
+    : model?.defaultReasoningEffort ?? n[0]?.reasoningEffort ?? null;
+}
+// 顺序：当前档位（若支持）→ 模型默认档位 → 第一个支持的档位 → null
+```
+
+**边缘路径（1 处，`prepareRuntime`）**：
 ```js
 let u = ['none','minimal','low','medium','high','xhigh','max','ultra','persistent'],
     d = u.find((e,t) => t < u.indexOf(c) && l?.supportedReasoningEfforts.some(...))
-// 降级到「比当前档位低、且被支持的」最近一档
+// Array.find 从索引 0 向上扫 → 返回**最低的**受支持档位（不是"最近的"）
 ```
+
+> **⚠️ 本规格此前的错误**：§3.1 正文曾把上面第二种写成"降级到最近一档"，与所引代码（返回最低档）矛盾，且两种都不是参考实现的主流行为。**以本节为准。**
+>
+> **实现采用的语义**（P2a 切片，已由测试固定）：当前档位 → 最近的低档 → 配置默认档 → 第一个支持的档 → 无。其中「最近的低档」是规格正文的原意，而「配置默认档」与参考实现主流路径一致；第 3–5 步覆盖了参考实现未定义的边界。
+
 
 **默认档位选择**：
 ```js
@@ -148,7 +166,12 @@ function Fxt({model, reasoningEffort}) {
 
 **R9（必须）** 未填充区的点显示为灰色，已填充区显示为白色。
 
-**R10（必须）** 档位不被支持时的降级：按参考实现逻辑，降到「比当前低且被支持的最近一档」。
+**R10（必须）** 档位不被支持时的降级顺序（见 §3.1 修正后的定义）：
+1. 当前档位（若被支持）
+2. 否则「比当前低且被支持」的**最近**一档
+3. 否则配置的默认档位（若被支持）
+4. 否则第一个被支持的档位
+5. 否则不渲染滑块
 
 **R11（必须）** 重置按钮：重置到 `ReasoningProfile.preference`（即配置的默认档位）。
 
