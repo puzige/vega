@@ -574,6 +574,14 @@ impl VegaWindow {
         }
     }
 
+    fn workspace_tab_icon(key: &TabKey) -> Icon {
+        match key {
+            TabKey::Diff | TabKey::File(_) => Icon::Document,
+            TabKey::Terminal(_) => Icon::Terminal,
+            TabKey::Artifact(_) => Icon::Summary,
+        }
+    }
+
     pub(crate) fn workspace_open_diff(&mut self, cx: &mut Context<Self>) {
         if let (Some(thread), Some((_, stream))) = (
             cx.global::<OpenedThread>().0.clone(),
@@ -987,8 +995,30 @@ impl VegaWindow {
             let close_key = key.clone();
             let keyboard_key = key.clone();
             let active = selected.as_ref() == Some(&key);
+            let tab_color = if active {
+                colors.text_primary
+            } else {
+                colors.text_secondary
+            };
+            let tab_icon = Self::workspace_tab_icon(&key);
+            let tab_group = SharedString::from(format!("workspace-tab-group-{key:?}"));
             let tab_selector = SharedString::from(format!("workspace-tab-{key:?}"));
             let close_selector = SharedString::from(format!("workspace-tab-close-{key:?}"));
+            let close = icon_button(
+                Icon::Close,
+                format!("关闭 {}", self.workspace_label(&close_key, cx)),
+                colors,
+                cx.listener(move |this, _, window, cx| {
+                    this.workspace_close_tab(&close_key, window, cx);
+                }),
+            )
+            .when(!active, |close| {
+                close
+                    .opacity(0.)
+                    .group_hover(tab_group.clone(), |style| style.opacity(1.))
+                    .focus_visible(|style| style.opacity(1.))
+            })
+            .debug_selector(move || close_selector.to_string());
             strip = strip.child(
                 div()
                     .id(tab_selector.clone())
@@ -1008,10 +1038,16 @@ impl VegaWindow {
                     }))
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
+                    .group(tab_group)
+                    .h(px(Layout::TAB_HEIGHT))
+                    .gap(px(Layout::TAB_CONTENT_GAP))
+                    .px(px(Layout::TAB_HORIZONTAL_INSET))
+                    .rounded(px(Layout::TAB_RADIUS))
+                    // Reserve the focus ring's 1px border so keyboard focus
+                    // cannot change the tab's text or close-control geometry.
+                    .border_1()
+                    .border_color(colors.bg_base.alpha(0.))
+                    .focus_visible(|style| style.border_color(colors.accent))
                     .bg(if active {
                         // R50: the pill sits on the pane's white `bg_base`
                         // surface, so the selected fill must be derived for
@@ -1021,7 +1057,7 @@ impl VegaWindow {
                         // levels too dark here.
                         colors.bg_active_alpha
                     } else {
-                        colors.bg_sidebar
+                        colors.bg_sidebar.opacity(0.)
                     })
                     .hover(move |s| s.bg(colors.bg_hover))
                     .cursor_pointer()
@@ -1033,25 +1069,18 @@ impl VegaWindow {
                             cx.notify();
                         }),
                     )
+                    .child(vega_ui::icons::icon(tab_icon, tab_color))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .max_w(px(150.))
                             .truncate()
+                            .text_size(px(Typography::SIDEBAR))
+                            .text_color(tab_color)
                             .child(label),
                     )
-                    .child(
-                        icon_button(
-                            Icon::Close,
-                            format!("关闭 {}", self.workspace_label(&close_key, cx)),
-                            colors,
-                            cx.listener(move |this, _, window, cx| {
-                                this.workspace_close_tab(&close_key, window, cx);
-                            }),
-                        )
-                        .debug_selector(move || close_selector.to_string()),
-                    ),
+                    .child(close),
             );
         }
         let mut actions = div()
@@ -3627,6 +3656,24 @@ mod terminal_tests {
                 .composer_input()
         });
         (root, window, input)
+    }
+
+    #[gpui_kit::test]
+    async fn r51_workspace_tabs_keep_frozen_geometry_and_close_hitbox(cx: &mut TestAppContext) {
+        let repo = tempfile::tempdir().expect("owned R51 workspace home");
+        let (_root, window, _input) = r45_terminal_window(repo.path(), cx);
+
+        click_mounted(window, "main-header-terminal", cx);
+        let tab = mounted_bounds(window, "workspace-tab-Terminal(1)", cx);
+        let close = mounted_bounds(window, "workspace-tab-close-Terminal(1)", cx);
+        assert_pixel_close(tab.size.height, Layout::TAB_HEIGHT, "workspace tab height");
+        assert_pixel_close(close.size.width, 24.0, "workspace tab close hitbox width");
+        assert_pixel_close(close.size.height, 24.0, "workspace tab close hitbox height");
+        assert_pixel_close(
+            tab.right() - close.right(),
+            Layout::TAB_HORIZONTAL_INSET,
+            "workspace tab close trailing inset",
+        );
     }
 
     #[gpui_kit::test]

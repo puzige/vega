@@ -464,6 +464,14 @@ impl Layout {
     pub const BOTTOM_WORKSPACE_HEIGHT: f32 = 272.0;
     /// Workspace tab/header height.
     pub const WORKSPACE_HEADER_HEIGHT: f32 = 40.0;
+    /// Workspace tab row height (R51).
+    pub const TAB_HEIGHT: f32 = 28.0;
+    /// Workspace tab corner radius (R51).
+    pub const TAB_RADIUS: f32 = 10.0;
+    /// Horizontal inset inside a workspace tab (R51).
+    pub const TAB_HORIZONTAL_INSET: f32 = 8.0;
+    /// Gap between a workspace tab's type icon, label, and close control (R51).
+    pub const TAB_CONTENT_GAP: f32 = 8.0;
     /// Terminal content toolbar height below the workspace tab header.
     pub const TERMINAL_TOOLBAR_HEIGHT: f32 = 32.0;
     /// Reserved trailing width for session timestamps and the compact action
@@ -578,6 +586,14 @@ mod tests {
         assert_eq!(Layout::COMPOSER_SEND_SIZE, 28.0);
         assert_eq!(Layout::WORKSPACE_HEADER_HEIGHT, 40.0);
         assert_eq!(Layout::BOTTOM_WORKSPACE_HEIGHT, 272.0);
+    }
+
+    #[test]
+    fn r51_workspace_tab_geometry_is_frozen() {
+        assert_eq!(Layout::TAB_HEIGHT, 28.0);
+        assert_eq!(Layout::TAB_RADIUS, 10.0);
+        assert_eq!(Layout::TAB_HORIZONTAL_INSET, 8.0);
+        assert_eq!(Layout::TAB_CONTENT_GAP, 8.0);
     }
 
     #[test]
