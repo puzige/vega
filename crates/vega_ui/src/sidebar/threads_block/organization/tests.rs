@@ -947,12 +947,18 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
         f32::from(projects_label.left() - projects_control.left()),
         Layout::SIDEBAR_ROW_INSET
     );
+    // R50: the group gap is now the single explicit section pitch, not the
+    // legacy shared `gap_2()` 8px. The old 8px here was the other half of the
+    // defect R50 removes (Pinned→Projects measured 12px while this boundary
+    // measured 8px for the same relationship); asserting the token keeps this
+    // test's intent — sections expand independently in the outer scroller —
+    // while pinning the corrected value.
     assert_eq!(
         f32::from(
             bounds(&f, cx, "organization-section-recents").top()
                 - bounds(&f, cx, "organization-section-projects").bottom()
         ),
-        8.0
+        Layout::SIDEBAR_SECTION_GAP
     );
     assert_eq!(
         recent_ids
@@ -1650,4 +1656,98 @@ async fn r48_folder_icon_keeps_its_column_when_the_project_collapses(
         expanded.left(),
         "collapsing a project must not move the folder icon column"
     );
+}
+
+/// R50 contract B, core executable proof: every adjacent section boundary in
+/// `Pinned → Projects → Recents` must be **equal**.
+///
+/// Before R50 the body's shared `gap_2()` (8px) plus `render_pinned_pi`'s
+/// `mb_1()` (4px) gave Pinned→Projects 12px while Projects→Recents stayed at
+/// 8px. The two boundaries express the same relationship, so the reader sees
+/// one of them as looser even though neither is individually wrong. This test
+/// pins both the section-box gap and the text-ink band, so a future extra
+/// margin, padding compensation or special case cannot reintroduce the 4px
+/// difference without failing here.
+#[gpui_kit::test]
+async fn r50_sidebar_section_boundaries_share_one_pitch(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let recent = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let pinned = bounds(&f, cx, "organization-section-pinned");
+    let projects = bounds(&f, cx, "organization-section-projects");
+    let recents = bounds(&f, cx, "organization-section-recents");
+    let pinned_to_projects = f32::from(projects.top() - pinned.bottom());
+    let projects_to_recents = f32::from(recents.top() - projects.bottom());
+
+    assert_eq!(
+        pinned_to_projects, projects_to_recents,
+        "Pinned→Projects ({pinned_to_projects}) and Projects→Recents \
+         ({projects_to_recents}) must share one section pitch"
+    );
+    assert_eq!(
+        pinned_to_projects,
+        Layout::SIDEBAR_SECTION_GAP,
+        "the shared section pitch must come from the explicit token, not a \
+         leftover margin"
+    );
+
+    // The same invariant in the reader's terms: the empty band from the last
+    // text of one section to the next section's label. Section boxes include
+    // their label's internal leading, so equal boxes are necessary but not
+    // sufficient — assert the visible band too.
+    let pinned_title = bounds(&f, cx, format!("pinned-thread-row-title-{}", f.first.id));
+    let projects_title = bounds(&f, cx, format!("project-thread-row-title-{}", f.other.id));
+    let recents_title = bounds(&f, cx, format!("standalone-thread-row-title-{}", recent.id));
+    let pinned_band = f32::from(
+        bounds(&f, cx, "organization-section-label-Projects").top() - pinned_title.bottom(),
+    );
+    let projects_band = f32::from(
+        bounds(&f, cx, "organization-section-label-Recents").top() - projects_title.bottom(),
+    );
+    assert_eq!(
+        pinned_band, projects_band,
+        "the visible band after the Pinned list ({pinned_band}) and after the \
+         Projects list ({projects_band}) must read the same"
+    );
+    assert!(pinned_band > 0.0 && recents_title.top() > recents.top());
+}
+
+/// R50 contract B, second half: `render_pinned_pi` carries no extra margin.
+///
+/// Pinned is not a special section. Asserting the boundary directly (rather
+/// than grepping the source) keeps the invariant tied to rendered geometry,
+/// so any future re-introduction of the 4px step — margin, padding or
+/// coordinate special-casing — fails here regardless of how it is written.
+#[gpui_kit::test]
+async fn r50_pinned_section_carries_no_extra_margin(cx: &mut gpui_kit::TestAppContext) {
+    fn assert_no_extra_margin(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
+        let pinned = bounds(f, cx, "organization-section-pinned");
+        let pinned_row = bounds(f, cx, format!("pinned-thread-row-{}", f.first.id));
+        let projects_header = bounds(f, cx, "organization-header-projects");
+        // The section box ends where its last row ends — no trailing margin
+        // inside the Pinned box itself.
+        assert_eq!(pinned.bottom(), pinned_row.bottom());
+        assert_eq!(
+            f32::from(projects_header.top() - pinned_row.bottom()),
+            Layout::SIDEBAR_SECTION_GAP,
+            "the Pinned→Projects boundary must be exactly one section pitch"
+        );
+    }
+
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+    assert_no_extra_margin(&f, cx);
+
+    // The pitch is a layout token, not a theme-dependent value: it must hold
+    // in dark mode too.
+    cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+    cx.run_until_parked();
+    assert_no_extra_margin(&f, cx);
 }
