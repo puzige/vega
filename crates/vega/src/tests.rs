@@ -93,6 +93,127 @@ fn r21_default_window_geometry_is_frozen() {
     assert_eq!(crate::WINDOW_MIN_HEIGHT, 600.0);
 }
 
+// ---------------------------------------------------------------------------
+// R52 (docs/vega-r52-test-gate.md §2.5): the load-sensitive disabled set is
+// frozen. Rust has no runtime reflection over test attributes, so this gate
+// scans the workspace sources instead: the tree may contain exactly the nine
+// `ignore` attributes below, each must carry a reason starting with
+// `load-sensitive:`, and each must sit on one of the nine named tests. Any
+// silent growth of the disabled set fails here instead of quietly weakening
+// the parallel gate.
+// ---------------------------------------------------------------------------
+
+/// The nine tests R52 disables, each asserting a wall-clock budget that is
+/// only reliable when the test binary runs without parallel CPU contention.
+const R52_LOAD_SENSITIVE_TESTS: [&str; 9] = [
+    "lone_text_delta_flushes_during_provider_stall_within_sixteen_ms",
+    "cancellation_is_persisted_as_interrupted_under_one_second",
+    "duplicate_stop_races_converge_to_exactly_one_terminal_event",
+    "one_hundred_case_delay_matrix_converges_with_p99_under_one_second",
+    "cancellation_stops_a_delayed_provider_under_one_second",
+    "retry_429_honors_retry_after_header",
+    "cancel_during_backoff_aborts_without_another_request",
+    "cancel_mid_stream_stops_immediately_with_no_further_events",
+    "draft_deadline_covers_setup_pre_done_and_post_done_stalls",
+];
+
+/// Workspace root: walk up from this crate until the manifest declaring
+/// `[workspace]` is found, so the scan works from any worktree or target dir.
+fn r52_workspace_root() -> PathBuf {
+    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    loop {
+        let manifest = dir.join("Cargo.toml");
+        if fs::read_to_string(&manifest).is_ok_and(|raw| raw.contains("[workspace]")) {
+            return dir;
+        }
+        assert!(
+            dir.pop(),
+            "no workspace Cargo.toml above {}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+    }
+}
+
+fn r52_collect_rust_sources(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).expect("read source dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            if path.file_name().is_some_and(|name| name == "target") {
+                continue;
+            }
+            r52_collect_rust_sources(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn r52_load_sensitive_ignores_are_frozen() {
+    let root = r52_workspace_root();
+    let mut sources = Vec::new();
+    for member in ["crates", "xtask"] {
+        r52_collect_rust_sources(&root.join(member), &mut sources);
+    }
+    assert!(!sources.is_empty(), "workspace scan found no Rust sources");
+
+    // Assembled at runtime so this test's own source cannot match the needle.
+    let needle = concat!("#[", "ignore");
+    let reason_prefix = "load-sensitive:";
+    let mut disabled = Vec::new();
+    for path in &sources {
+        let text = fs::read_to_string(path).expect("read source");
+        for (offset, _) in text.match_indices(needle) {
+            let line = text[..offset].matches('\n').count() + 1;
+            let rest = text[offset + needle.len()..].trim_start();
+            let rest = rest.strip_prefix('=').unwrap_or_else(|| {
+                panic!("{}:{line}: {needle} must carry a reason", path.display())
+            });
+            let reason = rest.trim_start().strip_prefix('"').unwrap_or_else(|| {
+                panic!(
+                    "{}:{line}: {needle} reason must be a string literal",
+                    path.display()
+                )
+            });
+            assert!(
+                reason.starts_with(reason_prefix),
+                "{}:{line}: {needle} reason must start with `{reason_prefix}`; the disabled set \
+                 may only hold load-sensitive tests",
+                path.display()
+            );
+            let name = text[offset..]
+                .lines()
+                .map(str::trim_start)
+                .find(|candidate| {
+                    candidate.starts_with("async fn ") || candidate.starts_with("fn ")
+                })
+                .and_then(|signature| {
+                    let word = if signature.starts_with("async") { 2 } else { 1 };
+                    signature.split_whitespace().nth(word)
+                })
+                .and_then(|signature| signature.split('(').next())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}:{line}: {needle} is not attached to a fn",
+                        path.display()
+                    )
+                });
+            disabled.push(name);
+        }
+    }
+
+    disabled.sort();
+    let mut expected = R52_LOAD_SENSITIVE_TESTS.map(str::to_owned).to_vec();
+    expected.sort();
+    assert_eq!(
+        disabled,
+        expected,
+        "the disabled test set changed; R52 froze exactly these {} load-sensitive tests",
+        expected.len()
+    );
+}
+
 fn pump_test_app(
     cx: &mut gpui_kit::TestAppContext,
     mut ready: impl FnMut(&mut gpui_kit::TestAppContext) -> bool,
