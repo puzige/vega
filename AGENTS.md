@@ -37,6 +37,31 @@ cargo test --workspace
 门禁由本地 git hooks 执行（`.githooks/`，见 [vega-s1-tasks.md](docs/vega-s1-tasks.md) T03；一次性安装 `git config core.hooksPath .githooks`）。
 外加 exec-guide §3 红线检查（`cargo tree` 依赖方向、色值硬编码 grep 等）。
 
+## 并发构建与测试：同一仓库同时只跑一个
+
+**本仓库所有 worktree 共用一个 `target/` 目录**（构建加速：新 worktree 首次构建从 15 分钟级降到秒级）。代价是**同一时间只能有一个 worktree 在构建或测试**。
+
+cargo 的独占锁**只覆盖编译阶段**，测试二进制一旦构建完成就在锁外执行。所以两个 worktree 的测试套件可以真的同时跑，已实测到两种故障：
+
+1. **产物串味**：一个 worktree 源码构建出的 crate 被另一个源码不同的 worktree 复用，报出源码里明明存在的符号找不到（实测 `E0599`）。普通重建即可恢复，但极易误判为真 bug。
+2. **共享状态竞争**：触碰全局状态的测试偶发失败、重跑就过（实测 3 个 `trusted_git` 测试争抢 git 全局配置）。
+
+**因此：构建/测试前先取锁。**
+
+```sh
+scripts/cargo-lock.sh test --workspace        # 被占用时快速失败并打印持有者
+scripts/cargo-lock.sh build --workspace --all-targets
+scripts/cargo-lock.sh --status                # 当前谁在跑
+scripts/cargo-lock.sh --wait test --workspace # 明确选择排队等待
+scripts/cargo-lock.sh --release               # 清理残留锁（进程已死时）
+```
+
+锁标记放在 `git rev-parse --git-common-dir` 下，该路径在**所有 worktree 中解析为同一处**，因此天然是仓库级共享的。进程崩溃留下的锁会在下次取锁时被自动识别并清理。
+
+**默认快速失败，不静默排队**——静默排队会让 agent 看起来卡死；明确报错才能让它去干别的活，或显式改用 `--wait`。
+
+> 如果某个 worktree 的 `target/` 不是指向共享目录的符号链接（独立构建），它不受此约束。用 `scripts/cargo-lock.sh --status` 之外的判断依据是：该 worktree 下 `target` 是否为符号链接。
+
 ## 架构红线（速记，详见 exec-guide）
 
 - `vega_runtime` 禁止依赖 GPUI/任何 UI crate（headless 可测）
