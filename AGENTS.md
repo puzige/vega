@@ -86,6 +86,31 @@ scripts/cargo-lock.sh --release               # 清理残留锁（进程已死�
 
 > 如果某个 worktree 的 `target/` 不是指向共享目录的符号链接（独立构建），它不受此约束。用 `scripts/cargo-lock.sh --status` 之外的判断依据是：该 worktree 下 `target` 是否为符号链接。
 
+## 原生 UI 验收：合成输入事件无效（工具限制）
+
+**不要用合成键盘/鼠标事件验证本应用的焦点行为——它们驱动不了 GPUI 的焦点链。** 这是工具限制，不是产品缺陷；写成规则以免每轮重复踩坑。
+
+2026-09-13 实测，四种方法全部失败：
+
+| 方法 | 结果 |
+|---|---|
+| Quartz `CGEventCreateKeyboardEvent` 发 Tab | 焦点不移动（连续 10 次停在同处） |
+| AppleScript `key code 48` | 同上 |
+| Quartz unicode 键盘事件打字 | 字符不进入输入框 |
+| macOS AX 查询 `AXFocusedUIElement` | 恒返回 `AXWindow`；窗口 AX 子元素仅 4 个 |
+
+根因：GPUI 应用不把内部焦点暴露给 macOS 辅助功能树，且 `focus_visible` 只在键盘导航路径下渲染。
+
+**推论与正确做法：**
+
+- **焦点归属不能靠截图判断**。composer 等控件用 `focus_visible`（仅键盘导航时可见），鼠标点击后的截图看不出焦点在哪。要验证焦点，读**代码链路**或用 GPUI `TestAppContext`（见下）。
+- **焦点行为的权威验证方式是生产测试**。GPUI 测试可直接注入并断言真实焦点状态：`window.update(cx, |_, w, cx| handle.focus(w, cx))` 后用 `handle.contains_focused(w, cx)` 断言，`window.focus_next(cx)` 可验证键盘导航路径。范例：`crates/vega/src/window/workspace.rs` 的 `r51_inactive_close_follows_parent_focus_and_group_hover`。
+- **合成鼠标事件仍可用于**：悬停（tooltip 会出现）、点击按钮触发无焦点依赖的动作。但依赖焦点状态的交互（tab 键盘激活、`focus_visible` 样式）不可用此法验证。
+- **原生像素验收仍有效**，用于颜色/几何/布局：截图 + 像素测量是可靠证据（如暗色下 tab pill 填充 `(39,39,39)` 与 `0.03×255+0.97×32=38.61` 吻合）。不可靠的只有**依赖焦点的**那部分。
+- 验收报告须区分「行为已验证（生产测试）」与「像素外观已验证（截图）」；不要把前者当作后者。
+
+同类记录：`docs/vega-r47-panel-structure-alignment-delivery.md:80`。
+
 ## 架构红线（速记，详见 exec-guide）
 
 - `vega_runtime` 禁止依赖 GPUI/任何 UI crate（headless 可测）
