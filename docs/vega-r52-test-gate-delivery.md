@@ -117,6 +117,25 @@ test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 三者都在孤立运行时通过，都在高 CPU 争抢（Spotlight `mds_stores` 100%+，另一 worktree 并发跑 `cargo test`）时失败，形态与本轮要解决的负载敏感问题同类，但 spec §2.1 未列它们、§2.3 也未列它们，故**未加 `#[ignore]`、未改断言、未改超时**。建议后续单独一轮按 §2.1 同一判定标准重新审计（尤其这三处都含上界等待或紧超时）。
 
+## 验收复核：CPU 满载不是充分条件（主 Agent 追加）
+
+主 Agent 在合并前独立复核时追加了一组对照实验，**修正了上面对偶发失败成因的归因**，记录如下。
+
+复核中另观察到一次失败：`vega_conversation::terminal::tests::owned_login_pty_persistent_interrupt_resize_exit_and_reap`（3 轮全量并行中 1 次失败，孤立运行 0.60 s 通过）。该测试内部用 `deadline = Instant::now() + Duration::from_secs(8)` 等待真实 PTY 拉起登录 shell，属上界等待，形态与上节三者同类。
+
+**对照实验（决定性）**：
+
+| 条件 | 结果 |
+|---|---|
+| 全量并行 × 4 轮，机器空闲 | **4/4 干净**（1052 passed / 0 failed） |
+| 仅 `-p vega_conversation -p vega_ui` × 4 轮 | 4/4 干净（543/0） |
+| 全量并行 + **10 核 `yes` 满载** | **1052 passed / 0 failed** |
+
+**结论：单纯 CPU 争抢不足以复现这些失败。** 10 核饱和下全量门禁仍然全绿。因此上节把成因归于"高 CPU 争抢"是不完整的——真正触发条件是**同一 target 目录被另一个 worktree 并发使用**（产物串味 + 测试期无锁），而不是机器负载本身。本仓库现已提供 `scripts/cargo-lock.sh` 把构建与测试整体串行化，从机制上消除该触发条件。
+
+**据此对后续审计的建议修正**：这三处（以及 PTY 那个）是否需要隔离，取决于**锁是否生效**，而非机器快慢。在 `cargo-lock.sh` 已生效的前提下，先按现状跑若干轮全量门禁观察；若仍复现，再按 §2.1 标准审计并隔离。不要仅凭"机器忙"就判定为负载敏感——那会掩盖真正的产物串味问题。
+
+
 ## 环境勘误：共享 target 导致的陈旧二进制
 
 `target/` 是指向 `/Users/puzige/Workspace/vega/target` 的符号链接，`vega-r50-sidebar-rhythm`、`vega-r51-tabs`、`vega-skill` 等 worktree 也链接同一目录。
