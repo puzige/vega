@@ -52,11 +52,12 @@ cargo test --workspace
 **新建 worktree 后必须接上，否则第一次构建要等十几分钟：**
 
 ```sh
+# 在主检出里跑（脚本会把所有 worktree 都接上，不只是新建的那个）
 git worktree add -b feat/<task-id>-<slug> ../vega-<slug> master
-scripts/cargo-share-target.sh /Users/puzige/Workspace/vega
+scripts/cargo-share-target.sh
 ```
 
-`scripts/cargo-share-target.sh` 幂等，随时可重跑；`--status` 看当前接线；`--unshare` 恢复独立目录。仓库内不写死机器路径：脚本默认作用于当前仓库，可用 `git rev-parse --show-toplevel` 得到路径后显式传入。
+`scripts/cargo-share-target.sh` 幂等，随时可重跑。无参数时作用于当前仓库；也可显式传仓库路径。`--status` 看当前接线，`--unshare` 恢复独立目录。
 
 **代价与约束见下一节**——共享 target 意味着同一时间只能有一个 worktree 在构建或测试。
 
