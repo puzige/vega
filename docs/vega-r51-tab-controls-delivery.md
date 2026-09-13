@@ -43,3 +43,11 @@ The first run of the existing terminal-flow E2E failed before assertions because
 - LIMIT: The active tab fill remains the existing expression by design; R50 may adjust that expression independently during integration.
 
 Spec deviations: none.
+
+## Coordinator review
+
+- First implementation snapshot: `cargo test --workspace` exited 0. The subsequent parent-focus patch passed executor focused R51 and existing terminal regressions; the full suite was not rerun for that follow-up.
+- Final source: `cargo clippy --all-targets -- -D warnings` exited 0; `cargo xtask package` exited 0 (release build 240 seconds).
+- Native candidate was opened separately from the installed application. Real CUA clicks verified bottom terminal creation, two tabs, switching selection, closing the inactive terminal while retaining the active terminal, and right Review alongside bottom terminal. Screenshots were observed in the coordinator conversation. This supersedes executor NOT RUN for those specific states only.
+- Native keyboard-focus appearance, dark theme and narrow-window checks remain NOT RUN; renderer tests do not prove their pixel appearance. Candidate was not installed or merged by this review.
+- Follow-up audit found branch access disappears for non-empty conversations after R49, and initial global right Review reveal requests Diff focus. These are separate unresolved behavior items, not fixed by R51.

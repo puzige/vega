@@ -278,6 +278,8 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 ## 15. 变更记录
 
+- R51 (2026-09-13)：Workspace 保留多 Tab；Tab 高 28px、圆角 10px、标签 13px、前置类型图标 16px，水平 inset/gap 均为 8px。非激活底色透明，关闭命中区维持 24px；非激活关闭在所属 Tab hover、父 Tab focus 或关闭按钮键盘 focus 时显现且不改变几何。外层 header 和全局槽位不变，激活填充由 R50 独立承接。该尺寸是 Vega 依据用户可见截图选定的实现目标，不代表第三方内部实现。详见 [R51 Tab controls](vega-r51-tab-controls.md)。
+
 - v1.32 (2026-09-13)：R49 Composer utility bar 对齐 Codex：§9 明确 utility bar 仅新建任务页渲染（有项目上下文且会话无消息，真实渲染可见性谓词），只做文件夹/分支两格，几何 bar 高 37、左右各内缩 19、顶部圆角 12 而底部无圆角、chip 间距 28、首 chip inset 14.5，bar 底与卡片顶零重叠形成层叠；chip 为无框 16px 图标 + 文字，hover 才出 `bg_hover` + `rounded_md`；文件夹 chip 复用 sidebar 项目数据源打开项目下拉，分支 chip 复用既有 `BranchSelector` 并由挂载点切换 trigger chrome。§10 记录 Environment 卡片不再承载分支入口（`environment-branch` 删除），分支入口唯一在 composer。新增 `COMPOSER_UTILITY_BAR_HEIGHT/INSET/RADIUS`、`COMPOSER_UTILITY_CHIP_GAP/INSET` 五个 token 并有冻结测试；会话 composer 几何（736/100/28/20）不变。真值来源为 Codex 实机原生 2x 抓帧（bar 510.0..1219.5、card 497.0..1232.5、chip 524.5/601.5/683.0）。精确规格见 [R49 Composer utility bar](vega-r49-composer-utility-bar.md)。
 
 - v1.31 (2026-09-12)：R48 Sidebar 缩进阶梯对齐 Codex：§7 侧边栏明确 `base(16) = 标签列 = folder 图标列`，`base + SIDEBAR_ROW_INSET(24) = 文本列 = 项目子任务文本列 = Show More 列`；新增 `SIDEBAR_LABEL_INSET`(0) 与 `SIDEBAR_ROW_INSET`(24) 两个 token，后者是 folder 图标 16 + `gap_2` 8 的导出量（冻结测试断言该恒等式），项目行去掉多余的前导 8px 内边距，子任务行与渐进控件改用共享文本列 token。真值来源为 Codex 实机 AX 控件盒与原生 2x 像素测量（标签 17.5 / folder 图标 16.5 / folder 文本 41.0 / child 文本 40.5）。精确规格见 [R48 Sidebar indent ladder](vega-r48-sidebar-indent-ladder.md)。
