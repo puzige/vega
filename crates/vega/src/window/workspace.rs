@@ -1013,7 +1013,13 @@ impl VegaWindow {
                     .py_1()
                     .rounded_md()
                     .bg(if active {
-                        colors.bg_active
+                        // R50: the pill sits on the pane's white `bg_base`
+                        // surface, so the selected fill must be derived for
+                        // that surface (5% ink → #f4f4f4). The flattened
+                        // `bg_active` (#ededed) is the same rule already
+                        // composited over the sidebar's #f9f9f9 and reads 7
+                        // levels too dark here.
+                        colors.bg_active_alpha
                     } else {
                         colors.bg_sidebar
                     })
