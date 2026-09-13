@@ -273,6 +273,7 @@ mod file_reference;
 mod model;
 mod render;
 mod render_rows;
+mod thinking_slider;
 mod utility_bar;
 
 #[cfg(test)]
@@ -282,6 +283,9 @@ pub use core::ConversationStream;
 pub(crate) use core::*;
 pub(crate) use model::*;
 pub(crate) use render_rows::*;
+pub use thinking_slider::{
+    ThinkingSlider, ThinkingSliderModel, ThinkingTierSelected, resolve_tier, track_fill_style,
+};
 
 /// Explicit stop for the currently owned worker; the app keeps its generation until terminal.
 pub struct ComposerStopRequested {
