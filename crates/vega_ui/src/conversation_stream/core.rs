@@ -63,7 +63,6 @@ pub struct ConversationStream {
     pub(crate) history_draft: Option<String>,
     pub(crate) approved_not_started: bool,
     pub(crate) trusted_action_busy: bool,
-    pub(crate) setting_focus: [FocusHandle; 7],
     pub(crate) controller_error: Option<String>,
     /// Bounded `@file` selector model (A2-12). Pure UI state over the typed
     /// [`FileIndexSnapshot`]; the app layer owns the filesystem walk.
@@ -93,7 +92,6 @@ pub struct ConversationStream {
     pub(crate) model_options: Vec<String>,
     /// Model selector popover state (open/closed + highlight row).
     pub(crate) model_selector_open: bool,
-    pub(crate) mode_menu_open: bool,
     pub(crate) compact_workspace: bool,
     pub(crate) project_label: String,
     /// R49 utility-bar project menu rows (`(id, name)`), loaded from the same
@@ -102,8 +100,6 @@ pub struct ConversationStream {
     pub(crate) utility_projects: Vec<(String, String)>,
     /// Whether the R49 folder chip's project menu is visible.
     pub(crate) utility_projects_open: bool,
-    pub(crate) permission_menu_open: bool,
-    pub(crate) compact_focus: [FocusHandle; 2],
     pub(crate) model_selector_highlight: usize,
     /// Keyboard focus stop for the model selector trigger (A2-14).
     pub(crate) model_focus: FocusHandle,
@@ -246,16 +242,6 @@ impl ConversationStream {
             history_draft: None,
             approved_not_started: false,
             trusted_action_busy: false,
-            setting_focus: [
-                cx.focus_handle().tab_index(10).tab_stop(true),
-                cx.focus_handle().tab_index(11).tab_stop(true),
-                cx.focus_handle().tab_index(12).tab_stop(true),
-                cx.focus_handle().tab_index(13).tab_stop(true),
-                cx.focus_handle().tab_index(14).tab_stop(true),
-                cx.focus_handle().tab_index(15).tab_stop(true),
-                // Thinking-level chip (A2-14): its own keyboard stop.
-                cx.focus_handle().tab_index(17).tab_stop(true),
-            ],
             controller_error: None,
             file_selector: FileSelectorModel::default(),
             file_snapshot: FileIndexSnapshot::default(),
@@ -275,13 +261,10 @@ impl ConversationStream {
             },
             model_options: Vec::new(),
             model_selector_open: false,
-            mode_menu_open: false,
             compact_workspace: false,
             project_label: String::new(),
             utility_projects: Vec::new(),
             utility_projects_open: false,
-            permission_menu_open: false,
-            compact_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             model_selector_highlight: 0,
             model_focus: cx.focus_handle().tab_index(16).tab_stop(true),
             model_selection_pending: None,
@@ -806,44 +789,6 @@ impl ConversationStream {
         self.request_model_selection(model, cx);
     }
 
-    pub(crate) fn cycle_thinking_clicked(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.cycle_thinking(cx);
-    }
-
-    pub(crate) fn on_cycle_thinking(
-        &mut self,
-        _: &CycleThinking,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.cycle_thinking(cx);
-    }
-
-    /// Rotates through the exact choices declared by the current
-    /// provider/model profile. Unknown or unsupported capability declarations
-    /// expose provider default only and therefore do not invent an off chip.
-    pub(crate) fn cycle_thinking(&mut self, cx: &mut Context<Self>) {
-        let levels = self.reasoning_choice_names();
-        if levels.len() <= 1 {
-            return;
-        }
-        let next = levels
-            .iter()
-            .position(|level| *level == self.composer_defaults.thinking)
-            .map_or(0, |index| (index + 1) % levels.len());
-        self.composer_defaults.thinking = levels[next].clone();
-        cx.emit(ComposerDefaultsRequested {
-            thread_id: self.thread.id.clone(),
-            defaults: self.composer_defaults.clone(),
-        });
-        cx.notify();
-    }
-
     /// Displays a bounded provider/runner failure after durable preparation.
     pub fn apply_agent_error(&mut self, cx: &mut Context<Self>) {
         self.controller_error = Some("执行未完成，可安全重试".into());
@@ -924,29 +869,6 @@ impl ConversationStream {
         if accepted && self.meter.apply(event) {
             cx.notify();
         }
-    }
-
-    fn reasoning_choice_names(&self) -> Vec<String> {
-        let Some(profile) = self.composer_defaults.reasoning.as_ref() else {
-            return vec!["provider_default".to_string()];
-        };
-        // Required means the provider enables thinking; it does not force a
-        // named effort. Keeping provider_default here lets the provider pick
-        // its own legal default and remains distinct from disabled.
-        let mut choices = vec!["provider_default".to_string()];
-        if profile.supports_disabled {
-            choices.push("disabled".to_string());
-        }
-        if !matches!(
-            profile.support,
-            ReasoningSupport::Unsupported | ReasoningSupport::Unknown
-        ) {
-            choices.extend(profile.efforts.iter().cloned());
-        }
-        if choices.is_empty() {
-            choices.push("provider_default".to_string());
-        }
-        choices
     }
 }
 

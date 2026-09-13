@@ -1,51 +1,6 @@
 use super::*;
 
 impl ConversationStream {
-    pub(crate) fn close_compact_settings(
-        &mut self,
-        _: &CloseCompactSettings,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let permission = self.permission_menu_open;
-        self.mode_menu_open = false;
-        self.permission_menu_open = false;
-        self.compact_focus[usize::from(permission)].focus(window, cx);
-        cx.notify();
-    }
-
-    pub(crate) fn on_settings_menu_key(
-        &mut self,
-        event: &gpui_kit::KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.mode_menu_open && !self.permission_menu_open {
-            return;
-        }
-        let permission = self.permission_menu_open;
-        let start = if permission { 3 } else { 0 };
-        match event.keystroke.key.as_str() {
-            "escape" => {
-                self.mode_menu_open = false;
-                self.permission_menu_open = false;
-                self.compact_focus[usize::from(permission)].focus(window, cx);
-            }
-            "left" | "up" | "right" | "down" => {
-                let current =
-                    (start..start + 3).find(|index| self.setting_focus[*index].is_focused(window));
-                let reverse = matches!(event.keystroke.key.as_str(), "left" | "up");
-                let index = current.map_or(start, |index| {
-                    start + (index - start + if reverse { 2 } else { 1 }) % 3
-                });
-                self.setting_focus[index].focus(window, cx);
-            }
-            _ => return,
-        }
-        cx.stop_propagation();
-        cx.notify();
-    }
-
     /// Inserts one artifact immediately after the exact tool entry. Identical
     /// duplicates reconcile in place; conflicting ids fail the existing card
     /// closed and never insert an unrelated entry.
@@ -306,9 +261,10 @@ impl ConversationStream {
             .update(cx, |input, cx| input.set_text(&recalled, cx));
     }
 
+    /// R57 P2b: the only remaining caller is the `+`-menu thread-mode row
+    /// (`composer_actions.rs`); the bottom-row dropdown that used to call it
+    /// is gone.
     pub(crate) fn request_mode(&mut self, mode: ThreadMode, cx: &mut Context<Self>) {
-        self.mode_menu_open = false;
-        cx.notify();
         if self.model_selection_pending.is_some() {
             return;
         }
@@ -321,56 +277,13 @@ impl ConversationStream {
         }
     }
 
-    pub(crate) fn select_ask(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.request_mode(ThreadMode::Ask, cx);
-    }
-
-    pub(crate) fn activate_ask(
-        &mut self,
-        _: &ActivateThreadSetting,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_mode(ThreadMode::Ask, cx);
-    }
-
-    pub(crate) fn select_plan(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.request_mode(ThreadMode::Plan, cx);
-    }
-
-    pub(crate) fn activate_plan(
-        &mut self,
-        _: &ActivateThreadSetting,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_mode(ThreadMode::Plan, cx);
-    }
-
-    pub(crate) fn select_execute(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_mode(ThreadMode::Execute, cx);
-    }
-
-    pub(crate) fn activate_execute(
-        &mut self,
-        _: &ActivateThreadSetting,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_mode(ThreadMode::Execute, cx);
-    }
-
+    /// R57 P2b: the only remaining caller is the `+`-menu permission row
+    /// (`composer_actions.rs`); the bottom-row dropdown that used to call it
+    /// is now static status text.
     pub(crate) fn request_permission_mode(&mut self, mode: PermissionMode, cx: &mut Context<Self>) {
         if self.model_selection_pending.is_some() {
             return;
         }
-        self.permission_menu_open = false;
-        cx.notify();
         if mode != self.thread.permission_mode {
             cx.emit(ThreadSettingsRequested {
                 thread_id: self.thread.id.clone(),
@@ -378,54 +291,5 @@ impl ConversationStream {
                 permission_mode: Some(mode),
             });
         }
-    }
-
-    pub(crate) fn select_readonly(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_permission_mode(PermissionMode::ReadOnly, cx);
-    }
-
-    pub(crate) fn activate_readonly(
-        &mut self,
-        _: &ActivateThreadSetting,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_permission_mode(PermissionMode::ReadOnly, cx);
-    }
-
-    pub(crate) fn select_confirm(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_permission_mode(PermissionMode::Confirm, cx);
-    }
-
-    pub(crate) fn activate_confirm(
-        &mut self,
-        _: &ActivateThreadSetting,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_permission_mode(PermissionMode::Confirm, cx);
-    }
-
-    pub(crate) fn select_auto(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.request_permission_mode(PermissionMode::Auto, cx);
-    }
-
-    pub(crate) fn activate_auto(
-        &mut self,
-        _: &ActivateThreadSetting,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_permission_mode(PermissionMode::Auto, cx);
     }
 }

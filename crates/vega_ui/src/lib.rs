@@ -250,16 +250,9 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("space", plan_card::PlanActivate, Some("PlanCard")),
         KeyBinding::new("tab", plan_card::PlanNext, Some("PlanCard")),
         KeyBinding::new("shift-tab", plan_card::PlanPrevious, Some("PlanCard")),
-        KeyBinding::new(
-            "enter",
-            conversation_stream::ActivateThreadSetting,
-            Some("ThreadSettings"),
-        ),
-        KeyBinding::new(
-            "space",
-            conversation_stream::ActivateThreadSetting,
-            Some("ThreadSettings"),
-        ),
+        // R57 P2b 移除了底部行的模式/权限下拉，`ThreadSettings` 作用域与其
+        // `ActivateThreadSetting` 绑定不再有承载控件（`+` 菜单行直接用鼠标/
+        // Enter 键处理）。整组绑定删除，不留无宿主的作用域。
         // A2-12 `@file` 选择器（S8-T47）：作用域 FileSelect，仅当下拉打开
         // 时由 Composer 输入行携带该上下文，Enter/Tab=接受（first-wins）、
         // Up/Down=移动高亮、Esc=取消；关闭时这些键回落到既有绑定。
@@ -289,7 +282,9 @@ pub fn init(cx: &mut App) {
         ),
         KeyBinding::new("escape", file_selector::CancelFile, Some("FileSelectRetry")),
         // A2-14 模型选择器（S8-T47）：Enter/Space 开合与接受、Up/Down 移动、
-        // Esc 关闭；thinking 档位 chip 用 Enter/Space 循环。
+        // Esc 关闭。R57 P2b 移除了底部行的模式/权限下拉与思考 chip，其
+        // CompactComposerSettings / ThinkingLevel 绑定随之删除；思考档位改由
+        // P3 的滑块组件承担。
         KeyBinding::new(
             "enter",
             conversation_stream::ActivateModel,
@@ -312,23 +307,8 @@ pub fn init(cx: &mut App) {
         ),
         KeyBinding::new(
             "escape",
-            conversation_stream::CloseCompactSettings,
-            Some("CompactComposerSettings"),
-        ),
-        KeyBinding::new(
-            "escape",
             conversation_stream::CloseModel,
             Some("ModelSelector"),
-        ),
-        KeyBinding::new(
-            "enter",
-            conversation_stream::CycleThinking,
-            Some("ThinkingLevel"),
-        ),
-        KeyBinding::new(
-            "space",
-            conversation_stream::CycleThinking,
-            Some("ThinkingLevel"),
         ),
         KeyBinding::new(
             "enter",

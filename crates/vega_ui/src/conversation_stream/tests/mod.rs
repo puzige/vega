@@ -134,6 +134,17 @@ fn focus_composer(
         .expect("composer stream window");
 }
 
+/// Opens the composer `+` menu through the production click path. Shared by
+/// the composer-actions and core-flow suites (R57 P1/P2b).
+fn click_composer_add(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext) {
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let bounds = visual
+        .debug_bounds("composer-add")
+        .expect("composer add button");
+    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+}
+
 fn bash_call(id: &str, command: &str) -> ToolCall {
     ToolCall {
         id: id.into(),

@@ -46,6 +46,7 @@ pub enum Icon {
     Mode,
     Terminal,
     Shield,
+    Warning,
     Thinking,
     Document,
     Summary,
@@ -110,6 +111,7 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Split => IconName::PanelLeft,
         Icon::Mode => IconName::Bot,
         Icon::Terminal => IconName::SquareTerminal,
+        Icon::Warning => IconName::TriangleAlert,
         Icon::Thinking => IconName::Asterisk,
         Icon::Document => IconName::FileText,
         Icon::Pin | Icon::Shield | Icon::Summary | Icon::DockMove => {

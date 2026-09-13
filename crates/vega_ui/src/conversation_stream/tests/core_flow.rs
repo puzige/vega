@@ -1,7 +1,9 @@
 use super::*;
 
 #[gpui_kit::test]
-async fn settings_keyboard_emits_scoped_requests_without_optimistic_state(cx: &mut TestAppContext) {
+async fn r57_plus_menu_permission_rows_emit_scoped_requests_without_optimistic_state(
+    cx: &mut TestAppContext,
+) {
     let global_escapes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let observed_escapes = global_escapes.clone();
     cx.update(|cx| {
@@ -15,44 +17,50 @@ async fn settings_keyboard_emits_scoped_requests_without_optimistic_state(cx: &m
         )])
     });
     let (window, stream, events) = open_controller_stream(cx, "settings-thread");
-    window
-        .update(cx, |_, window, cx| {
-            stream.read(cx).compact_focus[0].clone().focus(window, cx)
-        })
-        .expect("mode trigger");
-    cx.simulate_keystrokes(window.into(), "enter");
-    cx.simulate_keystrokes(window.into(), "down right");
-    cx.simulate_keystrokes(window.into(), "enter");
-    window
-        .update(cx, |_, window, cx| {
-            stream.read(cx).compact_focus[1].clone().focus(window, cx)
-        })
-        .expect("permission trigger");
-    cx.simulate_keystrokes(window.into(), "space");
-    cx.simulate_keystrokes(window.into(), "down right right");
-    cx.simulate_keystrokes(window.into(), "space");
+    // R57 P2b: the bottom-row mode/permission dropdowns are gone, so the
+    // request path is exercised through the `+` menu rows that replaced them
+    // (P1). Rows: file(0) ask(1) plan(2) execute(3) readonly(4) confirm(5)
+    // auto(6).
+    click_composer_add(window, cx);
+    cx.simulate_keystrokes(window.into(), "down down enter");
+    assert_eq!(
+        events.lock().expect("settings event capture").as_slice(),
+        &[ThreadSettingsRequested {
+            thread_id: "settings-thread".into(),
+            mode: Some(ThreadMode::Plan),
+            permission_mode: None,
+        }]
+    );
 
-    window
-        .update(cx, |_, window, cx| {
-            stream.read(cx).compact_focus[1].clone().focus(window, cx)
-        })
-        .expect("permission trigger");
-    cx.simulate_keystrokes(window.into(), "space escape");
-    assert!(!stream.read_with(cx, |stream, _| stream.permission_menu_open));
+    click_composer_add(window, cx);
+    cx.simulate_keystrokes(window.into(), "down down down down down down");
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert_eq!(
+        events.lock().expect("settings event capture").as_slice(),
+        &[
+            ThreadSettingsRequested {
+                thread_id: "settings-thread".into(),
+                mode: Some(ThreadMode::Plan),
+                permission_mode: None,
+            },
+            ThreadSettingsRequested {
+                thread_id: "settings-thread".into(),
+                mode: None,
+                permission_mode: Some(PermissionMode::Auto),
+            },
+        ]
+    );
+
+    // Esc in the open `+` menu closes it inside the menu scope and never
+    // reaches the window-level settings binding.
+    click_composer_add(window, cx);
+    cx.simulate_keystrokes(window.into(), "escape");
     assert_eq!(global_escapes.load(std::sync::atomic::Ordering::SeqCst), 0);
     cx.simulate_keystrokes(window.into(), "escape");
     assert_eq!(global_escapes.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-    let events = events.lock().expect("settings event capture");
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].thread_id, "settings-thread");
-    assert_eq!(events[0].mode, Some(ThreadMode::Plan));
-    assert_eq!(events[0].permission_mode, None);
-    assert_eq!(events[1].thread_id, "settings-thread");
-    assert_eq!(events[1].mode, None);
-    assert_eq!(events[1].permission_mode, Some(PermissionMode::Auto));
-    drop(events);
-
+    // No optimistic state: the displayed thread still holds the fixture's
+    // authoritative values until the app applies a durable thread.
     let selected = stream.read_with(cx, |stream, _| {
         (stream.thread.mode, stream.thread.permission_mode)
     });
@@ -74,6 +82,16 @@ async fn settings_keyboard_emits_scoped_requests_without_optimistic_state(cx: &m
     assert_eq!(selected, (ThreadMode::Plan, PermissionMode::Auto));
 }
 
+/// R57 P2b rewrite of the R21 popover-exclusivity check.
+///
+/// The original asserted that `composer-mode` and `composer-model` are
+/// mutually exclusive. P2b removed the bottom-row mode dropdown (spec §2.3
+/// R1), so that selector no longer exists and the assertion would be about a
+/// control that is gone. What still holds — and is what the original was
+/// really protecting — is that the composer's transient popovers are
+/// exclusive and that the model menu keeps its fixed `MENU_MAX_WIDTH` rather
+/// than collapsing to its trigger width. The surviving pair is the `+`
+/// actions menu and the model menu; both directions are asserted here.
 #[gpui_kit::test]
 async fn r21_composer_popovers_are_exclusive_and_model_labels_keep_menu_width(
     cx: &mut TestAppContext,
@@ -92,6 +110,18 @@ async fn r21_composer_popovers_are_exclusive_and_model_labels_keep_menu_width(
         visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
         visual.run_until_parked();
     };
+    let actions_menu_visible = |cx: &mut TestAppContext| {
+        // `composer-actions-menu` is the always-mounted container (zero-height
+        // while closed); the rows only exist in the frame while it is open.
+        gpui_kit::VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-action-file")
+            .is_some()
+    };
+    let model_menu_visible = |cx: &mut TestAppContext| {
+        gpui_kit::VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-model-menu")
+            .is_some()
+    };
 
     click("composer-model", cx);
     let model_menu = gpui_kit::VisualTestContext::from_window(window.into(), cx)
@@ -105,55 +135,124 @@ async fn r21_composer_popovers_are_exclusive_and_model_labels_keep_menu_width(
     assert_eq!(
         stream.read_with(cx, |stream, _| (
             stream.model_selector_open,
-            stream.mode_menu_open,
-            stream.permission_menu_open,
+            stream.actions.visible(),
         )),
-        (true, false, false)
+        (true, false)
     );
 
-    click("composer-mode", cx);
+    // Opening the `+` menu closes the model menu.
+    click("composer-add", cx);
     assert!(
-        gpui_kit::VisualTestContext::from_window(window.into(), cx)
-            .debug_bounds("composer-model-menu")
-            .is_none()
+        !model_menu_visible(cx),
+        "the `+` menu must close the model menu"
     );
+    assert!(actions_menu_visible(cx), "the `+` menu is open");
     assert_eq!(
         stream.read_with(cx, |stream, _| (
             stream.model_selector_open,
-            stream.mode_menu_open,
-            stream.permission_menu_open,
+            stream.actions.visible(),
         )),
-        (false, true, false)
+        (false, true)
     );
 
+    // Re-opening the model menu closes the `+` menu, and the model menu
+    // keeps its fixed width in this direction too.
     click("composer-model", cx);
     assert!(
-        gpui_kit::VisualTestContext::from_window(window.into(), cx)
-            .debug_bounds("composer-mode-menu")
-            .is_none()
+        !actions_menu_visible(cx),
+        "the model menu must close the `+` menu"
+    );
+    let model_menu = gpui_kit::VisualTestContext::from_window(window.into(), cx)
+        .debug_bounds("composer-model-menu")
+        .expect("model menu after reopening");
+    assert_eq!(
+        f32::from(model_menu.size.width),
+        Layout::MENU_MAX_WIDTH,
+        "model menu must not collapse to its trigger width"
     );
     assert_eq!(
         stream.read_with(cx, |stream, _| (
             stream.model_selector_open,
-            stream.mode_menu_open,
-            stream.permission_menu_open,
+            stream.actions.visible(),
         )),
-        (true, false, false)
+        (true, false)
+    );
+}
+
+/// R57 P2b (spec §2.3 R5 / acceptance A1): the bottom control row renders
+/// exactly `+` | permission status | spacer | model | send, in that left-to-
+/// right order. The removed `Execute` dropdown, the permission dropdown, and
+/// the thinking chip must not appear in any frame.
+#[gpui_kit::test]
+async fn r57_bottom_row_renders_permission_status_between_add_and_model(cx: &mut TestAppContext) {
+    let (window, stream, events) = open_controller_stream(cx, "bottom-row");
+    cx.run_until_parked();
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let add = visual.debug_bounds("composer-add").expect("add button");
+    let permission = visual
+        .debug_bounds("composer-permission-status")
+        .expect("static permission status");
+    let model = visual
+        .debug_bounds("composer-model")
+        .expect("model trigger");
+    let send = visual.debug_bounds("composer-send").expect("send button");
+
+    // The static status sits between the `+` button and the model trigger.
+    assert!(
+        f32::from(add.right()) <= f32::from(permission.left()),
+        "permission status must follow the `+` button: add.right={:?} permission.left={:?}",
+        add.right(),
+        permission.left()
+    );
+    assert!(
+        f32::from(permission.right()) <= f32::from(model.left()),
+        "the model trigger must follow the permission status: permission.right={:?} model.left={:?}",
+        permission.right(),
+        model.left()
+    );
+    assert!(
+        f32::from(model.right()) <= f32::from(send.left()),
+        "send must be the trailing control: model.right={:?} send.left={:?}",
+        model.right(),
+        send.left()
+    );
+    assert_eq!(
+        f32::from(send.size.width),
+        Layout::COMPOSER_SEND_SIZE,
+        "the send button keeps its fixed size"
     );
 
-    click("composer-permission", cx);
+    // The removed controls leave no selector in the frame.
+    for removed in [
+        "composer-mode",
+        "composer-mode-menu",
+        "composer-permission",
+        "composer-permission-menu",
+        "thinking-control",
+    ] {
+        assert!(
+            visual.debug_bounds(removed).is_none(),
+            "{removed} must not be rendered after R57 P2b"
+        );
+    }
+
+    // Static text: clicking it must not open anything and must not emit a
+    // settings request (the reference implementation's `⚠ Full access` is
+    // not an affordance).
+    visual.simulate_click(permission.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
     assert!(
-        gpui_kit::VisualTestContext::from_window(window.into(), cx)
-            .debug_bounds("composer-model-menu")
-            .is_none()
+        !stream.read_with(&visual, |stream, _| stream.actions.visible()),
+        "clicking the permission status must not open the `+` menu"
     );
-    assert_eq!(
-        stream.read_with(cx, |stream, _| (
-            stream.model_selector_open,
-            stream.mode_menu_open,
-            stream.permission_menu_open,
-        )),
-        (false, false, true)
+    assert!(
+        events.lock().expect("settings events").is_empty(),
+        "clicking the permission status must not emit ThreadSettingsRequested"
+    );
+    assert!(
+        visual.debug_bounds("composer-model-menu").is_none(),
+        "clicking the permission status must not open the model menu"
     );
 }
 

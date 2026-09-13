@@ -1,3 +1,4 @@
+use super::composer_actions::permission_label;
 use super::*;
 
 impl ConversationStream {
@@ -52,9 +53,15 @@ impl ConversationStream {
     }
 
     /// Renders the R19 composer: one growing input followed by one action row
-    /// with the existing context, mode, permission, model, thinking and
-    /// send/stop handlers. Project identity and branch controls live in the
-    /// window shell, so this surface never duplicates them or invents state.
+    /// with the existing context, permission status, model and send/stop
+    /// handlers. Project identity and branch controls live in the window
+    /// shell, so this surface never duplicates them or invents state.
+    ///
+    /// R57 P2b (spec §2.3 R1–R5) freezes the bottom row to
+    /// `+` | permission status | spacer | model | send/stop: the `Execute`
+    /// dropdown and the thinking chip are gone, and the permission control is
+    /// static text (not clickable). Thread mode and permission mode stay
+    /// reachable through the `+` menu (`composer_actions.rs`).
     fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
@@ -109,7 +116,6 @@ impl ConversationStream {
                     .on_action(cx.listener(Self::on_model_previous))
                     .on_action(cx.listener(Self::on_model_next))
                     .on_action(cx.listener(Self::on_model_close))
-                    .on_action(cx.listener(Self::on_cycle_thinking))
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -159,11 +165,9 @@ impl ConversationStream {
                                 .track_focus(&self.action_focus[0])
                                 .debug_selector(|| "composer-add".into()),
                             )
-                            .child(self.render_compact_settings(false, cx))
-                            .child(self.render_compact_settings(true, cx))
+                            .child(self.render_permission_status(cx))
                             .child(div().flex_1())
                             .child(self.render_model_selector(cx))
-                            .child(self.render_thinking_control(cx))
                             .when(
                                 self.actions.running || self.composer_submit_pending,
                                 |row| row.child(self.render_composer_stop(cx)),
@@ -243,259 +247,34 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    fn render_compact_settings(&self, permissions: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// R57 P2b (spec §2.3 R2/R5): the permission mode as static status text.
+    ///
+    /// Warning-coloured label plus the warning glyph, never clickable — the
+    /// reference implementation's `⚠ Full access` shape with Vega's existing
+    /// Chinese labels. The label comes from the one projection the `+` menu
+    /// also renders, so the two surfaces cannot drift. The change entry point
+    /// is the `+` menu (P1), which owns the keyboard path this control no
+    /// longer needs.
+    fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let trigger_selector = if permissions {
-            "composer-permission"
-        } else {
-            "composer-mode"
-        };
-        let menu_selector = if permissions {
-            "composer-permission-menu"
-        } else {
-            "composer-mode-menu"
-        };
-        let (label, open, index) = if permissions {
-            (
-                match self.thread.permission_mode {
-                    PermissionMode::ReadOnly => "只读",
-                    PermissionMode::Confirm => "确认",
-                    PermissionMode::Auto => "自动",
-                },
-                self.permission_menu_open,
-                1,
-            )
-        } else {
-            (
-                match self.thread.mode {
-                    ThreadMode::Ask => "Ask",
-                    ThreadMode::Plan => "Plan",
-                    ThreadMode::Execute => "Execute",
-                },
-                self.mode_menu_open,
-                0,
-            )
-        };
+        let label = permission_label(self.thread.permission_mode);
         div()
-            .relative()
-            .child(
-                div()
-                    .id(("composer-settings", index))
-                    .debug_selector(move || trigger_selector.into())
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .track_focus(&self.compact_focus[index])
-                    .tab_stop(true)
-                    .px_1()
-                    .py_1()
-                    .rounded_md()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(if permissions {
-                        colors.warning
-                    } else {
-                        colors.brand_primary
-                    })
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(colors.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            this.compact_focus[index].focus(window, cx);
-                            let open = if permissions {
-                                !this.permission_menu_open
-                            } else {
-                                !this.mode_menu_open
-                            };
-                            this.close_composer_popovers(cx);
-                            if permissions {
-                                this.permission_menu_open = open;
-                            } else {
-                                this.mode_menu_open = open;
-                            }
-                            cx.notify();
-                        }),
-                    )
-                    .on_key_down(
-                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                let open = if permissions {
-                                    !this.permission_menu_open
-                                } else {
-                                    !this.mode_menu_open
-                                };
-                                this.close_composer_popovers(cx);
-                                if permissions {
-                                    this.permission_menu_open = open;
-                                } else {
-                                    this.mode_menu_open = open;
-                                }
-                                cx.stop_propagation();
-                                cx.notify();
-                            }
-                        }),
-                    )
-                    .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
-                    .when(self.compact_workspace, |trigger| {
-                        trigger
-                            .size(px(24.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(crate::icons::icon(
-                                if permissions {
-                                    crate::icons::Icon::Shield
-                                } else {
-                                    crate::icons::Icon::Mode
-                                },
-                                if permissions {
-                                    colors.warning
-                                } else {
-                                    colors.brand_primary
-                                },
-                            ))
-                    })
-                    .when(!self.compact_workspace, |trigger| {
-                        trigger.flex().items_center().gap_1().child(label).child(
-                            crate::icons::icon(
-                                crate::icons::Icon::ChevronDown,
-                                colors.text_tertiary,
-                            ),
-                        )
-                    }),
-            )
-            .when(open, |root| {
-                root.child(
-                    div()
-                        .debug_selector(move || menu_selector.into())
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .absolute()
-                        .bottom(px(32.))
-                        .left_0()
-                        .w(px(180.).min(px(Layout::MENU_MAX_WIDTH)))
-                        .p_1()
-                        .rounded(px(Layout::MENU_RADIUS))
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .bg(colors.bg_elevated)
-                        .shadow_sm()
-                        .child(if permissions {
-                            self.render_permission_controls(cx)
-                        } else {
-                            self.render_mode_controls(cx)
-                        }),
-                )
-            })
-            .into_any_element()
-    }
-
-    fn render_mode_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let enabled = self.model_selection_pending.is_none();
-        div()
+            .id("composer-permission-status")
+            .debug_selector(|| "composer-permission-status".into())
+            .flex_shrink_0()
             .flex()
-            .flex_col()
-            .child(
-                segment(
-                    "Ask",
-                    self.thread.mode == ThreadMode::Ask,
-                    colors,
-                    self.setting_focus[0].clone(),
-                    enabled,
-                )
-                .key_context("ThreadSettings")
-                .when(enabled, |segment| {
-                    segment
-                        .on_action(cx.listener(Self::activate_ask))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_ask))
-                }),
-            )
-            .child(
-                segment(
-                    "Plan",
-                    self.thread.mode == ThreadMode::Plan,
-                    colors,
-                    self.setting_focus[1].clone(),
-                    enabled,
-                )
-                .key_context("ThreadSettings")
-                .when(enabled, |segment| {
-                    segment
-                        .on_action(cx.listener(Self::activate_plan))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_plan))
-                }),
-            )
-            .child(
-                segment(
-                    "Execute",
-                    self.thread.mode == ThreadMode::Execute,
-                    colors,
-                    self.setting_focus[2].clone(),
-                    enabled,
-                )
-                .key_context("ThreadSettings")
-                .when(enabled, |segment| {
-                    segment
-                        .on_action(cx.listener(Self::activate_execute))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_execute))
-                }),
-            )
-            .into_any_element()
-    }
-
-    fn render_permission_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let enabled = self.model_selection_pending.is_none();
-        div()
-            .flex()
-            .flex_col()
-            .child(
-                segment(
-                    "只读",
-                    self.thread.permission_mode == PermissionMode::ReadOnly,
-                    colors,
-                    self.setting_focus[3].clone(),
-                    enabled,
-                )
-                .key_context("ThreadSettings")
-                .when(enabled, |segment| {
-                    segment
-                        .on_action(cx.listener(Self::activate_readonly))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_readonly))
-                }),
-            )
-            .child(
-                segment(
-                    "确认",
-                    self.thread.permission_mode == PermissionMode::Confirm,
-                    colors,
-                    self.setting_focus[4].clone(),
-                    enabled,
-                )
-                .key_context("ThreadSettings")
-                .when(enabled, |segment| {
-                    segment
-                        .on_action(cx.listener(Self::activate_confirm))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_confirm))
-                }),
-            )
-            .child(
-                segment(
-                    "自动",
-                    self.thread.permission_mode == PermissionMode::Auto,
-                    colors,
-                    self.setting_focus[5].clone(),
-                    enabled,
-                )
-                .when(
-                    self.thread.permission_mode == PermissionMode::Auto,
-                    |item| item.text_color(colors.warning),
-                )
-                .key_context("ThreadSettings")
-                .when(enabled, |segment| {
-                    segment
-                        .on_action(cx.listener(Self::activate_auto))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::select_auto))
-                }),
-            )
+            .items_center()
+            .gap_1()
+            .px_1()
+            .py_1()
+            .text_size(px(Typography::METADATA))
+            .text_color(colors.warning)
+            .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
+            .child(crate::icons::icon(
+                crate::icons::Icon::Warning,
+                colors.warning,
+            ))
+            .child(label)
             .into_any_element()
     }
 
@@ -749,92 +528,6 @@ impl ConversationStream {
             })
             .into_any_element()
     }
-
-    /// The thinking-level control (R2): one chip cycling only through the
-    /// exact choices declared by the current provider/model profile.
-    fn render_thinking_control(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        let level = if self.composer_defaults.thinking.is_empty() {
-            "provider_default"
-        } else {
-            self.composer_defaults.thinking.as_str()
-        };
-        let label = match level {
-            "provider_default" => "提供方默认",
-            "disabled" => "关闭",
-            effort => effort,
-        };
-        div()
-            .id("thinking-control")
-            .key_context("ThinkingLevel")
-            .on_action(cx.listener(Self::on_cycle_thinking))
-            .track_focus(&self.setting_focus[6].clone())
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .text_size(px(Typography::SIDEBAR))
-            .text_color(if matches!(level, "provider_default" | "disabled") {
-                colors.text_tertiary
-            } else {
-                colors.brand_primary
-            })
-            .cursor_pointer()
-            .hover(move |style| style.bg(colors.bg_hover))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::cycle_thinking_clicked))
-            .tooltip({
-                let label = format!("推理深度：{label}");
-                move |_, cx| crate::icons::tooltip(label.clone(), cx)
-            })
-            .when(self.compact_workspace, |trigger| {
-                trigger.px_1().child(crate::icons::icon(
-                    crate::icons::Icon::Thinking,
-                    if matches!(level, "provider_default" | "disabled") {
-                        colors.text_secondary
-                    } else {
-                        colors.brand_primary
-                    },
-                ))
-            })
-            .when(!self.compact_workspace, |trigger| {
-                trigger
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(label.to_owned())
-                    .child(crate::icons::icon(
-                        crate::icons::Icon::ChevronDown,
-                        colors.text_tertiary,
-                    ))
-            })
-            .into_any_element()
-    }
-}
-
-fn segment(
-    label: &'static str,
-    selected: bool,
-    colors: ThemeColors,
-    focus: FocusHandle,
-    enabled: bool,
-) -> gpui_kit::Div {
-    div()
-        .track_focus(&focus)
-        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-        .w_full()
-        .px_2()
-        .flex()
-        .items_center()
-        .rounded_md()
-        .text_size(px(Typography::SIDEBAR))
-        .when(enabled, |item| item.cursor_pointer())
-        .when(selected, |item| {
-            item.bg(colors.bg_active).text_color(colors.brand_primary)
-        })
-        .when(!selected && enabled, |item| {
-            item.text_color(colors.text_secondary)
-        })
-        .when(!enabled, |item| item.text_color(colors.text_tertiary))
-        .child(label)
 }
 
 impl Render for ConversationStream {
@@ -941,18 +634,10 @@ impl Render for ConversationStream {
             .bg(colors.bg_base)
             .text_color(colors.text_primary)
             .key_context("ConversationStream")
-            .when(self.mode_menu_open || self.permission_menu_open, |root| {
-                root.key_context("CompactComposerSettings")
-            })
-            .on_action(cx.listener(Self::close_compact_settings))
-            .on_key_down(cx.listener(Self::on_settings_menu_key))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.mode_menu_open || this.permission_menu_open || this.model_selector_open
-                    {
-                        this.mode_menu_open = false;
-                        this.permission_menu_open = false;
+                    if this.model_selector_open {
                         this.model_selector_open = false;
                         cx.notify();
                     }

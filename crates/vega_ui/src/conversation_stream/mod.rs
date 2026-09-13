@@ -73,7 +73,7 @@ use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
     MeterSnapshot, PermissionMode, Plan, ReasoningChoice, ReasoningProfileProjection,
-    ReasoningSupport, RestoredUsage, RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
+    RestoredUsage, RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -104,15 +104,12 @@ actions!(
     vega_conversation_stream,
     [
         SendMessage,
-        CloseCompactSettings,
         PreviousMessage,
-        ActivateThreadSetting,
         OpenWorkspaceDiff,
         ActivateModel,
         PreviousModel,
         NextModel,
         CloseModel,
-        CycleThinking,
         ResumeTail,
         PreviousComposerAction,
         NextComposerAction,

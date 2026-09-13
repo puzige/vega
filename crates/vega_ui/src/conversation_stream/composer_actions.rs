@@ -7,7 +7,7 @@ use gpui_kit::Focusable;
 const MODE_ORDER: [ThreadMode; 3] = [ThreadMode::Ask, ThreadMode::Plan, ThreadMode::Execute];
 
 /// Permission-mode `+`-menu rows (R57 P1), in the same order as the
-/// bottom-row control they replace. P2b removes that control; this group is
+/// bottom-row control they replaced. P2b removed that control; this group is
 /// what keeps the permission mode reachable afterwards.
 const PERMISSION_ORDER: [PermissionMode; 3] = [
     PermissionMode::ReadOnly,
@@ -25,8 +25,10 @@ fn mode_command(mode: ThreadMode) -> &'static str {
     }
 }
 
-/// User-visible permission label, unchanged from the bottom-row control.
-fn permission_label(mode: PermissionMode) -> &'static str {
+/// User-visible permission label. R57 P2b shares this one projection between
+/// the `+`-menu rows and the bottom row's read-only permission status, so the
+/// two surfaces cannot drift.
+pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ReadOnly => "只读",
         PermissionMode::Confirm => "确认",
@@ -163,12 +165,11 @@ impl ComposerActions {
 impl ConversationStream {
     /// Closes every transient Composer surface before another one opens.
     /// Their controller state stays untouched; this only prevents overlapping
-    /// action, file, mode, permission, and model menus.
+    /// action, file, and model menus. R57 P2b removed the bottom-row mode and
+    /// permission dropdowns, so only these three surfaces remain.
     pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
         self.actions.menu = false;
         self.actions.slash = None;
-        self.mode_menu_open = false;
-        self.permission_menu_open = false;
         self.model_selector_open = false;
         self.close_file_selector_and_cancel(cx);
     }
@@ -299,6 +300,10 @@ impl ConversationStream {
         cx.notify();
     }
 
+    /// R57 P2b tab order: the remaining composer stops are the input, the `+`
+    /// context/mode button, the model trigger, and the send/stop button. The
+    /// mode/permission dropdown stops and the thinking chip stop are gone
+    /// with their controls.
     fn move_composer_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.input.read(cx).is_composing() {
             cx.propagate();
@@ -307,10 +312,7 @@ impl ConversationStream {
         let mut controls = vec![
             self.input.read(cx).focus_handle(cx),
             self.action_focus[0].clone(),
-            self.compact_focus[0].clone(),
-            self.compact_focus[1].clone(),
             self.model_focus.clone(),
-            self.setting_focus[6].clone(),
         ];
         if self.actions.running || self.composer_submit_pending {
             controls.push(self.action_focus[1].clone());

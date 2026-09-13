@@ -1,14 +1,5 @@
 use super::*;
 
-fn click_composer_add(window: WindowHandle<StreamHarness>, cx: &mut TestAppContext) {
-    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let bounds = visual
-        .debug_bounds("composer-add")
-        .expect("composer add button");
-    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
-}
-
 fn frame_has(
     window: WindowHandle<StreamHarness>,
     selector: &'static str,
