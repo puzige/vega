@@ -20,6 +20,21 @@ const fn rgba(hex: u32) -> Rgba {
     }
 }
 
+/// Converts an RGB hex literal (`0xRRGGBB`) plus an explicit alpha
+/// (`0.0..=1.0`) to [`Rgba`].
+///
+/// Derived fills keep their alpha as a ratio, not as an 8-bit channel: the
+/// reference rule is `5%` / `3%`, and `13/255` would bake in a rounding step
+/// the surface composition then inherits.
+const fn rgba_alpha(hex: u32, a: f32) -> Rgba {
+    Rgba {
+        r: ((hex >> 16) & 0xFF) as f32 / 255.0,
+        g: ((hex >> 8) & 0xFF) as f32 / 255.0,
+        b: (hex & 0xFF) as f32 / 255.0,
+        a,
+    }
+}
+
 /// The full set of UI color tokens (single appearance, light or dark).
 ///
 /// Field values must come from the token table in the UI spec; the two
@@ -35,7 +50,25 @@ pub struct ThemeColors {
     /// Hover state background.
     pub bg_hover: Rgba,
     /// Selected state background (current thread).
+    ///
+    /// This is a fill **already composited for an opaque sidebar surface**
+    /// (light `#EDEDEDFF` = the 5% ink rule over `#f9f9f9`). Use it on the
+    /// sidebar and other opaque surfaces; on a white surface use
+    /// [`ThemeColors::bg_active_alpha`] so the same rule derives the correct
+    /// value instead of reusing this flattened constant.
     pub bg_active: Rgba,
+    /// Selected/active fill as **5% foreground ink over the current surface**
+    /// (R50 contract A).
+    ///
+    /// Reference semantics: `--color-background-primary-ghost-hover`
+    ///   = `color-mix(in oklab, var(--color-text-foreground) 5%, transparent)`
+    /// with `--color-text-foreground: #1a1c1f` in the light theme. The alpha is
+    /// kept so GPUI composites it against whatever surface the element paints
+    /// on: `#f9f9f9` yields 238 (`#EEEEEE`), `#ffffff` yields 244 (`#F4F4F4`).
+    /// Flattening it to a single opaque constant is exactly the defect this
+    /// token exists to avoid. Dark mode uses 3% white (`#ffffff08`) instead of
+    /// the light ink, and must never fall back to the light value.
+    pub bg_active_alpha: Rgba,
     /// 1px separators and card borders.
     pub border_subtle: Rgba,
     /// Primary text.
@@ -73,6 +106,7 @@ pub const LIGHT: ThemeColors = ThemeColors {
     bg_elevated: rgba(0xFFFFFFFF),
     bg_hover: rgba(0xF3F3F3FF),
     bg_active: rgba(0xEDEDEDFF),
+    bg_active_alpha: rgba_alpha(0x1A1C1F, 0.05),
     border_subtle: rgba(0xE8E8E8FF),
     text_primary: rgba(0x191C1FFF),
     text_secondary: rgba(0x676767FF),
@@ -104,6 +138,7 @@ pub const DARK: ThemeColors = ThemeColors {
     bg_elevated: rgba(0x2A2A2AFF),
     bg_hover: rgba(0x282828FF),
     bg_active: rgba(0x303030FF),
+    bg_active_alpha: rgba_alpha(0xFFFFFF, 0.03),
     border_subtle: rgba(0x383838FF),
     text_primary: rgba(0xEDEDEDFF),
     text_secondary: rgba(0xABABABFF),
@@ -361,6 +396,34 @@ impl Layout {
     pub const SIDEBAR_ROW_INSET: f32 = 24.0;
     /// Stable width reserved for project metadata in pinned task rows.
     pub const SIDEBAR_PROJECT_METADATA_WIDTH: f32 = 85.0;
+    /// R50 section pitch: the vertical gap **between two Sidebar sections**
+    /// (`Pinned` → `Projects` → `Recents`), and nothing else.
+    ///
+    /// This is a section pitch, not a generic gap: it is the single source of
+    /// section-to-section spacing in `render_organization`, replacing the
+    /// shared `body.gap_2()` (8px) that left the Pinned section carrying an
+    /// extra `mb_1()` (4px). Those two produced 12px at Pinned→Projects and
+    /// 8px at Projects→Recents for the same relationship — the defect R50
+    /// removes by giving every boundary one value.
+    ///
+    /// Value derivation. The reference (Codex 2x capture, logical px) measures
+    /// a text band gap of ≈19.6px between rows inside a list and 31px / 43px
+    /// from a section's last row to the next section label (the two differ by
+    /// whether the previous section ends in a scrollable list). An exact match
+    /// is impossible this round: Vega's frozen row height is 32px against the
+    /// reference's 30px, so Vega's own intra-list band gap is 11px, not 19.6.
+    /// What transfers is the *relationship*: the section boundary should read
+    /// as a break, not as another row. At 12px the measured boundary is a
+    /// 21.5px band gap, i.e. 1.95× the 11px row band gap — between the
+    /// reference's two boundary ratios (31/19.6 = 1.58, 43/19.6 = 2.19).
+    ///
+    /// 12 is also the value already frozen by user-verified R35 acceptance and
+    /// written into the design guidelines (`Pinned` → `Projects` 12px), so
+    /// unifying on it corrects the 8px boundary instead of regressing the
+    /// documented one. Any change here must keep both boundaries equal; see the
+    /// structural invariant test in
+    /// `sidebar/threads_block/organization/tests.rs`.
+    pub const SIDEBAR_SECTION_GAP: f32 = 12.0;
     /// Composer width cap; the thread column remains wider for readable output.
     pub const COMPOSER_MAX_WIDTH: f32 = 736.0;
     /// Fixed wide-screen Environment rail width (304px card + 16px inset).
@@ -614,6 +677,96 @@ mod tests {
             Layout::SIDEBAR_NAV_CONTENT_INSET,
             "the R48 text column must not silently reuse the legacy 32px session inset"
         );
+    }
+
+    #[test]
+    fn r50_sidebar_section_pitch_is_frozen() {
+        // One explicit pitch for every section boundary (Pinned→Projects→
+        // Recents). It replaces the shared 8px body gap plus the Pinned-only
+        // 4px margin that made one boundary 12px and the other 8px.
+        //
+        // 12 keeps the user-verified R35 Pinned→Projects value and corrects the
+        // 8px boundary to match, so the two boundaries read as one rhythm
+        // instead of one loose and one tight. Measured in the mounted sidebar:
+        // 12px section box gap, 21.5px visible text band at both boundaries
+        // (1.95× the 11px intra-list band gap), and 42.5px row-to-label
+        // text-to-text.
+        assert_eq!(Layout::SIDEBAR_SECTION_GAP, 12.0);
+        assert_eq!(
+            Layout::SIDEBAR_SECTION_GAP % 4.0,
+            0.0,
+            "the section pitch must stay on the 4px rhythm"
+        );
+    }
+
+    /// Composites a translucent fill over an opaque `0xRRGGBB` surface,
+    /// returning the three 8-bit channels of the result.
+    ///
+    /// Source-over in straight (non-premultiplied) alpha:
+    /// `out = fill * a + surface * (1 - a)`. This mirrors what GPUI does when
+    /// it paints a translucent fill onto an opaque parent surface, and it is
+    /// the pure-function form of the R50 selected-fill rule.
+    fn composite(fill: Rgba, surface: u32) -> [i32; 3] {
+        let surface_rgb = [
+            ((surface >> 16) & 0xFF) as f32,
+            ((surface >> 8) & 0xFF) as f32,
+            (surface & 0xFF) as f32,
+        ];
+        let fill_rgb = [fill.r * 255.0, fill.g * 255.0, fill.b * 255.0];
+        let mut out = [0i32; 3];
+        for (index, channel) in out.iter_mut().enumerate() {
+            *channel =
+                (fill_rgb[index] * fill.a + surface_rgb[index] * (1.0 - fill.a)).round() as i32;
+        }
+        out
+    }
+
+    #[test]
+    fn r50_selected_fill_alpha_tokens_are_frozen() {
+        // The derived fill keeps the reference ratio as a float alpha; the
+        // 8-bit channel would bake in a 13/255 rounding step.
+        assert_eq!(LIGHT.bg_active_alpha.a, 0.05);
+        assert_eq!(DARK.bg_active_alpha.a, 0.03);
+        // Light ink is the reference `--color-text-foreground` (#1a1c1f).
+        assert_eq!(u32::from(LIGHT.bg_active_alpha) >> 8, 0x1A1C1F);
+        // Dark is 3% white, never the light ink.
+        assert_eq!(u32::from(DARK.bg_active_alpha) >> 8, 0xFFFFFF);
+        assert_ne!(
+            u32::from(LIGHT.bg_active_alpha),
+            u32::from(DARK.bg_active_alpha),
+            "dark must not fall back to the light selected fill"
+        );
+        // The flattened sidebar token keeps its own value: it is the rule
+        // already composited over the `#f9f9f9` sidebar, and 49 call sites
+        // depend on it.
+        assert_eq!(u32::from(LIGHT.bg_active), 0xEDEDEDFF);
+        assert_eq!(u32::from(DARK.bg_active), 0x303030FF);
+    }
+
+    #[test]
+    fn r50_selected_fill_derives_from_the_current_surface() {
+        // Executable proof of the rule: 5% ink over an opaque surface.
+        //   #fff    : 0.05*26 + 0.95*255 = 243.55 -> 244 (#f4f4f4)
+        //   #f9f9f9 : 0.05*26 + 0.95*249 = 237.85 -> 238 (#eeeeee, measured 237)
+        // ±1 tolerance covers the 237/238 truncation difference between the
+        // two rounding conventions the reference and Vega use.
+        let over_white = composite(LIGHT.bg_active_alpha, 0xFFFFFF);
+        let over_sidebar = composite(LIGHT.bg_active_alpha, 0xF9F9F9);
+        for channel in over_white {
+            assert!(
+                (channel - 244).abs() <= 1,
+                "5% ink over #ffffff must derive 244, got {channel}"
+            );
+        }
+        for channel in over_sidebar {
+            assert!(
+                (channel - 238).abs() <= 1,
+                "5% ink over #f9f9f9 must derive 238, got {channel}"
+            );
+        }
+        // The whole point: one rule, two surfaces, two results. A flattened
+        // constant could not satisfy both.
+        assert_ne!(over_white, over_sidebar);
     }
 
     #[test]
