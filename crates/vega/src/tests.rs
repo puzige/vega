@@ -117,20 +117,32 @@ const R52_LOAD_SENSITIVE_TESTS: [&str; 9] = [
     "draft_deadline_covers_setup_pre_done_and_post_done_stalls",
 ];
 
-/// Workspace root: walk up from this crate until the manifest declaring
-/// `[workspace]` is found, so the scan works from any worktree or target dir.
+/// Workspace root: walk up from the running test binary's directory until the
+/// manifest declaring `[workspace]` is found.
+///
+/// This deliberately resolves at RUNTIME rather than via
+/// `env!("CARGO_MANIFEST_DIR")`. All worktrees share one `target/` directory,
+/// so a test binary compiled in one worktree can be executed from another.
+/// A compile-time path would then point at a directory that no longer exists
+/// (observed: "no workspace Cargo.toml above .../vega-final-verify/crates/vega"
+/// after that worktree was removed). The test binary always lives under the
+/// target dir of the worktree actually running the tests, so walking up from
+/// it finds the right root in every case.
 fn r52_workspace_root() -> PathBuf {
-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let exe = std::env::current_exe().expect("test binary path");
+    // .../<worktree>/target/debug/deps/<test-binary>
+    let mut dir = exe
+        .parent()
+        .and_then(|deps| deps.parent())
+        .and_then(|debug| debug.parent())
+        .map(PathBuf::from)
+        .expect("test binary lives under <worktree>/target/debug/deps");
     loop {
         let manifest = dir.join("Cargo.toml");
         if fs::read_to_string(&manifest).is_ok_and(|raw| raw.contains("[workspace]")) {
             return dir;
         }
-        assert!(
-            dir.pop(),
-            "no workspace Cargo.toml above {}",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        assert!(dir.pop(), "no workspace Cargo.toml above {}", exe.display());
     }
 }
 
