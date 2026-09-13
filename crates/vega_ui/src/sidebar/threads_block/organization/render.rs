@@ -206,7 +206,12 @@ impl ThreadsBlock {
             .debug_selector(|| "sidebar-organization".into())
             .flex()
             .flex_col()
-            .gap_2();
+            // R50: one explicit section pitch for every section boundary.
+            // This replaces the shared `gap_2()` (8px) that, combined with the
+            // Pinned section's extra `mb_1()` (4px), gave Pinned→Projects 12px
+            // and Projects→Recents 8px — the same relationship rendered at two
+            // different values.
+            .gap(px(Layout::SIDEBAR_SECTION_GAP));
         body = body.children(self.render_pinned_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
@@ -317,7 +322,10 @@ impl ThreadsBlock {
                 .flex()
                 .flex_col()
                 .flex_shrink_0()
-                .mb_1()
+                // R50: Pinned is not a special section. Its former `mb_1()`
+                // added 4px on top of the shared body gap, so Pinned→Projects
+                // measured 12px while Projects→Recents measured 8px. Section
+                // pitch now comes from `Layout::SIDEBAR_SECTION_GAP` alone.
                 .child(
                     div()
                         .debug_selector(|| "organization-header-pinned".into())
