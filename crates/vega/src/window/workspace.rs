@@ -5,7 +5,7 @@ use vega_ui::icons::{Icon, icon_button};
 const MIN_RIGHT_WORKSPACE_AVAILABLE_WIDTH: f32 = 610.;
 const MIN_BOTTOM_WORKSPACE_WINDOW_HEIGHT: f32 = 480.;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum TabKey {
     Diff,
     Terminal(u64),
@@ -43,6 +43,7 @@ pub(super) struct Workspace {
     menu: bool,
     menu_bottom: bool,
     menu_focus: Option<FocusHandle>,
+    tab_focuses: std::collections::HashMap<TabKey, FocusHandle>,
     maximized: [bool; 2],
     width: Option<f32>,
     height: Option<f32>,
@@ -76,6 +77,7 @@ impl Workspace {
             .filter(|(_, bottom)| usize::from(*bottom) == pane)
             .count();
         self.tabs.remove(position);
+        self.tab_focuses.remove(key);
         if self.selected[pane].as_ref() == Some(key) {
             self.reveal_tabs[pane] = true;
             let mut siblings = self
@@ -1004,6 +1006,12 @@ impl VegaWindow {
             let tab_group = SharedString::from(format!("workspace-tab-group-{key:?}"));
             let tab_selector = SharedString::from(format!("workspace-tab-{key:?}"));
             let close_selector = SharedString::from(format!("workspace-tab-close-{key:?}"));
+            let tab_focus = self
+                .workspace
+                .tab_focuses
+                .entry(key.clone())
+                .or_insert_with(|| cx.focus_handle().tab_stop(true))
+                .clone();
             let close = icon_button(
                 Icon::Close,
                 format!("关闭 {}", self.workspace_label(&close_key, cx)),
@@ -1016,6 +1024,7 @@ impl VegaWindow {
                 close
                     .opacity(0.)
                     .group_hover(tab_group.clone(), |style| style.opacity(1.))
+                    .in_focus(|style| style.opacity(1.))
                     .focus_visible(|style| style.opacity(1.))
             })
             .debug_selector(move || close_selector.to_string());
@@ -1027,6 +1036,7 @@ impl VegaWindow {
                     .flex_shrink_0()
                     .max_w_full()
                     .focusable()
+                    .track_focus(&tab_focus)
                     .tab_stop(true)
                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
@@ -3673,6 +3683,69 @@ mod terminal_tests {
             tab.right() - close.right(),
             Layout::TAB_HORIZONTAL_INSET,
             "workspace tab close trailing inset",
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn r51_inactive_close_follows_parent_focus_and_group_hover(cx: &mut TestAppContext) {
+        let repo = tempfile::tempdir().expect("owned R51 workspace home");
+        let (root, window, _input) = r45_terminal_window(repo.path(), cx);
+
+        click_mounted(window, "main-header-terminal", cx);
+        click_mounted(window, "bottom-workspace-add", cx);
+        click_mounted(window, "workspace-add-terminal", cx);
+
+        let first_key = TabKey::Terminal(1);
+        let first_focus = root.read_with(cx, |root, _| {
+            assert_eq!(
+                root.workspace.selected[1],
+                Some(TabKey::Terminal(2)),
+                "second terminal remains active while the first tab is exercised"
+            );
+            root.workspace
+                .tab_focuses
+                .get(&first_key)
+                .cloned()
+                .expect("inactive tab focus handle")
+        });
+
+        let first_tab = mounted_bounds(window, "workspace-tab-Terminal(1)", cx);
+        let close = mounted_bounds(window, "workspace-tab-close-Terminal(1)", cx);
+        window
+            .update(cx, |_, window, cx| first_focus.focus(window, cx))
+            .expect("focus inactive workspace tab");
+        cx.run_until_parked();
+        assert!(
+            window
+                .update(cx, |_, window, cx| {
+                    first_focus.contains_focused(window, cx)
+                })
+                .expect("read workspace tab focus"),
+            "inactive close visibility must follow the parent tab focus"
+        );
+        assert!(
+            window
+                .update(cx, |_, window, cx| {
+                    window.focus_next(cx);
+                    first_focus.contains_focused(window, cx)
+                })
+                .expect("advance keyboard focus inside workspace tab"),
+            "Tab focus must stay within the parent tab while reaching its close control"
+        );
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_mouse_move(first_tab.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        let hovered_close = mounted_bounds(window, "workspace-tab-close-Terminal(1)", cx);
+        assert_eq!(
+            hovered_close, close,
+            "group hover keeps the inactive close hitbox geometry frozen"
+        );
+        visual.simulate_click(hovered_close.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            root.read_with(cx, |root, _| !root.workspace.terminals.contains_key(&1)),
+            "hovered inactive close control must close its own tab"
         );
     }
 
