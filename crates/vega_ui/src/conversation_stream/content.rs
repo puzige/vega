@@ -245,6 +245,48 @@ impl ConversationStream {
         self.thread.permission_mode
     }
 
+    /// The thinking choice this composer projects (`provider_default`,
+    /// `disabled`, or a declared effort). R57 P3 acceptance reads it to prove
+    /// a slider selection became the composer's authoritative state rather
+    /// than only moving the knob.
+    #[doc(hidden)]
+    pub fn thinking_choice(&self) -> &str {
+        &self.composer_defaults.thinking
+    }
+
+    /// The exact reasoning capability projection this composer currently
+    /// carries, or `None` when the model has no profile. R57 P3 acceptance
+    /// reads it to prove the slider's tier list is the model's own
+    /// `ReasoningProfile.efforts` rather than a fixed ladder.
+    #[doc(hidden)]
+    pub fn reasoning_profile(&self) -> Option<&ReasoningProfileProjection> {
+        self.composer_defaults.reasoning.as_ref()
+    }
+
+    /// The mounted tier slider (R57 P3). The application acceptance harness
+    /// reads its live tier and dot count to prove the composer's projection
+    /// reached the real component.
+    #[doc(hidden)]
+    pub fn thinking_slider(&self) -> Entity<ThinkingSlider> {
+        self.thinking_slider.clone()
+    }
+
+    /// Whether the model popup is currently open. R57 P3 acceptance reads it
+    /// to prove a tier-only round trip leaves the popup (which now hosts the
+    /// slider) open, while a model change closes it.
+    #[doc(hidden)]
+    pub fn model_selector_is_open(&self) -> bool {
+        self.model_selector_open
+    }
+
+    /// Number of priced model options the selector currently offers. R57 P3
+    /// acceptance waits on it because the popup (and therefore the slider it
+    /// hosts) only opens once the app published the catalog projection.
+    #[doc(hidden)]
+    pub fn model_options_len(&self) -> usize {
+        self.model_options.len()
+    }
+
     pub fn branch_selector(&self) -> Entity<BranchSelector> {
         self.branch_selector.clone()
     }

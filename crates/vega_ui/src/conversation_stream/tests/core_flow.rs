@@ -583,6 +583,89 @@ async fn unresolved_reasoning_authority_rejects_submit_but_missing_profile_defau
     }));
 }
 
+/// R57 P3: the profile the app worker already pushes onto the stream is what
+/// the mounted slider renders — no second capability path, and no fixed tier
+/// count. A model with no declared tiers renders no slider at all (R12).
+#[gpui_kit::test]
+async fn r57_thinking_slider_follows_the_projected_profile_tier_count(cx: &mut TestAppContext) {
+    let (_window, stream, _) = open_controller_stream(cx, "tier-count");
+
+    // A model that declares two tiers. The reference implementation renders
+    // seven because its own model supports seven (spec §3.4 R7).
+    let mut profile = ReasoningProfileProjection::unknown("owned", "mock");
+    profile.support = ReasoningSupport::Optional;
+    profile.efforts = vec!["low".into(), "max".into()];
+    profile.preference = ReasoningChoice::Effort("max".into());
+    stream.update(cx, |stream, cx| {
+        stream.apply_reasoning_profile(profile.clone(), cx)
+    });
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream
+            .thinking_slider()
+            .read(cx)
+            .dot_count()),
+        2,
+        "the slider renders one dot per declared tier"
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "max",
+        "the projected preference is the displayed tier"
+    );
+
+    // The same profile with no declared efforts: no slider, and the composer
+    // stays at provider default rather than inventing a tier.
+    let mut empty = profile;
+    empty.efforts = Vec::new();
+    empty.preference = ReasoningChoice::ProviderDefault;
+    stream.update(cx, |stream, cx| stream.apply_reasoning_profile(empty, cx));
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream
+            .thinking_slider()
+            .read(cx)
+            .dot_count()),
+        0,
+        "a model with no declared tiers renders no dots"
+    );
+    assert!(!stream.read_with(cx, |stream, cx| {
+        stream.thinking_slider().read(cx).has_tiers()
+    }));
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "provider_default"
+    );
+
+    // A profile whose persisted preference is no longer among its declared
+    // efforts (the file was edited externally while the preference stayed)
+    // resolves through the slider's fallback instead of showing an
+    // unsupported tier (R10). The composer's own projection still reports the
+    // raw preference; the slider is what refuses to render it as selected.
+    let mut narrowed = ReasoningProfileProjection::unknown("owned", "mock");
+    narrowed.support = ReasoningSupport::Optional;
+    narrowed.efforts = vec!["low".into(), "medium".into()];
+    narrowed.preference = ReasoningChoice::Effort("max".into());
+    stream.update(cx, |stream, cx| {
+        stream.apply_reasoning_profile(narrowed, cx);
+    });
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream
+            .thinking_slider()
+            .read(cx)
+            .tier()
+            .map(str::to_string)),
+        Some("medium".to_string()),
+        "an unsupported preference falls back to the nearest lower supported tier"
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream
+            .thinking_slider()
+            .read(cx)
+            .dot_count()),
+        2,
+        "the fallback does not change the declared tier count"
+    );
+}
+
 #[gpui_kit::test]
 async fn approved_not_started_projection_preserves_and_blocks_new_draft(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "approved-recovery");

@@ -663,31 +663,6 @@ impl VegaWindow {
         cx.notify();
     }
 
-    /// A2-14/R1: the thinking cycle still travels on `ComposerDefaultsRequested`,
-    /// but since R1 the in-session model selection is durable at the thread seam
-    /// and must not touch `config.defaults.model` (Settings 的"新任务默认模型"
-    /// keeps its own entry). Thinking stays session-local until R2 freezes its
-    /// wire semantics, so this handler only reflects the composer state back.
-    pub(crate) fn persist_composer_defaults(
-        &mut self,
-        stream: Entity<ConversationStream>,
-        request: &ComposerDefaultsRequested,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
-            return;
-        }
-        // Thinking remains session-local in R1, but its legacy payload also
-        // carries a model field. Preserve the stream's current durable model
-        // so a late thinking event cannot put an older model back on screen
-        // after a model-selection acknowledgement.
-        let mut defaults = request.defaults.clone();
-        defaults.model = stream.read(cx).displayed_model().to_owned();
-        stream.update(cx, |stream, cx| {
-            stream.apply_composer_defaults(defaults, cx)
-        });
-    }
-
     pub(crate) fn persist_thread_settings(
         &mut self,
         stream: Entity<ConversationStream>,

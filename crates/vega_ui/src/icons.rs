@@ -43,11 +43,8 @@ pub enum Icon {
     ArrowDown,
     Refresh,
     Split,
-    Mode,
     Terminal,
-    Shield,
     Warning,
-    Thinking,
     Document,
     Summary,
 }
@@ -56,11 +53,6 @@ pub enum Icon {
 /// pin asset. It is rendered by GPUI's normal SVG pipeline, rather than by a
 /// bespoke canvas path.
 const PIN_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M5 17h14"/><path d="M8 17V7a4 4 0 0 1 8 0v10"/><path d="M6 7h12"/></svg>"#;
-
-/// Lucide's shield path is kept inline because gpui-kit 0.6.0 does not ship
-/// a shield asset. It uses the same 24px, round-corner grammar as the
-/// embedded icon set.
-const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3z"/></svg>"#;
 
 /// Lucide's folder-plus silhouette is kept as one SVG so the add affordance
 /// remains legible at 16px without relying on two independently laid out
@@ -109,12 +101,10 @@ fn icon_name(kind: Icon) -> IconName {
         // A panel outline is the closest mature symbol for a split view and
         // preserves the same visual language as the dock controls.
         Icon::Split => IconName::PanelLeft,
-        Icon::Mode => IconName::Bot,
         Icon::Terminal => IconName::SquareTerminal,
         Icon::Warning => IconName::TriangleAlert,
-        Icon::Thinking => IconName::Asterisk,
         Icon::Document => IconName::FileText,
-        Icon::Pin | Icon::Shield | Icon::Summary | Icon::DockMove => {
+        Icon::Pin | Icon::Summary | Icon::DockMove => {
             unreachable!("inline SVG icons are handled before mapping")
         }
     }
@@ -141,7 +131,6 @@ fn inline_icon(data: &'static [u8], color: Rgba) -> AnyElement {
 pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
     match kind {
         Icon::Pin => inline_icon(PIN_SVG, color),
-        Icon::Shield => inline_icon(SHIELD_SVG, color),
         Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color),
         Icon::Summary => inline_icon(SUMMARY_SVG, color),
         Icon::DockMove => inline_icon(DOCK_MOVE_SVG, color),

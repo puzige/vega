@@ -127,6 +127,15 @@ pub(crate) struct VegaWindow {
     /// can close while the worker is running, so this gate lives above the
     /// Settings entity and still blocks a new run until the exact ack lands.
     pub(crate) reasoning_save_pending: Option<(u64, u64)>,
+    /// R57 P3: monotonic operation id for reasoning saves that originate from
+    /// the composer's tier slider rather than the Settings editor. The two
+    /// surfaces share one single-flight owner; only the id source differs.
+    pub(crate) composer_reasoning_operation: u64,
+    /// R57 P3: newest composer tier intent that arrived while the reasoning
+    /// worker was busy. One drag across the track emits several intents and
+    /// only the final position matters, so a single slot is enough — the next
+    /// save started from it carries the user's last choice.
+    pub(crate) pending_composer_thinking: Option<(String, String)>,
     /// Provider Settings saves request a model catalog reload. If a reasoning
     /// save owns the catalog authority, defer that reload until its ack so the
     /// two workers cannot regress each other's projections.
@@ -268,6 +277,8 @@ impl VegaWindow {
             configured_reasoning_error: None,
             configured_reasoning_authority: None,
             reasoning_save_pending: None,
+            composer_reasoning_operation: 0,
+            pending_composer_thinking: None,
             model_catalog_refresh_pending: false,
             reasoning_error_hold: None,
             model_catalog_loading: false,

@@ -87,6 +87,11 @@ pub struct ConversationStream {
     /// Provider/model/thinking composer defaults (A2-14). Display state for
     /// the selector; authority is the app-level config seam.
     pub(crate) composer_defaults: ComposerDefaults,
+    /// R57 P3: the thinking-tier slider (P2a) mounted inside the model popup.
+    /// It reads the exact `(provider, model)` profile the stream already
+    /// received through [`Self::apply_reasoning_profile`]; this entity owns no
+    /// store handle and performs no IO.
+    pub(crate) thinking_slider: Entity<ThinkingSlider>,
     /// Priced model options for the selector (from the T36 pricing catalog
     /// via the app layer's typed projection; zero file IO here).
     pub(crate) model_options: Vec<String>,
@@ -212,6 +217,22 @@ impl ConversationStream {
         let list = gpui_kit::ListState::new(0, gpui_kit::ListAlignment::Top, px(600.0));
         list.set_follow_mode(gpui_kit::FollowMode::Tail);
         let initial_model = thread.model.clone();
+        // R57 P3: the tier slider starts with the durable thread model and no
+        // tiers. The exact profile arrives later through
+        // `apply_reasoning_profile` (the same app worker that already feeds
+        // the composer's reasoning state), so no capability is guessed here.
+        let thinking_slider =
+            cx.new(|cx| ThinkingSlider::new(initial_model.clone(), Vec::new(), "", "", cx));
+        // The slider owns its knob and emits the user's intent; the stream
+        // routes that intent onto the existing `ComposerDefaultsRequested`
+        // save path rather than persisting anything itself.
+        cx.subscribe(
+            &thinking_slider,
+            |this, _, event: &ThinkingTierSelected, cx| {
+                this.apply_thinking_tier_selected(event, cx);
+            },
+        )
+        .detach();
         Self {
             thread,
             entries: Vec::new(),
@@ -259,6 +280,7 @@ impl ConversationStream {
                 reasoning: None,
                 reasoning_unavailable: false,
             },
+            thinking_slider,
             model_options: Vec::new(),
             model_selector_open: false,
             compact_workspace: false,
@@ -517,25 +539,12 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Reflects the authoritative provider/model/thinking composer defaults
-    /// after the app persisted a selection at the config seam.
-    pub fn apply_composer_defaults(&mut self, defaults: ComposerDefaults, cx: &mut Context<Self>) {
-        self.composer_defaults = defaults;
-        if self.composer_defaults.thinking.is_empty() {
-            self.composer_defaults.thinking = self
-                .composer_defaults
-                .reasoning
-                .as_ref()
-                .map(|profile| reasoning_choice_name(&profile.preference))
-                .unwrap_or_else(|| "provider_default".to_string());
-        }
-        self.model_selector_open = false;
-        cx.notify();
-    }
-
     /// Projects the exact provider/model capability loaded by the app worker
     /// onto this route. A profile refresh also resets the displayed choice to
     /// its persisted preference, keeping model switches deterministic.
+    ///
+    /// R57 P3: the same projection feeds the tier slider, so the card and the
+    /// composer always name one model and one tier list.
     pub fn apply_reasoning_profile(
         &mut self,
         profile: ReasoningProfileProjection,
@@ -544,6 +553,7 @@ impl ConversationStream {
         self.composer_defaults.reasoning = Some(profile.clone());
         self.composer_defaults.reasoning_unavailable = false;
         self.composer_defaults.thinking = reasoning_choice_name(&profile.preference);
+        self.sync_thinking_slider(cx);
         cx.notify();
     }
 
@@ -555,6 +565,7 @@ impl ConversationStream {
         self.composer_defaults.reasoning = None;
         self.composer_defaults.reasoning_unavailable = false;
         self.composer_defaults.thinking = "provider_default".to_string();
+        self.sync_thinking_slider(cx);
         cx.notify();
     }
 
@@ -565,6 +576,68 @@ impl ConversationStream {
         self.composer_defaults.reasoning = None;
         self.composer_defaults.reasoning_unavailable = true;
         self.composer_defaults.thinking = "provider_default".to_string();
+        self.sync_thinking_slider(cx);
+        cx.notify();
+    }
+
+    /// R57 P3: re-projects the model name, the model's declared tiers, and the
+    /// current/default tier onto the slider.
+    ///
+    /// The tiers are exactly the profile's own `efforts` (R7) — a model that
+    /// declares three tiers renders three dots, never the reference's fixed
+    /// seven. A profile that declares no legal effort vocabulary
+    /// (`Unsupported`/`Unknown`, or an empty list) renders nothing (R12).
+    /// The name and the tier list come from the same projection, so the card
+    /// cannot name one model while showing another model's tiers.
+    pub(crate) fn sync_thinking_slider(&mut self, cx: &mut Context<Self>) {
+        let (model_name, tiers, default_tier) = match self.composer_defaults.reasoning.as_ref() {
+            Some(profile) => (
+                profile.model.clone(),
+                declared_tiers(profile.support, &profile.efforts),
+                preferred_tier_name(&profile.preference)
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+            None => (
+                self.composer_defaults.model.clone(),
+                Vec::new(),
+                String::new(),
+            ),
+        };
+        let current = self.composer_defaults.thinking.clone();
+        self.thinking_slider.update(cx, |slider, cx| {
+            slider.set_model_and_tiers(model_name, tiers, current, default_tier, cx);
+        });
+    }
+
+    /// R57 P3: routes one slider selection onto the existing
+    /// `ComposerDefaultsRequested` save path.
+    ///
+    /// The event is refused unless it names the profile the composer currently
+    /// projects *and* one of that profile's declared efforts, so an invalid
+    /// preference can never reach the reasoning authority or a later run's
+    /// frozen snapshot. Nothing is persisted here: the app handler owns the
+    /// durable write and re-projects the authoritative profile back through
+    /// [`Self::apply_reasoning_profile`].
+    fn apply_thinking_tier_selected(
+        &mut self,
+        event: &ThinkingTierSelected,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(profile) = self.composer_defaults.reasoning.as_ref() else {
+            return;
+        };
+        if profile.model != event.model
+            || !profile.efforts.iter().any(|effort| effort == &event.tier)
+            || self.composer_defaults.thinking == event.tier
+        {
+            return;
+        }
+        self.composer_defaults.thinking = event.tier.clone();
+        cx.emit(ComposerDefaultsRequested {
+            thread_id: self.thread.id.clone(),
+            defaults: self.composer_defaults.clone(),
+        });
         cx.notify();
     }
 
@@ -877,6 +950,34 @@ fn reasoning_choice_name(choice: &ReasoningChoice) -> String {
         ReasoningChoice::ProviderDefault => "provider_default".to_string(),
         ReasoningChoice::Disabled => "disabled".to_string(),
         ReasoningChoice::Effort(effort) => effort.clone(),
+    }
+}
+
+/// The tiers the slider must render for one profile (R57 P3 / R7).
+///
+/// Only a profile whose capability is a real declaration contributes tiers:
+/// `Unsupported`/`Unknown` carry no legal effort vocabulary, so they render no
+/// slider (R12) rather than guessing one. The profile's own `efforts` order is
+/// preserved, because that order is also the dot order.
+pub(crate) fn declared_tiers(support: ReasoningSupport, efforts: &[String]) -> Vec<String> {
+    if matches!(
+        support,
+        ReasoningSupport::Unsupported | ReasoningSupport::Unknown
+    ) {
+        return Vec::new();
+    }
+    efforts.to_vec()
+}
+
+/// The tier name a persisted preference names, when it names one at all.
+///
+/// `provider_default` and `disabled` are not tiers, so they carry no name and
+/// the slider resolves through its own fallback rules instead — exactly like a
+/// declared effort the model no longer supports.
+pub(crate) fn preferred_tier_name(preference: &ReasoningChoice) -> Option<&str> {
+    match preference {
+        ReasoningChoice::Effort(effort) => Some(effort.as_str()),
+        ReasoningChoice::ProviderDefault | ReasoningChoice::Disabled => None,
     }
 }
 

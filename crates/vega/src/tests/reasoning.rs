@@ -4,6 +4,429 @@ use super::*;
 use vega_store::config::AppConfig;
 use vega_ui::settings::{ReasoningSettingsProjection, ReasoningTemplate};
 
+/// Owned three-tier reasoning profile for the R57 P3 slider tests.
+///
+/// The tier list is deliberately three long: the reference implementation
+/// renders seven because *its* model supports seven (spec §3.4 R7). A model
+/// declaring three must render three, which is the property these tests pin.
+fn three_tier_reasoning_config() -> vega_store::reasoning::ReasoningConfig {
+    vega_store::reasoning::ReasoningConfig {
+        version: vega_store::reasoning::REASONING_CONFIG_VERSION,
+        profiles: vec![vega_store::reasoning::ReasoningProfile {
+            provider: "owned".into(),
+            model: "gpt-5.6-terra".into(),
+            protocol: "openai_chat_completions".into(),
+            support: "optional".into(),
+            efforts: vec!["low".into(), "medium".into(), "high".into()],
+            supports_disabled: false,
+            disabled_wire: None,
+            preserve_reasoning_content: false,
+            preference: "medium".into(),
+        }],
+    }
+}
+
+/// The R57 P3 fixture: a real `VegaWindow`, a real stream, the owned config and
+/// reasoning files, and the same subscriptions production installs.
+struct ThinkingSliderFixture {
+    _config_root: TempDir,
+    _data_root: TempDir,
+    reasoning_path: std::path::PathBuf,
+    database_path: std::path::PathBuf,
+    thread: Thread,
+    root: Entity<VegaWindow>,
+    stream: Entity<ConversationStream>,
+    window: gpui_kit::WindowHandle<VegaWindow>,
+}
+
+impl ThinkingSliderFixture {
+    /// Builds the fixture and waits until the catalog worker has published the
+    /// owned reasoning profile onto the stream.
+    fn open(cx: &mut gpui_kit::TestAppContext) -> Self {
+        let config_root = tempfile::tempdir().expect("slider config root");
+        let config_path = config_root.path().join("config.toml");
+        model_selection_config(&config_path);
+        let reasoning_path = config_root.path().join("reasoning.toml");
+        let bytes = vega_store::reasoning::encode(&three_tier_reasoning_config())
+            .expect("encode owned reasoning profile");
+        fs::write(&reasoning_path, bytes).expect("owned reasoning file");
+
+        let data_root = tempfile::tempdir().expect("slider data root");
+        let database_path = data_root.path().join("vega.db");
+        let store = Store::open(&database_path).expect("slider store");
+        store.migrate().expect("slider migrations");
+        let project = vega_store::projects::create(
+            store.conn(),
+            data_root.path().to_str().expect("UTF-8 slider path"),
+            "slider-e2e",
+            None,
+        )
+        .expect("slider project");
+        let thread = vega_conversation::threads::create_thread(
+            &store,
+            &project.id,
+            "gpt-5.6-terra",
+            PermissionMode::Confirm.as_str(),
+        )
+        .expect("slider thread");
+        cx.update(|cx| {
+            install_diff_window_globals(
+                Store::open(&database_path).expect("slider global store"),
+                thread.clone(),
+                cx,
+            )
+        });
+
+        let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
+        let provider = Arc::new(vega_runtime::MockProvider::new(Vec::new()));
+        let root = cx.new(VegaWindow::new);
+        root.update(cx, |root, cx| {
+            root.model_selection_config_override = Some(config_path);
+            root.agent_provider_override = Some(provider);
+            root.stream_view = Some((thread.id.clone(), stream.clone()));
+            // The production stream subscriptions (render.rs): only the tier
+            // intent matters here, and it travels the real handler.
+            cx.subscribe(
+                &stream,
+                |this,
+                 stream,
+                 request: &vega_ui::conversation_stream::ComposerDefaultsRequested,
+                 cx| {
+                    this.persist_composer_thinking(stream.clone(), request, cx);
+                },
+            )
+            .detach();
+            root.start_model_catalog_load(cx);
+        });
+        let window_root = root.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(
+                gpui_kit::WindowOptions {
+                    window_bounds: Some(gpui_kit::WindowBounds::Windowed(
+                        gpui_kit::Bounds::centered(
+                            None,
+                            gpui_kit::size(gpui_kit::px(1200.), gpui_kit::px(900.)),
+                            cx,
+                        ),
+                    )),
+                    ..Default::default()
+                },
+                move |_, _| window_root,
+            )
+            .expect("production slider window")
+        });
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                root.configured_reasoning_authority.is_some()
+                    && !root.model_catalog_loading
+                    && root.reasoning_profile_for_model("gpt-5.6-terra").is_some()
+                    && matches!(
+                        root.pricing_controller.state,
+                        PricingControllerState::Ready { .. }
+                    )
+            }) && stream.read_with(cx, |stream, _| stream.reasoning_profile().is_some())
+        });
+        // The model trigger only opens the popup once the priced catalog
+        // projection reached the stream, exactly as production requires.
+        pump_test_app(cx, |cx| {
+            stream.read_with(cx, |stream, _| stream.model_options_len() > 0)
+        });
+        Self {
+            _config_root: config_root,
+            _data_root: data_root,
+            reasoning_path,
+            database_path,
+            thread,
+            root,
+            stream,
+            window,
+        }
+    }
+
+    /// Opens the model popup through the production trigger click, if it is
+    /// not already open. The trigger toggles: while the popup is open a second
+    /// click accepts the highlighted model instead of re-opening, so the
+    /// current state is read first.
+    fn open_model_popup(&self, cx: &mut gpui_kit::TestAppContext) {
+        if self
+            .stream
+            .read_with(cx, |stream, _| stream.model_selector_is_open())
+        {
+            return;
+        }
+        let mut visual = gpui_kit::VisualTestContext::from_window(self.window.into(), cx);
+        let trigger = visual
+            .debug_bounds("composer-model")
+            .expect("model trigger");
+        visual.simulate_click(trigger.center(), gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            self.stream
+                .read_with(cx, |stream, _| stream.model_selector_is_open()),
+            "the model popup must be open"
+        );
+    }
+
+    /// The durable preference read back from the owned reasoning file.
+    fn durable_preference(&self) -> String {
+        vega_store::reasoning::read_from(&self.reasoning_path)
+            .expect("read owned reasoning file")
+            .profiles
+            .iter()
+            .find(|profile| profile.model == "gpt-5.6-terra")
+            .expect("owned profile")
+            .preference
+            .clone()
+    }
+}
+
+/// R57 P3 / spec §3.4 R7: the slider renders the model's own tier count.
+///
+/// The model declares three efforts, so the mounted popup must show exactly
+/// three dots. A fixed seven (the reference implementation's own model
+/// happens to support seven) fails here.
+#[gpui_kit::test]
+async fn r57_thinking_slider_renders_the_models_declared_tier_count(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let fixture = ThinkingSliderFixture::open(cx);
+    fixture.open_model_popup(cx);
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(fixture.window.into(), cx);
+    assert!(
+        visual.debug_bounds("composer-thinking-slider").is_some(),
+        "the slider must be mounted inside the model popup"
+    );
+    assert!(
+        visual.debug_bounds("thinking-slider-track").is_some(),
+        "the tier track must render for a model that declares tiers"
+    );
+    // `debug_bounds` takes `&'static str`, so the selector ladder is spelled
+    // out. Indices 0..3 exist for this model; 3..7 must not.
+    const DOTS: [&str; 7] = [
+        "thinking-slider-dot-0",
+        "thinking-slider-dot-1",
+        "thinking-slider-dot-2",
+        "thinking-slider-dot-3",
+        "thinking-slider-dot-4",
+        "thinking-slider-dot-5",
+        "thinking-slider-dot-6",
+    ];
+    for (index, selector) in DOTS.iter().enumerate() {
+        if index < 3 {
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "dot {index} must render for a three-tier model"
+            );
+        } else {
+            assert!(
+                visual.debug_bounds(selector).is_none(),
+                "dot {index} must not render: this model declares only three tiers"
+            );
+        }
+    }
+
+    // The composer's own projection carries the same three tiers.
+    let efforts = fixture
+        .stream
+        .read_with(cx, |stream, _| {
+            stream
+                .reasoning_profile()
+                .map(|profile| profile.efforts.clone())
+        })
+        .expect("owned profile");
+    assert_eq!(efforts, vec!["low", "medium", "high"]);
+}
+
+/// R57 P3 / spec §6 A3 + A4: choosing a tier in the mounted slider persists it
+/// through the existing `ComposerDefaultsRequested` path, and the composer
+/// reflects the persisted tier after a reload.
+#[gpui_kit::test]
+async fn r57_slider_tier_selection_persists_and_survives_reload(cx: &mut gpui_kit::TestAppContext) {
+    let fixture = ThinkingSliderFixture::open(cx);
+    assert_eq!(
+        fixture.durable_preference(),
+        "medium",
+        "the fixture starts at the configured default tier"
+    );
+    assert_eq!(
+        fixture
+            .stream
+            .read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "medium"
+    );
+
+    fixture.open_model_popup(cx);
+    let mut visual = gpui_kit::VisualTestContext::from_window(fixture.window.into(), cx);
+    let track = visual
+        .debug_bounds("thinking-slider-track")
+        .expect("mounted tier track");
+    // The left end of the track is the weakest declared tier (`low`). Using the
+    // track's own bounds keeps this independent of the dot geometry constants.
+    visual.simulate_click(
+        gpui_kit::point(track.left() + gpui_kit::px(1.), track.center().y),
+        gpui_kit::Modifiers::default(),
+    );
+    visual.run_until_parked();
+
+    pump_test_app(cx, |cx| {
+        fixture
+            .root
+            .read_with(cx, |root, _| root.reasoning_save_pending.is_none())
+            && fixture.durable_preference() == "low"
+    });
+    assert_eq!(
+        fixture.durable_preference(),
+        "low",
+        "the slider selection must reach the durable reasoning profile"
+    );
+    assert_eq!(
+        fixture
+            .stream
+            .read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "low",
+        "the composer must project the persisted tier"
+    );
+
+    // Reload: re-run the exact projection a reopened thread performs
+    // (render.rs -> apply_reasoning_profile_to_stream) after dropping the
+    // in-memory capability, and assert the tier comes back from disk.
+    let model = fixture
+        .stream
+        .read_with(cx, |stream, _| stream.displayed_model().to_string());
+    fixture
+        .stream
+        .update(cx, ConversationStream::clear_reasoning_profile);
+    assert_eq!(
+        fixture
+            .stream
+            .read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "provider_default",
+        "a cleared projection carries no tier"
+    );
+    fixture.root.update(cx, |root, cx| {
+        root.apply_reasoning_profile_to_stream(&fixture.stream, &model, cx)
+    });
+    assert_eq!(
+        fixture
+            .stream
+            .read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "low",
+        "reloading the profile must restore the persisted tier"
+    );
+
+    // The reopened popup shows the persisted tier at the reloaded position.
+    fixture.open_model_popup(cx);
+    let mut visual = gpui_kit::VisualTestContext::from_window(fixture.window.into(), cx);
+    assert!(
+        visual.debug_bounds("thinking-slider-knob").is_some(),
+        "the reloaded slider still renders its knob"
+    );
+    let slider_tier = fixture
+        .stream
+        .read_with(cx, |stream, cx| {
+            stream.thinking_slider().read(cx).tier().map(str::to_string)
+        })
+        .expect("slider tier");
+    assert_eq!(slider_tier, "low", "the slider shows the reloaded tier");
+
+    // R11: the reset control returns to the profile's configured default tier.
+    // Vega has exactly one persisted tier field (`preference`), and a slider
+    // selection writes it, so immediately after a selection the reset target
+    // *is* the current tier. Reset is therefore a no-op here, and the honest
+    // assertion is that it stays mounted and writes nothing extra rather than
+    // inventing a second "default" the store does not have. (Flagged as a spec
+    // ambiguity: the reference implementation keeps `defaultReasoningEffort`
+    // separate from the current `reasoningEffort`.)
+    let reset = visual
+        .debug_bounds("thinking-slider-reset")
+        .expect("mounted reset control");
+    visual.simulate_click(reset.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        fixture
+            .root
+            .read_with(cx, |root, _| root.reasoning_save_pending.is_none()),
+        "reset at the configured preference must not start a save"
+    );
+    assert_eq!(
+        fixture.durable_preference(),
+        "low",
+        "reset at the configured preference leaves the durable tier unchanged"
+    );
+
+    // A slider selection is a local preference change: it never starts a run.
+    assert_eq!(
+        fixture
+            .root
+            .read_with(cx, |root, _| root.agent_worker_start_probe.load()),
+        0
+    );
+    // The durable thread is untouched: only the reasoning profile's preference
+    // changed, never `threads.model`.
+    let store = Store::open(&fixture.database_path).expect("reopened slider store");
+    assert_eq!(
+        vega_conversation::threads::open_thread(&store, &fixture.thread.id)
+            .expect("durable thread")
+            .model,
+        "gpt-5.6-terra",
+        "a tier change must not touch the durable thread model"
+    );
+}
+
+/// R57 P3: a drag across the track emits one intent per tier while a save may
+/// already be in flight. The newest position must win and a superseded tier
+/// must never be replayed afterwards.
+#[gpui_kit::test]
+async fn r57_slider_drag_coalesces_to_the_newest_tier(cx: &mut gpui_kit::TestAppContext) {
+    let fixture = ThinkingSliderFixture::open(cx);
+    fixture.open_model_popup(cx);
+    let mut visual = gpui_kit::VisualTestContext::from_window(fixture.window.into(), cx);
+    assert!(visual.debug_bounds("thinking-slider-track").is_some());
+
+    // Three presses in a row without waiting for the first save: `high` is the
+    // newest intent, and `low`/`medium` are superseded. Each click targets a
+    // dot's own center, which is always inside the track.
+    for dot in [
+        "thinking-slider-dot-0",
+        "thinking-slider-dot-1",
+        "thinking-slider-dot-2",
+    ] {
+        let bounds = visual.debug_bounds(dot).unwrap_or_else(|| panic!("{dot}"));
+        visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    pump_test_app(cx, |cx| {
+        fixture
+            .root
+            .read_with(cx, |root, _| root.reasoning_save_pending.is_none())
+            && fixture.durable_preference() == "high"
+    });
+    assert_eq!(
+        fixture.durable_preference(),
+        "high",
+        "the newest drag position must be the durable tier"
+    );
+    // No superseded intent may be replayed after the ack.
+    pump_test_app(cx, |cx| {
+        fixture
+            .root
+            .read_with(cx, |root, _| root.reasoning_save_pending.is_none())
+    });
+    assert_eq!(
+        fixture.durable_preference(),
+        "high",
+        "a superseded tier must not be written after the newest one"
+    );
+    assert_eq!(
+        fixture
+            .stream
+            .read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "high"
+    );
+}
+
 #[gpui_kit::test]
 async fn reasoning_authority_reconcile_error_blocks_controller_before_provider(
     cx: &mut gpui_kit::TestAppContext,

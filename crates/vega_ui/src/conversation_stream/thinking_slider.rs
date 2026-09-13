@@ -292,19 +292,6 @@ impl ThinkingSliderModel {
         self.rebind(current, default);
     }
 
-    /// Applies a caller-side change to the current tier, re-resolving through
-    /// the fallback rules.
-    pub fn set_current(&mut self, current: &str) {
-        let fallback = self.default.clone().unwrap_or_default();
-        self.current = resolve_tier(&self.tiers, current, &fallback).map(str::to_string);
-    }
-
-    /// Applies a caller-side change to the default tier.
-    pub fn set_default(&mut self, default: &str) {
-        self.default =
-            resolve_tier(&self.tiers, default, default).map(std::string::ToString::to_string);
-    }
-
     /// The tier the reset control returns to (R11: the configured default).
     pub fn default_tier(&self) -> Option<&str> {
         self.default.as_deref()
@@ -393,33 +380,36 @@ impl ThinkingSlider {
         self.model.tier()
     }
 
-    /// Dots the track renders — one per supported tier.
+    /// Dots the track renders — one per supported tier (R7). This is the count
+    /// the composer's acceptance tests assert against, so it stays a view
+    /// accessor rather than a test-only reach into the model.
     pub fn dot_count(&self) -> usize {
         self.model.dot_count()
     }
 
-    /// Replaces the supported tier list and re-resolves both tiers.
-    pub fn set_tiers(
+    /// Whether this model declares any tier at all.
+    ///
+    /// R12: a model with no declared tiers renders nothing, and the host must
+    /// not leave an empty padded slot behind either.
+    pub fn has_tiers(&self) -> bool {
+        self.model.dot_count() > 0
+    }
+
+    /// Replaces the model name and the supported tier list together (R57 P3).
+    /// The composer re-projects both whenever the displayed model or its
+    /// capability changes; keeping them in one call prevents a frame where the
+    /// card names one model while showing another model's tiers.
+    pub fn set_model_and_tiers(
         &mut self,
+        model_name: impl Into<String>,
         tiers: Vec<String>,
         current: impl AsRef<str>,
         default: impl AsRef<str>,
         cx: &mut Context<Self>,
     ) {
+        self.model_name = model_name.into();
         self.model
             .set_tiers(tiers, current.as_ref(), default.as_ref());
-        cx.notify();
-    }
-
-    /// Applies a caller-side current tier through the fallback rules.
-    pub fn set_current(&mut self, current: impl AsRef<str>, cx: &mut Context<Self>) {
-        self.model.set_current(current.as_ref());
-        cx.notify();
-    }
-
-    /// Applies a caller-side default tier.
-    pub fn set_default(&mut self, default: impl AsRef<str>, cx: &mut Context<Self>) {
-        self.model.set_default(default.as_ref());
         cx.notify();
     }
 

@@ -523,7 +523,26 @@ impl ConversationStream {
                                     ),
                                 )
                                 .child(label)
-                        })),
+                        }))
+                        // R57 P3 (spec §2.3 R3 / §3.4 R6): the tier slider
+                        // lives inside the model popup, not as a bottom-row
+                        // chip. It reads the displayed model's own
+                        // `ReasoningProfile.efforts`, so a model declaring
+                        // three tiers renders three dots — never the
+                        // reference implementation's fixed seven. A model
+                        // with no declared tiers renders nothing here at all,
+                        // not an empty padded slot (R12).
+                        .when(self.thinking_slider.read(cx).has_tiers(), |menu| {
+                            menu.child(
+                                div()
+                                    .debug_selector(|| "composer-thinking-slider".into())
+                                    .w_full()
+                                    .p_2()
+                                    .flex()
+                                    .justify_center()
+                                    .child(self.thinking_slider.clone()),
+                            )
+                        }),
                 )
             })
             .into_any_element()

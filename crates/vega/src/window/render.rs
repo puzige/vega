@@ -167,7 +167,7 @@ impl Render for VegaWindow {
                             })
                             .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
-                                this.persist_composer_defaults(stream.clone(), request, cx);
+                                this.persist_composer_thinking(stream.clone(), request, cx);
                             })
                             .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {

@@ -73,7 +73,7 @@ use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
     MeterSnapshot, PermissionMode, Plan, ReasoningChoice, ReasoningProfileProjection,
-    RestoredUsage, RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
+    ReasoningSupport, RestoredUsage, RunUsageEstimator, TaskCostSummary, Thread, ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -251,9 +251,13 @@ pub struct HistoryPageRequested {
 /// Bounded `@file` selector state (A2-12): pure model + bounded snapshot,
 /// driven by the app layer's typed index projection.
 ///
-/// Default provider/model/thinking choice for new threads (A2-14). Emitted
-/// on selector activation; the app persists it at the config seam and
-/// reflects it back through [`ConversationStream::apply_composer_defaults`].
+/// Thinking-tier choice for the current provider/model (A2-14, R57 P3).
+///
+/// R57 P3 gives this event its single remaining emitter: the thinking-tier
+/// slider mounted in the model popup. The app validates the tier against its
+/// own reasoning authority, persists it as the profile's `preference` through
+/// the existing reasoning save path, and re-projects the authoritative profile
+/// back through [`ConversationStream::apply_reasoning_profile`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposerDefaultsRequested {
     pub thread_id: String,
