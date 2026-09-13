@@ -2,11 +2,97 @@
 use super::*;
 use gpui_kit::Focusable;
 
-const MODES: [(&str, ThreadMode); 3] = [
-    ("/ask", ThreadMode::Ask),
-    ("/plan", ThreadMode::Plan),
-    ("/execute", ThreadMode::Execute),
+/// Thread-mode `+`-menu rows, in the order the slash parser also accepts.
+/// Labels come from [`mode_command`], so the menu and the parser cannot drift.
+const MODE_ORDER: [ThreadMode; 3] = [ThreadMode::Ask, ThreadMode::Plan, ThreadMode::Execute];
+
+/// Permission-mode `+`-menu rows (R57 P1), in the same order as the
+/// bottom-row control they replace. P2b removes that control; this group is
+/// what keeps the permission mode reachable afterwards.
+const PERMISSION_ORDER: [PermissionMode; 3] = [
+    PermissionMode::ReadOnly,
+    PermissionMode::Confirm,
+    PermissionMode::Auto,
 ];
+
+/// The exact slash command for one run mode. Single source for both the
+/// accepted vocabulary and the `+`-menu label.
+fn mode_command(mode: ThreadMode) -> &'static str {
+    match mode {
+        ThreadMode::Ask => "/ask",
+        ThreadMode::Plan => "/plan",
+        ThreadMode::Execute => "/execute",
+    }
+}
+
+/// User-visible permission label, unchanged from the bottom-row control.
+fn permission_label(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::ReadOnly => "只读",
+        PermissionMode::Confirm => "确认",
+        PermissionMode::Auto => "自动",
+    }
+}
+
+/// One selectable `+`-menu row. Rendering, keyboard highlight indices, and
+/// click dispatch all consume this one projection, so they cannot drift.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ComposerActionRow {
+    /// `@` project-file reference (menu only).
+    FileReference,
+    /// One `/ask` `/plan` `/execute` thread-mode command.
+    Mode(ThreadMode),
+    /// One permission-mode choice (menu only).
+    Permission(PermissionMode),
+}
+
+impl ComposerActionRow {
+    fn label(self) -> &'static str {
+        match self {
+            Self::FileReference => "项目文件引用",
+            Self::Mode(mode) => mode_command(mode),
+            Self::Permission(mode) => permission_label(mode),
+        }
+    }
+
+    /// Whether this row shows the thread's current authoritative value.
+    fn is_selected(self, thread: &Thread) -> bool {
+        match self {
+            Self::FileReference => false,
+            Self::Mode(mode) => thread.mode == mode,
+            Self::Permission(mode) => thread.permission_mode == mode,
+        }
+    }
+
+    /// Stable selector for the production click and keyboard tests.
+    fn selector(self) -> &'static str {
+        match self {
+            Self::FileReference => "composer-action-file",
+            Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask",
+            Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan",
+            Self::Mode(ThreadMode::Execute) => "composer-action-mode-execute",
+            Self::Permission(PermissionMode::ReadOnly) => "composer-action-permission-readonly",
+            Self::Permission(PermissionMode::Confirm) => "composer-action-permission-confirm",
+            Self::Permission(PermissionMode::Auto) => "composer-action-permission-auto",
+        }
+    }
+
+    /// Selector of the selection marker, which exists in the frame only while
+    /// this row holds the thread's authoritative value.
+    fn check_selector(self) -> &'static str {
+        match self {
+            Self::FileReference => "composer-action-file-check",
+            Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask-check",
+            Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan-check",
+            Self::Mode(ThreadMode::Execute) => "composer-action-mode-execute-check",
+            Self::Permission(PermissionMode::ReadOnly) => {
+                "composer-action-permission-readonly-check"
+            }
+            Self::Permission(PermissionMode::Confirm) => "composer-action-permission-confirm-check",
+            Self::Permission(PermissionMode::Auto) => "composer-action-permission-auto-check",
+        }
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct ComposerActions {
@@ -27,9 +113,12 @@ impl ComposerActions {
         self.menu || self.slash.is_some()
     }
 
+    /// Thread-mode commands matching the current slash query. The `+` menu
+    /// itself always offers all three (empty query).
     fn modes(&self) -> Vec<(&'static str, ThreadMode)> {
-        MODES
+        MODE_ORDER
             .into_iter()
+            .map(|mode| (mode_command(mode), mode))
             .filter(|(command, _)| {
                 self.slash
                     .as_ref()
@@ -38,8 +127,36 @@ impl ComposerActions {
             .collect()
     }
 
+    /// The exact visible rows, in render order. `highlight` indexes this
+    /// vector, so navigation, rendering, and dispatch share one projection.
+    ///
+    /// The permission group is `+`-menu-only: a slash query keeps the legacy
+    /// mode-command filtering and never offers permission rows.
+    fn rows(&self) -> Vec<ComposerActionRow> {
+        let mut rows = Vec::new();
+        if !self.visible() {
+            return rows;
+        }
+        if self.menu {
+            rows.push(ComposerActionRow::FileReference);
+        }
+        rows.extend(
+            self.modes()
+                .into_iter()
+                .map(|(_, mode)| ComposerActionRow::Mode(mode)),
+        );
+        if self.menu {
+            rows.extend(
+                PERMISSION_ORDER
+                    .into_iter()
+                    .map(ComposerActionRow::Permission),
+            );
+        }
+        rows
+    }
+
     fn count(&self) -> usize {
-        self.modes().len() + usize::from(self.menu)
+        self.rows().len()
     }
 }
 
@@ -135,7 +252,9 @@ impl ConversationStream {
         let text = input.read(cx).text();
         let token = text.split_whitespace().next().unwrap_or("");
         let slash = if text.starts_with('/')
-            && MODES.iter().any(|(command, _)| command.starts_with(token))
+            && MODE_ORDER
+                .into_iter()
+                .any(|mode| mode_command(mode).starts_with(token))
             && self.actions.dismissed.as_deref() != Some(text)
             && !self.actions.menu
             && self.actions.pending_mode.is_none()
@@ -277,31 +396,47 @@ impl ConversationStream {
         if self.input.read(cx).is_composing() {
             return;
         }
-        if self.actions.menu && index == 0 {
-            self.actions.menu = false;
-            let draft = self.input.read(cx).text();
-            let separator = if draft.is_empty() || draft.ends_with(char::is_whitespace) {
-                ""
-            } else {
-                " "
-            };
-            let text = format!("{draft}{separator}@");
-            self.input.update(cx, |input, cx| input.set_text(&text, cx));
-            self.focus_composer(window, cx);
-            let input = self.input.clone();
-            self.sync_at_query(&input, cx);
-            cx.notify();
-            return;
-        }
-        let offset = usize::from(self.actions.menu);
-        let Some((_, mode)) = self
-            .actions
-            .modes()
-            .get(index.saturating_sub(offset))
-            .copied()
-        else {
+        let Some(row) = self.actions.rows().get(index).copied() else {
             return;
         };
+        match row {
+            ComposerActionRow::FileReference => self.insert_file_reference_token(window, cx),
+            ComposerActionRow::Mode(mode) => self.select_composer_mode(mode, window, cx),
+            ComposerActionRow::Permission(mode) => {
+                self.actions.menu = false;
+                self.actions.slash = None;
+                self.request_permission_mode(mode, cx);
+                self.focus_composer(window, cx);
+                cx.notify();
+            }
+        }
+    }
+
+    /// `@` reference row: close the menu and start the bounded file selector
+    /// exactly as the previous positional implementation did.
+    fn insert_file_reference_token(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.actions.menu = false;
+        let draft = self.input.read(cx).text();
+        let separator = if draft.is_empty() || draft.ends_with(char::is_whitespace) {
+            ""
+        } else {
+            " "
+        };
+        let text = format!("{draft}{separator}@");
+        self.input.update(cx, |input, cx| input.set_text(&text, cx));
+        self.focus_composer(window, cx);
+        let input = self.input.clone();
+        self.sync_at_query(&input, cx);
+        cx.notify();
+    }
+
+    /// Thread-mode row: same guarded request path as the slash command.
+    fn select_composer_mode(
+        &mut self,
+        mode: ThreadMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.model_selection_blocked(cx)
             || self.has_pending_model_selection()
             || self.actions.pending_mode.is_some()
@@ -345,38 +480,37 @@ impl ConversationStream {
 
     pub(crate) fn render_composer_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let mut labels = Vec::new();
-        if self.actions.menu {
-            labels.push("项目文件引用");
-        }
-        if self.actions.visible() {
-            labels.extend(self.actions.modes().iter().map(|(label, _)| *label));
-        }
-        div()
-            .id("composer-actions-menu")
-            .w_full()
-            .flex()
-            .flex_col()
-            .when(!labels.is_empty(), |menu| {
-                menu.p_2()
-                    .mb_2()
-                    .rounded(px(Layout::MENU_RADIUS))
-                    .bg(colors.bg_elevated)
-                    .border_1()
-                    .border_color(colors.border_subtle)
-                    .shadow_sm()
-            })
-            .children(labels.into_iter().enumerate().map(|(index, label)| {
-                let highlighted = self.actions.highlight == index;
+        let rows = self.actions.rows();
+        let mut children = Vec::with_capacity(rows.len() + 1);
+        for (index, row) in rows.iter().enumerate() {
+            // One separator between the thread-mode commands and the
+            // permission group keeps the two vocabularies readable without
+            // inventing a second row style.
+            if matches!(row, ComposerActionRow::Permission(PermissionMode::ReadOnly)) && index > 0 {
+                children.push(
+                    div()
+                        .h(px(1.))
+                        .my_1()
+                        .bg(colors.border_subtle)
+                        .into_any_element(),
+                );
+            }
+            let highlighted = self.actions.highlight == index;
+            let selected = row.is_selected(&self.thread);
+            let label = row.label();
+            let row = *row;
+            children.push(
                 div()
                     .id(("composer-action", index))
+                    .debug_selector(move || row.selector().to_string())
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .px_2()
                     .flex()
                     .items_center()
+                    .gap_1()
                     .rounded_md()
                     .text_size(px(Typography::SIDEBAR))
-                    .text_color(if highlighted {
+                    .text_color(if selected || highlighted {
                         colors.brand_primary
                     } else {
                         colors.text_primary
@@ -390,8 +524,37 @@ impl ConversationStream {
                             this.select_composer_action(index, window, cx);
                         }),
                     )
+                    // Fixed-width marker column: every label starts on the
+                    // same x, with or without a check.
+                    .child(
+                        div()
+                            .when(selected, |marker| {
+                                marker
+                                    .debug_selector(move || row.check_selector().to_string())
+                                    .child("✓")
+                            })
+                            .w(px(Typography::SIDEBAR))
+                            .flex_shrink_0(),
+                    )
                     .child(label)
-            }))
+                    .into_any_element(),
+            );
+        }
+        div()
+            .id("composer-actions-menu")
+            .w_full()
+            .flex()
+            .flex_col()
+            .when(!children.is_empty(), |menu| {
+                menu.p_2()
+                    .mb_2()
+                    .rounded(px(Layout::MENU_RADIUS))
+                    .bg(colors.bg_elevated)
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .shadow_sm()
+            })
+            .children(children)
             .into_any_element()
     }
 

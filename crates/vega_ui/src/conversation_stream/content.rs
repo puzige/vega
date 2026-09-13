@@ -230,6 +230,21 @@ impl ConversationStream {
         self.permission_queue.clone()
     }
 
+    /// The authoritative run mode this composer projects. Read by the
+    /// application acceptance harness to prove a `+`-menu selection landed on
+    /// the durable thread rather than only in local UI state.
+    #[doc(hidden)]
+    pub fn thread_mode(&self) -> ThreadMode {
+        self.thread.mode
+    }
+
+    /// The authoritative permission mode this composer projects. Same seam as
+    /// [`Self::thread_mode`].
+    #[doc(hidden)]
+    pub fn thread_permission_mode(&self) -> PermissionMode {
+        self.thread.permission_mode
+    }
+
     pub fn branch_selector(&self) -> Entity<BranchSelector> {
         self.branch_selector.clone()
     }

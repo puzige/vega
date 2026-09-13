@@ -365,6 +365,149 @@ async fn r11_composer_context_and_slash_keyboard_use_real_mode_and_file_handlers
 }
 
 #[gpui_kit::test]
+async fn r57_plus_menu_permission_selection_persists_through_the_real_controller(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![]));
+    let f = fixture(cx, provider.clone());
+    // The fixture thread starts at `execute` + `confirm`.
+    assert_eq!(
+        vega_conversation::threads::open_thread(&f.store, &f.thread.id)
+            .expect("initial permission")
+            .permission_mode,
+        PermissionMode::Confirm
+    );
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    let add = visual.debug_bounds("composer-add").expect("composer add");
+    visual.simulate_click(add.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+
+    // The group is really rendered, with the current value marked.
+    assert!(
+        visual
+            .debug_bounds("composer-action-permission-readonly")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("composer-action-permission-auto")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("composer-action-permission-confirm-check")
+            .is_some(),
+        "the current permission mode must be marked"
+    );
+
+    // One click on the production row persists through the real
+    // `ThreadSettingsRequested` -> `persist_thread_settings` path.
+    let auto = visual
+        .debug_bounds("composer-action-permission-auto")
+        .expect("auto row");
+    visual.simulate_click(auto.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    cx.run_until_parked();
+
+    assert_eq!(
+        vega_conversation::threads::open_thread(&f.store, &f.thread.id)
+            .expect("durable permission after menu")
+            .permission_mode,
+        PermissionMode::Auto
+    );
+    // The composer reflects the new authoritative value: the bottom-row
+    // control P2b will remove still reads the same durable thread, and the
+    // reopened menu marks the new row.
+    let displayed = f
+        .stream
+        .read_with(cx, |stream, _| stream.thread_permission_mode());
+    assert_eq!(
+        displayed,
+        PermissionMode::Auto,
+        "composer projection follows the durable permission mode"
+    );
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    let add = visual
+        .debug_bounds("composer-add")
+        .expect("composer add again");
+    visual.simulate_click(add.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("composer-action-permission-auto-check")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("composer-action-permission-confirm-check")
+            .is_none()
+    );
+    // A local permission change never starts a run.
+    assert!(provider.requests().is_empty());
+    assert_eq!(
+        f.root
+            .read_with(cx, |root, _| root.agent_worker_start_probe.load()),
+        0
+    );
+}
+
+#[gpui_kit::test]
+async fn r57_plus_menu_thread_modes_persist_through_the_real_controller(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![]));
+    let f = fixture(cx, provider.clone());
+    // P1 evidence for the pre-existing `/ask` `/plan` `/execute` entries: they
+    // were reachable but had no production test proving the `+`-menu click
+    // path persists. Rows: file(0) ask(1) plan(2) execute(3) permission(4..6).
+    for (row, expected) in [
+        ("composer-action-mode-ask", ThreadMode::Ask),
+        ("composer-action-mode-plan", ThreadMode::Plan),
+        ("composer-action-mode-execute", ThreadMode::Execute),
+    ] {
+        let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+        let add = visual.debug_bounds("composer-add").expect("composer add");
+        visual.simulate_click(add.center(), gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+        let bounds = visual
+            .debug_bounds(row)
+            .unwrap_or_else(|| panic!("missing {row}"));
+        visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+        assert_eq!(
+            vega_conversation::threads::open_thread(&f.store, &f.thread.id)
+                .expect("durable mode after menu")
+                .mode,
+            expected,
+            "{row} must persist its thread mode"
+        );
+        assert!(
+            f.stream
+                .read_with(cx, |stream, _| stream.thread_mode() == expected),
+            "{row} must be reflected by the composer"
+        );
+    }
+    // A permission-mode change made alongside must not be reverted by a later
+    // mode change: the two groups share one request payload.
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    let add = visual.debug_bounds("composer-add").expect("composer add");
+    visual.simulate_click(add.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    let readonly = visual
+        .debug_bounds("composer-action-permission-readonly")
+        .expect("readonly row");
+    visual.simulate_click(readonly.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    cx.run_until_parked();
+    let persisted = vega_conversation::threads::open_thread(&f.store, &f.thread.id)
+        .expect("durable settings after both groups");
+    assert_eq!(persisted.permission_mode, PermissionMode::ReadOnly);
+    assert_eq!(persisted.mode, ThreadMode::Execute);
+    assert!(provider.requests().is_empty());
+}
+
+#[gpui_kit::test]
 async fn r11_composer_stop_revokes_pending_permission_without_tool_execution(
     cx: &mut gpui_kit::TestAppContext,
 ) {
