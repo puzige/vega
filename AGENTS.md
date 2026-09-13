@@ -37,9 +37,32 @@ cargo test --workspace
 门禁由本地 git hooks 执行（`.githooks/`，见 [vega-s1-tasks.md](docs/vega-s1-tasks.md) T03；一次性安装 `git config core.hooksPath .githooks`）。
 外加 exec-guide §3 红线检查（`cargo tree` 依赖方向、色值硬编码 grep 等）。
 
+## 共享构建缓存（新 worktree 必做）
+
+**本仓库所有 worktree 共用一个 `target/` 目录。** 主检出保留真实目录作为构建缓存，其余 worktree 的 `target` 是指向它的符号链接。这样新 worktree 的首次构建是增量的，而不是从零编译 900+ 依赖。
+
+实测（2026-09-13，`cargo check --workspace`）：
+
+| 场景 | 耗时 |
+|---|---|
+| 全新 worktree，独立 `target/` | 52 s |
+| 全新 worktree，接上共享 `target/` | **6 s** |
+| 改一行后重新 check | 0.8 s |
+
+**新建 worktree 后必须接上，否则第一次构建要等十几分钟：**
+
+```sh
+git worktree add -b feat/<task-id>-<slug> ../vega-<slug> master
+scripts/cargo-share-target.sh /Users/puzige/Workspace/vega
+```
+
+`scripts/cargo-share-target.sh` 幂等，随时可重跑；`--status` 看当前接线；`--unshare` 恢复独立目录。仓库内不写死机器路径：脚本默认作用于当前仓库，可用 `git rev-parse --show-toplevel` 得到路径后显式传入。
+
+**代价与约束见下一节**——共享 target 意味着同一时间只能有一个 worktree 在构建或测试。
+
 ## 并发构建与测试：同一仓库同时只跑一个
 
-**本仓库所有 worktree 共用一个 `target/` 目录**（构建加速：新 worktree 首次构建从 15 分钟级降到秒级）。代价是**同一时间只能有一个 worktree 在构建或测试**。
+**本仓库所有 worktree 共用一个 `target/` 目录**（见上一节）。代价是**同一时间只能有一个 worktree 在构建或测试**。
 
 cargo 的独占锁**只覆盖编译阶段**，测试二进制一旦构建完成就在锁外执行。所以两个 worktree 的测试套件可以真的同时跑，已实测到两种故障：
 
