@@ -147,6 +147,31 @@ ZCode 自己的窗口标题是 `Vega Desktop`，界面上也有 `Full access` �
 
 **改用**：每次都从 `CGWindowListCopyWindowInfo` 现读 origin，再加窗口内相对偏移。
 
+## GPUI 绘制顺序：弹出层必须 `deferred`（R64 实测）
+
+**在带边框的卡片里挂浮层，卡片边框会画在浮层之上。** 这是 GPUI 的绘制顺序决定的，不是 z-index 问题，`occlude()` 解决不了。
+
+`gpui-pre-0.3.4/src/style.rs:688` 的 `Style::paint` 顺序：
+
+```rust
+window.paint_quad(background);   // 1. 背景
+continuation(window, cx);        // 2. 子元素（浮层在这里画）
+if self.is_border_visible() {
+    window.paint_quad(border);   // 3. 边框 ← 在子元素之后
+}
+```
+
+**`occlude()` 只影响鼠标命中测试**，不影响绘制顺序——`div.rs:1208` 的 `Div::occlude` 只做 `interactivity().occlude_mouse()`，即设 `HitboxBehavior::BlockMouse`。R61/R62 给每个浮层都加了 `occlude()` 并据此认为层级已处理，**这个推断是错的**（R64 §2 记录了错误链条）。
+
+**正确做法**：浮层包一层 `gpui_kit::deferred(...).with_priority(2)`。语义是*"delay the painting of its child until after all of its ancestors, **while keeping its layout as part of the current element tree**"*（`elements/deferred.rs:11`）——布局不变、只把绘制挪到祖先之后，由 `window.rs:3343` 的 `paint_deferred_draws()` 在 `root_element.paint()` 之后执行。
+
+注意两点：
+
+- **`deferred` 不改变坐标**。`defer_draw` 会记录 `absolute_offset`（`window.rs:4105`）。R59 曾记录"deferred 导致卡片落在 x 1232.5"——那是它把 deferred 包在 `max_w + mx_auto` 的**外层盒子**里所致（R61 已删该结构），不是 deferred 本身。
+- **仓库里已有正确先例**：`branch_selector.rs:997`、`render_file_dropdown`（`render.rs:702`）、侧栏菜单。新增浮层时照抄这个模式。
+
+**验收方法**：浮层类改动不能只看"内容对不对"。必须做一次**像素行扫描**：取浮层中部一行，确认其中没有其他层画上来的元素（R64 用 `vfind`/`vscan` 定位到 `rgb(232,232,232)` = `border_subtle` 的连续 run）。
+
 ## 架构红线（速记，详见 exec-guide）
 
 - `vega_runtime` 禁止依赖 GPUI/任何 UI crate（headless 可测）
