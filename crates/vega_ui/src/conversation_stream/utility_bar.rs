@@ -9,7 +9,9 @@
 //! (`vega_store::projects`), so no second project pipeline exists.
 
 use super::*;
+use crate::menu_list;
 use crate::sidebar::{SelectedProject, VegaStore};
+use crate::text_input::TextInput;
 
 impl ConversationStream {
     /// Whether the R49 utility bar renders at all: the route resolves a
@@ -114,45 +116,69 @@ impl ConversationStream {
     /// The popup opens **upward**. The composer sits at the window's bottom
     /// edge, so a downward popup would leave the viewport; this is the minimal
     /// composer-context adjustment the R49 residual notes anticipated.
+    ///
+    /// R62 R10 adds the list structure the reference implementation has and
+    /// Vega lacked: a search field on top, a folder icon per row, a checkmark
+    /// plus a light-grey rounded surface on the current selection, a separator
+    /// before the trailing actions, and the two action rows (`+ 新建项目` /
+    /// `× 不关联项目`).
+    ///
+    /// R62 R11 keeps the semantics: filtering only hides rows from this frame;
+    /// clicking any visible row still writes the same `SelectedProject` and
+    /// refreshes, exactly as before. `不关联项目` is a real action — it writes
+    /// the same global with `None`, which is the state the sidebar's own
+    /// project-removal path already produces. `新建项目` has no Vega
+    /// implementation reachable from this surface (folder registration lives in
+    /// `ProjectsBlock::open_picker`, which owns its worker and its own error
+    /// handling), so it renders **disabled** rather than pretending to work;
+    /// this is reported as the R62 M7 finding.
     fn render_utility_projects_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let selected = cx.global::<SelectedProject>().0.clone();
-        let rows = self
+        let query = self.utility_project_query.trim().to_lowercase();
+        let visible: Vec<&(String, String)> = self
             .utility_projects
+            .iter()
+            .filter(|(_, name)| query.is_empty() || name.to_lowercase().contains(&query))
+            .collect();
+        let rows = visible
             .iter()
             .enumerate()
             .map(|(index, (project_id, name))| {
                 let is_selected = selected.as_deref() == Some(project_id.as_str());
                 let activate_id = project_id.clone();
                 let selector_id = project_id.clone();
-                div()
-                    .id(("composer-utility-project-row", index))
-                    .debug_selector(move || format!("composer-utility-project-row-{selector_id}"))
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .truncate()
-                    .text_size(px(Typography::SIDEBAR))
-                    .when(is_selected, |row| row.bg(colors.bg_active))
-                    .text_color(if is_selected {
-                        colors.brand_primary
-                    } else {
-                        colors.text_secondary
-                    })
-                    .cursor_pointer()
-                    .when(!is_selected, move |row| {
-                        row.hover(move |style| style.bg(colors.bg_hover))
-                    })
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            this.select_utility_project(&activate_id, cx);
-                        }),
-                    )
-                    .child(name.clone())
+                let check_id = format!("composer-utility-project-row-{project_id}-check");
+                menu_list::row_container(
+                    ("composer-utility-project-row", index),
+                    is_selected,
+                    true,
+                    colors,
+                )
+                .debug_selector(move || format!("composer-utility-project-row-{selector_id}"))
+                .text_color(if is_selected {
+                    colors.text_primary
+                } else {
+                    colors.text_secondary
+                })
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                        this.select_utility_project(&activate_id, cx);
+                    }),
+                )
+                .child(crate::icons::icon(
+                    crate::icons::Icon::Folder,
+                    colors.text_secondary,
+                ))
+                .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+                .child(menu_list::selection_marker(
+                    is_selected,
+                    move || check_id.clone(),
+                    colors,
+                ))
             });
-        div()
+        let mut menu = div()
             .debug_selector(|| "composer-utility-project-menu".into())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .absolute()
@@ -163,25 +189,58 @@ impl ConversationStream {
             .occlude()
             .flex()
             .flex_col()
+            .py_1()
             .rounded(px(Layout::MENU_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
             .bg(colors.bg_elevated)
             .text_color(colors.text_primary)
             .shadow_sm()
-            .children(rows)
-            .when(self.utility_projects.is_empty(), |menu| {
-                menu.child(
-                    div()
-                        .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .text_size(px(Typography::SIDEBAR))
-                        .text_color(colors.text_tertiary)
-                        .child("点击 [+] 添加文件夹"),
-                )
-            })
+            .child(menu_list::search_field(
+                &self.utility_project_search,
+                "composer-utility-project-search",
+                colors,
+            ));
+        if visible.is_empty() {
+            menu = menu.child(
+                div()
+                    .h(px(menu_list::MENU_ROW_HEIGHT))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_tertiary)
+                    .child(if self.utility_projects.is_empty() {
+                        "点击 [+] 添加文件夹"
+                    } else {
+                        "没有匹配项目"
+                    }),
+            );
+        } else {
+            menu = menu.children(rows);
+        }
+        menu.child(menu_list::separator(colors))
+            .child(menu_list::action_row(
+                "composer-utility-project-new",
+                crate::icons::Icon::Plus,
+                "新建项目".into(),
+                // R62 R11/M7: no Vega implementation path exists from this
+                // surface, so the row renders disabled instead of silently
+                // doing nothing.
+                false,
+                "暂不支持：请在侧栏使用 [+ 添加项目] 注册文件夹",
+                colors,
+                |_, _, _| {},
+            ))
+            .child(menu_list::action_row(
+                "composer-utility-project-detach",
+                crate::icons::Icon::Close,
+                "不关联项目".into(),
+                true,
+                "",
+                colors,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.detach_utility_project(cx)),
+            ))
             .into_any_element()
     }
 
@@ -204,6 +263,9 @@ impl ConversationStream {
     /// Opens/closes the folder chip's project menu. The list is read through
     /// the same store query the sidebar's project block already uses; it runs
     /// in this handler, never during a frame.
+    ///
+    /// R62 R10: each open starts from an empty filter, so the field never
+    /// hides the list the chip just claimed to show.
     pub(crate) fn toggle_utility_projects(
         &mut self,
         _: &MouseUpEvent,
@@ -215,8 +277,26 @@ impl ConversationStream {
         self.utility_projects_open = open;
         if open {
             self.utility_projects = Self::load_utility_projects(cx);
+            self.utility_project_query.clear();
+            self.utility_project_search
+                .update(cx, |input, cx| input.clear(cx));
         }
         cx.notify();
+    }
+
+    /// R62 R10: mirrors the visible filter query into the menu's own state.
+    /// It only decides which rows this frame lists — the selection contract is
+    /// untouched (R62 R11).
+    pub(crate) fn sync_utility_project_query(
+        &mut self,
+        input: &Entity<TextInput>,
+        cx: &mut Context<Self>,
+    ) {
+        let query = input.read(cx).text().to_owned();
+        if self.utility_project_query != query {
+            self.utility_project_query = query;
+            cx.notify();
+        }
     }
 
     /// Reads the sidebar's project rows. A missing or failing store degrades
@@ -243,6 +323,19 @@ impl ConversationStream {
     /// selection global is rewritten and every window repaints.
     fn select_utility_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
         cx.set_global(SelectedProject(Some(project_id.to_string())));
+        self.utility_projects_open = false;
+        cx.refresh_windows();
+        cx.notify();
+    }
+
+    /// R62 R10: the menu's `不关联项目` row. It writes the same shared
+    /// selection global with `None` — the exact state the sidebar's
+    /// project-removal path already produces — so no second deselect
+    /// mechanism exists. The utility bar's own visibility predicate then
+    /// stops matching the durable binding, which is what makes the bar
+    /// disappear with the project context (R49 §2.4).
+    fn detach_utility_project(&mut self, cx: &mut Context<Self>) {
+        cx.set_global(SelectedProject(None));
         self.utility_projects_open = false;
         cx.refresh_windows();
         cx.notify();

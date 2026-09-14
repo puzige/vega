@@ -6,9 +6,9 @@ use current_head::CurrentHead;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Anchor, AnchoredPositionMode, App, Context, EventEmitter, FocusHandle, Focusable, MouseButton,
-    Render, ScrollStrategy, UniformListScrollHandle, Window, actions, anchored, div, point, px,
-    uniform_list,
+    Anchor, AnchoredPositionMode, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    MouseButton, Render, ScrollStrategy, UniformListScrollHandle, Window, actions, anchored, div,
+    point, px, uniform_list,
 };
 use vega_conversation::types::{BranchId, BranchItem, BranchSnapshot, GitWorkspaceErrorCode};
 use vega_theme::{Layout, Typography, theme};
@@ -25,6 +25,18 @@ actions!(
 
 pub const BRANCH_ROW_HEIGHT: f32 = Typography::SIDEBAR_LINE_HEIGHT;
 pub const BRANCH_LIMIT: usize = 10_000;
+
+/// R62 R10: the fixed vertical band the popup spends on everything that is not
+/// a branch row — the search field ([`MENU_ROW_HEIGHT`] plus its 4px bottom
+/// margin), the separator above the trailing actions (1px plus 4px on each
+/// side) and the trailing action row ([`MENU_ROW_HEIGHT`]).
+///
+/// It is a named sum rather than a magic number so the popup's height budget
+/// and the elements it hosts cannot drift apart: change any band and the
+/// popup's row capacity follows.
+pub const BRANCH_CHROME_HEIGHT: f32 = (crate::menu_list::MENU_ROW_HEIGHT + 4.0)
+    + (4.0 + 1.0 + 4.0)
+    + crate::menu_list::MENU_ROW_HEIGHT;
 
 fn branch_count_allowed(count: usize) -> bool {
     count <= BRANCH_LIMIT
@@ -73,6 +85,15 @@ pub struct BranchSelectorModel {
     focused: Option<BranchId>,
     next_operation: u64,
     pending: Option<(BranchOperationId, u64, BranchId)>,
+    /// R62 R10: the visible row filter, as a lowercase needle. It is applied
+    /// to the already-bounded snapshot, so it can only hide rows — it never
+    /// widens what the selector can reach, and `focused`/`contains_switchable`
+    /// keep answering from the full snapshot (R62 R11).
+    filter: String,
+    /// Positions into `snapshot.branches` that match `filter`, in snapshot
+    /// order. Recomputed only when the snapshot or the filter changes, so a
+    /// frame never walks the whole branch list.
+    filtered: Vec<usize>,
 }
 
 impl Default for BranchSelectorModel {
@@ -84,6 +105,8 @@ impl Default for BranchSelectorModel {
             focused: None,
             next_operation: 0,
             pending: None,
+            filter: String::new(),
+            filtered: Vec::new(),
         }
     }
 }
@@ -111,6 +134,8 @@ impl BranchSelectorModel {
         }
         self.snapshot = None;
         self.focused = None;
+        self.filter.clear();
+        self.filtered.clear();
         self.status = SelectorStatus::Loading;
         true
     }
@@ -121,7 +146,72 @@ impl BranchSelectorModel {
         }
         self.status = SelectorStatus::Closed;
         self.focused = None;
+        self.filter.clear();
+        self.filtered.clear();
         true
+    }
+
+    /// R62 R10: replaces the visible filter. The snapshot, the focus target and
+    /// every switch capability are untouched — only which rows this frame
+    /// lists changes (R62 R11).
+    pub fn set_filter(&mut self, query: &str) -> bool {
+        let needle = query.trim().to_lowercase();
+        if self.filter == needle {
+            return false;
+        }
+        self.filter = needle;
+        self.rebuild_filtered();
+        true
+    }
+
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    /// Recomputes the visible positions. Runs on snapshot/filter changes only.
+    ///
+    /// If the filter just hid the focused branch, the focus re-anchors to the
+    /// first **visible** switchable row; if the filter hid every switchable
+    /// row, the focus is cleared outright, because Enter must never activate a
+    /// row the user cannot see. The switch capability itself is untouched —
+    /// `contains_switchable` still validates against the full snapshot, so the
+    /// set of branches the selector will actually switch to is unchanged
+    /// (R62 R11).
+    fn rebuild_filtered(&mut self) {
+        self.filtered = match &self.snapshot {
+            None => Vec::new(),
+            Some(snapshot) => snapshot
+                .branches
+                .iter()
+                .enumerate()
+                .filter(|(_, branch)| {
+                    self.filter.is_empty() || branch.label.to_lowercase().contains(&self.filter)
+                })
+                .map(|(index, _)| index)
+                .collect(),
+        };
+        let Some(snapshot) = &self.snapshot else {
+            return;
+        };
+        let visible_focus = self.focused.is_some_and(|focused| {
+            self.filtered
+                .iter()
+                .any(|index| snapshot.branches[*index].id == focused)
+        });
+        if visible_focus {
+            return;
+        }
+        self.focused = self
+            .filtered
+            .iter()
+            .find(|index| !snapshot.branches[**index].current)
+            .map(|index| snapshot.branches[*index].id);
+    }
+
+    /// Number of rows the list currently shows (R62 R10: the filtered count,
+    /// which is what the virtualized list is sized from).
+    pub fn visible_count(&self) -> usize {
+        self.filtered.len()
     }
 
     pub fn apply_snapshot(&mut self, snapshot: BranchSnapshot) -> bool {
@@ -132,6 +222,7 @@ impl BranchSelectorModel {
             if self.is_open() {
                 self.snapshot = None;
                 self.focused = None;
+                self.filtered.clear();
                 self.status = SelectorStatus::Failed(GitWorkspaceErrorCode::OutputTooLarge);
             }
             return false;
@@ -160,6 +251,7 @@ impl BranchSelectorModel {
             .find(|branch| branch.current)
             .map(|branch| branch.label.clone());
         self.snapshot = Some(snapshot);
+        self.rebuild_filtered();
         true
     }
 
@@ -167,6 +259,7 @@ impl BranchSelectorModel {
         if self.is_open() {
             self.snapshot = None;
             self.focused = None;
+            self.filtered.clear();
             self.status = SelectorStatus::Failed(code);
         }
     }
@@ -273,48 +366,69 @@ impl BranchSelectorModel {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
+        // R62 R10: the walk runs over the **visible** (filtered) projection, so
+        // arrow keys cannot land on a row the filter hid. With an empty filter
+        // `filtered` is `0..len`, which reproduces the pre-R62 walk exactly.
+        let switchable: Vec<usize> = self
+            .filtered
+            .iter()
+            .copied()
+            .filter(|index| {
+                snapshot
+                    .branches
+                    .get(*index)
+                    .is_some_and(|branch| !branch.current)
+            })
+            .collect();
         let current = self.focused.and_then(|focused| {
-            snapshot
-                .branches
+            switchable
                 .iter()
-                .position(|branch| branch.id == focused && !branch.current)
+                .position(|index| snapshot.branches[*index].id == focused)
         });
         let next = if direction < 0 {
-            current.and_then(|index| {
-                snapshot.branches[..index]
-                    .iter()
-                    .rposition(|branch| !branch.current)
-            })
+            current.and_then(|position| position.checked_sub(1))
         } else {
-            let start = current.map_or(0, |index| index.saturating_add(1));
-            snapshot.branches[start..]
-                .iter()
-                .position(|branch| !branch.current)
-                .map(|offset| start + offset)
+            match current {
+                Some(position) => position.checked_add(1).filter(|p| *p < switchable.len()),
+                None => (!switchable.is_empty()).then_some(0),
+            }
         };
-        if let Some(index) = next {
-            self.focused = Some(snapshot.branches[index].id);
+        if let Some(position) = next {
+            self.focused = Some(snapshot.branches[switchable[position]].id);
         } else if self.focused.is_none() {
-            self.focused = snapshot
-                .branches
-                .iter()
-                .find(|branch| !branch.current)
-                .map(|branch| branch.id);
+            self.focused = switchable.first().map(|index| snapshot.branches[*index].id);
         }
     }
 
+    /// R62 R10: where the focused branch sits in the **visible** projection —
+    /// the coordinate `UniformListScrollHandle::scroll_to_item` speaks now that
+    /// the list is sized from the filtered count.
+    pub fn focused_position(&self) -> Option<usize> {
+        let focused = self.focused?;
+        let snapshot = self.snapshot.as_ref()?;
+        self.filtered
+            .iter()
+            .position(|index| snapshot.branches[*index].id == focused)
+    }
+
     pub fn visible_rows(&self, range: Range<usize>) -> Vec<(usize, BranchItem)> {
-        self.snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
-            range
-                .filter_map(|index| {
-                    snapshot
-                        .branches
-                        .get(index)
-                        .cloned()
-                        .map(|branch| (index, branch))
-                })
-                .collect()
-        })
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return Vec::new();
+        };
+        // R62 R10: the range indexes the **filtered** projection, and the
+        // returned position is the snapshot index, which is what
+        // `focused_index` and the scroll handle speak. With an empty filter
+        // `filtered[i] == i`, so the pre-R62 behaviour is bit-identical.
+        range
+            .filter_map(|position| {
+                let index = *self.filtered.get(position)?;
+                snapshot
+                    .branches
+                    .get(index)
+                    .cloned()
+                    .map(|branch| (index, branch))
+            })
+            .collect()
     }
 }
 
@@ -328,6 +442,10 @@ pub struct BranchSelector {
     chip_chrome: bool,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
+    /// R62 R10: the popup's search field. An entity (not a string) because the
+    /// field is a real editable input with IME support; its text is mirrored
+    /// into `model.filter`, which only hides rows.
+    search: Entity<crate::text_input::TextInput>,
 }
 
 impl EventEmitter<BranchListRequested> for BranchSelector {}
@@ -356,6 +474,18 @@ impl BranchSelector {
             }
         })
         .detach();
+        // R62 R10: the popup's search field. Bare chrome, because the row
+        // around it draws the surface; its text mirrors into `model.filter`,
+        // which only decides which rows the list shows (R62 R11).
+        let search = cx
+            .new(|cx| crate::text_input::TextInput::new(cx, "搜索分支", false).with_bare_chrome());
+        cx.observe(&search, |this, input, cx| {
+            if this.model.set_filter(input.read(cx).text()) {
+                this.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             current_head: CurrentHead::new(),
             thread_id,
@@ -368,6 +498,7 @@ impl BranchSelector {
             chip_chrome: false,
             focus: cx.focus_handle().tab_stop(true),
             scroll: UniformListScrollHandle::new(),
+            search,
         }
     }
 
@@ -423,6 +554,22 @@ impl BranchSelector {
 
     pub fn visible_rows(&self, range: Range<usize>) -> Vec<(usize, BranchItem)> {
         self.model.visible_rows(range)
+    }
+
+    /// R62 R10: how many rows the popup currently lists (the filtered count).
+    pub fn visible_count(&self) -> usize {
+        self.model.visible_count()
+    }
+
+    /// R62 R10: the active row filter, as the normalized needle.
+    pub fn filter(&self) -> &str {
+        self.model.filter()
+    }
+
+    /// R62 R10: the popup's search field, so callers (and tests) can drive the
+    /// one real input rather than a parallel string.
+    pub fn search_input(&self) -> Entity<crate::text_input::TextInput> {
+        self.search.clone()
     }
 
     pub fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
@@ -607,13 +754,10 @@ impl BranchSelector {
     }
 
     fn focused_index(&self) -> Option<usize> {
-        let focused = self.model.focused()?;
-        self.model
-            .snapshot
-            .as_ref()?
-            .branches
-            .iter()
-            .position(|branch| branch.id == focused)
+        // R62 R10: the list is sized from the filtered count, so the scroll
+        // coordinate is the focused branch's position in the **visible**
+        // projection, not its snapshot index.
+        self.model.focused_position()
     }
 
     fn close_action(&mut self, _: &CloseBranchSelector, _: &mut Window, cx: &mut Context<Self>) {
@@ -637,13 +781,21 @@ impl Render for BranchSelector {
             .snapshot
             .as_ref()
             .map_or(0, |snapshot| snapshot.branches.len());
+        let filtered_count = self.model.visible_count();
         let view = cx.entity().clone();
         let banner_rows =
             usize::from(row_count > 0 && matches!(self.model.status, SelectorStatus::Failed(_)));
         let popup_width = px(320.0).min((window.viewport_size().width - px(16.0)).max(px(1.0)));
-        let popup_height = px((row_count.max(1) + banner_rows) as f32 * BRANCH_ROW_HEIGHT + 2.0)
-            .min(px(240.0))
-            .min((window.viewport_size().height - px(16.0)).max(px(1.0)));
+        // R62 R10: the popup now also carries the search row, the separator
+        // and the trailing action row, so the row-count height gains exactly
+        // those bands ([`BRANCH_CHROME_HEIGHT`]) and nothing else. R11's 240px
+        // cap and the window bound are unchanged; the body simply scrolls
+        // inside them.
+        let popup_height = px(
+            (filtered_count.max(1) + banner_rows) as f32 * BRANCH_ROW_HEIGHT + BRANCH_CHROME_HEIGHT,
+        )
+        .min(px(240.0))
+        .min((window.viewport_size().height - px(16.0)).max(px(1.0)));
 
         div()
             .when(non_git, |root| root.hidden())
@@ -730,6 +882,15 @@ impl Render for BranchSelector {
                     .bg(colors.bg_elevated)
                     .text_color(colors.text_primary)
                     .shadow_sm()
+                    // R62 R10: the search field, then the (filtered) rows.
+                    // `filtered_count` is what the virtualized list is sized
+                    // from, so a filter shortens the list instead of leaving
+                    // blank measured space behind.
+                    .child(crate::menu_list::search_field(
+                        &self.search,
+                        "branch-selector-search",
+                        colors,
+                    ))
                     .when_some(
                         match self.model.status {
                             SelectorStatus::Failed(code) if row_count > 0 => Some(code),
@@ -749,11 +910,11 @@ impl Render for BranchSelector {
                             )
                         },
                     )
-                    .when(row_count > 0, |body| {
+                    .when(filtered_count > 0, |body| {
                         body.child(
                             uniform_list(
                                 "branch-selector-rows",
-                                row_count,
+                                filtered_count,
                                 cx.processor(move |this: &mut BranchSelector, range, _, _| {
                                     this.model
                                         .visible_rows(range)
@@ -777,12 +938,19 @@ impl Render for BranchSelector {
                             .w_full(),
                         )
                     })
-                    .when(row_count == 0, |body| {
-                        let text = match self.model.status {
-                            SelectorStatus::Loading => "Loading branches…",
-                            SelectorStatus::Empty => "No local branches",
-                            SelectorStatus::Failed(code) => branch_error_label(code),
-                            SelectorStatus::Closed | SelectorStatus::Ready => "No local branches",
+                    .when(filtered_count == 0, |body| {
+                        let text = if row_count > 0 {
+                            // R62 R10: the filter hid every row.
+                            "没有匹配分支"
+                        } else {
+                            match self.model.status {
+                                SelectorStatus::Loading => "Loading branches…",
+                                SelectorStatus::Empty => "No local branches",
+                                SelectorStatus::Failed(code) => branch_error_label(code),
+                                SelectorStatus::Closed | SelectorStatus::Ready => {
+                                    "No local branches"
+                                }
+                            }
                         };
                         body.flex().items_center().justify_center().child(
                             div()
@@ -790,7 +958,23 @@ impl Render for BranchSelector {
                                 .text_color(colors.text_tertiary)
                                 .child(text),
                         )
-                    });
+                    })
+                    // R62 R10: the trailing action group. `+ 新建并切换分支`
+                    // has no Vega implementation path — the headless branch
+                    // service exposes refresh / prepare_switch / execute_switch
+                    // only, and no caller may invent a Git command outside it —
+                    // so the row renders **disabled** rather than pretending to
+                    // work (R62 R11).
+                    .child(crate::menu_list::separator(colors))
+                    .child(crate::menu_list::action_row(
+                        "branch-selector-new",
+                        crate::icons::Icon::Plus,
+                        "新建并切换分支".into(),
+                        false,
+                        "暂不支持：分支服务只提供列出与切换",
+                        colors,
+                        |_, _, _| {},
+                    ));
                 root.child(
                     div().absolute().top_0().left_0().size_full().child(
                         div().relative().size_full().child(
@@ -818,6 +1002,12 @@ impl Render for BranchSelector {
     }
 }
 
+/// One branch row (R62 R10): branch icon + label, and the current branch
+/// carries the checkmark and the light-grey rounded surface.
+///
+/// `index` is the **snapshot** index (what `visible_rows` returns), so the
+/// selector is stable across filtering and matches what
+/// `focused_index`/`scroll_to_item` speak.
 fn render_branch_row(
     index: usize,
     branch: BranchItem,
@@ -828,45 +1018,43 @@ fn render_branch_row(
 ) -> impl IntoElement {
     let id = branch.id;
     let current = branch.current;
-    div()
-        .id(("branch-row", index))
-        .h(px(BRANCH_ROW_HEIGHT))
-        .flex_shrink_0()
-        .min_w_0()
-        .overflow_hidden()
-        .px_2()
-        .flex()
-        .items_center()
-        .gap_2()
-        .text_size(px(Typography::SIDEBAR))
-        .text_color(if current || disabled {
-            colors.text_tertiary
-        } else {
-            colors.text_primary
+    let check_selector = format!("branch-row-{index}-check");
+    crate::menu_list::row_container(
+        ("branch-row", index),
+        current,
+        !current && !disabled,
+        colors,
+    )
+    .debug_selector(move || format!("branch-row-{index}"))
+    .text_color(if current || disabled {
+        colors.text_tertiary
+    } else {
+        colors.text_primary
+    })
+    // The keyboard-focus surface stays `bg_hover`; it is applied after the
+    // selection surface so a focused non-current row reads as focus.
+    .when(focused == Some(id), |row| row.bg(colors.bg_hover))
+    .when(!current && !disabled, |row| {
+        row.on_mouse_up(MouseButton::Left, move |_, _, cx| {
+            view.update(cx, |selector, cx| selector.activate(id, cx));
         })
-        .when(focused == Some(id), |row| row.bg(colors.bg_hover))
-        .when(!current && !disabled, |row| {
-            row.cursor_pointer()
-                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                    view.update(cx, |selector, cx| selector.activate(id, cx));
-                })
-        })
-        .child(
-            div()
-                .min_w_0()
-                .flex_1()
-                .overflow_hidden()
-                .child(branch.label),
-        )
-        .when(current, |row| {
-            row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.success)
-                    .child("Current"),
-            )
-        })
+    })
+    .child(crate::icons::icon(
+        crate::icons::Icon::ArrowUpDown,
+        colors.text_secondary,
+    ))
+    .child(
+        div()
+            .min_w_0()
+            .flex_1()
+            .overflow_hidden()
+            .child(branch.label),
+    )
+    .child(crate::menu_list::selection_marker(
+        current,
+        move || check_selector.clone(),
+        colors,
+    ))
 }
 
 fn branch_error_label(code: GitWorkspaceErrorCode) -> &'static str {
