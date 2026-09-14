@@ -1891,8 +1891,13 @@ mod tests {
             f32::from(conversation.size.width) <= Layout::CONTENT_MAX_WIDTH + 1.0,
             "conversation keeps its readable-column cap"
         );
+        // R60 §2 R1: the header no longer composes a project chip with the
+        // title, so the header's mount check anchors on `main-header-title` —
+        // the node that now carries the whole content row. The geometry this
+        // loop protected (the 46px band asserted above and the slot cluster
+        // the title must clear) is unchanged.
         for selector in [
-            "main-header-project",
+            "main-header-title",
             "main-header-terminal",
             "main-header-environment",
             "main-header-workspace-right",
@@ -2063,13 +2068,21 @@ mod tests {
             cx.refresh_windows();
         });
         cx.run_until_parked();
+        // The header keeps its title node on this route too (R60 §2 R1 leaves
+        // the title untouched, so it is the node this route check anchors on).
         let _ = shell_bounds(window, "main-header-title", cx);
-        for selector in ["main-header-project", "environment-rail"] {
-            assert!(
-                shell_absent(window, selector, cx),
-                "standalone route must fence {selector}"
-            );
-        }
+        // R60 §2 R1: `main-header-project` left this fence because the header
+        // no longer renders a project chip on *any* route, which made the old
+        // assertion vacuous here (it would hold on the project route too, so it
+        // stopped proving anything about the standalone fence). The R60 test
+        // `r60_main_header_drops_the_project_prefix_but_keeps_the_title`
+        // asserts that global absence; the route-scoped fence that is still
+        // real stays here — a standalone thread must not mount the
+        // project-scoped Environment rail.
+        assert!(
+            shell_absent(window, "environment-rail", cx),
+            "standalone route must fence environment-rail"
+        );
         // R45 slot model supersedes conditional header membership: the three
         // shell slots render at every route, and on a standalone route they
         // render disabled, so clicking them changes no workspace state.
@@ -2493,6 +2506,107 @@ mod tests {
             backdrop.size.height,
             860.0,
             "overlay backdrop keeps the full window height",
+        );
+    }
+
+    /// R60 §2 R1/R3 (A1+A2): the main header shows the conversation title
+    /// alone — no project chip and no ` / ` separator — while the 46px band
+    /// and the title's share of the row are unchanged. The project label
+    /// itself stays alive for the composer's folder chip (R2); this test only
+    /// pins the header.
+    #[gpui_kit::test]
+    async fn r60_main_header_drops_the_project_prefix_but_keeps_the_title(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        // The fixture mounts a real project-bound thread, so the header had
+        // every input it used to need to render the prefix. Absence below is
+        // therefore a property of the render tree, not of missing route data.
+        let (root, window) = r45_mount_project_window(&repo, "R60 header prefix", 1403., 860., cx);
+        assert!(
+            root.read_with(cx, |root, cx| root.shell_project_label(cx).is_some()),
+            "fixture must expose a project label, otherwise the absence check is vacuous"
+        );
+
+        let header = shell_bounds(window, "main-header", cx);
+        assert_close(
+            header.size.height,
+            Layout::MAIN_HEADER_HEIGHT,
+            "header keeps its 46px band after the prefix removal",
+        );
+
+        let title = shell_bounds(window, "main-header-title", cx);
+        assert!(
+            shell_absent(window, "main-header-project", cx),
+            "the header must no longer mount the project chip"
+        );
+        assert!(
+            f32::from(title.size.width) > 0.0,
+            "the title node must still lay out with real width"
+        );
+        // R3: with the chip and separator gone the title is the header's only
+        // content child, so it must span from the header's leading padding to
+        // its reserved trailing band. The 12px leading inset is gpui's
+        // `pl_3()` (3 × 4px) that the header applies whenever the Sidebar is
+        // visible; the 104px trailing band is the frozen R46 slot-cluster
+        // reserve the title must clear.
+        const HEADER_LEADING_INSET: f32 = 12.0;
+        assert_close(
+            title.left() - header.left(),
+            HEADER_LEADING_INSET,
+            "the title starts at the header's 12px leading inset",
+        );
+        assert_close(
+            header.right() - title.right(),
+            Layout::SHELL_SLOT_CLUSTER_RESERVE,
+            "the title stops at the reserved slot-cluster band",
+        );
+        assert_close(
+            title.size.width,
+            f32::from(header.size.width)
+                - HEADER_LEADING_INSET
+                - Layout::SHELL_SLOT_CLUSTER_RESERVE,
+            "the title fills the whole row between the two insets",
+        );
+        assert_close(
+            title.center().y,
+            f32::from(header.center().y),
+            "the title stays vertically centered in the 46px band",
+        );
+    }
+
+    /// R60 §2 R2 (A3): removing the header prefix must not touch the shared
+    /// `Sidebar::project_label` path — the composer's folder chip still renders
+    /// from it. This is the regression guard against over-deleting.
+    #[gpui_kit::test]
+    async fn r60_composer_folder_chip_still_renders_the_project_label(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "R60 composer chip", 1403., 860., cx);
+
+        // R2 at the source: the sidebar accessor the composer projects from is
+        // still present and still resolves this project's label.
+        let (project_id, label) = root.read_with(cx, |root, cx| {
+            let project_id = root
+                .shell_project_id(cx)
+                .expect("fixture thread is project-bound");
+            let label = root.sidebar.read(cx).project_label(&project_id, cx);
+            (project_id, label)
+        });
+        assert_eq!(
+            label.as_deref(),
+            Some("R60 composer chip"),
+            "Sidebar::project_label must still resolve project {project_id}"
+        );
+
+        // R2 at the render site: the folder chip is still mounted with real
+        // bounds on the new-task page, so the label has a live consumer.
+        let chip = shell_bounds(window, "composer-utility-project-chip", cx);
+        assert!(
+            f32::from(chip.size.width) > 0.0 && f32::from(chip.size.height) > 0.0,
+            "the composer folder chip must still mount with real bounds"
+        );
+        let bar = shell_bounds(window, "composer-utility-bar", cx);
+        assert!(
+            chip.left() >= bar.left() && chip.right() <= bar.right(),
+            "the folder chip must still lay out inside the utility bar"
         );
     }
 

@@ -599,9 +599,6 @@ impl VegaWindow {
                 }
             },
         );
-        let project_label = self.shell_project_label(cx);
-        let has_project_label = project_label.is_some();
-
         div()
             .id("main-header")
             .debug_selector(|| "main-header".into())
@@ -627,44 +624,14 @@ impl VegaWindow {
             .when(sidebar_visible, |header| header.pl_3())
             .child(
                 div()
+                    .debug_selector(|| "main-header-title".into())
                     .min_w_0()
                     .flex_1()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .children(project_label.map(|label| {
-                        div()
-                            .debug_selector(|| "main-header-project".into())
-                            .min_w_0()
-                            .max_w(px(180.))
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .text_size(px(Typography::SIDEBAR))
-                            .text_color(colors.text_secondary)
-                            .child(vega_ui::icons::icon(Icon::Folder, colors.text_secondary))
-                            .child(div().min_w_0().truncate().child(label))
-                    }))
-                    .when(has_project_label, |labels| {
-                        labels.child(
-                            div()
-                                .flex_shrink_0()
-                                .text_size(px(Typography::METADATA))
-                                .text_color(colors.text_tertiary)
-                                .child("/"),
-                        )
-                    })
-                    .child(
-                        div()
-                            .debug_selector(|| "main-header-title".into())
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .text_size(px(Typography::HEADING_PAGE))
-                            .font_weight(Typography::HEADING_PAGE_WEIGHT)
-                            .text_color(colors.text_primary)
-                            .child(title),
-                    ),
+                    .truncate()
+                    .text_size(px(Typography::HEADING_PAGE))
+                    .font_weight(Typography::HEADING_PAGE_WEIGHT)
+                    .text_color(colors.text_primary)
+                    .child(title),
             )
             .into_any_element()
     }
