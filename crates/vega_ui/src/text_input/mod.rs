@@ -97,6 +97,11 @@ pub struct TextInput {
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    /// R62 R10: suppress the single-line box chrome so the input can live
+    /// inside a menu row that already draws the surface (the utility bar's
+    /// two dropdown search fields). The element, editing keys, IME handling
+    /// and placeholder behaviour are unchanged.
+    bare_chrome: bool,
 }
 
 mod element;

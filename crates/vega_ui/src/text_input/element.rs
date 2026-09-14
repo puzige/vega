@@ -386,13 +386,18 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move));
         if !self.multiline {
-            container = container
-                .bg(colors.bg_elevated)
-                .border_1()
-                .border_color(colors.border_subtle)
-                .rounded_lg()
-                .px_2()
-                .py_1();
+            // R62 R10: a bare-chrome input draws no surface of its own; the
+            // menu row around it already supplies background, border, radius
+            // and padding, so a second box would read as a field inside a box.
+            if !self.bare_chrome {
+                container = container
+                    .bg(colors.bg_elevated)
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .rounded_lg()
+                    .px_2()
+                    .py_1();
+            }
         } else {
             // Fixed-row viewport: content beyond `rows` lines is clipped
             // (自适应滚动后置，任务卡注明).

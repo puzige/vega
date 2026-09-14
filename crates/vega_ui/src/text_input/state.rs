@@ -21,6 +21,7 @@ impl TextInput {
             last_line_height: px(0.),
             last_bounds: None,
             is_selecting: false,
+            bare_chrome: false,
         }
     }
 
@@ -56,6 +57,15 @@ impl TextInput {
     /// Marks this input as reachable by the window's Tab traversal.
     pub fn with_tab_stop(mut self, tab_stop: bool) -> Self {
         self.focus_handle = self.focus_handle.tab_stop(tab_stop);
+        self
+    }
+
+    /// R62 R10: drops the single-line box chrome (background, border, radius,
+    /// padding) so the input can be the editable body of a menu row that draws
+    /// its own surface. Only the decoration changes: content, selection, IME
+    /// handling, editing keys and the placeholder are untouched.
+    pub fn with_bare_chrome(mut self) -> Self {
+        self.bare_chrome = true;
         self
     }
 

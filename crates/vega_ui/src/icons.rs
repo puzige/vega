@@ -47,6 +47,12 @@ pub enum Icon {
     Warning,
     Document,
     Summary,
+    /// Selection marker for menu rows (R62 R8/R10).
+    Check,
+    /// R62 R8: the "ask for approval" permission row.
+    Hand,
+    /// R62 R8: the "approve for me" permission row.
+    Shield,
 }
 
 /// Lucide's pin path is kept inline because gpui-kit 0.6.0 does not ship a
@@ -74,6 +80,16 @@ const SUMMARY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="
 /// 16px it stays clearly distinct from `DockBottom` (rect + bottom bar) and
 /// `DockRight` (rect + right bar): neither carries an arrow.
 const DOCK_MOVE_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="5" width="14" height="14" rx="2"/><path d="M2 12h9"/><path d="m8 9 3 3-3 3"/></svg>"#;
+
+/// R62 R8: Lucide's open hand, the reference implementation's "Ask for
+/// approval" glyph. gpui-kit 0.6.0 ships no hand asset, so the same 24px,
+/// stroke-2, round-join grammar is carried inline here (the file's existing
+/// convention for missing symbols).
+const HAND_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>"#;
+
+/// R62 R8: Lucide's shield, the reference implementation's "Approve for me"
+/// glyph. Inline for the same reason as [`HAND_SVG`].
+const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>"#;
 
 fn icon_name(kind: Icon) -> IconName {
     match kind {
@@ -104,7 +120,8 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Terminal => IconName::SquareTerminal,
         Icon::Warning => IconName::TriangleAlert,
         Icon::Document => IconName::FileText,
-        Icon::Pin | Icon::Summary | Icon::DockMove => {
+        Icon::Check => IconName::Check,
+        Icon::Pin | Icon::Summary | Icon::DockMove | Icon::Hand | Icon::Shield => {
             unreachable!("inline SVG icons are handled before mapping")
         }
     }
@@ -134,6 +151,8 @@ pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
         Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color),
         Icon::Summary => inline_icon(SUMMARY_SVG, color),
         Icon::DockMove => inline_icon(DOCK_MOVE_SVG, color),
+        Icon::Hand => inline_icon(HAND_SVG, color),
+        Icon::Shield => inline_icon(SHIELD_SVG, color),
         _ => kit_icon(kind, color),
     }
 }
