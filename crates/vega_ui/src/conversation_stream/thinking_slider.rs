@@ -81,6 +81,17 @@ pub const THINKING_KNOB_DIAMETER: f32 = 24.0;
 /// `(254.5 - 203.0) / 2`.
 const CARD_INSET: f32 = (THINKING_CARD_WIDTH - THINKING_TRACK_WIDTH) / 2.0;
 
+/// Radius of the fill layer's two **left** corners (R65 R1).
+///
+/// The track is a capsule, so the fill's left end has to be a half-circle cap
+/// of radius `THINKING_TRACK_HEIGHT / 2.0` — the same shape the track's own
+/// right cap draws. A single value covers every tier because GPUI clamps each
+/// corner radius per quad to `min(width, height) / 2` (spec §4b): at the
+/// narrowest fill (`dot_center_offset(0, n) = 12.0`) the radius clamps to 6.0,
+/// which on a 12px-wide, 24px-tall box is exactly the left semicircle. No
+/// per-tier branching is needed, and none is wanted — see spec §4b.
+const FILL_LEFT_CAP_RADIUS: f32 = THINKING_TRACK_HEIGHT / 2.0;
+
 /// Dot diameter. **Chosen, not measured**: spec §4.5 M1 lists the dot spacing
 /// and diameter as still unmeasured, so this needs calibration.
 pub const THINKING_DOT_DIAMETER: f32 = 4.0;
@@ -768,6 +779,12 @@ impl ThinkingSlider {
                     .top_0()
                     .h(px(THINKING_TRACK_HEIGHT))
                     .w(px(width))
+                    // R65 R1: only the segment flush with the track's left edge
+                    // carries the capsule's left cap; the inner segment keeps
+                    // its square corners so the two halves abut seamlessly.
+                    .when(index == 0, |segment| {
+                        segment.rounded_l(px(FILL_LEFT_CAP_RADIUS))
+                    })
                     .bg(linear_gradient(
                         90.0,
                         linear_color_stop(from, 0.0),
@@ -790,6 +807,16 @@ impl ThinkingSlider {
             .top_0()
             .h(px(THINKING_TRACK_HEIGHT))
             .w(px(fill))
+            // R65 R1: the fill's left end must be a capsule cap, not a square
+            // corner. `overflow_hidden` on the track is a pure rectangle clip
+            // (spec §4), so the track's own `rounded` never reaches this child
+            // and the fill has to carry the radius itself.
+            //
+            // GPUI clamps each corner to `min(width, height) / 2` per quad
+            // (spec §4b), so this one value is correct at every tier: at the
+            // narrowest fill (12.0px) it clamps to 6.0, which on a 12px-wide
+            // box is exactly the left semicircle.
+            .rounded_l(px(FILL_LEFT_CAP_RADIUS))
             .bg(TRACK_FILL_FLAT)
             .into_any_element()
     }
@@ -1501,6 +1528,149 @@ mod tests {
             dot_center_offset(6, 7) + THINKING_KNOB_DIAMETER / 2.0,
             THINKING_TRACK_WIDTH
         );
+    }
+
+    // ---- R65: the fill layer's left cap ----------------------------------
+
+    /// `dot_center_offset` for a six-tier ladder, read off the formula before
+    /// R65 gave the fill layer a radius. R65 is a paint-only change and must
+    /// not move a single dot (spec §5 R2/R3, §6 A4).
+    const R65_SIX_TIER_BASELINE: [f32; 6] = [12.0, 47.8, 83.6, 119.4, 155.2, 191.0];
+
+    /// The same baseline with Off shown — seven positions, matching spec §4b's
+    /// per-tier table.
+    const R65_SEVEN_TIER_BASELINE: [f32; 7] = [12.0, 41.83, 71.67, 101.5, 131.33, 161.17, 191.0];
+
+    /// R65 A4: every tier's dot centre is identical to the pre-change value,
+    /// with and without the Off position.
+    ///
+    /// The literals above are the *pre-change* outputs, not a re-evaluation of
+    /// the formula, so this test can actually fail if `dot_center_offset` or
+    /// the frozen constants move. Recomputing them here would make it
+    /// tautological.
+    #[test]
+    fn r65_a4_dot_centres_match_the_pre_change_baseline() {
+        for (index, expected) in R65_SIX_TIER_BASELINE.iter().enumerate() {
+            let actual = dot_center_offset(index, 6);
+            assert!(
+                (actual - expected).abs() <= 0.01,
+                "R65 A4: six-tier dot {index} moved to {actual} from the \
+                 pre-change baseline {expected}"
+            );
+        }
+        for (index, expected) in R65_SEVEN_TIER_BASELINE.iter().enumerate() {
+            let actual = dot_center_offset(index, 7);
+            assert!(
+                (actual - expected).abs() <= 0.01,
+                "R65 A4: seven-tier dot {index} moved to {actual} from the \
+                 pre-change baseline {expected}"
+            );
+        }
+        // A one-dot ladder centres its single dot, and the strongest dot's
+        // knob stays flush with the measured right edge (R3: 203px is a hard
+        // bound).
+        assert!((dot_center_offset(0, 1) - 101.5).abs() <= 0.01);
+        assert_eq!(
+            dot_center_offset(5, 6) + THINKING_KNOB_DIAMETER / 2.0,
+            THINKING_TRACK_WIDTH
+        );
+    }
+
+    /// R65 §4b: **one** radius value covers every tier, because GPUI clamps
+    /// each corner per quad to `min(width, height) / 2`. At the narrowest fill
+    /// (`dot_center_offset(0, n) = 12.0`) that clamp lands on 6.0 — the left
+    /// semicircle of a 12px-wide, 24px-tall box; at every wider tier the full
+    /// 12.0 cap draws.
+    ///
+    /// This pins the **arithmetic the spec determined** (the constant and the
+    /// clamp), NOT the painted cap. The test platform has no headless
+    /// renderer, so the rendered shape is not observable here — spec §6 says
+    /// exactly that, and the shape proof is a native pixel scan. Do not read
+    /// this test as covering A1/A2.
+    #[test]
+    fn r65_the_left_cap_radius_clamps_to_the_semicircle_at_the_narrowest_fill() {
+        assert_eq!(FILL_LEFT_CAP_RADIUS, 12.0);
+        assert_eq!(FILL_LEFT_CAP_RADIUS, THINKING_TRACK_HEIGHT / 2.0);
+
+        let narrowest = dot_center_offset(0, 6);
+        assert_eq!(narrowest, 12.0, "the lowest tier's fill is 12px wide");
+        let clamped = FILL_LEFT_CAP_RADIUS.min(narrowest.min(THINKING_TRACK_HEIGHT) / 2.0);
+        assert_eq!(clamped, 6.0, "a 12px-wide fill clamps to a 6px radius");
+
+        // Every other tier is at least two radii wide, so its cap is a full
+        // semicircle rather than a clamp.
+        for index in 1..6 {
+            let width = dot_center_offset(index, 6);
+            assert!(
+                width >= FILL_LEFT_CAP_RADIUS * 2.0,
+                "tier {index}'s fill ({width}px) is narrower than the full cap"
+            );
+        }
+    }
+
+    /// R65 A4, rendered: the fill layer still begins flush with the track's
+    /// left edge and still spans exactly `dot_center_offset` for every tier.
+    ///
+    /// A corner radius is paint-only, so it must not move or resize the fill.
+    /// This is the rendered half of A4 — it says nothing about the painted
+    /// cap, which this harness cannot observe.
+    #[gpui_kit::test]
+    async fn r65_a4_the_fill_keeps_its_left_edge_and_width_at_every_tier(cx: &mut TestAppContext) {
+        let ladder = tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]);
+        let strongest = ladder.len() - 1;
+        for (selected, tier_name) in ladder.iter().enumerate() {
+            let window = open_slider(cx, ladder.clone(), tier_name, "medium");
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let track = visual
+                .debug_bounds("thinking-slider-track")
+                .expect("mounted track");
+            let expected = dot_center_offset(selected, ladder.len());
+
+            if selected == strongest {
+                // The strongest tier takes the gradient: its first segment
+                // must still start at the track's left edge, and the segment
+                // widths must still sum to the measured track width. The
+                // measured stops and their positions are unchanged (R2).
+                let first = visual
+                    .debug_bounds(GRADIENT_SEGMENT_SELECTORS[0])
+                    .expect("mounted first gradient segment");
+                let second = visual
+                    .debug_bounds(GRADIENT_SEGMENT_SELECTORS[1])
+                    .expect("mounted second gradient segment");
+                assert!(
+                    (f32::from(first.left() - track.left())).abs() <= 0.5,
+                    "R65 A4: the gradient's first segment must begin at the \
+                     track's left edge: segment {:?} vs track {:?}",
+                    first.left(),
+                    track.left()
+                );
+                let spanned = f32::from(first.size.width) + f32::from(second.size.width);
+                assert!(
+                    (spanned - THINKING_TRACK_WIDTH).abs() <= 1.0,
+                    "R65 A4/R2: the gradient must still span the measured \
+                     track: {spanned}px != {THINKING_TRACK_WIDTH}px"
+                );
+                continue;
+            }
+
+            let fill = visual
+                .debug_bounds("thinking-slider-fill-flat")
+                .expect("a non-strongest tier renders the flat fill");
+            assert!(
+                (f32::from(fill.left() - track.left())).abs() <= 0.5,
+                "R65 A4: the fill must stay flush with the track's left edge \
+                 at tier {selected}: fill {:?} vs track {:?}",
+                fill.left(),
+                track.left()
+            );
+            assert!(
+                (f32::from(fill.size.width) - expected).abs() <= 0.5,
+                "R65 A4: tier {selected}'s fill must still span \
+                 dot_center_offset = {expected}px, got {}",
+                f32::from(fill.size.width)
+            );
+        }
     }
 
     // ---- rendered geometry and interaction -------------------------------
