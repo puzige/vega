@@ -1,18 +1,6 @@
 use super::composer_actions::permission_label;
 use super::*;
 
-/// R59 R4/R5: horizontal inset of a model-picker layer from the right edge of
-/// the composer card, so the layer's right edge lands on the model trigger's
-/// own right edge.
-///
-/// Derived from the frozen bottom row rather than measured: the trigger is the
-/// last control before the send button, so the inset is the card's border (1)
-/// plus its `p_3` (12) plus the send button ([`Layout::COMPOSER_SEND_SIZE`])
-/// plus the row's `gap_2` (8). A structural test asserts the layer's right edge
-/// equals the trigger's, so a change to any of those terms cannot silently
-/// drift the popup.
-const PICKER_RIGHT_INSET: f32 = 1.0 + 12.0 + Layout::COMPOSER_SEND_SIZE + 8.0;
-
 /// R59 R7: the trigger label while the tier slider (level one) is showing.
 ///
 /// The reference implementation's `composer.modelPicker.selectEffort.label`
@@ -132,13 +120,13 @@ impl ConversationStream {
             .pt(px(Layout::COMPOSER_PADDING_TOP))
             .pb(px(Layout::COMPOSER_PADDING_BOTTOM))
             .flex_shrink_0()
-            // R59 R4/R5: the picker's two layers are absolutely positioned
-            // against this column, so it must be their containing block. They
-            // anchor to the column's **top** edge (`bottom: 100%`), which is
-            // the utility bar's top edge when the bar is mounted and the
-            // composer card's top edge when it is not — so a layer can never
-            // reach the bar or the card, on any window size.
-            .relative()
+            // R61 R2: the composer column no longer hosts the picker's
+            // floating layers — each layer is mounted inside the model
+            // trigger's own `.relative()` wrapper (`render_model_selector`),
+            // which is what makes the card hug the trigger. R59 pinned them
+            // here instead, to the column's top edge, to keep the R49 utility
+            // bar clear; the user ruled that trade-off out (R61 §2), so the
+            // column keeps no picker-related positioning role.
             // R49: the utility bar is a real sibling above the card on the
             // new-task page (zero overlap, no negative margin). The session
             // page renders the card alone, exactly like Codex.
@@ -304,10 +292,6 @@ impl ConversationStream {
                     .text_color(colors.danger)
                     .child(error)
             }))
-            // R59 R4: the picker overlay is the column's last child, so the
-            // layers paint above the bar and the card rather than inside either
-            // one.
-            .child(self.render_model_picker_overlay(cx))
             .into_any_element()
     }
 
@@ -482,6 +466,16 @@ impl ConversationStream {
     /// `settings/reasoning_render.rs` and R57 §2.2), so 选择强度 is the
     /// in-convention translation. Outside that state the trigger keeps the
     /// existing model-name display.
+    ///
+    /// R61 R1/R2: this `.relative()` wrapper is the picker's containing block.
+    /// Both levels are its absolutely positioned children and hang off its
+    /// **top** edge (`bottom: 100%` plus the gap), right-aligned to its
+    /// **right** edge (`right: 0`), so the card hugs the model button instead
+    /// of the composer column's top edge. That means the card overlaps the R49
+    /// utility bar by design (R61 §2: the user chose the overlap), and the
+    /// bar's chips may be covered while a layer is open — the layers
+    /// `stop_propagation` on mouse-down, so an outside click still closes the
+    /// picker and restores the bar (R61 R6).
     fn render_model_selector(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let enabled = !self.trusted_action_busy
@@ -497,7 +491,15 @@ impl ConversationStream {
             self.model_selection_pending.is_some(),
         );
         div()
+            // R61 R1: this wrapper is exactly the trigger's own box, so the
+            // layer's `bottom: 100%` / `right: 0` land on the trigger's edges
+            // rather than on the composer column's. It reproduces the trigger's
+            // own flex-item semantics (`flex` + `flex_shrink_0`), so the frozen
+            // bottom row's shape is unchanged: the absolutely positioned layer
+            // contributes nothing to the wrapper's measured size.
             .relative()
+            .flex()
+            .flex_shrink_0()
             .child(
                 div()
                     .id("composer-model")
@@ -548,16 +550,32 @@ impl ConversationStream {
                             )),
                     ),
             )
+            .child(self.render_model_picker_layers(cx))
             .into_any_element()
     }
 
-    /// R59 R4: the picker's two floating layers.
+    /// R59 R4 / R61 R1: the picker's two floating layers.
     ///
     /// The single `model_picker_level` value decides which arm below runs, so
     /// at most one layer is in the element tree per frame and the slider can
     /// never be nested inside the list's container (R59 A3). Each layer carries
     /// its own border, background and shadow, which is what removes R57's
     /// card-inside-a-card look (D1).
+    ///
+    /// R61 R2 removed the R59 `render_model_picker_overlay` wrapper that pinned
+    /// this call to the composer **column's** top edge with a
+    /// `max_w(COMPOSER_MAX_WIDTH) + mx_auto` inner box. That wrapper existed to
+    /// keep the R49 utility bar clear; the user ruled the trade-off out
+    /// (R61 §2), so the layers now hang from the model trigger's own
+    /// `.relative()` wrapper (see [`Self::render_model_selector`]) and each
+    /// layer right-aligns with `right_0()`.
+    ///
+    /// The layers are deliberately **not** wrapped in `gpui_kit::deferred`:
+    /// deferred content is laid out in its own window-space paint layer, which
+    /// breaks composer-relative coordinates (measured under R59: the card
+    /// landed at x 1232.5 on a 1200-wide window instead of on the card's right
+    /// edge). The trigger wrapper clips nothing, so no escape hatch is needed;
+    /// each layer's own `occlude()` supplies the hit-testing priority instead.
     fn render_model_picker_layers(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.model_picker_level {
             ModelPickerLevel::Closed => div().into_any_element(),
@@ -566,70 +584,28 @@ impl ConversationStream {
         }
     }
 
-    /// R59 R4/R5: the zero-height overlay both picker layers hang from.
-    ///
-    /// It is pinned to the **top edge of the composer column** — the utility
-    /// bar's top edge when the bar is mounted, the card's top edge when it is
-    /// not — and its inner box reproduces the composer card's own horizontal
-    /// geometry (`max_w` + `mx_auto`), so a layer's `right(px(..))` measures
-    /// from the card's right edge rather than from the window's.
-    ///
-    /// Anchoring here is what makes R5 structural rather than arithmetic: the
-    /// layers open upward from the column's top edge, so no window size, model
-    /// count, or grown input row can bring them down over the bar. Anchoring to
-    /// the model trigger was rejected by measurement — the gap between the
-    /// trigger's top (1022) and the bar's bottom (961) is 61px, while the
-    /// R57-frozen slider card needs 84px, so a trigger-anchored popup cannot
-    /// show the card without covering the bar (the D2 defect).
-    ///
-    /// The layers are deliberately **not** wrapped in `gpui_kit::deferred`:
-    /// deferred content is laid out in its own window-space paint layer, which
-    /// breaks these composer-relative coordinates (measured: the card landed at
-    /// x 1232.5 on a 1200-wide window instead of on the card's right edge). The
-    /// composer column clips nothing, so no escape hatch is needed; each
-    /// layer's own `occlude()` supplies the hit-testing priority instead.
-    fn render_model_picker_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
-        if !self.model_picker_level.is_open() {
-            return div().into_any_element();
-        }
-        div()
-            .debug_selector(|| "composer-picker-anchor".into())
-            .absolute()
-            .bottom(gpui_kit::relative(1.0))
-            .left_0()
-            .right_0()
-            .flex()
-            .flex_col()
-            .items_end()
-            .child(
-                div()
-                    .debug_selector(|| "composer-picker-anchor-box".into())
-                    .w_full()
-                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                    .mx_auto()
-                    .flex()
-                    .flex_col()
-                    .items_end()
-                    .child(self.render_model_picker_layers(cx)),
-            )
-            .into_any_element()
-    }
-
     /// R59 R5: the height bound shared by both layers.
     ///
     /// R57 shipped no bound at all, so the popup grew to 1409px with a 40-model
     /// catalog and covered the whole transcript. The bound is what makes the
-    /// list scroll inside itself instead of growing the layer.
+    /// list scroll inside itself instead of growing the layer. R61 R3 keeps it
+    /// unchanged.
     fn picker_max_height(&self) -> Pixels {
         px(Layout::COMPOSER_PICKER_MAX_HEIGHT)
     }
 
-    /// R59 R1: **level one** — the tier slider card, and nothing else.
+    /// R59 R1 / R61 R1: **level one** — the tier slider card, and nothing else.
     ///
     /// R57 mounted this card as the model menu's last child (D1); here it is a
     /// standalone floating layer with its own chrome (R4). A model that
     /// declares no tiers renders nothing at all (R57 R12), so the layer is not
     /// mounted in that case rather than leaving an empty padded card behind.
+    ///
+    /// R61 R1: `bottom: 100%` + [`Layout::COMPOSER_PICKER_TRIGGER_GAP`] places
+    /// the card's bottom edge that far above the **trigger's** top edge, and
+    /// `right_0()` aligns its right edge with the trigger's — no arithmetic
+    /// inset, because the containing block *is* the trigger's wrapper. R61
+    /// accepts the resulting overlap with the R49 utility bar (§2).
     fn render_picker_slider_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         if !self.thinking_slider.read(cx).has_tiers() {
             return div().into_any_element();
@@ -639,8 +615,8 @@ impl ConversationStream {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .absolute()
             .bottom(gpui_kit::relative(1.0))
-            .mb(px(Layout::COMPOSER_PICKER_ANCHOR_GAP))
-            .right(px(PICKER_RIGHT_INSET))
+            .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
+            .right_0()
             // R59 R4: the card's own surface. `ThinkingSlider` already draws the
             // measured 254.5px card with its own border, background and shadow,
             // so this layer adds only placement and the height bound.
@@ -656,10 +632,15 @@ impl ConversationStream {
     /// slider's title row.
     ///
     /// The list is bounded by [`Self::picker_max_height`] and scrolls inside
-    /// that bound, so a long catalog cannot grow the layer over the utility bar
-    /// (R5). The heading is the reference implementation's
+    /// that bound, so a long catalog cannot grow the layer without limit (R61
+    /// A4). The heading is the reference implementation's
     /// `composer.modelPicker.modelList.heading` ("Select model"); Vega's
     /// existing Chinese wording for this surface is 选择模型.
+    ///
+    /// R61 R1: same trigger anchoring as the slider layer — `bottom: 100%`
+    /// minus the gap, `right_0()`. The list keeps its own frozen
+    /// [`Layout::MENU_MAX_WIDTH`], so it extends to the **left** of the trigger
+    /// rather than to its right.
     fn render_picker_list_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         div()
@@ -668,8 +649,8 @@ impl ConversationStream {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .absolute()
             .bottom(gpui_kit::relative(1.0))
-            .mb(px(Layout::COMPOSER_PICKER_ANCHOR_GAP))
-            .right(px(PICKER_RIGHT_INSET))
+            .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
+            .right_0()
             .w(px(Layout::MENU_MAX_WIDTH))
             .max_h(self.picker_max_height())
             .occlude()

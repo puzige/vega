@@ -341,12 +341,16 @@ impl Layout {
     /// the R49 utility bar (R59 §1 D2). Every picker layer is now capped here
     /// and scrolls inside itself instead.
     pub const COMPOSER_PICKER_MAX_HEIGHT: f32 = 320.0;
-    /// R59 R5: visible clearance between a picker layer's bottom edge and the
-    /// top edge of the composer stack it opens above.
+    /// R61 R1: visible clearance between a picker layer's bottom edge and the
+    /// top edge of the **model trigger** it hangs from.
     ///
-    /// The layers open **upward**, so this is the one gap that separates the
-    /// popup's shadow from the surface underneath it.
-    pub const COMPOSER_PICKER_ANCHOR_GAP: f32 = 8.0;
+    /// R59 anchored the layers to the composer stack's top edge and called the
+    /// same 8px `COMPOSER_PICKER_ANCHOR_GAP`. R61 moved the anchor to the
+    /// trigger itself (see `render_model_selector`) so the card hugs the
+    /// model button (R61 §1 D1/D2); the value is unchanged, and R61 §6 M1
+    /// leaves the final number to visual review. R61 A1 judges the result as
+    /// "within 12px", which is what a test pins this token against.
+    pub const COMPOSER_PICKER_TRIGGER_GAP: f32 = 8.0;
     /// Top padding of the Composer wrapper column inside the conversation.
     pub const COMPOSER_PADDING_TOP: f32 = 12.0;
     /// Bottom padding of the Composer wrapper column inside the conversation.
@@ -633,6 +637,28 @@ mod tests {
             Layout::COMPOSER_RADIUS,
             "the utility bar must not reuse the composer card radius"
         );
+    }
+
+    /// R61 R1: the trigger-anchoring tokens are frozen.
+    ///
+    /// R61 renamed `COMPOSER_PICKER_ANCHOR_GAP` (R59's column-top gap) to
+    /// `COMPOSER_PICKER_TRIGGER_GAP` because the anchor moved from the composer
+    /// column's top edge to the model trigger's top edge. The value is
+    /// deliberately unchanged at 8px — R61 §6 M1 leaves the final number to
+    /// visual review, and the spec's acceptance threshold (A1, ≤ 12px) is a
+    /// tolerance around it rather than a second token.
+    #[test]
+    fn r61_picker_trigger_anchoring_tokens_are_frozen() {
+        assert_eq!(Layout::COMPOSER_PICKER_TRIGGER_GAP, 8.0);
+        assert_eq!(Layout::COMPOSER_PICKER_MAX_HEIGHT, 320.0);
+        // The hug must be visibly tighter than the bar it overlaps: a gap at or
+        // above the bar's own height would put the card back on the column's
+        // top edge, which is the R61 §1 D1 defect. The relation is between two
+        // constants, so it is checked at compile time rather than as a runtime
+        // assertion.
+        const {
+            assert!(Layout::COMPOSER_PICKER_TRIGGER_GAP < Layout::COMPOSER_UTILITY_BAR_HEIGHT);
+        }
     }
 
     #[test]
