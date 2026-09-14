@@ -111,6 +111,42 @@ scripts/cargo-lock.sh --release               # 清理残留锁（进程已死�
 
 同类记录：`docs/vega-r47-panel-structure-alignment-delivery.md:80`。
 
+## 原生验收的操作方法：五个必踩的坑（2026-09-14 实测）
+
+R62 验收耗时远超预期，全部时间花在**定位窗口和坐标**上，与产品无关。以下每条都真实发生过一次，照做可省一整轮。
+
+### 坑 1 · `pgrep -f '<path>'` 会匹配到自己
+
+`pgrep -f '/Applications/Vega.app/Contents/MacOS/vega'` 恒返回命中——模式字符串出现在执行 pgrep 的 **shell wrapper 自己的命令行**里。
+
+**改用**：`pgrep -x vega`（精确进程名），或 `ps aux | grep '[V]ega'`。
+
+### 坑 2 · ZCode 客户端窗口标题就是 "Vega Desktop"
+
+ZCode 自己的窗口标题是 `Vega Desktop`，界面上也有 `Full access` 等相同字样。**只看截图无法分辨**，点击会落到 ZCode 上。
+
+**改用**：`CGWindowListCopyWindowInfo` 按 owner name + bundle id 定位目标窗口。
+
+### 坑 3 · `screencapture -l <winid>` 的阴影边距会变
+
+窗口 ID 截图会把投影拍进去，边距**随窗口阴影状态在 34～56 逻辑像素间变化**。用它做像素→坐标换算必然错位（这是本轮坐标反复失准的真正原因）。
+
+**改用**：`screencapture -R x,y,w,h`（x/y/w/h 取自 `CGWindowListCopyWindowInfo` 的 bounds），输出严格 2× 且无边距，`px = 2 × window-rel`。
+
+### 坑 4 · shell 往返会让终端抢回焦点
+
+`open -a Vega` 与随后的点击若分属两次 Bash 调用，中间的终端窗口会重新成为前台。
+
+**改用**：把「激活 → 等成为前台 → 点击 → 截图」写进**同一个进程**。`scripts/native-drive.swift` 是为此写的驱动（`NSRunningApplication` + `CGWindowListCopyWindowInfo` + `CGEventPost` + `screencapture -R`）。
+
+注意：`NSRunningApplication.activate()` 在本机被系统拒绝（返回后仍非前台），**必须用 `open -a` 激活**，然后轮询 `NSWorkspace.shared.frontmostApplication?.bundleIdentifier`。
+
+### 坑 5 · 用窗口内相对坐标，不要用屏幕绝对坐标
+
+窗口位置在验收过程中会变（本轮实测 origin 从 (318,53) 变到 (346,52)）。写死屏幕坐标会在下一次窗口移动时静默失效。
+
+**改用**：每次都从 `CGWindowListCopyWindowInfo` 现读 origin，再加窗口内相对偏移。
+
 ## 架构红线（速记，详见 exec-guide）
 
 - `vega_runtime` 禁止依赖 GPUI/任何 UI crate（headless 可测）
