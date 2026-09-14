@@ -74,6 +74,27 @@ pub(crate) fn permission_is_warning(mode: PermissionMode) -> bool {
     mode == PermissionMode::Auto
 }
 
+/// R63: the debug selector naming **which glyph** [`permission_icon`] chose,
+/// so the test harness can tell the three modes apart by what the chip
+/// actually painted.
+///
+/// An icon renders as an `AnyElement` into the sprite atlas and carries no
+/// selector of its own, so a rendered glyph is otherwise invisible to
+/// `VisualTestContext::debug_bounds` — the same reason the picker's checkmark
+/// and the slider's chevron tag a wrapper. The tag is keyed to the glyph
+/// **value** the caller is about to paint (not to the mode), so the tag and
+/// the glyph are one value with one source: there is no second `match` on the
+/// mode here that could drift from [`permission_icon`], and a glyph outside
+/// the three named modes is reported as such rather than mislabelled.
+pub(crate) fn permission_icon_selector(icon: crate::icons::Icon) -> &'static str {
+    match icon {
+        crate::icons::Icon::Hand => "composer-permission-status-icon-hand",
+        crate::icons::Icon::Shield => "composer-permission-status-icon-shield",
+        crate::icons::Icon::Warning => "composer-permission-status-icon-warning",
+        _ => "composer-permission-status-icon-unexpected",
+    }
+}
+
 /// R62 R8: the picker's title row. The reference implementation's
 /// `composer.permissionsDropdown.title.chatgptDesktop` is
 /// "How should ChatGPT actions be approved?". Vega's UI is Chinese and its

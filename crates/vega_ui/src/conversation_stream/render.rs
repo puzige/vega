@@ -2,8 +2,8 @@ use super::*;
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
 use super::composer_actions::{
-    PERMISSION_ORDER, permission_description, permission_icon, permission_is_warning,
-    permission_label,
+    PERMISSION_ORDER, permission_description, permission_icon, permission_icon_selector,
+    permission_is_warning, permission_label,
 };
 pub(crate) use super::composer_actions::{PERMISSION_PICKER_LEARN_MORE, PERMISSION_PICKER_TITLE};
 
@@ -301,13 +301,22 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    /// R57 P2b (spec §2.3 R2/R5) / R62 R7: the permission mode as a clickable
-    /// status chip.
+    /// R57 P2b (spec §2.3 R2/R5) / R62 R7 / R63: the permission mode as a
+    /// clickable status chip.
     ///
-    /// Warning-coloured label plus the warning glyph, with Vega's existing
-    /// Chinese labels — the reference implementation's `⚠ Full access` shape.
-    /// The label comes from the one projection the `+` menu also renders, so
-    /// the two surfaces cannot drift.
+    /// Glyph, ink and label all come from the same projections the picker's
+    /// rows read (`permission_icon`, `permission_is_warning`,
+    /// `permission_label`), so the two surfaces can never contradict each
+    /// other: 只读 shows the hand, 确认 the shield, and only 自动 — the
+    /// unrestricted mode — carries the warning triangle and the warning ink.
+    /// R63 fixes the one place that had drifted: this chip hard-coded
+    /// `Icon::Warning` plus `colors.warning`, so it showed a warning triangle
+    /// in every mode while the picker's rows already showed the right glyph.
+    ///
+    /// Every non-warning mode reads in `text_secondary`, the ink the `+`
+    /// button and the model trigger beside it in this row use, so the chip
+    /// stays one of the row's neutral controls instead of carrying a status
+    /// colour of its own.
     ///
     /// R62 R7 reverses R57 P2b's "static text" decision: the user's screenshot
     /// proves the reference implementation's `Full access` label is a real
@@ -320,7 +329,18 @@ impl ConversationStream {
     /// wrapper's measured size.
     fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = permission_label(self.thread.permission_mode);
+        let mode = self.thread.permission_mode;
+        let label = permission_label(mode);
+        // R63: the glyph is chosen once, and both the painted icon and the
+        // harness-visible tag below are that same value — so the tag can never
+        // name one icon while the chip paints another.
+        let glyph = permission_icon(mode);
+        // R63: one rule decides both inks, and it is the picker's own rule.
+        let ink = if permission_is_warning(mode) {
+            colors.warning
+        } else {
+            colors.text_secondary
+        };
         div()
             .relative()
             .flex()
@@ -342,7 +362,7 @@ impl ConversationStream {
                     .py_1()
                     .rounded_md()
                     .text_size(px(Typography::METADATA))
-                    .text_color(colors.warning)
+                    .text_color(ink)
                     .cursor_pointer()
                     .hover(move |style| style.bg(colors.bg_hover))
                     .tooltip(move |_, cx| crate::icons::tooltip("切换权限模式", cx))
@@ -350,10 +370,20 @@ impl ConversationStream {
                         MouseButton::Left,
                         cx.listener(Self::toggle_permission_picker),
                     )
-                    .child(crate::icons::icon(
-                        crate::icons::Icon::Warning,
-                        colors.warning,
-                    ))
+                    // R63: the wrapper exists only so the test harness can read
+                    // *which* glyph the chip painted — an `AnyElement` icon
+                    // carries no selector of its own. It is a transparent flex
+                    // box hugging the 16px icon (the same technique the
+                    // slider's chevron uses), so the chip's frozen geometry is
+                    // unchanged, and the tag is derived from `glyph` itself
+                    // rather than from a second match on the mode.
+                    .child(
+                        div()
+                            .debug_selector(move || permission_icon_selector(glyph).to_string())
+                            .flex()
+                            .flex_shrink_0()
+                            .child(crate::icons::icon(glyph, ink)),
+                    )
                     .child(label),
             )
             .when(self.permission_picker_open, |chip| {

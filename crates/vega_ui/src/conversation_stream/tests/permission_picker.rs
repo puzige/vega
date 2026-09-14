@@ -9,6 +9,10 @@
 //! reasoning that the reference implementation's `Full access` label was not
 //! an affordance. The user's screenshot proved otherwise, and this suite
 //! exists so the decision cannot silently flip back.
+//!
+//! R63 adds the chip's own glyph to the same contract: the chip must show the
+//! mode's icon (hand / shield / warning), not a constant warning triangle.
+//! That case lives at the bottom of this file.
 
 use super::*;
 use crate::conversation_stream::render::{PERMISSION_PICKER_LEARN_MORE, PERMISSION_PICKER_TITLE};
@@ -253,4 +257,136 @@ async fn r62_permission_picker_is_exclusive_and_closes_on_outside_click(cx: &mut
         !mounted(window, "composer-permission-picker", cx),
         "an outside click must close the permission picker"
     );
+}
+
+/// R63 / UI-05: the chip's **glyph** follows the thread's permission mode.
+///
+/// The defect: `render_permission_status` hard-coded `Icon::Warning` plus
+/// `colors.warning`, so the chip showed an orange warning triangle in every
+/// mode while the picker's own rows — which already read the `permission_*`
+/// projections — showed a hand for 只读 and a shield for 确认. Two surfaces,
+/// one authoritative value, contradicting each other.
+///
+/// What this asserts, and why it is not vacuous:
+///
+/// * Each case checks the *painted* glyph's own tag. The tag is derived from
+///   the same `permission_icon(mode)` value the chip hands to `icons::icon`,
+///   so the pre-R63 chip — a constant `Icon::Warning` — would mount the
+///   `-warning` tag in all three modes and fail the 只读 and 确认 cases.
+/// * The negative half carries the regression: the two non-warning modes must
+///   *not* mount the warning tag. That is exactly the pre-R63 behaviour.
+/// * The tag sits on a measured 16x16 box, so it is a real painted element
+///   hugging the glyph rather than a zero-sized stub that would pass no matter
+///   what the chip drew.
+///
+/// Not asserted here: the chip's **ink**. `icons::icon` returns an
+/// `AnyElement` painted through the sprite atlas and the test platform ships
+/// no renderer, so neither the glyph pixels nor the resolved text colour are
+/// reachable from this harness. The glyph identity is therefore the strongest
+/// observable proxy for "the chip followed the projection", and the ink rule
+/// is pinned by construction: it is the same `permission_is_warning` call the
+/// picker's rows already use, not a second rule of the chip's own.
+#[gpui_kit::test]
+async fn r63_permission_chip_glyph_follows_the_mode(cx: &mut TestAppContext) {
+    let (window, stream, _events) = open_controller_stream(cx, "r63-permission-glyph");
+
+    // The fixture thread is `confirm`, so the chip must already show the
+    // shield — the pre-R63 chip showed the warning triangle here.
+    assert!(
+        mounted(window, "composer-permission-status-icon-shield", cx),
+        "R63: a `confirm` thread's chip must paint the shield"
+    );
+    assert!(
+        !mounted(window, "composer-permission-status-icon-warning", cx),
+        "R63: only 自动 may paint the warning triangle"
+    );
+    assert!(
+        !mounted(window, "composer-permission-status-icon-hand", cx),
+        "R63: a `confirm` thread must not paint the hand"
+    );
+
+    // The tag is a real painted box hugging the 16px glyph. This is also the
+    // R62 geometry guard: the R63 wrapper must not change the chip's frozen
+    // one-line shape.
+    let glyph = bounds(window, "composer-permission-status-icon-shield", cx);
+    assert_eq!(
+        f32::from(glyph.size.width),
+        16.0,
+        "R63: the glyph box must hug the 16px icon"
+    );
+    assert_eq!(f32::from(glyph.size.height), 16.0);
+    let chip = bounds(window, "composer-permission-status", cx);
+    assert!(
+        chip.contains(&glyph.center()),
+        "R63: the glyph must sit inside the chip's own box"
+    );
+    assert!(
+        f32::from(chip.size.height) < Layout::COMPOSER_MIN_HEIGHT,
+        "R63: the chip must stay one line tall"
+    );
+
+    // Drive the other two modes through the production picker path, applying
+    // the durable acknowledgement exactly as the app does. `只读` is the mode
+    // the defect's own evidence (`accept-perm-chip-readonly.png`) was captured
+    // in: it must lose the triangle and show the hand.
+    for (mode, expected, absent) in [
+        (
+            PermissionMode::ReadOnly,
+            "composer-permission-status-icon-hand",
+            "composer-permission-status-icon-warning",
+        ),
+        (
+            PermissionMode::Auto,
+            "composer-permission-status-icon-warning",
+            "composer-permission-status-icon-hand",
+        ),
+        (
+            PermissionMode::Confirm,
+            "composer-permission-status-icon-shield",
+            "composer-permission-status-icon-warning",
+        ),
+    ] {
+        click(window, "composer-permission-status", cx);
+        click(window, permission_row_selector(mode), cx);
+        stream.update(cx, |stream, cx| {
+            let mut persisted = stream.thread.clone();
+            persisted.permission_mode = mode;
+            stream.apply_thread(persisted, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(
+            mounted(window, expected, cx),
+            "R63: {mode:?} must paint {expected}"
+        );
+        assert!(
+            !mounted(window, absent, cx),
+            "R63: {mode:?} must not paint {absent}"
+        );
+    }
+
+    // Back to the fixture's own mode, so the loop cannot leave the assertion
+    // above passing only because it ran last.
+    stream.update(cx, |stream, cx| {
+        let mut persisted = stream.thread.clone();
+        persisted.permission_mode = PermissionMode::Confirm;
+        stream.apply_thread(persisted, cx);
+    });
+    cx.run_until_parked();
+    assert!(mounted(
+        window,
+        "composer-permission-status-icon-shield",
+        cx
+    ));
+}
+
+/// The picker row's selector for one mode. A test-side fixture: the
+/// production selector is built in `render.rs` from `mode.as_str()`, which is
+/// not `&'static str`.
+fn permission_row_selector(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::ReadOnly => "composer-permission-option-readonly",
+        PermissionMode::Confirm => "composer-permission-option-confirm",
+        PermissionMode::Auto => "composer-permission-option-auto",
+    }
 }
