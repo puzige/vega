@@ -23,7 +23,9 @@ R62 的两半（R62a 三行卡片、R62b 权限与工具栏下拉）**全部通�
 | A15 门禁 0 失败 | ✅ 1144 passed / 0 failed | 生产测试 |
 | R62a 三行卡片 + 阴影分离 | ✅ 通过 | 实机截图 |
 | R62a 二级下钻（档位名 → 模型列表） | ✅ 通过 | 实机截图 |
-| UI-05 权限 chip 图标随模式变化 | ❌ **不通过**（新缺陷） | 实机截图 |
+| UI-05 权限 chip 图标随模式变化 | ❌ 不通过（新缺陷）→ **已由 R63 修复并复验** | 实机截图 |
+
+> **后续**：验收发现 UI-05（权限 chip 图标/颜色不随模式变化，P1）。已立项 R63 修复并合入 master（`3642047`），复验见 §7。
 
 ---
 
@@ -193,6 +195,61 @@ gpt-5.6-luna
 | `/tmp/d1.png` / `/tmp/d1-crop.png` | 模型卡片三行 + 阴影 |
 | `/tmp/d3.png` / `/tmp/d3-crop.png` | 二级下钻：模型列表 |
 
-驱动工具（临时，未入库）：`/tmp/vdrive.swift`（原子化 激活-点击-截图）、`/tmp/vclick.swift`、`/tmp/vwin.swift`、`/tmp/pcrop.sh`。
+驱动工具：已正式入库为 `scripts/native-drive.swift`（见 AGENTS.md「原生验收的操作方法」）。用法：
 
-> 若后续需要重复实机验收，建议把 `vdrive.swift` 正式收进 `scripts/`；本轮先留在 `/tmp` 以控制改动范围。
+```
+swiftc -O scripts/native-drive.swift -o /tmp/vdrive
+/tmp/vdrive <out.png> <relX> <relY> [<relX> <relY> ...]   # 窗口内逻辑坐标，依次点击后截图
+```
+
+裁剪辅助：`sips -c <h> <w> --cropOffset <y> <x> <src> --out <dst>`（参数是**像素**，即窗口内逻辑坐标 ×2）。
+
+---
+
+## §7 UI-05 修复复验（R63）
+
+> 修复提交：`3642047`（`feat/r63-perm-chip-icon` → ff 合入 master）
+> 受测构建：`dist/Vega.app` → `/Applications/Vega.app`，可执行文件 `md5 d7709cf92fcf52d5016a203e0af060e0`
+> 签名：`codesign --verify --deep --strict` 通过
+
+### §7.1 修复内容
+
+`render_permission_status` 原本硬编码 `Icon::Warning` + `colors.warning`，改为读取与 picker 相同的投影：`permission_icon(mode)` 与 `permission_is_warning(mode)`。非警示模式取 `colors.text_secondary`（与同一行的 `+` 按钮、模型触发器一致）。
+
+### §7.2 独立门禁（合并前，我本人执行）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo fmt --all -- --check` | 退出 0，无输出 |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 退出 0 |
+| `cargo test -p vega_ui` | 280 passed / 0 failed |
+| `cargo test --workspace` | **1145 passed / 0 failed**（较 R62b 多 1，即新增的 R63 测试） |
+
+### §7.3 测试非平凡性证伪（我本人执行）
+
+把 `let glyph = permission_icon(mode);` 临时改回硬编码 `Icon::Warning` 后重跑新测试：
+
+```
+test ...r63_permission_chip_glyph_follows_the_mode ... FAILED
+panicked at ...:295:5:
+R63: a `confirm` thread's chip must paint the shield
+test result: FAILED. 0 passed; 1 failed
+```
+
+**测试确实能抓住这个缺陷**，不是空跑。随后已还原代码（`git diff` 为空）。
+
+### §7.4 三模式实机复验
+
+| 模式 | chip 显示 | 结论 |
+|---|---|---|
+| `确认` | `🛡 确认`（灰色盾牌） | ✅ |
+| `只读` | `✋ 只读`（灰色手掌） | ✅ |
+| `自动` | `⚠ 自动`（橙色警示三角） | ✅ |
+
+三种模式依次通过生产 picker 路径切换，chip 的图标与颜色均正确跟随。**UI-05 关闭。**
+
+证据：`/tmp/accept-r63-confirm.png`、`/tmp/accept-r63-readonly.png`、`/tmp/accept-r63-auto.png`、`/tmp/accept-r63-auto-chip.png`。
+
+### §7.5 未能验证的部分
+
+chip 的**颜色值**只有像素证据（截图），没有生产测试断言——GPUI 测试平台不带 headless renderer（`render_to_target` 报 "no HeadlessRenderer configured"），图标经 sprite atlas 绘制，测试里读不到像素或解析后的文字颜色。测试断言的是**图标身份**（debug selector 标记，由 `permission_icon(mode)` 的返回值直接派生，因此标签与所画图标必然是同一个值），颜色规则则由构造保证：与 picker 行用的是同一个 `permission_is_warning` 调用。
