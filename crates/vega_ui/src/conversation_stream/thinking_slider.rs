@@ -944,39 +944,84 @@ impl Render for ThinkingSlider {
             .bg(colors.bg_elevated)
             .text_color(colors.text_primary)
             .shadow_sm()
+            // R59 R2/R6: one title row, not a header row plus a model-name row.
+            // Both text runs live inside it, so they cannot collide with each
+            // other or with the track below (R59 D3), and each is bounded by
+            // `min_w_0` + `truncate` so a long name ellipsises inside the
+            // measured 254.5px card instead of spilling past its edge.
             .child(
                 div()
+                    .id("thinking-slider-title")
+                    .debug_selector(|| "thinking-slider-title".into())
                     .flex()
                     .items_center()
                     .justify_between()
+                    .gap_2()
                     .h(px(THINKING_TRACK_HEIGHT))
+                    .flex_shrink_0()
+                    .min_w_0()
+                    .cursor_pointer()
+                    .rounded_md()
+                    .hover(move |style| style.bg(colors.bg_hover))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|_, _: &MouseUpEvent, _, cx| {
+                            // R59 R3: the host answers this by swapping this card
+                            // out for the model list, so the two levels are never
+                            // on screen together.
+                            cx.emit(ThinkingSliderTitleActivated);
+                        }),
+                    )
                     .child(bolt_icon(colors.text_tertiary))
                     .child(
                         div()
-                            .debug_selector(|| "thinking-slider-label".into())
                             .flex()
                             .items_center()
                             .gap_1()
-                            .text_size(px(Typography::SIDEBAR))
-                            .text_color(label_color)
-                            .child(label)
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::ChevronRight,
-                                colors.text_tertiary,
-                            )),
-                    ),
+                            .flex_1()
+                            .min_w_0()
+                            // R59 R2 two-tone title: the model name is the
+                            // primary run, the tier name the second one.
+                            //
+                            // The tier run keeps R57's **measured** tier colour
+                            // (`tier_label_color`, spec §4.1: purple at the
+                            // strongest tier, blue below it) rather than a flat
+                            // secondary ink token. R59 R2 describes the reference
+                            // screenshot as "model name primary, tier name
+                            // secondary", which is a statement about the two
+                            // runs being *distinguishable*; R57 §3.4 R8 froze
+                            // the tier name as strength-coloured and R59 §4 does
+                            // not list that contract as changed. Honouring both
+                            // is possible here because the model name now takes
+                            // `text_primary` — a tone the tier ramp never uses —
+                            // so the two runs stay distinct in every tier state.
+                            .child(
+                                div()
+                                    .debug_selector(|| "thinking-slider-model".into())
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(Typography::SIDEBAR))
+                                    .text_color(colors.text_primary)
+                                    .child(self.model_name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| "thinking-slider-label".into())
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(label_color)
+                                    .child(label),
+                            ),
+                    )
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::ChevronRight,
+                        colors.text_tertiary,
+                    )),
                 // R58 R7: the reset control (circular-arrow icon) is removed.
                 // Vega has exactly one persisted tier field (`preference`) and
                 // a slider selection writes it, so "reset to the configured
                 // default" is the identity operation — R57 §3.4 R11 is void.
-            )
-            .child(
-                div()
-                    .debug_selector(|| "thinking-slider-model".into())
-                    .truncate()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child(self.model_name.clone()),
             )
             .child(track)
             .into_any_element()

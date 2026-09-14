@@ -170,7 +170,7 @@ impl ConversationStream {
     pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
         self.actions.menu = false;
         self.actions.slash = None;
-        self.model_selector_open = false;
+        self.model_picker_level = ModelPickerLevel::Closed;
         self.close_file_selector_and_cancel(cx);
     }
 

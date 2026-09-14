@@ -1,6 +1,59 @@
 use super::composer_actions::permission_label;
 use super::*;
 
+/// R59 R4/R5: horizontal inset of a model-picker layer from the right edge of
+/// the composer card, so the layer's right edge lands on the model trigger's
+/// own right edge.
+///
+/// Derived from the frozen bottom row rather than measured: the trigger is the
+/// last control before the send button, so the inset is the card's border (1)
+/// plus its `p_3` (12) plus the send button ([`Layout::COMPOSER_SEND_SIZE`])
+/// plus the row's `gap_2` (8). A structural test asserts the layer's right edge
+/// equals the trigger's, so a change to any of those terms cannot silently
+/// drift the popup.
+const PICKER_RIGHT_INSET: f32 = 1.0 + 12.0 + Layout::COMPOSER_SEND_SIZE + 8.0;
+
+/// R59 R7: the trigger label while the tier slider (level one) is showing.
+///
+/// The reference implementation's `composer.modelPicker.selectEffort.label`
+/// ("Select effort") is shown "while adjusting the reasoning effort of an
+/// explicitly selected model". Vega's UI is Chinese and its existing wording
+/// for this concept is 档位/强度 (`settings/reasoning_render.rs`, R57 §2.2),
+/// so 选择强度 is the in-convention counterpart rather than a literal
+/// translation.
+pub(crate) const PICKER_EFFORT_LABEL: &str = "选择强度";
+
+/// R59 R2: the level-two heading. The reference implementation's
+/// `composer.modelPicker.modelList.heading` is "Select model".
+pub(crate) const PICKER_LIST_HEADING: &str = "选择模型";
+
+/// R59 R7: the model trigger's label for one composer state.
+///
+/// Split out of the view so the rule is directly testable, and so the four
+/// states cannot drift from their documentation:
+/// 1. a durable save in flight shows the bounded pending text;
+/// 2. a model with no name yet shows the generic 模型 placeholder;
+/// 3. **the slider level shows [`PICKER_EFFORT_LABEL`]** — this is the R59 R7
+///    case, the one the reference implementation covers with
+///    `composer.modelPicker.selectEffort.label`;
+/// 4. every other state shows the selected model name, exactly as before.
+pub(crate) fn model_trigger_label(
+    model: &str,
+    level: ModelPickerLevel,
+    save_pending: bool,
+) -> &str {
+    if save_pending {
+        return "保存中…";
+    }
+    if model.is_empty() {
+        return "模型";
+    }
+    if level == ModelPickerLevel::Slider {
+        return PICKER_EFFORT_LABEL;
+    }
+    model
+}
+
 impl ConversationStream {
     fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
         if self.thread.is_standalone() {
@@ -79,6 +132,13 @@ impl ConversationStream {
             .pt(px(Layout::COMPOSER_PADDING_TOP))
             .pb(px(Layout::COMPOSER_PADDING_BOTTOM))
             .flex_shrink_0()
+            // R59 R4/R5: the picker's two layers are absolutely positioned
+            // against this column, so it must be their containing block. They
+            // anchor to the column's **top** edge (`bottom: 100%`), which is
+            // the utility bar's top edge when the bar is mounted and the
+            // composer card's top edge when it is not — so a layer can never
+            // reach the bar or the card, on any window size.
+            .relative()
             // R49: the utility bar is a real sibling above the card on the
             // new-task page (zero overlap, no negative margin). The session
             // page renders the card alone, exactly like Codex.
@@ -244,6 +304,10 @@ impl ConversationStream {
                     .text_color(colors.danger)
                     .child(error)
             }))
+            // R59 R4: the picker overlay is the column's last child, so the
+            // layers paint above the bar and the card rather than inside either
+            // one.
+            .child(self.render_model_picker_overlay(cx))
             .into_any_element()
     }
 
@@ -409,6 +473,15 @@ impl ConversationStream {
     /// options are the priced catalog projection installed by the app layer
     /// (zero file IO). Keyboard: Enter/Space open, Up/Down move, Enter
     /// accept (first-wins), Esc close.
+    ///
+    /// R59 R7: while the tier slider (level one) is showing, the trigger reads
+    /// `选择强度` — the Chinese counterpart of the reference implementation's
+    /// `Select effort`, which is what its `selectEffort.label` says the trigger
+    /// shows "while adjusting the reasoning effort of an explicitly selected
+    /// model". Vega's existing wording for this concept is 档位/强度 (see
+    /// `settings/reasoning_render.rs` and R57 §2.2), so 选择强度 is the
+    /// in-convention translation. Outside that state the trigger keeps the
+    /// existing model-name display.
     fn render_model_selector(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let enabled = !self.trusted_action_busy
@@ -416,13 +489,13 @@ impl ConversationStream {
             && self.model_selection_pending.is_none();
         // R1: while the durable save is in flight the chip shows a bounded
         // pending state instead of claiming the new selection already.
-        let current = if self.model_selection_pending.is_some() {
-            "保存中…"
-        } else if self.composer_defaults.model.is_empty() {
-            "模型"
-        } else {
-            self.composer_defaults.model.as_str()
-        };
+        // R59 R7: which model name (if any) the trigger shows is decided by
+        // `model_trigger_label`, so the rule is directly testable.
+        let current = model_trigger_label(
+            &self.composer_defaults.model,
+            self.model_picker_level,
+            self.model_selection_pending.is_some(),
+        );
         div()
             .relative()
             .child(
@@ -475,76 +548,190 @@ impl ConversationStream {
                             )),
                     ),
             )
-            .when(self.model_selector_open, |root| {
-                root.child(
-                    div()
-                        .debug_selector(|| "composer-model-menu".into())
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .absolute()
-                        .bottom(px(28.))
-                        .right_0()
-                        .w(px(Layout::MENU_MAX_WIDTH))
-                        .occlude()
-                        .flex()
-                        .flex_col()
-                        .rounded(px(Layout::MENU_RADIUS))
-                        .border_1()
-                        .border_color(colors.border_subtle)
-                        .bg(colors.bg_elevated)
-                        .text_color(colors.text_primary)
-                        .shadow_sm()
-                        .children(self.model_options.iter().enumerate().map(|(index, model)| {
-                            let selected = index == self.model_selector_highlight;
-                            let current_model = *model == self.composer_defaults.model;
-                            let model = model.clone();
-                            let label = model.clone();
-                            div()
-                                .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                                .px_2()
-                                .flex()
-                                .items_center()
-                                .text_size(px(Typography::SIDEBAR))
-                                .truncate()
-                                .when(selected, |row| row.bg(colors.bg_active))
-                                .text_color(if current_model {
-                                    colors.brand_primary
-                                } else if selected {
-                                    colors.text_primary
-                                } else {
-                                    colors.text_secondary
-                                })
-                                .cursor_pointer()
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(
-                                        move |this, _: &MouseUpEvent, _: &mut Window, cx| {
-                                            this.select_model_option(&model, cx);
-                                        },
-                                    ),
-                                )
-                                .child(label)
-                        }))
-                        // R57 P3 (spec §2.3 R3 / §3.4 R6): the tier slider
-                        // lives inside the model popup, not as a bottom-row
-                        // chip. It reads the displayed model's own
-                        // `ReasoningProfile.efforts`, so a model declaring
-                        // three tiers renders three dots — never the
-                        // reference implementation's fixed seven. A model
-                        // with no declared tiers renders nothing here at all,
-                        // not an empty padded slot (R12).
-                        .when(self.thinking_slider.read(cx).has_tiers(), |menu| {
-                            menu.child(
-                                div()
-                                    .debug_selector(|| "composer-thinking-slider".into())
-                                    .w_full()
-                                    .p_2()
-                                    .flex()
-                                    .justify_center()
-                                    .child(self.thinking_slider.clone()),
+            .into_any_element()
+    }
+
+    /// R59 R4: the picker's two floating layers.
+    ///
+    /// The single `model_picker_level` value decides which arm below runs, so
+    /// at most one layer is in the element tree per frame and the slider can
+    /// never be nested inside the list's container (R59 A3). Each layer carries
+    /// its own border, background and shadow, which is what removes R57's
+    /// card-inside-a-card look (D1).
+    fn render_model_picker_layers(&self, cx: &mut Context<Self>) -> AnyElement {
+        match self.model_picker_level {
+            ModelPickerLevel::Closed => div().into_any_element(),
+            ModelPickerLevel::Slider => self.render_picker_slider_layer(cx),
+            ModelPickerLevel::List => self.render_picker_list_layer(cx),
+        }
+    }
+
+    /// R59 R4/R5: the zero-height overlay both picker layers hang from.
+    ///
+    /// It is pinned to the **top edge of the composer column** — the utility
+    /// bar's top edge when the bar is mounted, the card's top edge when it is
+    /// not — and its inner box reproduces the composer card's own horizontal
+    /// geometry (`max_w` + `mx_auto`), so a layer's `right(px(..))` measures
+    /// from the card's right edge rather than from the window's.
+    ///
+    /// Anchoring here is what makes R5 structural rather than arithmetic: the
+    /// layers open upward from the column's top edge, so no window size, model
+    /// count, or grown input row can bring them down over the bar. Anchoring to
+    /// the model trigger was rejected by measurement — the gap between the
+    /// trigger's top (1022) and the bar's bottom (961) is 61px, while the
+    /// R57-frozen slider card needs 84px, so a trigger-anchored popup cannot
+    /// show the card without covering the bar (the D2 defect).
+    ///
+    /// The layers are deliberately **not** wrapped in `gpui_kit::deferred`:
+    /// deferred content is laid out in its own window-space paint layer, which
+    /// breaks these composer-relative coordinates (measured: the card landed at
+    /// x 1232.5 on a 1200-wide window instead of on the card's right edge). The
+    /// composer column clips nothing, so no escape hatch is needed; each
+    /// layer's own `occlude()` supplies the hit-testing priority instead.
+    fn render_model_picker_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.model_picker_level.is_open() {
+            return div().into_any_element();
+        }
+        div()
+            .debug_selector(|| "composer-picker-anchor".into())
+            .absolute()
+            .bottom(gpui_kit::relative(1.0))
+            .left_0()
+            .right_0()
+            .flex()
+            .flex_col()
+            .items_end()
+            .child(
+                div()
+                    .debug_selector(|| "composer-picker-anchor-box".into())
+                    .w_full()
+                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                    .mx_auto()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .child(self.render_model_picker_layers(cx)),
+            )
+            .into_any_element()
+    }
+
+    /// R59 R5: the height bound shared by both layers.
+    ///
+    /// R57 shipped no bound at all, so the popup grew to 1409px with a 40-model
+    /// catalog and covered the whole transcript. The bound is what makes the
+    /// list scroll inside itself instead of growing the layer.
+    fn picker_max_height(&self) -> Pixels {
+        px(Layout::COMPOSER_PICKER_MAX_HEIGHT)
+    }
+
+    /// R59 R1: **level one** — the tier slider card, and nothing else.
+    ///
+    /// R57 mounted this card as the model menu's last child (D1); here it is a
+    /// standalone floating layer with its own chrome (R4). A model that
+    /// declares no tiers renders nothing at all (R57 R12), so the layer is not
+    /// mounted in that case rather than leaving an empty padded card behind.
+    fn render_picker_slider_layer(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.thinking_slider.read(cx).has_tiers() {
+            return div().into_any_element();
+        }
+        div()
+            .debug_selector(|| "composer-thinking-slider".into())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .absolute()
+            .bottom(gpui_kit::relative(1.0))
+            .mb(px(Layout::COMPOSER_PICKER_ANCHOR_GAP))
+            .right(px(PICKER_RIGHT_INSET))
+            // R59 R4: the card's own surface. `ThinkingSlider` already draws the
+            // measured 254.5px card with its own border, background and shadow,
+            // so this layer adds only placement and the height bound.
+            .max_h(self.picker_max_height())
+            .occlude()
+            .flex()
+            .flex_col()
+            .child(self.thinking_slider.clone())
+            .into_any_element()
+    }
+
+    /// R59 R2/R3: **level two** — the model list, reached only from the
+    /// slider's title row.
+    ///
+    /// The list is bounded by [`Self::picker_max_height`] and scrolls inside
+    /// that bound, so a long catalog cannot grow the layer over the utility bar
+    /// (R5). The heading is the reference implementation's
+    /// `composer.modelPicker.modelList.heading` ("Select model"); Vega's
+    /// existing Chinese wording for this surface is 选择模型.
+    fn render_picker_list_layer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        div()
+            .id("composer-model-menu")
+            .debug_selector(|| "composer-model-menu".into())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .absolute()
+            .bottom(gpui_kit::relative(1.0))
+            .mb(px(Layout::COMPOSER_PICKER_ANCHOR_GAP))
+            .right(px(PICKER_RIGHT_INSET))
+            .w(px(Layout::MENU_MAX_WIDTH))
+            .max_h(self.picker_max_height())
+            .occlude()
+            .flex()
+            .flex_col()
+            .rounded(px(Layout::MENU_RADIUS))
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_elevated)
+            .text_color(colors.text_primary)
+            .shadow_sm()
+            .child(
+                div()
+                    .debug_selector(|| "composer-model-heading".into())
+                    .flex_shrink_0()
+                    .px_2()
+                    .pt_2()
+                    .pb_1()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_tertiary)
+                    .child(PICKER_LIST_HEADING),
+            )
+            // Only the rows scroll: the heading stays visible so the layer never
+            // becomes an unbounded column of model names.
+            .child(
+                div()
+                    .id("composer-model-rows")
+                    .debug_selector(|| "composer-model-rows".into())
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.model_menu_scroll)
+                    .children(self.model_options.iter().enumerate().map(|(index, model)| {
+                        let selected = index == self.model_selector_highlight;
+                        let current_model = *model == self.composer_defaults.model;
+                        let model = model.clone();
+                        let label = model.clone();
+                        div()
+                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                            .flex_shrink_0()
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .text_size(px(Typography::SIDEBAR))
+                            .truncate()
+                            .when(selected, |row| row.bg(colors.bg_active))
+                            .text_color(if current_model {
+                                colors.brand_primary
+                            } else if selected {
+                                colors.text_primary
+                            } else {
+                                colors.text_secondary
+                            })
+                            .cursor_pointer()
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _: &MouseUpEvent, _: &mut Window, cx| {
+                                    this.select_model_option(&model, cx);
+                                }),
                             )
-                        }),
-                )
-            })
+                            .child(label)
+                    })),
+            )
             .into_any_element()
     }
 }
@@ -656,8 +843,11 @@ impl Render for ConversationStream {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    if this.model_selector_open {
-                        this.model_selector_open = false;
+                    // R59: a click anywhere outside the picker closes whichever
+                    // level is mounted. The layers themselves stop propagation,
+                    // so this only sees genuine outside clicks.
+                    if this.model_picker_level.is_open() {
+                        this.model_picker_level = ModelPickerLevel::Closed;
                         cx.notify();
                     }
                 }),

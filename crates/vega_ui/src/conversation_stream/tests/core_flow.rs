@@ -82,16 +82,15 @@ async fn r57_plus_menu_permission_rows_emit_scoped_requests_without_optimistic_s
     assert_eq!(selected, (ThreadMode::Plan, PermissionMode::Auto));
 }
 
-/// R57 P2b rewrite of the R21 popover-exclusivity check.
+/// R59 rewrite of the R57 popover-exclusivity check.
 ///
-/// The original asserted that `composer-mode` and `composer-model` are
-/// mutually exclusive. P2b removed the bottom-row mode dropdown (spec §2.3
-/// R1), so that selector no longer exists and the assertion would be about a
-/// control that is gone. What still holds — and is what the original was
-/// really protecting — is that the composer's transient popovers are
-/// exclusive and that the model menu keeps its fixed `MENU_MAX_WIDTH` rather
-/// than collapsing to its trigger width. The surviving pair is the `+`
-/// actions menu and the model menu; both directions are asserted here.
+/// R57 asserted that the `+` actions menu and the model menu are mutually
+/// exclusive, and that the model menu keeps its fixed `MENU_MAX_WIDTH`. R59
+/// makes the model button open the **tier slider** first, so the surviving
+/// pair is the `+` menu versus the *picker* (whichever level it shows), and the
+/// fixed width now belongs to the level-two list. Both directions are asserted
+/// here, and the width check moves to the level-two layer in the R59 tests
+/// below.
 #[gpui_kit::test]
 async fn r21_composer_popovers_are_exclusive_and_model_labels_keep_menu_width(
     cx: &mut TestAppContext,
@@ -99,6 +98,15 @@ async fn r21_composer_popovers_are_exclusive_and_model_labels_keep_menu_width(
     let (window, stream, _) = open_controller_stream(cx, "composer-popovers");
     stream.update(cx, |stream, cx| {
         stream.apply_model_options(vec!["mock".into(), "deepseek-v4-flash".into()], cx);
+        // R59 R1: level one is the tier slider, which only mounts for a model
+        // that declares tiers (R57 R12). The exclusivity this test protects is
+        // about the picker as a whole, so the fixture declares the capability
+        // rather than asserting on an empty slider slot.
+        let mut profile = ReasoningProfileProjection::unknown("owned", "mock");
+        profile.support = ReasoningSupport::Optional;
+        profile.efforts = vec!["low".into(), "medium".into(), "high".into()];
+        profile.preference = ReasoningChoice::ProviderDefault;
+        stream.apply_reasoning_profile(profile, cx);
     });
     cx.run_until_parked();
 
@@ -117,65 +125,53 @@ async fn r21_composer_popovers_are_exclusive_and_model_labels_keep_menu_width(
             .debug_bounds("composer-action-file")
             .is_some()
     };
-    let model_menu_visible = |cx: &mut TestAppContext| {
-        gpui_kit::VisualTestContext::from_window(window.into(), cx)
-            .debug_bounds("composer-model-menu")
-            .is_some()
+    let picker_visible = |cx: &mut TestAppContext| {
+        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        visual.debug_bounds("composer-thinking-slider").is_some()
+            || visual.debug_bounds("composer-model-menu").is_some()
     };
 
+    // R59 R1: the model button opens the slider, not the list.
     click("composer-model", cx);
-    let model_menu = gpui_kit::VisualTestContext::from_window(window.into(), cx)
-        .debug_bounds("composer-model-menu")
-        .expect("model menu");
-    assert_eq!(
-        f32::from(model_menu.size.width),
-        Layout::MENU_MAX_WIDTH,
-        "model menu must not collapse to its trigger width"
+    assert!(
+        picker_visible(cx),
+        "the model button must mount a picker level"
     );
     assert_eq!(
         stream.read_with(cx, |stream, _| (
-            stream.model_selector_open,
+            stream.model_picker_level,
             stream.actions.visible(),
         )),
-        (true, false)
+        (ModelPickerLevel::Slider, false)
     );
 
-    // Opening the `+` menu closes the model menu.
+    // Opening the `+` menu closes the picker.
     click("composer-add", cx);
     assert!(
-        !model_menu_visible(cx),
-        "the `+` menu must close the model menu"
+        !picker_visible(cx),
+        "the `+` menu must close the model picker"
     );
     assert!(actions_menu_visible(cx), "the `+` menu is open");
     assert_eq!(
         stream.read_with(cx, |stream, _| (
-            stream.model_selector_open,
+            stream.model_picker_level,
             stream.actions.visible(),
         )),
-        (false, true)
+        (ModelPickerLevel::Closed, true)
     );
 
-    // Re-opening the model menu closes the `+` menu, and the model menu
-    // keeps its fixed width in this direction too.
+    // Re-opening the picker closes the `+` menu.
     click("composer-model", cx);
     assert!(
         !actions_menu_visible(cx),
-        "the model menu must close the `+` menu"
-    );
-    let model_menu = gpui_kit::VisualTestContext::from_window(window.into(), cx)
-        .debug_bounds("composer-model-menu")
-        .expect("model menu after reopening");
-    assert_eq!(
-        f32::from(model_menu.size.width),
-        Layout::MENU_MAX_WIDTH,
-        "model menu must not collapse to its trigger width"
+        "the model picker must close the `+` menu"
     );
     assert_eq!(
         stream.read_with(cx, |stream, _| (
-            stream.model_selector_open,
+            stream.model_picker_level,
             stream.actions.visible(),
         )),
-        (true, false)
+        (ModelPickerLevel::Slider, false)
     );
 }
 

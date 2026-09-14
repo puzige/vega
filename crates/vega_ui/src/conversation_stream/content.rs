@@ -271,12 +271,12 @@ impl ConversationStream {
         self.thinking_slider.clone()
     }
 
-    /// Whether the model popup is currently open. R57 P3 acceptance reads it
-    /// to prove a tier-only round trip leaves the popup (which now hosts the
-    /// slider) open, while a model change closes it.
+    /// Which model-picker level is mounted, if any (R59). The application
+    /// acceptance harness reads it to prove the two levels are mutually
+    /// exclusive and that a tier-only round trip leaves the slider mounted.
     #[doc(hidden)]
-    pub fn model_selector_is_open(&self) -> bool {
-        self.model_selector_open
+    pub fn model_picker_level(&self) -> ModelPickerLevel {
+        self.model_picker_level
     }
 
     /// Number of priced model options the selector currently offers. R57 P3
@@ -382,7 +382,7 @@ impl ConversationStream {
     pub fn set_trusted_action_busy(&mut self, busy: bool, cx: &mut Context<Self>) {
         self.trusted_action_busy = busy;
         if busy {
-            self.model_selector_open = false;
+            self.model_picker_level = ModelPickerLevel::Closed;
         }
         self.branch_selector
             .update(cx, |selector, cx| selector.set_disabled(busy, cx));

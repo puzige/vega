@@ -65,8 +65,9 @@ use std::time::{Duration, Instant};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AbsoluteLength, AnyElement, App, Context, DefiniteLength, Entity, EventEmitter, FocusHandle,
-    FontStyle, FontWeight, MouseButton, MouseUpEvent, Pixels, Render, Rgba, StrikethroughStyle,
-    StyledText, TextRun, TextStyle, UnderlineStyle, Window, actions, div, list, px,
+    FontStyle, FontWeight, MouseButton, MouseUpEvent, Pixels, Render, Rgba, ScrollHandle,
+    StrikethroughStyle, StyledText, TextRun, TextStyle, UnderlineStyle, Window, actions, div, list,
+    px,
 };
 use vega_conversation::agent::{PendingPermission, PermissionQueue};
 use vega_conversation::history::{HistoryEntry, HistoryPage};
@@ -284,12 +285,13 @@ mod utility_bar;
 mod tests;
 
 pub use core::ConversationStream;
+pub use core::ModelPickerLevel;
 pub(crate) use core::*;
 pub(crate) use model::*;
 pub(crate) use render_rows::*;
 pub use thinking_slider::{
     OFF_CHOICE_NAME, OFF_LABEL, PROVIDER_DEFAULT_LABEL, ThinkingSlider, ThinkingSliderModel,
-    ThinkingTierSelected, resolve_tier, track_fill_style,
+    ThinkingSliderTitleActivated, ThinkingTierSelected, resolve_tier, track_fill_style,
 };
 
 /// Explicit stop for the currently owned worker; the app keeps its generation until terminal.

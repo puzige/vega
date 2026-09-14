@@ -24,6 +24,7 @@ mod core_flow;
 mod e2e_variable_height;
 mod hydration;
 mod model_markdown;
+mod model_picker_levels;
 mod permissions_cards;
 mod scroll_follow;
 mod utility_bar;

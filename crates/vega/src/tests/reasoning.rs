@@ -172,14 +172,18 @@ impl ThinkingSliderFixture {
         }
     }
 
-    /// Opens the model popup through the production trigger click, if it is
-    /// not already open. The trigger toggles: while the popup is open a second
-    /// click accepts the highlighted model instead of re-opening, so the
-    /// current state is read first.
+    /// Opens the model picker through the production trigger click, if it is
+    /// not already open.
+    ///
+    /// R59 R1: the trigger opens **level one** — the tier slider — so this
+    /// asserts the slider level specifically. The trigger toggles: while the
+    /// slider level is mounted a second click closes it instead of re-opening,
+    /// so the current state is read first.
     fn open_model_popup(&self, cx: &mut gpui_kit::TestAppContext) {
         if self
             .stream
-            .read_with(cx, |stream, _| stream.model_selector_is_open())
+            .read_with(cx, |stream, _| stream.model_picker_level())
+            .is_open()
         {
             return;
         }
@@ -189,10 +193,11 @@ impl ThinkingSliderFixture {
             .expect("model trigger");
         visual.simulate_click(trigger.center(), gpui_kit::Modifiers::default());
         visual.run_until_parked();
-        assert!(
+        assert_eq!(
             self.stream
-                .read_with(cx, |stream, _| stream.model_selector_is_open()),
-            "the model popup must be open"
+                .read_with(cx, |stream, _| stream.model_picker_level()),
+            vega_ui::conversation_stream::ModelPickerLevel::Slider,
+            "R59 R1: the model button must open the tier slider level"
         );
     }
 
@@ -617,11 +622,12 @@ async fn r58_off_position_persists_disabled_without_touching_efforts(
 
     // R8: a tier selection must not close the popup. The control stays under
     // the user's pointer across the persistence round trip.
-    assert!(
+    assert_eq!(
         fixture
             .stream
-            .read_with(cx, |stream, _| stream.model_selector_is_open()),
-        "R8: the model popup stays open after a tier selection"
+            .read_with(cx, |stream, _| stream.model_picker_level()),
+        vega_ui::conversation_stream::ModelPickerLevel::Slider,
+        "R8: the picker stays on the slider level after a tier selection"
     );
     assert!(
         visual.debug_bounds("composer-thinking-slider").is_some(),
@@ -672,12 +678,13 @@ async fn r58_no_off_position_without_the_disabled_capability(cx: &mut gpui_kit::
         "no Off position exists for this model"
     );
 
-    // R8: the popup stays open after the tier selection.
-    assert!(
+    // R8: the picker stays on the slider level after the tier selection.
+    assert_eq!(
         fixture
             .stream
-            .read_with(cx, |stream, _| stream.model_selector_is_open()),
-        "R8: the model popup stays open after a tier selection"
+            .read_with(cx, |stream, _| stream.model_picker_level()),
+        vega_ui::conversation_stream::ModelPickerLevel::Slider,
+        "R8: the picker stays on the slider level after a tier selection"
     );
 }
 

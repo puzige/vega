@@ -334,6 +334,19 @@ impl Layout {
     pub const COMPOSER_RADIUS: f32 = 20.0;
     /// Minimum height of the primary composer shell.
     pub const COMPOSER_MIN_HEIGHT: f32 = 100.0;
+    /// R59 R5: maximum height of a composer model-picker floating layer.
+    ///
+    /// R57 shipped no bound at all, so appending the tier slider to the model
+    /// menu produced a 1409px-tall popup that covered the whole transcript and
+    /// the R49 utility bar (R59 §1 D2). Every picker layer is now capped here
+    /// and scrolls inside itself instead.
+    pub const COMPOSER_PICKER_MAX_HEIGHT: f32 = 320.0;
+    /// R59 R5: visible clearance between a picker layer's bottom edge and the
+    /// top edge of the composer stack it opens above.
+    ///
+    /// The layers open **upward**, so this is the one gap that separates the
+    /// popup's shadow from the surface underneath it.
+    pub const COMPOSER_PICKER_ANCHOR_GAP: f32 = 8.0;
     /// Top padding of the Composer wrapper column inside the conversation.
     pub const COMPOSER_PADDING_TOP: f32 = 12.0;
     /// Bottom padding of the Composer wrapper column inside the conversation.

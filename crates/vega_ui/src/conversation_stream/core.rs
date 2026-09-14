@@ -8,8 +8,12 @@ use super::*;
 /// slider as the model menu's last child, which put both on screen at once
 /// (R59 §1 D1/D2/D3); this single enum is what replaces that pair of
 /// independent booleans.
+///
+/// One value means one mounted layer. `render_model_picker_layers` matches on
+/// this enum and mounts exactly one floating layer, so no frame can ever hold
+/// both (R59 A3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ModelPickerLevel {
+pub enum ModelPickerLevel {
     /// Nothing is mounted.
     #[default]
     Closed,
@@ -17,6 +21,15 @@ pub(crate) enum ModelPickerLevel {
     Slider,
     /// Level two: the model list, reached from the slider's title (R59 R2/R3).
     List,
+}
+
+impl ModelPickerLevel {
+    /// Whether any level is mounted. The composer's trigger and its popover
+    /// exclusivity both read this instead of the R57 boolean, and the
+    /// application acceptance harness reads it through the public accessor.
+    pub fn is_open(self) -> bool {
+        !matches!(self, Self::Closed)
+    }
 }
 
 /// The opened-thread content view: thread header (title and trusted actions),
@@ -114,8 +127,17 @@ pub struct ConversationStream {
     /// Priced model options for the selector (from the T36 pricing catalog
     /// via the app layer's typed projection; zero file IO here).
     pub(crate) model_options: Vec<String>,
-    /// Model selector popover state (open/closed + highlight row).
-    pub(crate) model_selector_open: bool,
+    /// R59 R1–R3: which model-picker level is mounted, if any.
+    ///
+    /// A single three-state value replaces R57's `model_selector_open`
+    /// boolean, so the tier slider and the model list are mutually exclusive
+    /// by construction: `render_model_picker_layers` matches on this and
+    /// mounts exactly one floating layer per frame (R59 A3).
+    pub(crate) model_picker_level: ModelPickerLevel,
+    /// Scroll state for the model list (level two). The list carries an
+    /// explicit `max_h` (R59 R5), so a long catalog scrolls inside the layer
+    /// and the highlighted row is kept in view during keyboard navigation.
+    pub(crate) model_menu_scroll: ScrollHandle,
     pub(crate) compact_workspace: bool,
     pub(crate) project_label: String,
     /// R49 utility-bar project menu rows (`(id, name)`), loaded from the same
@@ -254,6 +276,14 @@ impl ConversationStream {
             },
         )
         .detach();
+        // R59 R2/R3: the slider's title row is the only entry to level two.
+        cx.subscribe(
+            &thinking_slider,
+            |this, _, _: &ThinkingSliderTitleActivated, cx| {
+                this.on_thinking_slider_title_activated(&ThinkingSliderTitleActivated, cx);
+            },
+        )
+        .detach();
         Self {
             thread,
             entries: Vec::new(),
@@ -303,7 +333,8 @@ impl ConversationStream {
             },
             thinking_slider,
             model_options: Vec::new(),
-            model_selector_open: false,
+            model_picker_level: ModelPickerLevel::Closed,
+            model_menu_scroll: ScrollHandle::new(),
             compact_workspace: false,
             project_label: String::new(),
             utility_projects: Vec::new(),
@@ -789,7 +820,10 @@ impl ConversationStream {
         self.thread = projected;
         self.model_selection_pending = None;
         self.clear_model_selection_save_owner(request_id, cx);
-        self.model_selector_open = false;
+        // R59 R3: the durable acknowledgement closes the picker. A model change
+        // is a completed round trip, so leaving a level mounted would strand
+        // the user on a layer whose selection is already applied.
+        self.model_picker_level = ModelPickerLevel::Closed;
         self.controller_error = None;
         cx.notify();
     }
@@ -820,9 +854,12 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// Enter/Space on the focused model selector trigger (A2-14): closed →
-    /// open; open → accept the highlighted model (first-wins default when
-    /// nothing was highlighted).
+    /// Enter/Space on the focused model selector trigger (A2-14).
+    ///
+    /// R59 R1: the trigger opens **level one** — the tier slider card — and
+    /// never the model list. From there the key is a plain toggle, because
+    /// level one has no rows to accept. Only level two keeps the pre-existing
+    /// "Enter accepts the highlighted model" behaviour.
     pub(crate) fn on_activate_model(
         &mut self,
         _: &ActivateModel,
@@ -836,14 +873,15 @@ impl ConversationStream {
         {
             return;
         }
-        if !self.model_selector_open {
+        if !self.model_picker_level.is_open() {
             self.close_composer_popovers(cx);
-            self.model_selector_open = true;
-            self.model_selector_highlight = self
-                .model_options
-                .iter()
-                .position(|model| *model == self.thread.model)
-                .unwrap_or(0);
+            self.open_model_picker_slider(cx);
+            return;
+        }
+        if self.model_picker_level == ModelPickerLevel::Slider {
+            // Level one has no rows to accept; the trigger's only remaining
+            // job is to close the picker again.
+            self.model_picker_level = ModelPickerLevel::Closed;
             cx.notify();
             return;
         }
@@ -852,9 +890,49 @@ impl ConversationStream {
             .get(self.model_selector_highlight)
             .cloned()
         {
-            self.model_selector_open = false;
-            self.request_model_selection(&model, cx);
+            self.select_model_option(&model, cx);
         }
+        cx.notify();
+    }
+
+    /// R59 R1: mounts the tier slider (level one) and focuses its scroll
+    /// state on the current model, so keyboard navigation of the list level
+    /// starts from the durable selection.
+    pub(crate) fn open_model_picker_slider(&mut self, cx: &mut Context<Self>) {
+        self.model_picker_level = ModelPickerLevel::Slider;
+        self.model_selector_highlight = self
+            .model_options
+            .iter()
+            .position(|model| *model == self.thread.model)
+            .unwrap_or(0);
+        self.model_menu_scroll
+            .scroll_to_item(self.model_selector_highlight);
+        cx.notify();
+    }
+
+    /// R59 R2/R3: the slider's title row was activated, so level one is
+    /// replaced by level two. The slider unmounts in the same frame the list
+    /// mounts, which is what makes the two levels mutually exclusive (A3).
+    pub(crate) fn on_thinking_slider_title_activated(
+        &mut self,
+        _: &ThinkingSliderTitleActivated,
+        cx: &mut Context<Self>,
+    ) {
+        if self.model_options.is_empty()
+            || self.model_selection_pending.is_some()
+            || self.model_selection_save_busy()
+            || self.trusted_action_busy
+        {
+            return;
+        }
+        self.model_picker_level = ModelPickerLevel::List;
+        self.model_selector_highlight = self
+            .model_options
+            .iter()
+            .position(|model| *model == self.thread.model)
+            .unwrap_or(0);
+        self.model_menu_scroll
+            .scroll_to_item(self.model_selector_highlight);
         cx.notify();
     }
 
@@ -864,33 +942,57 @@ impl ConversationStream {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.model_selector_open || self.model_options.is_empty() || self.trusted_action_busy {
+        if self.model_picker_level != ModelPickerLevel::List
+            || self.model_options.is_empty()
+            || self.trusted_action_busy
+        {
             return;
         }
         self.model_selector_highlight = self.model_selector_highlight.saturating_sub(1);
+        self.model_menu_scroll
+            .scroll_to_item(self.model_selector_highlight);
         cx.notify();
     }
 
     pub(crate) fn on_model_next(&mut self, _: &NextModel, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.model_selector_open || self.trusted_action_busy {
+        if self.model_picker_level != ModelPickerLevel::List || self.trusted_action_busy {
             return;
         }
         if self.model_selector_highlight + 1 < self.model_options.len() {
             self.model_selector_highlight += 1;
         }
+        self.model_menu_scroll
+            .scroll_to_item(self.model_selector_highlight);
         cx.notify();
     }
 
+    /// Esc closes whichever level is mounted (R59 R3).
     pub(crate) fn on_model_close(
         &mut self,
         _: &CloseModel,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.model_selector_open = false;
+        self.model_picker_level = ModelPickerLevel::Closed;
         cx.notify();
     }
 
+    /// R59 R3/A4: picking a model **closes** the picker.
+    ///
+    /// The spec leaves this to the implementer ("回到滑块（或关闭）") and asks
+    /// for the reason. Closing is the reading that cannot lie: the model change
+    /// starts a durable save, and until `apply_reasoning_profile` re-projects
+    /// the new model's capability the mounted slider would still be showing the
+    /// **previous** model's tier ladder under the new model's name. The trigger
+    /// already carries the honest feedback for that window (`保存中…`), so
+    /// unmounting both levels is strictly more truthful than returning to a
+    /// stale card. A **tier** selection is a different case and keeps the
+    /// picker open (R58 R8): that write does not change which model the slider
+    /// describes.
+    ///
+    /// This agrees with [`Self::apply_thread_model_acknowledged`], which also
+    /// closes on the durable acknowledgement, so no path can leave the picker
+    /// mounted on a selection that has already been applied.
     pub(crate) fn select_model_option(&mut self, model: &str, cx: &mut Context<Self>) {
         if self.model_selection_pending.is_some()
             || self.model_selection_save_busy()
@@ -898,7 +1000,7 @@ impl ConversationStream {
         {
             return;
         }
-        self.model_selector_open = false;
+        self.model_picker_level = ModelPickerLevel::Closed;
         self.request_model_selection(model, cx);
     }
 
