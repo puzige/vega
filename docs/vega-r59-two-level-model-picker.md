@@ -84,8 +84,14 @@ composer.modelPicker.default.description: "Recommended set of models"
 
 ### R5（必须）菜单不得溢出压住 utility bar
 
-- 菜单与滑块都要有高度约束，**不得覆盖 utility bar**
-- utility bar 必须保持可点击
+> **已被 R61 取代（2026-09-14）**：R61 §2 用户决策「允许遮住 utility bar」，把浮层锚定从
+> composer column 顶边改回模型触发器上缘。本条的「不得覆盖 utility bar」「utility bar 必须
+> 保持可点击」不再成立；现行契约见 [R61 §3 R1/R5/R6](vega-r61-picker-trigger-anchoring.md)。
+> R5 中「两个浮层都要有高度约束」的部分由 R61 R3 原样保留（`COMPOSER_PICKER_MAX_HEIGHT`）。
+
+- ~~菜单与滑块都要有高度约束，**不得覆盖 utility bar**~~
+- ~~utility bar 必须保持可点击~~
+- **仍然有效**：两个浮层都要有高度约束（`COMPOSER_PICKER_MAX_HEIGHT`，列表内部滚动）
 
 ### R6（必须）修卡片内部行距
 
@@ -113,7 +119,7 @@ composer.modelPicker.default.description: "Recommended set of models"
 | A2 | 生产测试 | 点滑块标题 → 渲染模型列表，**不渲染**滑块 |
 | A3 | 生产测试 | 两态互斥（同一时刻只有一个 mounted） |
 | A4 | 生产测试 | 选择模型后回到滑块态（或按实现者选择的行为） |
-| A5 | 原生截图 | 滑块与列表不同屏；utility bar 可见且可点击 |
+| A5 | 原生截图 | ~~滑块与列表不同屏；utility bar 可见且可点击~~ **改由 R61 A6/A1 判据**（卡片紧贴模型按钮；utility bar 允许被遮） |
 | A6 | 门禁 | `scripts/cargo-lock.sh test --workspace` 0 失败 |
 
 ## §6 已知未实测

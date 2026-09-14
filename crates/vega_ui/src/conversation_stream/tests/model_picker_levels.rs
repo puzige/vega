@@ -1,15 +1,28 @@
-//! R59 two-level model picker: one state machine, one level on screen.
+//! Two-level model picker: one state machine, one level on screen, anchored to
+//! the model trigger.
 //!
-//! Contract source: `docs/vega-r59-two-level-model-picker.md` §3. Every case
-//! mounts the real [`ConversationStream`] in a window and reads the rendered
-//! frame — no test-only seam decides any branch, and no synthetic keyboard
-//! event is used to prove focus (AGENTS.md: GPUI focus cannot be driven that
-//! way; the structural assertions below are the authority).
+//! Contract sources: `docs/vega-r59-two-level-model-picker.md` §3 (the
+//! two-level drill-down) and `docs/vega-r61-picker-trigger-anchoring.md` §3
+//! (the trigger anchoring that replaced R59's composer-column anchoring).
+//! Every case mounts the real [`ConversationStream`] in a window and reads the
+//! rendered frame — no test-only seam decides any branch, and no synthetic
+//! keyboard event is used to prove focus (AGENTS.md: GPUI focus cannot be
+//! driven that way; the structural assertions below are the authority).
 //!
-//! The defects these tests pin (spec §1):
-//! - D1 the slider card floated inside the model list;
-//! - D2 the unbounded menu covered the R49 utility bar;
-//! - D3 the card's rows collided.
+//! The defects these tests pin:
+//! - R59 D1 the slider card floated inside the model list;
+//! - R59 D2 the unbounded menu covered the R49 utility bar;
+//! - R59 D3 the card's rows collided;
+//! - R61 D1 the R59 column anchoring left the card a whole utility-bar height
+//!   away from the model button;
+//! - R61 D2 the same anchoring right-aligned the card to the 736px container
+//!   edge instead of to the trigger.
+//!
+//! R61 accepts that a trigger-anchored card overlaps the R49 utility bar: the
+//! trigger has ~61px of clearance and the R57-frozen card needs 84px, so the
+//! overlap is geometric (R61 §1). The tests below assert the **hug** instead of
+//! the clearance, and pin the accepted overlap so re-introducing the column
+//! anchoring has to re-open the decision (R61 R5).
 
 use super::*;
 use crate::conversation_stream::render::{PICKER_EFFORT_LABEL, PICKER_LIST_HEADING};
@@ -251,16 +264,21 @@ async fn r59_the_slider_card_is_never_nested_in_the_list(cx: &mut TestAppContext
     let _ = card;
 }
 
-/// R4: both layers are right-aligned to the model trigger, and each carries its
-/// own width — the slider the measured 254.5px card, the list the frozen
-/// `MENU_MAX_WIDTH`. This is what pins [`PICKER_RIGHT_INSET`] to the frozen
-/// bottom row: if the send button, the card padding, or the row gap changed
-/// without updating that derivation, the layers would visibly drift off the
-/// trigger.
+/// R61 A2: both layers are right-aligned to the **model trigger's** right edge,
+/// not to the composer container's, and each carries its own width — the slider
+/// the measured 254.5px card, the list the frozen `MENU_MAX_WIDTH`.
+///
+/// This is the R61 replacement for R59's `PICKER_RIGHT_INSET` derivation. R59
+/// computed the inset from the frozen bottom row (`border + p_3 + send + gap_2`)
+/// because the layers hung off the composer **column**; R61 hangs them off the
+/// trigger's own wrapper, so `right_0()` is structural and the assertion can be
+/// exact rather than derived. It also pins R61 D2: a layer aligned to the
+/// 736px container edge would sit 254.5px to the right of the trigger's edge
+/// for the card and ~350px for the list.
 #[gpui_kit::test]
-async fn r59_both_layers_align_with_the_model_trigger(cx: &mut TestAppContext) {
+async fn r61_both_layers_align_with_the_model_trigger(cx: &mut TestAppContext) {
     let (window, _stream) =
-        open_picker_stream(cx, "r59-align", twenty_models(), three_tiers(), true);
+        open_picker_stream(cx, "r61-align", twenty_models(), three_tiers(), true);
     let trigger = mounted(window, "composer-model", cx).expect("trigger");
 
     click(window, "composer-model", cx);
@@ -268,7 +286,17 @@ async fn r59_both_layers_align_with_the_model_trigger(cx: &mut TestAppContext) {
     assert_close(
         f32::from(slider.right()),
         f32::from(trigger.right()),
-        "the slider layer's right edge is the trigger's right edge",
+        "R61 A2: the slider layer's right edge is the trigger's right edge",
+    );
+    // The card keeps its measured width and therefore extends to the *left* of
+    // the trigger; the point of the assertion is that it hangs off the trigger
+    // rather than off the container's right edge.
+    assert!(
+        f32::from(slider.left()) < f32::from(trigger.left()),
+        "R61 A2: the 254.5px card is wider than the trigger, so it must extend \
+         left of it: slider.left={:?} trigger.left={:?}",
+        slider.left(),
+        trigger.left()
     );
 
     click(window, "thinking-slider-title", cx);
@@ -276,7 +304,7 @@ async fn r59_both_layers_align_with_the_model_trigger(cx: &mut TestAppContext) {
     assert_close(
         f32::from(menu.right()),
         f32::from(trigger.right()),
-        "the list layer's right edge is the trigger's right edge",
+        "R61 A2: the list layer's right edge is the trigger's right edge",
     );
     assert_close(
         f32::from(menu.size.width),
@@ -294,78 +322,333 @@ fn assert_close(actual: f32, expected: f32, label: &str) {
     );
 }
 
-// ---- R5: neither layer overflows the utility bar --------------------------
+// ---- R61 A1: the card hugs the trigger (and overlaps the utility bar) -----
 
-/// R5/D2: with the R49 utility bar mounted, neither layer's bounds reach above
-/// the bar's top edge, so the bar stays visible and clickable.
+/// R61 A1/R5: **the rewritten R59 test.**
+///
+/// R59 asserted `layer.bottom() <= bar.top()` — "no picker layer may reach the
+/// utility bar" — and that assertion is exactly what forced the card onto the
+/// composer column's top edge, a whole utility-bar height away from the model
+/// button (R61 §1 D1/D2). R61 §2 rules the trade-off out, so the assertion is
+/// **inverted, not deleted**: what matters now is that the card hugs the
+/// trigger, and the accepted consequence is pinned rather than left implicit.
+///
+/// Three claims, in the order they matter:
+/// 1. the card's bottom is within [`HUG_TOLERANCE`] of the trigger's top — this
+///    is A1's "≤ 12px" and it is what the R59 assertion got backwards;
+/// 2. the card therefore **intersects** the bar. This is the exact negation of
+///    R59's `slider.bottom() <= bar.top()`, so a future change that
+///    re-introduces the clearance fails here and has to re-open the R61 §2
+///    decision;
+/// 3. the list level hugs the trigger the same way, and still respects
+///    [`Layout::COMPOSER_PICKER_MAX_HEIGHT`] (R61 A4/R3).
+///
+/// The bar itself stays mounted and unmoved — R61 does not change the bar, only
+/// whether a popup may cover it.
 #[gpui_kit::test]
-async fn r59_neither_layer_reaches_the_utility_bar(cx: &mut TestAppContext) {
-    let (window, stream) = open_picker_stream(
+async fn r61_card_hugs_the_trigger_and_overlaps_the_utility_bar(cx: &mut TestAppContext) {
+    let (window, _stream) = open_picker_stream(
         cx,
-        "r59-r5",
+        "r61-hug",
         // A long catalog is the case that made the R57 menu 1409px tall.
         twenty_models(),
         three_tiers(),
         true,
     );
     let bar = mounted(window, "composer-utility-bar", cx).expect("utility bar");
+    let trigger = mounted(window, "composer-model", cx).expect("trigger");
 
     click(window, "composer-model", cx);
     let slider = mounted(window, "composer-thinking-slider", cx).expect("slider layer");
+    assert_hugs(slider, trigger, "R61 A1: the slider card");
+    // Claim 2: the rewrite. R59 asserted `slider.bottom() <= bar.top()` here.
+    // The card hangs 8px above the trigger, which is inside the bar's band, so
+    // the two boxes genuinely intersect — the overlap R61 §2 accepted.
     assert!(
-        slider.bottom() <= bar.top(),
-        "R5: the slider layer (bottom {:?}) must not reach the utility bar (top {:?})",
-        slider.bottom(),
-        bar.top()
+        slider.intersects(&bar),
+        "R61 R5: the card is expected to overlap the utility bar (R61 §2 chose \
+         the overlap); card {slider:?} vs bar {bar:?}. If this fails the card \
+         stopped hugging the trigger — see the A1 assertion above, not this line."
     );
 
     click(window, "thinking-slider-title", cx);
     let menu = mounted(window, "composer-model-menu", cx).expect("list layer");
-    assert!(
-        menu.bottom() <= bar.top(),
-        "R5: the list layer (bottom {:?}) must not reach the utility bar (top {:?})",
-        menu.bottom(),
-        bar.top()
-    );
+    assert_hugs(menu, trigger, "R61 A1: the model list");
     assert!(
         f32::from(menu.size.height) <= Layout::COMPOSER_PICKER_MAX_HEIGHT,
-        "R5: the list is bounded by COMPOSER_PICKER_MAX_HEIGHT, got {}",
+        "R61 A4: the list is still bounded by COMPOSER_PICKER_MAX_HEIGHT, got {}",
         f32::from(menu.size.height)
     );
-    let _ = stream;
 }
 
-/// R5: the utility bar stays clickable while a layer is mounted. The chip's own
-/// production handler must still open its menu, which is the behaviour the R57
-/// unbounded popup swallowed.
+/// R61 A1: how close the card's bottom edge must sit to the trigger's top edge.
+///
+/// The spec's own threshold ("≤ 12px", §5 A1) rather than the token's 8px: the
+/// assertion is about the *hug* being visually tight, and a tolerance of 12
+/// keeps it meaningful while leaving room for sub-pixel rounding in the layout
+/// engine. The token itself is pinned separately by
+/// [`r61_the_trigger_gap_is_the_frozen_token`], so a drift in
+/// [`Layout::COMPOSER_PICKER_TRIGGER_GAP`] still fails a test.
+const HUG_TOLERANCE: f32 = 12.0;
+
+/// Asserts the layer's bottom edge sits at most [`HUG_TOLERANCE`] above the
+/// trigger's top edge, and never *below* it (which would cover the button).
+fn assert_hugs(layer: Bounds<Pixels>, trigger: Bounds<Pixels>, label: &str) {
+    let gap = f32::from(trigger.top()) - f32::from(layer.bottom());
+    assert!(
+        gap.abs() <= HUG_TOLERANCE,
+        "{label} must hug the trigger: its bottom is {gap}px above the trigger's \
+         top (layer {layer:?}, trigger {trigger:?}); R61 A1 allows at most \
+         {HUG_TOLERANCE}px and R61 R1's token is {}px",
+        Layout::COMPOSER_PICKER_TRIGGER_GAP
+    );
+}
+
+/// R61 R1: the gap between the trigger's top edge and a layer's bottom edge is
+/// the frozen [`Layout::COMPOSER_PICKER_TRIGGER_GAP`] token, measured on the
+/// real frame.
+///
+/// A1's threshold is a tolerance; this is the exact value. Both are needed: the
+/// threshold says the card reads as attached to the button, and this says the
+/// attachment is the one token rather than whatever the layout happened to
+/// produce.
 #[gpui_kit::test]
-async fn r59_utility_bar_stays_clickable_with_a_layer_mounted(cx: &mut TestAppContext) {
-    let (window, _stream) =
-        open_picker_stream(cx, "r59-r5-click", twenty_models(), three_tiers(), true);
+async fn r61_the_trigger_gap_is_the_frozen_token(cx: &mut TestAppContext) {
+    let (window, _stream) = open_picker_stream(cx, "r61-gap", twenty_models(), three_tiers(), true);
+    let trigger = mounted(window, "composer-model", cx).expect("trigger");
+
     click(window, "composer-model", cx);
+    let slider = mounted(window, "composer-thinking-slider", cx).expect("slider layer");
+    assert_close(
+        f32::from(trigger.top() - slider.bottom()),
+        Layout::COMPOSER_PICKER_TRIGGER_GAP,
+        "R61 R1: the slider card's gap above the trigger is the frozen token",
+    );
+
+    click(window, "thinking-slider-title", cx);
+    let menu = mounted(window, "composer-model-menu", cx).expect("list layer");
+    assert_close(
+        f32::from(trigger.top() - menu.bottom()),
+        Layout::COMPOSER_PICKER_TRIGGER_GAP,
+        "R61 R1: the model list's gap above the trigger is the frozen token",
+    );
+}
+
+/// R61 R6/A5: the picker can always be dismissed while a layer is open, even
+/// though the layer now covers the utility bar.
+///
+/// R61 §6 M2 asks whether the bar's chips stay reachable once the card overlaps
+/// them. The answer this test pins is "not by clicking a chip, but the picker
+/// is still dismissible": a click **outside** the layer closes it (the
+/// composer's own outside-click handler), and once closed the bar is whole
+/// again. The chip is deliberately not asserted as clickable — R61 §3 R6 says
+/// covering it is acceptable.
+#[gpui_kit::test]
+async fn r61_a_layer_is_dismissible_while_it_covers_the_bar(cx: &mut TestAppContext) {
+    let (window, stream) =
+        open_picker_stream(cx, "r61-dismiss", twenty_models(), three_tiers(), true);
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Slider);
     assert!(is_mounted(window, "composer-thinking-slider", cx));
 
-    click(window, "composer-utility-project-chip", cx);
+    // A point inside the conversation column but outside every picker layer:
+    // the transcript area at the column's top. It is far from the composer
+    // card, the utility bar, and both layers, so the click cannot be
+    // attributed to any of them.
+    let column = mounted(window, "conversation-column", cx).expect("conversation column");
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_click(
+        gpui_kit::point(column.center().x, column.top() + gpui_kit::px(8.)),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
 
-    assert!(
-        is_mounted(window, "composer-utility-project-menu", cx),
-        "R5: the utility bar chip must still respond to clicks"
+    assert_eq!(
+        level(&stream, cx),
+        ModelPickerLevel::Closed,
+        "R61 R6/A5: an outside click dismisses the picker while the card covers the bar"
     );
-    // Opening the chip's own menu closes the picker, so the two popovers never
-    // stack (the composer's existing exclusivity rule).
+    assert!(!is_mounted(window, "composer-thinking-slider", cx));
+    // The bar was never unmounted by the overlap, so dismissing the picker is
+    // all that is needed to get it back.
     assert!(
-        !is_mounted(window, "composer-thinking-slider", cx),
-        "the chip's menu and the picker are exclusive"
+        is_mounted(window, "composer-utility-bar", cx),
+        "the utility bar is still mounted and whole once the picker is closed"
     );
+
+    // The same holds for the list level.
+    click(window, "composer-model", cx);
+    click(window, "thinking-slider-title", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::List);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_click(
+        gpui_kit::point(column.center().x, column.top() + gpui_kit::px(8.)),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        level(&stream, cx),
+        ModelPickerLevel::Closed,
+        "R61 R6/A5: the list level is dismissible the same way"
+    );
+    assert!(!is_mounted(window, "composer-model-menu", cx));
 }
 
-/// R5: the bound is a property of the layer, not of the window — the smallest
-/// window the app allows (960x600) must still keep the bar clear.
+/// R61 R5: where the layer and the utility bar overlap, the **layer** wins the
+/// hit test — the card is painted over the bar, not behind it.
+///
+/// The overlap R61 §2 accepts is only useful if the card is actually on top of
+/// the bar: a card that overlapped but sat behind would be unreadable and
+/// unclickable in its lower band. The layers carry `occlude()`, and this test
+/// proves the resulting z-order with the one observation available without
+/// pixels — a click inside the overlap region reaches the **card's** own
+/// surface (its title row's parent), not the bar underneath.
+///
+/// The click is placed inside the card but deliberately off the slider's own
+/// track, so the assertion is about the layer's hit area rather than about a
+/// slider interaction.
 #[gpui_kit::test]
-async fn r59_layers_stay_below_the_bar_in_the_smallest_window(cx: &mut TestAppContext) {
+async fn r61_the_layer_occludes_the_bar_where_they_overlap(cx: &mut TestAppContext) {
+    let (window, stream) =
+        open_picker_stream(cx, "r61-occlude", twenty_models(), three_tiers(), true);
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Slider);
+
+    let card = mounted(window, "thinking-slider-card", cx).expect("card");
+    let bar = mounted(window, "composer-utility-bar", cx).expect("utility bar");
+    assert!(
+        card.intersects(&bar),
+        "this test only means something while the card overlaps the bar: \
+         card={card:?} bar={bar:?}"
+    );
+
+    // A point inside both boxes, on the card's top padding band (above its
+    // title row and track, below the card's top edge), so nothing inside the
+    // card handles it.
+    let overlap = card.intersect(&bar);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_click(
+        gpui_kit::point(overlap.center().x, overlap.top() + gpui_kit::px(1.)),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+
+    // The layer's own `on_mouse_down` stops propagation, so a click that lands
+    // on it cannot reach the outside-click handler: the picker stays open. A
+    // click that fell through to the bar (or to the transcript behind it) would
+    // have closed the picker instead.
+    assert_eq!(
+        level(&stream, cx),
+        ModelPickerLevel::Slider,
+        "R61 R5: the card must take the click in the overlap region, so it is \
+         painted above the utility bar rather than behind it"
+    );
+    assert!(is_mounted(window, "composer-thinking-slider", cx));
+}
+
+/// R61 R6/A5: re-clicking the trigger closes the picker — the second close path,
+/// which needs no outside surface to be reachable.
+///
+/// This is the path that keeps the picker dismissible even in the worst case
+/// for the click-away handler: a window so short that no point outside the
+/// layer is hittable. The trigger sits below the layer, so it is always its own
+/// escape hatch.
+#[gpui_kit::test]
+async fn r61_the_trigger_stays_clickable_with_a_layer_mounted(cx: &mut TestAppContext) {
+    let (window, stream) =
+        open_picker_stream(cx, "r61-reclick", twenty_models(), three_tiers(), true);
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Slider);
+    assert!(is_mounted(window, "composer-thinking-slider", cx));
+
+    // The trigger's own bounds must remain hit-testable: the layer is anchored
+    // above it, so it never covers the button it hangs from.
+    let trigger = mounted(window, "composer-model", cx).expect("trigger");
+    let slider = mounted(window, "composer-thinking-slider", cx).expect("slider layer");
+    assert!(
+        slider.bottom() <= trigger.top(),
+        "the layer must not cover its own trigger: slider.bottom={:?} trigger.top={:?}",
+        slider.bottom(),
+        trigger.top()
+    );
+
+    click(window, "composer-model", cx);
+    assert_eq!(
+        level(&stream, cx),
+        ModelPickerLevel::Closed,
+        "R61 R6/A5: re-clicking the trigger dismisses the picker"
+    );
+    assert!(!is_mounted(window, "composer-thinking-slider", cx));
+}
+
+/// R61 §6 M2: how much of the utility bar the trigger-anchored card actually
+/// covers, and whether its chips survive.
+///
+/// R59 asserted unconditionally that the folder chip "must still respond to
+/// clicks" while a layer was mounted; R61 §3 R6 explicitly makes that
+/// acceptable to lose ("若遮住 utility bar 导致其 chip 不可点，这是可接受的"). The
+/// chip is therefore **not** a contract any more, and asserting it would claim
+/// a guarantee the spec no longer makes.
+///
+/// What is still worth pinning is the measurement M2 asks for. The overlap is
+/// vertical only: the card hangs off the trigger on the row's **right**, while
+/// the folder/branch chips sit at the bar's **left** inset. On the frozen
+/// geometry that leaves the chips clear, so the click still reaches the chip's
+/// own handler — and that handler still closes the picker, preserving the
+/// composer's popover exclusivity. Both facts are asserted below, so if a
+/// future change moves the trigger leftward or widens the card, this test
+/// reports that M2 flipped rather than silently losing the chips.
+#[gpui_kit::test]
+async fn r61_the_overlap_leaves_the_folder_chip_reachable(cx: &mut TestAppContext) {
+    let (window, stream) = open_picker_stream(cx, "r61-m2", twenty_models(), three_tiers(), true);
+    let chip = mounted(window, "composer-utility-project-chip", cx).expect("folder chip");
+
+    click(window, "composer-model", cx);
+    let slider = mounted(window, "composer-thinking-slider", cx).expect("slider layer");
+
+    // The layer does reach into the bar's band (R61 accepts this), but its
+    // horizontal extent does not cover the chip on this geometry.
+    assert!(
+        slider.top() < chip.bottom(),
+        "the card is expected to reach into the utility bar's band: card top {:?}, \
+         chip bottom {:?}",
+        slider.top(),
+        chip.bottom()
+    );
+    assert!(
+        !slider.intersects(&chip),
+        "M2: the card is expected to hang off the trigger's right edge, clear of \
+         the bar's left-aligned chips. If this fails the chips are covered — \
+         acceptable per R61 R6, but then this test's second half must be dropped \
+         rather than the card shrunk (R61 §4). slider={slider:?} chip={chip:?}"
+    );
+
+    // Still reachable, and still exclusive with the picker.
+    click(window, "composer-utility-project-chip", cx);
+    assert!(
+        is_mounted(window, "composer-utility-project-menu", cx),
+        "M2: the folder chip still opens its own menu"
+    );
+    assert_eq!(
+        level(&stream, cx),
+        ModelPickerLevel::Closed,
+        "the chip's menu and the picker stay exclusive"
+    );
+    assert!(!is_mounted(window, "composer-thinking-slider", cx));
+}
+
+/// R61 A1: the bound is a property of the layer, not of the window — the
+/// smallest window the app allows (960x600) still hugs the trigger, and the
+/// list still scrolls inside `COMPOSER_PICKER_MAX_HEIGHT`.
+///
+/// R59 asserted the bar stayed clear at this size. R61 replaces that with the
+/// hug: the geometry constraint that survives is the height bound, not the
+/// clearance.
+#[gpui_kit::test]
+async fn r61_layers_hug_the_trigger_in_the_smallest_window(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let mut thread = permission_thread();
-    thread.id = "r59-min-window".into();
+    thread.id = "r61-min-window".into();
     let stream = cx.new(|cx| ConversationStream::new(thread, cx));
     let root_stream = stream.clone();
     let window = cx.update(|cx| {
@@ -398,14 +681,18 @@ async fn r59_layers_stay_below_the_bar_in_the_smallest_window(cx: &mut TestAppCo
     });
     cx.run_until_parked();
 
-    let bar = mounted(window, "composer-utility-bar", cx).expect("utility bar");
+    let trigger = mounted(window, "composer-model", cx).expect("trigger");
     click(window, "composer-model", cx);
     let slider = mounted(window, "composer-thinking-slider", cx).expect("slider layer");
+    assert_hugs(slider, trigger, "960x600: the slider card");
+
+    click(window, "thinking-slider-title", cx);
+    let menu = mounted(window, "composer-model-menu", cx).expect("list layer");
+    assert_hugs(menu, trigger, "960x600: the model list");
     assert!(
-        slider.bottom() <= bar.top(),
-        "960x600: the slider (bottom {:?}) must not reach the bar (top {:?})",
-        slider.bottom(),
-        bar.top()
+        f32::from(menu.size.height) <= Layout::COMPOSER_PICKER_MAX_HEIGHT,
+        "960x600: the list is still bounded by COMPOSER_PICKER_MAX_HEIGHT, got {}",
+        f32::from(menu.size.height)
     );
 }
 
