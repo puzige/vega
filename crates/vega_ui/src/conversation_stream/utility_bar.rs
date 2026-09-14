@@ -219,29 +219,36 @@ impl ConversationStream {
         } else {
             menu = menu.children(rows);
         }
-        menu.child(menu_list::separator(colors))
-            .child(menu_list::action_row(
-                "composer-utility-project-new",
-                crate::icons::Icon::Plus,
-                "新建项目".into(),
-                // R62 R11/M7: no Vega implementation path exists from this
-                // surface, so the row renders disabled instead of silently
-                // doing nothing.
-                false,
-                "暂不支持：请在侧栏使用 [+ 添加项目] 注册文件夹",
-                colors,
-                |_, _, _| {},
-            ))
-            .child(menu_list::action_row(
-                "composer-utility-project-detach",
-                crate::icons::Icon::Close,
-                "不关联项目".into(),
-                true,
-                "",
-                colors,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| this.detach_utility_project(cx)),
-            ))
-            .into_any_element()
+        // R64 R1/R3: deferred paint, priority 2 — the composer card's border is
+        // painted after its children (`Style::paint`), so a popup mounted inside
+        // the card is crossed by it. `deferred` keeps this layer's layout in the
+        // current tree and moves only its painting after the ancestors.
+        gpui_kit::deferred(
+            menu.child(menu_list::separator(colors))
+                .child(menu_list::action_row(
+                    "composer-utility-project-new",
+                    crate::icons::Icon::Plus,
+                    "新建项目".into(),
+                    // R62 R11/M7: no Vega implementation path exists from this
+                    // surface, so the row renders disabled instead of silently
+                    // doing nothing.
+                    false,
+                    "暂不支持：请在侧栏使用 [+ 添加项目] 注册文件夹",
+                    colors,
+                    |_, _, _| {},
+                ))
+                .child(menu_list::action_row(
+                    "composer-utility-project-detach",
+                    crate::icons::Icon::Close,
+                    "不关联项目".into(),
+                    true,
+                    "",
+                    colors,
+                    cx.listener(|this, _: &MouseUpEvent, _, cx| this.detach_utility_project(cx)),
+                )),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 
     /// The branch chip. The selector entity owns its own trigger chrome (see

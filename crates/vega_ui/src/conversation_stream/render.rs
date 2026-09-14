@@ -508,58 +508,62 @@ impl ConversationStream {
                             }),
                     )
             });
-        div()
-            .debug_selector(|| "composer-permission-picker".into())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .absolute()
-            .bottom(gpui_kit::relative(1.0))
-            .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
-            .left_0()
-            .w(px(Layout::MENU_MAX_WIDTH))
-            .occlude()
-            .flex()
-            .flex_col()
-            .rounded(px(Layout::MENU_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .text_color(colors.text_primary)
-            .shadow_sm()
-            .child(
-                div()
-                    .debug_selector(|| "composer-permission-picker-title".into())
-                    .flex_shrink_0()
-                    .px_2()
-                    .pt_2()
-                    .pb_1()
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_secondary)
-                            .child(PERMISSION_PICKER_TITLE),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_tertiary)
-                            .child(PERMISSION_PICKER_LEARN_MORE),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .mx_2()
-                    .h(px(1.))
-                    .bg(colors.border_subtle),
-            )
-            .child(div().flex_shrink_0().p_1().flex().flex_col().children(rows))
-            .into_any_element()
+        // R64 R1/R3: deferred paint, priority 2 — see `render_file_dropdown`.
+        gpui_kit::deferred(
+            div()
+                .debug_selector(|| "composer-permission-picker".into())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .absolute()
+                .bottom(gpui_kit::relative(1.0))
+                .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
+                .left_0()
+                .w(px(Layout::MENU_MAX_WIDTH))
+                .occlude()
+                .flex()
+                .flex_col()
+                .rounded(px(Layout::MENU_RADIUS))
+                .border_1()
+                .border_color(colors.border_subtle)
+                .bg(colors.bg_elevated)
+                .text_color(colors.text_primary)
+                .shadow_sm()
+                .child(
+                    div()
+                        .debug_selector(|| "composer-permission-picker-title".into())
+                        .flex_shrink_0()
+                        .px_2()
+                        .pt_2()
+                        .pb_1()
+                        .flex()
+                        .items_start()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_secondary)
+                                .child(PERMISSION_PICKER_TITLE),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(Typography::METADATA))
+                                .text_color(colors.text_tertiary)
+                                .child(PERMISSION_PICKER_LEARN_MORE),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .mx_2()
+                        .h(px(1.))
+                        .bg(colors.border_subtle),
+                )
+                .child(div().flex_shrink_0().p_1().flex().flex_col().children(rows)),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 
     /// R62 R7: opens/closes the permission picker. Closing every other
@@ -839,12 +843,23 @@ impl ConversationStream {
     /// `.relative()` wrapper (see [`Self::render_model_selector`]) and each
     /// layer right-aligns with `right_0()`.
     ///
-    /// The layers are deliberately **not** wrapped in `gpui_kit::deferred`:
-    /// deferred content is laid out in its own window-space paint layer, which
-    /// breaks composer-relative coordinates (measured under R59: the card
-    /// landed at x 1232.5 on a 1200-wide window instead of on the card's right
-    /// edge). The trigger wrapper clips nothing, so no escape hatch is needed;
-    /// each layer's own `occlude()` supplies the hit-testing priority instead.
+    /// R64 R1: both layers are wrapped in `gpui_kit::deferred(...)` at
+    /// priority 2. GPUI paints an element's border **after** its children
+    /// (`Style::paint`), so the composer card's own 1px border crossed every
+    /// layer mounted inside it. `deferred` delays only the painting until after
+    /// the ancestors, keeping layout in the current tree, which is why the
+    /// trigger anchoring above is untouched.
+    ///
+    /// R59 recorded that a deferred card landed at x 1232.5 on a 1200-wide
+    /// window. R64 §3 established that this came from wrapping the R59
+    /// `max_w(COMPOSER_MAX_WIDTH) + mx_auto` **outer box** — the structure R61
+    /// R2 deleted — not from `deferred` itself, which records and replays the
+    /// element's own `absolute_offset` (`window.rs`'s `defer_draw`). The layers
+    /// below are measured to keep the exact bounds they had before the wrap.
+    ///
+    /// `occlude()` is kept on each layer: it supplies the mouse hit-testing
+    /// priority (`HitboxBehavior::BlockMouse`) and was never a paint-order
+    /// mechanism.
     fn render_model_picker_layers(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.model_picker_level {
             ModelPickerLevel::Closed => div().into_any_element(),
@@ -879,22 +894,26 @@ impl ConversationStream {
         if !self.thinking_slider.read(cx).has_tiers() {
             return div().into_any_element();
         }
-        div()
-            .debug_selector(|| "composer-thinking-slider".into())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .absolute()
-            .bottom(gpui_kit::relative(1.0))
-            .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
-            .right_0()
-            // R59 R4: the card's own surface. `ThinkingSlider` already draws the
-            // measured 254.5px card with its own border, background and shadow,
-            // so this layer adds only placement and the height bound.
-            .max_h(self.picker_max_height())
-            .occlude()
-            .flex()
-            .flex_col()
-            .child(self.thinking_slider.clone())
-            .into_any_element()
+        // R64 R1/R3: deferred paint, priority 2 — see `render_file_dropdown`.
+        gpui_kit::deferred(
+            div()
+                .debug_selector(|| "composer-thinking-slider".into())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .absolute()
+                .bottom(gpui_kit::relative(1.0))
+                .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
+                .right_0()
+                // R59 R4: the card's own surface. `ThinkingSlider` already draws the
+                // measured 254.5px card with its own border, background and shadow,
+                // so this layer adds only placement and the height bound.
+                .max_h(self.picker_max_height())
+                .occlude()
+                .flex()
+                .flex_col()
+                .child(self.thinking_slider.clone()),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 
     /// R59 R2/R3: **level two** — the model list, reached only from the
@@ -912,77 +931,83 @@ impl ConversationStream {
     /// rather than to its right.
     fn render_picker_list_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        div()
-            .id("composer-model-menu")
-            .debug_selector(|| "composer-model-menu".into())
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .absolute()
-            .bottom(gpui_kit::relative(1.0))
-            .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
-            .right_0()
-            .w(px(Layout::MENU_MAX_WIDTH))
-            .max_h(self.picker_max_height())
-            .occlude()
-            .flex()
-            .flex_col()
-            .rounded(px(Layout::MENU_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .text_color(colors.text_primary)
-            .shadow_sm()
-            .child(
-                div()
-                    .debug_selector(|| "composer-model-heading".into())
-                    .flex_shrink_0()
-                    .px_2()
-                    .pt_2()
-                    .pb_1()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_tertiary)
-                    .child(PICKER_LIST_HEADING),
-            )
-            // Only the rows scroll: the heading stays visible so the layer never
-            // becomes an unbounded column of model names.
-            .child(
-                div()
-                    .id("composer-model-rows")
-                    .debug_selector(|| "composer-model-rows".into())
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.model_menu_scroll)
-                    .children(self.model_options.iter().enumerate().map(|(index, model)| {
-                        let selected = index == self.model_selector_highlight;
-                        let current_model = *model == self.composer_defaults.model;
-                        let model = model.clone();
-                        let label = model.clone();
-                        div()
-                            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                            .flex_shrink_0()
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .text_size(px(Typography::SIDEBAR))
-                            .truncate()
-                            .when(selected, |row| row.bg(colors.bg_active))
-                            .text_color(if current_model {
-                                colors.brand_primary
-                            } else if selected {
-                                colors.text_primary
-                            } else {
-                                colors.text_secondary
-                            })
-                            .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseUpEvent, _: &mut Window, cx| {
-                                    this.select_model_option(&model, cx);
-                                }),
-                            )
-                            .child(label)
-                    })),
-            )
-            .into_any_element()
+        // R64 R1/R3: deferred paint, priority 2 — see `render_file_dropdown`.
+        gpui_kit::deferred(
+            div()
+                .id("composer-model-menu")
+                .debug_selector(|| "composer-model-menu".into())
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .absolute()
+                .bottom(gpui_kit::relative(1.0))
+                .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
+                .right_0()
+                .w(px(Layout::MENU_MAX_WIDTH))
+                .max_h(self.picker_max_height())
+                .occlude()
+                .flex()
+                .flex_col()
+                .rounded(px(Layout::MENU_RADIUS))
+                .border_1()
+                .border_color(colors.border_subtle)
+                .bg(colors.bg_elevated)
+                .text_color(colors.text_primary)
+                .shadow_sm()
+                .child(
+                    div()
+                        .debug_selector(|| "composer-model-heading".into())
+                        .flex_shrink_0()
+                        .px_2()
+                        .pt_2()
+                        .pb_1()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_tertiary)
+                        .child(PICKER_LIST_HEADING),
+                )
+                // Only the rows scroll: the heading stays visible so the layer never
+                // becomes an unbounded column of model names.
+                .child(
+                    div()
+                        .id("composer-model-rows")
+                        .debug_selector(|| "composer-model-rows".into())
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.model_menu_scroll)
+                        .children(self.model_options.iter().enumerate().map(|(index, model)| {
+                            let selected = index == self.model_selector_highlight;
+                            let current_model = *model == self.composer_defaults.model;
+                            let model = model.clone();
+                            let label = model.clone();
+                            div()
+                                .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                                .flex_shrink_0()
+                                .px_2()
+                                .flex()
+                                .items_center()
+                                .text_size(px(Typography::SIDEBAR))
+                                .truncate()
+                                .when(selected, |row| row.bg(colors.bg_active))
+                                .text_color(if current_model {
+                                    colors.brand_primary
+                                } else if selected {
+                                    colors.text_primary
+                                } else {
+                                    colors.text_secondary
+                                })
+                                .cursor_pointer()
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(
+                                        move |this, _: &MouseUpEvent, _: &mut Window, cx| {
+                                            this.select_model_option(&model, cx);
+                                        },
+                                    ),
+                                )
+                                .child(label)
+                        })),
+                ),
+        )
+        .with_priority(2)
+        .into_any_element()
     }
 }
 
