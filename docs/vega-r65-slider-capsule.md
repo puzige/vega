@@ -111,6 +111,48 @@ pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
 | 786–793 | 填充：`absolute() .left_0() .top_0() .h(24) .w(fill) .bg(TRACK_FILL_FLAT)` |
 | 826 | `dot_center_offset(0, n) = 12.0`（最低档 / Off 的填充宽度） |
 
+## §4b 修复手段（已确定，无需再研究 GPUI）
+
+**做法：给填充层左侧两个角加半径 `THINKING_TRACK_HEIGHT / 2.0`（= 12.0）。**
+
+GPUI 的圆角是**按 quad 尺寸钳制**的，行为完全确定（`gpui-pre-0.3.4/src/geometry.rs:2467`）：
+
+```rust
+pub fn clamp_radii_for_quad_size(self, size: Size<T>) -> Corners<T> {
+    let max = cmp::min(size.width, size.height) / 2.;
+    Corners {
+        top_left:     cmp::min(self.top_left, max.clone()),
+        top_right:    cmp::min(self.top_right, max.clone()),
+        bottom_right: cmp::min(self.bottom_right, max.clone()),
+        bottom_left:  cmp::min(self.bottom_left, max),
+    }
+}
+```
+
+即每个角的实际半径 = `min(设定值, min(宽, 高) / 2)`。
+
+**逐档位结果**（`H=24`，7 档，`travel = 203 - 24`）：
+
+| 档位 | fill（逻辑 px） | 钳制后半径 | 左端形状 |
+|---|---|---|---|
+| 0（最低 / Off） | 12.0 | **6.0** | 被钳制，半径 6 的圆角 |
+| 1 | 41.8 | 12.0 | 完整半圆帽 |
+| 2 | 71.7 | 12.0 | 完整半圆帽 |
+| 3 | 101.5 | 12.0 | 完整半圆帽 |
+| 4 | 131.3 | 12.0 | 完整半圆帽 |
+| 5 | 161.2 | 12.0 | 完整半圆帽 |
+| 6 | 191.0 | 12.0 | 完整半圆帽 |
+
+**关于最低档（fill = 12.0）**：钳制后半径 6.0，画出来是"左侧上下各一个 6px 圆角"，在 12px 宽的方块上**视觉上就是左半圆**（半径 6 = 高度的一半，左右两个角相接）。这与右端的半圆帽在几何上自洽：胶囊的端帽半径就是 `H/2 = 12`，而 12px 宽的填充其左端只有一个 12px 直径的半圆——**两者是同一形状**。
+
+因此**统一用 `THINKING_TRACK_HEIGHT / 2.0` 一个值即可**，不需要按档位分支，钳制逻辑自动处理窄填充。这是本规格推荐的做法。
+
+**不要**研究 quad shader、content mask 对绝对定位后代的裁剪等 GPUI 内部实现——本缺陷的修复不依赖它们，钳制行为已由上面这段源码确定。
+
+### 唯一需要实现者自行确认的点
+
+`rounded_l()` 之类的**左侧两角** API 名称与可用性（本仓库已用的 GPUI 版本可能只暴露 `rounded_tl`/`rounded_bl` 或 `Corners` 构造）。查 `elements/div.rs` 的 `Styled` 实现即可，**不要**为此展开源码调研。
+
 ## §5 契约
 
 **R1（必须）** 填充层左端与右端**形状对称**：两端都是半径 = `THINKING_TRACK_HEIGHT / 2` 的半圆帽。
