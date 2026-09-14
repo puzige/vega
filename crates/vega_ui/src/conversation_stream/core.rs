@@ -146,6 +146,18 @@ pub struct ConversationStream {
     pub(crate) utility_projects: Vec<(String, String)>,
     /// Whether the R49 folder chip's project menu is visible.
     pub(crate) utility_projects_open: bool,
+    /// R62 R10: the folder chip's menu filter query. Display-only state for
+    /// the visible rows — selecting a row still means "switch to it", filtered
+    /// or not (R62 R11).
+    pub(crate) utility_project_query: String,
+    /// R62 R10: the folder chip's menu search field. An entity rather than a
+    /// string because the field is a real editable input with IME support;
+    /// `utility_project_query` mirrors its text for the row filter.
+    pub(crate) utility_project_search: Entity<TextInput>,
+    /// R62 R7: whether the bottom row's permission picker is mounted. The
+    /// second entry (`+` menu) and this one share the same request path and
+    /// the same `thread.permission_mode`, so the two can never disagree.
+    pub(crate) permission_picker_open: bool,
     pub(crate) model_selector_highlight: usize,
     /// Keyboard focus stop for the model selector trigger (A2-14).
     pub(crate) model_focus: FocusHandle,
@@ -224,6 +236,15 @@ impl ConversationStream {
         });
         let commit_panel =
             cx.new(|cx| CommitPanel::new(thread.id.clone(), thread.project_id.clone(), cx));
+        // R62 R10: the folder chip's menu search field. Bare chrome, because
+        // the menu row around it draws the surface; the query is mirrored into
+        // `utility_project_query` and only filters the visible rows.
+        let utility_project_search =
+            cx.new(|cx| TextInput::new(cx, "搜索项目", false).with_bare_chrome());
+        cx.observe(&utility_project_search, |this, input, cx| {
+            this.sync_utility_project_query(&input, cx);
+        })
+        .detach();
         // 空输入禁用发送 + `@` 触发的文件选择跟随输入内容变化：输入内容
         // 变化即重渲染 Composer。
         cx.observe(&input, |this, input, cx| {
@@ -339,6 +360,9 @@ impl ConversationStream {
             project_label: String::new(),
             utility_projects: Vec::new(),
             utility_projects_open: false,
+            utility_project_query: String::new(),
+            utility_project_search,
+            permission_picker_open: false,
             model_selector_highlight: 0,
             model_focus: cx.focus_handle().tab_index(16).tab_stop(true),
             model_selection_pending: None,

@@ -175,10 +175,16 @@ async fn r21_composer_popovers_are_exclusive_and_model_labels_keep_menu_width(
     );
 }
 
-/// R57 P2b (spec §2.3 R5 / acceptance A1): the bottom control row renders
-/// exactly `+` | permission status | spacer | model | send, in that left-to-
-/// right order. The removed `Execute` dropdown, the permission dropdown, and
-/// the thinking chip must not appear in any frame.
+/// R57 P2b (spec §2.3 R5 / acceptance A1), amended by R62 R7: the bottom
+/// control row renders exactly `+` | permission status | spacer | model |
+/// send, in that left-to-right order. The removed `Execute` dropdown and the
+/// thinking chip must not appear in any frame.
+///
+/// R62 R7 reverses one half of P2b: the permission status is a real
+/// affordance again (the reference implementation's `⚠ Full access` opens a
+/// picker), so this test now asserts the chip **keeps its frozen slot** and
+/// that clicking it opens the permission picker instead of the `+` menu. The
+/// picker's own contents are asserted in `permission_picker.rs`.
 #[gpui_kit::test]
 async fn r57_bottom_row_renders_permission_status_between_add_and_model(cx: &mut TestAppContext) {
     let (window, stream, events) = open_controller_stream(cx, "bottom-row");
@@ -188,13 +194,13 @@ async fn r57_bottom_row_renders_permission_status_between_add_and_model(cx: &mut
     let add = visual.debug_bounds("composer-add").expect("add button");
     let permission = visual
         .debug_bounds("composer-permission-status")
-        .expect("static permission status");
+        .expect("permission status chip");
     let model = visual
         .debug_bounds("composer-model")
         .expect("model trigger");
     let send = visual.debug_bounds("composer-send").expect("send button");
 
-    // The static status sits between the `+` button and the model trigger.
+    // The status chip sits between the `+` button and the model trigger.
     assert!(
         f32::from(add.right()) <= f32::from(permission.left()),
         "permission status must follow the `+` button: add.right={:?} permission.left={:?}",
@@ -233,18 +239,23 @@ async fn r57_bottom_row_renders_permission_status_between_add_and_model(cx: &mut
         );
     }
 
-    // Static text: clicking it must not open anything and must not emit a
-    // settings request (the reference implementation's `⚠ Full access` is
-    // not an affordance).
+    // R62 R7: the chip is a real affordance. Clicking it opens the permission
+    // picker — and nothing else: not the `+` menu, not the model picker, and
+    // no settings request (a click that merely opens a menu changes no
+    // durable state).
     visual.simulate_click(permission.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("composer-permission-picker").is_some(),
+        "clicking the permission status must open the permission picker"
+    );
     assert!(
         !stream.read_with(&visual, |stream, _| stream.actions.visible()),
         "clicking the permission status must not open the `+` menu"
     );
     assert!(
         events.lock().expect("settings events").is_empty(),
-        "clicking the permission status must not emit ThreadSettingsRequested"
+        "opening the permission picker must not emit ThreadSettingsRequested"
     );
     assert!(
         visual.debug_bounds("composer-model-menu").is_none(),

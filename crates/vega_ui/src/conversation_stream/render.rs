@@ -1,5 +1,11 @@
-use super::composer_actions::permission_label;
 use super::*;
+// Re-exported so the permission picker's copy is testable from the suite the
+// same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
+use super::composer_actions::{
+    PERMISSION_ORDER, permission_description, permission_icon, permission_is_warning,
+    permission_label,
+};
+pub(crate) use super::composer_actions::{PERMISSION_PICKER_LEARN_MORE, PERMISSION_PICKER_TITLE};
 
 /// R59 R7: the trigger label while the tier slider (level one) is showing.
 ///
@@ -295,35 +301,268 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    /// R57 P2b (spec §2.3 R2/R5): the permission mode as static status text.
+    /// R57 P2b (spec §2.3 R2/R5) / R62 R7: the permission mode as a clickable
+    /// status chip.
     ///
-    /// Warning-coloured label plus the warning glyph, never clickable — the
-    /// reference implementation's `⚠ Full access` shape with Vega's existing
-    /// Chinese labels. The label comes from the one projection the `+` menu
-    /// also renders, so the two surfaces cannot drift. The change entry point
-    /// is the `+` menu (P1), which owns the keyboard path this control no
-    /// longer needs.
+    /// Warning-coloured label plus the warning glyph, with Vega's existing
+    /// Chinese labels — the reference implementation's `⚠ Full access` shape.
+    /// The label comes from the one projection the `+` menu also renders, so
+    /// the two surfaces cannot drift.
+    ///
+    /// R62 R7 reverses R57 P2b's "static text" decision: the user's screenshot
+    /// proves the reference implementation's `Full access` label is a real
+    /// affordance that opens a three-option picker (R62 §7 records the wrong
+    /// reasoning chain behind P2b). The chip therefore keeps its exact frozen
+    /// geometry and gains the interaction, and the picker layer hangs from a
+    /// `.relative()` wrapper exactly like the model trigger's layer does
+    /// (`render_model_selector`), so the frozen bottom row's shape is
+    /// unchanged: an absolutely positioned child contributes nothing to the
+    /// wrapper's measured size.
     fn render_permission_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let label = permission_label(self.thread.permission_mode);
         div()
-            .id("composer-permission-status")
-            .debug_selector(|| "composer-permission-status".into())
-            .flex_shrink_0()
+            .relative()
             .flex()
-            .items_center()
-            .gap_1()
-            .px_1()
-            .py_1()
-            .text_size(px(Typography::METADATA))
-            .text_color(colors.warning)
-            .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
-            .child(crate::icons::icon(
-                crate::icons::Icon::Warning,
-                colors.warning,
-            ))
-            .child(label)
+            .flex_shrink_0()
+            .child(
+                div()
+                    .id("composer-permission-status")
+                    .debug_selector(|| "composer-permission-status".into())
+                    // R62 R7: the same guard the model trigger carries. The
+                    // conversation root's own mouse-down closes any open
+                    // picker, so without this the chip's mouse-up toggle would
+                    // reopen the layer the same click had just closed.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_1()
+                    .py_1()
+                    .rounded_md()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.warning)
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(colors.bg_hover))
+                    .tooltip(move |_, cx| crate::icons::tooltip("切换权限模式", cx))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(Self::toggle_permission_picker),
+                    )
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::Warning,
+                        colors.warning,
+                    ))
+                    .child(label),
+            )
+            .when(self.permission_picker_open, |chip| {
+                chip.child(self.render_permission_picker(cx))
+            })
             .into_any_element()
+    }
+
+    /// R62 R8: the permission picker — the reference implementation's
+    /// three-option approvals dropdown.
+    ///
+    /// Structure (2026-09-14 screenshot):
+    ///
+    /// ```text
+    /// How should ChatGPT actions be approved?          Learn more
+    ///   <icon> 只读 / 每次都询问
+    ///   <icon> 确认 / 仅对潜在不安全操作询问
+    ///   <icon> 自动 / 不受限访问                              ✓
+    /// ```
+    ///
+    /// Every row's icon, label and description come from the shared
+    /// `permission_*` projections in `composer_actions.rs`, and the rows are
+    /// ordered by the same [`PERMISSION_ORDER`] the `+` menu uses, so the two
+    /// entries can never disagree about what a mode is called or which one is
+    /// current (R62 R9).
+    ///
+    /// The layer is anchored to the chip's own box (`bottom: 100%` plus the
+    /// frozen [`Layout::COMPOSER_PICKER_TRIGGER_GAP`], `left_0()`), the same
+    /// technique R61 settled on for the model card. It opens **upward**,
+    /// because the composer sits at the window's bottom edge.
+    ///
+    /// The title row's `了解更多` is plain secondary text: the reference
+    /// implementation opens its docs page, and Vega has no such route, so the
+    /// row renders the label without inventing a target (R62 R11's rule for
+    /// actions with no implementation path — the *picker's own* actions are
+    /// all real; only this link has no Vega counterpart).
+    fn render_permission_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        let current = self.thread.permission_mode;
+        let rows = PERMISSION_ORDER
+            .into_iter()
+            .enumerate()
+            .map(|(index, mode)| {
+                let selected = mode == current;
+                let warning = permission_is_warning(mode);
+                let ink = if warning {
+                    colors.warning
+                } else {
+                    colors.text_primary
+                };
+                let icon_ink = if warning {
+                    colors.warning
+                } else {
+                    colors.text_secondary
+                };
+                div()
+                    .id(("composer-permission-option", index))
+                    .debug_selector(move || format!("composer-permission-option-{}", mode.as_str()))
+                    .min_h(px(44.))
+                    .flex_shrink_0()
+                    .px_2()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_md()
+                    // R50 contract A: on the picker's white `bg_elevated`
+                    // surface the selection uses the derived 5%-ink fill, not
+                    // the sidebar's pre-composited `bg_active` constant.
+                    .when(selected, |row| {
+                        row.bg(crate::menu_list::selected_row_bg(colors))
+                    })
+                    .cursor_pointer()
+                    .hover(move |row| row.bg(colors.bg_hover))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+                            this.select_permission_mode(mode, window, cx);
+                        }),
+                    )
+                    .child(crate::icons::icon(permission_icon(mode), icon_ink))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(Typography::SIDEBAR))
+                                    .text_color(ink)
+                                    .child(permission_label(mode)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(colors.text_tertiary)
+                                    .child(permission_description(mode)),
+                            ),
+                    )
+                    // Fixed marker column: the selected row carries the check, and
+                    // an unselected row reserves the same width so labels stay on
+                    // one x axis.
+                    .child(
+                        div()
+                            .w(px(Typography::SIDEBAR))
+                            .flex_shrink_0()
+                            .flex()
+                            .justify_end()
+                            .when(selected, |marker| {
+                                marker
+                                    .debug_selector(move || {
+                                        format!(
+                                            "composer-permission-option-{}-check",
+                                            mode.as_str()
+                                        )
+                                    })
+                                    .child(crate::icons::icon(
+                                        crate::icons::Icon::Check,
+                                        colors.brand_primary,
+                                    ))
+                            }),
+                    )
+            });
+        div()
+            .debug_selector(|| "composer-permission-picker".into())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .absolute()
+            .bottom(gpui_kit::relative(1.0))
+            .mb(px(Layout::COMPOSER_PICKER_TRIGGER_GAP))
+            .left_0()
+            .w(px(Layout::MENU_MAX_WIDTH))
+            .occlude()
+            .flex()
+            .flex_col()
+            .rounded(px(Layout::MENU_RADIUS))
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_elevated)
+            .text_color(colors.text_primary)
+            .shadow_sm()
+            .child(
+                div()
+                    .debug_selector(|| "composer-permission-picker-title".into())
+                    .flex_shrink_0()
+                    .px_2()
+                    .pt_2()
+                    .pb_1()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_secondary)
+                            .child(PERMISSION_PICKER_TITLE),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_tertiary)
+                            .child(PERMISSION_PICKER_LEARN_MORE),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .mx_2()
+                    .h(px(1.))
+                    .bg(colors.border_subtle),
+            )
+            .child(div().flex_shrink_0().p_1().flex().flex_col().children(rows))
+            .into_any_element()
+    }
+
+    /// R62 R7: opens/closes the permission picker. Closing every other
+    /// composer popover first is what keeps the picker, the `+` menu, the
+    /// file dropdown and the model picker mutually exclusive.
+    pub(crate) fn toggle_permission_picker(
+        &mut self,
+        _: &MouseUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let open = !self.permission_picker_open;
+        self.close_composer_popovers(cx);
+        self.permission_picker_open = open;
+        self.focus_composer(window, cx);
+        cx.notify();
+    }
+
+    /// R62 R8/A10: applies a picker choice. The picker closes first (a mode
+    /// change is a completed round trip, exactly like the model picker's
+    /// R59 R3 rule), then the request goes out on the one existing
+    /// `ThreadSettingsRequested` path — the same one the `+` menu uses, so
+    /// persistence semantics cannot differ between the two entries (R62 R9).
+    pub(crate) fn select_permission_mode(
+        &mut self,
+        mode: PermissionMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.permission_picker_open = false;
+        self.request_permission_mode(mode, cx);
+        self.focus_composer(window, cx);
+        cx.notify();
     }
 
     /// The `@file` suggestion dropdown (A2-12): rendered above the input row
@@ -824,11 +1063,12 @@ impl Render for ConversationStream {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
-                    // R59: a click anywhere outside the picker closes whichever
-                    // level is mounted. The layers themselves stop propagation,
-                    // so this only sees genuine outside clicks.
-                    if this.model_picker_level.is_open() {
+                    // R59/R62: a click anywhere outside a picker closes
+                    // whichever level is mounted. The layers themselves stop
+                    // propagation, so this only sees genuine outside clicks.
+                    if this.model_picker_level.is_open() || this.permission_picker_open {
                         this.model_picker_level = ModelPickerLevel::Closed;
+                        this.permission_picker_open = false;
                         cx.notify();
                     }
                 }),

@@ -6,10 +6,11 @@ use gpui_kit::Focusable;
 /// Labels come from [`mode_command`], so the menu and the parser cannot drift.
 const MODE_ORDER: [ThreadMode; 3] = [ThreadMode::Ask, ThreadMode::Plan, ThreadMode::Execute];
 
-/// Permission-mode `+`-menu rows (R57 P1), in the same order as the
-/// bottom-row control they replaced. P2b removed that control; this group is
-/// what keeps the permission mode reachable afterwards.
-const PERMISSION_ORDER: [PermissionMode; 3] = [
+/// Permission-mode rows, in the order both permission surfaces render them
+/// (R57 P1's `+` menu and R62 R8's picker). P2b removed the bottom-row
+/// dropdown; these two surfaces are what keep the permission mode reachable,
+/// and sharing the order is what keeps them from drifting (R62 R9).
+pub(crate) const PERMISSION_ORDER: [PermissionMode; 3] = [
     PermissionMode::ReadOnly,
     PermissionMode::Confirm,
     PermissionMode::Auto,
@@ -35,6 +36,59 @@ pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
         PermissionMode::Auto => "自动",
     }
 }
+
+/// R62 R8: the second line of a permission row, taken from the reference
+/// implementation's per-option descriptions (2026-09-14 screenshot):
+/// `Always ask to edit external files and use the internet` /
+/// `Only ask for actions detected as potentially unsafe` /
+/// `Unrestricted access to the internet and any file on your computer`.
+///
+/// The wording follows Vega's own vocabulary rather than translating the
+/// reference literally: Vega's `PermissionMode` doc comments define 只读 as
+/// "ask every time", 确认 as "ask only for potentially unsafe actions" and
+/// 自动 as "unrestricted access", and the spec's §7 table fixes these three
+/// descriptions. They live beside [`permission_label`] so every surface that
+/// lists permission modes reads one projection.
+pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::ReadOnly => "每次都询问",
+        PermissionMode::Confirm => "仅对潜在不安全操作询问",
+        PermissionMode::Auto => "不受限访问",
+    }
+}
+
+/// R62 R8: the per-row glyph, matching the reference implementation's
+/// three-option picker (open hand / shield / warning triangle).
+pub(crate) fn permission_icon(mode: PermissionMode) -> crate::icons::Icon {
+    match mode {
+        PermissionMode::ReadOnly => crate::icons::Icon::Hand,
+        PermissionMode::Confirm => crate::icons::Icon::Shield,
+        PermissionMode::Auto => crate::icons::Icon::Warning,
+    }
+}
+
+/// R62 R8: whether a permission row renders in the warning ink. Only
+/// `自动`/Full access does, matching the reference implementation's orange
+/// third row (and the bottom row's pre-existing warning-coloured status).
+pub(crate) fn permission_is_warning(mode: PermissionMode) -> bool {
+    mode == PermissionMode::Auto
+}
+
+/// R62 R8: the picker's title row. The reference implementation's
+/// `composer.permissionsDropdown.title.chatgptDesktop` is
+/// "How should ChatGPT actions be approved?". Vega's UI is Chinese and its
+/// existing vocabulary for this concept is 权限模式 (`settings/render_impl.rs`
+/// field label), so the in-convention title keeps that noun. It drops the
+/// reference's product name: "ChatGPT" is the reference app's assistant, and
+/// no Vega surface names a foreign product, so the sentence addresses the
+/// agent's actions generically.
+pub(crate) const PERMISSION_PICKER_TITLE: &str = "操作应如何获得批准？";
+
+/// R62 R8: the title row's trailing link label. The reference implementation's
+/// `composer.permissionsDropdown.learnMore` is "Learn more". Vega has no docs
+/// surface to open, so the row is rendered as plain secondary text — see the
+/// picker's own comment for why no click handler is attached.
+pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "了解更多";
 
 /// One selectable `+`-menu row. Rendering, keyboard highlight indices, and
 /// click dispatch all consume this one projection, so they cannot drift.
@@ -165,12 +219,15 @@ impl ComposerActions {
 impl ConversationStream {
     /// Closes every transient Composer surface before another one opens.
     /// Their controller state stays untouched; this only prevents overlapping
-    /// action, file, and model menus. R57 P2b removed the bottom-row mode and
-    /// permission dropdowns, so only these three surfaces remain.
+    /// action, file, permission, and model menus. R57 P2b removed the
+    /// bottom-row mode dropdown, and R62 R7 brought the permission picker
+    /// back as a real popover, so it belongs in this list.
     pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
         self.actions.menu = false;
         self.actions.slash = None;
         self.model_picker_level = ModelPickerLevel::Closed;
+        self.permission_picker_open = false;
+        self.utility_projects_open = false;
         self.close_file_selector_and_cancel(cx);
     }
 
