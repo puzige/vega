@@ -26,6 +26,21 @@ fn three_tier_reasoning_config() -> vega_store::reasoning::ReasoningConfig {
     }
 }
 
+/// R58: the same three-tier profile, but declaring the disabled operation.
+///
+/// `openai_chat_completions` + `reasoning_effort_none` is the one pairing the
+/// store and runtime validators accept for `supports_disabled` on an OpenAI
+/// protocol profile, so this is a real capability declaration rather than a
+/// hand-written one.
+fn three_tier_disabled_reasoning_config() -> vega_store::reasoning::ReasoningConfig {
+    let mut config = three_tier_reasoning_config();
+    if let Some(profile) = config.profiles.first_mut() {
+        profile.supports_disabled = true;
+        profile.disabled_wire = Some("reasoning_effort_none".into());
+    }
+    config
+}
+
 /// The R57 P3 fixture: a real `VegaWindow`, a real stream, the owned config and
 /// reasoning files, and the same subscriptions production installs.
 struct ThinkingSliderFixture {
@@ -37,17 +52,30 @@ struct ThinkingSliderFixture {
     root: Entity<VegaWindow>,
     stream: Entity<ConversationStream>,
     window: gpui_kit::WindowHandle<VegaWindow>,
+    /// The concrete mock behind `agent_provider_override`, so a test can read
+    /// the exact `ChatRequest` the run froze (R58 A3).
+    provider: Arc<vega_runtime::MockProvider>,
 }
 
 impl ThinkingSliderFixture {
     /// Builds the fixture and waits until the catalog worker has published the
     /// owned reasoning profile onto the stream.
     fn open(cx: &mut gpui_kit::TestAppContext) -> Self {
+        Self::open_with(cx, three_tier_reasoning_config())
+    }
+
+    /// R58: the same fixture over an arbitrary owned reasoning profile, so a
+    /// test can declare the disabled capability without hand-writing a
+    /// projection the store would reject.
+    fn open_with(
+        cx: &mut gpui_kit::TestAppContext,
+        reasoning_config: vega_store::reasoning::ReasoningConfig,
+    ) -> Self {
         let config_root = tempfile::tempdir().expect("slider config root");
         let config_path = config_root.path().join("config.toml");
         model_selection_config(&config_path);
         let reasoning_path = config_root.path().join("reasoning.toml");
-        let bytes = vega_store::reasoning::encode(&three_tier_reasoning_config())
+        let bytes = vega_store::reasoning::encode(&reasoning_config)
             .expect("encode owned reasoning profile");
         fs::write(&reasoning_path, bytes).expect("owned reasoning file");
 
@@ -82,7 +110,7 @@ impl ThinkingSliderFixture {
         let root = cx.new(VegaWindow::new);
         root.update(cx, |root, cx| {
             root.model_selection_config_override = Some(config_path);
-            root.agent_provider_override = Some(provider);
+            root.agent_provider_override = Some(provider.clone());
             root.stream_view = Some((thread.id.clone(), stream.clone()));
             // The production stream subscriptions (render.rs): only the tier
             // intent matters here, and it travels the real handler.
@@ -140,6 +168,7 @@ impl ThinkingSliderFixture {
             root,
             stream,
             window,
+            provider,
         }
     }
 
@@ -330,29 +359,12 @@ async fn r57_slider_tier_selection_persists_and_survives_reload(cx: &mut gpui_ki
         .expect("slider tier");
     assert_eq!(slider_tier, "low", "the slider shows the reloaded tier");
 
-    // R11: the reset control returns to the profile's configured default tier.
-    // Vega has exactly one persisted tier field (`preference`), and a slider
-    // selection writes it, so immediately after a selection the reset target
-    // *is* the current tier. Reset is therefore a no-op here, and the honest
-    // assertion is that it stays mounted and writes nothing extra rather than
-    // inventing a second "default" the store does not have. (Flagged as a spec
-    // ambiguity: the reference implementation keeps `defaultReasoningEffort`
-    // separate from the current `reasoningEffort`.)
-    let reset = visual
-        .debug_bounds("thinking-slider-reset")
-        .expect("mounted reset control");
-    visual.simulate_click(reset.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
+    // R58 R7: the reset control is gone. Vega has exactly one persisted tier
+    // field (`preference`) and a slider selection writes it, so "reset to the
+    // configured default" was the identity operation (R57 §3.4 R11 is void).
     assert!(
-        fixture
-            .root
-            .read_with(cx, |root, _| root.reasoning_save_pending.is_none()),
-        "reset at the configured preference must not start a save"
-    );
-    assert_eq!(
-        fixture.durable_preference(),
-        "low",
-        "reset at the configured preference leaves the durable tier unchanged"
+        visual.debug_bounds("thinking-slider-reset").is_none(),
+        "R58 R7 removes the reset control"
     );
 
     // A slider selection is a local preference change: it never starts a run.
@@ -424,6 +436,248 @@ async fn r57_slider_drag_coalesces_to_the_newest_tier(cx: &mut gpui_kit::TestApp
             .stream
             .read_with(cx, |stream, _| stream.thinking_choice().to_string()),
         "high"
+    );
+}
+
+/// R58 A1/A3: a model that declares `supports_disabled` + a `disabled_wire`
+/// renders `efforts.len() + 1` dots with Off leftmost, and selecting Off
+/// persists `"disabled"` — the `ReasoningChoice::Disabled` path — without ever
+/// touching the declared `efforts`.
+#[gpui_kit::test]
+async fn r58_off_position_persists_disabled_without_touching_efforts(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let fixture = ThinkingSliderFixture::open_with(cx, three_tier_disabled_reasoning_config());
+    assert_eq!(
+        fixture.durable_preference(),
+        "medium",
+        "the fixture starts at the configured default tier"
+    );
+    fixture.open_model_popup(cx);
+
+    // A1: four dots for three efforts plus Off, and Off is the leftmost.
+    let mut visual = gpui_kit::VisualTestContext::from_window(fixture.window.into(), cx);
+    assert!(visual.debug_bounds("composer-thinking-slider").is_some());
+    for (index, expected) in [
+        ("thinking-slider-dot-0", true),
+        ("thinking-slider-dot-1", true),
+        ("thinking-slider-dot-2", true),
+        ("thinking-slider-dot-3", true),
+        ("thinking-slider-dot-4", false),
+    ] {
+        assert_eq!(
+            visual.debug_bounds(index).is_some(),
+            expected,
+            "dot {index} presence"
+        );
+    }
+    let off_dot = visual
+        .debug_bounds("thinking-slider-dot-0")
+        .expect("the leftmost dot is the Off position");
+    let track = visual
+        .debug_bounds("thinking-slider-track")
+        .expect("mounted tier track");
+    assert!(
+        f32::from(off_dot.center().x) < f32::from(track.center().x),
+        "Off must sit at the far left of the track"
+    );
+
+    // A3: clicking the leftmost dot selects Off.
+    visual.simulate_click(off_dot.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    pump_test_app(cx, |cx| {
+        fixture
+            .root
+            .read_with(cx, |root, _| root.reasoning_save_pending.is_none())
+            && fixture.durable_preference() == "disabled"
+    });
+    assert_eq!(
+        fixture.durable_preference(),
+        "disabled",
+        "the Off position persists the store's own disabled name"
+    );
+    assert_eq!(
+        fixture
+            .stream
+            .read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "disabled",
+        "the composer projects the persisted disabled choice"
+    );
+    assert!(
+        fixture
+            .stream
+            .read_with(cx, |stream, cx| stream.thinking_slider().read(cx).is_off()),
+        "the slider shows Off as selected"
+    );
+
+    // The declared efforts are untouched: Off is a separate state, never a
+    // member of the effort ladder.
+    let profile = vega_store::reasoning::read_from(&fixture.reasoning_path)
+        .expect("read owned reasoning file")
+        .profiles
+        .into_iter()
+        .find(|profile| profile.model == "gpt-5.6-terra")
+        .expect("owned profile");
+    assert_eq!(
+        profile.efforts,
+        vec!["low".to_string(), "medium".to_string(), "high".to_string()],
+        "selecting Off must not add an effort to the declared ladder"
+    );
+    assert!(
+        profile
+            .efforts
+            .iter()
+            .all(|effort| !matches!(effort.as_str(), "off" | "none" | "disabled")),
+        "no off-like string may enter efforts"
+    );
+    assert!(profile.supports_disabled);
+    assert_eq!(
+        profile.disabled_wire.as_deref(),
+        Some("reasoning_effort_none")
+    );
+
+    // The frozen request for the next run is `Disabled` with its wire — the
+    // path `openai/mod.rs` encodes as `reasoning_effort: "none"`. It is never
+    // `Effort("off")`.
+    let frozen = fixture
+        .stream
+        .read_with(cx, |stream, _| stream.frozen_reasoning_for_submit())
+        .expect("frozen profile")
+        .expect("explicit owned profile");
+    assert_eq!(
+        frozen.choice,
+        ReasoningChoice::Disabled,
+        "Off must resolve to Disabled, never an Effort"
+    );
+    assert_eq!(
+        frozen.disabled_wire,
+        Some(vega_conversation::types::ReasoningDisabledWire::ReasoningEffortNone)
+    );
+    assert_eq!(frozen.declared_efforts, profile.efforts);
+
+    // The choice reaches the provider boundary unchanged.
+    let provider = fixture.provider.clone();
+    fixture.root.update(cx, |root, cx| {
+        root.start_agent_run_with_reasoning(
+            fixture.stream.clone(),
+            &fixture.thread.id,
+            PendingAgentRun::UserMessage("off must reach the wire".into()),
+            Some(frozen),
+            cx,
+        );
+    });
+    pump_test_app(cx, |cx| {
+        fixture
+            .root
+            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            && provider.requests().len() == 1
+    });
+    let request = provider
+        .requests()
+        .into_iter()
+        .next()
+        .expect("mock request");
+    let reasoning = request.reasoning.expect("reasoning captured for the run");
+    assert_eq!(
+        reasoning.choice,
+        ReasoningChoice::Disabled,
+        "the provider must receive Disabled, not Effort(\"off\")"
+    );
+    assert_eq!(
+        reasoning.disabled_wire,
+        Some(vega_conversation::types::ReasoningDisabledWire::ReasoningEffortNone)
+    );
+
+    // A4 regression: selecting a tier still yields `Effort(efforts[i])`. With
+    // Off at index 0, the first effort is index 1.
+    fixture.open_model_popup(cx);
+    let mut visual = gpui_kit::VisualTestContext::from_window(fixture.window.into(), cx);
+    let first_tier = visual
+        .debug_bounds("thinking-slider-dot-1")
+        .expect("first effort dot");
+    visual.simulate_click(first_tier.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    pump_test_app(cx, |cx| {
+        fixture
+            .root
+            .read_with(cx, |root, _| root.reasoning_save_pending.is_none())
+            && fixture.durable_preference() == "low"
+    });
+    assert_eq!(fixture.durable_preference(), "low");
+    let frozen = fixture
+        .stream
+        .read_with(cx, |stream, _| stream.frozen_reasoning_for_submit())
+        .expect("frozen profile")
+        .expect("explicit owned profile");
+    assert_eq!(
+        frozen.choice,
+        ReasoningChoice::Effort("low".to_string()),
+        "a tier selection is unchanged by R58"
+    );
+
+    // R8: a tier selection must not close the popup. The control stays under
+    // the user's pointer across the persistence round trip.
+    assert!(
+        fixture
+            .stream
+            .read_with(cx, |stream, _| stream.model_selector_is_open()),
+        "R8: the model popup stays open after a tier selection"
+    );
+    assert!(
+        visual.debug_bounds("composer-thinking-slider").is_some(),
+        "R8: the slider is still mounted after the round trip"
+    );
+}
+
+/// R58 A2: a model without the disabled capability renders `efforts.len()`
+/// dots and no Off position, so the leftmost dot is the first effort.
+#[gpui_kit::test]
+async fn r58_no_off_position_without_the_disabled_capability(cx: &mut gpui_kit::TestAppContext) {
+    let fixture = ThinkingSliderFixture::open(cx);
+    fixture.open_model_popup(cx);
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(fixture.window.into(), cx);
+    for (selector, expected) in [
+        ("thinking-slider-dot-0", true),
+        ("thinking-slider-dot-1", true),
+        ("thinking-slider-dot-2", true),
+        ("thinking-slider-dot-3", false),
+    ] {
+        assert_eq!(
+            visual.debug_bounds(selector).is_some(),
+            expected,
+            "{selector} presence"
+        );
+    }
+    let leftmost = visual
+        .debug_bounds("thinking-slider-dot-0")
+        .expect("the first effort dot");
+    visual.simulate_click(leftmost.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    pump_test_app(cx, |cx| {
+        fixture
+            .root
+            .read_with(cx, |root, _| root.reasoning_save_pending.is_none())
+            && fixture.durable_preference() == "low"
+    });
+    assert_eq!(
+        fixture.durable_preference(),
+        "low",
+        "without Off the leftmost dot is the first effort"
+    );
+    assert!(
+        !fixture
+            .stream
+            .read_with(cx, |stream, cx| stream.thinking_slider().read(cx).is_off()),
+        "no Off position exists for this model"
+    );
+
+    // R8: the popup stays open after the tier selection.
+    assert!(
+        fixture
+            .stream
+            .read_with(cx, |stream, _| stream.model_selector_is_open()),
+        "R8: the model popup stays open after a tier selection"
     );
 }
 

@@ -221,8 +221,10 @@ impl ConversationStream {
         // tiers. The exact profile arrives later through
         // `apply_reasoning_profile` (the same app worker that already feeds
         // the composer's reasoning state), so no capability is guessed here.
+        // R58: no Off position either, for the same reason — R2 requires a
+        // declared disabled capability before the position may appear.
         let thinking_slider =
-            cx.new(|cx| ThinkingSlider::new(initial_model.clone(), Vec::new(), "", "", cx));
+            cx.new(|cx| ThinkingSlider::new(initial_model.clone(), Vec::new(), false, "", "", cx));
         // The slider owns its knob and emits the user's intent; the stream
         // routes that intent onto the existing `ComposerDefaultsRequested`
         // save path rather than persisting anything itself.
@@ -589,24 +591,33 @@ impl ConversationStream {
     /// (`Unsupported`/`Unknown`, or an empty list) renders nothing (R12).
     /// The name and the tier list come from the same projection, so the card
     /// cannot name one model while showing another model's tiers.
+    ///
+    /// R58: the Off position is a *view* flag, not a tier. `supports_off`
+    /// carries the same `supports_disabled` + `disabled_wire` pairing the
+    /// store and runtime validators enforce, so the slider can only offer Off
+    /// where the wire can actually carry it (R2). `current` stays the persisted
+    /// preference string, so `"disabled"` selects the Off position (R4).
     pub(crate) fn sync_thinking_slider(&mut self, cx: &mut Context<Self>) {
-        let (model_name, tiers, default_tier) = match self.composer_defaults.reasoning.as_ref() {
-            Some(profile) => (
-                profile.model.clone(),
-                declared_tiers(profile.support, &profile.efforts),
-                preferred_tier_name(&profile.preference)
-                    .unwrap_or_default()
-                    .to_string(),
-            ),
-            None => (
-                self.composer_defaults.model.clone(),
-                Vec::new(),
-                String::new(),
-            ),
-        };
+        let (model_name, tiers, supports_off, default_tier) =
+            match self.composer_defaults.reasoning.as_ref() {
+                Some(profile) => (
+                    profile.model.clone(),
+                    declared_tiers(profile.support, &profile.efforts),
+                    supports_off_position(profile),
+                    preferred_tier_name(&profile.preference)
+                        .unwrap_or_default()
+                        .to_string(),
+                ),
+                None => (
+                    self.composer_defaults.model.clone(),
+                    Vec::new(),
+                    false,
+                    String::new(),
+                ),
+            };
         let current = self.composer_defaults.thinking.clone();
         self.thinking_slider.update(cx, |slider, cx| {
-            slider.set_model_and_tiers(model_name, tiers, current, default_tier, cx);
+            slider.set_model_and_tiers(model_name, tiers, supports_off, current, default_tier, cx);
         });
     }
 
@@ -614,11 +625,16 @@ impl ConversationStream {
     /// `ComposerDefaultsRequested` save path.
     ///
     /// The event is refused unless it names the profile the composer currently
-    /// projects *and* one of that profile's declared efforts, so an invalid
+    /// projects *and* a choice that profile actually permits, so an invalid
     /// preference can never reach the reasoning authority or a later run's
     /// frozen snapshot. Nothing is persisted here: the app handler owns the
     /// durable write and re-projects the authoritative profile back through
     /// [`Self::apply_reasoning_profile`].
+    ///
+    /// R58: the event carries a persisted *choice name*. [`OFF_CHOICE_NAME`]
+    /// (`"disabled"`) is accepted only when the profile declares the disabled
+    /// operation (R2) — the same pairing the store validator enforces — and is
+    /// stored as the preference string `"disabled"`, never as an effort.
     fn apply_thinking_tier_selected(
         &mut self,
         event: &ThinkingTierSelected,
@@ -627,13 +643,18 @@ impl ConversationStream {
         let Some(profile) = self.composer_defaults.reasoning.as_ref() else {
             return;
         };
-        if profile.model != event.model
-            || !profile.efforts.iter().any(|effort| effort == &event.tier)
-            || self.composer_defaults.thinking == event.tier
-        {
+        if profile.model != event.model || self.composer_defaults.thinking == event.choice {
             return;
         }
-        self.composer_defaults.thinking = event.tier.clone();
+        let accepted = if event.choice == OFF_CHOICE_NAME {
+            supports_off_position(profile)
+        } else {
+            profile.efforts.iter().any(|effort| effort == &event.choice)
+        };
+        if !accepted {
+            return;
+        }
+        self.composer_defaults.thinking = event.choice.clone();
         cx.emit(ComposerDefaultsRequested {
             thread_id: self.thread.id.clone(),
             defaults: self.composer_defaults.clone(),
@@ -953,6 +974,22 @@ fn reasoning_choice_name(choice: &ReasoningChoice) -> String {
     }
 }
 
+/// Whether the slider may offer the Off position for one profile (R58 R2).
+///
+/// Mirrors the pairing `vega_store::reasoning::ReasoningProfile::validate` and
+/// `FrozenReasoning::validate` enforce: `supports_disabled` **and** a declared
+/// `disabled_wire`. Offering Off on a profile that only sets one of the two
+/// would let the UI emit a request the provider rejects, so the slider stays
+/// conservative and hides Off entirely.
+///
+/// `ReasoningProfileProjection` is produced by `from_store`, which runs the
+/// store validator first, so a projected profile normally satisfies this by
+/// construction. The check is repeated here because the projection is a public
+/// type that tests and other callers construct directly.
+pub(crate) fn supports_off_position(profile: &ReasoningProfileProjection) -> bool {
+    profile.supports_disabled && profile.disabled_wire.is_some()
+}
+
 /// The tiers the slider must render for one profile (R57 P3 / R7).
 ///
 /// Only a profile whose capability is a real declaration contributes tiers:
@@ -974,6 +1011,11 @@ pub(crate) fn declared_tiers(support: ReasoningSupport, efforts: &[String]) -> V
 /// `provider_default` and `disabled` are not tiers, so they carry no name and
 /// the slider resolves through its own fallback rules instead — exactly like a
 /// declared effort the model no longer supports.
+///
+/// R58: this feeds the slider's *fallback* tier, not its current selection.
+/// The current selection travels as the raw preference string
+/// (`composer_defaults.thinking`), so `"disabled"` still lands on the Off
+/// position (R4) even though it has no tier name here.
 pub(crate) fn preferred_tier_name(preference: &ReasoningChoice) -> Option<&str> {
     match preference {
         ReasoningChoice::Effort(effort) => Some(effort.as_str()),

@@ -666,6 +666,165 @@ async fn r57_thinking_slider_follows_the_projected_profile_tier_count(cx: &mut T
     );
 }
 
+/// R58 R2: the Off position appears exactly when the projected profile
+/// declares `supports_disabled` **and** a `disabled_wire`, and the composer
+/// routes an Off selection to `"disabled"` — never to an effort.
+#[gpui_kit::test]
+async fn r58_off_position_follows_the_disabled_capability(cx: &mut TestAppContext) {
+    use vega_conversation::types::{ReasoningDisabledWire, ReasoningProtocol};
+
+    let (_window, stream, _) = open_controller_stream(cx, "r58-off");
+
+    let profile = |supports_disabled: bool, wire: Option<ReasoningDisabledWire>| {
+        let mut profile = ReasoningProfileProjection::unknown("owned", "mock");
+        profile.support = ReasoningSupport::Optional;
+        profile.protocol = ReasoningProtocol::OpenAiChatCompletions;
+        profile.efforts = vec!["low".into(), "medium".into(), "high".into()];
+        profile.supports_disabled = supports_disabled;
+        profile.disabled_wire = wire;
+        profile.preference = ReasoningChoice::Effort("medium".into());
+        profile
+    };
+    let slider = |cx: &mut TestAppContext| {
+        stream.read_with(cx, |stream, cx| {
+            let slider = stream.thinking_slider().read(cx);
+            (
+                slider.dot_count(),
+                slider.tiers().to_vec(),
+                slider.is_off(),
+                slider.choice_name().map(str::to_string),
+            )
+        })
+    };
+    // Drives the real gesture path: the mounted slider emits
+    // `ThinkingTierSelected`, the stream's own subscription handles it.
+    let select_position = |cx: &mut TestAppContext, index: usize| {
+        let slider = stream.read_with(cx, |stream, _| stream.thinking_slider());
+        slider.update(cx, |slider, cx| {
+            slider.select_index(index, cx);
+        });
+        cx.run_until_parked();
+    };
+
+    // Capability declared: three efforts plus the Off position.
+    stream.update(cx, |stream, cx| {
+        stream.apply_reasoning_profile(
+            profile(true, Some(ReasoningDisabledWire::ReasoningEffortNone)),
+            cx,
+        );
+    });
+    let (dots, tiers, is_off, choice) = slider(cx);
+    assert_eq!(dots, 4, "efforts.len() + 1 with Off shown");
+    assert_eq!(
+        tiers,
+        vec!["low".to_string(), "medium".to_string(), "high".to_string()],
+        "the tier list is exactly the profile's efforts — Off is not a member"
+    );
+    assert!(!is_off);
+    assert_eq!(choice, Some("medium".to_string()));
+
+    // Selecting the Off position persists `"disabled"` and never an effort.
+    select_position(cx, 0);
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "disabled"
+    );
+    let (dots, tiers, is_off, choice) = slider(cx);
+    assert!(is_off, "the Off position is selected");
+    assert_eq!(choice, Some(OFF_CHOICE_NAME.to_string()));
+    assert_eq!(dots, 4, "selecting Off does not change the dot count");
+    assert!(
+        !tiers
+            .iter()
+            .any(|tier| matches!(tier.as_str(), "off" | "none" | "disabled")),
+        "no off-like string may enter the effort list"
+    );
+    // The frozen request for the next run is `Disabled`, not `Effort`.
+    let frozen = stream
+        .read_with(cx, |stream, _| stream.frozen_reasoning_for_submit())
+        .expect("frozen profile")
+        .expect("declared profile");
+    assert_eq!(frozen.choice, ReasoningChoice::Disabled);
+    assert_eq!(
+        frozen.disabled_wire,
+        Some(ReasoningDisabledWire::ReasoningEffortNone)
+    );
+
+    // A tier selection still yields the effort (A4). With Off at 0, `high` is
+    // position 3.
+    select_position(cx, 3);
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "high"
+    );
+    let frozen = stream
+        .read_with(cx, |stream, _| stream.frozen_reasoning_for_submit())
+        .expect("frozen profile")
+        .expect("declared profile");
+    assert_eq!(
+        frozen.choice,
+        ReasoningChoice::Effort("high".to_string()),
+        "tier selection is unchanged by R58"
+    );
+
+    // Capability absent: no Off position, and the dot count is efforts.len().
+    stream.update(cx, |stream, cx| {
+        stream.apply_reasoning_profile(profile(false, None), cx);
+    });
+    let (dots, _tiers, is_off, _choice) = slider(cx);
+    assert_eq!(dots, 3, "efforts.len() with no Off");
+    assert!(!is_off);
+    // Position 0 is now the first effort, not Off.
+    select_position(cx, 0);
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "low"
+    );
+    let (_dots, _tiers, is_off, choice) = slider(cx);
+    assert!(!is_off, "without the capability position 0 is an effort");
+    assert_eq!(choice, Some("low".to_string()));
+
+    // A `supports_disabled` without a wire is the inconsistent pairing the
+    // store validator rejects. The slider must not offer Off for it either,
+    // because the wire could not carry the choice.
+    stream.update(cx, |stream, cx| {
+        stream.apply_reasoning_profile(profile(true, None), cx);
+    });
+    let (dots, _tiers, is_off, _choice) = slider(cx);
+    assert_eq!(dots, 3, "Off needs both the flag and the wire");
+    assert!(!is_off);
+
+    // R4: a persisted `"disabled"` preference lands on the Off position.
+    stream.update(cx, |stream, cx| {
+        let mut declared = profile(true, Some(ReasoningDisabledWire::ReasoningEffortNone));
+        declared.preference = ReasoningChoice::Disabled;
+        stream.apply_reasoning_profile(declared, cx);
+    });
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "disabled"
+    );
+    let (dots, _tiers, is_off, choice) = slider(cx);
+    assert_eq!(dots, 4);
+    assert!(is_off, "a persisted disabled preference selects Off");
+    assert_eq!(choice, Some(OFF_CHOICE_NAME.to_string()));
+
+    // R6: `provider_default` selects nothing at all — it is not Off.
+    stream.update(cx, |stream, cx| {
+        let mut defaulted = profile(true, Some(ReasoningDisabledWire::ReasoningEffortNone));
+        defaulted.preference = ReasoningChoice::ProviderDefault;
+        stream.apply_reasoning_profile(defaulted, cx);
+    });
+    let (dots, _tiers, is_off, choice) = slider(cx);
+    assert_eq!(dots, 4, "the ladder still renders for provider_default");
+    assert!(!is_off, "provider_default is not Off");
+    assert_eq!(choice, None, "provider_default selects no position");
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+        "provider_default"
+    );
+}
+
 #[gpui_kit::test]
 async fn approved_not_started_projection_preserves_and_blocks_new_draft(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "approved-recovery");

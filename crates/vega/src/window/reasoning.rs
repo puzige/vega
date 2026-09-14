@@ -347,6 +347,12 @@ impl VegaWindow {
     /// the stream's copy: a tier the profile does not declare is refused with
     /// the exact stream re-projected from that authority, so the slider cannot
     /// display a value the next run would not send.
+    ///
+    /// R58: the request's `thinking` is a persisted *choice name*. The Off
+    /// position sends [`OFF_CHOICE_NAME`] (`"disabled"`), which becomes
+    /// `ReasoningChoice::Disabled` — the same value the wire encoder already
+    /// routes through `disabled_wire`. It is never written into `efforts` and
+    /// never becomes `Effort("off")`.
     pub(crate) fn persist_composer_thinking(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -375,7 +381,7 @@ impl VegaWindow {
                 Some((request.thread_id.clone(), request.defaults.thinking.clone()));
             return;
         }
-        let tier = request.defaults.thinking.clone();
+        let choice = request.defaults.thinking.clone();
         let model = stream.read(cx).displayed_model().to_owned();
         let Some(profile) = self.reasoning_profile_for_model(&model) else {
             // A missing profile is provider-default with no controls. The
@@ -392,21 +398,36 @@ impl VegaWindow {
             self.apply_reasoning_profile_to_stream(&stream, &model, cx);
             return;
         };
-        // Refuse anything the profile does not declare. An unknown tier would
-        // otherwise fail the store validator inside the worker and surface as
-        // a generic I/O error, when it is really an invalid intent.
-        if !profile.efforts.iter().any(|effort| effort == &tier) {
-            self.apply_reasoning_profile_to_stream(&stream, &model, cx);
-            return;
-        }
+        // R58: the Off position persists `"disabled"`, which is the store's
+        // own name for `ReasoningChoice::Disabled` — a *separate* state, never
+        // an effort. It is refused unless the profile declares the disabled
+        // operation, mirroring the store validator; otherwise the store would
+        // reject the write and surface it as a generic I/O error.
+        let next = if choice == OFF_CHOICE_NAME {
+            if !(profile.supports_disabled && profile.disabled_wire.is_some()) {
+                self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+                return;
+            }
+            ReasoningChoice::Disabled
+        } else {
+            // Refuse anything the profile does not declare. An unknown tier
+            // would otherwise fail the store validator inside the worker and
+            // surface as a generic I/O error, when it is really an invalid
+            // intent.
+            if !profile.efforts.iter().any(|effort| effort == &choice) {
+                self.apply_reasoning_profile_to_stream(&stream, &model, cx);
+                return;
+            }
+            ReasoningChoice::Effort(choice)
+        };
         // An unchanged preference is already the durable authority: re-project
         // instead of writing the same bytes back.
-        if profile.preference == ReasoningChoice::Effort(tier.clone()) {
+        if profile.preference == next {
             self.apply_reasoning_profile_to_stream(&stream, &model, cx);
             return;
         }
         let mut candidate = profile.clone();
-        candidate.preference = ReasoningChoice::Effort(tier);
+        candidate.preference = next;
         let patch = match reasoning_profile_patch(&profile, &candidate) {
             Ok(patch) => patch,
             Err(_) => {

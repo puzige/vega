@@ -31,6 +31,28 @@
 //! current `ultra`, this module answers `max` while the snippet answers `low`.
 //! [`nearest_lower`] is the single place that decides this; reversing its scan
 //! direction reproduces the snippet literally.
+//!
+//! ## The Off position (R58 §2)
+//!
+//! R58 adds an **Off** position at the far left (tier index 0) for models that
+//! declare a true disabled operation. Vega models "thinking disabled" as a
+//! *separate* [`ReasoningChoice::Disabled`](vega_conversation::types::ReasoningChoice)
+//! reached through the profile's `disabled_wire`, **not** as one entry of the
+//! `efforts` sequence the way the reference implementation does. The Off
+//! position is therefore **visual only**:
+//!
+//! - Off is index 0 and occupies a dot like any tier; the dot count becomes
+//!   `efforts.len() + 1` whenever it is shown (R1).
+//! - It is shown only when the profile declares `supports_disabled` **and** a
+//!   matching `disabled_wire`, the same pairing `reasoning.rs` and
+//!   `FrozenReasoning::validate` enforce (R2). Otherwise the ladder is exactly
+//!   `efforts` and there is no Off.
+//! - Selecting Off emits [`OFF_CHOICE_NAME`] (`"disabled"`), never an effort
+//!   string, and `"off"`/`"none"`/`"disabled"` are never appended to
+//!   [`ThinkingSliderModel::tiers`] (R3).
+//! - The Off label is `关闭`, the wording Vega's removed thinking chip already
+//!   used (R5). Its colour is **unmeasured** and deliberately reuses the
+//!   lowest tier's visual; see [`tier_label_color_for`].
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -126,6 +148,24 @@ const TRACK_UNFILLED: Rgba = measured_rgba(0xE9E8E8FF);
 /// grammar. Kept inline so this component stays self-contained (the bundled
 /// icon set has no bolt) and so no shared icon table is touched.
 const BOLT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>"#;
+
+/// The persisted name of the Off position (R58 R3).
+///
+/// This is the string the composer already maps to
+/// `ReasoningChoice::Disabled` (`core.rs`'s `reasoning_choice_for_name`) and
+/// the one `reasoning.toml` stores in `ReasoningProfile.preference`. It is a
+/// *choice* name, never an effort: it must not be appended to
+/// [`ThinkingSliderModel::tiers`] or sent as `Effort`.
+pub const OFF_CHOICE_NAME: &str = "disabled";
+
+/// The Off position's tier-name text (R58 R5). Vega's existing wording for
+/// `"disabled"`, taken from the thinking chip R57 replaced
+/// (`docs/vega-r57-composer-alignment.md` §2.2).
+pub const OFF_LABEL: &str = "关闭";
+
+/// The no-selection label, shown when the persisted preference is
+/// `provider_default` (R58 R6). Vega's existing wording for that state.
+pub const PROVIDER_DEFAULT_LABEL: &str = "提供方默认";
 
 /// Static debug selectors for rendered dots, indexed by dot position. The
 /// array bound exists because `VisualTestContext::debug_bounds` only accepts a
@@ -224,107 +264,236 @@ pub fn resolve_tier<'a>(
 // Pure model
 // ---------------------------------------------------------------------------
 
+/// What the slider currently shows. R58 R3/R6: the Off position and the
+/// `provider_default` state are deliberately **not** entries of
+/// [`ThinkingSliderModel::tiers`] — the tier list stays exactly the profile's
+/// `efforts`, and only the *position* mapping knows about Off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Selection {
+    /// The Off position (index 0 when shown). Maps to
+    /// `ReasoningChoice::Disabled` through [`OFF_CHOICE_NAME`]; never an
+    /// effort.
+    Off,
+    /// A declared tier, by name.
+    Tier(String),
+}
+
 /// Headless state for one slider. Owns no store handle and performs no IO.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThinkingSliderModel {
+    /// The profile's declared `efforts`, in declaration order. This list is
+    /// the tier ladder and **never** contains `off`/`none`/`disabled`.
     tiers: Vec<String>,
-    current: Option<String>,
+    /// Whether the profile declares a true disabled operation, i.e.
+    /// `supports_disabled` **and** a matching `disabled_wire` (R2). When
+    /// `false` there is no Off position at all.
+    supports_off: bool,
+    current: Option<Selection>,
+    /// Whether the persisted preference is `provider_default` (R6). That is a
+    /// third state — "let the provider decide" — and is not a position, so the
+    /// track renders with nothing selected.
+    provider_default: bool,
     default: Option<String>,
 }
 
 impl ThinkingSliderModel {
     /// Builds the model, resolving both the current and the default tier
     /// against `tiers` straight away.
-    pub fn new(tiers: Vec<String>, current: &str, default: &str) -> Self {
+    ///
+    /// `supports_off` is the R2 pairing (`supports_disabled` with a declared
+    /// `disabled_wire`); `current` is the persisted preference name, where
+    /// [`OFF_CHOICE_NAME`] selects the Off position and `"provider_default"`
+    /// selects nothing.
+    pub fn new(tiers: Vec<String>, supports_off: bool, current: &str, default: &str) -> Self {
         let mut model = Self {
             tiers,
+            supports_off,
             current: None,
+            provider_default: false,
             default: None,
         };
-        model.rebind(current, default);
+        model.rebind(supports_off, current, default);
         model
     }
 
-    fn rebind(&mut self, current: &str, default: &str) {
+    /// Position offset of the first tier: 1 when Off occupies index 0, else 0.
+    fn off_offset(&self) -> usize {
+        usize::from(self.supports_off)
+    }
+
+    fn rebind(&mut self, supports_off: bool, current: &str, default: &str) {
+        self.supports_off = supports_off;
         // The default resolves first so it can serve as the current tier's
         // last-resort fallback.
         self.default =
             resolve_tier(&self.tiers, default, default).map(std::string::ToString::to_string);
         let fallback = self.default.clone().unwrap_or_default();
-        self.current = resolve_tier(&self.tiers, current, &fallback).map(str::to_string);
+        // R4: `"disabled"` maps to the Off position. It is only representable
+        // when the profile declares the disabled operation; a profile that
+        // somehow persists it without the capability falls through to the
+        // ordinary unsupported-preference fallback instead of showing an Off
+        // position the provider would reject (R2).
+        if current == OFF_CHOICE_NAME && supports_off {
+            self.current = Some(Selection::Off);
+            self.provider_default = false;
+            return;
+        }
+        // R6: `provider_default` is not a position. The track renders no
+        // selection and the label names the state itself.
+        if current == "provider_default" || current.is_empty() {
+            self.current = None;
+            self.provider_default = true;
+            return;
+        }
+        self.current = resolve_tier(&self.tiers, current, &fallback)
+            .map(|tier| Selection::Tier(tier.to_string()));
+        self.provider_default = false;
     }
 
     /// The model's supported tiers, in the order the caller declared them.
+    /// This is the profile's `efforts` verbatim — the Off position is not a
+    /// member (R3).
     pub fn tiers(&self) -> &[String] {
         &self.tiers
     }
 
-    /// Number of dots the track must render — one per supported tier (R7).
-    /// This is the single source of truth the renderer reads.
+    /// Whether this model declares a true disabled operation, i.e. whether the
+    /// Off position is shown at all (R2).
+    pub fn shows_off(&self) -> bool {
+        self.supports_off
+    }
+
+    /// Number of dots the track must render — one per supported tier, plus one
+    /// for the Off position when it is shown (R1). This is the single source of
+    /// truth the renderer reads.
     pub fn dot_count(&self) -> usize {
-        self.tiers.len()
+        self.tiers.len() + self.off_offset()
     }
 
-    /// The tier currently selected, or `None` when the model supports none.
+    /// The tier currently selected, or `None` when Off, `provider_default`, or
+    /// no tier is selected. The Off position is not a tier, so it reports
+    /// `None` here; read [`Self::choice_name`] for the persisted name.
     pub fn tier(&self) -> Option<&str> {
-        self.current.as_deref()
+        match self.current.as_ref()? {
+            Selection::Tier(tier) => Some(tier.as_str()),
+            Selection::Off => None,
+        }
     }
 
-    /// Index of the selected tier within [`Self::tiers`].
-    pub fn selected_index(&self) -> Option<usize> {
-        let current = self.current.as_deref()?;
-        self.tiers
-            .iter()
-            .position(|candidate| candidate.as_str() == current)
+    /// The persisted preference name this slider shows: [`OFF_CHOICE_NAME`]
+    /// for the Off position, the tier name for a tier, and `None` when nothing
+    /// is selected (`provider_default`, or a model with no positions).
+    pub fn choice_name(&self) -> Option<&str> {
+        match self.current.as_ref()? {
+            Selection::Tier(tier) => Some(tier.as_str()),
+            Selection::Off => Some(OFF_CHOICE_NAME),
+        }
     }
 
-    /// Index of the strongest supported tier. The gradient fill and the
+    /// Whether the Off position is the current selection.
+    pub fn is_off(&self) -> bool {
+        matches!(self.current, Some(Selection::Off))
+    }
+
+    /// Whether the persisted preference is `provider_default` (R6).
+    pub fn is_provider_default(&self) -> bool {
+        self.provider_default
+    }
+
+    /// The tier-name text for the current state.
+    pub fn label(&self) -> &str {
+        match self.current.as_ref() {
+            Some(Selection::Tier(tier)) => tier.as_str(),
+            Some(Selection::Off) => OFF_LABEL,
+            None if self.provider_default => PROVIDER_DEFAULT_LABEL,
+            None => "",
+        }
+    }
+
+    /// Position of the selected dot, or `None` when nothing is selected.
+    ///
+    /// With Off shown, position 0 is Off and tier `i` sits at position
+    /// `i + 1`; without it, tier `i` sits at position `i`.
+    pub fn selected_position(&self) -> Option<usize> {
+        match self.current.as_ref()? {
+            Selection::Off => Some(0),
+            Selection::Tier(tier) => self
+                .tiers
+                .iter()
+                .position(|candidate| candidate == tier)
+                .map(|index| index + self.off_offset()),
+        }
+    }
+
+    /// Position of the strongest supported tier. The gradient fill and the
     /// purple label both key off this, which is what makes the two measured
     /// states (`Medium` flat blue, `Ultra` gradient purple) both correct.
-    pub fn strongest_index(&self) -> Option<usize> {
-        self.tiers.len().checked_sub(1)
+    ///
+    /// The Off position is never the strongest tier, so an Off-only track has
+    /// no strongest position and therefore no gradient (R5: Off takes the
+    /// lowest tier's visual, which is the flat fill).
+    pub fn strongest_position(&self) -> Option<usize> {
+        self.tiers
+            .len()
+            .checked_sub(1)
+            .map(|last| last + self.off_offset())
     }
 
     /// Replaces the supported tier list, re-resolving the current and default
     /// tiers against it.
-    pub fn set_tiers(&mut self, tiers: Vec<String>, current: &str, default: &str) {
+    pub fn set_tiers(
+        &mut self,
+        tiers: Vec<String>,
+        supports_off: bool,
+        current: &str,
+        default: &str,
+    ) {
         self.tiers = tiers;
-        self.rebind(current, default);
+        self.rebind(supports_off, current, default);
     }
 
-    /// The tier the reset control returns to (R11: the configured default).
+    /// The tier the slider falls back to when the preferred tier is no longer
+    /// supported.
     pub fn default_tier(&self) -> Option<&str> {
         self.default.as_deref()
     }
 
-    /// Selects the tier at `index`. Returns whether the selection changed.
+    /// Selects the position at `index`. Returns the persisted choice name when
+    /// the selection changed.
+    ///
+    /// Position 0 is the Off position when the model shows one, and maps to
+    /// [`OFF_CHOICE_NAME`] — never to an effort (R3).
     fn select(&mut self, index: usize) -> Option<String> {
-        let tier = self.tiers.get(index)?.clone();
-        if self.current.as_deref() == Some(tier.as_str()) {
+        let next = match (self.supports_off, index) {
+            (true, 0) => Selection::Off,
+            (true, _) => Selection::Tier(self.tiers.get(index - 1)?.clone()),
+            (false, _) => Selection::Tier(self.tiers.get(index)?.clone()),
+        };
+        if self.current.as_ref() == Some(&next) {
             return None;
         }
-        self.current = Some(tier.clone());
-        Some(tier)
-    }
-
-    /// Resets to the configured default tier. Returns whether the selection
-    /// changed.
-    fn reset(&mut self) -> Option<String> {
-        let target = self.default.clone()?;
-        if self.current.as_deref() == Some(target.as_str()) {
-            return None;
-        }
-        self.current = Some(target.clone());
-        Some(target)
+        let name = match &next {
+            Selection::Off => OFF_CHOICE_NAME.to_string(),
+            Selection::Tier(tier) => tier.clone(),
+        };
+        self.current = Some(next);
+        self.provider_default = false;
+        Some(name)
     }
 }
 
-/// Emitted when the user picks a different tier. P3 turns this into the
-/// existing `ComposerDefaults` save path; the component itself performs no IO.
+/// Emitted when the user picks a different position. The composer turns this
+/// into the existing `ComposerDefaults` save path; the component itself
+/// performs no IO.
+///
+/// `choice` is a persisted *choice name*, not necessarily an effort: the Off
+/// position emits [`OFF_CHOICE_NAME`] (`"disabled"`), which the composer maps
+/// to `ReasoningChoice::Disabled` (R3). It is never `"off"`/`"none"`, and it
+/// is never appended to the tier list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThinkingTierSelected {
     pub model: String,
-    pub tier: String,
+    pub choice: String,
 }
 
 /// The drag payload. Its only job is to exist so GPUI's `on_drag_move`
@@ -358,31 +527,65 @@ impl ThinkingSlider {
     /// Builds the slider for one model.
     ///
     /// `tiers` is the model's supported tier list (`ReasoningProfile.efforts`),
-    /// `current` the tier to show, and `default` the tier the reset control
-    /// returns to (`ReasoningProfile.preference`). An unsupported `current`
-    /// resolves through [`resolve_tier`].
+    /// `supports_off` whether the Off position is shown (`supports_disabled`
+    /// with a declared `disabled_wire`, R2), and `current` the persisted
+    /// preference name ([`OFF_CHOICE_NAME`], `"provider_default"`, or a tier).
+    /// An unsupported `current` resolves through [`resolve_tier`].
     pub fn new(
         model_name: impl Into<String>,
         tiers: Vec<String>,
+        supports_off: bool,
         current: impl AsRef<str>,
         default: impl AsRef<str>,
         _cx: &mut Context<Self>,
     ) -> Self {
         Self {
-            model: ThinkingSliderModel::new(tiers, current.as_ref(), default.as_ref()),
+            model: ThinkingSliderModel::new(
+                tiers,
+                supports_off,
+                current.as_ref(),
+                default.as_ref(),
+            ),
             model_name: model_name.into(),
             track_bounds: None,
         }
     }
 
-    /// The tier currently shown.
+    /// The model's supported tiers, exactly the profile's `efforts`.
+    ///
+    /// Exposed so acceptance tests can prove the Off position never becomes a
+    /// member of this list (R3).
+    pub fn tiers(&self) -> &[String] {
+        self.model.tiers()
+    }
+
+    /// The tier currently shown, or `None` when the Off position or
+    /// `provider_default` is shown.
     pub fn tier(&self) -> Option<&str> {
         self.model.tier()
     }
 
-    /// Dots the track renders — one per supported tier (R7). This is the count
-    /// the composer's acceptance tests assert against, so it stays a view
-    /// accessor rather than a test-only reach into the model.
+    /// The persisted preference name this slider shows
+    /// ([`OFF_CHOICE_NAME`] for Off, else a tier name), or `None` when nothing
+    /// is selected (R3/R6).
+    pub fn choice_name(&self) -> Option<&str> {
+        self.model.choice_name()
+    }
+
+    /// Whether the Off position is the current selection.
+    pub fn is_off(&self) -> bool {
+        self.model.is_off()
+    }
+
+    /// Whether the persisted preference is `provider_default` (R6).
+    pub fn is_provider_default(&self) -> bool {
+        self.model.is_provider_default()
+    }
+
+    /// Dots the track renders — one per supported tier, plus one for the Off
+    /// position when the model declares a disabled operation (R1). This is the
+    /// count the composer's acceptance tests assert against, so it stays a
+    /// view accessor rather than a test-only reach into the model.
     pub fn dot_count(&self) -> usize {
         self.model.dot_count()
     }
@@ -390,9 +593,12 @@ impl ThinkingSlider {
     /// Whether this model declares any tier at all.
     ///
     /// R12: a model with no declared tiers renders nothing, and the host must
-    /// not leave an empty padded slot behind either.
+    /// not leave an empty padded slot behind either. Note that Off alone is
+    /// *not* a tier: a profile with `supports_disabled` but no `efforts` still
+    /// renders nothing, because the ladder the slider moves along would be
+    /// empty (R2's pairing is necessary but not sufficient on its own).
     pub fn has_tiers(&self) -> bool {
-        self.model.dot_count() > 0
+        !self.model.tiers().is_empty()
     }
 
     /// Replaces the model name and the supported tier list together (R57 P3).
@@ -403,38 +609,27 @@ impl ThinkingSlider {
         &mut self,
         model_name: impl Into<String>,
         tiers: Vec<String>,
+        supports_off: bool,
         current: impl AsRef<str>,
         default: impl AsRef<str>,
         cx: &mut Context<Self>,
     ) {
         self.model_name = model_name.into();
         self.model
-            .set_tiers(tiers, current.as_ref(), default.as_ref());
+            .set_tiers(tiers, supports_off, current.as_ref(), default.as_ref());
         cx.notify();
     }
 
-    /// Selects the tier at `index`. Returns whether the selection changed.
-    pub fn select_index(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
-        let Some(tier) = self.model.select(index) else {
-            return false;
-        };
-        cx.emit(ThinkingTierSelected {
-            model: self.model_name.clone(),
-            tier,
-        });
-        cx.notify();
-        true
-    }
-
-    /// Resets to the configured default tier. Returns whether the selection
+    /// Selects the position at `index`, where index 0 is the Off position
+    /// whenever the model shows one (R1). Returns whether the selection
     /// changed.
-    pub fn reset(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(tier) = self.model.reset() else {
+    pub fn select_index(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
+        let Some(choice) = self.model.select(index) else {
             return false;
         };
         cx.emit(ThinkingTierSelected {
             model: self.model_name.clone(),
-            tier,
+            choice,
         });
         cx.notify();
         true
@@ -507,21 +702,31 @@ impl ThinkingSlider {
         }
     }
 
-    fn on_reset(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.reset(cx);
-    }
-
     /// Tier-name colour. Only the two measured endpoints are modelled (§4.5
     /// M2 leaves the ramp between them unmeasured): the strongest tier takes
-    /// the measured purple, every other tier the measured blue.
+    /// the measured purple, every other position the measured blue.
+    ///
+    /// R58 R5: the Off position is **unmeasured**. It deliberately takes the
+    /// same visual as the lowest tier — the measured blue, flat fill — rather
+    /// than a new colour, and is flagged as needing calibration.
     fn tier_label_color(&self) -> Rgba {
-        tier_label_color_for(self.model.selected_index(), self.model.strongest_index())
+        tier_label_color_for(
+            self.model.selected_position(),
+            self.model.strongest_position(),
+        )
     }
 
     /// The fill layer. The strongest tier gets the measured multi-stop
-    /// gradient; every other tier the measured flat fill (§4.2).
-    fn render_track_fill(&self, selected: usize) -> AnyElement {
-        if track_fill_style(selected, self.model.strongest_index()) == TrackFillStyle::Gradient {
+    /// gradient; every other position the measured flat fill (§4.2).
+    ///
+    /// With nothing selected (R6's `provider_default`) the track renders no
+    /// fill at all, so the unselected state is visibly distinct from any
+    /// position.
+    fn render_track_fill(&self, selected: Option<usize>) -> AnyElement {
+        let Some(selected) = selected else {
+            return Empty.into_any_element();
+        };
+        if track_fill_style(selected, self.model.strongest_position()) == TrackFillStyle::Gradient {
             // GPUI backgrounds carry exactly two colour stops, so the
             // measured three-stop gradient is composed from adjacent segments
             // that share the middle stop. Each segment is a straight
@@ -615,31 +820,33 @@ impl Render for ThinkingSlider {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         let count = self.model.dot_count();
-        let Some(selected) = self.model.selected_index() else {
+        if !self.has_tiers() {
             // Zero-tier fallback (R12, plan P2a): a model that declares no
             // reasoning tiers renders no slider at all. The reference app's
             // UI for this case is UNMEASURED (spec §4.5 M3) — this is the
-            // simplest sensible reading and still needs calibration.
+            // simplest sensible reading and still needs calibration. The Off
+            // position alone does not make a ladder, so it does not rescue
+            // this case (R58 R2).
             return Empty.into_any_element();
-        };
+        }
+        // R6: `provider_default` selects no position. The track still renders
+        // (the model does declare tiers) but carries no knob and no fill, and
+        // the label names the state so the user can tell it apart from Off.
+        let selected = self.model.selected_position();
 
-        let label = self
-            .model
-            .tiers()
-            .get(selected)
-            .cloned()
-            .unwrap_or_default();
+        let label = self.model.label().to_string();
         let label_color = self.tier_label_color();
 
         let dots = (0..count).map(|index| {
             let offset = dot_center_offset(index, count);
+            let filled = selected.is_some_and(|selected| index <= selected);
             let dot = div()
                 .absolute()
                 .left(px(offset - THINKING_DOT_DIAMETER / 2.0))
                 .top(px((THINKING_TRACK_HEIGHT - THINKING_DOT_DIAMETER) / 2.0))
                 .size(px(THINKING_DOT_DIAMETER))
                 .rounded_full()
-                .bg(if index <= selected {
+                .bg(if filled {
                     // R9: filled-region dots render white.
                     TRACK_DOT_FILLED
                 } else {
@@ -653,8 +860,6 @@ impl Render for ThinkingSlider {
                 None => dot,
             }
         });
-
-        let knob_offset = dot_center_offset(selected, count);
 
         // The track captures its own bounds at prepaint so a click position
         // can be mapped to a dot. `ElementExt::on_prepaint` mounts a
@@ -692,19 +897,23 @@ impl Render for ThinkingSlider {
             .on_drag_move(cx.listener(Self::on_knob_drag_move))
             .child(self.render_track_fill(selected))
             .children(dots)
-            .child(
-                div()
-                    .debug_selector(|| "thinking-slider-knob".into())
-                    .absolute()
-                    .left(px(knob_offset - THINKING_KNOB_DIAMETER / 2.0))
-                    .top_0()
-                    .size(px(THINKING_KNOB_DIAMETER))
-                    .rounded_full()
-                    // Measured pure white in the light reference (§4.3); the
-                    // elevated-surface token is white there and follows the
-                    // theme in dark mode, which was never measured.
-                    .bg(colors.bg_elevated),
-            );
+            .when_some(selected, |track, selected| {
+                track.child(
+                    div()
+                        .debug_selector(|| "thinking-slider-knob".into())
+                        .absolute()
+                        .left(px(
+                            dot_center_offset(selected, count) - THINKING_KNOB_DIAMETER / 2.0
+                        ))
+                        .top_0()
+                        .size(px(THINKING_KNOB_DIAMETER))
+                        .rounded_full()
+                        // Measured pure white in the light reference (§4.3);
+                        // the elevated-surface token is white there and follows
+                        // the theme in dark mode, which was never measured.
+                        .bg(colors.bg_elevated),
+                )
+            });
 
         div()
             .debug_selector(|| "thinking-slider-card".into())
@@ -731,6 +940,7 @@ impl Render for ThinkingSlider {
                     .child(bolt_icon(colors.text_tertiary))
                     .child(
                         div()
+                            .debug_selector(|| "thinking-slider-label".into())
                             .flex()
                             .items_center()
                             .gap_1()
@@ -741,25 +951,11 @@ impl Render for ThinkingSlider {
                                 crate::icons::Icon::ChevronRight,
                                 colors.text_tertiary,
                             )),
-                    )
-                    .child(
-                        div()
-                            .id("thinking-slider-reset")
-                            .debug_selector(|| "thinking-slider-reset".into())
-                            .size(px(20.0))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(colors.bg_hover))
-                            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_reset))
-                            .child(crate::icons::icon(
-                                crate::icons::Icon::Refresh,
-                                colors.text_secondary,
-                            )),
                     ),
+                // R58 R7: the reset control (circular-arrow icon) is removed.
+                // Vega has exactly one persisted tier field (`preference`) and
+                // a slider selection writes it, so "reset to the configured
+                // default" is the identity operation — R57 §3.4 R11 is void.
             )
             .child(
                 div()
@@ -774,14 +970,13 @@ impl Render for ThinkingSlider {
     }
 }
 
-/// Shared with tests: the tier-name colour for one model state.
-#[cfg(test)]
-fn label_color_for(model: &ThinkingSliderModel) -> Rgba {
-    tier_label_color_for(model.selected_index(), model.strongest_index())
-}
-
 /// Tier-name colour for one model state. Split out of the view so the
 /// measured §4.1 rule is directly testable.
+///
+/// R58 R5: the Off position is **unmeasured**. It is not a tier and never the
+/// strongest, so it falls to [`TIER_LABEL_BASE`] — the same visual as the
+/// lowest tier. That is a deliberate placeholder, not a measurement; see
+/// spec §5 M1/M2.
 fn tier_label_color_for(selected: Option<usize>, strongest: Option<usize>) -> Rgba {
     match (selected, strongest) {
         (Some(selected), Some(strongest)) if selected == strongest => TIER_LABEL_STRONG,
@@ -804,12 +999,32 @@ mod tests {
         current: &str,
         default: &str,
     ) -> WindowHandle<ThinkingSlider> {
+        open_slider_with(cx, tier_list, false, current, default)
+    }
+
+    /// Opens the slider with an explicit Off capability (R58 R2).
+    fn open_slider_with(
+        cx: &mut TestAppContext,
+        tier_list: Vec<String>,
+        supports_off: bool,
+        current: &str,
+        default: &str,
+    ) -> WindowHandle<ThinkingSlider> {
         let current = current.to_string();
         let default = default.to_string();
         cx.update(|cx| {
             cx.set_global(vega_theme::Theme::light());
             cx.open_window(WindowOptions::default(), move |_, cx| {
-                cx.new(|cx| ThinkingSlider::new("GPT-6 Astra", tier_list, current, default, cx))
+                cx.new(|cx| {
+                    ThinkingSlider::new(
+                        "GPT-6 Astra",
+                        tier_list,
+                        supports_off,
+                        current,
+                        default,
+                        cx,
+                    )
+                })
             })
             .expect("thinking slider window")
         })
@@ -831,6 +1046,13 @@ mod tests {
             .expect("slider window is open")
     }
 
+    /// Reads the mounted slider's persisted choice name (R58 R3).
+    fn choice_of(window: &WindowHandle<ThinkingSlider>, cx: &TestAppContext) -> Option<String> {
+        window
+            .read_with(cx, |slider, _| slider.choice_name().map(str::to_string))
+            .expect("slider window is open")
+    }
+
     /// Window-space x of dot `index` for a mounted track.
     fn dot_x(track: Bounds<Pixels>, index: usize, count: usize) -> Pixels {
         track.left() + px(dot_center_offset(index, count))
@@ -848,9 +1070,138 @@ mod tests {
             ),
             (Vec::new(), 0),
         ] {
-            let model = ThinkingSliderModel::new(list, "medium", "medium");
+            let model = ThinkingSliderModel::new(list, false, "medium", "medium");
             assert_eq!(model.dot_count(), expected);
         }
+    }
+
+    /// R58 R1: with Off shown the dot count is `efforts.len() + 1` and Off
+    /// occupies position 0. The tier list itself is untouched, which is what
+    /// keeps Off out of `efforts` (R3).
+    #[test]
+    fn off_position_adds_one_dot_and_leaves_the_tier_list_alone() {
+        let model = ThinkingSliderModel::new(
+            tiers(&["low", "medium", "high"]),
+            true,
+            OFF_CHOICE_NAME,
+            "low",
+        );
+        assert!(model.shows_off());
+        assert_eq!(model.dot_count(), 4, "three efforts plus the Off position");
+        assert_eq!(
+            model.tiers(),
+            tiers(&["low", "medium", "high"]).as_slice(),
+            "Off must never be appended to the effort list"
+        );
+        assert!(
+            model
+                .tiers()
+                .iter()
+                .all(|tier| !matches!(tier.as_str(), "off" | "none" | "disabled"))
+        );
+        assert_eq!(model.selected_position(), Some(0), "Off is the far left");
+        assert!(model.is_off());
+        assert_eq!(model.choice_name(), Some(OFF_CHOICE_NAME));
+        assert_eq!(model.label(), OFF_LABEL);
+        assert_eq!(
+            model.tier(),
+            None,
+            "Off is not a tier, so it reports no tier name"
+        );
+    }
+
+    /// R58 R2: without a declared disabled operation there is no Off position,
+    /// and the dot count is exactly `efforts.len()`.
+    #[test]
+    fn no_off_position_without_the_disabled_capability() {
+        let model = ThinkingSliderModel::new(
+            tiers(&["low", "medium", "high"]),
+            false,
+            // Even a persisted `"disabled"` cannot conjure the position: the
+            // provider would reject the request, so the slider falls back.
+            OFF_CHOICE_NAME,
+            "low",
+        );
+        assert!(!model.shows_off());
+        assert_eq!(model.dot_count(), 3);
+        assert!(!model.is_off());
+        assert_ne!(model.choice_name(), Some(OFF_CHOICE_NAME));
+        assert_eq!(
+            model.choice_name(),
+            Some("low"),
+            "an unusable disabled preference falls back to the default tier"
+        );
+    }
+
+    /// R58 R3: selecting position `i` yields the tier `efforts[i - 1]` when Off
+    /// is shown, and `efforts[i]` when it is not. Selecting position 0 yields
+    /// `"disabled"` — a choice name, never an effort.
+    #[test]
+    fn selecting_positions_maps_off_to_disabled_and_tiers_to_efforts() {
+        let mut with_off =
+            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), true, "medium", "medium");
+        assert_eq!(
+            with_off.selected_position(),
+            Some(2),
+            "medium is position 2"
+        );
+        assert_eq!(with_off.select(0), Some(OFF_CHOICE_NAME.to_string()));
+        assert!(with_off.is_off());
+        assert_eq!(with_off.tier(), None);
+        assert_eq!(with_off.select(1), Some("low".to_string()));
+        assert_eq!(with_off.select(2), Some("medium".to_string()));
+        assert_eq!(with_off.select(3), Some("high".to_string()));
+        // Out of range changes nothing.
+        assert_eq!(with_off.select(4), None);
+        assert_eq!(with_off.select(9), None);
+        assert_eq!(with_off.tier(), Some("high"));
+
+        let mut without_off =
+            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), false, "low", "low");
+        assert_eq!(without_off.selected_position(), Some(0));
+        assert_eq!(without_off.select(0), None, "already selected");
+        assert_eq!(without_off.select(2), Some("high".to_string()));
+    }
+
+    /// R58 R4: `"disabled"` in the persisted preference maps to the Off
+    /// position, and `"provider_default"` maps to no position at all (R6).
+    #[test]
+    fn persisted_preference_maps_onto_the_off_position() {
+        let off = ThinkingSliderModel::new(tiers(&["low", "high"]), true, "disabled", "low");
+        assert!(off.is_off());
+        assert_eq!(off.selected_position(), Some(0));
+        assert_eq!(off.choice_name(), Some(OFF_CHOICE_NAME));
+        assert!(!off.is_provider_default());
+
+        // R6: provider default is a third state, not a position.
+        let default =
+            ThinkingSliderModel::new(tiers(&["low", "high"]), true, "provider_default", "low");
+        assert!(!default.is_off());
+        assert!(default.is_provider_default());
+        assert_eq!(default.selected_position(), None, "nothing is selected");
+        assert_eq!(default.choice_name(), None);
+        assert_eq!(default.label(), PROVIDER_DEFAULT_LABEL);
+        assert_eq!(default.dot_count(), 3, "the ladder still renders");
+    }
+
+    /// R58 R1/R5: the Off position never takes the strongest tier's gradient —
+    /// it is the lowest visual, so its label stays the base colour.
+    #[test]
+    fn off_takes_the_lowest_tier_visual() {
+        let off = ThinkingSliderModel::new(tiers(&["low", "high"]), true, "disabled", "low");
+        assert_eq!(
+            tier_label_color_for(off.selected_position(), off.strongest_position()),
+            TIER_LABEL_BASE
+        );
+        // The strongest position with Off shown is the last tier, not Off.
+        assert_eq!(off.strongest_position(), Some(2));
+        assert_eq!(
+            track_fill_style(
+                off.selected_position().unwrap_or_default(),
+                off.strongest_position()
+            ),
+            TrackFillStyle::Flat
+        );
     }
 
     #[test]
@@ -896,35 +1247,35 @@ mod tests {
     #[test]
     fn no_supported_tiers_resolve_to_nothing() {
         assert_eq!(resolve_tier(&[], "medium", "medium"), None);
-        let model = ThinkingSliderModel::new(Vec::new(), "medium", "medium");
+        let model = ThinkingSliderModel::new(Vec::new(), false, "medium", "medium");
         assert_eq!(model.tier(), None);
-        assert_eq!(model.selected_index(), None);
+        assert_eq!(model.selected_position(), None);
         assert_eq!(model.default_tier(), None);
     }
 
+    /// R58 R2: Off alone is not a ladder. A profile that declares the disabled
+    /// operation but no efforts still renders no slider (R12), because there is
+    /// nothing to slide between.
     #[test]
-    fn reset_returns_to_the_configured_default_tier() {
-        let mut model =
-            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), "low", "medium");
-        assert_eq!(model.tier(), Some("low"));
-        assert_eq!(model.reset(), Some("medium".to_string()));
-        assert_eq!(model.tier(), Some("medium"));
-        // Resetting again is a no-op.
-        assert_eq!(model.reset(), None);
+    fn off_alone_does_not_make_a_slider() {
+        let model = ThinkingSliderModel::new(Vec::new(), true, OFF_CHOICE_NAME, "");
+        assert!(model.shows_off());
+        assert_eq!(model.dot_count(), 1, "the Off position is the only dot");
+        assert!(model.tiers().is_empty());
     }
 
     #[test]
-    fn reset_target_itself_resolves_through_the_fallback() {
+    fn the_default_tier_resolves_through_the_fallback() {
         // `xhigh` is not supported; the nearest lower supported tier is `high`.
-        let mut model = ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), "low", "xhigh");
+        let model =
+            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), false, "low", "xhigh");
         assert_eq!(model.default_tier(), Some("high"));
-        assert_eq!(model.reset(), Some("high".to_string()));
     }
 
     #[test]
     fn selecting_an_index_is_idempotent() {
         let mut model =
-            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), "medium", "low");
+            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), false, "medium", "low");
         assert_eq!(model.select(2), Some("high".to_string()));
         assert_eq!(model.select(2), None);
         assert_eq!(model.select(9), None);
@@ -932,13 +1283,23 @@ mod tests {
     }
 
     #[test]
-    fn strongest_index_marks_the_gradient_tier() {
-        let model = ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), "medium", "low");
-        assert_eq!(model.strongest_index(), Some(2));
-        assert_eq!(label_color_for(&model), TIER_LABEL_BASE);
+    fn strongest_position_marks_the_gradient_tier() {
+        let model =
+            ThinkingSliderModel::new(tiers(&["low", "medium", "high"]), false, "medium", "low");
+        assert_eq!(model.strongest_position(), Some(2));
+        assert_eq!(
+            tier_label_color_for(model.selected_position(), model.strongest_position()),
+            TIER_LABEL_BASE
+        );
         let mut strongest = model.clone();
         strongest.select(2);
-        assert_eq!(label_color_for(&strongest), TIER_LABEL_STRONG);
+        assert_eq!(
+            tier_label_color_for(
+                strongest.selected_position(),
+                strongest.strongest_position()
+            ),
+            TIER_LABEL_STRONG
+        );
     }
 
     #[test]
@@ -1023,7 +1384,131 @@ mod tests {
         assert_eq!(rendered_dot_count(&mut visual), 0);
         assert!(visual.debug_bounds("thinking-slider-card").is_none());
         assert!(visual.debug_bounds("thinking-slider-track").is_none());
+        // R58 R7: the reset control is gone from every state.
         assert!(visual.debug_bounds("thinking-slider-reset").is_none());
+    }
+
+    /// R58 R7: the reset control no longer exists, and its removal is a
+    /// structural change rather than a hidden element.
+    #[gpui_kit::test]
+    async fn the_reset_control_is_removed(cx: &mut TestAppContext) {
+        let window = open_slider(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            "medium",
+            "high",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("thinking-slider-card").is_some());
+        assert!(
+            visual.debug_bounds("thinking-slider-reset").is_none(),
+            "R58 R7 removes the reset control entirely"
+        );
+        // The header still renders its bolt and its tier label.
+        assert!(visual.debug_bounds("thinking-slider-label").is_some());
+    }
+
+    /// R58 R1/A1: with Off shown the track renders `efforts.len() + 1` dots and
+    /// the leftmost dot is the Off position.
+    #[gpui_kit::test]
+    async fn off_adds_a_leftmost_dot_when_the_model_supports_it(cx: &mut TestAppContext) {
+        let window = open_slider_with(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            true,
+            OFF_CHOICE_NAME,
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert_eq!(
+            rendered_dot_count(&mut visual),
+            7,
+            "six efforts plus the Off position"
+        );
+        // The knob sits on the leftmost dot, i.e. Off.
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        let knob = visual
+            .debug_bounds("thinking-slider-knob")
+            .expect("mounted knob");
+        let off_x = dot_x(track, 0, 7);
+        assert!(
+            (f32::from(knob.center().x) - f32::from(off_x)).abs() <= 1.0,
+            "the knob must rest on the Off position at {off_x:?}, not {:?}",
+            knob.center()
+        );
+        assert!(
+            window
+                .read_with(cx, |slider, _| slider.is_off())
+                .unwrap_or(false)
+        );
+        assert_eq!(choice_of(&window, cx), Some(OFF_CHOICE_NAME.to_string()));
+    }
+
+    /// R58 R2/A2: without the disabled capability the Off position is absent
+    /// and the dot count is exactly `efforts.len()`.
+    #[gpui_kit::test]
+    async fn no_off_dot_without_the_disabled_capability(cx: &mut TestAppContext) {
+        let window = open_slider_with(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            false,
+            "minimal",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert_eq!(rendered_dot_count(&mut visual), 6);
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        let knob = visual
+            .debug_bounds("thinking-slider-knob")
+            .expect("mounted knob");
+        let first_x = dot_x(track, 0, 6);
+        assert!(
+            (f32::from(knob.center().x) - f32::from(first_x)).abs() <= 1.0,
+            "without Off, the leftmost dot is the first effort"
+        );
+        assert!(
+            !window
+                .read_with(cx, |slider, _| slider.is_off())
+                .unwrap_or(true)
+        );
+        assert_eq!(choice_of(&window, cx), Some("minimal".to_string()));
+    }
+
+    /// R58 R6: `provider_default` renders the ladder with nothing selected —
+    /// no knob and no fill — rather than pretending Off is selected.
+    #[gpui_kit::test]
+    async fn provider_default_renders_with_no_selection(cx: &mut TestAppContext) {
+        let window = open_slider_with(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            true,
+            "provider_default",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert_eq!(rendered_dot_count(&mut visual), 7);
+        assert!(
+            visual.debug_bounds("thinking-slider-knob").is_none(),
+            "provider_default selects no position"
+        );
+        assert!(
+            visual.debug_bounds("thinking-slider-fill-flat").is_none(),
+            "provider_default fills no track"
+        );
+        assert!(
+            window
+                .read_with(cx, |slider, _| slider.is_provider_default())
+                .unwrap_or(false)
+        );
+        assert_eq!(choice_of(&window, cx), None);
     }
 
     #[gpui_kit::test]
@@ -1097,37 +1582,82 @@ mod tests {
         }
     }
 
+    /// R58 R3: clicking the leftmost dot with Off shown emits `"disabled"` —
+    /// the choice name that maps to `ReasoningChoice::Disabled` — and clicking
+    /// the next dot emits the first effort. The Off position must never
+    /// surface as an effort.
     #[gpui_kit::test]
-    async fn clicking_the_reset_control_returns_to_the_default_tier(cx: &mut TestAppContext) {
-        let window = open_slider(
+    async fn clicking_the_off_dot_selects_disabled(cx: &mut TestAppContext) {
+        let window = open_slider_with(
             cx,
             tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            true,
             "medium",
-            "high",
+            "medium",
         );
         cx.run_until_parked();
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         let track = visual
             .debug_bounds("thinking-slider-track")
             .expect("mounted track");
-        let reset = visual
-            .debug_bounds("thinking-slider-reset")
-            .expect("mounted reset control");
+        let count = 7;
 
+        // `medium` is position 3 with Off at 0.
+        assert_eq!(choice_of(&window, cx), Some("medium".to_string()));
         visual.simulate_click(
-            gpui_kit::point(dot_x(track, 5, 6), track.center().y),
+            gpui_kit::point(dot_x(track, 0, count), track.center().y),
             Modifiers::default(),
         );
         visual.run_until_parked();
-        assert_eq!(tier_of(&window, cx), Some("max".to_string()));
-
-        visual.simulate_click(reset.center(), Modifiers::default());
-        visual.run_until_parked();
         assert_eq!(
-            tier_of(&window, cx),
-            Some("high".to_string()),
-            "reset returns to the configured default tier"
+            choice_of(&window, cx),
+            Some(OFF_CHOICE_NAME.to_string()),
+            "the leftmost dot is the Off position"
         );
+        assert!(
+            window
+                .read_with(cx, |slider, _| slider.is_off())
+                .unwrap_or(false),
+            "Off is not a tier"
+        );
+        assert_eq!(tier_of(&window, cx), None);
+
+        // The first effort sits one dot to the right of Off.
+        visual.simulate_click(
+            gpui_kit::point(dot_x(track, 1, count), track.center().y),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(choice_of(&window, cx), Some("minimal".to_string()));
+        assert!(
+            !window
+                .read_with(cx, |slider, _| slider.is_off())
+                .unwrap_or(true)
+        );
+    }
+
+    /// R58 R3/A4: without Off, clicking dot `i` still selects `efforts[i]` —
+    /// the R57 behaviour is unchanged.
+    #[gpui_kit::test]
+    async fn clicking_a_dot_without_off_still_selects_the_effort(cx: &mut TestAppContext) {
+        let window = open_slider(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            "medium",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        visual.simulate_click(
+            gpui_kit::point(dot_x(track, 0, 6), track.center().y),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(tier_of(&window, cx), Some("minimal".to_string()));
+        assert_eq!(choice_of(&window, cx), Some("minimal".to_string()));
     }
 
     #[gpui_kit::test]
@@ -1260,6 +1790,58 @@ mod tests {
             tier_of(&window, cx),
             Some("xhigh".to_string()),
             "release resolves the tier under the pointer"
+        );
+    }
+
+    /// R58 R1/R3: a drag onto the Off dot selects `"disabled"`, the same as a
+    /// click. The position is part of the same gesture as the tiers.
+    #[gpui_kit::test]
+    async fn dragging_onto_off_selects_disabled(cx: &mut TestAppContext) {
+        let window = open_slider_with(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            true,
+            "minimal",
+            "medium",
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        let count = 7;
+
+        // Position 1 is the first effort (`minimal`).
+        visual.simulate_mouse_down(
+            gpui_kit::point(dot_x(track, 1, count), track.center().y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(choice_of(&window, cx), Some("minimal".to_string()));
+        // GPUI consumes the first move past its 2 px threshold to create the
+        // drag, so that move carries no `drag_move`; the next one does.
+        visual.simulate_mouse_move(
+            gpui_kit::point(dot_x(track, 2, count), track.center().y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        visual.simulate_mouse_move(
+            gpui_kit::point(dot_x(track, 0, count), track.center().y),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        assert_eq!(
+            choice_of(&window, cx),
+            Some(OFF_CHOICE_NAME.to_string()),
+            "dragging onto the leftmost dot selects Off"
+        );
+        assert!(
+            window
+                .read_with(cx, |slider, _| slider.is_off())
+                .unwrap_or(false)
         );
     }
 
