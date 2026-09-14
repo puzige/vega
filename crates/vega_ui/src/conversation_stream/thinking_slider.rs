@@ -496,6 +496,18 @@ pub struct ThinkingTierSelected {
     pub choice: String,
 }
 
+/// Emitted when the user activates the card's title row — the
+/// `model name + tier name + >` block (R59 R2).
+///
+/// This is the **only** way level two is reached: the host answers it by
+/// swapping this card out for the model list (R59 R3), so the two levels are
+/// never on screen together. The reference implementation's
+/// `composer.modelPicker.modelList.open.ariaLabel` ("Accessible label for the
+/// selected-model action **above the model-picker slider**, which opens the
+/// list of available models") is the same control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThinkingSliderTitleActivated;
+
 /// The drag payload. Its only job is to exist so GPUI's `on_drag_move`
 /// delivers positions while the pointer is outside the track.
 #[derive(Clone)]
@@ -522,6 +534,7 @@ pub struct ThinkingSlider {
 }
 
 impl EventEmitter<ThinkingTierSelected> for ThinkingSlider {}
+impl EventEmitter<ThinkingSliderTitleActivated> for ThinkingSlider {}
 
 impl ThinkingSlider {
     /// Builds the slider for one model.

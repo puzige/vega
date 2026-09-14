@@ -1,5 +1,24 @@
 use super::*;
 
+/// R59 §3 R1–R3: which level of the model picker is showing.
+///
+/// The reference implementation is a two-level drill-down — the model button
+/// opens the tier slider, and the slider's title opens the model list — so the
+/// two views are **mutually exclusive by construction**. R57 mounted the
+/// slider as the model menu's last child, which put both on screen at once
+/// (R59 §1 D1/D2/D3); this single enum is what replaces that pair of
+/// independent booleans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ModelPickerLevel {
+    /// Nothing is mounted.
+    #[default]
+    Closed,
+    /// Level one: the thinking-tier slider card (R59 R1).
+    Slider,
+    /// Level two: the model list, reached from the slider's title (R59 R2/R3).
+    List,
+}
+
 /// The opened-thread content view: thread header (title and trusted actions),
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
