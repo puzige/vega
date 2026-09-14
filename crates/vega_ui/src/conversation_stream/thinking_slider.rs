@@ -81,15 +81,22 @@ pub const THINKING_KNOB_DIAMETER: f32 = 24.0;
 /// `(254.5 - 203.0) / 2`.
 const CARD_INSET: f32 = (THINKING_CARD_WIDTH - THINKING_TRACK_WIDTH) / 2.0;
 
-/// Radius of the fill layer's two **left** corners (R65 R1).
+/// Radius of the fill layer's capsule caps (R65 R1/R4b/R4d).
 ///
-/// The track is a capsule, so the fill's left end has to be a half-circle cap
-/// of radius `THINKING_TRACK_HEIGHT / 2.0` — the same shape the track's own
-/// right cap draws. A single value covers every tier because GPUI clamps each
-/// corner radius per quad to `min(width, height) / 2` (spec §4b): at the
-/// narrowest fill (`dot_center_offset(0, n) = 12.0`) the radius clamps to 6.0,
-/// which on a 12px-wide, 24px-tall box is exactly the left semicircle. No
-/// per-tier branching is needed, and none is wanted — see spec §4b.
+/// The track is a capsule, so each *outer* end of the fill has to be a
+/// half-circle cap of radius `THINKING_TRACK_HEIGHT / 2.0` — the same shape the
+/// track's own caps draw. The name keeps its original left-side spelling (the
+/// gradient's right cap, R4d, reuses the same measured value); it is the one
+/// cap radius this module has.
+///
+/// GPUI clamps each corner radius per quad to `min(width, height) / 2`
+/// (spec §4b). That clamp is why the fill's **drawn** width is padded to
+/// `THINKING_TRACK_HEIGHT` before this radius is applied: at the narrowest fill
+/// (`dot_center_offset(0, n) = 12.0`) the clamp would otherwise land on 6.0,
+/// and a 6px radius on a 12px-wide box leaves the fill poking 6px *outside* the
+/// track's left cap — the blue crescent the user reported. With the padding the
+/// ceiling is `min(24, 24) / 2 = 12` and the cap is a true semicircle. See
+/// [`fill_effective_width`].
 const FILL_LEFT_CAP_RADIUS: f32 = THINKING_TRACK_HEIGHT / 2.0;
 
 /// Dot diameter. **Chosen, not measured**: spec §4.5 M1 lists the dot spacing
@@ -779,11 +786,17 @@ impl ThinkingSlider {
                     .top_0()
                     .h(px(THINKING_TRACK_HEIGHT))
                     .w(px(width))
-                    // R65 R1: only the segment flush with the track's left edge
-                    // carries the capsule's left cap; the inner segment keeps
-                    // its square corners so the two halves abut seamlessly.
-                    .when(index == 0, |segment| {
+                    // R65 R1/R4d: only the segment flush with the track's left
+                    // edge carries the capsule's left cap, and only the segment
+                    // flush with its right edge carries the right cap; the inner
+                    // segment keeps square corners so the two halves abut
+                    // seamlessly. Without the right cap the gradient ended on a
+                    // square corner 12px past the track's right cap (spec §4b).
+                    .when(gradient_segment_has_left_cap(index), |segment| {
                         segment.rounded_l(px(FILL_LEFT_CAP_RADIUS))
+                    })
+                    .when(gradient_segment_has_right_cap(index), |segment| {
+                        segment.rounded_r(px(FILL_LEFT_CAP_RADIUS))
                     })
                     .bg(linear_gradient(
                         90.0,
@@ -799,7 +812,12 @@ impl ThinkingSlider {
         }
         // A flat tier fills up to the knob centre, so the knob straddles the
         // fill edge. The exact extent is unmeasured (§4.5 M5).
-        let fill = dot_center_offset(selected, self.model.dot_count());
+        let fill = fill_effective_width(selected, self.model.dot_count());
+        // R65 R4c: a fill narrower than `THINKING_TRACK_HEIGHT` (the lowest tier
+        // / Off) *is* the cap itself, so both of its ends are rounded and it
+        // draws as a 24px disc under the knob. A wider fill keeps its right end
+        // square: that end sits at the knob centre and is covered by the knob.
+        let narrow = fill_has_right_cap(selected, self.model.dot_count());
         div()
             .debug_selector(|| "thinking-slider-fill-flat".into())
             .absolute()
@@ -807,16 +825,16 @@ impl ThinkingSlider {
             .top_0()
             .h(px(THINKING_TRACK_HEIGHT))
             .w(px(fill))
-            // R65 R1: the fill's left end must be a capsule cap, not a square
-            // corner. `overflow_hidden` on the track is a pure rectangle clip
+            // R65 R1: the fill's outer ends must be capsule caps, not square
+            // corners. `overflow_hidden` on the track is a pure rectangle clip
             // (spec §4), so the track's own `rounded` never reaches this child
             // and the fill has to carry the radius itself.
             //
-            // GPUI clamps each corner to `min(width, height) / 2` per quad
-            // (spec §4b), so this one value is correct at every tier: at the
-            // narrowest fill (12.0px) it clamps to 6.0, which on a 12px-wide
-            // box is exactly the left semicircle.
+            // The width above is already padded to `THINKING_TRACK_HEIGHT`, so
+            // the per-quad clamp (spec §4b) lands on the full
+            // `FILL_LEFT_CAP_RADIUS` rather than shrinking the cap.
             .rounded_l(px(FILL_LEFT_CAP_RADIUS))
+            .when(narrow, |fill| fill.rounded_r(px(FILL_LEFT_CAP_RADIUS)))
             .bg(TRACK_FILL_FLAT)
             .into_any_element()
     }
@@ -857,6 +875,53 @@ fn dot_center_offset(index: usize, count: usize) -> f32 {
     let half = THINKING_KNOB_DIAMETER / 2.0;
     let travel = THINKING_TRACK_WIDTH - THINKING_KNOB_DIAMETER;
     half + index as f32 * travel / (count - 1) as f32
+}
+
+/// The width the flat fill is **drawn** at for a selected position: the knob
+/// centre offset, padded up to at least `THINKING_TRACK_HEIGHT` (R65 R4b).
+///
+/// The padding is what makes the cap radius survive GPUI's per-quad clamp. Any
+/// quad narrower than `2 * (H / 2) = THINKING_TRACK_HEIGHT` cannot hold a radius
+/// of `FILL_LEFT_CAP_RADIUS`, so the clamp shrinks it and the cap degenerates
+/// into "small corner + straight edge" that pokes out past the track's own cap
+/// (spec §4b). Padding to the track height sets the clamp ceiling to
+/// `min(24, 24) / 2 = 12`, i.e. a true semicircle.
+///
+/// The padding is at most `THINKING_TRACK_HEIGHT / 2 = 12px`, and the knob
+/// (diameter `THINKING_KNOB_DIAMETER`, painted *after* the fill) covers exactly
+/// `[centre - 12, centre + 12]`, so every padded pixel lands under the knob.
+///
+/// At position 0 the padded fill is a 24px disc sitting exactly under the knob,
+/// which is the intended shape rather than a special case: there is deliberately
+/// no `is_off` branch, and R6 forbids widening past this to make blue show at
+/// the lowest tier. `dot_center_offset` itself is untouched — 203px stays a
+/// hard bound (R3).
+fn fill_effective_width(index: usize, count: usize) -> f32 {
+    dot_center_offset(index, count).max(THINKING_TRACK_HEIGHT)
+}
+
+/// Whether the flat fill for `index` must round its **right** corners too
+/// (R65 R4c).
+///
+/// True exactly when the *raw* knob-centre offset is narrower than the track
+/// height, i.e. when the effective width is the padded case. Such a fill is the
+/// cap itself and draws as a disc; a wider one keeps a square right end because
+/// the knob covers it.
+fn fill_has_right_cap(index: usize, count: usize) -> bool {
+    dot_center_offset(index, count) < THINKING_TRACK_HEIGHT
+}
+
+/// Whether gradient segment `index` carries the capsule's **left** cap (R65
+/// R1). Only the segment flush with the track's left edge does.
+fn gradient_segment_has_left_cap(index: usize) -> bool {
+    index == 0
+}
+
+/// Whether gradient segment `index` carries the capsule's **right** cap (R65
+/// R4d). Only the segment flush with the track's right edge does — the last
+/// one, `TRACK_GRADIENT.len() - 2` in `windows(2)` terms.
+fn gradient_segment_has_right_cap(index: usize) -> bool {
+    index == TRACK_GRADIENT.len() - 2
 }
 
 /// R62 R4: the card's own elevation, one tier above the `shadow_sm()` the rest
@@ -1576,44 +1641,120 @@ mod tests {
         );
     }
 
-    /// R65 §4b: **one** radius value covers every tier, because GPUI clamps
-    /// each corner per quad to `min(width, height) / 2`. At the narrowest fill
-    /// (`dot_center_offset(0, n) = 12.0`) that clamp lands on 6.0 — the left
-    /// semicircle of a 12px-wide, 24px-tall box; at every wider tier the full
-    /// 12.0 cap draws.
+    /// R65 §4b/R4b: the flat fill's **effective drawn width** is
+    /// `max(dot_center_offset, THINKING_TRACK_HEIGHT)`.
     ///
-    /// This pins the **arithmetic the spec determined** (the constant and the
-    /// clamp), NOT the painted cap. The test platform has no headless
+    /// The padding is what keeps the cap radius from being clamped down: any
+    /// quad narrower than `THINKING_TRACK_HEIGHT` would clamp
+    /// `FILL_LEFT_CAP_RADIUS` to `width / 2`, and the resulting 6px corner pokes
+    /// outside the track's own left cap (spec §4b's corrected arithmetic). With
+    /// the padding the clamp ceiling is `min(24, 24) / 2 = 12`.
+    ///
+    /// This pins the **arithmetic the spec determined** (the effective width and
+    /// the clamp), NOT the painted cap. The test platform has no headless
     /// renderer, so the rendered shape is not observable here — spec §6 says
     /// exactly that, and the shape proof is a native pixel scan. Do not read
-    /// this test as covering A1/A2.
+    /// this test as covering A1/A2/A3.
     #[test]
-    fn r65_the_left_cap_radius_clamps_to_the_semicircle_at_the_narrowest_fill() {
+    fn r65_the_fill_is_padded_to_the_track_height_before_the_cap_radius() {
         assert_eq!(FILL_LEFT_CAP_RADIUS, 12.0);
         assert_eq!(FILL_LEFT_CAP_RADIUS, THINKING_TRACK_HEIGHT / 2.0);
 
+        // The lowest tier's raw offset is 12px — below the 24px the cap needs,
+        // so it is padded and the radius is no longer clamped.
         let narrowest = dot_center_offset(0, 6);
-        assert_eq!(narrowest, 12.0, "the lowest tier's fill is 12px wide");
-        let clamped = FILL_LEFT_CAP_RADIUS.min(narrowest.min(THINKING_TRACK_HEIGHT) / 2.0);
-        assert_eq!(clamped, 6.0, "a 12px-wide fill clamps to a 6px radius");
+        assert_eq!(narrowest, 12.0, "the lowest tier's raw fill is 12px wide");
+        assert_eq!(
+            fill_effective_width(0, 6),
+            THINKING_TRACK_HEIGHT,
+            "R4b: the narrow fill is padded to the track height"
+        );
+        let clamped =
+            FILL_LEFT_CAP_RADIUS.min(fill_effective_width(0, 6).min(THINKING_TRACK_HEIGHT) / 2.0);
+        assert_eq!(
+            clamped, FILL_LEFT_CAP_RADIUS,
+            "R4b: the padded quad holds the full cap radius, unclamped"
+        );
 
-        // Every other tier is at least two radii wide, so its cap is a full
-        // semicircle rather than a clamp.
+        // Every other tier is at least two radii wide, so it needs no padding
+        // and its cap is a full semicircle either way.
         for index in 1..6 {
             let width = dot_center_offset(index, 6);
             assert!(
                 width >= FILL_LEFT_CAP_RADIUS * 2.0,
                 "tier {index}'s fill ({width}px) is narrower than the full cap"
             );
+            assert_eq!(
+                fill_effective_width(index, 6),
+                width,
+                "tier {index} is wide enough, so it is drawn at its raw offset"
+            );
         }
     }
 
-    /// R65 A4, rendered: the fill layer still begins flush with the track's
-    /// left edge and still spans exactly `dot_center_offset` for every tier.
+    /// R65 R4b/R4c: the padded case is exactly the "narrow" case, and only it
+    /// rounds the fill's right corners.
     ///
-    /// A corner radius is paint-only, so it must not move or resize the fill.
-    /// This is the rendered half of A4 — it says nothing about the painted
-    /// cap, which this harness cannot observe.
+    /// R4c's disc is the lowest tier / Off; R4b's padding is what makes it a
+    /// disc rather than a lopsided shape. No `is_off` special case exists — the
+    /// predicate is purely geometric.
+    #[test]
+    fn r65_only_the_padded_fill_takes_a_right_cap() {
+        // Position 0 of a six-tier ladder: raw 12px, padded to 24, both caps.
+        assert!(fill_has_right_cap(0, 6), "the lowest tier is a disc");
+        assert_eq!(fill_effective_width(0, 6), THINKING_TRACK_HEIGHT);
+        // Every wider tier keeps a square right end under the knob.
+        for index in 1..6 {
+            assert!(
+                !fill_has_right_cap(index, 6),
+                "tier {index} is wide enough to keep a square right end"
+            );
+        }
+        // With Off shown, position 0 is the padded one and position 1 (the
+        // lowest effort) is already wider than the track height.
+        assert!(fill_has_right_cap(0, 7));
+        assert!(!fill_has_right_cap(1, 7));
+    }
+
+    /// R65 R1/R4d: the gradient's first segment carries the left cap and its
+    /// **last** segment the right cap; the middle one carries neither.
+    ///
+    /// The initial R65 pass gave only `index == 0` a radius, which left the
+    /// gradient ending on a square corner 12px past the track's right cap
+    /// (spec §4b's second defect).
+    #[test]
+    fn r65_the_gradient_caps_its_first_and_last_segments_only() {
+        let last = TRACK_GRADIENT.len() - 2;
+        assert_eq!(last, 1, "the measured gradient has two segments");
+
+        assert!(gradient_segment_has_left_cap(0));
+        assert!(
+            !gradient_segment_has_right_cap(0),
+            "the first segment abuts"
+        );
+        assert!(gradient_segment_has_right_cap(last));
+        assert!(
+            !gradient_segment_has_left_cap(last),
+            "the last segment abuts"
+        );
+
+        // Every interior segment carries no cap at all, so the halves stay
+        // seamless.
+        for index in 1..last {
+            assert!(!gradient_segment_has_left_cap(index));
+            assert!(!gradient_segment_has_right_cap(index));
+        }
+        assert_eq!(FILL_LEFT_CAP_RADIUS, THINKING_TRACK_HEIGHT / 2.0);
+    }
+
+    /// R65 A4, rendered: the fill layer still begins flush with the track's
+    /// left edge and still spans exactly
+    /// `max(dot_center_offset, THINKING_TRACK_HEIGHT)` for every tier.
+    ///
+    /// A corner radius is paint-only, so it must not move the fill; the only
+    /// width change R65 makes is the R4b padding, which is asserted here as the
+    /// effective width. This says nothing about the painted cap, which this
+    /// harness cannot observe.
     #[gpui_kit::test]
     async fn r65_a4_the_fill_keeps_its_left_edge_and_width_at_every_tier(cx: &mut TestAppContext) {
         let ladder = tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -1625,7 +1766,7 @@ mod tests {
             let track = visual
                 .debug_bounds("thinking-slider-track")
                 .expect("mounted track");
-            let expected = dot_center_offset(selected, ladder.len());
+            let expected = fill_effective_width(selected, ladder.len());
 
             if selected == strongest {
                 // The strongest tier takes the gradient: its first segment
@@ -1666,8 +1807,8 @@ mod tests {
             );
             assert!(
                 (f32::from(fill.size.width) - expected).abs() <= 0.5,
-                "R65 A4: tier {selected}'s fill must still span \
-                 dot_center_offset = {expected}px, got {}",
+                "R65 A4/R4b: tier {selected}'s fill must span the effective \
+                 width = {expected}px, got {}",
                 f32::from(fill.size.width)
             );
         }
