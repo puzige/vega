@@ -502,11 +502,15 @@ async fn r61_a_layer_is_dismissible_while_it_covers_the_bar(cx: &mut TestAppCont
 /// unclickable in its lower band. The layers carry `occlude()`, and this test
 /// proves the resulting z-order with the one observation available without
 /// pixels — a click inside the overlap region reaches the **card's** own
-/// surface (its title row's parent), not the bar underneath.
+/// surface, not the bar underneath.
 ///
-/// The click is placed inside the card but deliberately off the slider's own
-/// track, so the assertion is about the layer's hit area rather than about a
-/// slider interaction.
+/// R62 R2 grew the card from two rows to three, so its top edge now sits
+/// further above the bar's top than it did under R61 — the overlap region
+/// starts at the **bar's** top edge rather than at the card's. The click point
+/// is therefore taken from the model row (R62 R3: the inert row, which handles
+/// nothing) and asserted to fall inside the overlap, instead of being
+/// `overlap.top() + 1`, which after R62 lands on the title row and would
+/// measure the wrong thing by opening the list.
 #[gpui_kit::test]
 async fn r61_the_layer_occludes_the_bar_where_they_overlap(cx: &mut TestAppContext) {
     let (window, stream) =
@@ -522,26 +526,32 @@ async fn r61_the_layer_occludes_the_bar_where_they_overlap(cx: &mut TestAppConte
          card={card:?} bar={bar:?}"
     );
 
-    // A point inside both boxes, on the card's top padding band (above its
-    // title row and track, below the card's top edge), so nothing inside the
-    // card handles it.
+    // The inert model row (R62 R3) supplies a point that is inside the card but
+    // handled by nothing inside it, so the assertion is about the layer's hit
+    // area rather than about a slider or title interaction.
+    let model_name = mounted(window, "thinking-slider-model", cx).expect("model name");
+    let target = model_name.center();
     let overlap = card.intersect(&bar);
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
-    visual.simulate_click(
-        gpui_kit::point(overlap.center().x, overlap.top() + gpui_kit::px(1.)),
-        Modifiers::default(),
+    assert!(
+        overlap.contains(&target),
+        "R61 R5: the chosen click point must lie in the card/bar overlap: \
+         target={target:?} overlap={overlap:?}"
     );
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_click(target, Modifiers::default());
     visual.run_until_parked();
 
     // The layer's own `on_mouse_down` stops propagation, so a click that lands
     // on it cannot reach the outside-click handler: the picker stays open. A
     // click that fell through to the bar (or to the transcript behind it) would
-    // have closed the picker instead.
+    // have closed the picker instead. The click is on the inert row, so it must
+    // not drill down to the list either (R62 R3).
     assert_eq!(
         level(&stream, cx),
         ModelPickerLevel::Slider,
-        "R61 R5: the card must take the click in the overlap region, so it is \
-         painted above the utility bar rather than behind it"
+        "R61 R5 / R62 R3: the card must take the click in the overlap region \
+         without the inert model row emitting anything"
     );
     assert!(is_mounted(window, "composer-thinking-slider", cx));
 }
@@ -698,40 +708,141 @@ async fn r61_layers_hug_the_trigger_in_the_smallest_window(cx: &mut TestAppConte
 
 // ---- R6/D3: no row overlap inside the card --------------------------------
 
-/// R6/D3: the card's title row and its track do not overlap, and the card is
-/// exactly as tall as its rows plus padding.
+/// R59 R6/D3, **rewritten by R62 R2**: the card's three rows do not overlap
+/// each other or the track, and all of them stay inside the card.
+///
+/// R59 asserted that the model name and the tier name sat on **one** row
+/// (`model_name.right() <= tier_name.left()`). R62 R2 replaced that layout with
+/// three stacked rows, so the assertion is **inverted, not deleted**: the two
+/// text runs now occupy separate bands, which is the R62 A2 claim. Keeping the
+/// old assertion would pin a layout the spec has retired.
+///
+/// The vertical ordering asserted here is the reference layout of R62 §2:
+/// tier row above model row above track.
 #[gpui_kit::test]
-async fn r59_card_rows_do_not_overlap(cx: &mut TestAppContext) {
-    let (window, _stream) = open_picker_stream(cx, "r59-r6", twenty_models(), three_tiers(), true);
+async fn r62_card_rows_stack_without_overlapping(cx: &mut TestAppContext) {
+    let (window, _stream) =
+        open_picker_stream(cx, "r62-rows", twenty_models(), three_tiers(), true);
     click(window, "composer-model", cx);
 
     let card = mounted(window, "thinking-slider-card", cx).expect("card");
     let title = mounted(window, "thinking-slider-title", cx).expect("title row");
+    let model_name = mounted(window, "thinking-slider-model", cx).expect("model name");
     let track = mounted(window, "thinking-slider-track", cx).expect("track");
 
+    // R62 R2 order, top to bottom: tier row, model row, track.
     assert!(
-        title.bottom() <= track.top(),
-        "R6/D3: the title row (bottom {:?}) must not overlap the track (top {:?})",
+        title.bottom() <= model_name.top(),
+        "R62 A2: the tier row (bottom {:?}) must sit above the model row (top {:?})",
         title.bottom(),
+        model_name.top()
+    );
+    assert!(
+        model_name.bottom() <= track.top(),
+        "R62 A2: the model row (bottom {:?}) must sit above the track (top {:?})",
+        model_name.bottom(),
         track.top()
     );
+    // The two text runs are in separate vertical bands — the direct A2 claim.
     assert!(
-        track.bottom() <= card.bottom() && title.top() >= card.top(),
-        "R6: the rows stay inside the card: card={card:?} title={title:?} track={track:?}"
+        title.bottom() <= model_name.top() || model_name.bottom() <= title.top(),
+        "R62 A2: the tier name and the model name must not share a row: \
+         tier={title:?} model={model_name:?}"
     );
-    // The model name and the tier name share the one title row, so they cannot
-    // collide with each other either (R59 R2 two-tone title).
-    let model_name = mounted(window, "thinking-slider-model", cx).expect("model name");
-    let tier_name = mounted(window, "thinking-slider-label", cx).expect("tier name");
-    assert!(
-        f32::from(model_name.right()) <= f32::from(tier_name.left()),
-        "R2: model name (right {:?}) precedes the tier name (left {:?}) on one row",
-        model_name.right(),
-        tier_name.left()
+    // R62 R5: the taller card still contains all three rows.
+    for (label, bounds) in [
+        ("tier row", title),
+        ("model row", model_name),
+        ("track", track),
+    ] {
+        assert!(
+            bounds.top() >= card.top() && bounds.bottom() <= card.bottom(),
+            "R6: the {label} stays inside the card: card={card:?} {label}={bounds:?}"
+        );
+    }
+}
+
+/// R62 R5/M1: how much **more** of the utility bar the three-row card covers
+/// on the real production mount.
+///
+/// R62 M1 asks for the card's total height after the layout change and how it
+/// moves the R61 overlap. Both are measured here on the mounted composer rather
+/// than derived, so the answer is the rendered geometry:
+///
+/// * the card's own height, from the production shrink-to-fit layer (in the
+///   component's own harness the card is the window root and stretches, so the
+///   height M1 is about can only be read here);
+/// * the card's top edge relative to the bar's top edge — the depth to which
+///   the card reaches into the bar's 37px band;
+/// * the card's bottom edge relative to the trigger's top edge, which is R61's
+///   anchor and must be unchanged by the taller card (R62 R5).
+///
+/// **Measured on the frozen geometry (this window, this trigger):** the card is
+/// `254.5 × 108`, its bottom sits 8px above the trigger's top (the R61 token),
+/// and its top edge lands 55px above the bar's bottom edge and 18px above the
+/// bar's top edge. The pre-R62 two-row card was 82px, so the card grew 26px and
+/// deepened the accepted overlap by the same amount (R62 R5).
+#[gpui_kit::test]
+async fn r62_m1_the_taller_card_covers_more_of_the_utility_bar(cx: &mut TestAppContext) {
+    let (window, _stream) = open_picker_stream(cx, "r62-m1", twenty_models(), three_tiers(), true);
+    let bar = mounted(window, "composer-utility-bar", cx).expect("utility bar");
+    let trigger = mounted(window, "composer-model", cx).expect("trigger");
+
+    click(window, "composer-model", cx);
+    let card = mounted(window, "thinking-slider-card", cx).expect("card");
+
+    // R61's anchoring survives the taller card: the bottom still hugs the
+    // trigger's top with the frozen gap, and the card still hugs from *below*
+    // the trigger rather than covering it.
+    assert_hugs(card, trigger, "R62 R5: the three-row card");
+    assert_close(
+        f32::from(trigger.top() - card.bottom()),
+        Layout::COMPOSER_PICKER_TRIGGER_GAP,
+        "R62 R5: the anchor gap is still the R61 token",
     );
     assert!(
-        model_name.top() >= card.top() && model_name.bottom() <= card.bottom(),
-        "the model name stays inside the card"
+        card.bottom() <= trigger.top(),
+        "R62 R5: the taller card must grow *upward* from the anchor, not down \
+         over the trigger: card.bottom={:?} trigger.top={:?}",
+        card.bottom(),
+        trigger.top()
+    );
+
+    // M1: the height the three-row layout produces on the production mount.
+    assert_close(
+        f32::from(card.size.height),
+        108.0,
+        "R62 M1: the three-row card's mounted height (pre-R62: 82px)",
+    );
+    assert_close(
+        f32::from(card.size.width),
+        crate::conversation_stream::thinking_slider::THINKING_CARD_WIDTH,
+        "R62 R6: the width is unchanged by the extra row",
+    );
+
+    // The accepted consequence, quantified: the card reaches into the bar's
+    // 37px band, and past its top edge. R61's clearance was 61px of trigger
+    // headroom for an 82px card; the R62 card needs 108px, so the extra 26px
+    // comes out of the bar (R62 R5 accepts this).
+    assert!(
+        card.intersects(&bar),
+        "R62 R5/M1: the taller card still overlaps the utility bar \
+         (card={card:?} bar={bar:?})"
+    );
+    assert_close(
+        f32::from(bar.bottom() - card.top()),
+        55.0,
+        "R62 M1: how deep the card's top edge reaches into the bar's band, \
+         measured from the bar's bottom edge",
+    );
+    assert!(
+        card.top() < bar.top(),
+        "R62 M1: the card reaches above the bar's own top edge by {:?}px \
+         (card.top={:?} bar.top={:?}); the pre-R62 card also did, and the extra \
+         26px deepens it",
+        bar.top() - card.top(),
+        card.top(),
+        bar.top()
     );
 }
 

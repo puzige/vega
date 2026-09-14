@@ -56,11 +56,11 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Bounds, DragMoveEvent, Empty, EventEmitter, MouseButton, MouseDownEvent,
+    AnyElement, Bounds, Div, DragMoveEvent, Empty, EventEmitter, MouseButton, MouseDownEvent,
     MouseUpEvent, Pixels, Point, Render, Rgba, Window, base::ElementExt, div, linear_color_stop,
-    linear_gradient, px, svg,
+    linear_gradient, px,
 };
-use vega_theme::{Layout, Typography, theme};
+use vega_theme::{Layout, ThemeColors, Typography, theme};
 
 // ---------------------------------------------------------------------------
 // Measured geometry (spec §4.3, logical px)
@@ -92,6 +92,23 @@ const CARD_PADDING_TOP: f32 = 12.0;
 const CARD_PADDING_BOTTOM: f32 = 14.0;
 /// Vertical gap between the card's three rows. **Chosen** (§4.5 M5).
 const CARD_ROW_GAP: f32 = 8.0;
+
+/// Minimum height of each of the card's two text rows (R62 R2). **Chosen, not
+/// measured**: the reference layout fixes the rows' *order* and alignment, not
+/// their height, so §6 M1/M4 stay open on it.
+///
+/// It is a **floor**, applied with `min_h`, not a fixed height: the model name
+/// renders a 21px line box (13px `SIDEBAR` at the default line height), which
+/// overflows a hard 20px and makes the row taller than the constant claims. As
+/// a floor the row takes whichever is larger, so the constant still keeps the
+/// two rows visually equal for short text while a larger line box can never be
+/// clipped.
+const CARD_TEXT_ROW_HEIGHT: f32 = 20.0;
+
+/// Gap between the tier name and its chevron inside the title group (R62 R2).
+/// **Chosen, not measured**: it is the 4px `gap_1` the pre-R62 title row used
+/// between its two text runs, kept so the group's rhythm is unchanged.
+const TITLE_GROUP_GAP: f32 = 4.0;
 
 // ---------------------------------------------------------------------------
 // Measured colours (spec §4.1, §4.2)
@@ -143,11 +160,6 @@ const TRACK_DOT_FILLED: Rgba = measured_rgba(0xFFFFFFFF);
 /// region). The measurement is light-mode only; `border_subtle` is 0xE8E8E8,
 /// one 8-bit step away, and is used in dark mode where no measurement exists.
 const TRACK_UNFILLED: Rgba = measured_rgba(0xE9E8E8FF);
-
-/// Lucide's `zap` bolt on the bundled set's 24 px, stroke-2, round-join
-/// grammar. Kept inline so this component stays self-contained (the bundled
-/// icon set has no bolt) and so no shared icon table is touched.
-const BOLT_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>"#;
 
 /// The persisted name of the Off position (R58 R3).
 ///
@@ -820,13 +832,26 @@ fn dot_center_offset(index: usize, count: usize) -> f32 {
     half + index as f32 * travel / (count - 1) as f32
 }
 
-fn bolt_icon(color: Rgba) -> AnyElement {
-    svg()
-        .data(BOLT_SVG)
-        .size(px(16.0))
-        .flex_shrink_0()
-        .text_color(color)
-        .into_any_element()
+/// R62 R4: the card's own elevation, one tier above the `shadow_sm()` the rest
+/// of Vega's popovers use.
+///
+/// R61 anchored this card to the model trigger, which makes it overlap the
+/// composer card (R61 §2 accepted that). At `shadow_sm()` the composer card's
+/// top border and rounded corner read as a line crossing the slider card — the
+/// user's D1 "looks translucent" / D2 "left side is cut off" reports, whose
+/// real cause is an elevation too weak to separate the layers (R62 §1).
+///
+/// `shadow_lg` rather than `shadow_md`: `shadow_md`'s 6px blur at 10% opacity
+/// is only one step above `shadow_sm` and still reads as a hairline where the
+/// two cards cross, while `shadow_lg`'s 15px blur with a 3px negative spread
+/// produces a clear dark transition on the card's left edge and bottom without
+/// bleeding far past the card. This is a GPUI framework tier, not a Vega token
+/// — Vega has no `shadow_md`/`shadow_lg` wrapper (R62 R4 note).
+///
+/// The card's background stays **opaque** `bg_elevated`; R4 forbids solving the
+/// separation with translucency.
+fn card_shadow(card: Div) -> Div {
+    card.shadow_lg()
 }
 
 impl Render for ThinkingSlider {
@@ -928,102 +953,166 @@ impl Render for ThinkingSlider {
                 )
             });
 
+        // R62 R2: three stacked rows — tier name + chevron, model name, track.
+        //
+        // The tier row is the clickable control that opens the model list (R59
+        // R2/R3); it is built by `render_title_row` so the event it emits stays
+        // in one place. The model row is *not* clickable — see that function's
+        // docs for why the two are kept apart.
+        //
+        // R6: both text rows carry `min_w_0` + `truncate`, so a long tier or
+        // model name ellipsises inside the measured 254.5px card instead of
+        // spilling past its edge. `min_w_0` is what lets a flex child shrink
+        // below its content width; without it `truncate` never engages.
+        //
+        // R62 R4: `card_shadow` supplies the stronger elevation that makes the
+        // card read as floating above the composer card it overlaps.
+        card_shadow(
+            div()
+                .debug_selector(|| "thinking-slider-card".into())
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(CARD_ROW_GAP))
+                .w(px(THINKING_CARD_WIDTH))
+                .px(px(CARD_INSET))
+                .pt(px(CARD_PADDING_TOP))
+                .pb(px(CARD_PADDING_BOTTOM))
+                // Measured radius is ≈20 (spec §4.3); `COMPOSER_RADIUS` is 20.0.
+                .rounded(px(Layout::COMPOSER_RADIUS))
+                .border_1()
+                .border_color(colors.border_subtle)
+                // R62 R4: the surface stays fully opaque. The card's separation
+                // from the composer card comes from `card_shadow` alone.
+                .bg(colors.bg_elevated)
+                .text_color(colors.text_primary),
+        )
+        .child(self.render_title_row(label, label_color, colors, cx))
+        .child(self.render_model_row(colors))
+        // The track is the one full-width row; `items_center` on the card
+        // cannot stretch it because it carries its own measured width.
+        .child(track)
+        .into_any_element()
+    }
+}
+
+impl ThinkingSlider {
+    /// R62 R2 row 1: the tier name and its `>` chevron, centred, and the only
+    /// control that opens the model list.
+    ///
+    /// R59 R2/R3 kept the title row as the level-two entry point; R62 R3 keeps
+    /// that meaning exactly, so the `ThinkingSliderTitleActivated` emit below is
+    /// the same event on the same condition. Only the row's contents changed:
+    /// the bolt icon is gone (R1) and the model name moved to its own row.
+    ///
+    /// The row spans the card's content width so the whole band stays clickable
+    /// — the hover fill and the hit area are the full row, not just the text —
+    /// while `justify_center` centres the `tier name + chevron` group inside it
+    /// (R2 row 1).
+    ///
+    /// **Row 2 is deliberately not clickable** (R3's first option). Reasons:
+    /// the reference implementation's own two rows are separate elements and
+    /// only the tier row carries the chevron, which is the affordance that
+    /// says "this opens something"; and folding the model row into the same hit
+    /// area would put a click target *below* the control the user reads as the
+    /// button, so a click aimed at the model name would silently drill down.
+    /// Leaving row 2 inert keeps the hit area identical to the affordance.
+    fn render_title_row(
+        &self,
+        label: String,
+        label_color: Rgba,
+        colors: ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
-            .debug_selector(|| "thinking-slider-card".into())
+            .id("thinking-slider-title")
+            .debug_selector(|| "thinking-slider-title".into())
             .flex()
-            .flex_col()
-            .gap(px(CARD_ROW_GAP))
-            .w(px(THINKING_CARD_WIDTH))
-            .px(px(CARD_INSET))
-            .pt(px(CARD_PADDING_TOP))
-            .pb(px(CARD_PADDING_BOTTOM))
-            // Measured radius is ≈20 (spec §4.3); `COMPOSER_RADIUS` is 20.0.
-            .rounded(px(Layout::COMPOSER_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .text_color(colors.text_primary)
-            .shadow_sm()
-            // R59 R2/R6: one title row, not a header row plus a model-name row.
-            // Both text runs live inside it, so they cannot collide with each
-            // other or with the track below (R59 D3), and each is bounded by
-            // `min_w_0` + `truncate` so a long name ellipsises inside the
-            // measured 254.5px card instead of spilling past its edge.
+            .items_center()
+            .justify_center()
+            .w_full()
+            .min_h(px(CARD_TEXT_ROW_HEIGHT))
+            .flex_shrink_0()
+            .min_w_0()
+            .cursor_pointer()
+            .rounded_md()
+            .hover(move |style| style.bg(colors.bg_hover))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|_, _: &MouseUpEvent, _, cx| {
+                    // R59 R3: the host answers this by swapping this card
+                    // out for the model list, so the two levels are never
+                    // on screen together.
+                    cx.emit(ThinkingSliderTitleActivated);
+                }),
+            )
+            // The centred group. It exists as its own element so a test can
+            // measure the group's centring independently of the tier name's own
+            // width — with a chevron beside it, a centred *group* is not the
+            // same claim as a centred label.
             .child(
                 div()
-                    .id("thinking-slider-title")
-                    .debug_selector(|| "thinking-slider-title".into())
+                    .debug_selector(|| "thinking-slider-title-group".into())
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .h(px(THINKING_TRACK_HEIGHT))
-                    .flex_shrink_0()
+                    .gap(px(TITLE_GROUP_GAP))
                     .min_w_0()
-                    .cursor_pointer()
-                    .rounded_md()
-                    .hover(move |style| style.bg(colors.bg_hover))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|_, _: &MouseUpEvent, _, cx| {
-                            // R59 R3: the host answers this by swapping this card
-                            // out for the model list, so the two levels are never
-                            // on screen together.
-                            cx.emit(ThinkingSliderTitleActivated);
-                        }),
-                    )
-                    .child(bolt_icon(colors.text_tertiary))
+                    // R62 R2: the tier name keeps R57's **measured** strength
+                    // ramp (`tier_label_color`: purple at the strongest tier,
+                    // blue below it, spec §4.1) — R57 §3.4 R8 froze that and
+                    // R62 does not change it.
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .flex_1()
+                            .debug_selector(|| "thinking-slider-label".into())
                             .min_w_0()
-                            // R59 R2 two-tone title: the model name is the
-                            // primary run, the tier name the second one.
-                            //
-                            // The tier run keeps R57's **measured** tier colour
-                            // (`tier_label_color`, spec §4.1: purple at the
-                            // strongest tier, blue below it) rather than a flat
-                            // secondary ink token. R59 R2 describes the reference
-                            // screenshot as "model name primary, tier name
-                            // secondary", which is a statement about the two
-                            // runs being *distinguishable*; R57 §3.4 R8 froze
-                            // the tier name as strength-coloured and R59 §4 does
-                            // not list that contract as changed. Honouring both
-                            // is possible here because the model name now takes
-                            // `text_primary` — a tone the tier ramp never uses —
-                            // so the two runs stay distinct in every tier state.
-                            .child(
-                                div()
-                                    .debug_selector(|| "thinking-slider-model".into())
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(Typography::SIDEBAR))
-                                    .text_color(colors.text_primary)
-                                    .child(self.model_name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "thinking-slider-label".into())
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(label_color)
-                                    .child(label),
-                            ),
+                            .truncate()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(label_color)
+                            .child(label),
                     )
-                    .child(crate::icons::icon(
-                        crate::icons::Icon::ChevronRight,
-                        colors.text_tertiary,
-                    )),
-                // R58 R7: the reset control (circular-arrow icon) is removed.
-                // Vega has exactly one persisted tier field (`preference`) and
-                // a slider selection writes it, so "reset to the configured
-                // default" is the identity operation — R57 §3.4 R11 is void.
+                    .child(
+                        div()
+                            .debug_selector(|| "thinking-slider-chevron".into())
+                            .flex()
+                            .flex_shrink_0()
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::ChevronRight,
+                                colors.text_tertiary,
+                            )),
+                    ),
             )
-            .child(track)
+            .into_any_element()
+    }
+
+    /// R62 R2 row 2: the model name, centred, in `text_secondary`.
+    ///
+    /// R62 R3 keeps this row **inert**: no id, no cursor, no hover, no mouse
+    /// handler. It stays inside the card's own hit area (the layer's
+    /// `occlude()`), so a click on it is swallowed by the card rather than
+    /// falling through to the composer behind it — it simply does nothing.
+    ///
+    /// The `debug_selector` sits on the *inner* truncated box rather than on the
+    /// full-width row, so the measured bounds are the model name's own text run.
+    /// That is what makes the centring assertion (A3) meaningful: a full-width
+    /// row would be centred by construction.
+    fn render_model_row(&self, colors: ThemeColors) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .w_full()
+            .min_h(px(CARD_TEXT_ROW_HEIGHT))
+            .flex_shrink_0()
+            .min_w_0()
+            .child(
+                div()
+                    .debug_selector(|| "thinking-slider-model".into())
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_secondary)
+                    .child(self.model_name.clone()),
+            )
             .into_any_element()
     }
 }
@@ -1046,6 +1135,8 @@ fn tier_label_color_for(selected: Option<usize>, strongest: Option<usize>) -> Rg
 mod tests {
     use super::*;
     use gpui_kit::{Modifiers, TestAppContext, VisualTestContext, WindowHandle, WindowOptions};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn tiers(list: &[&str]) -> Vec<String> {
         list.iter().map(|tier| (*tier).to_string()).collect()
@@ -1463,7 +1554,7 @@ mod tests {
             visual.debug_bounds("thinking-slider-reset").is_none(),
             "R58 R7 removes the reset control entirely"
         );
-        // The header still renders its bolt and its tier label.
+        // The header still renders its tier label (R62 R1 removed only the bolt).
         assert!(visual.debug_bounds("thinking-slider-label").is_some());
     }
 
@@ -1607,6 +1698,473 @@ mod tests {
             (f32::from(knob.size.width) - THINKING_KNOB_DIAMETER).abs() <= 1.0,
             "knob diameter {} != measured {THINKING_KNOB_DIAMETER}",
             f32::from(knob.size.width)
+        );
+    }
+
+    // ---- R62: the three-row card ----------------------------------------
+
+    /// Opens the card for a six-tier model at `medium`.
+    fn open_three_row_card(cx: &mut TestAppContext) -> WindowHandle<ThinkingSlider> {
+        open_slider(
+            cx,
+            tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+            "medium",
+            "medium",
+        )
+    }
+
+    /// R62 A1: the card no longer mounts the bolt icon.
+    ///
+    /// A bare "the bolt's selector is absent" assertion would be vacuous — the
+    /// pre-R62 bolt never carried a `debug_selector`, so that check would pass
+    /// on the old layout too. The proof is therefore **geometric**: the title
+    /// group is exactly its two known children (`tier name + TITLE_GROUP_GAP +
+    /// chevron`) wide. The removed bolt was a 16px icon preceded by the group's
+    /// 4px gap, so a re-added bolt would widen the group by 20px and fail the
+    /// width identity below.
+    ///
+    /// The chevron keeps an explicit selector so the identity has two measured
+    /// terms rather than one measured and one assumed.
+    #[gpui_kit::test]
+    async fn r62_a1_the_title_group_has_no_bolt_icon(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(
+            visual.debug_bounds("thinking-slider-card").is_some(),
+            "the card itself must still mount, or this test proves nothing"
+        );
+        let group = visual
+            .debug_bounds("thinking-slider-title-group")
+            .expect("mounted title group");
+        let label = visual
+            .debug_bounds("thinking-slider-label")
+            .expect("mounted tier name");
+        let chevron = visual
+            .debug_bounds("thinking-slider-chevron")
+            .expect("mounted chevron");
+        let children_width =
+            f32::from(label.size.width) + TITLE_GROUP_GAP + f32::from(chevron.size.width);
+        let group_width = f32::from(group.size.width);
+        assert!(
+            (group_width - children_width).abs() <= 1.0,
+            "R62 A1: the title group must contain only the tier name and the \
+             chevron. Group width {group_width}px vs its two children \
+             {children_width}px (label {} + gap {TITLE_GROUP_GAP} + chevron \
+             {}). A difference of ~20px means a 16px bolt icon and its gap are \
+             back in the row.",
+            f32::from(label.size.width),
+            f32::from(chevron.size.width)
+        );
+        // R62 R1: `BOLT_SVG` and its helper are gone from the module, so no
+        // selector for a bolt can exist.
+        assert!(
+            visual.debug_bounds("thinking-slider-bolt").is_none(),
+            "R62 R1: the bolt icon must not be mounted in the card"
+        );
+        // The other title-row parts survive the removal.
+        assert!(visual.debug_bounds("thinking-slider-title").is_some());
+        assert!(
+            visual.debug_bounds("thinking-slider-model").is_some(),
+            "R62 R2 row 2 renders the model name"
+        );
+    }
+
+    /// R62 A2: the tier name and the model name occupy two vertically
+    /// separated rows.
+    ///
+    /// This is the structural claim R62 R2 makes — before R62 the two runs
+    /// shared one row, so this assertion is exactly the one that could not have
+    /// held on the old layout.
+    #[gpui_kit::test]
+    async fn r62_a2_tier_and_model_names_sit_on_separate_rows(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let tier_name = visual
+            .debug_bounds("thinking-slider-label")
+            .expect("mounted tier name");
+        let model_name = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model name");
+        assert!(
+            tier_name.bottom() <= model_name.top(),
+            "R62 A2: the tier name (bottom {:?}) must sit entirely above the \
+             model name (top {:?})",
+            tier_name.bottom(),
+            model_name.top()
+        );
+        // R62 R2 row order: the tier row is first, the model row second.
+        assert!(
+            tier_name.top() < model_name.top(),
+            "R62 R2: the tier name is row 1 and the model name row 2: \
+             tier={tier_name:?} model={model_name:?}"
+        );
+        // R62 R5: the model row is still inside the card and above the track.
+        let card = visual
+            .debug_bounds("thinking-slider-card")
+            .expect("mounted card");
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        assert!(
+            model_name.bottom() <= track.top() && track.bottom() <= card.bottom(),
+            "R62 R2: the row order is tier, model, track: card={card:?} \
+             model={model_name:?} track={track:?}"
+        );
+    }
+
+    /// R62 A3: both text rows are horizontally centred inside the card.
+    ///
+    /// "Centred" is measured against the **card's** centre, not against the
+    /// row's own bounds: the rows span the card's content width by design, so
+    /// asserting a full-width box is centred would be vacuous. The tier claim is
+    /// made on the `tier name + chevron` group, which is the unit R2 centres.
+    #[gpui_kit::test]
+    async fn r62_a3_both_text_rows_are_centred(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let card = visual
+            .debug_bounds("thinking-slider-card")
+            .expect("mounted card");
+        let card_center = card.center().x;
+        // Anti-vacuity guard: a box as wide as the card's content band would be
+        // centred by construction, so each measured box must be genuinely
+        // narrower than that band for the centring claim to mean anything.
+        let content_band = f32::from(card.size.width) - CARD_INSET * 2.0;
+        let half_tolerance = 1.0;
+        for (label, selector) in [
+            ("tier name + chevron group", "thinking-slider-title-group"),
+            ("model name", "thinking-slider-model"),
+        ] {
+            let row = visual
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("mounted {label}"));
+            assert!(
+                f32::from(row.size.width) < content_band,
+                "R62 A3: the {label} must be shrink-to-fit ({:.1}px) inside the \
+                 {content_band}px content band, or its centring is vacuous",
+                f32::from(row.size.width)
+            );
+            let offset = f32::from(row.center().x) - f32::from(card_center);
+            assert!(
+                offset.abs() <= half_tolerance,
+                "R62 A3: the {label} must be centred in the card: its centre \
+                 {:?} is {offset}px from the card's centre {card_center:?} \
+                 (card={card:?} row={row:?})",
+                row.center().x
+            );
+        }
+    }
+
+    /// R62 A4: row 1 still emits `ThinkingSliderTitleActivated` on click.
+    ///
+    /// R62 R3 requires the two-level drill-down semantics to be unchanged, so
+    /// this asserts the same event the pre-R62 title row emitted. The event is
+    /// observed on the mounted entity itself, which is the production path.
+    #[gpui_kit::test]
+    async fn r62_a4_the_title_row_still_emits_title_activated(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let activated = Arc::new(AtomicUsize::new(0));
+        let captured = activated.clone();
+        let slider = window.entity(cx).expect("slider entity");
+        cx.update(|cx| {
+            cx.subscribe(&slider, move |_, _: &ThinkingSliderTitleActivated, _| {
+                captured.fetch_add(1, Ordering::SeqCst);
+            })
+            .detach();
+        });
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let title = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted title row");
+        visual.simulate_click(title.center(), Modifiers::default());
+        visual.run_until_parked();
+
+        assert_eq!(
+            activated.load(Ordering::SeqCst),
+            1,
+            "R62 A4: clicking row 1 must emit exactly one \
+             ThinkingSliderTitleActivated"
+        );
+    }
+
+    /// R62 R3: the model row does **not** emit the drill-down event.
+    ///
+    /// This is the other half of the R3 decision (row 2 is inert). Without it,
+    /// "row 1 emits" would still hold if both rows emitted.
+    #[gpui_kit::test]
+    async fn r62_r3_the_model_row_is_inert(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let activated = Arc::new(AtomicUsize::new(0));
+        let captured = activated.clone();
+        let slider = window.entity(cx).expect("slider entity");
+        cx.update(|cx| {
+            cx.subscribe(&slider, move |_, _: &ThinkingSliderTitleActivated, _| {
+                captured.fetch_add(1, Ordering::SeqCst);
+            })
+            .detach();
+        });
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let model_name = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model name");
+        let tier_before = tier_of(&window, cx);
+        visual.simulate_click(model_name.center(), Modifiers::default());
+        visual.run_until_parked();
+
+        assert_eq!(
+            activated.load(Ordering::SeqCst),
+            0,
+            "R62 R3: the model row must not open the model list"
+        );
+        assert_eq!(
+            tier_of(&window, cx),
+            tier_before,
+            "R62 R3: the model row must not change the selected tier either"
+        );
+    }
+
+    /// R62 A5: the card keeps the measured `THINKING_CARD_WIDTH`.
+    ///
+    /// R6 freezes the width and §4 forbids shrinking the card, so the taller
+    /// three-row layout must not have traded width for height.
+    #[gpui_kit::test]
+    async fn r62_a5_the_card_keeps_its_width(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let card = visual
+            .debug_bounds("thinking-slider-card")
+            .expect("mounted card");
+        assert!(
+            (f32::from(card.size.width) - THINKING_CARD_WIDTH).abs() <= 1.0,
+            "R62 A5/R6: card width {} != frozen {THINKING_CARD_WIDTH}",
+            f32::from(card.size.width)
+        );
+        assert_eq!(THINKING_CARD_WIDTH, 254.5);
+        // The track is unchanged too (R57 froze the bottom row).
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        assert!(
+            (f32::from(track.size.width) - THINKING_TRACK_WIDTH).abs() <= 1.0,
+            "R57's bottom row is unchanged: track width {} != {THINKING_TRACK_WIDTH}",
+            f32::from(track.size.width)
+        );
+    }
+
+    /// R62 A6: the card's shadow is no longer `shadow_sm`.
+    ///
+    /// `shadow_sm` is a GPUI framework method that writes a `Vec<BoxShadow>`
+    /// straight into the element's style, so the value is asserted on the same
+    /// builder the card uses: `card_shadow` must produce `shadow_lg`'s two
+    /// layers, and must differ from `shadow_sm`'s. `StyleRefinement`'s fields
+    /// are `Option`-wrapped by the derive, which is why the shadow is read
+    /// through the style accessor rather than compared as a whole.
+    #[test]
+    fn r62_a6_the_card_shadow_is_stronger_than_shadow_sm() {
+        let large = card_shadow(div()).style().box_shadow.clone();
+        let small = div().shadow_sm().style().box_shadow.clone();
+        let large = large.expect("card_shadow sets a box shadow");
+        let small = small.expect("shadow_sm sets a box shadow");
+        assert_ne!(
+            large, small,
+            "R62 A6/R4: the card's shadow must no longer be shadow_sm"
+        );
+        // `shadow_lg` is Tailwind's two-layer 10px/4px offset pair; the larger
+        // blur is the value that distinguishes it from `shadow_sm`'s 3px/2px.
+        assert_eq!(
+            large.len(),
+            2,
+            "shadow_lg is a two-layer shadow, got {large:?}"
+        );
+        let widest_blur = large
+            .iter()
+            .map(|shadow| f32::from(shadow.blur_radius))
+            .fold(0.0_f32, f32::max);
+        assert!(
+            widest_blur >= 15.0,
+            "R62 R4: the card's shadow must be visibly wider than shadow_sm's \
+             3px blur; got a widest blur of {widest_blur}px"
+        );
+        // The stronger tier is a strict escalation: the largest blur of the
+        // chosen shadow exceeds the largest blur `shadow_sm` offers.
+        let widest_small = small
+            .iter()
+            .map(|shadow| f32::from(shadow.blur_radius))
+            .fold(0.0_f32, f32::max);
+        assert!(
+            widest_blur > widest_small,
+            "R62 R4: {widest_blur}px blur must exceed shadow_sm's {widest_small}px"
+        );
+    }
+
+    /// R62 R4: the surface stays **opaque**. The separation comes from the
+    /// shadow alone; R4 explicitly forbids a translucent background.
+    #[test]
+    fn r62_r4_the_card_background_stays_opaque() {
+        let colors = vega_theme::Theme::light().colors;
+        assert_eq!(
+            colors.bg_elevated.a, 1.0,
+            "R62 R4: the card's surface token must stay fully opaque"
+        );
+        assert_eq!(colors.bg_elevated, measured_rgba(0xFFFFFFFF));
+        // Dark mode too, so the rule is not appearance-dependent.
+        assert_eq!(vega_theme::Theme::dark().colors.bg_elevated.a, 1.0);
+    }
+
+    /// R62 M1: the three-row card's content height, reported as an assertion so
+    /// a future change to any row's height is visible rather than silent.
+    ///
+    /// The height is measured from the card's top edge to the track's bottom
+    /// edge plus the bottom padding, rather than read from `card.size.height`.
+    /// In this harness the card is the window's **root** view, so a fixed-width
+    /// flex column stretches to the window's height; the content-driven height
+    /// is the number M1 is about, and it is what the production mount (where
+    /// the card sits in a shrink-to-fit absolute layer) renders.
+    ///
+    /// **Measured on the rendered frame: 106px** (the production mount in
+    /// `model_picker_levels.rs` reads 108px; see the note below). The sum is
+    /// `CARD_PADDING_TOP + 2 text rows + track + 2 × CARD_ROW_GAP +
+    /// CARD_PADDING_BOTTOM` = 12 + 21 + 21 + 24 + 16 + 14 = 108. The text rows
+    /// render at 21px rather than the 20px [`CARD_TEXT_ROW_HEIGHT`] floor
+    /// because the 13px `SIDEBAR` line box is 21px; the floor is a minimum, not
+    /// a fixed height, which is exactly what keeps the text from being clipped.
+    ///
+    /// The pre-R62 card was 12 + 24 + 8 + 24 + 14 = 82px, so the card grows
+    /// **26px** taller and covers that much more of the 37px utility bar
+    /// (R62 R5, M1 — measured as 55px into the bar on the production mount).
+    #[gpui_kit::test]
+    async fn r62_m1_the_card_height_is_the_three_row_sum(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let card = visual
+            .debug_bounds("thinking-slider-card")
+            .expect("mounted card");
+        let title = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted title row");
+        let model_name = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model row");
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+
+        // The paddings and gaps, measured on the rendered frame.
+        assert!(
+            (f32::from(title.top() - card.top()) - CARD_PADDING_TOP).abs() <= 1.0,
+            "R62 M1: the top padding is CARD_PADDING_TOP ({CARD_PADDING_TOP}px), \
+             got {}",
+            f32::from(title.top() - card.top())
+        );
+        let gap_above_model = f32::from(model_name.top() - title.bottom());
+        let gap_above_track = f32::from(track.top() - model_name.bottom());
+        assert!(
+            (gap_above_model - CARD_ROW_GAP).abs() <= 1.0
+                && (gap_above_track - CARD_ROW_GAP).abs() <= 1.0,
+            "R62 R2: the row gap is CARD_ROW_GAP ({CARD_ROW_GAP}px) in both \
+             gaps, got {gap_above_model}px and {gap_above_track}px"
+        );
+
+        // The content-driven height: card top to track bottom, plus the bottom
+        // padding the track's bounds cannot include.
+        let content_height = f32::from(track.bottom() - card.top()) + CARD_PADDING_BOTTOM;
+        // The two text rows are read from the frame, not assumed to be the
+        // floor: `min_h` means the rendered height is the larger of the floor
+        // and the line box, and M1 is about what actually renders.
+        let text_rows = f32::from(title.size.height) + f32::from(model_name.size.height);
+        let expected = CARD_PADDING_TOP
+            + text_rows
+            + THINKING_TRACK_HEIGHT
+            + CARD_ROW_GAP * 2.0
+            + CARD_PADDING_BOTTOM;
+        assert!(
+            (content_height - expected).abs() <= 1.0,
+            "R62 M1: the card's content height is {content_height}px; its three \
+             rows ({text_rows}px of text) plus padding sum to {expected}px"
+        );
+        // The floor holds: neither text row collapsed below it.
+        for (label, row) in [("title", title), ("model", model_name)] {
+            assert!(
+                f32::from(row.size.height) >= CARD_TEXT_ROW_HEIGHT - 1.0,
+                "R62 R2: the {label} row ({:?}) must be at least \
+                 CARD_TEXT_ROW_HEIGHT ({CARD_TEXT_ROW_HEIGHT}px)",
+                row.size.height
+            );
+        }
+
+        // The pre-R62 two-row card, for the R5 growth claim: one title row that
+        // shared its line with the model name, then the track.
+        let two_row = CARD_PADDING_TOP
+            + THINKING_TRACK_HEIGHT
+            + CARD_ROW_GAP
+            + THINKING_TRACK_HEIGHT
+            + CARD_PADDING_BOTTOM;
+        assert_eq!(two_row, 82.0, "the pre-R62 card measured 82px");
+        assert_eq!(
+            content_height - two_row,
+            26.0,
+            "R62 R5/M1: the card grows 26px taller (two text rows plus the \
+             second gap, minus the row height the old title row shared), so it \
+             covers 26px more of the utility bar — accepted by R62 R5"
+        );
+    }
+
+    /// R62 R6: a long model name ellipsises inside the card instead of spilling
+    /// past its edge.
+    ///
+    /// The card's width is frozen, so an unbounded model name would either
+    /// stretch the card or paint outside it. `min_w_0` + `truncate` is what
+    /// keeps it inside; this asserts the rendered text run stays within the
+    /// card's content band.
+    #[gpui_kit::test]
+    async fn r62_r6_a_long_model_name_stays_inside_the_card(cx: &mut TestAppContext) {
+        let long_name = "gpt-6-astra-ultra-extended-preview-2026-09-14-build-0001";
+        let long_name_owned = long_name.to_string();
+        let window = cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            cx.open_window(WindowOptions::default(), move |_, cx| {
+                cx.new(|cx| {
+                    ThinkingSlider::new(
+                        long_name_owned,
+                        tiers(&["minimal", "low", "medium", "high", "xhigh", "max"]),
+                        false,
+                        "medium",
+                        "medium",
+                        cx,
+                    )
+                })
+            })
+            .expect("long-name slider window")
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let card = visual
+            .debug_bounds("thinking-slider-card")
+            .expect("mounted card");
+        let model_name = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model name");
+        assert!(
+            (f32::from(card.size.width) - THINKING_CARD_WIDTH).abs() <= 1.0,
+            "R62 R6: a long model name must not widen the card: {} != \
+             {THINKING_CARD_WIDTH}",
+            f32::from(card.size.width)
+        );
+        assert!(
+            model_name.left() >= card.left() && model_name.right() <= card.right(),
+            "R62 R6: the model name ({model_name:?}) must stay inside the card \
+             ({card:?}) and ellipsise rather than spill"
         );
     }
 
