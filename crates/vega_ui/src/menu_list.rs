@@ -23,7 +23,27 @@ use crate::text_input::TextInput;
 /// [`Typography::SIDEBAR_LINE_HEIGHT`] for their rows; the constant is named
 /// here so the shared pieces (search field, separator, action rows) agree
 /// with them by construction.
+///
+/// R68 R7 (**withdrawn**) / R11: this stays 32. R68 v1 asked for 36 from the
+/// reference's *browser* CSS token; measuring the Codex desktop screenshot
+/// shows the reference row is 28.5 logical, i.e. **shorter** than Vega's 32,
+/// so raising it would be a reverse optimisation. R68 R11 freezes it.
 pub const MENU_ROW_HEIGHT: f32 = Typography::SIDEBAR_LINE_HEIGHT;
+
+/// R68 R8: the horizontal padding one dropdown row spends between its fill
+/// edge and its first/last child (the icon / the selection marker).
+///
+/// The Codex desktop screenshot measures 9.5 logical here; the reference's
+/// own `--menu-item-padding` horizontal component is 10. Two independent
+/// measurements agree on 10, so 10 it is. The 4px gap between the card edge
+/// and the row fill (`mx_1` below) is **not** part of this: the reference
+/// measures 4.5 there, which is inside the 1px error band, and R8 leaves it
+/// alone.
+///
+/// R68 R10: every row-shaped piece in this module reads the constant rather
+/// than spelling `10` — the two dropdowns share this chrome, so a change has
+/// to reach both at once.
+pub const MENU_ROW_PADDING_X: f32 = 10.0;
 
 /// The rounded light-grey surface the current selection carries (R62 R10).
 ///
@@ -48,9 +68,18 @@ pub fn separator(colors: ThemeColors) -> AnyElement {
 
 /// The magnifier + editable query row at the top of a dropdown (R62 R10).
 ///
-/// The row draws the surface; the input is mounted with
-/// [`TextInput::with_bare_chrome`] so the field does not render a second box
-/// inside it. The caller owns the entity and decides what the query filters.
+/// The input is mounted with [`TextInput::with_bare_chrome`] so the field
+/// does not render a second box inside it. The caller owns the entity and
+/// decides what the query filters.
+///
+/// R68 R9: the row paints **no** `bg_hover` fill of its own. Vega drew a grey
+/// pill behind the magnifier; the reference (verified against the Codex
+/// screenshot crop) has just the magnifier and the placeholder sitting
+/// directly on the card's `bg_elevated` surface, and the extra pill was one
+/// of the most visible differences. Removing it is why the popup now reads
+/// lighter. The height is still [`MENU_ROW_HEIGHT`] and the horizontal
+/// padding still [`MENU_ROW_PADDING_X`] (R8/R10), so the row's geometry is
+/// unchanged by the fill removal — only its paint is.
 pub fn search_field(
     input: &Entity<TextInput>,
     selector: &'static str,
@@ -62,12 +91,11 @@ pub fn search_field(
         .mx_1()
         .mb_1()
         .h(px(MENU_ROW_HEIGHT))
-        .px_2()
+        .px(px(MENU_ROW_PADDING_X))
         .flex()
         .items_center()
         .gap_2()
         .rounded_md()
-        .bg(colors.bg_hover)
         .text_size(px(Typography::SIDEBAR))
         .child(icon(Icon::Search, colors.text_tertiary))
         .child(div().flex_1().min_w_0().child(input.clone()))
@@ -101,7 +129,7 @@ pub fn action_row(
         .h(px(MENU_ROW_HEIGHT))
         .flex_shrink_0()
         .mx_1()
-        .px_2()
+        .px(px(MENU_ROW_PADDING_X))
         .flex()
         .items_center()
         .gap_2()
@@ -125,6 +153,11 @@ pub fn action_row(
 /// selection surface. The leading icon, label and trailing marker stay with
 /// the caller because the two dropdowns source them differently (projects
 /// from the store, branches from a virtualized Git projection).
+///
+/// R68 R8/R10: the horizontal padding is [`MENU_ROW_PADDING_X`] here rather
+/// than a literal, because this is the one place both dropdowns' rows get
+/// their inset from. The `mx_1` card-edge gutter is deliberately untouched
+/// (see the constant's doc comment).
 pub fn row_container(
     id: impl Into<ElementId>,
     selected: bool,
@@ -138,7 +171,7 @@ pub fn row_container(
         .min_w_0()
         .overflow_hidden()
         .mx_1()
-        .px_2()
+        .px(px(MENU_ROW_PADDING_X))
         .flex()
         .items_center()
         .gap_2()

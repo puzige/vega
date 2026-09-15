@@ -421,7 +421,10 @@ async fn r62_branch_filter_never_leaves_keyboard_focus_on_a_hidden_row(cx: &mut 
 /// [`BranchId`] has no public constructor by design (the opaque-id contract),
 /// so the snapshot comes from the real service over a real owned repository —
 /// the same route `vega`'s own branch tests take.
-fn branch_snapshot(labels: &[&str]) -> BranchSnapshot {
+///
+/// `pub(super)` so the R68 suite can mount the same real snapshot rather than
+/// building a second fixture.
+pub(super) fn branch_snapshot(labels: &[&str]) -> BranchSnapshot {
     let root = tempfile::tempdir().expect("owned branch fixture repo");
     let git = |args: &[&str]| {
         let status = std::process::Command::new("/usr/bin/git")

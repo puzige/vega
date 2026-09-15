@@ -7,8 +7,8 @@ use current_head::CurrentHead;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnchoredPositionMode, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    MouseButton, Render, ScrollStrategy, UniformListScrollHandle, Window, actions, anchored, div,
-    point, px, uniform_list,
+    MouseButton, MouseDownEvent, Render, ScrollStrategy, UniformListScrollHandle, Window, actions,
+    anchored, div, point, px, uniform_list,
 };
 use vega_conversation::types::{BranchId, BranchItem, BranchSnapshot, GitWorkspaceErrorCode};
 use vega_theme::{Layout, Typography, theme};
@@ -814,6 +814,16 @@ impl Render for BranchSelector {
                         let label = label.clone();
                         move || format!("branch-current-{label}")
                     })
+                    // R68 R3: the trigger claims the mouse-down in the
+                    // **capture** phase, exactly like the composer's project
+                    // chip. `toggle` below runs on mouse-up, so a bubble-phase
+                    // `stop_propagation` would arrive too late to keep the
+                    // popup's capture-phase out-handler (R1) from closing it,
+                    // and the following mouse-up would reopen it — the trigger
+                    // could never close its own popup (R68 §2). R6/R15: this
+                    // changes no geometry and leaves the R64 `deferred` wrap
+                    // untouched.
+                    .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
                     .h(px(BRANCH_ROW_HEIGHT))
                     .max_w(px(180.0))
                     .min_w_0()
@@ -869,6 +879,30 @@ impl Render for BranchSelector {
             )
             .when(open, |root| {
                 let popup = div()
+                    // R68 R1/R2/R4/R5: the popup closes when the pointer goes
+                    // down **outside** it. `on_mouse_down_out` fires in the
+                    // capture phase and only when the pointer is outside the
+                    // element's own bounds, so a click on the popup's own
+                    // surface — the search field, a row, the trailing action —
+                    // leaves it open (R4) with no extra "am I inside?" logic.
+                    // The close goes through the selector's existing
+                    // [`BranchSelector::request_close`] (R2): it also emits
+                    // `BranchSelectorClosed`, whose pending cleanup belongs to
+                    // the controller, so the handler must not mutate
+                    // `model.status` directly. R5: this touches only this
+                    // popup's state; the project popup's flag lives in
+                    // `ConversationStream`, not here.
+                    .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        let _ = this.request_close(cx);
+                    }))
+                    // R68: the popup's own selector, so a test can tell "the
+                    // pointer is outside the popup" from "the pointer is on the
+                    // trigger" without re-deriving the popup's box. The
+                    // `anchored` layer snaps this popup over its own trigger
+                    // when the window is too short to host it below, so the two
+                    // boxes really do overlap and neither can be inferred from
+                    // the other.
+                    .debug_selector(|| "branch-selector-popup".into())
                     .w(popup_width)
                     .flex_shrink_0()
                     .h(popup_height)

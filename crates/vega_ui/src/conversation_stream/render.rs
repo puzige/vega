@@ -109,7 +109,7 @@ impl ConversationStream {
     /// dropdown and the thinking chip are gone, and the permission control is
     /// static text (not clickable). Thread mode and permission mode stay
     /// reachable through the `+` menu (`composer_actions.rs`).
-    fn render_composer(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_composer(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let file_retry_visible = self.file_selector_wanted && self.file_index_failure.is_some();
         let file_selector_active =
@@ -137,7 +137,7 @@ impl ConversationStream {
             // new-task page (zero overlap, no negative margin). The session
             // page renders the card alone, exactly like Codex.
             .when(self.utility_bar_visible(cx), |column| {
-                column.child(self.render_composer_utility_bar(cx))
+                column.child(self.render_composer_utility_bar(window, cx))
             })
             .child(
                 div()
@@ -1162,7 +1162,7 @@ impl Render for ConversationStream {
                             .child(body),
                     ),
             )
-            .child(self.render_composer(cx))
+            .child(self.render_composer(window, cx))
             .when(project_bound, |root| root.child(self.commit_panel.clone()))
             .into_any_element();
         counters.record_render(render_t0);

@@ -29,6 +29,7 @@ mod model_picker_levels;
 mod permission_picker;
 mod permissions_cards;
 mod r64_popup_deferred;
+mod r68_popup_dismiss;
 mod scroll_follow;
 mod utility_bar;
 mod variable_height;

@@ -13,6 +13,43 @@ use crate::menu_list;
 use crate::sidebar::{SelectedProject, VegaStore};
 use crate::text_input::TextInput;
 
+/// R68 R14: the horizontal room the composer's own chrome takes up before the
+/// project chip's **left** edge — the composer column's content padding, the
+/// utility bar's own inset inside that column, and the chip's inset inside the
+/// bar. All three are frozen [`Layout`] constants, so the sum is exact in the
+/// one case that matters: a window too narrow for the column to be centred
+/// (below `COMPOSER_MAX_WIDTH + 2 * CONTENT_PADDING`) makes the column fill the
+/// window and the chip really does start here. On a wider window the centred
+/// column pushes the chip further right, so subtracting this sum under-states
+/// the room the popup has — a conservative bound, never an optimistic one.
+const UTILITY_CHIP_LEFT_INSET: f32 = Layout::CONTENT_PADDING
+    + Layout::COMPOSER_UTILITY_BAR_INSET
+    + Layout::COMPOSER_UTILITY_CHIP_INSET;
+
+/// R68 R14: the gap the popup keeps from the window's right edge when the
+/// viewport is what bounds it.
+const PROJECT_MENU_VIEWPORT_MARGIN: f32 = 8.0;
+
+/// R68 R13/R14: the project popup's width.
+///
+/// R13: it is [`Layout::MENU_MAX_WIDTH`] (350) and **not** a function of the
+/// chip's width. Before R68 the menu carried `.w(350).max_w_full()` and its
+/// containing block was the folder chip, whose width follows the project name;
+/// `max_w_full` therefore clamped the popup to the chip (measured 40px in the
+/// harness, ~183px natively), which is what truncated every project name
+/// (`r13-alp…`). The reference implementation's `contentWidth` map gives the
+/// workspace dropdown `min-w-[260px]`, and the Codex screenshot measures 261
+/// logical px, so a fixed 350 is the right shape here — Vega's own model list
+/// uses the same constant.
+///
+/// R14: it still never overflows the window. When the viewport cannot host
+/// 350px to the right of the chip, the popup shrinks to the room that is left
+/// rather than running off the edge.
+fn project_menu_width(viewport: Pixels) -> Pixels {
+    let room = viewport - px(UTILITY_CHIP_LEFT_INSET + PROJECT_MENU_VIEWPORT_MARGIN);
+    px(Layout::MENU_MAX_WIDTH).min(room.max(px(1.0)))
+}
+
 impl ConversationStream {
     /// Whether the R49 utility bar renders at all: the route resolves a
     /// project context (the opened task is bound to the currently selected
@@ -38,7 +75,15 @@ impl ConversationStream {
     /// the card's top edge. The parent stacks bar then card (zero overlap, no
     /// negative margin), which is what makes the bar read as one layer tucked
     /// under the card.
-    pub(crate) fn render_composer_utility_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+    ///
+    /// R68 R14: `window` is threaded through only so the project popup can
+    /// bound itself against the viewport (see [`project_menu_width`]); the
+    /// bar's own geometry reads no window state.
+    pub(crate) fn render_composer_utility_bar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         div()
             // Same width cap and centering as `composer-shell`; the bar itself
@@ -60,7 +105,7 @@ impl ConversationStream {
                     .pl(px(Layout::COMPOSER_UTILITY_CHIP_INSET))
                     .bg(colors.bg_sidebar)
                     .rounded_t(px(Layout::COMPOSER_UTILITY_BAR_RADIUS))
-                    .child(self.render_utility_project_chip(cx))
+                    .child(self.render_utility_project_chip(window, cx))
                     .child(self.render_utility_branch_chip()),
             )
             .into_any_element()
@@ -69,7 +114,15 @@ impl ConversationStream {
     /// The folder chip: 16px folder icon + project name, with no border, no
     /// background and no pill radius. Hover adds the shared `bg_hover`
     /// surface; clicking opens the project menu above the chip.
-    fn render_utility_project_chip(&self, cx: &mut Context<Self>) -> AnyElement {
+    ///
+    /// R68 R3: the chip claims the mouse-down in the **capture** phase. The
+    /// popup's outside-click handler (R1) also runs in capture, and the chip's
+    /// own open/close toggle runs on mouse-**up**; a bubble-phase
+    /// `stop_propagation` would therefore run *after* the popup had already
+    /// closed itself, and the subsequent mouse-up would immediately reopen it,
+    /// making the chip unable to close its own popup. Declaring the gesture in
+    /// capture is what makes "click the chip again" close (R68 §2).
+    fn render_utility_project_chip(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let label = if self.project_label.is_empty() {
             "项目".to_string()
@@ -82,7 +135,7 @@ impl ConversationStream {
                 div()
                     .id("composer-utility-project")
                     .debug_selector(|| "composer-utility-project-chip".into())
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
                     .h(px(Typography::SIDEBAR_LINE_HEIGHT))
                     .flex()
                     .items_center()
@@ -103,7 +156,7 @@ impl ConversationStream {
                     .child(div().min_w_0().max_w(px(180.0)).truncate().child(label)),
             )
             .when(self.utility_projects_open, |chip| {
-                chip.child(self.render_utility_projects_menu(cx))
+                chip.child(self.render_utility_projects_menu(window, cx))
             })
             .into_any_element()
     }
@@ -132,7 +185,22 @@ impl ConversationStream {
     /// `ProjectsBlock::open_picker`, which owns its worker and its own error
     /// handling), so it renders **disabled** rather than pretending to work;
     /// this is reported as the R62 M7 finding.
-    fn render_utility_projects_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+    ///
+    /// R68 R1/R2/R4: the popup closes when the pointer goes down **outside**
+    /// it. `on_mouse_down_out` fires in the capture phase and only when the
+    /// pointer is outside the element's own bounds, so a click anywhere on the
+    /// popup — the search field, a row, the trailing actions — leaves it open
+    /// (R4) and the handler never has to re-derive "inside" itself. The close
+    /// goes through this popup's existing path: `utility_projects_open = false`
+    /// plus `cx.notify()` (R2), exactly what the row-selection and detach
+    /// handlers already do. R5: it touches nothing but this popup's own flag —
+    /// the branch popup's state lives in `BranchSelector`, not here.
+    ///
+    /// R68 R13/R14: the width is [`Layout::MENU_MAX_WIDTH`], bounded by the
+    /// viewport but **not** by the chip (see [`project_menu_width`]). The
+    /// `left_0()` anchoring, the `bottom(relative(1.0))` relationship and the
+    /// R64 `deferred` wrap below are untouched (R15).
+    fn render_utility_projects_menu(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let selected = cx.global::<SelectedProject>().0.clone();
         let query = self.utility_project_query.trim().to_lowercase();
@@ -180,12 +248,24 @@ impl ConversationStream {
             });
         let mut menu = div()
             .debug_selector(|| "composer-utility-project-menu".into())
+            // R68 R1/R4: the outside-click close runs in **capture** and only
+            // when the pointer is outside the popup's bounds.
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                if this.utility_projects_open {
+                    this.utility_projects_open = false;
+                    cx.notify();
+                }
+            }))
+            // The pre-R68 bubble-phase claim is kept: a click **on** the popup
+            // must not reach the composer's own outside-click handler behind
+            // it. It is not the dismissal mechanism (R1) and it cannot block
+            // the capture handler above — different phase, and gated on the
+            // pointer being inside.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .absolute()
             .bottom(gpui_kit::relative(1.0))
             .left_0()
-            .w(px(Layout::MENU_MAX_WIDTH))
-            .max_w_full()
+            .w(project_menu_width(window.viewport_size().width))
             .occlude()
             .flex()
             .flex_col()
@@ -205,7 +285,7 @@ impl ConversationStream {
             menu = menu.child(
                 div()
                     .h(px(menu_list::MENU_ROW_HEIGHT))
-                    .px_2()
+                    .px(px(menu_list::MENU_ROW_PADDING_X))
                     .flex()
                     .items_center()
                     .text_size(px(Typography::SIDEBAR))

@@ -31,11 +31,14 @@ use gpui_kit::{Bounds, Modifiers, Pixels, VisualTestContext};
 
 /// The `permission_thread()` fixture's durable project binding. The utility
 /// bar's visibility predicate requires the shared selection to match it.
-const PROJECT_BINDING: &str = "project-safe-id";
+///
+/// `pub(super)`: the R68 suite mounts the same utility bar and reuses the
+/// helpers below rather than growing a fourth copy of the fixture.
+pub(super) const PROJECT_BINDING: &str = "project-safe-id";
 
 /// Owned store with the same project rows the sidebar renders, plus the
 /// selection global the composer's project context resolves through.
-fn install_utility_globals(
+pub(super) fn install_utility_globals(
     cx: &mut TestAppContext,
     projects: &[(&str, &str)],
     selected: Option<&str>,
@@ -66,7 +69,7 @@ fn install_utility_globals(
     ids
 }
 
-fn bounds(
+pub(super) fn bounds(
     window: WindowHandle<StreamHarness>,
     selector: &'static str,
     cx: &mut TestAppContext,
@@ -77,7 +80,11 @@ fn bounds(
         .unwrap_or_else(|| panic!("missing {selector}"))
 }
 
-fn click(window: WindowHandle<StreamHarness>, selector: &'static str, cx: &mut TestAppContext) {
+pub(super) fn click(
+    window: WindowHandle<StreamHarness>,
+    selector: &'static str,
+    cx: &mut TestAppContext,
+) {
     let b = bounds(window, selector, cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_click(b.center(), Modifiers::default());
@@ -188,13 +195,20 @@ async fn r64_picker_list_layer_bounds_match_the_baseline(cx: &mut TestAppContext
     );
 }
 
-/// R64 A1 / R49 §2.5 / R62 R10: the utility-bar project menu keeps the geometry
-/// it had before the `deferred` wrap.
+/// R64 A1 / R49 §2.5 / R62 R10 / **R68 R12/R13**: the utility-bar project menu
+/// keeps its `deferred`-era geometry except for the one width R68 changes on
+/// purpose.
 ///
-/// The measured width is the chip wrapper's, not `MENU_MAX_WIDTH`: the menu
-/// carries `.w(350).max_w_full()` and its containing block is the 40px-wide
-/// folder chip, so `max_w_full` is what binds. R64 R2 forbids touching that
-/// anchoring, and this test is where a future change to it would show up.
+/// The **width** is now [`Layout::MENU_MAX_WIDTH`] (350), not the chip's. R64's
+/// baseline recorded 40 here because the menu carried `.w(350).max_w_full()`
+/// and its containing block was the 40px-wide folder chip, so `max_w_full` was
+/// what bound; natively that clamped the popup to ~183px and truncated every
+/// project name (R68 §4). R68 R13 removes the clamp, so **this `40 → 350` is
+/// R68's intentional change, not a `deferred` regression**: R64 A1's contract
+/// is "`deferred` does not move geometry", not "geometry is frozen forever"
+/// (R68 R12 says exactly this). Every other component — x, y, height — is
+/// unchanged, which is what still makes this test a `deferred` guard: the
+/// upward anchoring and the R64 wrap are untouched (R68 R15).
 #[gpui_kit::test]
 async fn r64_project_menu_bounds_match_the_baseline(cx: &mut TestAppContext) {
     let (window, _stream, _events) = open_controller_stream(cx, "r64-a1-project");
@@ -206,8 +220,8 @@ async fn r64_project_menu_bounds_match_the_baseline(cx: &mut TestAppContext) {
     click(window, "composer-utility-project-chip", cx);
     assert_baseline(
         bounds(window, "composer-utility-project-menu", cx),
-        (433.5, 711.5, 40.0, 215.0),
-        "the utility-bar project menu",
+        (433.5, 711.5, Layout::MENU_MAX_WIDTH, 215.0),
+        "the utility-bar project menu (width updated by R68 R13)",
         "composer-utility-project-menu",
     );
 }
