@@ -50,9 +50,19 @@
 //! - Selecting Off emits [`OFF_CHOICE_NAME`] (`"disabled"`), never an effort
 //!   string, and `"off"`/`"none"`/`"disabled"` are never appended to
 //!   [`ThinkingSliderModel::tiers`] (R3).
-//! - The Off label is `关闭`, the wording Vega's removed thinking chip already
-//!   used (R5). Its colour is **unmeasured** and deliberately reuses the
-//!   lowest tier's visual; see [`tier_label_color_for`].
+//! - The Off label is [`OFF_LABEL`] (R66 R6 changed it from `关闭` to `None`,
+//!   the reference implementation's own lowest-tier label). Its colour is
+//!   **unmeasured** and deliberately reuses the lowest tier's visual; see
+//!   [`tier_label_color_for`].
+//!
+//! ## R66: the title block
+//!
+//! R66 wraps the tier-name row and the model-name row in **one** persistent
+//! highlight container (`render_title_block`) that hugs its content, and
+//! displays tiers through [`tier_display_label`] rather than as raw effort
+//! ids. The container is a **visual** merge only: the
+//! `ThinkingSliderTitleActivated` handler stays on the tier row and the model
+//! row stays inert (R66 R5 / R62 R3).
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -128,6 +138,28 @@ const CARD_TEXT_ROW_HEIGHT: f32 = 20.0;
 /// between its two text runs, kept so the group's rhythm is unchanged.
 const TITLE_GROUP_GAP: f32 = 4.0;
 
+/// Horizontal padding inside the R66 title highlight block.
+///
+/// **Chosen, not measured.** The reference's block is 172px wide against a
+/// content run narrower than that, so *some* horizontal padding exists; the
+/// spec measures the block's total width, not its inset (§2, M1), so this
+/// value is an approximation. It is deliberately **horizontal only**: R66 R4
+/// freezes the card height and the two row gaps, and vertical padding here
+/// would change both (see `ThinkingSlider::render_title_block`).
+const TITLE_HIGHLIGHT_PADDING_X: f32 = 8.0;
+
+/// Maximum width of the content inside the R66 title block, i.e. the card's
+/// content band less the block's own horizontal padding.
+///
+/// This is what keeps the block content-hugging **and** bounded: the block has
+/// no explicit width, so it takes the wider row's max-content width; each row
+/// is capped here, so the block can never grow past the card. Without a cap the
+/// rows would size to their text and a long model name would spill out of the
+/// card (R62 R6), because a flex column with `items_center` sizes its children
+/// to their content rather than stretching them.
+const TITLE_BLOCK_CONTENT_MAX_WIDTH: f32 =
+    THINKING_CARD_WIDTH - CARD_INSET * 2.0 - TITLE_HIGHLIGHT_PADDING_X * 2.0;
+
 // ---------------------------------------------------------------------------
 // Measured colours (spec §4.1, §4.2)
 // ---------------------------------------------------------------------------
@@ -188,14 +220,69 @@ const TRACK_UNFILLED: Rgba = measured_rgba(0xE9E8E8FF);
 /// [`ThinkingSliderModel::tiers`] or sent as `Effort`.
 pub const OFF_CHOICE_NAME: &str = "disabled";
 
-/// The Off position's tier-name text (R58 R5). Vega's existing wording for
-/// `"disabled"`, taken from the thinking chip R57 replaced
-/// (`docs/vega-r57-composer-alignment.md` §2.2).
-pub const OFF_LABEL: &str = "关闭";
+/// The Off position's tier-name text (R58 R5, **R66 R6**).
+///
+/// R66 R6 changed this from Vega's own `关闭` to `None`: the reference
+/// implementation has no separate "Off"/"Disabled" reasoning label at all —
+/// `composer.mode.local.reasoning.none.label` *is* `None`, and it is the
+/// lowest entry of the same table [`tier_display_label`] encodes. The old
+/// wording also broke the row's language consistency, since the model name
+/// beside it is always English (R66 §3).
+pub const OFF_LABEL: &str = "None";
 
 /// The no-selection label, shown when the persisted preference is
-/// `provider_default` (R58 R6). Vega's existing wording for that state.
-pub const PROVIDER_DEFAULT_LABEL: &str = "提供方默认";
+/// `provider_default` (R58 R6, **R66 R7**).
+///
+/// R66 R7 changed this from `提供方默认` to `Default`. The authority is the
+/// reference implementation's `composer.modelPicker.default.label`, whose
+/// `defaultMessage` is `Default` — a **composer** message key, in the same
+/// namespace as `selectEffort.label` and `modelList.heading`. The Settings
+/// page's `settings.agent.configuration.modelDefault` (`Model default`) is a
+/// different namespace and is deliberately not used (R66 R7's note).
+pub const PROVIDER_DEFAULT_LABEL: &str = "Default";
+
+/// R66 R10/R11/R13: the **pure** display mapping from a persisted effort id to
+/// the tier name the card shows.
+///
+/// The table is quoted verbatim from the reference bundle's own
+/// `composer.mode.local.reasoning.<tier>.label` entries. Two mappings are
+/// deliberately non-trivial and must not be "corrected":
+///
+/// - `low` → `Light` (not `Low`);
+/// - `xhigh` → `Extra High` (not `XHigh`).
+///
+/// R11's fallback uppercases the **first letter** rather than returning the id
+/// verbatim. Vega's efforts are a configurable `Vec<String>` rather than the
+/// reference's fixed enum, so a custom id genuinely reaches this function; the
+/// reference's `other {Other}` fallback cannot be used literally because it
+/// names no id.
+///
+/// R12: this is display only. The effort ids themselves are the persistence
+/// contract and are never rewritten — [`ThinkingSliderModel::tier`] and
+/// [`ThinkingSliderModel::choice_name`] still return the raw id.
+///
+/// Uppercasing is done on the first `char`, not the first byte, so a non-ASCII
+/// custom id is not split.
+pub fn tier_display_label(effort: &str) -> String {
+    match effort {
+        "none" => "None".to_string(),
+        "minimal" => "Minimal".to_string(),
+        "low" => "Light".to_string(),
+        "medium" => "Medium".to_string(),
+        "high" => "High".to_string(),
+        "xhigh" => "Extra High".to_string(),
+        "max" => "Max".to_string(),
+        "ultra" => "Ultra".to_string(),
+        "persistent" => "Persistent".to_string(),
+        other => {
+            let mut characters = other.chars();
+            match characters.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+                None => String::new(),
+            }
+        }
+    }
+}
 
 /// Static debug selectors for rendered dots, indexed by dot position. The
 /// array bound exists because `VisualTestContext::debug_bounds` only accepts a
@@ -431,12 +518,22 @@ impl ThinkingSliderModel {
     }
 
     /// The tier-name text for the current state.
-    pub fn label(&self) -> &str {
+    ///
+    /// R66 R10: a tier renders through [`tier_display_label`], not as its raw
+    /// effort id, so `"max"` shows as `Max` and `"low"` as `Light`. The
+    /// **persisted** id is untouched — read [`Self::tier`] or
+    /// [`Self::choice_name`] for that (R12).
+    ///
+    /// Returns an owned `String` because the tier arm allocates: the fallback
+    /// in [`tier_display_label`] cannot be a `&'static str` since a custom
+    /// effort id has no static label. The Off and `provider_default` arms
+    /// return the two frozen constants.
+    pub fn label(&self) -> String {
         match self.current.as_ref() {
-            Some(Selection::Tier(tier)) => tier.as_str(),
-            Some(Selection::Off) => OFF_LABEL,
-            None if self.provider_default => PROVIDER_DEFAULT_LABEL,
-            None => "",
+            Some(Selection::Tier(tier)) => tier_display_label(tier),
+            Some(Selection::Off) => OFF_LABEL.to_string(),
+            None if self.provider_default => PROVIDER_DEFAULT_LABEL.to_string(),
+            None => String::new(),
         }
     }
 
@@ -964,7 +1061,7 @@ impl Render for ThinkingSlider {
         // the label names the state so the user can tell it apart from Off.
         let selected = self.model.selected_position();
 
-        let label = self.model.label().to_string();
+        let label = self.model.label();
         let label_color = self.tier_label_color();
 
         let dots = (0..count).map(|index| {
@@ -1045,12 +1142,14 @@ impl Render for ThinkingSlider {
                 )
             });
 
-        // R62 R2: three stacked rows — tier name + chevron, model name, track.
+        // R62 R2 / R66 §2: three stacked rows — the tier-name block (tier name +
+        // chevron, then the model name) and the track.
         //
-        // The tier row is the clickable control that opens the model list (R59
-        // R2/R3); it is built by `render_title_row` so the event it emits stays
-        // in one place. The model row is *not* clickable — see that function's
-        // docs for why the two are kept apart.
+        // R66 §2 replaced the two independent row children with **one**
+        // `render_title_block` child: the highlight is a single persistent
+        // block covering both text rows, hugging its content. R62 R5's
+        // two-level interaction is untouched — see `render_title_row` and
+        // `render_model_row` for which of the two rows handles clicks.
         //
         // R6: both text rows carry `min_w_0` + `truncate`, so a long tier or
         // model name ellipsises inside the measured 254.5px card instead of
@@ -1079,8 +1178,7 @@ impl Render for ThinkingSlider {
                 .bg(colors.bg_elevated)
                 .text_color(colors.text_primary),
         )
-        .child(self.render_title_row(label, label_color, colors, cx))
-        .child(self.render_model_row(colors))
+        .child(self.render_title_block(label, label_color, colors, cx))
         // The track is the one full-width row; `items_center` on the card
         // cannot stretch it because it carries its own measured width.
         .child(track)
@@ -1089,26 +1187,79 @@ impl Render for ThinkingSlider {
 }
 
 impl ThinkingSlider {
-    /// R62 R2 row 1: the tier name and its `>` chevron, centred, and the only
-    /// control that opens the model list.
+    /// R66 §2: the **one** highlight container that wraps both text rows.
+    ///
+    /// R1/R3: a single persistent block — the measured reference shows one
+    /// continuous light-grey block running from the tier row through the model
+    /// row with no white gap, present with no pointer interaction. The fill is
+    /// [`ThemeColors::bg_hover`], the same light grey the pre-R66 title row
+    /// used for its hover; R3 only changes *when* it shows (always, not on
+    /// hover).
+    ///
+    /// R2: the block **hugs its content**. The card is an `items_center` flex
+    /// column, so a child with no explicit width takes its content's width
+    /// rather than stretching; neither row below sets `w_full` any more. The
+    /// `max_w` is the card's own content band, so an over-long model name
+    /// still ellipsises inside the card (R62 R6) instead of widening the block
+    /// past it. See the module report for the measured block width.
+    ///
+    /// R4: the container adds **horizontal** padding only. Vertical padding or
+    /// an extra gap would change the card's height and the two row gaps, which
+    /// R4 freezes; the vertical rhythm therefore stays exactly
+    /// `CARD_PADDING_TOP`, `CARD_ROW_GAP`, `CARD_ROW_GAP`,
+    /// `CARD_PADDING_BOTTOM`.
+    ///
+    /// R5 (the critical one): the container carries **no** interaction. It has
+    /// no `id`, no `cursor_pointer` and no mouse handler, so wrapping the two
+    /// rows in one box cannot merge their behaviour. The
+    /// `ThinkingSliderTitleActivated` handler stays on the tier row alone and
+    /// the model row stays inert (R62 R3).
+    fn render_title_block(
+        &self,
+        label: String,
+        label_color: Rgba,
+        colors: ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .debug_selector(|| "thinking-slider-title-block".into())
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(CARD_ROW_GAP))
+            // The card's content band. Without it the block would be free to
+            // grow past the card on a long model name.
+            .max_w(px(THINKING_CARD_WIDTH - CARD_INSET * 2.0))
+            .rounded_md()
+            .bg(colors.bg_hover)
+            .px(px(TITLE_HIGHLIGHT_PADDING_X))
+            .child(self.render_title_row(label, label_color, colors, cx))
+            .child(self.render_model_row(colors))
+            .into_any_element()
+    }
+
+    /// R62 R2 row 1: the tier name and its `>` chevron, and the only control
+    /// that opens the model list.
     ///
     /// R59 R2/R3 kept the title row as the level-two entry point; R62 R3 keeps
     /// that meaning exactly, so the `ThinkingSliderTitleActivated` emit below is
     /// the same event on the same condition. Only the row's contents changed:
     /// the bolt icon is gone (R1) and the model name moved to its own row.
     ///
-    /// The row spans the card's content width so the whole band stays clickable
-    /// — the hover fill and the hit area are the full row, not just the text —
-    /// while `justify_center` centres the `tier name + chevron` group inside it
-    /// (R2 row 1).
+    /// **R66 R5**: this row is still the *only* clickable one. The highlight
+    /// container above it is inert, so a click on the model row below still
+    /// does nothing (R62 R3) even though the two rows now share one visual
+    /// block.
     ///
-    /// **Row 2 is deliberately not clickable** (R3's first option). Reasons:
-    /// the reference implementation's own two rows are separate elements and
-    /// only the tier row carries the chevron, which is the affordance that
-    /// says "this opens something"; and folding the model row into the same hit
-    /// area would put a click target *below* the control the user reads as the
-    /// button, so a click aimed at the model name would silently drill down.
-    /// Leaving row 2 inert keeps the hit area identical to the affordance.
+    /// The row hugs its own content (R66 R2 removed its `w_full`), so the hit
+    /// area and the hover fill are the `tier name + chevron` group rather than
+    /// the full card band. R66 R2 makes the *block* content-hugging, so a
+    /// full-width row inside it would defeat the measurement; the chevron
+    /// remains the affordance that says "this opens something".
+    ///
+    /// The pre-R66 `.hover(bg_hover)` is gone: the block already paints that
+    /// exact colour persistently (R66 R3), so the hover had become a no-op.
+    /// `cursor_pointer` keeps the interactive affordance.
     fn render_title_row(
         &self,
         label: String,
@@ -1122,13 +1273,11 @@ impl ThinkingSlider {
             .flex()
             .items_center()
             .justify_center()
-            .w_full()
             .min_h(px(CARD_TEXT_ROW_HEIGHT))
             .flex_shrink_0()
             .min_w_0()
+            .max_w(px(TITLE_BLOCK_CONTENT_MAX_WIDTH))
             .cursor_pointer()
-            .rounded_md()
-            .hover(move |style| style.bg(colors.bg_hover))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|_, _: &MouseUpEvent, _, cx| {
@@ -1182,6 +1331,11 @@ impl ThinkingSlider {
     /// handler. It stays inside the card's own hit area (the layer's
     /// `occlude()`), so a click on it is swallowed by the card rather than
     /// falling through to the composer behind it — it simply does nothing.
+    /// **R66 R5** re-states this: the row now shares a highlight block with the
+    /// clickable tier row, and this row still handles nothing.
+    ///
+    /// R66 R2 removed the row's `w_full`, so the block's width is decided by
+    /// whichever of the two rows is wider rather than always by the card band.
     ///
     /// The `debug_selector` sits on the *inner* truncated box rather than on the
     /// full-width row, so the measured bounds are the model name's own text run.
@@ -1192,10 +1346,10 @@ impl ThinkingSlider {
             .flex()
             .items_center()
             .justify_center()
-            .w_full()
             .min_h(px(CARD_TEXT_ROW_HEIGHT))
             .flex_shrink_0()
             .min_w_0()
+            .max_w(px(TITLE_BLOCK_CONTENT_MAX_WIDTH))
             .child(
                 div()
                     .debug_selector(|| "thinking-slider-model".into())
@@ -2476,6 +2630,433 @@ mod tests {
             model_name.left() >= card.left() && model_name.right() <= card.right(),
             "R62 R6: the model name ({model_name:?}) must stay inside the card \
              ({card:?}) and ellipsise rather than spill"
+        );
+    }
+
+    // ---- R66: the title block, the labels, and the tier-name table ---------
+
+    /// R66 A1 (spec §5): [`tier_display_label`] returns the reference's own
+    /// label for each of the nine ladder ids, quoted verbatim from
+    /// `composer.mode.local.reasoning.<tier>.label`.
+    ///
+    /// The table is written out here rather than derived from
+    /// [`TIER_LADDER`], so the two non-trivial mappings (`low` → `Light`,
+    /// `xhigh` → `Extra High`) are pinned as literals a future "cleanup" cannot
+    /// silently normalise.
+    #[test]
+    fn r66_a1_tier_display_label_matches_the_reference_table() {
+        for (effort, expected) in [
+            ("none", "None"),
+            ("minimal", "Minimal"),
+            ("low", "Light"),
+            ("medium", "Medium"),
+            ("high", "High"),
+            ("xhigh", "Extra High"),
+            ("max", "Max"),
+            ("ultra", "Ultra"),
+            ("persistent", "Persistent"),
+        ] {
+            assert_eq!(
+                tier_display_label(effort),
+                expected,
+                "R66 A1: `{effort}` must display as `{expected}`"
+            );
+        }
+        // The two deliberate divergences, called out on their own so a
+        // "correction" to the obvious reading fails loudly.
+        assert_eq!(tier_display_label("low"), "Light", "not `Low`");
+        assert_eq!(tier_display_label("xhigh"), "Extra High", "not `XHigh`");
+    }
+
+    /// R66 A2 (spec §5): an id outside the table takes the capitalisation
+    /// fallback — the first letter is uppercased and the rest is untouched.
+    ///
+    /// Vega's efforts are a configurable `Vec<String>`, so this path is real,
+    /// not defensive.
+    #[test]
+    fn r66_a2_unknown_ids_are_capitalised() {
+        assert_eq!(tier_display_label("somecustom"), "Somecustom");
+        assert_eq!(tier_display_label("Custom"), "Custom");
+        assert_eq!(tier_display_label("a"), "A");
+        assert_eq!(tier_display_label(""), "", "an empty id stays empty");
+        // Only the first character moves: no lowercasing of the tail, so an
+        // already-camel id keeps its shape.
+        assert_eq!(tier_display_label("megaHigh"), "MegaHigh");
+        // A multi-byte first character is a `char`, not a byte.
+        assert_eq!(tier_display_label("élevé"), "Élevé");
+    }
+
+    /// R66 A3 (spec §5): the two label constants are English, matching the
+    /// reference's composer namespace.
+    #[test]
+    fn r66_a3_the_title_labels_are_english() {
+        assert_eq!(OFF_LABEL, "None");
+        assert_eq!(PROVIDER_DEFAULT_LABEL, "Default");
+        // R66 R7's note: the Settings-page key is a different namespace and
+        // must not have been used.
+        assert_ne!(PROVIDER_DEFAULT_LABEL, "Model default");
+        // No CJK left in either label (R66 §3's complaint).
+        for label in [OFF_LABEL, PROVIDER_DEFAULT_LABEL] {
+            assert!(
+                label.is_ascii(),
+                "R66 §3: `{label}` must be an ASCII English label"
+            );
+        }
+    }
+
+    /// R66 A4 (spec §5, R8): the **persisted** choice name is unchanged.
+    ///
+    /// It is a storage contract, not a display string: `reasoning.toml` stores
+    /// it in `ReasoningProfile.preference` and `core.rs` maps it to
+    /// `ReasoningChoice::Disabled`. R66 changes only what is shown.
+    #[test]
+    fn r66_a4_the_off_choice_name_is_unchanged() {
+        assert_eq!(OFF_CHOICE_NAME, "disabled");
+        assert_ne!(
+            OFF_LABEL, OFF_CHOICE_NAME,
+            "the display label and the persisted name are now different strings"
+        );
+        let model = ThinkingSliderModel::new(tiers(&["low", "high"]), true, OFF_CHOICE_NAME, "low");
+        assert_eq!(
+            model.choice_name(),
+            Some(OFF_CHOICE_NAME),
+            "R8: the Off position still persists `disabled`"
+        );
+        assert_eq!(model.label(), OFF_LABEL, "R6: while showing `None`");
+    }
+
+    /// R66 R10/R12: [`ThinkingSliderModel::label`] displays the mapped tier
+    /// name while the model keeps reporting the raw effort id.
+    #[test]
+    fn r66_the_model_label_maps_the_id_but_keeps_the_persisted_one() {
+        let model =
+            ThinkingSliderModel::new(tiers(&["minimal", "low", "max"]), false, "low", "low");
+        assert_eq!(model.label(), "Light", "R10: `low` displays as `Light`");
+        assert_eq!(
+            model.tier(),
+            Some("low"),
+            "R12: the persisted effort id is untouched"
+        );
+        assert_eq!(model.choice_name(), Some("low"));
+
+        let strongest =
+            ThinkingSliderModel::new(tiers(&["minimal", "low", "max"]), false, "max", "low");
+        assert_eq!(strongest.label(), "Max", "R9/A9: `max` displays as `Max`");
+        assert_eq!(strongest.tier(), Some("max"));
+    }
+
+    /// R66 A5 (spec §5): the **one** highlight container's bounds contain both
+    /// text rows' bounds.
+    ///
+    /// This is the structural claim of R1: a single block spanning the tier row
+    /// *and* the model row, rather than the pre-R66 arrangement in which the
+    /// tier row carried the background alone.
+    ///
+    /// Containment is asserted with explicit `<=` comparisons rather than
+    /// `Bounds::is_contained_within`, which uses a strict `<` on the
+    /// bottom-right corner: the block has no vertical padding (R66 R4), so the
+    /// model row's bottom edge coincides with the block's and the strict form
+    /// would reject the very layout R1 asks for.
+    ///
+    /// **This test says nothing about the paint.** The test platform has no
+    /// headless renderer, so the grey fill, its radius and its width are not
+    /// observable here (spec §5: A5 must not be presented as A8).
+    #[gpui_kit::test]
+    async fn r66_a5_the_highlight_block_contains_both_rows(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+        let block = visual
+            .debug_bounds("thinking-slider-title-block")
+            .expect("mounted title block");
+        let tier_row = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted tier row");
+        let model_row = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model row");
+
+        for (label, row) in [("tier row", tier_row), ("model row", model_row)] {
+            assert!(
+                block.left() <= row.left()
+                    && row.right() <= block.right()
+                    && block.top() <= row.top()
+                    && row.bottom() <= block.bottom(),
+                "R66 A5: the highlight block ({block:?}) must contain the {label} \
+                 ({row:?})"
+            );
+        }
+
+        // R1: one block, not two. The tier row's top and the model row's bottom
+        // are the block's own edges, so nothing separates them.
+        assert!(
+            block.top() <= tier_row.top() && model_row.bottom() <= block.bottom(),
+            "R66 R1: the block spans from the tier row through the model row"
+        );
+    }
+
+    /// R66 R2 (spec §2): the highlight block hugs its content instead of
+    /// stretching to the card's content band.
+    ///
+    /// The pre-R66 title row was `w_full`, so its background was the full 203px
+    /// band (the user's 403px full-row measurement). R2 requires the block's
+    /// width to come from the wider row plus the horizontal padding, which is
+    /// asserted as an arithmetic identity rather than a magic number.
+    ///
+    /// The measured widths are reported in the failure messages so a regression
+    /// prints the number that moved.
+    #[gpui_kit::test]
+    async fn r66_r2_the_highlight_block_hugs_its_content(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+        let block = visual
+            .debug_bounds("thinking-slider-title-block")
+            .expect("mounted title block");
+        let card = visual
+            .debug_bounds("thinking-slider-card")
+            .expect("mounted card");
+        let tier_row = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted tier row");
+        let model_row = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model row");
+
+        let content_band = THINKING_CARD_WIDTH - CARD_INSET * 2.0;
+        assert!(
+            f32::from(block.size.width) < f32::from(card.size.width) - 1.0,
+            "R66 R2: the block ({}px) must not stretch to the card width \
+             ({}px) — the pre-R66 `w_full` row did",
+            f32::from(block.size.width),
+            f32::from(card.size.width)
+        );
+        assert!(
+            f32::from(block.size.width) <= content_band + 1.0,
+            "R66 R2: the block ({}px) must stay inside the {content_band}px \
+             content band",
+            f32::from(block.size.width)
+        );
+
+        let widest_row = f32::from(tier_row.size.width).max(f32::from(model_row.size.width));
+        let expected = widest_row + TITLE_HIGHLIGHT_PADDING_X * 2.0;
+        assert!(
+            (f32::from(block.size.width) - expected).abs() <= 1.0,
+            "R66 R2: the block must be the wider row plus its padding: got \
+             {}px, expected {expected}px (tier row {}px, model row {}px, \
+             padding {TITLE_HIGHLIGHT_PADDING_X}px each side)",
+            f32::from(block.size.width),
+            f32::from(tier_row.size.width),
+            f32::from(model_row.size.width)
+        );
+    }
+
+    /// R66 A6 (spec §5, R4): the frozen geometry is unchanged by the block.
+    ///
+    /// R4 forbids changing the card width, the two row heights, the gap between
+    /// the rows, the slider position or the card height. The block therefore
+    /// carries **horizontal** padding only; this test pins the vertical rhythm
+    /// and the two measured widths against the same values the R62 tests use.
+    #[gpui_kit::test]
+    async fn r66_a6_the_frozen_geometry_is_unchanged(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+        let card = visual
+            .debug_bounds("thinking-slider-card")
+            .expect("mounted card");
+        let block = visual
+            .debug_bounds("thinking-slider-title-block")
+            .expect("mounted title block");
+        let tier_row = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted tier row");
+        let model_row = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model row");
+        let track = visual
+            .debug_bounds("thinking-slider-track")
+            .expect("mounted track");
+        let knob = visual
+            .debug_bounds("thinking-slider-knob")
+            .expect("mounted knob");
+
+        // Card and track: the R57/R62 measured widths.
+        assert!(
+            (f32::from(card.size.width) - THINKING_CARD_WIDTH).abs() <= 1.0,
+            "R66 R4: card width {} != frozen {THINKING_CARD_WIDTH}",
+            f32::from(card.size.width)
+        );
+        assert!(
+            (f32::from(track.size.width) - THINKING_TRACK_WIDTH).abs() <= 1.0
+                && (f32::from(track.size.height) - THINKING_TRACK_HEIGHT).abs() <= 1.0,
+            "R66 R4: the slider is unchanged: track {:?}",
+            track.size
+        );
+        assert!(
+            (f32::from(knob.size.width) - THINKING_KNOB_DIAMETER).abs() <= 1.0,
+            "R66 R4: the knob is unchanged: {:?}",
+            knob.size
+        );
+
+        // The vertical rhythm: top padding, the row gap above the model row
+        // (now the block's internal gap), the gap above the track, and both
+        // row heights. R4 freezes all of them.
+        assert!(
+            (f32::from(block.top() - card.top()) - CARD_PADDING_TOP).abs() <= 1.0,
+            "R66 R4: the block adds no top padding: block {:?} card {:?}",
+            block.top(),
+            card.top()
+        );
+        for (label, gap) in [
+            (
+                "between the tier row and the model row",
+                f32::from(model_row.top() - tier_row.bottom()),
+            ),
+            (
+                "between the model row and the track",
+                f32::from(track.top() - model_row.bottom()),
+            ),
+        ] {
+            assert!(
+                (gap - CARD_ROW_GAP).abs() <= 1.0,
+                "R66 R4: the gap {label} is CARD_ROW_GAP ({CARD_ROW_GAP}px), \
+                 got {gap}px"
+            );
+        }
+        for (label, row) in [("tier", tier_row), ("model", model_row)] {
+            assert!(
+                f32::from(row.size.height) >= CARD_TEXT_ROW_HEIGHT - 1.0,
+                "R66 R4: the {label} row ({:?}) must be at least \
+                 CARD_TEXT_ROW_HEIGHT ({CARD_TEXT_ROW_HEIGHT}px)",
+                row.size.height
+            );
+        }
+        // The card's content height is the R62 M1 sum, unchanged: the block's
+        // horizontal padding cannot move it.
+        let content_height = f32::from(track.bottom() - card.top()) + CARD_PADDING_BOTTOM;
+        let expected = CARD_PADDING_TOP
+            + f32::from(tier_row.size.height)
+            + f32::from(model_row.size.height)
+            + CARD_ROW_GAP * 2.0
+            + THINKING_TRACK_HEIGHT
+            + CARD_PADDING_BOTTOM;
+        assert!(
+            (content_height - expected).abs() <= 1.0,
+            "R66 R4: the card's content height is {content_height}px, expected \
+             {expected}px — the block must not have changed it"
+        );
+    }
+
+    /// R66 A7 (spec §5, R5 — the critical regression): merging the two rows into
+    /// one visual block must **not** merge their interactions.
+    ///
+    /// Clicking the tier row emits `ThinkingSliderTitleActivated`; clicking the
+    /// model row emits nothing. Both halves are asserted in one test because
+    /// either alone is satisfiable by the wrong implementation: "the tier row
+    /// emits" also holds if both emit, and "the model row is inert" also holds
+    /// if neither does.
+    ///
+    /// This is the assertion that catches the most likely mistake in R66 — a
+    /// click handler moved from the tier row onto the shared container, which
+    /// would make the model row clickable and break R62 R3.
+    #[gpui_kit::test]
+    async fn r66_a7_the_block_does_not_merge_the_row_interactions(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let activated = Arc::new(AtomicUsize::new(0));
+        let captured = activated.clone();
+        let slider = window.entity(cx).expect("slider entity");
+        cx.update(|cx| {
+            cx.subscribe(&slider, move |_, _: &ThinkingSliderTitleActivated, _| {
+                captured.fetch_add(1, Ordering::SeqCst);
+            })
+            .detach();
+        });
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let model_row = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model row");
+        let tier_before = tier_of(&window, cx);
+        visual.simulate_click(model_row.center(), Modifiers::default());
+        visual.run_until_parked();
+
+        assert_eq!(
+            activated.load(Ordering::SeqCst),
+            0,
+            "R66 R5 / R62 R3: clicking the model row must not drill down"
+        );
+        assert_eq!(
+            tier_of(&window, cx),
+            tier_before,
+            "R66 R5: the model row must not change the selected tier either"
+        );
+
+        // Now the tier row, on the same mounted card: it must still drill down.
+        let tier_row = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted tier row");
+        visual.simulate_click(tier_row.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            activated.load(Ordering::SeqCst),
+            1,
+            "R66 R5 / R59 R3: clicking the tier row must still emit exactly one \
+             ThinkingSliderTitleActivated"
+        );
+    }
+
+    /// R66 R5: the highlight container itself handles nothing.
+    ///
+    /// A7 clicks the model row's own bounds. This is the complementary check:
+    /// the block has no `id`, no cursor and no handler, so a click on the part
+    /// of the block that lies outside both rows (the horizontal padding) cannot
+    /// drill down either. Together they rule out "the handler moved to the
+    /// container" rather than merely "the handler is somewhere on the model
+    /// row".
+    #[gpui_kit::test]
+    async fn r66_r5_the_highlight_container_is_inert(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let activated = Arc::new(AtomicUsize::new(0));
+        let captured = activated.clone();
+        let slider = window.entity(cx).expect("slider entity");
+        cx.update(|cx| {
+            cx.subscribe(&slider, move |_, _: &ThinkingSliderTitleActivated, _| {
+                captured.fetch_add(1, Ordering::SeqCst);
+            })
+            .detach();
+        });
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let block = visual
+            .debug_bounds("thinking-slider-title-block")
+            .expect("mounted title block");
+        let tier_row = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted tier row");
+        // A point inside the block but outside the tier row: the block's left
+        // padding, at the tier row's own height.
+        let padding_point = gpui_kit::point(block.left() + px(1.0), tier_row.center().y);
+        assert!(
+            block.contains(&padding_point) && !tier_row.contains(&padding_point),
+            "this test only means something on the block's padding: block={block:?} \
+             tier_row={tier_row:?} point={padding_point:?}"
+        );
+        visual.simulate_click(padding_point, Modifiers::default());
+        visual.run_until_parked();
+
+        assert_eq!(
+            activated.load(Ordering::SeqCst),
+            0,
+            "R66 R5: the highlight container must carry no click handler of its \
+             own"
         );
     }
 
