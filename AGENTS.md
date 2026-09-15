@@ -111,7 +111,7 @@ scripts/cargo-lock.sh --release               # 清理残留锁（进程已死�
 
 同类记录：`docs/vega-r47-panel-structure-alignment-delivery.md:80`。
 
-## 原生验收的操作方法：五个必踩的坑（2026-09-14 实测）
+## 原生验收的操作方法：六个必踩的坑（2026-09-14/15 实测）
 
 R62 验收耗时远超预期，全部时间花在**定位窗口和坐标**上，与产品无关。以下每条都真实发生过一次，照做可省一整轮。
 
@@ -146,6 +146,14 @@ ZCode 自己的窗口标题是 `Vega Desktop`，界面上也有 `Full access` �
 窗口位置在验收过程中会变（本轮实测 origin 从 (318,53) 变到 (346,52)）。写死屏幕坐标会在下一次窗口移动时静默失效。
 
 **改用**：每次都从 `CGWindowListCopyWindowInfo` 现读 origin，再加窗口内相对偏移。
+
+### 坑 6 · 点不开某个 UI 时，先查数据前提，再调坐标（R66 实测）
+
+R66 验收时我反复打不开滑块卡片，**花了十几轮在调整点击坐标**，全是白费。真实原因是数据前提不满足：`~/.config/vega/reasoning.toml` 只给 `glm-5.3-flash` 声明了档位，而当时选中的模型是 `deepseek-v4-flash` —— 按 R57 R12，**无档位的模型不渲染滑块卡片**。
+
+**规则**：某个 UI 元素反复点不开时，**先确认它的渲染前提**（该模型的配置、该路由的状态、该 feature 开关），再去调坐标。前提不满足时，坐标怎么调都不会有反应。
+
+配置位置速查：reasoning 档位在 `~/.config/vega/reasoning.toml`（**不在** `~/Library/Application Support/ai.vega/` 的数据库里，也不在任何 `.toml` 仓库文件里）。
 
 ## GPUI 圆角：`overflow_hidden` 不裁圆角，且半径会被钳制（R65 实测）
 
