@@ -217,6 +217,55 @@ if self.is_border_visible() {
 
 **验收方法**：浮层类改动不能只看"内容对不对"。必须做一次**像素行扫描**：取浮层中部一行，确认其中没有其他层画上来的元素（R64 用 `vfind`/`vscan` 定位到 `rgb(232,232,232)` = `border_subtle` 的连续 run）。
 
+## GPUI hover：`.hover()` 不带 `.id()` 就永不重绘（R67 实测）
+
+**给一个匿名 div 加 `.hover(...)`，它永远不会变色。** 必须同时给它 `.id(...)`。
+
+原因：GPUI 只在元素拥有 **element state** 时才注册 hover 翻转的重绘监听（`gpui-pre-0.3.4/src/elements/div.rs:2783`），而 element state 只在 `Element::id()` 返回 `Some` 时存在（`div.rs:1848`，id 来自 `interactivity.element_id`，即 `.id(...)`）。绘制分支（`div.rs:3391-3405`）在有 hitbox 时读 `hitbox.is_hovered(window)`，无 hitbox 时退化到 element state——匿名 div 没有 element state。
+
+R67 的临时探针实测（同一份代码，只差一个 `.id()`）：
+
+```
+ANONYMOUS: base        renders=1 bg=BLUE
+ANONYMOUS: hover-child renders=1 bg=BLUE   ← 永不变化
+ANONYMOUS: hover-block renders=1 bg=BLUE   ← 永不变化
+STATEFUL:  base        renders=1 bg=BLUE
+STATEFUL:  hover-child renders=2 bg=RED    ← 生效
+STATEFUL:  left        renders=3 bg=BLUE   ← 退出还原
+```
+
+**这条最阴的地方是它静默**：不报错、不 panic，只是永远不亮。若把某个原本常驻的底色改成 hover 态（R67 就是），漏掉 `.id()` 会得到一个**比改动前更糟**的结果。
+
+**加 `.id()` 不等于加交互。** id 只注册一个 `HitboxBehavior::Normal` 的 hitbox，不注册任何监听器；R66 R5 约束的是**点击行为**，`r66_r5_the_highlight_container_is_inert` 在加了 id 之后仍通过。
+
+**顺带**：hover 命中父块时，指针落在带自己 hitbox 的**子元素**上也一样有效——`hit_test` 收集指针下所有 hitbox，`HitboxBehavior::Normal` 不遮挡后面的（`window.rs:1095`）。所以"整块 hover"不必给每行单独加 hover。
+
+## 测试平台能观测绘制：用 `painted_quads()`，不是 `capture_screenshot`（R67 实测）
+
+旧注释说"测试平台没有 headless renderer，所以绘制结果不可观测"——**只对了一半**，别再用它当借口跳过绘制断言。
+
+- `VisualTestContext::capture_screenshot` → `window.render_to_image()`：**确实**需要 `HeadlessRenderer`，未配置时 `bail!`（`gpui-pre-0.3.4/src/platform/test/window.rs:441`）。
+- **`Window::painted_quads()`**（`window.rs:2618`）：直接读 `rendered_frame.scene.quads`，**不需要渲染器**。每个 `Quad` 带 `bounds` / `corner_radii` / `background`。
+
+```rust
+let quads = visual
+    .update_window(window, |_, window, _| window.painted_quads())
+    .expect("painted quads");
+```
+
+两个坑：
+
+- **`painted_quads` 的 bounds 是缩放像素**（本机 2×），`debug_bounds` 是逻辑像素。要按 `window.scale_factor()` 换算后才能互相比较。
+- **`Background` 的 `tag`/`solid` 字段是 `pub(crate)`**，外部无法 `match Background::Solid(..)`。用公开的 `Background::as_solid()` 取 `Hsla`，再比色。
+
+R67 因此把"hover 才亮"从"看截图差不多"变成了可证伪的生产测试（`r67_a3..a6`）。
+
+## 验证 hover 类改动不能用点击（R67 实测）
+
+`scripts/native-drive.swift` 只做点击。**hover 态不能靠它验证**——点标题行会进二级列表，点别处又测不到 hover。需要一个 **move-only** 驱动：激活 → `CGEvent(mouseMoved)` 移动（不要 down/up）→ 截图。
+
+另外：hover 是**翻转**触发的，所以移动要分两步（先到块外的起点，再到目标点），一步直接落在目标上可能不触发。R67 的驱动先移到窗口左下角再移到目标。
+
 ## 架构红线（速记，详见 exec-guide）
 
 - `vega_runtime` 禁止依赖 GPUI/任何 UI crate（headless 可测）
