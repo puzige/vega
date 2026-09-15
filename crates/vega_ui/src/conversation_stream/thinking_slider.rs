@@ -50,19 +50,36 @@
 //! - Selecting Off emits [`OFF_CHOICE_NAME`] (`"disabled"`), never an effort
 //!   string, and `"off"`/`"none"`/`"disabled"` are never appended to
 //!   [`ThinkingSliderModel::tiers`] (R3).
-//! - The Off label is [`OFF_LABEL`] (R66 R6 changed it from `关闭` to `None`,
-//!   the reference implementation's own lowest-tier label). Its colour is
-//!   **unmeasured** and deliberately reuses the lowest tier's visual; see
-//!   [`tier_label_color_for`].
+//! - The Off label is [`OFF_LABEL`] (`"Off"` since R67 R8; R66 R6 had borrowed
+//!   the reference's `None`, which was wrong — see the constant's own doc).
+//!   Its colour is **unmeasured** and deliberately reuses the lowest tier's
+//!   visual; see [`tier_label_color_for`].
 //!
 //! ## R66: the title block
 //!
-//! R66 wraps the tier-name row and the model-name row in **one** persistent
-//! highlight container (`render_title_block`) that hugs its content, and
-//! displays tiers through [`tier_display_label`] rather than as raw effort
-//! ids. The container is a **visual** merge only: the
-//! `ThinkingSliderTitleActivated` handler stays on the tier row and the model
-//! row stays inert (R66 R5 / R62 R3).
+//! R66 wraps the tier-name row and the model-name row in **one** highlight
+//! container (`render_title_block`) that hugs its content, and displays tiers
+//! through [`tier_display_label`] rather than as raw effort ids. The container
+//! is a **visual** merge only: the `ThinkingSliderTitleActivated` handler stays
+//! on the tier row and the model row stays inert (R66 R5 / R62 R3).
+//!
+//! ## R67: the block's fill is a hover state
+//!
+//! R66 R3 made that fill **persistent** — the grey was there whenever the card
+//! was open, with no pointer interaction. The user rejected that reading
+//! (2026-09-15): the grey must appear **only while the pointer is over the
+//! block**, and be absent otherwise (R67 R1). Two things follow, both easy to
+//! get wrong:
+//!
+//! - the fill is applied through `.hover(...)`, not `.bg(...)`;
+//! - the block carries an explicit `.id(...)` (R67 R2). GPUI only re-renders a
+//!   hover transition when the element has **element state**, which exists only
+//!   when `Element::id()` is `Some` (`gpui-pre-0.3.4/src/elements/div.rs:2783`
+//!   registers the transition listener on `element_state`, `:1848` shows `id()`
+//!   is `interactivity.element_id`). An anonymous div with `.hover()` and no
+//!   `.id()` never repaints and its fill never appears at all — strictly worse
+//!   than the persistent version. The id registers a `HitboxBehavior::Normal`
+//!   hitbox and no listeners, so R66 R5's click contract is untouched.
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -220,15 +237,28 @@ const TRACK_UNFILLED: Rgba = measured_rgba(0xE9E8E8FF);
 /// [`ThinkingSliderModel::tiers`] or sent as `Effort`.
 pub const OFF_CHOICE_NAME: &str = "disabled";
 
-/// The Off position's tier-name text (R58 R5, **R66 R6**).
+/// The Off position's tier-name text (R58 R5, **R66 R6**, **R67 R8**).
 ///
-/// R66 R6 changed this from Vega's own `关闭` to `None`: the reference
-/// implementation has no separate "Off"/"Disabled" reasoning label at all —
-/// `composer.mode.local.reasoning.none.label` *is* `None`, and it is the
-/// lowest entry of the same table [`tier_display_label`] encodes. The old
-/// wording also broke the row's language consistency, since the model name
-/// beside it is always English (R66 §3).
-pub const OFF_LABEL: &str = "None";
+/// R66 R6 changed this from Vega's own `关闭` to `None`; R67 R8 changes it again
+/// to `Off`. The `关闭` → `None` step was right to drop the CJK wording (the
+/// model name beside it is always English), but wrong in what it replaced it
+/// with: it borrowed the reference implementation's
+/// `composer.mode.local.reasoning.none.label`, which is the display name of the
+/// reference's **lowest reasoning effort tier**, not of a "no reasoning"
+/// position.
+///
+/// Vega's Off is not an effort. It is a separate
+/// [`ReasoningChoice::Disabled`](vega_conversation::types::ReasoningChoice)
+/// reached through the profile's `disabled_wire`, and it is never a member of
+/// `efforts` (R58 R1/R3, module docs). The reference therefore has **no** label
+/// for the concept Vega's Off names, so there is nothing to copy: borrowing the
+/// tier's label conflated two different things, and it made the Off position
+/// and the `none` tier display the same word. `Off` is Vega's own label for its
+/// own concept (user decision, 2026-09-15).
+///
+/// [`tier_display_label`]'s `none` → `None` row is **not** touched by R67 R8 —
+/// that is the tier table, a different thing (R67 R11).
+pub const OFF_LABEL: &str = "Off";
 
 /// The no-selection label, shown when the persisted preference is
 /// `provider_default` (R58 R6, **R66 R7**).
@@ -250,6 +280,14 @@ pub const PROVIDER_DEFAULT_LABEL: &str = "Default";
 ///
 /// - `low` → `Light` (not `Low`);
 /// - `xhigh` → `Extra High` (not `XHigh`).
+///
+/// R67 R11: this table is the **tier** vocabulary and is untouched by R67 R8's
+/// Off-label change. In particular `none` → `None` stays: `none` is a real
+/// effort tier here, whereas Vega's Off is a separate
+/// [`ReasoningChoice::Disabled`](vega_conversation::types::ReasoningChoice)
+/// that never appears in `efforts`. Reading the user's "null → off" as an edit
+/// to this row would make the `none` tier display as `Off` while the actual Off
+/// position kept its old label — the exact opposite of the request.
 ///
 /// R11's fallback uppercases the **first letter** rather than returning the id
 /// verbatim. Vega's efforts are a configurable `Vec<String>` rather than the
@@ -1146,9 +1184,10 @@ impl Render for ThinkingSlider {
         // chevron, then the model name) and the track.
         //
         // R66 §2 replaced the two independent row children with **one**
-        // `render_title_block` child: the highlight is a single persistent
-        // block covering both text rows, hugging its content. R62 R5's
-        // two-level interaction is untouched — see `render_title_row` and
+        // `render_title_block` child: the highlight is a single block covering
+        // both text rows, hugging its content. R67 R1 makes that block's grey a
+        // **hover** state rather than a persistent fill. R62 R5's two-level
+        // interaction is untouched — see `render_title_row` and
         // `render_model_row` for which of the two rows handles clicks.
         //
         // R6: both text rows carry `min_w_0` + `truncate`, so a long tier or
@@ -1189,31 +1228,59 @@ impl Render for ThinkingSlider {
 impl ThinkingSlider {
     /// R66 §2: the **one** highlight container that wraps both text rows.
     ///
-    /// R1/R3: a single persistent block — the measured reference shows one
-    /// continuous light-grey block running from the tier row through the model
-    /// row with no white gap, present with no pointer interaction. The fill is
-    /// [`ThemeColors::bg_hover`], the same light grey the pre-R66 title row
-    /// used for its hover; R3 only changes *when* it shows (always, not on
-    /// hover).
+    /// R67 R1/R3: the block's fill is a **hover state**, not a persistent
+    /// background. R66 R3 had it always-on; the user rejected that (the grey
+    /// must appear only while the pointer is over the block), so the fill is
+    /// applied through `.hover(...)` instead of `.bg(...)`. When the card is
+    /// open and the pointer is elsewhere the block paints nothing.
     ///
-    /// R2: the block **hugs its content**. The card is an `items_center` flex
-    /// column, so a child with no explicit width takes its content's width
+    /// The fill colour itself is unchanged (R67 R7): [`ThemeColors::bg_hover`],
+    /// the same light grey the pre-R66 title row used for its hover. R66 R3 and
+    /// R67 R1 disagree only about *when* it shows.
+    ///
+    /// R3's hit area is the **whole block** — both rows plus the horizontal
+    /// padding — so the two rows light up together, which is what R66's
+    /// "model and thinking level are selected together" asks for. Hovering a
+    /// child with its own hitbox still hovers this block: `hit_test` collects
+    /// every hitbox under the pointer and `HitboxBehavior::Normal` does not
+    /// block the ones behind it, so the tier row's own hitbox does not shadow
+    /// the block's.
+    ///
+    /// R2 (R67): the block **must** carry an explicit `.id(...)`. GPUI registers
+    /// the hover-transition listener only when the element has element state
+    /// (`gpui-pre-0.3.4/src/elements/div.rs:2783`), and element state exists
+    /// only when `Element::id()` is `Some` (`:1848`). The paint branch
+    /// (`:3391`) reads `hitbox.is_hovered(window)` when a hitbox exists and
+    /// otherwise falls back to element state, which an anonymous div does not
+    /// have — so `.hover()` **without** `.id()` produces a block that never
+    /// lights up at all, which is worse than R66's persistent grey. The id
+    /// string matches the debug selector so the two names stay one thing.
+    ///
+    /// R66 R5 (still in force): the container carries **no** click interaction.
+    /// It has no `cursor_pointer` and no mouse handler, so wrapping the two rows
+    /// in one box cannot merge their behaviour. The
+    /// `ThinkingSliderTitleActivated` handler stays on the tier row alone and
+    /// the model row stays inert (R62 R3). The `.id(...)` above does not weaken
+    /// that: an id with no listeners registers a `HitboxBehavior::Normal`
+    /// hitbox and no handler, so R66 R5's constraint — which is about *click
+    /// behaviour*, not about hitbox existence — is untouched. See
+    /// `r66_r5_the_highlight_container_is_inert`.
+    ///
+    /// R2 (R66): the block **hugs its content**. The card is an `items_center`
+    /// flex column, so a child with no explicit width takes its content's width
     /// rather than stretching; neither row below sets `w_full` any more. The
     /// `max_w` is the card's own content band, so an over-long model name
     /// still ellipsises inside the card (R62 R6) instead of widening the block
     /// past it. See the module report for the measured block width.
     ///
-    /// R4: the container adds **horizontal** padding only. Vertical padding or
-    /// an extra gap would change the card's height and the two row gaps, which
-    /// R4 freezes; the vertical rhythm therefore stays exactly
+    /// R4 (R66): the container adds **horizontal** padding only. Vertical
+    /// padding or an extra gap would change the card's height and the two row
+    /// gaps, which R4 freezes; the vertical rhythm therefore stays exactly
     /// `CARD_PADDING_TOP`, `CARD_ROW_GAP`, `CARD_ROW_GAP`,
     /// `CARD_PADDING_BOTTOM`.
     ///
-    /// R5 (the critical one): the container carries **no** interaction. It has
-    /// no `id`, no `cursor_pointer` and no mouse handler, so wrapping the two
-    /// rows in one box cannot merge their behaviour. The
-    /// `ThinkingSliderTitleActivated` handler stays on the tier row alone and
-    /// the model row stays inert (R62 R3).
+    /// R67 R5: no hover **transition/animation** is introduced either — the
+    /// fill is a plain two-state style, so the switch is instant.
     fn render_title_block(
         &self,
         label: String,
@@ -1222,6 +1289,9 @@ impl ThinkingSlider {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()
+            // R67 R2: the id is what makes the hover transition repaint. See the
+            // doc comment above; removing it silently disables the fill.
+            .id("thinking-slider-title-block")
             .debug_selector(|| "thinking-slider-title-block".into())
             .flex()
             .flex_col()
@@ -1231,7 +1301,9 @@ impl ThinkingSlider {
             // grow past the card on a long model name.
             .max_w(px(THINKING_CARD_WIDTH - CARD_INSET * 2.0))
             .rounded_md()
-            .bg(colors.bg_hover)
+            // R67 R1: hover-triggered, never persistent. R67 R7: the colour is
+            // the unchanged `bg_hover`.
+            .hover(move |style| style.bg(colors.bg_hover))
             .px(px(TITLE_HIGHLIGHT_PADDING_X))
             .child(self.render_title_row(label, label_color, colors, cx))
             .child(self.render_model_row(colors))
@@ -1252,14 +1324,21 @@ impl ThinkingSlider {
     /// block.
     ///
     /// The row hugs its own content (R66 R2 removed its `w_full`), so the hit
-    /// area and the hover fill are the `tier name + chevron` group rather than
-    /// the full card band. R66 R2 makes the *block* content-hugging, so a
-    /// full-width row inside it would defeat the measurement; the chevron
-    /// remains the affordance that says "this opens something".
+    /// area is the `tier name + chevron` group rather than the full card band.
+    /// R66 R2 makes the *block* content-hugging, so a full-width row inside it
+    /// would defeat the measurement; the chevron remains the affordance that
+    /// says "this opens something".
     ///
-    /// The pre-R66 `.hover(bg_hover)` is gone: the block already paints that
-    /// exact colour persistently (R66 R3), so the hover had become a no-op.
-    /// `cursor_pointer` keeps the interactive affordance.
+    /// **R67 R4**: this row does **not** re-add the pre-R66 `.hover(bg_hover)`.
+    /// R66 removed it because the block painted the same colour persistently;
+    /// that reason no longer holds (R67 R1 made the block's fill hover-only),
+    /// but the conclusion does — the block's own hover covers this row. A child
+    /// with its own hitbox does not shadow its parent's hitbox: `hit_test`
+    /// collects every hitbox under the pointer and `HitboxBehavior::Normal`
+    /// blocks nothing behind it, so hovering the tier row hovers the block
+    /// too. A row-level hover would be a second, redundant fill of the same
+    /// colour, and would risk the row and the block disagreeing about *when*
+    /// they light up. `cursor_pointer` keeps the interactive affordance.
     fn render_title_row(
         &self,
         label: String,
@@ -1380,7 +1459,9 @@ fn tier_label_color_for(selected: Option<usize>, strongest: Option<usize>) -> Rg
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui_kit::{Modifiers, TestAppContext, VisualTestContext, WindowHandle, WindowOptions};
+    use gpui_kit::{
+        Hsla, Modifiers, Quad, Size, TestAppContext, VisualTestContext, WindowHandle, WindowOptions,
+    };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1805,10 +1886,17 @@ mod tests {
     /// the padding the clamp ceiling is `min(24, 24) / 2 = 12`.
     ///
     /// This pins the **arithmetic the spec determined** (the effective width and
-    /// the clamp), NOT the painted cap. The test platform has no headless
-    /// renderer, so the rendered shape is not observable here — spec §6 says
-    /// exactly that, and the shape proof is a native pixel scan. Do not read
-    /// this test as covering A1/A2/A3.
+    /// the clamp), NOT the painted cap. `capture_screenshot` would need a
+    /// `HeadlessRenderer` this harness does not have — spec §6 says exactly
+    /// that, and the shape proof is a native pixel scan. Do not read this test
+    /// as covering A1/A2/A3.
+    ///
+    /// R67 §4 correction: "not observable" is only true of the *rasterized*
+    /// frame. `Window::painted_quads()` reads the scene's quads without a
+    /// renderer, so a quad's `corner_radii` (what this arithmetic feeds) **is**
+    /// observable in tests — see the R67 A3–A6 tests below, which assert on
+    /// painted fills. This test stays arithmetic-only because that is what the
+    /// spec asked it to pin, not because the paint is unreachable.
     #[test]
     fn r65_the_fill_is_padded_to_the_track_height_before_the_cap_radius() {
         assert_eq!(FILL_LEFT_CAP_RADIUS, 12.0);
@@ -2688,9 +2776,15 @@ mod tests {
 
     /// R66 A3 (spec §5): the two label constants are English, matching the
     /// reference's composer namespace.
+    ///
+    /// **R67 R8** updates the Off label from `None` to `Off`. The test keeps its
+    /// R66 name because the claim it makes (the two title labels are ASCII
+    /// English, not the old CJK) is unchanged; only the Off string moved. The
+    /// `Off` value is pinned here as a literal, so a revert to `None` — or back
+    /// to `关闭` — fails loudly.
     #[test]
     fn r66_a3_the_title_labels_are_english() {
-        assert_eq!(OFF_LABEL, "None");
+        assert_eq!(OFF_LABEL, "Off", "R67 R8: Vega's own label for its Off");
         assert_eq!(PROVIDER_DEFAULT_LABEL, "Default");
         // R66 R7's note: the Settings-page key is a different namespace and
         // must not have been used.
@@ -2722,7 +2816,7 @@ mod tests {
             Some(OFF_CHOICE_NAME),
             "R8: the Off position still persists `disabled`"
         );
-        assert_eq!(model.label(), OFF_LABEL, "R6: while showing `None`");
+        assert_eq!(model.label(), OFF_LABEL, "R8: while showing `Off`");
     }
 
     /// R66 R10/R12: [`ThinkingSliderModel::label`] displays the mapped tier
@@ -2758,9 +2852,12 @@ mod tests {
     /// model row's bottom edge coincides with the block's and the strict form
     /// would reject the very layout R1 asks for.
     ///
-    /// **This test says nothing about the paint.** The test platform has no
-    /// headless renderer, so the grey fill, its radius and its width are not
-    /// observable here (spec §5: A5 must not be presented as A8).
+    /// **This test measures geometry, not paint.** It asserts where the block
+    /// *is*, not what it *fills*; the fill is covered by the R67 A3–A6 tests
+    /// below, which read `Window::painted_quads()`. (`capture_screenshot` would
+    /// need a `HeadlessRenderer` this harness does not have, but
+    /// `painted_quads()` reads `rendered_frame.scene.quads` directly and needs
+    /// no renderer — see spec §4.)
     #[gpui_kit::test]
     async fn r66_a5_the_highlight_block_contains_both_rows(cx: &mut TestAppContext) {
         let window = open_three_row_card(cx);
@@ -3057,6 +3154,337 @@ mod tests {
             0,
             "R66 R5: the highlight container must carry no click handler of its \
              own"
+        );
+    }
+
+    // ---- R67: the hover fill and the Off label ----------------------------
+
+    /// A point far from the card. Every hover assertion below enters the block
+    /// **from here**, because GPUI detects hover on a *transition*: the div's
+    /// mouse-move listener compares `hitbox.is_hovered(window)` against the
+    /// previous frame's state and only notifies on a change. A test that began
+    /// with the pointer already on the block would read the un-hovered paint and
+    /// prove nothing.
+    fn away_from_the_card() -> Point<Pixels> {
+        gpui_kit::point(px(600.), px(600.))
+    }
+
+    /// Moves the pointer and lets the resulting frame settle.
+    fn move_pointer(visual: &mut VisualTestContext, position: Point<Pixels>) {
+        visual.simulate_mouse_move(position, None, Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    /// The painted scene, plus the window's scale factor.
+    ///
+    /// `Window::painted_quads()` reads `rendered_frame.scene.quads` directly and
+    /// needs **no** `HeadlessRenderer`, so unlike `capture_screenshot` it works
+    /// in this harness (spec §4). It is the R67 evidence for "what is painted".
+    ///
+    /// The quads' bounds are in **scaled** pixels (2× on this machine), unlike
+    /// [`VisualTestContext::debug_bounds`], which is logical. The scale factor is
+    /// returned so callers can bring the two into the same space.
+    fn painted_scene(
+        visual: &mut VisualTestContext,
+        window: WindowHandle<ThinkingSlider>,
+    ) -> (Vec<Quad>, f32) {
+        visual
+            .update_window(window.into(), |_, window, _| {
+                (window.painted_quads(), window.scale_factor())
+            })
+            .expect("the window must still be open to read its painted quads")
+    }
+
+    /// Whether two colours are the same fill.
+    ///
+    /// This compares the 8-bit **RGBA** channels rather than using `Hsla`'s own
+    /// `PartialEq`. Both forms were measured on the real painted quad: the strict
+    /// `Hsla` equality does hold for the hover fill here (`l = 0.9529412`
+    /// round-trips exactly), so this is a deliberate robustness margin rather
+    /// than a necessity. Going through `Rgba` with a one-step tolerance keeps the
+    /// assertion meaningful if a future theme or GPUI version re-introduces a
+    /// rounding difference in the `Rgba` → `Hsla` conversion, while still pinning
+    /// the exact token: `bg_hover` is `0xF3F3F3`, and no neighbouring token is
+    /// within one 8-bit step of it (`bg_active` is `0xEDEDED`, six steps away).
+    fn same_colour(actual: Hsla, expected: Hsla) -> bool {
+        let (actual, expected) = (Rgba::from(actual), Rgba::from(expected));
+        [
+            (actual.r, expected.r),
+            (actual.g, expected.g),
+            (actual.b, expected.b),
+            (actual.a, expected.a),
+        ]
+        .into_iter()
+        .all(|(actual, expected)| (actual - expected).abs() <= 1.0 / 255.0)
+    }
+
+    /// The `bg_hover`-coloured quads, in **logical** pixels.
+    ///
+    /// `bg_hover` is the only fill the title block can paint, and no other
+    /// element in this card uses it, so this list is exactly "the highlight".
+    fn hover_fills(quads: &[Quad], scale: f32) -> Vec<Bounds<f32>> {
+        let expected = Hsla::from(vega_theme::Theme::light().colors.bg_hover);
+        quads
+            .iter()
+            .filter_map(|quad| quad.background.as_solid().map(|solid| (quad, solid)))
+            .filter(|(_, solid)| same_colour(*solid, expected))
+            .map(|(quad, _)| Bounds {
+                origin: Point {
+                    x: quad.bounds.left().as_f32() / scale,
+                    y: quad.bounds.top().as_f32() / scale,
+                },
+                size: Size {
+                    width: quad.bounds.size.width.as_f32() / scale,
+                    height: quad.bounds.size.height.as_f32() / scale,
+                },
+            })
+            .collect()
+    }
+
+    /// Whether `outer` (logical) covers `inner` (logical), allowing for the
+    /// device-pixel snapping `painted_quads` applies.
+    fn covers(outer: &Bounds<f32>, inner: &Bounds<Pixels>) -> bool {
+        const TOLERANCE: f32 = 1.0;
+        outer.left() <= f32::from(inner.left()) + TOLERANCE
+            && outer.right() >= f32::from(inner.right()) - TOLERANCE
+            && outer.top() <= f32::from(inner.top()) + TOLERANCE
+            && outer.bottom() >= f32::from(inner.bottom()) - TOLERANCE
+    }
+
+    /// R67 A1 (spec §4): the Off label is `Off`, and the two strings it must not
+    /// be confused with are unchanged.
+    ///
+    /// R67 R8 changes only the **display** label. `OFF_CHOICE_NAME` is the
+    /// persistence contract (`reasoning.toml` stores it; `core.rs` maps it to
+    /// `ReasoningChoice::Disabled`) and R9 forbids touching it;
+    /// `PROVIDER_DEFAULT_LABEL` was not questioned in R67 (R10).
+    #[test]
+    fn r67_a1_the_off_label_is_off() {
+        assert_eq!(
+            OFF_LABEL, "Off",
+            "R8: Vega's own label for its Off position"
+        );
+        assert_eq!(
+            OFF_CHOICE_NAME, "disabled",
+            "R9: the persisted choice name is a storage contract"
+        );
+        assert_eq!(PROVIDER_DEFAULT_LABEL, "Default", "R10: untouched by R67");
+        assert_ne!(
+            OFF_LABEL, OFF_CHOICE_NAME,
+            "the display label and the persisted name are different strings"
+        );
+        assert_ne!(OFF_LABEL, "关闭", "R12: the CJK label must not come back");
+    }
+
+    /// R67 A2 (spec §4): the **tier** table was not collaterally changed while
+    /// fixing the Off label.
+    ///
+    /// This is the guard for the single easiest mistake in R67 R11: reading the
+    /// user's "null → off" as an edit to `tier_display_label`'s `"none"` row.
+    /// That row is the display name of the effort tier `none`, a different thing
+    /// from Vega's Off position, and it must stay `None`.
+    ///
+    /// [`r66_a1_tier_display_label_matches_the_reference_table`] remains the
+    /// full-table authority (all nine ids, quoted as literals); this test pins
+    /// only the three ids R67 A2 names, so it is a guard rather than a
+    /// duplicate.
+    #[test]
+    fn r67_a2_the_tier_table_survives_the_off_label_change() {
+        assert_eq!(
+            tier_display_label("none"),
+            "None",
+            "R11: the `none` **tier** keeps its own label; only the Off \
+             position's label moved to `Off`"
+        );
+        assert_eq!(tier_display_label("low"), "Light", "R11: not `Low`");
+        assert_eq!(
+            tier_display_label("xhigh"),
+            "Extra High",
+            "R11: not `XHigh`"
+        );
+    }
+
+    /// R67 A3 (spec §4, R1): the block's grey is **not persistent**.
+    ///
+    /// R66 R3 painted `bg_hover` whenever the card was open. R67 R1 requires the
+    /// fill to be absent unless the pointer is over the block, which is the
+    /// claim this test makes: with the pointer parked far from the card, no
+    /// `bg_hover` quad covers the block.
+    ///
+    /// The quads' bounds are scaled pixels; `covers` compares them against
+    /// `debug_bounds`, which is logical, after dividing by the scale factor.
+    #[gpui_kit::test]
+    async fn r67_a3_the_highlight_is_not_persistent(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let block = visual
+            .debug_bounds("thinking-slider-title-block")
+            .expect("mounted title block");
+
+        move_pointer(&mut visual, away_from_the_card());
+        let (quads, scale) = painted_scene(&mut visual, window);
+        // Anti-vacuity: an empty scene would satisfy the assertion below for the
+        // wrong reason.
+        assert!(
+            !quads.is_empty(),
+            "the harness must be painting quads, or this test proves nothing"
+        );
+        let fills = hover_fills(&quads, scale);
+        assert!(
+            fills.iter().all(|fill| !covers(fill, &block)),
+            "R67 R1: with the pointer away from the card the title block must not \
+             paint `bg_hover`; found {fills:?} over the block {block:?} \
+             ({} quads painted)",
+            quads.len()
+        );
+    }
+
+    /// R67 A4 (spec §4, R3): hovering the **tier row** lights one block covering
+    /// both rows.
+    ///
+    /// R3's hit area is the whole block, not one row: a fill that contains the
+    /// model row's bounds as well as the tier row's is the proof that this is
+    /// one block over two rows rather than a row-local hover. The padding case
+    /// (the third hit area R3 names) is asserted here too, since it is the same
+    /// block hover reached at a point neither row's own hitbox covers.
+    #[gpui_kit::test]
+    async fn r67_a4_hovering_the_tier_row_lights_the_whole_block(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let block = visual
+            .debug_bounds("thinking-slider-title-block")
+            .expect("mounted title block");
+        let tier_row = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted tier row");
+        let model_row = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model row");
+
+        // R67 R2/M1: hover is a transition, so enter from outside the block.
+        move_pointer(&mut visual, away_from_the_card());
+        move_pointer(&mut visual, tier_row.center());
+
+        let (quads, scale) = painted_scene(&mut visual, window);
+        let fills = hover_fills(&quads, scale);
+        assert!(
+            !quads.is_empty(),
+            "the harness must be painting quads, or this test proves nothing"
+        );
+        assert_eq!(
+            fills.len(),
+            1,
+            "R67 R3: one block, not two fills; got {fills:?}"
+        );
+        assert!(
+            covers(&fills[0], &tier_row) && covers(&fills[0], &model_row),
+            "R67 R3: the hover fill must cover the tier row AND the model row \
+             (one block over both); fill {:?}, tier row {tier_row:?}, model row \
+             {model_row:?}",
+            fills[0]
+        );
+
+        // R3's third hit area: the block's own horizontal padding, which lies
+        // outside the tier row's hitbox. The block's hover still lights, because
+        // `hit_test` collects every hitbox under the pointer and a child's
+        // `HitboxBehavior::Normal` does not shadow its parent's (spec §2 M2).
+        let padding_point = gpui_kit::point(block.left() + px(1.0), tier_row.center().y);
+        assert!(
+            block.contains(&padding_point) && !tier_row.contains(&padding_point),
+            "this phase only means something on the block's padding: \
+             block={block:?} tier_row={tier_row:?} point={padding_point:?}"
+        );
+        move_pointer(&mut visual, away_from_the_card());
+        move_pointer(&mut visual, padding_point);
+        let (quads, scale) = painted_scene(&mut visual, window);
+        let fills = hover_fills(&quads, scale);
+        assert_eq!(
+            fills.len(),
+            1,
+            "R67 R3: hovering the block's padding must light the same single \
+             block; got {fills:?}"
+        );
+        assert!(
+            covers(&fills[0], &tier_row) && covers(&fills[0], &model_row),
+            "R67 R3: the padding hover must cover both rows too; fill {:?}",
+            fills[0]
+        );
+    }
+
+    /// R67 A5 (spec §4, R3): hovering the **model row** lights the same single
+    /// block over both rows.
+    ///
+    /// R62 R3 keeps this row inert for *clicks*; R67 R3 says it still counts as
+    /// part of the block for *hover*. The two claims are independent, and
+    /// `r66_r5_the_highlight_container_is_inert` / `r66_a7_...` pin the click
+    /// half.
+    #[gpui_kit::test]
+    async fn r67_a5_hovering_the_model_row_lights_the_whole_block(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let tier_row = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted tier row");
+        let model_row = visual
+            .debug_bounds("thinking-slider-model")
+            .expect("mounted model row");
+
+        move_pointer(&mut visual, away_from_the_card());
+        move_pointer(&mut visual, model_row.center());
+
+        let (quads, scale) = painted_scene(&mut visual, window);
+        let fills = hover_fills(&quads, scale);
+        assert!(
+            !quads.is_empty(),
+            "the harness must be painting quads, or this test proves nothing"
+        );
+        assert_eq!(
+            fills.len(),
+            1,
+            "R67 R3: one block, not two fills; got {fills:?}"
+        );
+        assert!(
+            covers(&fills[0], &tier_row) && covers(&fills[0], &model_row),
+            "R67 R3: hovering the model row must light the block over BOTH rows; \
+             fill {:?}, tier row {tier_row:?}, model row {model_row:?}",
+            fills[0]
+        );
+    }
+
+    /// R67 A6 (spec §4, R1/R3): the fill reverts when the pointer leaves.
+    ///
+    /// A3 proves "absent when never hovered" and A4 proves "present when
+    /// hovered"; this test proves the two are the same element's two states, by
+    /// observing both on one mounted card.
+    #[gpui_kit::test]
+    async fn r67_a6_the_highlight_reverts_when_the_pointer_leaves(cx: &mut TestAppContext) {
+        let window = open_three_row_card(cx);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let tier_row = visual
+            .debug_bounds("thinking-slider-title")
+            .expect("mounted tier row");
+
+        move_pointer(&mut visual, away_from_the_card());
+        move_pointer(&mut visual, tier_row.center());
+        let (quads, scale) = painted_scene(&mut visual, window);
+        assert_eq!(
+            hover_fills(&quads, scale).len(),
+            1,
+            "precondition: the block must be lit before this test can observe it \
+             going dark"
+        );
+
+        move_pointer(&mut visual, away_from_the_card());
+        let (quads, scale) = painted_scene(&mut visual, window);
+        let fills = hover_fills(&quads, scale);
+        assert!(
+            fills.is_empty(),
+            "R67 R1: the fill must be gone once the pointer leaves the block; \
+             still painted: {fills:?}"
         );
     }
 
