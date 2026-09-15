@@ -266,6 +266,47 @@ R67 因此把"hover 才亮"从"看截图差不多"变成了可证伪的生产测
 
 另外：hover 是**翻转**触发的，所以移动要分两步（先到块外的起点，再到目标点），一步直接落在目标上可能不触发。R67 的驱动先移到窗口左下角再移到目标。
 
+## GPUI 点击外部关闭：`on_mouse_down_out` 会与 mouse-up 触发器互相打架（R68 实测）
+
+`on_mouse_down_out` 是"点击外部关闭"的正确原语。三条实测结论：
+
+- **不需要 `.id()`**（与 `.hover()` 相反，见上一节）；
+- **在 `gpui_kit::deferred` 包裹下照常工作**，不影响 R64 的绘制顺序修复；
+- 跑在 **capture 阶段**，且只在指针位于该元素 bounds **之外**时触发。
+
+### 坑：触发器的开关在 mouse-up，会被 out 处理器吃掉
+
+若触发器的开关跑在 mouse-**up**（本仓库两个 composer 弹窗都是），而 out 处理器跑在 mouse-**down**，点触发器会变成「down 先关 → up 再开」，**看起来完全没反应**：
+
+```
+1. click chip        -> open=true
+2. click chip again  -> open=true   ← 错，关不掉
+```
+
+**修法**：触发器改用 **`capture_any_mouse_down(|_, _, cx| cx.stop_propagation())`**，在 capture 阶段抢先声明手势。
+
+注意 **bubble 阶段的 `on_mouse_down(stop_propagation)` 挡不住**——它比 capture 晚。这是最容易踩错的一步。
+
+### 坑：别把 out 处理器挂到「包含触发器的外层」
+
+那样能修好触发器，但会**破坏弹窗内部点击**：弹窗是 `absolute` 定位，落在 wrapper 的布局 bounds **之外**，内部点击会被当成「外部」。实测点弹窗内部会把弹窗关掉。**用 capture 方案，不要用外层方案。**
+
+### 弹窗内部点击要防穿透
+
+弹窗自己仍要保留一个 bubble 阶段的 `.on_mouse_down(stop_propagation())`，否则点弹窗内部会穿透到**祖先**的外部点击处理器（如 composer 卡片自己的）。它与 capture 阶段的 out 处理器**阶段不同、互不冲突**，两个都要有。
+
+## 对齐参考实现时，先确认 CSS 变体作用域（R68 教训）
+
+参考实现的 CSS 里有大量 `[data-vega-window-type=browser]` / `=electron` 变体块。**同一组 token 在不同变体下值不同**，取错会得出完全反向的结论。
+
+R68 就踩了：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-height: 36` 等值，写下"行高该 32→36、内边距差一倍"；而 Codex **桌面截图**实测行高 28.5、行内边距只差 2px——**真正的缺陷是卡片宽度差 30%**。若照第一版做，会把行高改大（反向优化）而没修宽度。
+
+**方法**：
+
+1. 取 token 时**连 selector 一起记录**，确认它属于哪个变体；
+2. **用截图交叉验证**：先找一个已知量校准截图的缩放比例（R68 用 Vega 自身的 32px 行高：实测 64px 行距 ÷ 32 = 2×），再按比例读其它量；
+3. 两者矛盾时，**以产品截图为准**，并把这个矛盾写进报告。
+
 ## 架构红线（速记，详见 exec-guide）
 
 - `vega_runtime` 禁止依赖 GPUI/任何 UI crate（headless 可测）
