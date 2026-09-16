@@ -32,5 +32,9 @@ The first R68 focused run failed 1/10 because `exposed_point` still assumed the 
 - ACCEPTED: the shared `GitBranch` icon is an independently authored, three-node, 16px-neutral outline SVG using the existing icon viewBox/stroke conventions; it is used by both the Composer trigger and branch rows.
 - ACCEPTED: the Composer render no longer overwrites the selector's default upward anchor; non-Composer callers retain the explicit placement API.
 - ACCEPTED: the R69 draft route's branch controller remains disabled as specified by R69; this task does not expand into draft-route controller behavior.
-- NOT RUN: native screenshot/CUA visual acceptance is owned by the parent task; behavioral bounds evidence is separate from that visual check.
+- Native light-mode acceptance: parent launched the final package, clicked the branch chip and observed the popup wholly above the trigger, with the new three-node icon. Clicking outside dismissed it. Repeated after installing and launching the installed bundle. Dark-mode native pixels and native minimum-window pixels remain NOT RUN (minimum-window layout is covered by the production tests above).
 - LIMIT: the existing `block v0.1.6` future-incompatibility advisory remains outside this change.
+
+## Final package and installation
+
+The earlier packaging row precedes the final SVG refinement; it is not the installed artifact. Parent repackaged implementation commit `889dc28` using `scripts/cargo-lock.sh xtask package`, successfully verified the signature, and verified the installed executable matches the candidate SHA-256 `5a43212249dc16052b0168b00de3351ae4ea53f485b86ec756ca9bc9957347d5`. The previous app bundle was backed up; user data was untouched. This task branch retains the R69 base and is not merged to master or pushed.
