@@ -134,7 +134,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 | 主 Header | 46px | 底部 1px 分隔线 |
 | 可读内容列 | max 820px | 居中；最小水平内边距 16px |
 | Composer | max 736px / min-height 100px | 圆角 20px，内容可因多行或错误增长；包裹列上下 padding 12/16px（`Layout::COMPOSER_PADDING_TOP/BOTTOM`，值不变，R45 起 token 化） |
-| Composer utility bar | h 37px / inset 19px / radius 12px（顶部） | 仅新建任务页；宽 = 卡片宽 − 2×19，`mx_auto` 共用卡片中轴；bar 底 == 卡片顶（零重叠）；chip gap 28px、首 chip inset 14.5px |
+| Composer utility bar | h 37px / inset 19px / radius 12px（顶部） | 仅新建任务页；宽 = 卡片宽 − 2×19，`mx_auto` 共用卡片中轴；bar 底 == 卡片顶（零重叠）；chip gap 8px、首 chip inset 14.5px；chip 高 28px、水平 padding 8px |
 | 普通 Panel / Card | radius 12px | 默认容器圆角 |
 | Environment rail | 320px | 304px card + 16px right inset；≥1230px 时可持久显示 |
 | Environment card | 304px / inset 16px / radius 18px | 轻边框，必要时使用克制小阴影 |
@@ -183,8 +183,8 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - Composer 是单个主表面：增长输入区在上，一行真实操作在下；不要再套多层卡片或装饰性工具栏。
 - 当前壳层使用 max-width 736px、min-height 100px、radius 20px、底部 inset 16px。
 - utility bar（R49）：**仅新建任务页渲染** —— 有项目上下文且当前会话无消息时，卡片上方多一条 utility bar；已发出第一条消息的会话页只渲染卡片本体，谓词必须是真实渲染可见性，不得用 `hidden()` 或零高度占位。bar 只做两格（文件夹 / 分支），Codex 的 `Local`（执行环境）不移植、不占位、不置灰。
-- utility bar 几何（R49，Codex 实机 2x 实测）：bar 高 37px、相对卡片左右各内缩 19px 并共用卡片中轴、顶部圆角 12px 而底部无圆角；bar 底边与卡片顶边**零重叠**（`bar bottom == card top`），靠父列顺序堆叠形成「标签页压在卡片上」的层叠观感，不使用负 margin。bar 内 chip 间距 28px，首个 chip 距 bar 左缘 14.5px。
-- utility bar chip 样式：`icon(16px, text_secondary)` + `label(Typography::SIDEBAR, text_primary)`、`gap_2`；**无边框、无背景、无圆角药丸**，hover 时才出现 `bg_hover` + `rounded_md` 与 pointer 光标。文件夹 chip tooltip「切换项目」、分支 chip tooltip「切换分支」。
+- utility bar 几何：保留 R49 的 bar 高 37px、相对卡片左右各内缩 19px 并共用卡片中轴、顶部圆角 12px 而底部无圆角；bar 底边与卡片顶边**零重叠**（`bar bottom == card top`），靠父列顺序堆叠形成「标签页压在卡片上」的层叠观感，不使用负 margin。2026-09-16 用户要求收紧两个 chip：边界间距由 28px 改为 8px，首个 chip 距 bar 左缘仍为 14.5px。
+- utility bar chip 样式（取代 R49 对触发器的旧定义）：两个触发器均高 28px、水平 padding 8px、全胶囊；保留 `icon(16px, text_secondary)` + `label(Typography::SIDEBAR, text_primary)`、内部 `gap_2`。静止无边框且底色透明；hover 或对应菜单打开时显示专用主题覆盖色，文字和图标不参与透明度变化；关闭并移走指针后恢复透明。浅色覆盖色为 Vega 自主选定的 `#DBDBDB × 0.6`，叠在 `#FAF9F9` 上约为 `#E7E7E7`；深色为白色 × 0.10，叠在 `#191919` 上约为 `#303030`。分支保留 GitBranch 图标。文件夹 chip tooltip「切换项目」、分支 chip tooltip「切换分支」。这些为产品目标，不代表第三方内部实现。详见 [utility chip states](vega-utility-chip-states.md)；非 composer 的 R19 带框触发器不变。
 - 文件夹 chip 打开项目下拉（列出 sidebar 已有项目），选中后写共享 `SelectedProject` 并 `refresh_windows`；复用既有项目数据源，不新建数据管道。分支 chip 复用既有 `BranchSelector`（open/close/切换/pending/错误码/focus/滚动语义不变），仅由挂载点切换 trigger chrome（`set_chip_chrome`），非 git 项目按既有 `NonGit` 语义隐藏。
 - Context、mode、permission、model、thinking 与 send/stop 必须连接已有 controller 和 guard。状态缺失时隐藏或禁用，不造假。
 - 不显示装饰性的 token/cost 仪表。成本信息只在有真实账单/计数来源的产品位置展示。

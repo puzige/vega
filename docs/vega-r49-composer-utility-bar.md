@@ -2,6 +2,8 @@
 
 状态：**冻结** · 前置：R45（d7cb2d6）、R46（95c5456）、R47（ed52b07）、R48（08602fb）· 关联：`vega-design-guidelines.md` §9 Composer
 
+2026-09-16 局部取代：chip 的高度、水平 padding、胶囊形状、hover/open 底色和两 chip 间距以 [utility chip states R1–R3](vega-utility-chip-states.md) 为准（28px / 8px / 全胶囊 / 静止透明 / 间距 8px）。本文件其他几何与真实数据契约保持不变。以下旧值作为历史冻结记录保留，不用于本次触发器实现。
+
 ## §0 冻结依据与人类裁决
 
 真值来源：Codex 实机原生 2x 抓帧（`/tmp/r49-codex-newchat-2x.png` 新建任务页、`/tmp/r49-codex-work-2x.png` 会话页）+ Codex WebView token 源码（`vega-design-reference/app/webview/assets/app-primary-*.css`）。
