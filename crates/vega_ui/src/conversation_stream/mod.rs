@@ -83,7 +83,7 @@ use vega_markdown::{
 use vega_theme::{Layout, ThemeColors, Typography, theme};
 
 use crate::artifact_card::ArtifactCard;
-use crate::branch_selector::BranchSelector;
+use crate::branch_selector::{BranchListRequested, BranchSelector};
 use crate::commit_panel::CommitPanel;
 use crate::file_selector::{
     AcceptFile, CancelFile, FILE_SUGGESTION_LIMIT, FileSelectorModel, FocusPreviousRetry,

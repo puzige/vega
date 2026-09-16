@@ -377,6 +377,16 @@ impl ConversationStream {
         cx: &mut Context<Self>,
     ) {
         let open = !self.utility_projects_open;
+        // C2: project opening is the sibling boundary in the opposite
+        // direction. Use the selector's normal close path so the controller
+        // receives `BranchSelectorClosed` and owns any pending cleanup; do
+        // not fold the branch entity into `close_composer_popovers`, because
+        // that helper is also called by the branch-open subscription above.
+        if open {
+            self.branch_selector.update(cx, |selector, cx| {
+                let _ = selector.request_close(cx);
+            });
+        }
         self.close_composer_popovers(cx);
         self.utility_projects_open = open;
         if open {

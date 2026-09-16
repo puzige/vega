@@ -33,6 +33,7 @@ mod r64_popup_deferred;
 mod r68_popup_dismiss;
 mod scroll_follow;
 mod utility_bar;
+mod utility_menu_coordination;
 mod variable_height;
 
 struct StreamHarness {

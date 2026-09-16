@@ -234,6 +234,16 @@ impl ConversationStream {
             selector.set_chip_chrome(true);
             selector
         });
+        // C2: the branch request is the production boundary for opening its
+        // popup. Close sibling Composer surfaces here, but deliberately do
+        // not call `close_composer_popovers` on the branch entity itself —
+        // this subscription runs because that entity just opened and must not
+        // re-close it or disturb its pending-operation ownership.
+        cx.subscribe(&branch_selector, |this, _, _: &BranchListRequested, cx| {
+            this.close_composer_popovers(cx);
+            cx.notify();
+        })
+        .detach();
         let commit_panel =
             cx.new(|cx| CommitPanel::new(thread.id.clone(), thread.project_id.clone(), cx));
         // R62 R10: the folder chip's menu search field. Bare chrome, because

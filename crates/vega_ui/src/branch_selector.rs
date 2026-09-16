@@ -82,7 +82,15 @@ pub struct BranchSelectorModel {
     snapshot: Option<BranchSnapshot>,
     current_label: Option<String>,
     status: SelectorStatus,
+    /// Logical Enter candidate. This may be seeded from the first switchable
+    /// row before the user has navigated; it must not imply visual keyboard
+    /// intent (C1).
     focused: Option<BranchId>,
+    /// Branch that has received explicit keyboard navigation in the currently
+    /// visible menu. Keeping this separate from `focused` preserves the
+    /// existing Enter candidate without painting an unearned second row
+    /// highlight on open or refresh.
+    visual_focused: Option<BranchId>,
     next_operation: u64,
     pending: Option<(BranchOperationId, u64, BranchId)>,
     /// R62 R10: the visible row filter, as a lowercase needle. It is applied
@@ -103,6 +111,7 @@ impl Default for BranchSelectorModel {
             current_label: None,
             status: SelectorStatus::Closed,
             focused: None,
+            visual_focused: None,
             next_operation: 0,
             pending: None,
             filter: String::new(),
@@ -134,6 +143,7 @@ impl BranchSelectorModel {
         }
         self.snapshot = None;
         self.focused = None;
+        self.visual_focused = None;
         self.filter.clear();
         self.filtered.clear();
         self.status = SelectorStatus::Loading;
@@ -146,6 +156,7 @@ impl BranchSelectorModel {
         }
         self.status = SelectorStatus::Closed;
         self.focused = None;
+        self.visual_focused = None;
         self.filter.clear();
         self.filtered.clear();
         true
@@ -194,18 +205,25 @@ impl BranchSelectorModel {
             return;
         };
         let visible_focus = self.focused.is_some_and(|focused| {
-            self.filtered
-                .iter()
-                .any(|index| snapshot.branches[*index].id == focused)
+            self.filtered.iter().any(|index| {
+                snapshot.branches[*index].id == focused && !snapshot.branches[*index].current
+            })
         });
-        if visible_focus {
-            return;
+        if !visible_focus {
+            self.focused = self
+                .filtered
+                .iter()
+                .find(|index| !snapshot.branches[**index].current)
+                .map(|index| snapshot.branches[*index].id);
         }
-        self.focused = self
-            .filtered
-            .iter()
-            .find(|index| !snapshot.branches[**index].current)
-            .map(|index| snapshot.branches[*index].id);
+        let visual_visible = self.visual_focused.is_some_and(|focused| {
+            self.filtered.iter().any(|index| {
+                snapshot.branches[*index].id == focused && !snapshot.branches[*index].current
+            })
+        });
+        if !visual_visible {
+            self.visual_focused = None;
+        }
     }
 
     /// Number of rows the list currently shows (R62 R10: the filtered count,
@@ -222,12 +240,19 @@ impl BranchSelectorModel {
             if self.is_open() {
                 self.snapshot = None;
                 self.focused = None;
+                self.visual_focused = None;
                 self.filtered.clear();
                 self.status = SelectorStatus::Failed(GitWorkspaceErrorCode::OutputTooLarge);
             }
             return false;
         }
         let preserve = self.focused.filter(|id| {
+            snapshot
+                .branches
+                .iter()
+                .any(|branch| branch.id == *id && !branch.current)
+        });
+        let visual_preserve = self.visual_focused.filter(|id| {
             snapshot
                 .branches
                 .iter()
@@ -240,6 +265,7 @@ impl BranchSelectorModel {
                 .find(|branch| !branch.current)
                 .map(|branch| branch.id)
         });
+        self.visual_focused = visual_preserve;
         self.status = if snapshot.branches.is_empty() {
             SelectorStatus::Empty
         } else {
@@ -259,6 +285,7 @@ impl BranchSelectorModel {
         if self.is_open() {
             self.snapshot = None;
             self.focused = None;
+            self.visual_focused = None;
             self.filtered.clear();
             self.status = SelectorStatus::Failed(code);
         }
@@ -323,6 +350,7 @@ impl BranchSelectorModel {
         } else {
             self.status = SelectorStatus::Closed;
             self.focused = None;
+            self.visual_focused = None;
         }
         true
     }
@@ -380,6 +408,16 @@ impl BranchSelectorModel {
                     .is_some_and(|branch| !branch.current)
             })
             .collect();
+        // The first arrow key is the user's intent to enter keyboard
+        // navigation, not an instruction to skip the seeded Enter candidate.
+        // Reveal that candidate first; subsequent arrows advance normally.
+        if self.visual_focused.is_none() {
+            if self.focused.is_none() {
+                self.focused = switchable.first().map(|index| snapshot.branches[*index].id);
+            }
+            self.visual_focused = self.focused;
+            return;
+        }
         let current = self.focused.and_then(|focused| {
             switchable
                 .iter()
@@ -398,6 +436,10 @@ impl BranchSelectorModel {
         } else if self.focused.is_none() {
             self.focused = switchable.first().map(|index| snapshot.branches[*index].id);
         }
+        // Arrow-key navigation is the evidence needed to paint focus. The
+        // logical candidate above remains available to Enter even while this
+        // is `None` on an untouched opening frame.
+        self.visual_focused = self.focused;
     }
 
     /// R62 R10: where the focused branch sits in the **visible** projection —
@@ -970,7 +1012,7 @@ impl Render for BranchSelector {
                                             render_branch_row(
                                                 index,
                                                 branch,
-                                                this.model.focused(),
+                                                this.model.visual_focused,
                                                 disabled,
                                                 colors,
                                                 view.clone(),
