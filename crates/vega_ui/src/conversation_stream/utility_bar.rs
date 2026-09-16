@@ -111,9 +111,9 @@ impl ConversationStream {
             .into_any_element()
     }
 
-    /// The folder chip: 16px folder icon + project name, with no border, no
-    /// background and no pill radius. Hover adds the shared `bg_hover`
-    /// surface; clicking opens the project menu above the chip.
+    /// The folder chip: 16px folder icon + project name, with a transparent
+    /// rest state and the shared R2 overlay while hovered or open. Clicking
+    /// opens the project menu above the chip.
     ///
     /// R68 R3: the chip claims the mouse-down in the **capture** phase. The
     /// popup's outside-click handler (R1) also runs in capture, and the chip's
@@ -130,29 +130,46 @@ impl ConversationStream {
             self.project_label.clone()
         };
         div()
+            // R68/R64: keep the popup's legacy 32px anchor box while the
+            // interactive chip itself is the new 28px capsule.  Centering the
+            // capsule in this unchanged box preserves the frozen menu bounds
+            // and its outside-click geometry.
             .relative()
+            .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+            .flex()
+            .items_center()
             .child(
                 div()
                     .id("composer-utility-project")
                     .debug_selector(|| "composer-utility-project-chip".into())
                     .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
-                    .h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                    .h(px(Layout::COMPOSER_UTILITY_CHIP_HEIGHT))
+                    .px(px(Layout::COMPOSER_UTILITY_CHIP_PADDING_X))
+                    .rounded_full()
                     .flex()
                     .items_center()
                     .gap_2()
                     .text_size(px(Typography::SIDEBAR))
                     .text_color(colors.text_primary)
                     .cursor_pointer()
-                    .hover(move |style| style.bg(colors.bg_hover).rounded_md())
+                    .hover(move |style| style.bg(colors.bg_utility_chip_overlay).rounded_full())
+                    .when(self.utility_projects_open, |chip| {
+                        chip.bg(colors.bg_utility_chip_overlay).rounded_full()
+                    })
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(Self::toggle_utility_projects),
                     )
                     .tooltip(move |_, cx| crate::icons::tooltip("切换项目", cx))
-                    .child(crate::icons::icon(
-                        crate::icons::Icon::Folder,
-                        colors.text_secondary,
-                    ))
+                    .child(
+                        div()
+                            .debug_selector(|| "composer-utility-project-icon".into())
+                            .flex_shrink_0()
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::Folder,
+                                colors.text_secondary,
+                            )),
+                    )
                     .child(div().min_w_0().max_w(px(180.0)).truncate().child(label)),
             )
             .when(self.utility_projects_open, |chip| {

@@ -843,9 +843,10 @@ impl Render for BranchSelector {
                     })
                     .when(self.chip_chrome, |trigger| {
                         trigger
+                            .h(px(Layout::COMPOSER_UTILITY_CHIP_HEIGHT))
                             .rounded_full()
                             .gap_2()
-                            .px_2()
+                            .px(px(Layout::COMPOSER_UTILITY_CHIP_PADDING_X))
                             .text_color(if disabled {
                                 colors.text_tertiary
                             } else {
@@ -860,10 +861,13 @@ impl Render for BranchSelector {
                             colors.text_secondary
                         })
                     })
+                    .when(self.chip_chrome && open, |trigger| {
+                        trigger.bg(colors.bg_utility_chip_overlay).rounded_full()
+                    })
                     .when(self.chip_chrome && !disabled, |trigger| {
-                        trigger
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(colors.bg_hover).rounded_full())
+                        trigger.cursor_pointer().hover(move |style| {
+                            style.bg(colors.bg_utility_chip_overlay).rounded_full()
+                        })
                     })
                     .when(!self.chip_chrome && !disabled, |trigger| {
                         trigger.cursor_pointer()
@@ -873,14 +877,19 @@ impl Render for BranchSelector {
                         // R49 §2.3 chip structure: 16px icon in the secondary
                         // ink, label in the primary ink (tertiary while
                         // disabled, matching the pill's §8 degradation).
-                        trigger.child(crate::icons::icon(
-                            crate::icons::Icon::GitBranch,
-                            if disabled {
-                                colors.text_tertiary
-                            } else {
-                                colors.text_secondary
-                            },
-                        ))
+                        trigger.child(
+                            div()
+                                .debug_selector(|| "composer-utility-branch-icon".into())
+                                .flex_shrink_0()
+                                .child(crate::icons::icon(
+                                    crate::icons::Icon::GitBranch,
+                                    if disabled {
+                                        colors.text_tertiary
+                                    } else {
+                                        colors.text_secondary
+                                    },
+                                )),
+                        )
                     })
                     .child(label),
             )
@@ -973,6 +982,13 @@ impl Render for BranchSelector {
                             .track_scroll(&self.scroll)
                             .flex_1()
                             .min_h_0()
+                            // R4: uniform_list lays each item out against its
+                            // padded content width.  Keep the menu's 4px
+                            // card-edge gutter in the list itself; applying
+                            // `mx_1` to a full-width item is ignored by the
+                            // virtualized root and makes the selected surface
+                            // touch the popup edge.
+                            .px_1()
                             .w_full(),
                         )
                     })
@@ -1063,6 +1079,13 @@ fn render_branch_row(
         !current && !disabled,
         colors,
     )
+    // R4: uniform_list items otherwise measure to their intrinsic child width.
+    // Give the branch row the popup's content width so its selected surface
+    // and trailing marker occupy the same full-width row as the menu body;
+    // the parent list's `px_1()` supplies the 4px edge gutters because the
+    // virtualized root lays each item against its definite padded width.
+    .w_full()
+    .mx_0()
     .debug_selector(move || format!("branch-row-{index}"))
     .text_color(if current || disabled {
         colors.text_tertiary

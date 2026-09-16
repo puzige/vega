@@ -69,6 +69,14 @@ pub struct ThemeColors {
     /// token exists to avoid. Dark mode uses 3% white (`#ffffff08`) instead of
     /// the light ink, and must never fall back to the light value.
     pub bg_active_alpha: Rgba,
+    /// Transient fill for Composer utility chips while hovered or open.
+    ///
+    /// This is deliberately a translucent shared token rather than a
+    /// pre-composited surface: the same chip is mounted on the light utility
+    /// bar in both states, and GPUI must retain the alpha so the fill remains
+    /// correct if that surface changes. Light uses neutral `#DBDBDB` at 60%
+    /// alpha; dark uses white at 10% alpha (R1/R2).
+    pub bg_utility_chip_overlay: Rgba,
     /// 1px separators and card borders.
     pub border_subtle: Rgba,
     /// Primary text.
@@ -107,6 +115,7 @@ pub const LIGHT: ThemeColors = ThemeColors {
     bg_hover: rgba(0xF3F3F3FF),
     bg_active: rgba(0xEDEDEDFF),
     bg_active_alpha: rgba_alpha(0x1A1C1F, 0.05),
+    bg_utility_chip_overlay: rgba_alpha(0xDBDBDB, 0.60),
     border_subtle: rgba(0xE8E8E8FF),
     text_primary: rgba(0x191C1FFF),
     text_secondary: rgba(0x676767FF),
@@ -139,6 +148,7 @@ pub const DARK: ThemeColors = ThemeColors {
     bg_hover: rgba(0x282828FF),
     bg_active: rgba(0x303030FF),
     bg_active_alpha: rgba_alpha(0xFFFFFF, 0.03),
+    bg_utility_chip_overlay: rgba_alpha(0xFFFFFF, 0.10),
     border_subtle: rgba(0x383838FF),
     text_primary: rgba(0xEDEDEDFF),
     text_secondary: rgba(0xABABABFF),
@@ -368,13 +378,21 @@ impl Layout {
     /// 8..12; 12 is taken so the bar reads as one layer below the 20px card.
     /// The bottom corners stay square — the card continues the surface.
     pub const COMPOSER_UTILITY_BAR_RADIUS: f32 = 12.0;
-    /// R49 gap between adjacent utility-bar chips. Codex measured 28.0 between
-    /// the folder and environment chips and 29.5 before the branch chip; the
-    /// tighter of the two is frozen.
-    pub const COMPOSER_UTILITY_CHIP_GAP: f32 = 28.0;
+    /// R3 gap between adjacent utility-bar chips after the R49 chip-state
+    /// revision. The chip capsules themselves own 8px horizontal padding, so
+    /// the text-to-icon visual distance remains 24px (8 + 8 + 8).
+    pub const COMPOSER_UTILITY_CHIP_GAP: f32 = 8.0;
     /// R49 leading inset of the first utility-bar chip from the bar's left
     /// edge (Codex `chip1 left 524.5 - bar left 510.0`).
     pub const COMPOSER_UTILITY_CHIP_INSET: f32 = 14.5;
+    /// R1 utility chip interactive height. This is smaller than the legacy
+    /// R19 branch trigger, whose 32px geometry remains unchanged when the
+    /// selector is mounted outside the Composer chip chrome.
+    pub const COMPOSER_UTILITY_CHIP_HEIGHT: f32 = 28.0;
+    /// R1 utility chip horizontal content padding on both sides.
+    pub const COMPOSER_UTILITY_CHIP_PADDING_X: f32 = 8.0;
+    /// R1 utility chip capsule radius (half of the 28px chip height).
+    pub const COMPOSER_UTILITY_CHIP_RADIUS: f32 = 14.0;
     /// Height reserved by every non-Settings main route.
     pub const MAIN_HEADER_HEIGHT: f32 = 46.0;
     /// Gap between the main content panel and the native window edges/sidebar.
@@ -626,7 +644,7 @@ mod tests {
         assert_eq!(Layout::COMPOSER_UTILITY_BAR_HEIGHT, 37.0);
         assert_eq!(Layout::COMPOSER_UTILITY_BAR_INSET, 19.0);
         assert_eq!(Layout::COMPOSER_UTILITY_BAR_RADIUS, 12.0);
-        assert_eq!(Layout::COMPOSER_UTILITY_CHIP_GAP, 28.0);
+        assert_eq!(Layout::COMPOSER_UTILITY_CHIP_GAP, 8.0);
         assert_eq!(Layout::COMPOSER_UTILITY_CHIP_INSET, 14.5);
         // The bar is a narrower, tighter layer above the card, never a
         // replacement: its inset is non-zero and its top radius stays below
@@ -637,6 +655,37 @@ mod tests {
             Layout::COMPOSER_RADIUS,
             "the utility bar must not reuse the composer card radius"
         );
+    }
+
+    #[test]
+    fn r1_composer_utility_chip_geometry_is_literal_and_shared() {
+        // R1 freezes these values independently of the production call sites:
+        // a mutation to a component must fail this contract rather than merely
+        // changing the token and making a token-to-token assertion pass.
+        assert_eq!(Layout::COMPOSER_UTILITY_CHIP_HEIGHT, 28.0);
+        assert_eq!(Layout::COMPOSER_UTILITY_CHIP_PADDING_X, 8.0);
+        assert_eq!(Layout::COMPOSER_UTILITY_CHIP_RADIUS, 14.0);
+        assert_eq!(Layout::COMPOSER_UTILITY_CHIP_RADIUS * 2.0, 28.0);
+        assert_eq!(Layout::COMPOSER_UTILITY_CHIP_GAP, 8.0);
+    }
+
+    #[test]
+    fn r2_composer_utility_chip_overlay_tokens_keep_the_requested_alpha() {
+        assert_eq!(u32::from(LIGHT.bg_utility_chip_overlay) >> 8, 0xDBDBDB);
+        assert_eq!(LIGHT.bg_utility_chip_overlay.a, 0.60);
+        assert_eq!(u32::from(DARK.bg_utility_chip_overlay) >> 8, 0xFFFFFF);
+        assert_eq!(DARK.bg_utility_chip_overlay.a, 0.10);
+    }
+
+    #[test]
+    fn r2_composer_utility_chip_overlay_composites_to_the_requested_samples() {
+        // Source-over calculation from the task contract:
+        // light: .6 * #DBDBDB + .4 * #FAF9F9 = (231, 231, 231)
+        // dark:  .1 * #FFFFFF + .9 * #191919 = (48, 48, 48)
+        let light = composite(LIGHT.bg_utility_chip_overlay, 0xFAF9F9);
+        let dark = composite(DARK.bg_utility_chip_overlay, 0x191919);
+        assert_eq!(light, [231, 231, 231]);
+        assert_eq!(dark, [48, 48, 48]);
     }
 
     /// R61 R1: the trigger-anchoring tokens are frozen.
