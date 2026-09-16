@@ -13,7 +13,9 @@
 
 use super::model_selection::model_selection_config;
 use super::*;
-use gpui_kit::{Bounds, Pixels, WindowBounds, WindowOptions, px, size};
+use gpui_kit::{
+    Bounds, Modifiers, Pixels, VisualTestContext, WindowBounds, WindowOptions, px, size,
+};
 use vega_conversation::types::{PermissionMode, ThreadMode, ThreadStatus};
 use vega_ui::conversation_stream::{ComposerDefaultsRequested, ThreadSettingsRequested};
 use vega_ui::sidebar::SelectedProject;
@@ -34,8 +36,11 @@ struct DraftFixture {
 }
 
 impl DraftFixture {
-    fn open(cx: &mut gpui_kit::TestAppContext, with_project: bool) -> Self {
-        let repo = diff_controller_repo();
+    fn open_with_repo(
+        cx: &mut gpui_kit::TestAppContext,
+        with_project: bool,
+        repo: TempDir,
+    ) -> Self {
         let config_root = tempfile::tempdir().expect("r69 config root");
         let config_path = config_root.path().join("config.toml");
         model_selection_config(&config_path);
@@ -113,7 +118,15 @@ impl DraftFixture {
     }
 
     fn home(cx: &mut gpui_kit::TestAppContext, with_project: bool) -> Self {
-        let fixture = Self::open(cx, with_project);
+        Self::home_with_repo(cx, with_project, diff_controller_repo())
+    }
+
+    fn home_with_repo(
+        cx: &mut gpui_kit::TestAppContext,
+        with_project: bool,
+        repo: TempDir,
+    ) -> Self {
+        let fixture = Self::open_with_repo(cx, with_project, repo);
         pump_test_app(cx, |cx| {
             fixture.root.read_with(cx, |root, _| {
                 root.draft.is_some()
@@ -505,10 +518,22 @@ async fn r69_a6b_draft_thinking_update_writes_no_row(cx: &mut gpui_kit::TestAppC
     );
 }
 
-/// A7: the draft route does not begin the branch/artifact controllers (R6).
+/// A7: a project-bound draft keeps artifact access absent but can use the
+/// existing branch controller against the selected project's real repository.
 #[gpui_kit::test]
-async fn r69_a7_draft_route_starts_no_durable_row_controllers(cx: &mut gpui_kit::TestAppContext) {
-    let f = DraftFixture::home(cx, true);
+async fn r69_a7_project_draft_lists_and_switches_without_materializing(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let repo = artifact_controller_repo();
+    run_fixture_git(repo.path(), &["branch", "r69-draft-target"]);
+    let f = DraftFixture::home_with_repo(cx, true, repo);
+    let input = f.input(cx);
+    input.update(cx, |input, cx| {
+        input.set_text("draft text survives branch switching", cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(f.thread_rows(), 0, "the draft starts without a durable row");
+
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
             !root.model_catalog_loading && root.configured_models.is_some()
@@ -521,11 +546,73 @@ async fn r69_a7_draft_route_starts_no_durable_row_controllers(cx: &mut gpui_kit:
     );
     assert!(
         f.root
-            .read_with(cx, |root, _| root.branch_controller.active.is_none()),
-        "ensure_branch_route must not begin on the draft route (R6)"
+            .read_with(cx, |root, _| root.branch_controller.active.is_some()),
+        "a project-bound draft must begin the existing branch route"
     );
-    // R6 corollary: the task-scoped git affordances stay unoffered, because
-    // they open routes that resolve through `artifact_project_root`.
+    let selector = f
+        .stream(cx)
+        .read_with(cx, |stream, _| stream.branch_selector());
+    let trigger = f.bounds("composer-utility-branch-chip", cx);
+    {
+        let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+        visual.simulate_click(trigger.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+    pump_test_app(cx, |cx| {
+        selector.read_with(cx, |selector, _| selector.snapshot_generation().is_some())
+    });
+    assert_eq!(
+        f.thread_rows(),
+        0,
+        "listing branches must not materialize the draft"
+    );
+    let (target_index, target_label) = selector
+        .read_with(cx, |selector, _| {
+            selector
+                .visible_rows(0..64)
+                .into_iter()
+                .find(|(_, branch)| branch.label == "r69-draft-target")
+                .map(|(index, branch)| (index, branch.label))
+        })
+        .expect("the production branch list contains the owned target");
+    let row_selector: &'static str =
+        Box::leak(format!("branch-row-{target_index}").into_boxed_str());
+    let row = f.bounds(row_selector, cx);
+    {
+        let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+        visual.simulate_click(row.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+    pump_test_app(cx, |cx| {
+        selector.read_with(cx, |selector, _| !selector.is_pending())
+    });
+    let head = fixture_git_command(f._repo.path(), &["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .expect("read owned draft repository HEAD");
+    assert!(head.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&head.stdout).trim(),
+        target_label,
+        "branch switching uses the existing controller and owned repository"
+    );
+    assert_eq!(
+        f.thread_rows(),
+        0,
+        "branch switching must not materialize draft"
+    );
+    assert_eq!(
+        f.input(cx)
+            .read_with(cx, |input, _| input.text().to_string()),
+        "draft text survives branch switching",
+        "branch switching must preserve composer text"
+    );
+    assert_eq!(
+        selector.read_with(cx, |selector, _| selector.pending_key()),
+        None,
+        "the existing switch controller clears its operation"
+    );
+    // R6 corollary: artifact-only review stays unoffered; the branch chip is
+    // the deliberate project-bound draft exception covered above.
     assert!(
         f.absent("environment-review", cx),
         "the draft route must not offer the Changes/Review entry"
@@ -648,6 +735,11 @@ async fn r69_a11_no_project_home_route_is_still_a_usable_composer(
     assert!(
         draft.is_standalone(),
         "no project selection → standalone draft"
+    );
+    assert!(
+        f.root
+            .read_with(cx, |root, _| root.branch_controller.active.is_none()),
+        "a standalone draft must not create a branch controller"
     );
 
     let composer = f.bounds("composer-shell", cx);

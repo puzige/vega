@@ -355,14 +355,17 @@ impl Render for VegaWindow {
                     // the next visible frame so newly saved providers/models
                     // become selectable without rebuilding the session.
                     self.start_model_catalog_load(cx);
-                    // R69 R6: the draft has no durable row, so the two
-                    // controllers that resolve through `artifact_project_root`
-                    // must not begin on it. Their own staleness observers close
-                    // any route the previous thread left behind.
+                    // R69/R6 correction: the draft still has no durable row,
+                    // so artifact access remains excluded. Branch access is
+                    // different: `artifact_project_root` resolves the
+                    // selected project row, and the existing branch
+                    // controller can therefore list/switch its repository
+                    // without materializing the draft. Standalone drafts are
+                    // rejected by `ensure_branch_route` itself.
                     if !draft_route {
                         self.ensure_artifact_route(&thread, stream.clone(), cx);
-                        self.ensure_branch_route(&thread, stream.clone(), cx);
                     }
+                    self.ensure_branch_route(&thread, stream.clone(), cx);
                     let commit_focus = self
                         .commit_controller
                         .active

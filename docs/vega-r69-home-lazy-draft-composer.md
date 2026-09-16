@@ -88,7 +88,7 @@ Codex 的模型是：**客户端 id 先行 → 草稿只存在内存 → 首次�
 | 线程设置（mode / permission） | `persist_thread_settings` | 同上 |
 | 打开线程触碰时间 | `open_thread` / `visit_thread` | 不调用 |
 
-**R6（必须）** 草稿的路由**不得**启动依赖持久行的后台控制器：`ensure_branch_route`（`crates/vega/src/window/branch.rs:52`）与 `ensure_artifact_route`（`crates/vega/src/window/artifact.rs:109`）在草稿上不 begin。理由：二者经 `artifact_project_root` 走持久行语义，草稿行不存在。
+**R6（必须）** 草稿仍不得启动依赖线程持久行的 artifact 控制器：`ensure_artifact_route`（`crates/vega/src/window/artifact.rs:109`）在草稿上不 begin。项目绑定的草稿**允许**启动既有 `ensure_branch_route`（`crates/vega/src/window/branch.rs:52`）：它通过 `artifact_project_root` 读取已存在的项目行来获得真实 Git 根目录，不需要草稿线程行；standalone 草稿仍由 branch route 的 `InvalidRoot` 保护拒绝。分支列出/切换继续使用既有 route、generation、busy、dirty 与授权 guards，不物化草稿。
 
 **R7（必须）** 草稿路由**跳过**持久历史水合块（`render.rs:259-322`）。草稿按定义无历史；该块中 `recoverable_approved_instruction` 会经 `plans.rs:55` → `threads.rs:365-368` 返回 `ConversationError::NotFound`，被 `render.rs:277` 的 `?` 变成可见的 controller error。草稿直接应用空状态，**不得**出现任何错误条。
 
@@ -156,7 +156,7 @@ Codex 的模型是：**客户端 id 先行 → 草稿只存在内存 → 首次�
 | A4 | 生产测试 | 提交前后 `stream_view` 的缓存键与实体身份不变（R9：不重建 stream） |
 | A5 | 生产测试 | 草稿路由上 `controller_error` 为 `None`（R7：无 NotFound 错误条） |
 | A6 | 生产测试 | 草稿路由上改模型 / thinking / 权限：内存与 `OpenedThread` 更新，store 行数不变（R5） |
-| A7 | 生产测试 | 草稿路由上 `ensure_branch_route` / `ensure_artifact_route` 未 begin（R6） |
+| A7 | 生产测试 | 项目绑定草稿上 branch controller begin 并通过真实项目根列出/切换；不 begin artifact controller；standalone 草稿不 begin branch（R6） |
 | A8 | 生产测试 | 草稿路由 + 已选项目 → `utility_bar_visible == true`（R13） |
 | A9 | 生产测试 | 主头部标题为 `新建任务`（R12） |
 | A10 | 生产测试 | 首页输入 → 导航到别的任务 → 返回首页，草稿文本仍在（R4） |

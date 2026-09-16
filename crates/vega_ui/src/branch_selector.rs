@@ -830,20 +830,27 @@ impl Render for BranchSelector {
                     .overflow_hidden()
                     .flex()
                     .items_center()
-                    .rounded_md()
                     // R49: the R19 bordered pill is the default chrome; the
                     // composer utility bar mounts the same selector as a
                     // borderless chip, so the mount point decides. The
                     // disabled affordance (§8) is identical in both.
                     .when(!self.chip_chrome, |trigger| {
-                        trigger.px_2().border_1().border_color(colors.border_subtle)
+                        trigger
+                            .rounded_md()
+                            .px_2()
+                            .border_1()
+                            .border_color(colors.border_subtle)
                     })
                     .when(self.chip_chrome, |trigger| {
-                        trigger.gap_2().text_color(if disabled {
-                            colors.text_tertiary
-                        } else {
-                            colors.text_primary
-                        })
+                        trigger
+                            .rounded_full()
+                            .gap_2()
+                            .px_2()
+                            .text_color(if disabled {
+                                colors.text_tertiary
+                            } else {
+                                colors.text_primary
+                            })
                     })
                     .text_size(px(Typography::SIDEBAR))
                     .when(!self.chip_chrome, |trigger| {
@@ -856,7 +863,7 @@ impl Render for BranchSelector {
                     .when(self.chip_chrome && !disabled, |trigger| {
                         trigger
                             .cursor_pointer()
-                            .hover(move |style| style.bg(colors.bg_hover).rounded_md())
+                            .hover(move |style| style.bg(colors.bg_hover).rounded_full())
                     })
                     .when(!self.chip_chrome && !disabled, |trigger| {
                         trigger.cursor_pointer()
@@ -910,8 +917,6 @@ impl Render for BranchSelector {
                     .flex()
                     .flex_col()
                     .rounded(px(Layout::MENU_RADIUS))
-                    .border_1()
-                    .border_color(colors.border_subtle)
                     .bg(colors.bg_elevated)
                     .text_color(colors.text_primary)
                     .shadow_sm()
