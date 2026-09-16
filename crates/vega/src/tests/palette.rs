@@ -336,7 +336,26 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
             cx.global::<SelectedProject>().0.as_deref(),
             Some(selected.id.as_str())
         );
-        assert!(cx.global::<OpenedThread>().0.is_none());
+        // R69 intentional change: the home route no longer leaves
+        // `OpenedThread` empty. It now installs the window's lazy draft (R1),
+        // bound to the project that was just selected (R2). The property this
+        // assertion used to protect — "the picker did not create a durable
+        // task" — is now proven by the store row count instead, which is
+        // checked below; a draft is by definition not a row.
+        let opened = cx.global::<OpenedThread>().0.clone();
+        assert!(
+            opened
+                .as_ref()
+                .is_some_and(|thread| thread.project_id == selected.id),
+            "home route must hold a draft bound to the newly selected project"
+        );
+        assert_eq!(
+            vega_store::threads::list_by_project(store.conn(), &selected.id, None)
+                .unwrap()
+                .len(),
+            0,
+            "selecting a project must not insert a task row"
+        );
         assert!(!cx.global::<SettingsOpen>().0);
     });
     // Selecting a previously registered folder reuses its row and activates it.
@@ -360,13 +379,21 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
     pump_test_app(cx, |cx| {
         cx.update(|cx| cx.global::<OpenedThread>().0.is_some())
     });
+    // R69 intentional change: ⌘N navigates to the home draft route (R14). It
+    // no longer INSERTs a row, which is exactly what used to pile up empty
+    // `未命名任务` rows in the sidebar.
     assert_eq!(
         vega_store::threads::list_by_project(store.conn(), &project.id, None)
             .unwrap()
             .len(),
-        before + 1
+        before,
+        "⌘N must not insert a task row"
     );
     let created = cx.update(|cx| cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone());
+    assert!(
+        root.read_with(cx, |root, _| root.is_draft_route(&created)),
+        "⌘N must land on the unpersisted draft route"
+    );
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| {
             root.stream_view
@@ -374,20 +401,23 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
                 .is_some_and(|(id, _)| id == &created)
         })
     });
+    // R69 R4: a second ⌘N reuses the same draft id, so the composer draft
+    // text keyed by that id is never stranded.
     cx.simulate_keystrokes(window.into(), "cmd-n");
     pump_test_app(cx, |cx| {
         cx.update(|cx| {
             cx.global::<OpenedThread>()
                 .0
                 .as_ref()
-                .is_some_and(|thread| thread.id != created)
+                .is_some_and(|thread| thread.id == created)
         })
     });
     assert_eq!(
         vega_store::threads::list_by_project(store.conn(), &project.id, None)
             .unwrap()
             .len(),
-        before + 2
+        before,
+        "re-entering the draft route must not insert a row either"
     );
     assert_eq!(
         input.read_with(cx, |input, _| input.text().to_string()),

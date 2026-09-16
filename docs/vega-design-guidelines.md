@@ -278,6 +278,8 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 ## 15. 变更记录
 
+- v1.33 (2026-09-15)：R69 首页常驻真实 Composer：无打开任务时不再渲染静态占位卡片「新建任务并开始输入…」，改为直接渲染真实 `ConversationStream`（含 R49 utility bar 与 R57 底行），其任务为**未持久化的惰性草稿**，首次提交才落库；侧栏「新建任务」与 ⌘N 改为导航到该草稿路由，不再急切 INSERT（消除 `未命名任务` 堆积）。Composer 几何（736/100/28/20）、utility bar 几何、底行结构与配色全部不变。详见 [R69 Home lazy draft composer](vega-r69-home-lazy-draft-composer.md)。
+
 - R51 (2026-09-13)：Workspace 保留多 Tab；Tab 高 28px、圆角 10px、标签 13px、前置类型图标 16px，水平 inset/gap 均为 8px。非激活底色透明，关闭命中区维持 24px；非激活关闭在所属 Tab hover、父 Tab focus 或关闭按钮键盘 focus 时显现且不改变几何。外层 header 和全局槽位不变，激活填充由 R50 独立承接。该尺寸是 Vega 依据用户可见截图选定的实现目标，不代表第三方内部实现。详见 [R51 Tab controls](vega-r51-tab-controls.md)。
 
 - v1.32 (2026-09-13)：R49 Composer utility bar 对齐 Codex：§9 明确 utility bar 仅新建任务页渲染（有项目上下文且会话无消息，真实渲染可见性谓词），只做文件夹/分支两格，几何 bar 高 37、左右各内缩 19、顶部圆角 12 而底部无圆角、chip 间距 28、首 chip inset 14.5，bar 底与卡片顶零重叠形成层叠；chip 为无框 16px 图标 + 文字，hover 才出 `bg_hover` + `rounded_md`；文件夹 chip 复用 sidebar 项目数据源打开项目下拉，分支 chip 复用既有 `BranchSelector` 并由挂载点切换 trigger chrome。§10 记录 Environment 卡片不再承载分支入口（`environment-branch` 删除），分支入口唯一在 composer。新增 `COMPOSER_UTILITY_BAR_HEIGHT/INSET/RADIUS`、`COMPOSER_UTILITY_CHIP_GAP/INSET` 五个 token 并有冻结测试；会话 composer 几何（736/100/28/20）不变。真值来源为 Codex 实机原生 2x 抓帧（bar 510.0..1219.5、card 497.0..1232.5、chip 524.5/601.5/683.0）。精确规格见 [R49 Composer utility bar](vega-r49-composer-utility-bar.md)。

@@ -103,6 +103,14 @@ pub(crate) struct VegaWindow {
     /// built lazily on first render of an opened thread; rebuilt when another
     /// thread is opened. The stream itself is memory-only (no persistence).
     pub(crate) stream_view: Option<(String, Entity<ConversationStream>)>,
+    /// R69 R1/R4: the window's at-most-one unpersisted home-route draft.
+    ///
+    /// The draft is a real [`Thread`] carrying its final client-side ulid, so
+    /// materialization reuses the id verbatim and no alias layer exists. It
+    /// stays here — never on `Thread` — because R18 keeps `Thread` aligned
+    /// field-by-field with the `threads` DDL. `None` means the current route
+    /// is durable (or the draft was just materialized).
+    pub(crate) draft: Option<Thread>,
     pub(crate) agent_controller: AppAgentController,
     pub(crate) file_index_controller: FileIndexController,
     pub(crate) diff_controller: DiffController,
@@ -253,12 +261,13 @@ impl VegaWindow {
             .and_then(|path| path.parent())
             .map(|root| Arc::new(PricingSettingsService::new(root.join("pricing.json"))));
         let mut window = Self {
-            navigation: navigation::Navigation::new(cx),
+            navigation: navigation::Navigation::new(cx, None),
             palette: crate::app_palette::AppPalette::default(),
             sidebar: cx.new(Sidebar::new),
             settings_view: None,
             pricing_controller: PricingController::new(pricing_service),
             stream_view: None,
+            draft: None,
             agent_controller: AppAgentController::default(),
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),

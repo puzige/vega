@@ -709,6 +709,16 @@ impl VegaWindow {
         cx.global::<OpenedThread>()
             .0
             .as_ref()
+            // R69 R6: every affordance this accessor gates (the Environment
+            // card's Changes/Review row, the right dock's Review slot, the
+            // workspace creation menu's Review action) opens a task-scoped
+            // workspace route. The draft has no durable row, so the same fence
+            // that keeps `ensure_branch_route` and `ensure_artifact_route` from
+            // beginning on it applies here — project context still renders
+            // (the Environment folder row via `shell_project_label`, and the
+            // R49 utility bar via its own binding), but the git route is not
+            // offered until first submit materializes the draft.
+            .filter(|thread| !self.is_draft_route(&thread.id))
             .filter(|thread| thread.project_binding() == Some(project_id.as_str()))
             .cloned()
     }

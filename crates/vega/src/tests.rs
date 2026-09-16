@@ -73,6 +73,7 @@ mod model_selection;
 mod palette;
 mod plan;
 mod pricing;
+mod r69;
 mod reasoning;
 
 pub(crate) use artifact_terminal::{

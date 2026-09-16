@@ -283,13 +283,22 @@ async fn r15_project_registration_reveals_dedupes_and_scopes_new_tasks(
     assert_ne!(first_id, second_id);
     click(&f, cx, "sidebar-new-task");
     let state = snapshot(&f);
-    assert_eq!(
+    // R69 intentional change: [新建任务] navigates to the home draft route (R14)
+    // instead of eagerly INSERTing. The scoping property this assertion
+    // protected — "the new task belongs to the newly selected project, not the
+    // previous one" — is now carried by `SelectedProject`, which the draft
+    // binds to at construction (R2). The row itself appears on first submit.
+    assert!(
         state
             .threads
             .iter()
-            .filter(|thread| thread.project_id == second_id)
-            .count(),
-        1
+            .all(|thread| thread.project_id != second_id),
+        "the eager create path must not insert a row anymore"
+    );
+    assert_eq!(
+        cx.update(|cx| cx.global::<SelectedProject>().0.clone()),
+        Some(second_id.clone()),
+        "the new task's project scope is the newly selected project"
     );
     assert!(state.memberships.is_empty());
     let selection = cx.update(|cx| cx.global::<SelectedProject>().0.clone());
@@ -343,9 +352,18 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
     assert_eq!(f32::from(bounds(&f, cx, "project-more-p").size.width), 24.0);
 
     click(&f, cx, "organization-new-session");
-    let standalone_id = cx.update(|cx| {
+    // R69 intentional change: the SESSIONS plus button navigates to the home
+    // draft route (R14) rather than INSERTing a standalone row, so there is
+    // nothing for the sidebar to list yet. In this sidebar-only harness the
+    // route stays `OpenedThread == None` (the window installs the draft on its
+    // next frame); the durable row appears on first submit, whose sidebar-level
+    // proof is the window test `r69_a3_first_submit_materializes_the_draft_under_its_own_id`.
+    cx.update(|cx| {
         assert!(cx.global::<SelectedProject>().0.is_none());
-        cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone()
+        assert!(
+            cx.global::<OpenedThread>().0.is_none(),
+            "the new-task entry must not eagerly create a task"
+        );
     });
     let store = Store::open(f.dir.path().join("organization.db")).unwrap();
     let standalone_count: i64 = store
@@ -356,11 +374,11 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(standalone_count, 1);
-    let standalone_selector: &'static str =
-        Box::leak(format!("standalone-thread-row-{standalone_id}").into_boxed_str());
-    assert!(visual.debug_bounds(standalone_selector).is_some());
-    assert!(visual.debug_bounds("organization-recents-empty").is_none());
+    assert_eq!(standalone_count, 0);
+    assert!(
+        visual.debug_bounds("organization-recents-empty").is_some(),
+        "with no durable standalone row the recents section stays empty"
+    );
 
     click(&f, cx, "project-add-p");
     let project_tasks: i64 = store
@@ -371,7 +389,8 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(project_tasks, 6);
+    // R69: five fixture rows for project `p`, unchanged by the new-task click.
+    assert_eq!(project_tasks, 5);
     assert_eq!(
         store
             .conn()
@@ -381,21 +400,27 @@ async fn r15_sidebar_has_only_projects_and_standalone_sessions(cx: &mut gpui_kit
                 |row| row.get(0),
             )
             .unwrap(),
-        1
+        0
     );
-    let project_task_id = cx.update(|cx| {
+    cx.update(|cx| {
         assert_eq!(cx.global::<SelectedProject>().0.as_deref(), Some("p"));
-        cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone()
+        assert!(
+            cx.global::<OpenedThread>().0.is_none(),
+            "the project-scoped new-task entry must not eagerly create a task either"
+        );
     });
     let project_selector: &'static str =
-        Box::leak(format!("project-thread-row-{project_task_id}").into_boxed_str());
+        Box::leak(format!("project-thread-row-{}", f.first.id).into_boxed_str());
     let standalone_project_selector: &'static str =
-        Box::leak(format!("standalone-thread-row-{project_task_id}").into_boxed_str());
+        Box::leak(format!("standalone-thread-row-{}", f.first.id).into_boxed_str());
     if !absent(&f, cx, "project-p-show-more") {
         click(&f, cx, "project-p-show-more");
     }
-    assert!(visual.debug_bounds(project_selector).is_some());
-    assert!(visual.debug_bounds(standalone_project_selector).is_none());
+    assert!(
+        visual.debug_bounds(project_selector).is_some(),
+        "the project's existing durable rows stay listed"
+    );
+    assert!(absent(&f, cx, standalone_project_selector));
 
     click(&f, cx, "project-header-p");
     assert!(
@@ -1507,14 +1532,33 @@ async fn r26_pin_mutation_persists_and_reprojects_between_pinned_and_project(
 #[gpui_kit::test]
 async fn r15_archive_filter_hides_and_restores_standalone_task(cx: &mut gpui_kit::TestAppContext) {
     let f = fixture(cx);
-    click(&f, cx, "organization-new-session");
-    let standalone_id = cx.update(|cx| cx.global::<OpenedThread>().0.as_ref().unwrap().id.clone());
+    // R69 intentional change: the SESSIONS plus button no longer INSERTs a row
+    // (R14) — it opens the home draft route, which is not a sidebar row until
+    // first submit. This test's subject is the archive filter, so its fixture
+    // row is created through the conversation layer directly and then loaded
+    // through the sidebar's own production reload path.
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let standalone = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    cx.update(|cx| {
+        cx.set_global(SelectedProject(None));
+        cx.set_global(OpenedThread(Some(standalone.clone())));
+    });
+    f.sidebar
+        .update(cx, |sidebar, cx| sidebar.reload_sessions(cx));
+    cx.run_until_parked();
+    let standalone_id = standalone.id.clone();
     let row_selector: &'static str =
         Box::leak(format!("standalone-thread-row-{standalone_id}").into_boxed_str());
     let actions_selector: &'static str =
         Box::leak(format!("standalone-thread-actions-{standalone_id}").into_boxed_str());
     let archive_selector: &'static str =
         Box::leak(format!("standalone-thread-action-{standalone_id}-2").into_boxed_str());
+    assert!(
+        gpui_kit::VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds(row_selector)
+            .is_some(),
+        "the durable standalone row must be listed"
+    );
 
     click(&f, cx, actions_selector);
     assert!(

@@ -352,9 +352,23 @@ async fn navigation_settings_returns_to_empty_without_database(cx: &mut TestAppC
         cx.set_global(SelectedProject(None));
         cx.refresh_windows();
     });
+    // R69 intentional change: the home route now renders the real composer
+    // over an unpersisted draft thread (R1), so `stream_view` is mounted here
+    // rather than `None`. The property this assertion protected — "the home
+    // route needs no database" — is preserved: the draft is reached with the
+    // store global still healthy, and the steps below re-prove it with the
+    // store replaced by an error.
     pump(cx, |cx| {
-        f.root.read_with(cx, |root, _| root.stream_view.is_none())
+        f.root.read_with(cx, |root, _| {
+            root.draft.is_some() && root.stream_view.is_some()
+        })
     });
+    let draft = f
+        .root
+        .read_with(cx, |root, _| {
+            root.draft.as_ref().map(|draft| draft.id.clone())
+        })
+        .expect("home route installs its draft");
     cx.update(|cx| {
         cx.set_global(vega_ui::sidebar::VegaStore(Err(
             "owned unavailable database".into(),
@@ -375,7 +389,15 @@ async fn navigation_settings_returns_to_empty_without_database(cx: &mut TestAppC
             !root.navigation.pending && !cx.global::<SettingsOpen>().0
         })
     });
-    assert_eq!(current(&f, cx), None);
+    // R69 R4/R7: returning from Settings lands back on the same draft id, and
+    // the route renders without touching the (now unavailable) store — no
+    // hydration ran, so no controller error bar appeared.
+    assert_eq!(current(&f, cx), Some(draft.clone()));
+    assert_eq!(
+        f.root
+            .read_with(cx, |root, _| root.draft.as_ref().map(|d| d.id.clone())),
+        Some(draft)
+    );
     assert_eq!(f.root.read_with(cx, |root, _| root.navigation.cursor), 1);
 }
 

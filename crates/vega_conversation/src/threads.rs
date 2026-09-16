@@ -141,16 +141,33 @@ fn create_thread_with_binding(
     model: &str,
     permission_mode: &str,
 ) -> Result<Thread, ConversationError> {
-    let permission_mode = if permission_mode.is_empty() {
+    let thread = assemble_thread(project_id, model, parse_permission_mode(permission_mode)?);
+    insert_thread(store, project_id, &thread)?;
+    Ok(thread)
+}
+
+/// Strict config-string → [`PermissionMode`] bridge for the durable
+/// constructor: an empty value is the DDL default `confirm`, anything outside
+/// the vocabulary fails closed.
+fn parse_permission_mode(value: &str) -> Result<PermissionMode, ConversationError> {
+    if value.is_empty() {
         // DDL 默认（config 缺失模板同值：confirm）。
-        PermissionMode::Confirm
-    } else {
-        PermissionMode::parse(permission_mode).ok_or_else(|| {
-            ConversationError::CorruptRow(format!("permission_mode: {permission_mode}"))
-        })?
-    };
+        return Ok(PermissionMode::Confirm);
+    }
+    PermissionMode::parse(value)
+        .ok_or_else(|| ConversationError::CorruptRow(format!("permission_mode: {value}")))
+}
+
+/// The one field-by-field `Thread` construction shared by the durable
+/// constructor and the R69 draft. The caller supplies the already-typed
+/// permission mode and the id source differs (fresh ulid either way).
+fn assemble_thread(
+    project_id: Option<&str>,
+    model: &str,
+    permission_mode: PermissionMode,
+) -> Thread {
     let now = now_ms();
-    let thread = Thread {
+    Thread {
         id: new_thread_id(),
         project_id: project_id.unwrap_or_default().to_string(),
         title: String::new(),
@@ -162,7 +179,18 @@ fn create_thread_with_binding(
         unread: false,
         created_at: now,
         updated_at: now,
-    };
+    }
+}
+
+/// The one INSERT shared by [`create_thread_with_binding`] and
+/// [`materialize_draft`]. A `Some` project id uses the FK-checked statement,
+/// `None` writes a real SQL `NULL` so standalone tasks never become a
+/// synthetic project.
+fn insert_thread(
+    store: &Store,
+    project_id: Option<&str>,
+    thread: &Thread,
+) -> Result<(), ConversationError> {
     let values = store::NewThread {
         id: &thread.id,
         project_id: &thread.project_id,
@@ -181,7 +209,60 @@ fn create_thread_with_binding(
     } else {
         store::create_standalone(store.conn(), values).map_err(store_error)?;
     }
-    Ok(thread)
+    Ok(())
+}
+
+/// R69 R1/R2: builds the **unpersisted** home-route draft thread.
+///
+/// The draft carries its final id (`new_thread_id`), so materialization reuses
+/// it verbatim — Vega needs no Codex-style prefix/alias layer. Every other
+/// field follows the same rules as [`create_thread`]: empty `title`,
+/// `ThreadMode::Execute`, the caller's config `model`/`permission_mode`, DDL
+/// defaults for `status`/`pinned`/`unread`, and one `now_ms()` timestamp pair.
+///
+/// Unlike the durable constructor this is infallible: a `permission_mode`
+/// outside the vocabulary falls back to the DDL default `confirm` (the same
+/// rule as an empty value). The draft is a UI projection that never reaches
+/// the store by itself, and the durable INSERT writes the typed
+/// [`PermissionMode`] this returns, so there is no unvalidated value to leak.
+pub fn draft_thread(project_id: Option<&str>, model: &str, permission_mode: &str) -> Thread {
+    let permission_mode = PermissionMode::parse(permission_mode).unwrap_or(PermissionMode::Confirm);
+    assemble_thread(project_id, model, permission_mode)
+}
+
+/// R69 R8: persists a draft thread under **its own id**.
+///
+/// This is the only writer the lazy-draft route uses on first submit. It
+/// reuses the exact construction rules and the exact INSERT as
+/// [`create_thread`]/[`create_standalone_thread`], so a materialized draft is
+/// indistinguishable from an eagerly created row. Because the id is the
+/// primary key, a repeated call fails closed instead of producing a second
+/// row (R11).
+///
+/// R69 M4 (architect's ruling, 2026-09-16): `created_at`/`updated_at` are the
+/// **submit** instant, not the moment the home draft was first rendered. A user
+/// can sit on the home route for minutes before sending, and the sidebar's
+/// "Created" sort (`SidebarTaskSort::Created`) must reflect when the task
+/// actually started. The returned thread is the authoritative row; callers
+/// project it so the route and any later durable read agree.
+pub fn materialize_draft(store: &Store, thread: &Thread) -> Result<Thread, ConversationError> {
+    let project_id = thread.project_binding();
+    if let Some(project_id) = project_id {
+        // 与 create_thread 同源的显式守卫：无项目行时给类型化错误，而不是裸外键失败。
+        let exists =
+            store_projects::project_exists(store.conn(), project_id).map_err(store_error)?;
+        if !exists {
+            return Err(ConversationError::NoProject);
+        }
+    }
+    let now = now_ms();
+    let materialized = Thread {
+        created_at: now,
+        updated_at: now,
+        ..thread.clone()
+    };
+    insert_thread(store, project_id, &materialized)?;
+    Ok(materialized)
 }
 
 /// Lists a project's threads, most recently updated first, pinned group
@@ -462,11 +543,13 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
 mod tests {
     use super::{
         composer_history, create_standalone_thread, create_thread, current_project, delete_thread,
-        list_standalone_threads, list_threads, new_thread_id, open_thread, rename_thread,
-        set_thread_mode, set_thread_permission_mode, set_thread_pinned, set_thread_status,
-        task_workspace_root, update_thread,
+        draft_thread, list_standalone_threads, list_threads, materialize_draft, new_thread_id,
+        now_ms, open_thread, rename_thread, set_thread_mode, set_thread_permission_mode,
+        set_thread_pinned, set_thread_status, task_workspace_root, update_thread,
     };
-    use crate::types::{ConversationError, PermissionMode, ThreadMode, ThreadStatus, ThreadUpdate};
+    use crate::types::{
+        ConversationError, PermissionMode, Thread, ThreadMode, ThreadStatus, ThreadUpdate,
+    };
     use vega_store::Store;
     use vega_store::config::AppConfig;
 
@@ -655,6 +738,128 @@ mod tests {
         let (store, _dir) = open_store();
         let error = create_thread(&store, "missing", "", "confirm").unwrap_err();
         assert!(matches!(error, ConversationError::NoProject));
+    }
+
+    #[test]
+    fn draft_thread_matches_create_thread_fields_without_writing_a_row() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let draft = draft_thread(Some("p1"), "deepseek-chat", "auto");
+        assert!(ulid::Ulid::from_string(&draft.id).is_ok());
+        assert_eq!(draft.project_id, "p1");
+        assert_eq!(draft.title, "");
+        assert_eq!(draft.mode, ThreadMode::Execute);
+        assert_eq!(draft.permission_mode, PermissionMode::Auto);
+        assert_eq!(draft.model, "deepseek-chat");
+        assert_eq!(draft.status, ThreadStatus::Active);
+        assert!(!draft.pinned);
+        assert!(!draft.unread);
+        assert!(draft.created_at > 0);
+        assert_eq!(draft.created_at, draft.updated_at);
+        // 草稿本身不落库（R5）。
+        assert_eq!(list_threads(&store, "p1", None).unwrap().len(), 0);
+        assert_eq!(list_standalone_threads(&store, None).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn draft_thread_uses_ddl_defaults_for_unusable_permission_modes() {
+        let draft = draft_thread(None, "m", "");
+        assert_eq!(draft.permission_mode, PermissionMode::Confirm);
+        assert!(draft.is_standalone());
+        // 越界值回落到 DDL 默认，草稿仍是可渲染投影而不是错误。
+        assert_eq!(
+            draft_thread(None, "m", "yolo").permission_mode,
+            PermissionMode::Confirm
+        );
+    }
+
+    #[test]
+    fn materialize_draft_reuses_the_draft_id_and_fails_closed_on_a_second_write() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let draft = draft_thread(Some("p1"), "mock", "confirm");
+        // R69 M4: the durable row is stamped at submit, so simulate the user
+        // sitting on the home route before sending.
+        let submitted = Thread {
+            created_at: draft.created_at + 60_000,
+            updated_at: draft.updated_at + 60_000,
+            ..draft.clone()
+        };
+        let materialized = materialize_draft(&store, &submitted).unwrap();
+        let loaded = list_threads(&store, "p1", None).unwrap();
+        assert_eq!(loaded.len(), 1);
+        // 除时间戳外逐字段与草稿一致：id / project / model / permission 全部复用。
+        assert_eq!(loaded[0], materialized);
+        assert_eq!(materialized.id, draft.id);
+        assert_eq!(materialized.project_id, draft.project_id);
+        assert_eq!(materialized.model, draft.model);
+        assert_eq!(materialized.permission_mode, draft.permission_mode);
+        // 主键冲突 → 第二次物化失败，不产生第二行（R11）。
+        assert!(materialize_draft(&store, &submitted).is_err());
+        assert_eq!(list_threads(&store, "p1", None).unwrap().len(), 1);
+    }
+
+    /// R69 M4（架构师裁决 2026-09-16）：物化行的时间戳是**提交时刻**，不是草稿
+    /// 构造时刻。用户在首页可以停留很久，侧栏 "Created" 排序必须反映任务真正
+    /// 开始的时刻。
+    #[test]
+    fn materialize_draft_stamps_the_submit_instant_not_the_draft_instant() {
+        let (store, _dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let draft = draft_thread(Some("p1"), "mock", "confirm");
+        // 草稿先"停留"一段可观测的时间差。
+        let stale = Thread {
+            created_at: draft.created_at - 60_000,
+            updated_at: draft.updated_at - 60_000,
+            ..draft.clone()
+        };
+        let before = now_ms();
+        let materialized = materialize_draft(&store, &stale).unwrap();
+        let after = now_ms();
+        assert!(
+            materialized.created_at >= before && materialized.created_at <= after,
+            "created_at must be the submit instant: {} not in [{before}, {after}]",
+            materialized.created_at
+        );
+        assert_eq!(materialized.created_at, materialized.updated_at);
+        assert_ne!(
+            materialized.created_at, stale.created_at,
+            "the stale draft timestamp must not survive materialization"
+        );
+        // 库里读回的也是提交时刻，不是草稿时刻。
+        let loaded = list_threads(&store, "p1", None).unwrap();
+        assert_eq!(loaded[0].created_at, materialized.created_at);
+    }
+
+    #[test]
+    fn materialize_standalone_draft_writes_a_null_binding() {
+        let (store, _dir) = open_store();
+        let draft = draft_thread(None, "mock", "confirm");
+        materialize_draft(&store, &draft).unwrap();
+        let project_id: Option<String> = store
+            .conn()
+            .query_row(
+                "SELECT project_id FROM threads WHERE id = ?1",
+                [&draft.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(project_id, None);
+        assert_eq!(
+            list_standalone_threads(&store, Some(ThreadStatus::Active))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn materialize_draft_rejects_an_unregistered_project() {
+        let (store, _dir) = open_store();
+        let draft = draft_thread(Some("missing"), "mock", "confirm");
+        let error = materialize_draft(&store, &draft).unwrap_err();
+        assert!(matches!(error, ConversationError::NoProject));
+        assert_eq!(list_threads(&store, "missing", None).unwrap().len(), 0);
     }
 
     #[test]

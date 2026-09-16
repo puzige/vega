@@ -561,6 +561,23 @@ impl VegaWindow {
                 return;
             }
         };
+        // R69 R8-R11: first submit materializes the lazy draft under its own
+        // id before the existing submit path runs. Route identity is untouched
+        // (`OpenedThread.0.id` and the `stream_view` key are unchanged), so
+        // `owns_stream_request` above still holds and the cached stream — with
+        // its composer text and focus — is never rebuilt (R9). A failure keeps
+        // the draft installed and surfaces the error with the text intact, so
+        // no half-written state exists (R10). Success releases the draft, which
+        // makes a repeated submit a plain durable-route submit (R11).
+        if let Some(draft) = self.draft_for_route(&request.thread_id)
+            && self.materialize_draft(&draft, cx).is_err()
+        {
+            stream.update(cx, |stream, cx| {
+                stream.reject_composer_submission(cx);
+                stream.apply_controller_error(cx);
+            });
+            return;
+        }
         self.start_agent_run_with_reasoning(
             stream,
             &request.thread_id,

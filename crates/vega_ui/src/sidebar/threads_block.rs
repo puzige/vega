@@ -192,8 +192,14 @@ impl ThreadsBlock {
         cx.notify();
     }
 
-    /// Creates and opens one task for the requested project binding. `None`
-    /// is a genuine standalone task and is used by the SESSIONS plus button.
+    /// R69 R14: navigates to the home draft route for the requested project
+    /// binding instead of eagerly INSERTing a row. `None` is a genuine
+    /// standalone task and is used by the SESSIONS plus button.
+    ///
+    /// The draft is materialized by the window on first submit (R8), which is
+    /// what stops this entry point from piling up empty `未命名任务` rows. The
+    /// store is still read here for the project's display name so the route
+    /// carries the same selection the eager path used to install.
     pub(crate) fn create_task(&mut self, project_id: Option<String>, cx: &mut Context<Self>) {
         if task_mutation_busy(cx) {
             self.error = Some("任务正在保存，请稍后重试".into());
@@ -203,34 +209,35 @@ impl ThreadsBlock {
         if !crate::navigation::allow_task_navigation(None, cx) {
             return;
         }
-        let (model, permission_mode) = match config::load() {
-            Ok(config) => (config.defaults.model, config.defaults.permission_mode),
-            Err(error) => {
-                self.error = Some(format!("配置加载失败：{error}"));
-                cx.notify();
-                return;
-            }
-        };
-        let result = with_store(cx, |store| {
-            let thread = match project_id.as_deref() {
-                Some(project_id) => {
-                    conversation::create_thread(store, project_id, &model, &permission_mode)
+        // The project must exist before it becomes the draft's binding; this is
+        // the same guard `conversation::create_thread` applied, without the
+        // INSERT. An unregistered id is refused instead of silently becoming a
+        // standalone draft.
+        if let Some(project_id) = project_id.as_deref() {
+            let exists = with_store(cx, |store| {
+                vega_store::projects::find(store.conn(), project_id)
+                    .map_err(|error| error.to_string())
+                    .map(|row| row.is_some())
+            });
+            match exists {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.error = Some("项目不存在，无法创建任务".into());
+                    cx.notify();
+                    return;
                 }
-                None => conversation::create_standalone_thread(store, &model, &permission_mode),
+                Err(message) => {
+                    self.error = Some(message);
+                    cx.notify();
+                    return;
+                }
             }
-            .map_err(|error| error.to_string())?;
-            conversation::open_thread(store, &thread.id).map_err(|error| error.to_string())
-        });
-        match result {
-            Ok(opened) => {
-                self.error = None;
-                cx.set_global(SelectedProject(opened.project_binding().map(str::to_owned)));
-                cx.set_global(OpenedThread(Some(opened)));
-                self.reload(cx);
-                cx.emit(ThreadsBlockEvent::Opened);
-            }
-            Err(message) => self.error = Some(message),
         }
+        self.error = None;
+        cx.set_global(SelectedProject(project_id));
+        cx.set_global(OpenedThread(None));
+        self.reload(cx);
+        cx.emit(ThreadsBlockEvent::Opened);
         cx.refresh_windows();
     }
 

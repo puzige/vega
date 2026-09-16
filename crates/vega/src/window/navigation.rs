@@ -17,19 +17,35 @@ struct Projection {
     project: Option<String>,
     thread: Option<Thread>,
     settings: bool,
+    /// R69 R4: whether `thread` is this window's unpersisted home draft.
+    ///
+    /// The draft is a real task route for every downstream consumer
+    /// (`OpenedThread.0.id`, the `stream_view` cache key), but it stays the
+    /// **home** route in navigation history. That is what makes
+    /// back/forward return to the same draft id instead of resolving a
+    /// nonexistent durable row (`NavigationService::resolve` would report
+    /// `InvalidRoute` and prune the entry).
+    draft: bool,
 }
 impl Projection {
-    fn read(cx: &App) -> Self {
+    fn read(cx: &App, draft_id: Option<&str>) -> Self {
+        let thread = cx.global::<OpenedThread>().0.clone();
+        let draft = thread
+            .as_ref()
+            .is_some_and(|thread| Some(thread.id.as_str()) == draft_id);
         Self {
             project: cx.global::<SelectedProject>().0.clone(),
-            thread: cx.global::<OpenedThread>().0.clone(),
+            thread,
             settings: cx.global::<SettingsOpen>().0,
+            draft,
         }
     }
     fn route(&self) -> NavigationRoute {
         if self.settings {
             NavigationRoute::Settings
-        } else if let Some(thread) = &self.thread {
+        } else if let Some(thread) = &self.thread
+            && !self.draft
+        {
             NavigationRoute::Task {
                 project: thread.project_binding().map(str::to_owned),
                 task: thread.id.clone(),
@@ -55,8 +71,8 @@ pub(super) struct Navigation {
     error: Option<&'static str>,
 }
 impl Navigation {
-    pub(super) fn new(cx: &App) -> Self {
-        let current = Projection::read(cx);
+    pub(super) fn new(cx: &App, draft_id: Option<&str>) -> Self {
+        let current = Projection::read(cx, draft_id);
         Self {
             entries: vec![current.route()],
             cursor: 0,
@@ -130,12 +146,19 @@ pub(crate) fn bind_shortcuts(window: AnyWindowHandle, root: WeakEntity<VegaWindo
 }
 
 impl VegaWindow {
+    /// The current draft id, if any. Navigation reads this to keep the draft
+    /// route classified as the home route (R69 R4).
+    fn draft_id(&self) -> Option<&str> {
+        self.draft.as_ref().map(|draft| draft.id.as_str())
+    }
+
     /// Final palette acceptance shares the same draft reservation and visit ordering as history.
     pub(crate) fn accept_palette_thread(&mut self, thread: Thread, cx: &mut Context<Self>) -> bool {
         let destination = Projection {
             project: thread.project_binding().map(str::to_owned),
             thread: Some(thread.clone()),
             settings: false,
+            draft: false,
         };
         if !self.retain_departing_draft(&destination, cx) {
             self.navigation.error = Some("草稿已达容量上限，请先发送或清空当前草稿再导航。");
@@ -312,7 +335,7 @@ impl VegaWindow {
 
     /// Coalesce all route globals before render tears down the departing editor.
     pub(super) fn sync_navigation(&mut self, cx: &mut Context<Self>) {
-        let projection = Projection::read(cx);
+        let projection = Projection::read(cx, self.draft_id());
         let route = projection.route();
         if route == self.navigation.current.route() {
             self.navigation.current = projection;
@@ -441,7 +464,7 @@ impl VegaWindow {
             let _ = owner.update(cx, |this, cx| {
                 this.navigation.pending = false;
                 if this.navigation.generation != generation
-                    || Projection::read(cx).route() != origin
+                    || Projection::read(cx, this.draft_id()).route() != origin
                 {
                     this.publish_navigation(cx);
                     cx.notify();

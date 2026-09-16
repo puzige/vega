@@ -131,8 +131,16 @@ impl Render for VegaWindow {
         } else {
             // 设置已关闭：丢弃缓存，下次打开时重新构造并载入最新配置。
             let returning_from_settings = self.settings_view.take().is_some();
-            match cx.global::<OpenedThread>().0.clone() {
-                Some(thread) => {
+            // R69 R1/R4: the home route (no opened thread) installs — or
+            // reuses — the window's single unpersisted draft thread and
+            // renders the real ConversationStream over it. `OpenedThread`
+            // becomes `Some(draft)`, so the route identity is a task route
+            // everywhere downstream while the draft stays a home route in the
+            // navigation history (`Projection::route`).
+            let thread = self.resolve_route_thread(cx);
+            let draft_route = self.is_draft_route(&thread.id);
+            {
+                {
                     // S3-T17：会话流视图（每线程一个实体，切换会话时重建；
                     // MarkdownStream 内存态构造，不落库）。
                     let cached = match &self.stream_view {
@@ -256,70 +264,85 @@ impl Render for VegaWindow {
                                 this.commit_panel_closed(panel.clone(), request, cx);
                             })
                             .detach();
-                            let initial = match &cx.global::<VegaStore>().0 {
-                                Ok(store) => (|| {
-                                    // S8-T45/C7: the controller is rebuilt first,
-                                    // one repair pass normalizes rows the killed
-                                    // process left incomplete, and only then is
-                                    // the newest durable page projected.
-                                    let hydration =
-                                        vega_conversation::history::restart_history_page(
-                                            store,
-                                            &thread.id,
-                                            vega_store::messages::PAGE_LIMIT,
-                                        )?;
-                                    let plans =
-                                        vega_conversation::plans::list_plans(store, &thread.id)?;
-                                    let history = vega_conversation::threads::composer_history(
-                                        store, &thread.id,
-                                    )?;
-                                    let recovery =
-                                        vega_conversation::plans::recoverable_approved_instruction(
+                            // R69 R7: a draft has no durable history by
+                            // definition, so the whole hydration block is
+                            // skipped. Running it would surface a visible
+                            // controller error — `recoverable_approved_instruction`
+                            // returns `NotFound` for a row that does not exist
+                            // and the `?` chain turns that into the error bar.
+                            // The empty state is applied directly instead.
+                            let initial = if draft_route {
+                                None
+                            } else {
+                                Some(match &cx.global::<VegaStore>().0 {
+                                    Ok(store) => (|| {
+                                        // S8-T45/C7: the controller is rebuilt first,
+                                        // one repair pass normalizes rows the killed
+                                        // process left incomplete, and only then is
+                                        // the newest durable page projected.
+                                        let hydration =
+                                            vega_conversation::history::restart_history_page(
+                                                store,
+                                                &thread.id,
+                                                vega_store::messages::PAGE_LIMIT,
+                                            )?;
+                                        let plans = vega_conversation::plans::list_plans(
                                             store, &thread.id,
                                         )?;
-                                    // S7-T39/C4: the calibrated counter baseline
-                                    // comes from the conversation checked aggregate
-                                    // query exactly once per route open; the meter
-                                    // itself never touches SQLite afterwards.
-                                    let usage = vega_conversation::threads::thread_usage_seed(
-                                        store, &thread.id,
-                                    )?;
-                                    // S7-T40 restart recovery: token/cost/cache/
-                                    // tool count re-project from the durable
-                                    // audits; duration stays `—` (no finished
-                                    // timestamp in `messages`, C4). The hydrated
-                                    // page carries the same summary reference and
-                                    // first-wins dedup keeps exactly one card.
-                                    let summary = vega_conversation::summary::latest_task_summary(
-                                        store, &thread.id, None,
-                                    )?;
-                                    Ok((hydration, plans, history, recovery, usage, summary))
-                                })(),
-                                Err(error) => {
-                                    Err(vega_conversation::types::ConversationError::Store(
-                                        error.clone(),
-                                    ))
-                                }
+                                        let history = vega_conversation::threads::composer_history(
+                                            store, &thread.id,
+                                        )?;
+                                        let recovery =
+                                            vega_conversation::plans::recoverable_approved_instruction(
+                                                store, &thread.id,
+                                            )?;
+                                        // S7-T39/C4: the calibrated counter baseline
+                                        // comes from the conversation checked aggregate
+                                        // query exactly once per route open; the meter
+                                        // itself never touches SQLite afterwards.
+                                        let usage = vega_conversation::threads::thread_usage_seed(
+                                            store, &thread.id,
+                                        )?;
+                                        // S7-T40 restart recovery: token/cost/cache/
+                                        // tool count re-project from the durable
+                                        // audits; duration stays `—` (no finished
+                                        // timestamp in `messages`, C4). The hydrated
+                                        // page carries the same summary reference and
+                                        // first-wins dedup keeps exactly one card.
+                                        let summary =
+                                            vega_conversation::summary::latest_task_summary(
+                                                store, &thread.id, None,
+                                            )?;
+                                        Ok((hydration, plans, history, recovery, usage, summary))
+                                    })(),
+                                    Err(error) => {
+                                        Err(vega_conversation::types::ConversationError::Store(
+                                            error.clone(),
+                                        ))
+                                    }
+                                })
                             };
-                            view.update(cx, |stream, cx| match initial {
-                                Ok((hydration, plans, history, recovery, usage, summary)) => {
-                                    // Hydrated history lands first so route-open
-                                    // plan cards keep their position after it.
-                                    stream.apply_history_page(hydration, cx);
-                                    for plan in plans {
-                                        stream.apply_plan(plan, cx);
+                            if let Some(initial) = initial {
+                                view.update(cx, |stream, cx| match initial {
+                                    Ok((hydration, plans, history, recovery, usage, summary)) => {
+                                        // Hydrated history lands first so route-open
+                                        // plan cards keep their position after it.
+                                        stream.apply_history_page(hydration, cx);
+                                        for plan in plans {
+                                            stream.apply_plan(plan, cx);
+                                        }
+                                        stream.apply_composer_history(&thread.id, history, cx);
+                                        if let Some(summary) = summary {
+                                            stream.apply_task_summary(summary, cx);
+                                        }
+                                        if recovery.is_some() {
+                                            stream.apply_approved_not_started(cx);
+                                        }
+                                        stream.restore_meter(usage, cx);
                                     }
-                                    stream.apply_composer_history(&thread.id, history, cx);
-                                    if let Some(summary) = summary {
-                                        stream.apply_task_summary(summary, cx);
-                                    }
-                                    if recovery.is_some() {
-                                        stream.apply_approved_not_started(cx);
-                                    }
-                                    stream.restore_meter(usage, cx);
-                                }
-                                Err(_) => stream.apply_controller_error(cx),
-                            });
+                                    Err(_) => stream.apply_controller_error(cx),
+                                });
+                            }
                             self.restore_navigation_draft(&thread.id, &view, cx);
                             self.stream_view = Some((thread.id.clone(), view.clone()));
                             self.sync_navigation(cx);
@@ -332,8 +355,14 @@ impl Render for VegaWindow {
                     // the next visible frame so newly saved providers/models
                     // become selectable without rebuilding the session.
                     self.start_model_catalog_load(cx);
-                    self.ensure_artifact_route(&thread, stream.clone(), cx);
-                    self.ensure_branch_route(&thread, stream.clone(), cx);
+                    // R69 R6: the draft has no durable row, so the two
+                    // controllers that resolve through `artifact_project_root`
+                    // must not begin on it. Their own staleness observers close
+                    // any route the previous thread left behind.
+                    if !draft_route {
+                        self.ensure_artifact_route(&thread, stream.clone(), cx);
+                        self.ensure_branch_route(&thread, stream.clone(), cx);
+                    }
                     let commit_focus = self
                         .commit_controller
                         .active
@@ -349,14 +378,21 @@ impl Render for VegaWindow {
                     if returning_from_settings {
                         stream.update(cx, |stream, cx| stream.focus_composer(window, cx));
                     }
-                    stream.into_any_element()
-                }
-                None => {
-                    if let Some((_, previous)) = self.stream_view.take() {
-                        self.cancel_active_agent(cx);
-                        previous.update(cx, |stream, cx| stream.timeout_permission(cx));
+                    // R69 R15: with no project selected the home route keeps
+                    // the existing guidance copy and the `显示侧栏` entry above
+                    // the real composer, which materializes as a standalone
+                    // task on first submit.
+                    if draft_route && thread.is_standalone() {
+                        div()
+                            .size_full()
+                            .flex()
+                            .flex_col()
+                            .child(self.render_home_guidance(!sidebar_visible, colors, cx))
+                            .child(div().flex_1().min_h_0().child(stream))
+                            .into_any_element()
+                    } else {
+                        stream.into_any_element()
                     }
-                    self.render_empty_state(!sidebar_visible, colors, cx)
                 }
             }
         };
@@ -586,19 +622,29 @@ impl VegaWindow {
             .into_any_element()
     }
 
+    /// R12/R69: the main header's title for the current route.
+    ///
+    /// The draft route keeps the pre-R69 home title. A draft has an empty
+    /// title by construction, so without this branch the header would read
+    /// `未命名任务` on the page the user has not started yet.
+    pub(crate) fn main_header_title(&self, cx: &App) -> String {
+        let thread = cx.global::<OpenedThread>().0.clone();
+        let Some(thread) = thread else {
+            return "新建任务".to_string();
+        };
+        if self.is_draft_route(&thread.id) {
+            return "新建任务".to_string();
+        }
+        if thread.title.is_empty() {
+            "未命名任务".to_string()
+        } else {
+            thread.title.clone()
+        }
+    }
+
     fn render_main_header(&mut self, sidebar_visible: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let thread = cx.global::<OpenedThread>().0.clone();
-        let title = thread.as_ref().map_or_else(
-            || "新建任务".to_string(),
-            |thread| {
-                if thread.title.is_empty() {
-                    "未命名任务".to_string()
-                } else {
-                    thread.title.clone()
-                }
-            },
-        );
+        let title = self.main_header_title(cx);
         div()
             .id("main-header")
             .debug_selector(|| "main-header".into())
@@ -645,15 +691,6 @@ impl VegaWindow {
         }
     }
 
-    fn empty_new_thread_clicked(
-        &mut self,
-        _: &MouseUpEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_new_thread(window, cx);
-    }
-
     fn empty_add_project_clicked(
         &mut self,
         _: &MouseUpEvent,
@@ -672,69 +709,17 @@ impl VegaWindow {
         window.dispatch_action(Box::new(ToggleSidebar), cx);
     }
 
-    /// The content-area empty state (ui-spec §4.6): a quiet prompt with the
-    /// real route actions needed to start. Existing-project and no-project
-    /// states intentionally use different copy, while the action handlers
-    /// stay on Sidebar/VegaWindow's production paths.
-    fn render_empty_state(
+    /// R69 R15: the project-less home route keeps the §4.6 guidance copy and
+    /// the `显示侧栏` entry, now sitting above the **real** composer instead of
+    /// a click-to-create placeholder. The `添加项目文件夹以开始…` affordance stays
+    /// reachable and still opens the production folder picker.
+    fn render_home_guidance(
         &mut self,
         sidebar_hidden: bool,
         colors: ThemeColors,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let has_project = cx.global::<SelectedProject>().0.is_some();
-        let title = if has_project {
-            "今天想做些什么？"
-        } else {
-            "先添加一个项目"
-        };
-        let description = if has_project {
-            "选择新建任务即可开始；也可以从侧栏切换项目。"
-        } else {
-            "添加一个文件夹后，就可以创建任务并开始工作。"
-        };
-        let start_action = if has_project {
-            div()
-                .w_full()
-                .min_h(px(Layout::COMPOSER_MIN_HEIGHT))
-                .p_3()
-                .rounded(px(Layout::COMPOSER_RADIUS))
-                .border_1()
-                .border_color(colors.border_subtle)
-                .shadow_sm()
-                .bg(colors.bg_elevated)
-                .text_color(colors.text_secondary)
-                .text_size(px(Typography::SIDEBAR))
-                .cursor_pointer()
-                .hover(move |style| style.bg(colors.bg_hover))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(Self::empty_new_thread_clicked),
-                )
-                .child("新建任务并开始输入…")
-                .into_any_element()
-        } else {
-            div()
-                .w_full()
-                .min_h(px(Layout::COMPOSER_MIN_HEIGHT))
-                .p_3()
-                .rounded(px(Layout::COMPOSER_RADIUS))
-                .border_1()
-                .border_color(colors.border_subtle)
-                .shadow_sm()
-                .bg(colors.bg_elevated)
-                .text_color(colors.text_secondary)
-                .text_size(px(Typography::SIDEBAR))
-                .cursor_pointer()
-                .hover(move |style| style.bg(colors.bg_hover))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(Self::empty_add_project_clicked),
-                )
-                .child("添加项目文件夹以开始…")
-                .into_any_element()
-        };
-        let show_sidebar = (!has_project && sidebar_hidden).then(|| {
+        let show_sidebar = sidebar_hidden.then(|| {
             div()
                 .px_3()
                 .py_1()
@@ -751,46 +736,32 @@ impl VegaWindow {
                 .into_any_element()
         });
         div()
-            .size_full()
-            .flex()
-            .flex_col()
+            .w_full()
+            .flex_shrink_0()
+            .px(px(Layout::CONTENT_PADDING))
+            .pt(px(Layout::CONTENT_PADDING))
             .child(
                 div()
-                    .flex_1()
                     .w_full()
+                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
+                    .mx_auto()
                     .flex()
+                    .flex_col()
                     .items_center()
-                    .justify_center()
-                    .px(px(Layout::CONTENT_PADDING))
+                    .gap_3()
                     .child(
                         div()
-                            .w_full()
-                            .max_w(px(Layout::CONTENT_MAX_WIDTH))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .text_size(px(Typography::EMPTY_STATE_TITLE))
-                                    .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
-                                    .text_color(colors.text_primary)
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(colors.text_secondary)
-                                    .child(description),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .px(px(Layout::CONTENT_PADDING))
-                    .pt(px(12.))
-                    .pb(px(16.))
+                            .text_size(px(Typography::EMPTY_STATE_TITLE))
+                            .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
+                            .text_color(colors.text_primary)
+                            .child("先添加一个项目"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_secondary)
+                            .child("添加一个文件夹后，就可以创建任务并开始工作。"),
+                    )
                     .child(
                         div()
                             .w_full()
@@ -798,8 +769,27 @@ impl VegaWindow {
                             .mx_auto()
                             .flex()
                             .flex_col()
+                            .items_center()
                             .gap_2()
-                            .child(start_action)
+                            .child(
+                                div()
+                                    .debug_selector(|| "home-guidance-add-project".into())
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(colors.border_subtle)
+                                    .bg(colors.bg_elevated)
+                                    .text_size(px(Typography::SIDEBAR))
+                                    .text_color(colors.text_secondary)
+                                    .cursor_pointer()
+                                    .hover(move |style| style.bg(colors.bg_hover))
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(Self::empty_add_project_clicked),
+                                    )
+                                    .child("添加项目文件夹以开始…"),
+                            )
                             .children(show_sidebar),
                     ),
             )

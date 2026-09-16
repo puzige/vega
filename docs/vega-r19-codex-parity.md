@@ -93,6 +93,8 @@ guards stay intact. No token/cost indicator is rendered. The empty route uses
 the same real composer control surface after a task is created; it must not
 degrade to a decorative input-only card.
 
+> ⚠️ **部分取代（2026-09-15，R69）**：上句的「**after a task is created**」已被 [R69 Home lazy draft composer](vega-r69-home-lazy-draft-composer.md) 取代——首页现在**无需先创建任务**即渲染同一套真实 composer 控件面（任务改为首次提交时惰性落库）。「不得退化为装饰性 input-only 卡片」这条约束仍然成立，并被 R69 强化。
+
 ### Environment rail
 
 With a project selected and no persistent right workspace, a 292px rail is

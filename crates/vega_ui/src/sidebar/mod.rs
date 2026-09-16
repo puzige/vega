@@ -198,6 +198,53 @@ pub struct VegaStore(pub Result<Store, String>);
 
 impl Global for VegaStore {}
 
+/// R69 R3: the `config.defaults` values a new task starts from
+/// (`defaults.model` / `defaults.permission_mode`).
+///
+/// Installed from the same `config::load()` source the eager `create_task`
+/// path used, and refreshed by the window's config-catalog worker, so the
+/// home-route draft can take its defaults **without any config IO during
+/// render** (the A2-14/R1 constraint). `Default` mirrors the missing-config
+/// template (`AppConfig::default().defaults`): empty model, `confirm`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewTaskDefaults {
+    /// `defaults.model` (empty until a provider is configured).
+    pub model: String,
+    /// `defaults.permission_mode` (`readonly` | `confirm` | `auto`).
+    pub permission_mode: String,
+}
+
+impl Default for NewTaskDefaults {
+    fn default() -> Self {
+        let defaults = config::AppConfig::default().defaults;
+        Self {
+            model: defaults.model,
+            permission_mode: defaults.permission_mode,
+        }
+    }
+}
+
+impl NewTaskDefaults {
+    /// Reads `config.defaults` from the resolved config root. A missing or
+    /// malformed file falls back to the same `AppConfig::default()` values the
+    /// generated template carries, so the draft's defaults match what
+    /// `create_task` would have used on the missing-config path.
+    pub fn load() -> Self {
+        match config::load() {
+            Ok(config) => Self {
+                model: config.defaults.model,
+                permission_mode: config.defaults.permission_mode,
+            },
+            Err(error) => {
+                tracing::error!(%error, "failed to read defaults from config.toml");
+                Self::default()
+            }
+        }
+    }
+}
+
+impl Global for NewTaskDefaults {}
+
 /// Loads the persisted Cmd+B collapse preference; `false` when the config
 /// cannot be read (error logged, sidebar stays visible — the safe default).
 pub fn load_collapsed() -> bool {
@@ -260,6 +307,7 @@ pub fn init(cx: &mut App) {
     cx.set_global(OpenedThread(None));
     cx.set_global(PendingDeleteConfirm(None));
     cx.set_global(SidebarWidth(load_width()));
+    cx.set_global(NewTaskDefaults::load());
 }
 
 /// Opens and migrates `vega.db` under the platform data root (tech-spec §6).
@@ -485,6 +533,14 @@ impl Sidebar {
             .iter()
             .find(|project| project.id == project_id)
             .map(|project| project.name.clone())
+    }
+
+    /// Re-reads the session block's durable rows. Production callers reach this
+    /// through the block's own event wiring; this wrapper exists so a caller
+    /// that changed the store directly (the window's draft materialization on
+    /// first submit, R69 R8) can refresh the sidebar without owning the block.
+    pub fn reload_sessions(&mut self, cx: &mut Context<Self>) {
+        self.sessions_block.update(cx, ThreadsBlock::reload);
     }
 
     /// Empty-state entry point for the existing project picker. The block
