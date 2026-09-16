@@ -38,6 +38,10 @@
 
 ## Residuals
 
-- NOT RUN: installed-candidate/native macOS visual check for light/dark rounded chip and borderless popup; main agent owns packaging/native verification.
+- PASS (parent native light-mode check): candidate and installed app both list the actual selected project's two branches with the current branch checked. Popup opens upward with its explicit border removed; chip has rounded hover chrome. No user branch was switched. Dark-mode native appearance remains NOT RUN.
 - NOT RUN: branch switching against any user repository; production test uses only an owned temporary repository.
 - No package, install, merge, push, or user-project branch mutation was performed.
+
+## Parent packaging and installation
+
+After executor verification, parent ran `scripts/cargo-lock.sh xtask package` successfully and updated the installed app with a recoverable backup of the previous bundle. Signature verification passed. Candidate and installed executable SHA-256 both equal `7b4e1ba061f21ee92b8ab3d4a9b8cdb24cd3bd995728b90af5fa654ccc00f074`. Production source corresponds to implementation commit `3a27578`; application data was not removed. No merge or push was performed.
