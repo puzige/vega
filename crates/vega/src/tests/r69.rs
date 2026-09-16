@@ -849,3 +849,71 @@ async fn r69_draft_binds_to_the_selected_project(cx: &mut gpui_kit::TestAppConte
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, draft.id);
 }
+
+/// R69 × R68 integration: the R68 utility-bar dropdowns must still work on the
+/// home draft route.
+///
+/// This combination is covered by neither suite alone. R68's own tests mount a
+/// bare `StreamHarness` (`conversation_stream/tests/r68_popup_dismiss.rs`),
+/// which bypasses the window route entirely; R69's A8 only asserts that the
+/// utility bar is *mounted* on the draft route. So before this test, nothing
+/// proved that clicking the project chip on the home route actually opens the
+/// popup, or that an outside click closes it there — the exact surface the user
+/// now sees on launch, since R69 made the composer (and therefore the R49
+/// utility bar) render before any task exists.
+#[gpui_kit::test]
+async fn r69_r68_project_popup_opens_and_dismisses_on_the_draft_route(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let chip = f.bounds("composer-utility-project-chip", cx);
+    assert!(
+        f.absent("composer-utility-project-menu", cx),
+        "the popup starts closed on the draft route"
+    );
+
+    // R68 A1: the chip click opens it. `VisualTestContext` drives a real
+    // pointer event, so this exercises R68's capture-phase trigger claim.
+    let chip_point = gpui_kit::point(
+        chip.origin.x + chip.size.width / 2.,
+        chip.origin.y + chip.size.height / 2.,
+    );
+    {
+        let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+        visual.simulate_click(chip_point, gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+    }
+    assert!(
+        !f.absent("composer-utility-project-menu", cx),
+        "R68 A1 must hold on the R69 draft route: the chip click opens the popup"
+    );
+
+    // R68 A2: an outside click closes it. The window's top-left corner is far
+    // from the bottom-anchored composer column, and the guard keeps that true.
+    let outside = gpui_kit::point(gpui_kit::px(4.), gpui_kit::px(4.));
+    let popup = f.bounds("composer-utility-project-menu", cx);
+    assert!(
+        !popup.contains(&outside),
+        "the outside point must not be inside the popup: popup={popup:?}"
+    );
+    {
+        let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+        visual.simulate_click(outside, gpui_kit::Modifiers::default());
+        visual.run_until_parked();
+    }
+    assert!(
+        f.absent("composer-utility-project-menu", cx),
+        "R68 A2 must hold on the R69 draft route: an outside click closes the popup"
+    );
+
+    // Opening a popup must not materialize the draft: the popup is pure UI.
+    assert_eq!(
+        f.thread_rows(),
+        0,
+        "interacting with the utility bar must not write a row (R5)"
+    );
+    assert!(
+        f.root.read_with(cx, |root, _| root.draft.is_some()),
+        "the draft route is unchanged by a popup interaction"
+    );
+}

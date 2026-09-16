@@ -192,6 +192,49 @@ idle done; submitting at 1789489683068
 
 ---
 
-## §9 未决项
+## §9 与 master 合并后的验证（2026-09-16）
 
-无。M1（导航草稿保留）、M3（file_index 在草稿路由）、M4（时间戳口径）均已落地或被测试覆盖。
+R69 实现完成后 master 前进了三个提交（R68 弹层：`9185ecb` 规格 / `ab2a11a` 实现 / `78faae6` 验收），合并提交 `9fc3d02`。
+
+**R68 与 R69 的改动面直接重叠**：R68 改了 `conversation_stream/render.rs`、`utility_bar.rs`、`menu_list.rs`、`branch_selector.rs`，而 R69 改的正是 composer 的渲染路由与 `utility_bar_visible` 的调用时机。所以自动合并无冲突**不等于**语义正确，必须实测。
+
+### 已确认无冲突的两点
+
+| 检查 | 结论 |
+|---|---|
+| R68 是否改 `utility_bar_visible` 谓词 | **未改**（`git diff 1c62455..master -- utility_bar.rs` 中该函数无差异）。R69 R13 依赖此谓词不变，成立 |
+| R68 的 `render_composer(window, cx)` 签名变更 | 已合并；R69 在 `render.rs` 的草稿路由分支不触碰该函数签名 |
+
+### 发现并补上的测试缺口
+
+**两边套件都没覆盖「R68 弹层 + R69 首页草稿路由」这个组合**：
+
+- R68 的 10 个测试挂的是裸 `StreamHarness`（`conversation_stream/tests/r68_popup_dismiss.rs`），**绕过窗口路由**；
+- R69 的 A8 只断言 utility bar 在草稿路由**被挂载**，不验证点击。
+
+而 R69 恰恰让 composer（连同 R49 utility bar）在**任何任务存在之前**就渲染——这是用户开机即见的界面。
+
+**新增测试** `r69_r68_project_popup_opens_and_dismisses_on_the_draft_route`（`crates/vega/src/tests/r69.rs`）：
+
+1. 草稿路由上点项目 chip → 弹层打开（R68 A1 在草稿路由成立）；
+2. 点外部 → 弹层关闭（R68 A2 成立），外部点带 `!popup.contains(&point)` 守卫，避免退化成空洞测试；
+3. 弹层交互后 `thread_rows() == 0` 且 `draft.is_some()`——弹层是纯 UI，不得触发物化（R5）。
+
+**非空洞验证**：临时给 `utility_bar.rs:253` 的 `on_mouse_down_out` 加提前 `return` 后，该测试**立即失败**；恢复后通过。证明它真的在测 R68 的关闭机制，而不是恒真。
+
+### 合并后门禁
+
+| 门禁 | 结果 |
+|---|---|
+| `cargo fmt --all -- --check` | 通过 |
+| `cargo clippy --all-targets -- -D warnings` | 通过 |
+| `scripts/cargo-lock.sh test --workspace` | 3 轮中 2 轮全绿；1 轮出现 `tests::diff::diff_refresh_intents_keep_content_during_background_and_retry`（**仓库已记录的既有偶发**，见 §6，与 R69/R68 均无关） |
+| `-p vega --bin vega r69` | **17 passed / 0 failed**（16 个 R69 + 1 个 R69×R68 集成） |
+| `-p vega_ui r68` | **10 passed / 0 failed** |
+| 实机（合并后重新打包 `9caa3d46…` 之后的构建） | 首页零输入捕获仍为完整 composer；R68 弹层在草稿路由可开可关 |
+
+---
+
+## §10 未决项
+
+无。M1（导航草稿保留）、M3（file_index 在草稿路由）、M4（时间戳口径）均已落地或被测试覆盖；R68 合并组合已补测试覆盖。
