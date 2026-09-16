@@ -1018,8 +1018,6 @@ impl Render for ConversationStream {
             self.focus_composer(window, cx);
         }
         let render_t0 = Instant::now();
-        self.branch_selector
-            .update(cx, |selector, _| selector.set_menu_below(true));
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
 

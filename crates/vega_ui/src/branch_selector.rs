@@ -867,7 +867,7 @@ impl Render for BranchSelector {
                         // ink, label in the primary ink (tertiary while
                         // disabled, matching the pill's §8 degradation).
                         trigger.child(crate::icons::icon(
-                            crate::icons::Icon::ArrowUpDown,
+                            crate::icons::Icon::GitBranch,
                             if disabled {
                                 colors.text_tertiary
                             } else {
@@ -898,10 +898,9 @@ impl Render for BranchSelector {
                     // R68: the popup's own selector, so a test can tell "the
                     // pointer is outside the popup" from "the pointer is on the
                     // trigger" without re-deriving the popup's box. The
-                    // `anchored` layer snaps this popup over its own trigger
-                    // when the window is too short to host it below, so the two
-                    // boxes really do overlap and neither can be inferred from
-                    // the other.
+                    // `anchored` layer keeps this deferred surface attached to
+                    // the trigger while window-margin constraints are applied,
+                    // so the two boxes are measured independently.
                     .debug_selector(|| "branch-selector-popup".into())
                     .w(popup_width)
                     .flex_shrink_0()
@@ -1074,7 +1073,7 @@ fn render_branch_row(
         })
     })
     .child(crate::icons::icon(
-        crate::icons::Icon::ArrowUpDown,
+        crate::icons::Icon::GitBranch,
         colors.text_secondary,
     ))
     .child(

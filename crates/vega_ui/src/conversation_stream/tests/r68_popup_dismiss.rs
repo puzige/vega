@@ -263,14 +263,16 @@ async fn r68_a3_clicking_inside_leaves_the_branch_popup_open(cx: &mut TestAppCon
 
 /// A point on `trigger` that `cover` does not also cover.
 ///
-/// The branch popup is mounted below the trigger and the composer sits at the
-/// window's bottom edge, so the `anchored` layer's `snap_to_window_with_margin`
-/// pulls the popup back **up over** the chip; the chip's top edge is then the
-/// only part of it a click can still reach. That exposed band is computed here
-/// rather than hard-coded, so the test follows the geometry instead of
-/// asserting a pixel sliver — and it fails loudly, rather than silently
-/// clicking the popup, if the chip ever becomes fully covered.
+/// Return a point on `trigger` that is not covered by `cover`. The Composer
+/// branch popup now opens above its trigger, so the normal case is simply the
+/// trigger center. Keeping the overlap calculation makes this regression
+/// robust to a future window-constrained placement without hard-coding a
+/// pixel sliver — and fails loudly rather than silently clicking the popup if
+/// the chip ever becomes fully covered.
 fn exposed_point(trigger: Bounds<Pixels>, cover: Bounds<Pixels>, label: &str) -> Point<Pixels> {
+    if !trigger.intersects(&cover) {
+        return trigger.center();
+    }
     if f32::from(cover.top()) > f32::from(trigger.top()) {
         let y = trigger.top() + (cover.top() - trigger.top()) / 2.0;
         let point = gpui_kit::point(trigger.center().x, y);
@@ -331,8 +333,8 @@ async fn r68_a4_clicking_the_trigger_closes_the_project_popup(cx: &mut TestAppCo
 /// R68 A4 / R3: the same trap on the branch chip — its `toggle` also runs on
 /// mouse-up.
 ///
-/// Unlike the project popup, the branch popup can cover its own trigger, so
-/// the click point is the chip's exposed band (see [`exposed_point`]).
+/// The helper chooses the trigger center when the upward popup does not
+/// overlap it, and retains the exposed-band fallback for constrained layouts.
 #[gpui_kit::test]
 async fn r68_a4_clicking_the_trigger_closes_the_branch_popup(cx: &mut TestAppContext) {
     let (window, stream, _events) = open_controller_stream(cx, "r68-a4-branch");

@@ -36,6 +36,7 @@ pub enum Icon {
     Minimize,
     More,
     ArrowUpDown,
+    GitBranch,
     Pin,
     ChevronDown,
     ChevronRight,
@@ -91,6 +92,11 @@ const HAND_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 /// glyph. Inline for the same reason as [`HAND_SVG`].
 const SHIELD_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>"#;
 
+/// The Git branch outline is authored inline because gpui-kit 0.6.0 does not
+/// ship a Git branch asset. It follows the shared 24px viewBox, stroke-2,
+/// round-cap/round-join convention used by the other inline functional icons.
+const GIT_BRANCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="7" x2="6" y2="17"/><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><path d="M18 7v3a9 9 0 0 1-9 9H8"/></svg>"#;
+
 fn icon_name(kind: Icon) -> IconName {
     match kind {
         Icon::Search => IconName::Search,
@@ -110,6 +116,7 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Minimize => IconName::Minimize,
         Icon::More => IconName::Ellipsis,
         Icon::ArrowUpDown => IconName::ChevronsUpDown,
+        Icon::GitBranch => unreachable!("inline SVG icons are handled before mapping"),
         Icon::ChevronDown => IconName::ChevronDown,
         Icon::ChevronRight => IconName::ChevronRight,
         Icon::ArrowDown => IconName::ArrowDown,
@@ -153,6 +160,7 @@ pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
         Icon::DockMove => inline_icon(DOCK_MOVE_SVG, color),
         Icon::Hand => inline_icon(HAND_SVG, color),
         Icon::Shield => inline_icon(SHIELD_SVG, color),
+        Icon::GitBranch => inline_icon(GIT_BRANCH_SVG, color),
         _ => kit_icon(kind, color),
     }
 }

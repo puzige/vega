@@ -18,6 +18,7 @@ use vega_markdown::{ListItem, TableCell};
 
 type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
+mod branch_popup_upward;
 mod composer_actions;
 mod composer_counter;
 mod core_flow;
