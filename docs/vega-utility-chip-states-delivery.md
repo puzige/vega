@@ -133,3 +133,43 @@ constraint that makes the mounted row, rather than only a token, pass.
 - No global menu hover or selected-row colors were changed. The branch row
   width change is scoped to its virtualized list; the shared `menu_list` module
   was not modified.
+
+## Primary review and installed build
+
+Verified at `2026-09-16T15:58:43Z` / `2026-09-16T23:58:43+0800`, implementation
+commit `e40f625`. Primary independently reran the final tree (including the
+R19 test) and checked that its four-file diff hash matches the freeze above:
+
+| Command | Final result | Raw log |
+| --- | --- | --- |
+| `./scripts/cargo-lock.sh test --workspace` | 1213 passed, 9 ignored, 0 failed; 5 doctests passed | `/private/tmp/vega-utility-chips-workspace-review.log` |
+| `./scripts/cargo-lock.sh clippy --workspace --all-targets -- -D warnings` | exit 0 | `/private/tmp/vega-utility-chips-clippy-review.log` |
+| `cargo fmt --all -- --check` | exit 0 | `/private/tmp/vega-utility-chips-fmt-review.log` |
+| `./scripts/cargo-lock.sh xtask package` | exit 0 | `/private/tmp/vega-utility-chips-package-20260916.log` |
+
+Workspace log SHA-256: `7d3e5111e30dfcaec2d46522eb9e3fe4e8b75d9a4db082836f99f5bd1f3c40ac`.
+Clippy log SHA-256: `f2c7782f0b0ac68e987cea174d24333f71eebd7666d13ce07e52d79e18744a79`.
+Clippy has no lint errors; Cargo still emits the pre-existing dependency
+future-incompatibility notice for `block v0.1.6` (not a new task warning).
+
+Native light screenshots through the computer-use tool verified both chips
+at rest, each menu open, and each open chip retaining fill after clicking its
+menu search field (pointer away from trigger). Outside clicks closed the
+menus and restored transparent chips. The real branch list renders full-width
+surfaces with a trailing check. The installed build was reopened and its
+branch popup verified again. No project/branch was switched during native QA.
+Screenshots are inline evidence in this task, not separately exported files.
+Native move-only hover and native dark were NOT RUN; both hover and dark
+paint evidence comes from production GPUI tests, not native screenshots.
+
+Updated installed `Vega.app`; code signature verification passed. Executable
+SHA-256: `c6103e7a54507c141b9030842ea766d9a2ef75e0f2f3dc865ca4aaf7a8596810`.
+Recoverable previous bundle: `/private/tmp/vega-before-utility-chips.m4dupq/Vega.app`.
+No push or merge to master was performed.
+
+Changed implementation files: `crates/vega_theme/src/lib.rs`,
+`crates/vega_ui/src/branch_selector.rs`,
+`crates/vega_ui/src/conversation_stream/utility_bar.rs`, and its
+`tests/utility_bar.rs`. Specification/design synchronization is in
+`docs/vega-utility-chip-states.md`, `docs/vega-design-guidelines.md`, and
+`docs/vega-r49-composer-utility-bar.md`.
