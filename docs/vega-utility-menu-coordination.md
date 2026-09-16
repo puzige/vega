@@ -25,6 +25,9 @@ paint automatic logical candidate as keyboard focus. Actual arrow-key navigation
 must still show its target and activate the correct visible switchable branch.
 Filtering, refresh and open/close must not leak stale visual keyboard intent.
 Preserve controller authority, logical switchability, row colors and geometry.
+The first arrow action with no visual keyboard target reveals the logical
+candidate rather than skipping it; subsequent arrows perform the existing
+bounded walk. Enter keeps its existing logical candidate semantics.
 
 C2. Project and branch popups are mutually exclusive at production event
 boundaries in both directions. Clicking the other trigger takes one click:

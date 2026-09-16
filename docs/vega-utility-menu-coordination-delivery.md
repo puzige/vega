@@ -111,7 +111,31 @@ All three production reversals were restored before the green focused runs.
 
 ## Residuals
 
-- ACCEPTED: native macOS installation/visual acceptance remains parent-owned;
-  production test and painted-quad evidence are complete.
+- ACCEPTED: parent completed native macOS installation and visual acceptance
+  as recorded below; production test and painted-quad evidence are complete.
 - LIMIT: the workspace/clippy logs are retained under `/private/tmp`; the
   report records bounded command results rather than embedding full output.
+
+## Parent native acceptance and installation
+
+- Source implementation: `a10f11843f1916bfbbdd4d1d171c3b3651ee1875`.
+- Independently reran `./scripts/cargo-lock.sh test -p vega_ui
+  utility_menu_coordination -- --nocapture`: 4 passed, 0 failed.
+  Log: `/private/tmp/vega-menu-coordination-primary-focused.log`.
+- `./scripts/cargo-lock.sh xtask package`: passed.
+  Log: `/private/tmp/vega-menu-coordination-primary-package.log`.
+- Native candidate screenshots verified initial branch opening paints only
+  current `main`, direct branch → project → branch replaces its sibling,
+  and repeating the same trigger closes the menu.
+- Installed `/Applications/Vega.app`, then independently verified native
+  project → branch → project with screenshots after each click. Exactly one
+  popup remained; opening branch did not highlight the noncurrent row.
+  Outside click closed the remaining popup; composer stayed empty.
+- Native QA used light appearance; dark appearance was covered by production
+  painted-quad tests, not a separate native session. No Git branch was switched.
+- `codesign --verify --deep --strict /Applications/Vega.app`: passed.
+- Installed executable SHA-256:
+  `62928924b8a37cc2ae4e9bece2d8dabd1c660112a2fcffe56ccfe83e3d895112`.
+- Previous app preserved at
+  `/private/tmp/vega-before-menu-coordination.k6iBbI/Vega.app`.
+- Changes remain on `feat/branch-popup-upward`; no push or master merge.
