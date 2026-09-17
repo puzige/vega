@@ -2,12 +2,14 @@ use super::*;
 use std::{
     io::{Read, Write},
     net::TcpListener,
+    path::Path,
     thread,
     time::{Duration, Instant},
 };
 use vega_store::config::ProviderConfig;
 
 const KEY: &str = "synthetic-r14-loopback-only";
+const PI_KEY: &str = "fake-pi-agent-key-for-tests-only";
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -137,6 +139,264 @@ async fn finish_server(http: thread::JoinHandle<String>) -> String {
 
 fn valid_stream() -> String {
     "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into()
+}
+
+fn import_fixture() -> (
+    tempfile::TempDir,
+    ProviderSettingsService,
+    ProviderConfig,
+    std::path::PathBuf,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let config_path = root.path().join("vega").join("config.toml");
+    let pi_path = root.path().join("pi").join("models.json");
+    std::fs::create_dir_all(pi_path.parent().unwrap()).unwrap();
+    let provider = ProviderConfig {
+        enabled: false,
+        name: "cpa".into(),
+        base_url: "https://cpa.example.test/v1".into(),
+        key_ref: "cpa".into(),
+        models: vec!["glm-5.3-flash".into()],
+    };
+    AppConfig {
+        providers: vec![
+            provider.clone(),
+            ProviderConfig {
+                enabled: true,
+                name: "unrelated".into(),
+                base_url: "https://other.example.test/v1".into(),
+                key_ref: "unrelated".into(),
+                models: vec!["other-model".into()],
+            },
+        ],
+        ..Default::default()
+    }
+    .save_to(&config_path)
+    .unwrap();
+    vega_store::keystore::set_key(
+        root.path().join("vega").as_path(),
+        "unrelated",
+        "old-unrelated-fake-key",
+    )
+    .unwrap();
+    write_pi_source(
+        &pi_path,
+        serde_json::json!({
+            "providers": {
+                "cpa": {
+                    "api": "openai-completions",
+                    "baseUrl": provider.base_url.clone(),
+                    "apiKey": PI_KEY,
+                    "models": [{"id": "glm-5.3-flash"}]
+                },
+                "unrelated": {
+                    "api": "other-api",
+                    "baseUrl": "https://other.example.test/v1",
+                    "apiKey": "other-pi-fake-key",
+                    "models": [{"id": "other-model"}]
+                }
+            }
+        }),
+    );
+    let service = ProviderSettingsService::with_pi_models_path(config_path, pi_path.clone());
+    (root, service, provider, pi_path)
+}
+
+fn write_pi_source(path: &Path, document: serde_json::Value) {
+    std::fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+fn assert_config_unchanged(service: &ProviderSettingsService, before: &[u8]) {
+    assert_eq!(std::fs::read(&service.config_path).unwrap(), before);
+    assert!(!format!("{service:?}").contains(PI_KEY));
+}
+
+#[test]
+fn production_pi_import_stores_only_selected_credential_enables_provider_and_preserves_others() {
+    let (root, service, provider, pi_path) = import_fixture();
+    let source_before = std::fs::read(&pi_path).unwrap();
+    let saved = service.import_pi_credential(provider.clone()).unwrap();
+    assert!(saved.providers[0].enabled);
+    assert_eq!(saved.providers[0].models, provider.models);
+    assert_eq!(saved.providers[1].name, "unrelated");
+    assert!(saved.providers[1].enabled);
+    assert_eq!(saved.providers[1].models, ["other-model"]);
+    assert_eq!(saved.providers[1].key_ref, "unrelated");
+    assert_eq!(
+        vega_store::keystore::get_key(root.path().join("vega").as_path(), "cpa").unwrap(),
+        PI_KEY
+    );
+    assert_eq!(
+        vega_store::keystore::get_key(root.path().join("vega").as_path(), "unrelated").unwrap(),
+        "old-unrelated-fake-key"
+    );
+    assert!(
+        !std::fs::read_to_string(&service.config_path)
+            .unwrap()
+            .contains(PI_KEY)
+    );
+    assert_eq!(std::fs::read(&pi_path).unwrap(), source_before);
+    assert!(!format!("{saved:?}").contains(PI_KEY));
+}
+
+#[test]
+fn production_pi_import_rejects_stale_snapshot_without_mutation() {
+    let (root, service, provider, _pi_path) = import_fixture();
+    let before = std::fs::read(&service.config_path).unwrap();
+    let mut changed = service.load().unwrap();
+    changed.providers[0].models = vec!["changed-model".into()];
+    changed.save_to(&service.config_path).unwrap();
+    let current = std::fs::read(&service.config_path).unwrap();
+    assert_eq!(
+        service.import_pi_credential(provider),
+        Err(ProviderSettingsError::Conflict)
+    );
+    assert_eq!(std::fs::read(&service.config_path).unwrap(), current);
+    assert_eq!(
+        vega_store::keystore::get_key(root.path().join("vega").as_path(), "cpa"),
+        Err(vega_store::keystore::Error::Missing)
+    );
+    assert_ne!(before, current);
+}
+
+#[test]
+fn production_pi_import_rejects_selected_entry_validation_failures_without_mutation() {
+    let cases = [
+        (
+            "missing-key",
+            serde_json::json!({
+                "api": "openai-completions",
+                "baseUrl": "https://cpa.example.test/v1",
+                "models": [{"id": "glm-5.3-flash"}]
+            }),
+        ),
+        (
+            "wrong-api",
+            serde_json::json!({
+                "api": "anthropic-messages",
+                "baseUrl": "https://cpa.example.test/v1",
+                "apiKey": PI_KEY,
+                "models": [{"id": "glm-5.3-flash"}]
+            }),
+        ),
+        (
+            "wrong-url",
+            serde_json::json!({
+                "api": "openai-completions",
+                "baseUrl": "https://wrong.example.test/v1",
+                "apiKey": PI_KEY,
+                "models": [{"id": "glm-5.3-flash"}]
+            }),
+        ),
+        (
+            "no-shared-model",
+            serde_json::json!({
+                "api": "openai-completions",
+                "baseUrl": "https://cpa.example.test/v1",
+                "apiKey": PI_KEY,
+                "models": [{"id": "different-model"}]
+            }),
+        ),
+    ];
+    for (label, selected) in cases {
+        let (_root, service, provider, pi_path) = import_fixture();
+        let before = std::fs::read(&service.config_path).unwrap();
+        write_pi_source(
+            &pi_path,
+            serde_json::json!({"providers": {"cpa": selected}}),
+        );
+        let error = service.import_pi_credential(provider).unwrap_err();
+        assert_eq!(error, ProviderSettingsError::Invalid, "{label}");
+        assert_config_unchanged(&service, &before);
+        assert!(!format!("{error:?} {error}").contains(PI_KEY));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn production_pi_import_rejects_missing_oversized_symlink_nonregular_and_insecure_sources() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let (_root, service, provider, pi_path) = import_fixture();
+    let before = std::fs::read(&service.config_path).unwrap();
+    std::fs::remove_file(&pi_path).unwrap();
+    assert_eq!(
+        service.import_pi_credential(provider.clone()),
+        Err(ProviderSettingsError::PiSource)
+    );
+    assert_config_unchanged(&service, &before);
+
+    let target = pi_path.with_extension("target");
+    write_pi_source(&target, serde_json::json!({"providers": {}}));
+    symlink(&target, &pi_path).unwrap();
+    assert_eq!(
+        service.import_pi_credential(provider.clone()),
+        Err(ProviderSettingsError::PiSource)
+    );
+    std::fs::remove_file(&pi_path).unwrap();
+
+    std::fs::create_dir(&pi_path).unwrap();
+    assert_eq!(
+        service.import_pi_credential(provider.clone()),
+        Err(ProviderSettingsError::PiSource)
+    );
+    std::fs::remove_dir(&pi_path).unwrap();
+
+    std::fs::write(&pi_path, vec![b'x'; PI_MODELS_MAX_BYTES as usize + 1]).unwrap();
+    std::fs::set_permissions(&pi_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        service.import_pi_credential(provider.clone()),
+        Err(ProviderSettingsError::PiSource)
+    );
+
+    write_pi_source(
+        &pi_path,
+        serde_json::json!({"providers": {"cpa": {
+            "api": "openai-completions",
+            "baseUrl": "https://cpa.example.test/v1",
+            "apiKey": PI_KEY,
+            "models": [{"id": "glm-5.3-flash"}]
+        }}}),
+    );
+    std::fs::set_permissions(&pi_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        service.import_pi_credential(provider),
+        Err(ProviderSettingsError::PiSource)
+    );
+    assert_config_unchanged(&service, &before);
+}
+
+#[test]
+fn production_pi_import_rolls_back_key_when_config_save_fails() {
+    let (root, service, provider, _pi_path) = import_fixture();
+    let config_before = std::fs::read(&service.config_path).unwrap();
+    vega_store::keystore::set_key(
+        root.path().join("vega").as_path(),
+        "cpa",
+        "old-cpa-fake-key",
+    )
+    .unwrap();
+    std::fs::create_dir(service.config_path.with_extension("toml.tmp")).unwrap();
+    assert_eq!(
+        service.import_pi_credential(provider),
+        Err(ProviderSettingsError::Config)
+    );
+    assert_eq!(std::fs::read(&service.config_path).unwrap(), config_before);
+    assert_eq!(
+        vega_store::keystore::get_key(root.path().join("vega").as_path(), "cpa").unwrap(),
+        "old-cpa-fake-key"
+    );
+    std::fs::remove_dir(service.config_path.with_extension("toml.tmp")).unwrap();
+    assert!(
+        !std::fs::read_to_string(&service.config_path)
+            .unwrap()
+            .contains(PI_KEY)
+    );
 }
 
 #[tokio::test]

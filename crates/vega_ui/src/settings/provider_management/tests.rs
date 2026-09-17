@@ -3,6 +3,8 @@ use gpui_kit::{
     Bounds, TestAppContext, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, size,
 };
 use std::io::{Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Harness(Entity<SettingsView>);
 impl Render for Harness {
@@ -405,4 +407,168 @@ async fn pointer_stop_clears_pending_connection_projection(cx: &mut TestAppConte
             && view.provider_management.statuses.is_empty()
             && view.provider_management.cancel.is_none())
     );
+}
+
+fn write_test_pi_source(path: &std::path::Path, body: serde_json::Value) {
+    std::fs::write(path, serde_json::to_vec(&body).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+fn mounted_pi_fixture(
+    cx: &mut TestAppContext,
+    source_exists: bool,
+) -> (
+    tempfile::TempDir,
+    Entity<SettingsView>,
+    WindowHandle<Harness>,
+    ProviderConfig,
+    std::path::PathBuf,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.toml");
+    let pi_path = root.path().join("pi-models.json");
+    let provider = ProviderConfig {
+        enabled: false,
+        name: "cpa".into(),
+        base_url: "https://cpa.example.test/v1".into(),
+        models: vec!["glm-5.3-flash".into()],
+        key_ref: "cpa".into(),
+    };
+    AppConfig {
+        providers: vec![provider.clone()],
+        ..Default::default()
+    }
+    .save_to(&path)
+    .unwrap();
+    if source_exists {
+        write_test_pi_source(
+            &pi_path,
+            serde_json::json!({"providers": {"cpa": {
+                "api": "openai-completions",
+                "baseUrl": "https://cpa.example.test/v1",
+                "apiKey": "fake-pi-agent-ui-key",
+                "models": [{"id": "glm-5.3-flash"}]
+            }}}),
+        );
+    }
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(|cx| SettingsView::from_path(Some(path), cx));
+    let window = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1280.), px(750.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|_| Harness(view.clone())),
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    click(cx, window, "settings-nav-providers");
+    view.update(cx, |view, _| {
+        view.pi_models_path = Some(pi_path.clone());
+    });
+    cx.run_until_parked();
+    (root, view, window, provider, pi_path)
+}
+
+#[gpui_kit::test]
+async fn mounted_pi_import_has_explicit_reachable_action_and_idle_does_not_read_source(
+    cx: &mut TestAppContext,
+) {
+    let (_root, view, window, _provider, pi_path) = mounted_pi_fixture(cx, true);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("provider-import-pi").is_some());
+    assert!(view.read_with(cx, |view, cx| {
+        view.provider_management.message.is_none() && view.key_input.read(cx).text().is_empty()
+    }));
+    assert!(std::fs::metadata(pi_path).is_ok());
+}
+
+#[gpui_kit::test]
+async fn mounted_pi_import_success_shows_setup_status_enables_provider_and_keeps_key_blank(
+    cx: &mut TestAppContext,
+) {
+    let (root, view, window, provider, _pi_path) = mounted_pi_fixture(cx, true);
+    let events = Arc::new(AtomicUsize::new(0));
+    let events_copy = events.clone();
+    cx.update(|cx| {
+        cx.subscribe(&view, move |_, _: &SettingsSaved, _| {
+            events_copy.fetch_add(1, Ordering::SeqCst);
+        })
+        .detach();
+    });
+    click(cx, window, "provider-import-pi");
+    assert!(view.read_with(cx, |view, cx| {
+        view.provider_management
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("已从 Pi Agent 导入凭据"))
+            && view.key_input.read(cx).text().is_empty()
+            && view.available_key_refs.contains(&provider.key_ref)
+    }));
+    let saved = config::read_from(&root.path().join("config.toml")).unwrap();
+    assert!(saved.providers[0].enabled);
+    assert_eq!(events.load(Ordering::SeqCst), 1);
+    assert!(
+        !std::fs::read_to_string(root.path().join("config.toml"))
+            .unwrap()
+            .contains("fake-pi-agent-ui-key")
+    );
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("provider-import-status").is_some());
+}
+
+#[gpui_kit::test]
+async fn mounted_pi_import_failure_is_visible_and_does_not_enable_provider(
+    cx: &mut TestAppContext,
+) {
+    let (root, view, window, _provider, _pi_path) = mounted_pi_fixture(cx, false);
+    click(cx, window, "provider-import-pi");
+    assert!(view.read_with(cx, |view, cx| {
+        view.provider_management
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains("导入凭据失败"))
+            && view.key_input.read(cx).text().is_empty()
+    }));
+    let saved = config::read_from(&root.path().join("config.toml")).unwrap();
+    assert!(!saved.providers[0].enabled);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("provider-import-status").is_some());
+}
+
+#[gpui_kit::test]
+async fn mounted_pi_import_in_progress_disables_action(cx: &mut TestAppContext) {
+    let (root, view, window, _provider, _pi_path) = mounted_pi_fixture(cx, true);
+    view.update(cx, |view, cx| {
+        view.provider_management.saving = true;
+        view.provider_management.message = Some("正在从 Pi Agent 导入凭据…".into());
+        cx.notify();
+    });
+    cx.run_until_parked();
+    click(cx, window, "provider-import-pi");
+    assert!(view.read_with(cx, |view, _| {
+        view.provider_management.saving
+            && view
+                .provider_management
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("正在从 Pi Agent"))
+    }));
+    let saved = config::read_from(&root.path().join("config.toml")).unwrap();
+    assert!(!saved.providers[0].enabled);
 }

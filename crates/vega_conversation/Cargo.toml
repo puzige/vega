@@ -3,6 +3,11 @@ name = "vega_conversation"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Enables only owned test fixtures to inject a temporary Pi models source.
+# Production callers always resolve the fixed `$HOME/.pi/agent/models.json`.
+test-support = []
+
 [dependencies]
 vega_store = { workspace = true }
 vega_runtime = { workspace = true }
