@@ -182,10 +182,10 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 - Composer 是单个主表面：增长输入区在上，一行真实操作在下；不要再套多层卡片或装饰性工具栏。
 - 当前壳层使用 max-width 736px、min-height 100px、radius 20px、底部 inset 16px。
-- utility bar（R49）：**仅新建任务页渲染** —— 有项目上下文且当前会话无消息时，卡片上方多一条 utility bar；已发出第一条消息的会话页只渲染卡片本体，谓词必须是真实渲染可见性，不得用 `hidden()` 或零高度占位。bar 只做两格（文件夹 / 分支），Codex 的 `Local`（执行环境）不移植、不占位、不置灰。
+- utility bar（R49；无项目草稿由 A8-01 取代）：**新建任务草稿始终渲染** —— 即使未选择项目，也显示可选项目的文件夹 chip；有真实 Git 项目时再显示分支 chip。已发出第一条消息的会话页只渲染卡片本体，谓词必须是真实渲染可见性，不得用 `hidden()` 或零高度占位。最多两格（文件夹 / 分支），Codex 的 `Local`（执行环境）不移植、不占位、不置灰。
 - utility bar 几何：保留 R49 的 bar 高 37px、相对卡片左右各内缩 19px 并共用卡片中轴、顶部圆角 12px 而底部无圆角；bar 底边与卡片顶边**零重叠**（`bar bottom == card top`），靠父列顺序堆叠形成「标签页压在卡片上」的层叠观感，不使用负 margin。2026-09-16 用户要求收紧两个 chip：边界间距由 28px 改为 8px，首个 chip 距 bar 左缘仍为 14.5px。
 - utility bar chip 样式（取代 R49 对触发器的旧定义）：两个触发器均高 28px、水平 padding 8px、全胶囊；保留 `icon(16px, text_secondary)` + `label(Typography::SIDEBAR, text_primary)`、内部 `gap_2`。静止无边框且底色透明；hover 或对应菜单打开时显示专用主题覆盖色，文字和图标不参与透明度变化；关闭并移走指针后恢复透明。浅色覆盖色为 Vega 自主选定的 `#DBDBDB × 0.6`，叠在 `#FAF9F9` 上约为 `#E7E7E7`；深色为白色 × 0.10，叠在 `#191919` 上约为 `#303030`。分支保留 GitBranch 图标。文件夹 chip tooltip「切换项目」、分支 chip tooltip「切换分支」。这些为产品目标，不代表第三方内部实现。详见 [utility chip states](vega-utility-chip-states.md)；非 composer 的 R19 带框触发器不变。
-- 文件夹 chip 打开项目下拉（列出 sidebar 已有项目），选中后写共享 `SelectedProject` 并 `refresh_windows`；复用既有项目数据源，不新建数据管道。分支 chip 复用既有 `BranchSelector`（open/close/切换/pending/错误码/focus/滚动语义不变），仅由挂载点切换 trigger chrome（`set_chip_chrome`），非 git 项目按既有 `NonGit` 语义隐藏。
+- 文件夹 chip 打开项目下拉（列出 sidebar 已有项目）；无项目草稿显示「选择项目」。选中、切换或解除项目时，草稿绑定及 Composer/分支上下文必须与共享 `SelectedProject` 同步，不得只换全局选择而留下旧任务绑定；复用既有项目数据源，不新建数据管道。分支 chip 复用既有 `BranchSelector`（open/close/切换/pending/错误码/focus/滚动语义不变），仅由挂载点切换 trigger chrome（`set_chip_chrome`），非 git 项目按既有 `NonGit` 语义隐藏。详见 [A8-01](vega-a8-composer-project-entry.md)。
 - Context、mode、permission、model、thinking 与 send/stop 必须连接已有 controller 和 guard。状态缺失时隐藏或禁用，不造假。
 - 不显示装饰性的 token/cost 仪表。成本信息只在有真实账单/计数来源的产品位置展示。
 - 默认使用实色语义表面。玻璃、blur、Web `data-composer-*` 变体和单行 44px 胶囊不属于当前 GPUI 契约；若产品确需新增，必须单独 spec。
@@ -277,6 +277,8 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 本文件不以“搬运更多 token”为目标；只有被 Vega 产品需要、能形成语义、可由实现和测试约束的值，才进入设计系统。
 
 ## 15. 变更记录
+
+- A8-01 (2026-09-17)：新建草稿在无项目时也显示 Composer 项目 chip；项目切换必须同步草稿和控制器，移除单独的「添加项目文件夹以开始…」首页引导。详见 [Composer project entry](vega-a8-composer-project-entry.md)。
 
 - v1.33 (2026-09-15)：R69 首页常驻真实 Composer：无打开任务时不再渲染静态占位卡片「新建任务并开始输入…」，改为直接渲染真实 `ConversationStream`（含 R49 utility bar 与 R57 底行），其任务为**未持久化的惰性草稿**，首次提交才落库；侧栏「新建任务」与 ⌘N 改为导航到该草稿路由，不再急切 INSERT（消除 `未命名任务` 堆积）。Composer 几何（736/100/28/20）、utility bar 几何、底行结构与配色全部不变。详见 [R69 Home lazy draft composer](vega-r69-home-lazy-draft-composer.md)。
 

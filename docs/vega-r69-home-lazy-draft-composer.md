@@ -1,5 +1,7 @@
 # R69 · 首页常驻真实 Composer + 惰性草稿任务（规格冻结）
 
+2026-09-17 局部取代：R13 中「无项目不显示 utility bar」的前提及 R15 的独立项目文件夹引导已由 [A8-01 Composer project entry](vega-a8-composer-project-entry.md) 取代；惰性草稿、稳定 ID、首次提交物化和真实 Composer 的其余契约保持不变。
+
 > 状态：**SPEC FROZEN**
 > 基线：`master @ 1c62455`
 > 来源：用户 2026-09-15 实机截图 + 口头诉求「把这个特性给它移除掉」
