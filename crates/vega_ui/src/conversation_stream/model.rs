@@ -697,6 +697,8 @@ pub(crate) enum StreamEntry {
     Assistant {
         stream: Box<MarkdownStream>,
         model: StreamModel,
+        /// Bounded terminal reason; never contains a provider response body.
+        failure: Option<RunFailureKind>,
     },
     /// One audited tool card. Expansion adds fixed-height virtual rows.
     Tool { card: Entity<ToolCard> },
@@ -715,7 +717,9 @@ impl StreamEntry {
     pub(crate) fn row_count(&self, cx: &App) -> usize {
         match self {
             StreamEntry::User { lines } => lines.len(),
-            StreamEntry::Assistant { model, .. } => model.row_count(),
+            StreamEntry::Assistant { model, failure, .. } => {
+                model.row_count() + usize::from(failure.is_some())
+            }
             StreamEntry::Tool { card } => card.read(cx).row_count(),
             StreamEntry::Artifact { card } => card.read(cx).row_count(),
             StreamEntry::Permission { card } => card.read(cx).row_count(),

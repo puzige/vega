@@ -372,6 +372,7 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
             pending_approved_instruction: None,
             started: std::time::Instant::now(),
             terminal_message_id: None,
+            terminal_failure: None,
         });
     });
     failure_stream.update(cx, |stream, cx| {

@@ -41,7 +41,7 @@ pub(crate) fn render_entry(
     let colors = theme(cx).colors;
     let item = match entry {
         StreamEntry::User { lines } => user_message_item(lines, &colors),
-        StreamEntry::Assistant { model, .. } => markdown_item(model, &colors),
+        StreamEntry::Assistant { model, failure, .. } => markdown_item(model, *failure, &colors),
         StreamEntry::Tool { card } => {
             let card = card.clone();
             let row_count = card.read(cx).row_count();
@@ -116,7 +116,11 @@ fn card_rows_item(row_count: usize, mut render_row: impl FnMut(usize) -> AnyElem
 
 /// One assistant markdown turn as one natural-height item: each materialized
 /// block renders at its own natural height (text wraps, C4 禁截断).
-pub(crate) fn markdown_item(model: &StreamModel, colors: &ThemeColors) -> AnyElement {
+pub(crate) fn markdown_item(
+    model: &StreamModel,
+    failure: Option<RunFailureKind>,
+    colors: &ThemeColors,
+) -> AnyElement {
     div()
         .w_full()
         .flex_shrink_0()
@@ -131,6 +135,14 @@ pub(crate) fn markdown_item(model: &StreamModel, colors: &ThemeColors) -> AnyEle
                 .chain(model.pending_lines.iter())
                 .map(|line| render_line(line, colors)),
         )
+        .children(failure.map(|reason| {
+            div()
+                .debug_selector(|| "assistant-run-failure".to_string())
+                .py_1()
+                .text_size(px(Typography::METADATA))
+                .text_color(colors.danger)
+                .child(reason.message())
+        }))
         .into_any_element()
 }
 

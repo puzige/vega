@@ -464,6 +464,7 @@ impl VegaWindow {
                         let ActiveAgentRun {
                             pending_user_content: pending_user,
                             pending_approved_instruction,
+                            terminal_failure,
                             ..
                         } = finished_run;
                         let approved_not_started = pending_approved_instruction.is_some();
@@ -526,7 +527,13 @@ impl VegaWindow {
                             && reference_failure.is_none()
                             && !credential_failure
                         {
-                            stream.update(cx, ConversationStream::apply_agent_error);
+                            stream.update(cx, |stream, cx| {
+                                if let Some(failure) = terminal_failure {
+                                    stream.apply_agent_runtime_error(failure, cx);
+                                } else {
+                                    stream.apply_agent_error(cx);
+                                }
+                            });
                         }
                         if let Some(pending) = pending_review {
                             this.review_plan(pending.stream, &pending.request, cx);

@@ -52,7 +52,7 @@ impl Render for FilePreview {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = theme(cx).colors;
         let body = if let Some(model) = &self.markdown {
-            crate::conversation_stream::markdown_item(model, &colors)
+            crate::conversation_stream::markdown_item(model, None, &colors)
         } else {
             div()
                 .font_family("Menlo")

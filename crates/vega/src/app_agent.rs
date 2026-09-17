@@ -109,6 +109,9 @@ pub(crate) struct ActiveAgentRun {
     /// (S7-T40 summary projection key; `None` when the run failed before a
     /// message ever started).
     pub(crate) terminal_message_id: Option<String>,
+    /// Safe, run-owned terminal diagnosis. The raw provider body remains in
+    /// the ephemeral event and is never copied to this controller state.
+    pub(crate) terminal_failure: Option<RunFailureKind>,
 }
 
 pub(crate) enum AgentBatchIngress {
@@ -345,6 +348,7 @@ impl AppAgentController {
             pending_approved_instruction,
             started: Instant::now(),
             terminal_message_id: None,
+            terminal_failure: None,
         });
         (generation, cancel)
     }
@@ -386,20 +390,25 @@ impl AppAgentController {
         stream: &Entity<ConversationStream>,
         event: &ConversationEvent,
     ) {
-        let message_id = match event {
-            ConversationEvent::MessageFinished { message_id, .. } => message_id,
-            ConversationEvent::Interrupted { message_id } => message_id,
-            ConversationEvent::Error {
-                message_id: Some(message_id),
-                ..
-            } => message_id,
+        let (message_id, failure) = match event {
+            ConversationEvent::MessageFinished { message_id, .. }
+            | ConversationEvent::Interrupted { message_id } => (Some(message_id), None),
+            ConversationEvent::Error { message_id, error } => (
+                message_id.as_ref(),
+                Some(RunFailureKind::from_runtime(error)),
+            ),
             _ => return,
         };
         if !self.matches(generation, thread_id, stream) {
             return;
         }
         if let Some(active) = self.active.as_mut() {
-            active.terminal_message_id = Some(message_id.clone());
+            if let Some(message_id) = message_id {
+                active.terminal_message_id = Some(message_id.clone());
+            }
+            if let Some(failure) = failure {
+                active.terminal_failure = Some(failure);
+            }
         }
     }
 
@@ -586,7 +595,7 @@ pub(crate) fn run_agent_worker(
     worker_start_probe.record();
     let mut reference_failure = None;
     let mut credential_failure = false;
-    let success = (|| -> Result<(), ()> {
+    let success = (|| -> Result<bool, ()> {
         // Config and local credential storage are touched only after an explicit user submit
         // or committed Plan approval reaches this worker.
         let tools = vega_tools::Tools::new(&project_path).map_err(|_| ())?;
@@ -750,9 +759,9 @@ pub(crate) fn run_agent_worker(
                 )
             }
         };
-        result.map(|_| ()).map_err(|_| ())
+        Ok(result.is_ok_and(|run| !run.failed))
     })()
-    .is_ok();
+    .unwrap_or(false);
     let _ = sender.send(AgentUpdate::Finished {
         success,
         reference_failure,

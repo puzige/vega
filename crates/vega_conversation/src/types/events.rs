@@ -11,6 +11,90 @@ pub enum ConversationStopReason {
     ToolLimit,
 }
 
+/// Content-free explanation of a failed run. The provider's raw diagnostic
+/// may contain arbitrary response text, so only an allowlisted error code or
+/// HTTP metadata is allowed to cross into rendered conversation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunFailureKind {
+    /// The provider explicitly reported an exhausted account quota.
+    ProviderQuota,
+    /// The provider rejected the local credential or account permissions.
+    ProviderAuthorization,
+    /// The provider rate-limited this request.
+    ProviderRateLimited,
+    /// Another HTTP response rejected the request.
+    ProviderHttp(u16),
+    /// No HTTP response was received.
+    ProviderTransport,
+    /// An in-process runtime error rather than a provider HTTP failure.
+    Runtime,
+    /// A durable failed row whose original reason was not persisted.
+    Persisted,
+}
+
+impl RunFailureKind {
+    /// Reduces the typed runtime error without retaining or displaying its
+    /// provider-supplied body. A quota diagnosis requires the exact structured
+    /// code in an HTTP 400 response; free-form prose is never trusted.
+    pub fn from_runtime(error: &vega_runtime::VegaError) -> Self {
+        match error {
+            vega_runtime::VegaError::Provider {
+                status: Some(400),
+                message,
+                ..
+            } if provider_has_quota_code(message) => Self::ProviderQuota,
+            vega_runtime::VegaError::Provider {
+                status: Some(401 | 403),
+                ..
+            } => Self::ProviderAuthorization,
+            vega_runtime::VegaError::Provider {
+                status: Some(429), ..
+            } => Self::ProviderRateLimited,
+            vega_runtime::VegaError::Provider {
+                status: Some(status),
+                ..
+            } => Self::ProviderHttp(*status),
+            vega_runtime::VegaError::Provider { status: None, .. } => Self::ProviderTransport,
+            _ => Self::Runtime,
+        }
+    }
+
+    /// Actionable text made entirely from local vocabulary and HTTP metadata.
+    pub fn message(self) -> String {
+        match self {
+            Self::ProviderQuota => {
+                "供应商额度不足；请充值或在设置 → Providers 切换可用供应商后重试".into()
+            }
+            Self::ProviderAuthorization => {
+                "供应商拒绝了凭据或账号权限；请在设置 → Providers 检查 API Key 后重试".into()
+            }
+            Self::ProviderRateLimited => "供应商限流；请稍后重试或切换可用供应商".into(),
+            Self::ProviderHttp(status) => {
+                format!("供应商请求失败（HTTP {status}）；请检查供应商状态、模型和额度后重试")
+            }
+            Self::ProviderTransport => "无法连接供应商；请检查网络和供应商地址后重试".into(),
+            Self::Runtime => "任务执行失败；请检查运行环境后重试".into(),
+            Self::Persisted => "这条回复执行失败；请检查供应商状态、额度或运行环境后重试".into(),
+        }
+    }
+}
+
+fn provider_has_quota_code(message: &str) -> bool {
+    // OpenAiProvider prefixes a bounded response snippet with `...): `.
+    // Parsing only the JSON body avoids interpreting arbitrary prose (or a
+    // secret that happens to contain the marker) as a quota error.
+    let Some((_, body)) = message.split_once("): ") else {
+        return false;
+    };
+    let Ok(response) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    response
+        .pointer("/error/code")
+        .and_then(|code| code.as_str())
+        == Some("insufficient_user_quota")
+}
+
 /// Runtime-to-UI/store unique event stream (tech-spec §3).
 #[derive(Clone)]
 pub enum ConversationEvent {
@@ -371,4 +455,73 @@ pub(crate) fn invalid_tool_code(code: vega_tools::MutationErrorCode) -> Option<I
         | Code::CodecInvalid
         | Code::PreparedScopeMismatch => return None,
     })
+}
+
+#[cfg(test)]
+mod run_failure_tests {
+    use super::RunFailureKind;
+    use vega_runtime::VegaError;
+
+    fn provider(status: Option<u16>, message: &str) -> VegaError {
+        VegaError::Provider {
+            status,
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
+    #[test]
+    fn quota_needs_exact_structured_code_and_never_projects_response_body() {
+        const SENTINEL: &str = "PRIVATE_RESPONSE_AND_KEY_SENTINEL";
+        let error = provider(
+            Some(400),
+            &format!(
+                "chat/completions request failed (HTTP 400): {{\"error\":{{\"code\":\"insufficient_user_quota\",\"message\":\"{SENTINEL}\"}}}}"
+            ),
+        );
+        let kind = RunFailureKind::from_runtime(&error);
+        assert_eq!(kind, RunFailureKind::ProviderQuota);
+        assert!(kind.message().contains("额度不足"));
+        assert!(!kind.message().contains(SENTINEL));
+
+        let spoofed = provider(
+            Some(400),
+            "chat/completions request failed (HTTP 400): insufficient_user_quota PRIVATE_RESPONSE_AND_KEY_SENTINEL",
+        );
+        assert_eq!(
+            RunFailureKind::from_runtime(&spoofed),
+            RunFailureKind::ProviderHttp(400)
+        );
+        assert!(
+            !RunFailureKind::from_runtime(&spoofed)
+                .message()
+                .contains(SENTINEL)
+        );
+    }
+
+    #[test]
+    fn provider_and_runtime_failure_categories_keep_only_safe_metadata() {
+        for (status, expected) in [
+            (Some(401), RunFailureKind::ProviderAuthorization),
+            (Some(403), RunFailureKind::ProviderAuthorization),
+            (Some(429), RunFailureKind::ProviderRateLimited),
+            (Some(503), RunFailureKind::ProviderHttp(503)),
+            (None, RunFailureKind::ProviderTransport),
+        ] {
+            let kind = RunFailureKind::from_runtime(&provider(status, "SECRET_SENTINEL"));
+            assert_eq!(kind, expected);
+            assert!(!kind.message().contains("SECRET_SENTINEL"));
+        }
+        assert_eq!(
+            RunFailureKind::from_runtime(&VegaError::ReasoningSelectionInvalid {
+                message: "SECRET_SENTINEL".into(),
+            }),
+            RunFailureKind::Runtime
+        );
+        assert!(
+            !RunFailureKind::Runtime
+                .message()
+                .contains("SECRET_SENTINEL")
+        );
+    }
 }

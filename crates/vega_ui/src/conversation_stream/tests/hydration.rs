@@ -1,6 +1,58 @@
 use super::*;
 
 #[gpui_kit::test]
+async fn failed_empty_assistant_hydrates_a_visible_safe_reason(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "failed-history-thread");
+    stream.update(cx, |stream, cx| {
+        stream.apply_history_page(
+            hydration_page(
+                vec![
+                    hydration_user(1, "hi"),
+                    HistoryEntry::AssistantText {
+                        seq: 2,
+                        message_id: "failed-answer".into(),
+                        content: String::new(),
+                        status: vega_conversation::history::AssistantStatus::Failed,
+                    },
+                    HistoryEntry::AssistantText {
+                        seq: 3,
+                        message_id: "completed-answer".into(),
+                        content: "done".into(),
+                        status: vega_conversation::history::AssistantStatus::Done,
+                    },
+                ],
+                None,
+            ),
+            cx,
+        );
+    });
+    let (failed, completed, rows) = stream.read_with(cx, |stream, cx| {
+        let failed = match &stream.entries[1] {
+            StreamEntry::Assistant { failure, .. } => *failure,
+            _ => panic!("failed assistant is not in sequence"),
+        };
+        let completed = match &stream.entries[2] {
+            StreamEntry::Assistant { failure, .. } => *failure,
+            _ => panic!("completed assistant is not in sequence"),
+        };
+        (failed, completed, stream.entries[1].row_count(cx))
+    });
+    assert_eq!(failed, Some(RunFailureKind::Persisted));
+    assert_eq!(completed, None);
+    assert_eq!(
+        rows, 1,
+        "the empty failed turn still occupies a visible row"
+    );
+    assert!(!RunFailureKind::Persisted.message().contains("额度不足"));
+    cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert!(
+        visual.debug_bounds("assistant-run-failure").is_some(),
+        "the failed status is mounted in the rendered transcript"
+    );
+}
+
+#[gpui_kit::test]
 async fn hydrated_page_fills_durable_entries_in_sequence_position(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "hydration-thread");
     stream.update(cx, |stream, cx| {

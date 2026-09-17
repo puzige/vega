@@ -93,6 +93,7 @@ impl ConversationStream {
         self.entries.push(StreamEntry::Assistant {
             stream: Box::new(MarkdownStream::new()),
             model: StreamModel::default(),
+            failure: None,
         });
         self.list_append(entry_index);
         self.injecting = Some(InjectionState {

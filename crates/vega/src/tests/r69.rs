@@ -1148,6 +1148,158 @@ async fn a7_repaired_readiness_submits_retained_draft_once(cx: &mut gpui_kit::Te
     );
 }
 
+/// A7-03: the production home Composer accepts the first message, the
+/// provider rejects it, and both the live transcript and composer explain
+/// the durable failed turn without echoing the untrusted response body.
+#[gpui_kit::test]
+async fn a7_first_submit_provider_quota_failure_is_visible_and_durable(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    const SENTINEL: &str = "PRIVATE_PROVIDER_BODY_SENTINEL";
+    let f = DraftFixture::home(cx, true);
+    let draft_id = f.draft(cx).id;
+    let failed_provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::Error {
+            status: Some(400),
+            message: format!(
+                "chat/completions request failed (HTTP 400): {{\"error\":{{\"code\":\"insufficient_user_quota\",\"message\":\"{SENTINEL}\"}}}}"
+            ),
+            retryable: false,
+        },
+    ]));
+    f.root.update(cx, |root, _| {
+        root.agent_provider_override = Some(failed_provider.clone());
+    });
+
+    f.submit("hi", cx);
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1
+                && root.agent_controller.active.is_none()
+                && failed_provider.requests().len() == 1
+        })
+    });
+    let stream = f.stream(cx);
+    let visible = stream
+        .read_with(cx, |stream, _| stream.controller_error_message())
+        .expect("quota failure is visible after app refresh");
+    assert!(visible.contains("额度不足"), "wrong failure: {visible}");
+    assert!(visible.contains("设置 → Providers"));
+    assert!(!visible.contains(SENTINEL));
+    assert!(!visible.contains("本地凭据缺失"));
+    f.bounds("assistant-run-failure", cx);
+    assert_eq!(f.thread_rows(), 1, "post-start failure retains its task");
+    let store = f.store();
+    let (status, content): (String, String) = store
+        .conn()
+        .query_row(
+            "SELECT status, content FROM messages WHERE thread_id = ?1 AND role = 'assistant' ORDER BY seq DESC LIMIT 1",
+            [&draft_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("durable assistant result");
+    assert_eq!(status, "failed");
+    assert!(
+        content.is_empty(),
+        "a provider failure emitted no fake reply"
+    );
+    let history = vega_conversation::history::restart_history_page(&store, &draft_id, 200)
+        .expect("typed restart projection");
+    assert!(history.entries.iter().any(|entry| matches!(
+        entry,
+        vega_conversation::history::HistoryEntry::AssistantText {
+            status: vega_conversation::history::AssistantStatus::Failed,
+            ..
+        }
+    )));
+}
+
+/// A7-03: an arbitrary provider body never becomes user-visible text when
+/// the response lacks the exact allowlisted quota code.
+#[gpui_kit::test]
+async fn a7_provider_http_failure_uses_safe_fallback(cx: &mut gpui_kit::TestAppContext) {
+    let f = DraftFixture::home(cx, true);
+    let failed_provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::Error {
+            status: Some(503),
+            message: "PRIVATE_PROVIDER_BODY_SENTINEL".into(),
+            retryable: false,
+        },
+    ]));
+    f.root.update(cx, |root, _| {
+        root.agent_provider_override = Some(failed_provider.clone());
+    });
+    f.submit("status fallback", cx);
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1
+                && root.agent_controller.active.is_none()
+                && failed_provider.requests().len() == 1
+        })
+    });
+    let visible = f
+        .stream(cx)
+        .read_with(cx, |stream, _| stream.controller_error_message())
+        .expect("provider status is visible");
+    assert!(visible.contains("HTTP 503"));
+    assert!(!visible.contains("PRIVATE_PROVIDER_BODY_SENTINEL"));
+    assert!(!visible.contains("额度不足"));
+    f.bounds("assistant-run-failure", cx);
+}
+
+/// A7-03: an out-of-order error is not allowed to terminate or annotate the
+/// current assistant message. The event still belongs to the prior run only.
+#[gpui_kit::test]
+async fn a7_foreign_runtime_error_cannot_mark_current_turn(cx: &mut gpui_kit::TestAppContext) {
+    let f = DraftFixture::home(cx, true);
+    let stream = f.stream(cx);
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: "current".into(),
+                seq: 1,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::Error {
+                message_id: Some("foreign".into()),
+                error: Arc::new(vega_runtime::VegaError::Provider {
+                    status: Some(503),
+                    message: "PRIVATE_PROVIDER_BODY_SENTINEL".into(),
+                    retryable: false,
+                }),
+            },
+            cx,
+        );
+    });
+    assert!(stream.read_with(cx, |stream, _| stream.has_active_agent()));
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.controller_error_message()),
+        None
+    );
+    assert!(f.absent("assistant-run-failure", cx));
+
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::Error {
+                message_id: Some("current".into()),
+                error: Arc::new(vega_runtime::VegaError::Io(std::io::Error::other(
+                    "PRIVATE_RUNTIME_SENTINEL",
+                ))),
+            },
+            cx,
+        );
+    });
+    assert!(!stream.read_with(cx, |stream, _| stream.has_active_agent()));
+    let visible = stream
+        .read_with(cx, |stream, _| stream.controller_error_message())
+        .expect("owned runtime error is visible");
+    assert!(visible.contains("运行环境"));
+    assert!(!visible.contains("PRIVATE_RUNTIME_SENTINEL"));
+    f.bounds("assistant-run-failure", cx);
+}
+
 /// A3 companion: repeated submits after materialization still produce exactly
 /// one row (R11).
 #[gpui_kit::test]

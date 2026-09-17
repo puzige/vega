@@ -346,6 +346,7 @@ fn mixed_entry(
         StreamEntry::Assistant {
             stream: Box::new(stream),
             model,
+            failure: None,
         }
     };
     match index % 25 {

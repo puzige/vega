@@ -74,7 +74,7 @@ use vega_conversation::history::{HistoryEntry, HistoryPage};
 use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
     MeterSnapshot, PermissionMode, Plan, ProviderPreflightFailure, ReasoningChoice,
-    ReasoningProfileProjection, ReasoningSupport, RestoredUsage, RunUsageEstimator,
+    ReasoningProfileProjection, ReasoningSupport, RestoredUsage, RunFailureKind, RunUsageEstimator,
     TaskCostSummary, Thread, ThreadMode,
 };
 use vega_markdown::{

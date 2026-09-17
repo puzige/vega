@@ -225,6 +225,7 @@ fn finished_assistant(doc: &str, counters: &StreamCounters) -> StreamEntry {
     StreamEntry::Assistant {
         stream: Box::new(stream),
         model,
+        failure: None,
     }
 }
 
@@ -503,7 +504,7 @@ impl BenchStreamView {
             return;
         }
         let index = self.entries.len().saturating_sub(1);
-        let Some(StreamEntry::Assistant { stream, model }) = self.entries.last_mut() else {
+        let Some(StreamEntry::Assistant { stream, model, .. }) = self.entries.last_mut() else {
             return;
         };
         let snapshot = stream.snapshot();

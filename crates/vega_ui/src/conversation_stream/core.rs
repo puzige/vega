@@ -1059,6 +1059,14 @@ impl ConversationStream {
         cx.notify();
     }
 
+    /// Projects a terminal runtime/provider failure after app refresh. Unlike
+    /// a preparation rejection, this run already has durable message rows.
+    pub fn apply_agent_runtime_error(&mut self, failure: RunFailureKind, cx: &mut Context<Self>) {
+        self.controller_error = Some(failure.message());
+        self.meter.end_run();
+        cx.notify();
+    }
+
     /// Displays a typed resolver rejection while keeping the original draft
     /// editable. The app clears the submit owner before calling this method;
     /// no user echo or durable row is created for the rejected attempt.

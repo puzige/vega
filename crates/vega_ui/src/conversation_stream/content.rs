@@ -99,7 +99,9 @@ impl ConversationStream {
                         lines: user_message_lines(block_id, &content),
                     });
                 }
-                HistoryEntry::AssistantText { content, .. } => {
+                HistoryEntry::AssistantText {
+                    content, status, ..
+                } => {
                     // Durable markdown is complete; one append + finish is the
                     // whole turn. Empty (killed-before-first-delta) turns
                     // materialize zero content, like an empty live stream. The
@@ -113,6 +115,11 @@ impl ConversationStream {
                     hydrated.push(StreamEntry::Assistant {
                         stream: Box::new(stream),
                         model,
+                        // The original provider body is intentionally not
+                        // durable. A failed row still needs a visible,
+                        // truthful fallback after route reopen/restart.
+                        failure: (status == vega_conversation::history::AssistantStatus::Failed)
+                            .then_some(RunFailureKind::Persisted),
                     });
                 }
                 HistoryEntry::Plan { plan, .. } => {
@@ -505,6 +512,7 @@ impl ConversationStream {
                 self.entries.push(StreamEntry::Assistant {
                     stream: Box::new(MarkdownStream::new()),
                     model: StreamModel::default(),
+                    failure: None,
                 });
                 self.list_append(entry_index);
                 self.active_agent_message = Some((message_id, entry_index));
@@ -599,12 +607,27 @@ impl ConversationStream {
                 self.record_composer_terminal(&message_id, true);
                 self.finish_agent_message(&message_id, cx);
             }
-            ConversationEvent::Error { message_id, .. } => {
+            ConversationEvent::Error { message_id, error } => {
+                let failure = RunFailureKind::from_runtime(&error);
                 if let Some(message_id) = message_id {
+                    // A stale event must not annotate the currently active
+                    // assistant turn (nor overwrite a newer composer error).
+                    if let Some((active_id, entry_index)) = self.active_agent_message.as_ref()
+                        && active_id == &message_id
+                        && let Some(StreamEntry::Assistant {
+                            failure: active_failure,
+                            ..
+                        }) = self.entries.get_mut(*entry_index)
+                    {
+                        *active_failure = Some(failure);
+                        self.controller_error = Some(failure.message());
+                    }
                     self.record_composer_terminal(&message_id, false);
                     self.finish_agent_message(&message_id, cx);
                 } else {
+                    self.controller_error = Some(failure.message());
                     self.timeout_permission(cx);
+                    cx.notify();
                 }
             }
         }
@@ -621,7 +644,9 @@ impl ConversationStream {
         // 这是从 mutable tail 摘除前的最后一次显式失效（C4 白名单），必须
         // 在本帧内完成最终物化——否则批量 ingress 末批 [delta…, Finished]
         // 的尾部 delta 永不上屏、终块永无 committed 高亮。
-        if let Some(StreamEntry::Assistant { stream, model }) = self.entries.get_mut(*entry_index) {
+        if let Some(StreamEntry::Assistant { stream, model, .. }) =
+            self.entries.get_mut(*entry_index)
+        {
             stream.finish();
             let snapshot = stream.snapshot();
             model.sync(&snapshot, &self.counters);
