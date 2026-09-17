@@ -24,3 +24,11 @@ On the installed Vega build, clicking **新建任务** with no `SelectedProject`
 - `./scripts/cargo-lock.sh test --workspace`, `cargo fmt --all -- --check`, `./scripts/cargo-lock.sh clippy --workspace --all-targets -- -D warnings`, package, and native click-path verification on the installed app. Report any accepted residual honestly.
 
 No new dependencies or non-test `unwrap`/`expect`; use existing store and controller boundaries. Update older tests whose only assertion is the superseded absence of the no-project bar, but do not weaken unrelated tests.
+
+## Delivery and native acceptance · 2026-09-17
+
+- Implementation: `879d876` on `feat/a7-usable-e2e`. The cached draft stream is rebound in place when its project changes; the project and branch selectors follow the new binding without recreating the Composer or persisting an empty task. The duplicate project-less folder guidance was removed; the explicit Add Project route remains.
+- Targeted regression: A8 root tests 5/5, R49 UI tests 5/5, R69 root tests 17/17, Vega UI tests 336/336, Vega root tests 145/145. `cargo fmt --all -- --check` and strict workspace Clippy both exited 0.
+- `./scripts/cargo-lock.sh test --workspace`: the first run had one failure in the existing load-sensitive `tests::diff::diff_refresh_intents_keep_content_during_background_and_retry`; that exact test passed alone on retry, and a second full workspace run exited 0 including doctests. No diff code was changed by A8.
+- `./scripts/cargo-lock.sh xtask package` and `codesign --verify --deep --strict` passed. The installed `/Applications/Vega.app` executable matches the packaged SHA-256 `0f5f4664a9661da909699cf9d86dcf7cd936458a5c3dedf1f35baa5d920946d0`. The previous bundle is recoverable at `/tmp/vega-a8-install.XIP6GG/Vega.app.previous`.
+- Native installed-app walkthrough: New Task with no project displays the real Composer and `选择项目` chip, not the old standalone folder guidance. The chip opens registered projects; choosing `r13-alpha-project` shows its branch chip. Switching to `r13-beta-project` keeps the chip and an already typed draft intact. Choosing `不关联项目` restores `选择项目` without losing the draft. The temporary draft was cleared without submission. No provider request or test task was created in this walkthrough.
