@@ -216,6 +216,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - `Pinned` 标题本身已表达置顶语义，区内任务行不重复渲染 Pin 图标、所属项目或空占位。无前导图标的 Pinned 与顶层 Recents 任务标题和各自区块标题左对齐；项目 Folder 与名称保持 8px 间距，项目 Folder 图标与区块标题同列，项目子任务落在 `base + SIDEBAR_ROW_INSET(24)` 的共享文本列以表达层级（R48 起取代旧的 32px 内容列）。
 - Sidebar 区块按内容自然高度连续排列，不以 Projects 撑满剩余空间。Projects 默认显示 5 个顶层项目、Recents 默认显示 10 个任务；有更多内容时使用对齐内容列的 `Show More / Show Less` 在当前会话内渐进展开，外层 Sidebar 统一承担溢出滚动。
 - Sidebar 对话行静止时只展示标题，不展示相对时间；Pinned 行也不重复展示所属项目。尾部菜单触发器仅在 hover、键盘聚焦或菜单打开时显现，并保持固定命中区避免布局跳动。每个展开项目默认显示 5 条非置顶任务，超出时使用独立的 `Show More / Show Less` 渐进展开，控件与项目子任务共享同一文本列（`base + SIDEBAR_ROW_INSET`）。
+- Sidebar 的项目操作菜单只显示 `移除项目`，不显示上下移动命令；未来的鼠标拖动排序另行设计。精简标签不改变保留本地文件与任务历史的移除语义，详见 [A8-02](vega-a8-project-removal-integrity.md)。分组菜单的移动命令不受影响。
 - 全局搜索入口使用窗口顶部共享控制组中的放大镜按钮，紧邻 Sidebar 显隐按钮并位于 Back / Forward 之前；Sidebar 展开或隐藏时位置和数量都保持稳定。按钮带“搜索 (⌘K)”可访问名称与提示，点击或键盘激活打开现有搜索面板；保留 Command-K，Sidebar 内容区不再重复渲染搜索入口。此规则取代 R39 的 Sidebar 局部位置，精确规格见 [R41 Titlebar Search adjacency](vega-r41-titlebar-search.md)。
 - 窗口顶部 `Sidebar / Search / Back / Forward` 四个控制统一使用 28×28px 方形交互面、16px 居中图标和 4px 相邻间隔；禁用的历史按钮也保留同尺寸槽位，保证四个图标中心恒定相隔 32px。精确规格见 [R43 Titlebar control spacing](vega-r43-titlebar-control-spacing.md)。
 - 主头部尾部是恰好三个永久槽位（切换环境 / 切换终端 ⌘J / 切换右侧面板），统一 28×28 交互面、16px 居中图标与 6px 相邻间隔；每槽只表达一个全局布局表面，选中态由该表面真实 rendered 可见性驱动（`hidden == false` 不算可见），禁用时保留占位、图标降为 tertiary、不回流；R43 的 4px 间隔规则仍只适用于前导 Sidebar/Search/Back/Forward 组。三个槽位窗口锚定在窗口右上角（不属于会话列、rail 或任何 pane），任何面板开合都不得改变其坐标；凡占据窗口顶部条带的面板头部（右面板、任一面板最大化）都预留同一尾部槽位带，让面板自身尾部动作排在槽位左侧，底仓头部不预留。Environment rail 与 overlay 卡片从 header 行下方开始，不覆盖控件。Environment overlay（<1230px）支持 Esc 与点击卡片外部关闭并回焦 Composer，rail 模式无 Esc 契约。精确规格见 [R45 Header shell controls and Composer alignment](vega-r45-shell-controls-composer.md)，几何归属与顶部条带归属由 [R46 Window-anchored shell slots](vega-r46-window-anchored-shell-slots.md) 取代。
@@ -278,6 +279,7 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 
 ## 15. 变更记录
 
+- A8-02 (2026-09-18)：项目操作菜单只保留 `移除项目`，移除上下移动命令及标签中的解释性后缀；保留文件与任务历史的安全语义不变。
 - A8-01 (2026-09-17)：新建草稿在无项目时也显示 Composer 项目 chip；项目切换必须同步草稿和控制器，移除单独的「添加项目文件夹以开始…」首页引导。详见 [Composer project entry](vega-a8-composer-project-entry.md)。
 
 - v1.33 (2026-09-15)：R69 首页常驻真实 Composer：无打开任务时不再渲染静态占位卡片「新建任务并开始输入…」，改为直接渲染真实 `ConversationStream`（含 R49 utility bar 与 R57 底行），其任务为**未持久化的惰性草稿**，首次提交才落库；侧栏「新建任务」与 ⌘N 改为导航到该草稿路由，不再急切 INSERT（消除 `未命名任务` 堆积）。Composer 几何（736/100/28/20）、utility bar 几何、底行结构与配色全部不变。详见 [R69 Home lazy draft composer](vega-r69-home-lazy-draft-composer.md)。

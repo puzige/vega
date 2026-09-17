@@ -1,6 +1,6 @@
 # A8-02 — Remove a registered project without losing tasks
 
-Status: user-authorized bug fix, 2026-09-18. Supersedes the A1-03/S2 removal implementation only where it assumes that deleting a `projects` row is sufficient after tasks have been created. The existing `移除项目（保留文件）` action, no-confirmation ruling, and standalone-task model remain in force.
+Status: user-authorized bug fix, 2026-09-18. Supersedes the A1-03/S2 removal implementation only where it assumes that deleting a `projects` row is sufficient after tasks have been created. The no-confirmation ruling and standalone-task model remain in force. The project-menu wording and actions are amended below by the user's 2026-09-18 decision.
 
 ## Defect and cause
 
@@ -15,12 +15,19 @@ The installed app reports `项目移除失败：projects store error: FOREIGN KE
 5. Existing project-scoped permission rows are not transferred to the standalone tasks or a re-registered project. Their opaque old project ID cannot authorize work after removal; this bug fix does not broaden into a permission-history cleanup or alter tool approval rules.
 6. **Running worker gate.** Before any detach/delete SQL, refuse removal of a project while any real Agent worker for that project is still alive, including workers owned by another window or already cancelled but not yet exited. Show a clear inline instruction to stop/wait and retry; leave registration, task bindings, and active workspace untouched. Register worker activity synchronously before spawn, and release it only when the worker actually exits. Idle or fully exited workers must not block removal. Keep this in an app-wide, bounded/lazily pruned ownership registry; do not infer liveness from a streaming message row or wait for a later render to cancel old authority. A UI-only global wrapper may bridge to a pure shared identity/liveness type, but must not move domain state into the UI crate or violate the cross-crate type boundary.
 
+## Project menu simplification (user decision, 2026-09-18)
+
+- The `项目操作` menu for a project exposes exactly one command, labelled `移除项目`. Do not render `项目上移` or `项目下移`, even when neighboring projects exist. Mouse drag-and-drop sorting is future work, not part of this change; retain the stored project order and its underlying API without creating a replacement control now.
+- Remove the explanatory `（保留文件）` suffix from the menu label only. The removal semantics above remain unchanged: local files and task history are preserved, the running-worker gate still applies, and failures still surface inline. Do not introduce a new confirmation dialog or a second removal path.
+- The single visible menu item must invoke the existing remove command for the exact project whose menu was opened. Other organization menus (groups, filter) and their move actions are out of scope.
+
 ## Acceptance
 
 - Owned temporary migrated database through the production store API: remove a project with active, archived, and pinned tasks plus messages/tool calls/token usage and an unrelated project; assert the target registration is gone, all target tasks have SQL `NULL` binding, related records and relevant metadata are unchanged, the unrelated project/tasks remain bound, and `PRAGMA foreign_key_check` is clean. Verify re-registration of the same path does not rebind history.
 - Empty-project removal and unknown-ID idempotence still pass. Inject a transactional failure (or use an equivalent owned fixture) and prove rollback leaves both the project and bindings intact; do not rely on a test that merely calls the SQL primitive with no task.
 - Mounted sidebar/root production test: invoke the existing Remove Project action for a project with tasks, confirm no error bar, the folder vanishes, and the retained tasks appear once under standalone/Recents with no project route. The active-project case must clear stale selection; unrelated project remains available.
 - Mounted real-window worker test: with the project's Agent worker blocked at an existing controlled provider boundary, removal is refused before SQL and keeps the project/task/route intact. The same action succeeds after that exact worker exits. Cover the registry's project isolation and cross-window ownership semantics without replacing the production removal path with a test-only seam.
+- Mounted project-menu test: with multiple ordered projects, inspect the real menu and assert its sole action is `移除项目`; activate it and confirm only the targeted project is unregistered while local files and historical tasks are preserved. Existing group/filter menu behavior remains unchanged.
 - `cargo fmt --all -- --check`, `./scripts/cargo-lock.sh clippy --workspace --all-targets -- -D warnings`, `./scripts/cargo-lock.sh test --workspace`, package/signature and installed-app/native check. Native validation may use a disposable registered project; never delete one of the user's existing project registrations as a test.
 
 No new dependency, no non-test `unwrap`/`expect`, no direct UI SQLite writes, and no user-file deletion.
