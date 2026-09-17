@@ -184,7 +184,7 @@ impl SseAssembler {
                 self.finish_reason = Some(map_finish_reason(reason));
                 // tool_calls 收敛：分片聚合完整后才发 ToolUse
                 if self.finish_reason == Some(StopReason::ToolUse) {
-                    events.extend(self.flush_tools());
+                    events.extend(self.flush_tools()?);
                 }
             }
         }
@@ -194,13 +194,16 @@ impl SseAssembler {
     pub(crate) fn absorb_tool_call(&mut self, call: &serde_json::Value) {
         let index = call.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
         let fragment = self.tools.entry(index).or_default();
-        if let Some(id) = str_field(call, "id") {
+        // A7-03: CPA/hy3 repeats `name: ""` on argument-only continuations.
+        // Empty fields mean "no update", not "erase the start fragment".
+        if let Some(id) = str_field(call, "id").filter(|id| !id.is_empty()) {
             fragment.id = id.to_string();
         }
         let function = call.get("function");
         if let Some(name) = function
             .and_then(|f| f.get("name"))
             .and_then(|n| n.as_str())
+            .filter(|name| !name.is_empty())
         {
             fragment.name = name.to_string();
         }
@@ -220,23 +223,37 @@ impl SseAssembler {
             message: String::from("SSE stream ended without finish_reason"),
             retryable: false,
         })?;
-        let mut events = self.flush_tools();
+        let mut events = self.flush_tools()?;
         events.push(ProviderEvent::Done {
             stop_reason: finish_reason,
         });
         Ok(events)
     }
 
-    pub(crate) fn flush_tools(&mut self) -> Vec<ProviderEvent> {
+    pub(crate) fn flush_tools(&mut self) -> Result<Vec<ProviderEvent>, VegaError> {
+        // A7-03: never turn an incomplete wire fragment into an unnamed tool
+        // proposal. Validate the whole batch before exposing any call.
+        if self
+            .tools
+            .values()
+            .any(|fragment| fragment.id.is_empty() || fragment.name.is_empty())
+        {
+            self.tools.clear();
+            return Err(VegaError::Provider {
+                status: None,
+                message: "SSE tool call missing id or function name".to_string(),
+                retryable: false,
+            });
+        }
         let tools = std::mem::take(&mut self.tools);
-        tools
+        Ok(tools
             .into_values()
             .map(|fragment| ProviderEvent::ToolUse {
                 id: fragment.id,
                 name: fragment.name,
                 input_json: fragment.arguments,
             })
-            .collect()
+            .collect())
     }
 }
 

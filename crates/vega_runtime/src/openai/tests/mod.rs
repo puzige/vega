@@ -236,6 +236,55 @@ fn tool_call_fragments_aggregate_into_single_tool_use() {
 }
 
 #[test]
+fn empty_tool_identity_continuations_preserve_start_fragment() {
+    let mut assembler = SseAssembler::default();
+    let events = absorb_all(
+        &mut assembler,
+        &[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","function":{"name":"read","arguments":""}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"","function":{"name":"","arguments":"{\"path\":"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"","arguments":"\"README.md\"}"}}]}}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+        ],
+    );
+    assert_eq!(
+        events,
+        vec![ProviderEvent::ToolUse {
+            id: "call-read".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"README.md"}"#.into(),
+        }]
+    );
+}
+
+#[test]
+fn incomplete_tool_identity_fails_atomically_before_tool_use() {
+    for incomplete in [
+        r#"{"index":1,"id":"","function":{"name":"read","arguments":"{}"}}"#,
+        r#"{"index":1,"id":"call-missing-name","function":{"name":"","arguments":"{}"}}"#,
+    ] {
+        let mut assembler = SseAssembler::default();
+        let first = format!(
+            "{{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"call-valid\",\"function\":{{\"name\":\"read\",\"arguments\":\"{{}}\"}}}},{}]}}}}]}}",
+            incomplete
+        );
+        assert!(assembler.absorb(&first).unwrap().is_empty());
+        let error = assembler
+            .absorb(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            VegaError::Provider {
+                status: None,
+                retryable: false,
+                ..
+            }
+        ));
+        assert!(assembler.tools.is_empty(), "no partial tool batch survives");
+    }
+}
+
+#[test]
 fn multiple_tool_calls_flush_in_index_order() {
     let mut assembler = SseAssembler::default();
     let events = absorb_all(

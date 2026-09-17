@@ -83,6 +83,88 @@ async fn happy_path_sends_openai_wire_format_and_streams_events() {
     );
 }
 
+#[tokio::test]
+async fn empty_name_stream_continuations_execute_one_real_read_and_observe() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("README.md"), "# Vega E2E\n").unwrap();
+    let tool_round = sse_response(
+        &[
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","type":"function","function":{"name":"read","arguments":""}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"","arguments":"{\"path\":"}}]}}]}"#,
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"","arguments":"\"README.md\"}"}}]}}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
+            usage_chunk(),
+        ],
+        true,
+    );
+    let answer_round = sse_response(
+        &[
+            r##"{"choices":[{"delta":{"content":"# Vega E2E"}}]}"##,
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            usage_chunk(),
+        ],
+        true,
+    );
+    let server = spawn_server(scripted_server(vec![tool_round, answer_round])).await;
+    let provider = provider_for(&server, fast_policy(1));
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let outcome = crate::run_agent(
+        &provider,
+        &tools,
+        crate::AgentRequest {
+            model: MODEL.into(),
+            system_prompt: "Read the requested file.".into(),
+            history: vec![ChatMessage::new(ChatRole::User, "Read README.md")],
+            max_tokens: None,
+            completed_tool_results: std::collections::HashMap::new(),
+            tool_config: crate::RuntimeToolConfig::default(),
+            pricing_catalog: None,
+            reasoning: None,
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    assert!(!outcome.failed);
+    assert_eq!(outcome.final_text, "# Vega E2E");
+    assert_eq!(outcome.tool_call_count, 1);
+    assert_eq!(outcome.executed_tool_call_count, 1);
+    assert!(outcome.events.iter().any(|event| matches!(
+        event,
+        crate::RuntimeEvent::ToolCallFinished(crate::RuntimeToolResult {
+            status: crate::RuntimeToolStatus::Success,
+            ..
+        })
+    )));
+    assert!(
+        !outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, crate::RuntimeEvent::Error(_)))
+    );
+    let captured = server.captured();
+    assert_eq!(captured.len(), 2);
+    let follow_up = &captured[1].body["messages"];
+    assert!(follow_up.as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["role"] == "assistant"
+                && message["tool_calls"][0]["function"]["name"] == "read"
+                && message["tool_calls"][0]["function"]["arguments"] == r#"{"path":"README.md"}"#
+        }) && messages.iter().any(|message| {
+            message["role"] == "tool"
+                && message["tool_call_id"] == "call-read"
+                && message["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("# Vega E2E"))
+        })
+    }));
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("README.md")).unwrap(),
+        "# Vega E2E\n"
+    );
+}
+
 #[test]
 fn captured_request_debug_redacts_distinct_authorization_and_body_sentinels() {
     let sentinels = [
