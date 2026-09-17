@@ -366,6 +366,10 @@ async fn at_reference_real_subscription_indexes_and_injects_request(
     )
     .expect("symlink subscription file");
     let data = tempfile::tempdir().expect("subscription data");
+    let config_path = data.path().join("config.toml");
+    super::model_selection::model_selection_config(&config_path);
+    vega_store::keystore::set_key(data.path(), "owned", "subscription-test-key")
+        .expect("subscription credential");
     let store = Store::open(data.path().join("vega.db")).expect("subscription store");
     store.migrate().expect("subscription migrations");
     let project = vega_store::projects::create(
@@ -397,6 +401,7 @@ async fn at_reference_real_subscription_indexes_and_injects_request(
     ]));
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(config_path);
         root.agent_provider_override = Some(provider.clone())
     });
     let window_root = root.clone();

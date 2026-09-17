@@ -435,6 +435,60 @@ pub(crate) fn unique_provider_for_model(
     Some(provider)
 }
 
+/// Performs the content-free provider and owner-only credential readiness
+/// check used before a composer submission can materialize a draft.
+///
+/// All config/keystore IO is expected to run in the caller's bounded worker;
+/// this function intentionally returns only typed provider/model identifiers
+/// and never returns or logs a credential value.
+pub(crate) fn preflight_provider(
+    config_path: Option<&std::path::Path>,
+    model: &str,
+) -> Result<(), ProviderPreflightFailure> {
+    let unavailable = |providers: Vec<String>| ProviderPreflightFailure::ProviderUnavailable {
+        model: model.to_owned(),
+        providers,
+    };
+    let Some(config_path) = config_path else {
+        return Err(unavailable(Vec::new()));
+    };
+    let config = vega_store::config::read_from(config_path).map_err(|_| unavailable(Vec::new()))?;
+    let mut providers = config
+        .providers
+        .iter()
+        .filter(|provider| provider.models.iter().any(|candidate| candidate == model))
+        .map(|provider| provider.name.clone())
+        .collect::<Vec<_>>();
+    providers.sort();
+    providers.dedup();
+
+    let enabled = config
+        .providers
+        .iter()
+        .filter(|provider| provider.enabled)
+        .filter(|provider| provider.models.iter().any(|candidate| candidate == model))
+        .collect::<Vec<_>>();
+    let Some(provider) = (enabled.len() == 1).then(|| enabled[0]) else {
+        return Err(unavailable(providers));
+    };
+    if provider.base_url.trim().is_empty()
+        || !vega_runtime::provider_check::valid_base_url(&provider.base_url)
+        || provider.key_ref.trim().is_empty()
+    {
+        return Err(unavailable(vec![provider.name.clone()]));
+    }
+    let Some(root) = config_path.parent() else {
+        return Err(unavailable(vec![provider.name.clone()]));
+    };
+    vega_store::keystore::get_key(root, &provider.key_ref).map_err(|_| {
+        ProviderPreflightFailure::CredentialUnavailable {
+            model: model.to_owned(),
+            provider: provider.name.clone(),
+        }
+    })?;
+    Ok(())
+}
+
 /// Resolves one immutable reasoning snapshot for the exact provider/model
 /// pair selected for a run. Missing profiles intentionally become provider
 /// default with no wire controls; malformed declared profiles fail closed so

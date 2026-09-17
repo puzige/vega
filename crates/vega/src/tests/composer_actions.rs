@@ -21,6 +21,8 @@ fn fixture(
     fs::write(repo.path().join("context.txt"), "owned context").expect("context fixture");
     let config = data.path().join("config.toml");
     super::model_selection::model_selection_config(&config);
+    vega_store::keystore::set_key(data.path(), "owned", "composer-test-key")
+        .expect("owned composer credential");
     let database = data.path().join("vega.db");
     let store = Store::open(&database).expect("owned DB");
     store.migrate().expect("migrate");
@@ -170,6 +172,10 @@ async fn r11_composer_preparation_stop_preserves_draft_and_prevents_late_start(
         .expect("existing construction gate") = Some((entered_tx, release_rx));
     edit(&f, "retained early draft", cx);
     cx.simulate_keystrokes(f.window.into(), "cmd-enter");
+    pump_test_app(cx, |cx| {
+        f.root
+            .read_with(cx, |root, _| root.agent_controller.active.is_some())
+    });
     entered_rx
         .recv_timeout(Duration::from_secs(5))
         .expect("real worker reached provider boundary");
@@ -226,8 +232,17 @@ async fn r11_composer_stream_stop_retains_partial_and_next_draft(
     edit(&f, "start cancellable stream", cx);
     assert_composer_control_size(&f, "composer-send", cx);
     cx.simulate_keystrokes(f.window.into(), "cmd-enter");
-    pump_test_app(cx, |_| {
-        f.store.conn().query_row("SELECT count(*) FROM messages WHERE role = 'assistant' AND content LIKE '%retained partial text%'", [], |row| row.get::<_, i64>(0)).expect("partial persistence") == 1
+    pump_test_app(cx, |cx| {
+        f.store
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM messages WHERE role = 'assistant' AND content LIKE '%retained partial text%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("partial persistence")
+            == 1
+            && draft(&f, cx).is_empty()
     });
     assert_eq!(draft(&f, cx), "", "durable start accepted submitted text");
     edit(&f, "unsent next draft", cx);

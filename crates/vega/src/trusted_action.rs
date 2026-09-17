@@ -10,6 +10,9 @@ pub(crate) enum TrustedActionKind {
     /// coordinator so submit/plan/commit/branch stay blocked until the
     /// authoritative `threads.model` write settles.
     ModelSelection,
+    /// A7-01: provider/model and owner-only credential readiness before a
+    /// composer submission may materialize or start a run.
+    AgentPreflight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

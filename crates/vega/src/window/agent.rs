@@ -1,5 +1,9 @@
 use super::*;
 
+/// Poll interval for the provider/credential preflight worker. The worker
+/// owns all config and keystore IO; the UI only observes its typed result.
+const AGENT_PREFLIGHT_POLL: std::time::Duration = std::time::Duration::from_millis(4);
+
 impl VegaWindow {
     pub(crate) fn workspace_tool_terminal(
         &mut self,
@@ -561,15 +565,107 @@ impl VegaWindow {
                 return;
             }
         };
+        // A7-01: hold the existing draft/input in memory while a bounded
+        // worker reads the owned config and credential store. Materialization
+        // and agent start happen only after this typed readiness result; no
+        // config or keystore IO is performed on the UI submit path.
+        let Some(lease) = self
+            .trusted_actions
+            .acquire(TrustedActionKind::AgentPreflight, 0, 0)
+        else {
+            stream.update(cx, |stream, cx| {
+                stream.reject_composer_submission(cx);
+                stream.apply_controller_error(cx);
+            });
+            return;
+        };
+        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
+        let config_path = self.composer_config_path();
+        let model = stream.read(cx).displayed_model().to_owned();
+        let content = request.content.clone();
+        let thread_id = request.thread_id.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker_model = model.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-agent-preflight".into())
+            .spawn(move || {
+                let outcome = preflight_provider(config_path.as_deref(), &worker_model);
+                let _ = sender.send(outcome);
+            });
+        if worker.is_err() {
+            let _ = self.trusted_actions.release(lease);
+            stream.update(cx, |stream, cx| {
+                stream.set_trusted_action_busy(false, cx);
+                stream.reject_composer_submission(cx);
+                stream.apply_controller_error(cx);
+            });
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AGENT_PREFLIGHT_POLL).await;
+                let outcome = match receiver.try_recv() {
+                    Ok(outcome) => outcome,
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        Err(ProviderPreflightFailure::ProviderUnavailable {
+                            model: model.clone(),
+                            providers: Vec::new(),
+                        })
+                    }
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.finish_agent_preflight(
+                        stream.clone(),
+                        thread_id.clone(),
+                        content.clone(),
+                        reasoning.clone(),
+                        lease,
+                        outcome,
+                        cx,
+                    )
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// Applies the worker's typed readiness result. The route fence and the
+    /// single-flight lease are checked before any materialization or run
+    /// start, so late/stale results cannot create a task.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_agent_preflight(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        thread_id: String,
+        content: String,
+        reasoning: Option<FrozenReasoning>,
+        lease: TrustedActionToken,
+        outcome: Result<(), ProviderPreflightFailure>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.trusted_actions.release(lease) {
+            return;
+        }
+        stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+        if cx.global::<SettingsOpen>().0 || !self.owns_stream_request(&stream, &thread_id, cx) {
+            stream.update(cx, ConversationStream::reject_composer_submission);
+            return;
+        }
+        if let Err(failure) = outcome {
+            stream.update(cx, |stream, cx| {
+                stream.apply_provider_preflight_error(failure, cx)
+            });
+            return;
+        }
         // R69 R8-R11: first submit materializes the lazy draft under its own
-        // id before the existing submit path runs. Route identity is untouched
+        // id only after readiness passes. Route identity is untouched
         // (`OpenedThread.0.id` and the `stream_view` key are unchanged), so
-        // `owns_stream_request` above still holds and the cached stream — with
-        // its composer text and focus — is never rebuilt (R9). A failure keeps
-        // the draft installed and surfaces the error with the text intact, so
-        // no half-written state exists (R10). Success releases the draft, which
-        // makes a repeated submit a plain durable-route submit (R11).
-        if let Some(draft) = self.draft_for_route(&request.thread_id)
+        // the cached stream — with its composer text and focus — is never
+        // rebuilt. A materialization failure keeps the draft installed and
+        // surfaces the existing controller error for retry.
+        if let Some(draft) = self.draft_for_route(&thread_id)
             && self.materialize_draft(&draft, cx).is_err()
         {
             stream.update(cx, |stream, cx| {
@@ -580,8 +676,8 @@ impl VegaWindow {
         }
         self.start_agent_run_with_reasoning(
             stream,
-            &request.thread_id,
-            PendingAgentRun::UserMessage(request.content.clone()),
+            &thread_id,
+            PendingAgentRun::UserMessage(content),
             reasoning,
             cx,
         );

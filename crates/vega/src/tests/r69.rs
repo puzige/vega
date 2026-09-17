@@ -27,6 +27,7 @@ use vega_ui::sidebar::SelectedProject;
 struct DraftFixture {
     _repo: TempDir,
     _config_root: TempDir,
+    config_path: std::path::PathBuf,
     data_root: TempDir,
     database_path: std::path::PathBuf,
     project_id: String,
@@ -44,6 +45,8 @@ impl DraftFixture {
         let config_root = tempfile::tempdir().expect("r69 config root");
         let config_path = config_root.path().join("config.toml");
         model_selection_config(&config_path);
+        vega_store::keystore::set_key(config_root.path(), "owned", "r69-test-key")
+            .expect("r69 test credential");
         let data_root = tempfile::tempdir().expect("r69 data root");
         let database_path = data_root.path().join("vega.db");
         let store = Store::open(&database_path).expect("r69 store");
@@ -86,7 +89,7 @@ impl DraftFixture {
             ]),
         ]));
         root.update(cx, |root, _| {
-            root.model_selection_config_override = Some(config_path);
+            root.model_selection_config_override = Some(config_path.clone());
             root.agent_provider_override = Some(provider.clone());
         });
         let window_root = root.clone();
@@ -108,6 +111,7 @@ impl DraftFixture {
         Self {
             _repo: repo,
             _config_root: config_root,
+            config_path,
             data_root,
             database_path,
             project_id,
@@ -209,7 +213,127 @@ impl DraftFixture {
             .update(cx, |_, window, cx| window.focus(&focus, cx))
             .expect("r69 composer focus");
         cx.simulate_keystrokes(self.window.into(), "cmd-enter");
-        cx.run_until_parked();
+        let stream = self.stream(cx);
+        pump_test_app(cx, |cx| {
+            self.root.read_with(cx, |root, _| {
+                root.draft.is_none()
+                    || stream.read_with(cx, |stream, _| !stream.composer_submission_pending())
+            })
+        });
+    }
+
+    fn save_config(&self, mutate: impl FnOnce(&mut vega_store::config::AppConfig)) {
+        let mut config =
+            vega_store::config::read_from(&self.config_path).expect("r69 preflight config");
+        mutate(&mut config);
+        config
+            .save_to(&self.config_path)
+            .expect("r69 preflight config save");
+    }
+
+    fn disable_provider(&self) {
+        self.save_config(|config| config.providers[0].enabled = false);
+    }
+
+    fn remove_model(&self) {
+        self.save_config(|config| config.providers[0].models.clear());
+    }
+
+    fn set_malformed_base_url(&self) {
+        self.save_config(|config| config.providers[0].base_url = "not-a-url".to_owned());
+    }
+
+    fn add_ambiguous_provider(&self) {
+        self.save_config(|config| {
+            let mut duplicate = config.providers[0].clone();
+            duplicate.name = "second".to_owned();
+            duplicate.key_ref = "second".to_owned();
+            config.providers.push(duplicate);
+        });
+        vega_store::keystore::set_key(
+            self.config_path.parent().expect("r69 config parent"),
+            "second",
+            "r69-ambiguous-key",
+        )
+        .expect("r69 ambiguous test credential");
+    }
+
+    fn remove_credential(&self) {
+        vega_store::keystore::delete_key(
+            self.config_path.parent().expect("r69 config parent"),
+            "owned",
+        )
+        .expect("r69 delete test credential");
+    }
+
+    fn repair_provider(&self) {
+        let service = vega_conversation::ProviderSettingsService::new(self.config_path.clone());
+        let current = service.load().expect("r69 settings provider");
+        let provider = current.providers[0].clone();
+        if !provider.enabled {
+            service
+                .patch(ProviderPatchRequest {
+                    provider: provider.clone(),
+                    action: ProviderPatchAction::SetEnabled(true),
+                })
+                .expect("r69 settings provider enable");
+        }
+        let repaired = service
+            .load()
+            .expect("r69 settings provider reload")
+            .providers[0]
+            .clone();
+        service
+            .save_provider(
+                Some(repaired.clone()),
+                repaired,
+                Some("r69-repaired-key".to_owned()),
+            )
+            .expect("r69 settings credential repair");
+    }
+
+    fn wait_for_preflight_error(&self, cx: &mut gpui_kit::TestAppContext) -> String {
+        let stream = self.stream(cx);
+        pump_test_app(cx, |cx| {
+            stream.read_with(cx, |stream, _| {
+                !stream.composer_submission_pending() && stream.controller_error_message().is_some()
+            })
+        });
+        stream.read_with(cx, |stream, _| {
+            stream.controller_error_message().expect("preflight error")
+        })
+    }
+
+    fn assert_rejected_before_start(
+        &self,
+        draft_id: &str,
+        text: &str,
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let stream = self.stream(cx);
+        assert_eq!(self.thread_rows(), 0);
+        assert_eq!(self.standalone_rows(), 0);
+        assert_eq!(self.draft(cx).id, draft_id);
+        assert_eq!(
+            self.input(cx)
+                .read_with(cx, |input, _| input.text().to_string()),
+            text
+        );
+        assert_eq!(
+            cx.update(|cx| cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|thread| thread.id.clone())),
+            Some(draft_id.to_owned())
+        );
+        assert!(!stream.read_with(cx, |stream, _| stream.composer_submission_pending()));
+        assert_eq!(
+            self.root
+                .read_with(cx, |root, _| root.agent_worker_start_probe.load()),
+            0
+        );
+        assert!(self.provider.requests().is_empty());
     }
 }
 
@@ -869,6 +993,159 @@ async fn r69_a13_materialization_failure_preserves_the_draft(cx: &mut gpui_kit::
     assert_eq!(rows[0].id, draft.id);
     let _ = f.data_root.path();
     let _ = f.provider.requests();
+}
+
+/// A7-01: a disabled provider is rejected in the production submit path
+/// before the lazy draft is materialized or an agent worker starts.
+#[gpui_kit::test]
+async fn a7_first_submit_disabled_provider_rejects_before_materialization(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let draft_id = f.draft(cx).id;
+    f.disable_provider();
+
+    f.submit("disabled provider draft", cx);
+    let error = f.wait_for_preflight_error(cx);
+    f.assert_rejected_before_start(&draft_id, "disabled provider draft", cx);
+    assert!(error.contains("gpt-5.6-terra"));
+    assert!(error.contains("owned"));
+    assert!(error.contains("设置 → Providers"));
+    assert!(!error.contains("执行未完成"));
+}
+
+/// A7-01: removing the selected model from the enabled-provider catalog is a
+/// typed configuration rejection, not a network/agent failure.
+#[gpui_kit::test]
+async fn a7_first_submit_unavailable_model_rejects_before_materialization(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let draft_id = f.draft(cx).id;
+    f.remove_model();
+
+    f.submit("unavailable model draft", cx);
+    let error = f.wait_for_preflight_error(cx);
+    f.assert_rejected_before_start(&draft_id, "unavailable model draft", cx);
+    assert!(error.contains("gpt-5.6-terra"));
+    assert!(error.contains("没有可用的供应商"));
+    assert!(error.contains("设置 → Providers"));
+    assert!(!error.contains("执行未完成"));
+}
+
+/// A7-01: two enabled providers claiming the selected model are ambiguous and
+/// must not be allowed to materialize a draft without a unique authority.
+#[gpui_kit::test]
+async fn a7_first_submit_ambiguous_provider_rejects_before_materialization(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let draft_id = f.draft(cx).id;
+    f.add_ambiguous_provider();
+
+    f.submit("ambiguous provider draft", cx);
+    let error = f.wait_for_preflight_error(cx);
+    f.assert_rejected_before_start(&draft_id, "ambiguous provider draft", cx);
+    assert!(error.contains("gpt-5.6-terra"));
+    assert!(error.contains("owned"));
+    assert!(error.contains("second"));
+    assert!(error.contains("设置 → Providers"));
+    assert!(!error.contains("执行未完成"));
+}
+
+/// A7-01: a missing owner-only credential keeps the exact draft editable and
+/// uses the credential-repair guidance before any durable row or run exists.
+#[gpui_kit::test]
+async fn a7_first_submit_missing_credential_rejects_before_materialization(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let draft_id = f.draft(cx).id;
+    f.remove_credential();
+
+    f.submit("missing credential draft", cx);
+    let error = f.wait_for_preflight_error(cx);
+    f.assert_rejected_before_start(&draft_id, "missing credential draft", cx);
+    assert!(error.contains("gpt-5.6-terra"));
+    assert!(error.contains("owned"));
+    assert!(error.contains("本地凭据缺失或无法读取"));
+    assert!(error.contains("设置 → Providers"));
+    assert!(!error.contains("执行未完成"));
+}
+
+/// A7-01: malformed provider endpoints are not treated as usable merely
+/// because a model and credential reference are present.
+#[gpui_kit::test]
+async fn a7_first_submit_malformed_provider_rejects_before_materialization(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let draft_id = f.draft(cx).id;
+    f.set_malformed_base_url();
+
+    f.submit("malformed provider draft", cx);
+    let error = f.wait_for_preflight_error(cx);
+    f.assert_rejected_before_start(&draft_id, "malformed provider draft", cx);
+    assert!(error.contains("gpt-5.6-terra"));
+    assert!(error.contains("owned"));
+    assert!(error.contains("设置 → Providers"));
+    assert!(!error.contains("执行未完成"));
+}
+
+/// A7-01: repeated clicks after a rejected preflight stay single-flight and
+/// cannot create duplicate rows or start a provider request.
+#[gpui_kit::test]
+async fn a7_repeated_rejected_submit_creates_no_rows_or_run(cx: &mut gpui_kit::TestAppContext) {
+    let f = DraftFixture::home(cx, true);
+    let draft_id = f.draft(cx).id;
+    f.disable_provider();
+
+    f.submit("retryable disabled draft", cx);
+    let first_error = f.wait_for_preflight_error(cx);
+    f.submit("retryable disabled draft", cx);
+    let second_error = f.wait_for_preflight_error(cx);
+    f.assert_rejected_before_start(&draft_id, "retryable disabled draft", cx);
+    assert_eq!(first_error, second_error);
+    assert_eq!(f.thread_rows(), 0);
+    assert_eq!(f.standalone_rows(), 0);
+}
+
+/// A7-01: after readiness is repaired through the owned provider authority,
+/// the same retained draft id is accepted once and follows the ordinary run
+/// path with the provider/network boundary mocked.
+#[gpui_kit::test]
+async fn a7_repaired_readiness_submits_retained_draft_once(cx: &mut gpui_kit::TestAppContext) {
+    let f = DraftFixture::home(cx, true);
+    let draft_id = f.draft(cx).id;
+    f.disable_provider();
+
+    f.submit("repair and submit", cx);
+    let _ = f.wait_for_preflight_error(cx);
+    f.assert_rejected_before_start(&draft_id, "repair and submit", cx);
+
+    // This uses the same owned config/credential authority that Settings
+    // updates, with a synthetic fixture credential and no host-user state.
+    f.repair_provider();
+    f.submit("repair and submit", cx);
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1
+                && f.thread_rows() == 1
+                && root.agent_controller.active.is_none()
+        })
+    });
+
+    let rows = vega_store::threads::list_by_project(f.store().conn(), &f.project_id, None)
+        .expect("r69 repaired rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, draft_id);
+    assert_eq!(f.thread_rows(), 1);
+    assert_eq!(f.standalone_rows(), 0);
+    assert_eq!(f.provider.requests().len(), 1);
+    assert!(
+        !f.stream(cx)
+            .read_with(cx, |stream, _| stream.composer_submission_pending())
+    );
 }
 
 /// A3 companion: repeated submits after materialization still produce exactly

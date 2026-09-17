@@ -295,6 +295,8 @@ theme = "light"
 "#,
     )
     .expect("permission entry config");
+    vega_store::keystore::set_key(config_root.path(), "owned", "permission-entry-test-key")
+        .expect("permission entry credential");
     let data = tempfile::tempdir().expect("permission entry data root");
     let database_path = data.path().join("vega.db");
     let store = Store::open(&database_path).expect("permission entry store");

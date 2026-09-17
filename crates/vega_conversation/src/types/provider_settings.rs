@@ -1,6 +1,56 @@
 //! Content-free provider settings commands and asynchronous operation identity.
 use vega_store::config::ProviderConfig;
 
+/// Content-free readiness failures raised before a composer submission is
+/// materialized or an agent worker is started.
+///
+/// The provider names and model ids are configuration identifiers only. A
+/// credential value never crosses this boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProviderPreflightFailure {
+    /// The selected model has no unique, enabled, usable provider baseline.
+    ProviderUnavailable {
+        /// Model selected by the draft or existing conversation.
+        model: String,
+        /// Provider names that mention the model, if any.
+        providers: Vec<String>,
+    },
+    /// The unique enabled provider exists, but its local credential cannot be
+    /// read from the owner-only keystore.
+    CredentialUnavailable {
+        /// Model selected by the draft or existing conversation.
+        model: String,
+        /// Unique enabled provider selected for the model.
+        provider: String,
+    },
+}
+
+impl ProviderPreflightFailure {
+    /// Projects one actionable, secret-free UI message.
+    pub fn message(&self) -> String {
+        match self {
+            Self::ProviderUnavailable { model, providers } => {
+                let provider_hint = if providers.is_empty() {
+                    "没有可用的供应商"
+                } else {
+                    "供应商配置不可用"
+                };
+                let names = if providers.is_empty() {
+                    String::new()
+                } else {
+                    format!("（{}）", providers.join("、"))
+                };
+                format!(
+                    "模型“{model}”{names}{provider_hint}，请前往设置 → Providers 启用并配置唯一匹配后重试"
+                )
+            }
+            Self::CredentialUnavailable { model, provider } => format!(
+                "模型“{model}”的供应商“{provider}”本地凭据缺失或无法读取，请在设置 → Providers 中重新填写 API Key 后重试"
+            ),
+        }
+    }
+}
+
 /// Exact provider baseline; contains credential references, never credential values.
 pub type ProviderSnapshot = ProviderConfig;
 

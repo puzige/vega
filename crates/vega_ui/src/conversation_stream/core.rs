@@ -619,6 +619,19 @@ impl ConversationStream {
         cx.notify();
     }
 
+    /// Displays a typed provider-readiness rejection from the preflight
+    /// worker. The draft/input remain untouched because this runs before a
+    /// durable thread row or agent run exists.
+    pub fn apply_provider_preflight_error(
+        &mut self,
+        failure: ProviderPreflightFailure,
+        cx: &mut Context<Self>,
+    ) {
+        self.reject_composer_submission(cx);
+        self.controller_error = Some(failure.message());
+        cx.notify();
+    }
+
     /// Applies an already-loaded project display label without filesystem IO.
     pub fn set_project_label(&mut self, label: String, cx: &mut Context<Self>) {
         self.project_label = label;
