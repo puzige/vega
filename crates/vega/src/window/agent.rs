@@ -249,6 +249,18 @@ impl VegaWindow {
         self.start_agent_run_with_reasoning(stream, thread_id, run, reasoning, cx);
     }
 
+    /// Shows the existing Pricing repair route while preserving the current
+    /// authority/draft. Both durable runs and A7 first submits use this one
+    /// projection; only the first-submit caller must check before INSERT.
+    fn open_pricing_repair(&mut self, code: PricingSettingsErrorCode, cx: &mut Context<Self>) {
+        if let PricingControllerState::Ready { error, .. } = &mut self.pricing_controller.state {
+            *error = Some(code);
+        }
+        cx.set_global(vega_ui::settings::PricingSettingsRequested(true));
+        cx.set_global(SettingsOpen(true));
+        self.push_pricing_projection(cx);
+    }
+
     pub(crate) fn start_agent_run_with_reasoning(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -340,24 +352,6 @@ impl VegaWindow {
         let pricing_catalog = match self.pricing_controller.select_exact(&thread.model) {
             Ok(selection) => selection.catalog(),
             Err(code) => {
-                if let PricingControllerState::Ready {
-                    authority,
-                    generation,
-                    notice,
-                    draft,
-                    draft_reason,
-                    ..
-                } = &self.pricing_controller.state
-                {
-                    self.pricing_controller.state = PricingControllerState::Ready {
-                        authority: authority.clone(),
-                        generation: *generation,
-                        notice: *notice,
-                        draft: draft.clone(),
-                        draft_reason: *draft_reason,
-                        error: Some(code),
-                    };
-                }
                 if pending_user_content.is_some() {
                     stream.update(cx, ConversationStream::reject_composer_submission);
                 }
@@ -366,9 +360,7 @@ impl VegaWindow {
                 } else {
                     stream.update(cx, ConversationStream::apply_agent_error);
                 }
-                cx.set_global(vega_ui::settings::PricingSettingsRequested(true));
-                cx.set_global(SettingsOpen(true));
-                self.push_pricing_projection(cx);
+                self.open_pricing_repair(code, cx);
                 return;
             }
         };
@@ -672,14 +664,26 @@ impl VegaWindow {
         // the cached stream — with its composer text and focus — is never
         // rebuilt. A materialization failure keeps the draft installed and
         // surfaces the existing controller error for retry.
-        if let Some(draft) = self.draft_for_route(&thread_id)
-            && self.materialize_draft(&draft, cx).is_err()
-        {
-            stream.update(cx, |stream, cx| {
-                stream.reject_composer_submission(cx);
-                stream.apply_controller_error(cx);
-            });
-            return;
+        if let Some(draft) = self.draft_for_route(&thread_id) {
+            // A7-01 rule 8: the durable-thread T37 pricing gate below is too
+            // late for a lazy draft. Check its exact model against the same
+            // Ready authority before INSERT, so a missing price opens the
+            // repair page without creating an empty task or losing the text.
+            if let Err(code) = self.pricing_controller.select_exact(&draft.model) {
+                stream.update(cx, |stream, cx| {
+                    stream.reject_composer_submission(cx);
+                    stream.apply_agent_error(cx);
+                });
+                self.open_pricing_repair(code, cx);
+                return;
+            }
+            if self.materialize_draft(&draft, cx).is_err() {
+                stream.update(cx, |stream, cx| {
+                    stream.reject_composer_submission(cx);
+                    stream.apply_controller_error(cx);
+                });
+                return;
+            }
         }
         self.start_agent_run_with_reasoning(
             stream,

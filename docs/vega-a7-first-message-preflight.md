@@ -49,11 +49,20 @@ single-materialization, and no-stream-rebuild contracts.
 7. No user is asked to edit tests, config files, SQLite, or credentials by
    hand. Native live-provider acceptance needs an actual credential entered
    by the user through Vega Settings; until then it is BLOCKED, not PASS.
+8. A first submit whose exact draft model is not in the current Ready pricing
+   authority is also rejected **before** materialization. It opens the existing
+   Settings → Pricing repair route, retains the exact composer text, project,
+   model, and draft id across “Back to app”, and creates zero thread/message
+   rows. After adding that model's price through Settings, retrying the same
+   draft materializes exactly once and starts normally. This extends the
+   first-submit ordering only; existing durable-thread pricing preflight and
+   its authority remain unchanged. A pending/invalid pricing authority still
+   fails closed rather than inventing a zero price.
 
 ## Boundaries
 
 - No migration or automatic deletion of historical empty tasks.
-- No changes to model pricing, permission policy, branch/project menus, or
+- No changes to model pricing data or mutation policy, permission policy, branch/project menus, or
   composer geometry; no new dependencies.
 - No raw key or provider response in logs/test reports. No non-test
   `unwrap()`/`expect()` and no hard-coded style values.
@@ -78,3 +87,16 @@ single-materialization, and no-stream-rebuild contracts.
   agent may read that source without displaying the secret and save it through
   Vega Settings UI. Then verify a real response and one safe test-project tool
   action; record live network evidence separately from mock tests.
+- A mounted production-window regression covers an enabled provider and
+  credential with an unpriced exact draft model: submit → Pricing route →
+  UI Settings mutation → Back to app → retained text/project/model/id → retry.
+  Assert zero new rows and zero worker/provider calls before repair, then one
+  materialized row under the original draft id after repair. The test must
+  fail against the former materialize-before-price ordering.
+
+## Change record
+
+- 2026-09-17: Native E2E found a valid-provider `hy3` draft created a durable
+  empty thread before the missing-price gate opened Settings; returning after
+  repair lost the typed first message. Rule 8 and the mounted regression above
+  freeze pricing as a first-submit readiness check before draft materialization.

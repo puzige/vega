@@ -42,9 +42,27 @@ impl DraftFixture {
         with_project: bool,
         repo: TempDir,
     ) -> Self {
+        Self::open_with_repo_and_model(cx, with_project, repo, None)
+    }
+
+    fn open_with_repo_and_model(
+        cx: &mut gpui_kit::TestAppContext,
+        with_project: bool,
+        repo: TempDir,
+        unpriced_model: Option<&str>,
+    ) -> Self {
         let config_root = tempfile::tempdir().expect("r69 config root");
         let config_path = config_root.path().join("config.toml");
         model_selection_config(&config_path);
+        if let Some(model) = unpriced_model {
+            let mut config =
+                vega_store::config::read_from(&config_path).expect("r69 unpriced config");
+            config.providers[0].models.push(model.to_owned());
+            config.defaults.model = model.to_owned();
+            config
+                .save_to(&config_path)
+                .expect("r69 unpriced config save");
+        }
         vega_store::keystore::set_key(config_root.path(), "owned", "r69-test-key")
             .expect("r69 test credential");
         let data_root = tempfile::tempdir().expect("r69 data root");
@@ -107,6 +125,9 @@ impl DraftFixture {
             )
             .expect("r69 root window")
         });
+        // Match main.rs: Settings' Back button dispatches the app-level
+        // CloseSettings action through these production shortcut bindings.
+        cx.update(|cx| crate::app_palette::bind_shortcuts(window.into(), root.downgrade(), cx));
         cx.run_until_parked();
         Self {
             _repo: repo,
@@ -167,6 +188,17 @@ impl DraftFixture {
                 |row| row.get(0),
             )
             .expect("r69 standalone count")
+    }
+
+    fn message_rows(&self, thread_id: &str) -> i64 {
+        self.store()
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE thread_id = ?1",
+                [thread_id],
+                |row| row.get(0),
+            )
+            .expect("r69 message count")
     }
 
     fn draft(&self, cx: &mut gpui_kit::TestAppContext) -> Thread {
@@ -1298,6 +1330,141 @@ async fn a7_foreign_runtime_error_cannot_mark_current_turn(cx: &mut gpui_kit::Te
     assert!(visible.contains("运行环境"));
     assert!(!visible.contains("PRIVATE_RUNTIME_SENTINEL"));
     f.bounds("assistant-run-failure", cx);
+}
+
+/// A7-01 rule 8: the first-message pricing gate is a readiness failure, not
+/// permission to persist an empty task. The mounted window routes to the
+/// actual Pricing settings view; a settings-originated mutation repairs the
+/// exact model, and its visible Back control returns to the same editable
+/// draft before a second submit uses the ordinary provider boundary.
+#[gpui_kit::test]
+async fn a7_unpriced_first_submit_preserves_draft_through_pricing_repair(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let model = "a7-unpriced";
+    let content = "Reply with exactly VEGA_E2E_OK.";
+    let f = DraftFixture::open_with_repo_and_model(cx, true, diff_controller_repo(), Some(model));
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.draft.is_some()
+                && root.stream_view.is_some()
+                && matches!(
+                    root.pricing_controller.state,
+                    PricingControllerState::Ready { .. }
+                )
+                && root.configured_models.is_some()
+        })
+    });
+    let draft = f.draft(cx);
+    assert_eq!(draft.model, model);
+    assert_eq!(draft.project_id, f.project_id);
+    f.submit(content, cx);
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, cx| {
+            cx.global::<SettingsOpen>().0 && root.settings_view.is_some()
+        })
+    });
+    f.bounds("settings-page-pricing", cx);
+    assert_eq!(f.thread_rows(), 0, "an unpriced draft writes no empty task");
+    assert_eq!(f.message_rows(&draft.id), 0);
+    assert_eq!(f.draft(cx).id, draft.id);
+    assert_eq!(
+        f.input(cx)
+            .read_with(cx, |input, _| input.text().to_owned()),
+        content
+    );
+    assert!(f.provider.requests().is_empty());
+    assert_eq!(
+        f.root
+            .read_with(cx, |root, _| root.agent_worker_start_probe.load()),
+        0
+    );
+
+    let settings = f
+        .root
+        .read_with(cx, |root, _| root.settings_view.clone())
+        .expect("mounted pricing settings");
+    let generation = f
+        .root
+        .read_with(cx, |root, _| match &root.pricing_controller.state {
+            PricingControllerState::Ready { generation, .. } => *generation,
+            _ => panic!("pricing authority must be Ready"),
+        });
+    settings.update(cx, |_, cx| {
+        cx.emit(PricingMutationRequested {
+            generation,
+            mutation: Ok(vega_conversation::types::PricingMutation::AddCustom {
+                model: model.to_owned(),
+                rates: vega_conversation::types::PricingRateInputs {
+                    input_usd_per_million: "1".into(),
+                    output_usd_per_million: "1".into(),
+                    cache_read_usd_per_million: "1".into(),
+                    cache_write_usd_per_million: "1".into(),
+                },
+            }),
+        });
+    });
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            matches!(
+                &root.pricing_controller.state,
+                PricingControllerState::Ready { authority, .. }
+                    if authority.contains_exact_model(model)
+            )
+        })
+    });
+    assert_eq!(f.thread_rows(), 0, "adding a price is not a submit");
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    let back = visual
+        .debug_bounds("settings-back")
+        .expect("visible Back to app");
+    visual.simulate_click(back.center(), Modifiers::default());
+    visual.run_until_parked();
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, cx| {
+            !cx.global::<SettingsOpen>().0
+                && root.settings_view.is_none()
+                && root
+                    .stream_view
+                    .as_ref()
+                    .is_some_and(|(id, _)| id == &draft.id)
+        })
+    });
+    let retained = f.draft(cx);
+    assert_eq!(retained.id, draft.id);
+    assert_eq!(retained.project_id, f.project_id);
+    assert_eq!(retained.model, model);
+    assert_eq!(
+        f.input(cx)
+            .read_with(cx, |input, _| input.text().to_owned()),
+        content
+    );
+    assert_eq!(f.thread_rows(), 0);
+
+    f.submit(content, cx);
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1
+                && root.agent_controller.active.is_none()
+                && f.thread_rows() == 1
+        })
+    });
+    let rows = vega_store::threads::list_by_project(f.store().conn(), &f.project_id, None)
+        .expect("priced task rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, draft.id);
+    assert_eq!(rows[0].model, model);
+    assert_eq!(f.provider.requests().len(), 1);
+    let user_content: String = f
+        .store()
+        .conn()
+        .query_row(
+            "SELECT content FROM messages WHERE thread_id = ?1 AND role = 'user' ORDER BY seq LIMIT 1",
+            [&draft.id],
+            |row| row.get(0),
+        )
+        .expect("first durable user message");
+    assert_eq!(user_content, content);
 }
 
 /// A3 companion: repeated submits after materialization still produce exactly
