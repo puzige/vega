@@ -158,12 +158,22 @@ pub fn find_by_path(conn: &Connection, path: &str) -> Result<Option<Project>, Pr
     .map_err(ProjectsError::from)
 }
 
-/// Removes the project row with `id` and returns whether a row was deleted.
+/// Unregisters a project and returns whether a row was deleted.
 ///
-/// Only the database row is removed; files on disk are never touched (S2
-/// ruling: no confirmation layer, no filesystem writes).
+/// A8-02: existing tasks become standalone (`project_id IS NULL`) before the
+/// project row is removed. Both writes share one transaction, so a failed
+/// delete cannot leave tasks detached from a still-registered project. The
+/// sidebar project-order row follows its existing `ON DELETE CASCADE` foreign
+/// key. Files on disk are never touched (S2: no confirmation or file writes).
 pub fn remove(conn: &Connection, id: &str) -> Result<bool, ProjectsError> {
-    let deleted = conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
+    let transaction = conn.unchecked_transaction()?;
+    transaction.execute(
+        "UPDATE threads SET project_id = NULL WHERE project_id = ?1",
+        rusqlite::params![id],
+    )?;
+    let deleted =
+        transaction.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
+    transaction.commit()?;
     Ok(deleted > 0)
 }
 
@@ -241,7 +251,7 @@ fn is_unique_violation(error: &rusqlite::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{ProjectSort, ProjectsError, create, list, remove, touch_last_opened};
-    use crate::Store;
+    use crate::{Store, messages, sidebar_organization, threads, token_usage, tool_calls};
     use rusqlite::{Connection, params};
     use tempfile::tempdir;
 
@@ -361,6 +371,305 @@ mod tests {
 
         // 重复删除同一 id：无行受影响，返回 false。
         assert!(!remove(store.conn(), &gone.id).unwrap());
+    }
+
+    #[test]
+    fn a8_remove_detaches_all_tasks_and_preserves_their_history() {
+        let (store, dir) = open_temp_store();
+        let foreign_keys: i64 = store
+            .conn()
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(foreign_keys, 1);
+        let path = dir.path().join("target").to_string_lossy().into_owned();
+        let gone = create(store.conn(), &path, "target", Some("main")).unwrap();
+        let kept = create(
+            store.conn(),
+            &dir.path().join("kept").to_string_lossy(),
+            "kept",
+            None,
+        )
+        .unwrap();
+        for (id, project_id, status, pinned) in [
+            ("active", gone.id.as_str(), "active", false),
+            ("pinned", gone.id.as_str(), "active", true),
+            ("archived", gone.id.as_str(), "archived", false),
+            ("other", kept.id.as_str(), "active", false),
+        ] {
+            threads::create(
+                store.conn(),
+                threads::NewThread {
+                    id,
+                    project_id,
+                    title: id,
+                    mode: "plan",
+                    permission_mode: "confirm",
+                    model: "fixture-model",
+                    status,
+                    pinned,
+                    unread: true,
+                    created_at: 100,
+                    updated_at: 200,
+                },
+            )
+            .unwrap();
+        }
+        let message = messages::MessageRow {
+            id: "message".into(),
+            thread_id: "active".into(),
+            seq: 1,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: "retained answer".into(),
+            status: "done".into(),
+            created_at: 300,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        };
+        messages::insert(store.conn(), &message).unwrap();
+        tool_calls::insert(
+            store.conn(),
+            tool_calls::NewToolCall {
+                id: "tool",
+                thread_id: "active",
+                message_id: "message",
+                seq: 1,
+                tool: "read",
+                input_json: "{}",
+                status: "success",
+                created_at: 301,
+            },
+        )
+        .unwrap();
+        let usage_id = token_usage::insert(
+            store.conn(),
+            token_usage::NewTokenUsage {
+                thread_id: "active",
+                message_id: Some("message"),
+                model: "fixture-model",
+                input_tokens: 10,
+                output_tokens: 20,
+                cache_read_tokens: 3,
+                cache_write_tokens: 4,
+                cost_microcents: 100,
+                created_at: 302,
+                pricing_version: Some(token_usage::PRICED_VERSION),
+                pricing_profile: Some("base"),
+                call_started_at: Some(0),
+            },
+        )
+        .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO sidebar_groups(id,name,color,position) VALUES ('group','group','\"Gray\"',0)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO sidebar_memberships(thread_id,group_id,position) VALUES ('active','group',7)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO sidebar_project_order(project_id,position) VALUES (?1,1)",
+                [&gone.id],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO sidebar_project_order(project_id,position) VALUES (?1,2)",
+                [&kept.id],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO permissions(project_id,tool,pattern,created_at) VALUES (?1,'read','*',0)",
+                [&gone.id],
+            )
+            .unwrap();
+
+        let before = ["active", "pinned", "archived", "other"]
+            .map(|id| threads::find(store.conn(), id).unwrap().unwrap());
+        let before_call = tool_calls::find_state(store.conn(), "tool").unwrap();
+        let before_usage = token_usage::aggregate_by_thread(store.conn(), "active").unwrap();
+        let before_snapshot = sidebar_organization::read(store.conn()).unwrap();
+        assert!(remove(store.conn(), &gone.id).unwrap());
+        assert!(super::find(store.conn(), &gone.id).unwrap().is_none());
+        assert_eq!(
+            super::find(store.conn(), &kept.id).unwrap(),
+            Some(kept.clone())
+        );
+        for (index, id) in ["active", "pinned", "archived", "other"].iter().enumerate() {
+            let mut expected = before[index].clone();
+            if id != &"other" {
+                expected.project_id.clear();
+            }
+            assert_eq!(threads::find(store.conn(), id).unwrap(), Some(expected));
+        }
+        assert_eq!(
+            threads::list_standalone(store.conn(), Some("active"))
+                .unwrap()
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["pinned", "active"]
+        );
+        assert_eq!(
+            threads::list_standalone(store.conn(), Some("archived"))
+                .unwrap()
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["archived"]
+        );
+        assert_eq!(
+            messages::recent(store.conn(), "active", 10).unwrap(),
+            vec![message]
+        );
+        assert_eq!(
+            tool_calls::count_by_message(store.conn(), "active", "message").unwrap(),
+            1
+        );
+        assert_eq!(
+            tool_calls::find_state(store.conn(), "tool").unwrap(),
+            before_call
+        );
+        let usage = token_usage::aggregate_by_thread(store.conn(), "active").unwrap();
+        assert_eq!(usage, before_usage);
+        assert_eq!(usage.row_count, 1);
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens,
+                usage.cache_write_tokens
+            ),
+            (10, 20, 3, 4)
+        );
+        let retained_usage_id: i64 = store
+            .conn()
+            .query_row(
+                "SELECT id FROM token_usage WHERE thread_id='active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained_usage_id, usage_id);
+        let after_snapshot = sidebar_organization::read(store.conn()).unwrap();
+        assert_eq!(after_snapshot.memberships, before_snapshot.memberships);
+        assert_eq!(after_snapshot.project_order, vec![kept.id.clone()]);
+        assert_eq!(
+            before_snapshot.project_order,
+            vec![gone.id.clone(), kept.id.clone()]
+        );
+        let orphaned_permissions: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM permissions WHERE project_id=?1",
+                [&gone.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            orphaned_permissions, 1,
+            "old opaque project rule is inert, not transferred"
+        );
+        let violations: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+
+        // Path reuse creates a new identity; no old task or permission follows it.
+        let registered = create(store.conn(), &path, "target", Some("main")).unwrap();
+        assert_ne!(registered.id, gone.id);
+        assert!(
+            threads::list_by_project(store.conn(), &registered.id, None)
+                .unwrap()
+                .is_empty()
+        );
+        let new_permissions: i64 = store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM permissions WHERE project_id=?1",
+                [&registered.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_permissions, 0);
+        assert!(!remove(store.conn(), &gone.id).unwrap());
+        assert_eq!(
+            threads::find(store.conn(), "active")
+                .unwrap()
+                .unwrap()
+                .project_id,
+            ""
+        );
+    }
+
+    #[test]
+    fn a8_delete_failure_rolls_back_task_detach_and_project_order() {
+        let (store, _dir) = open_temp_store();
+        let project = create(store.conn(), "/tmp/rollback", "rollback", None).unwrap();
+        threads::create(
+            store.conn(),
+            threads::NewThread {
+                id: "owned",
+                project_id: &project.id,
+                title: "owned",
+                mode: "execute",
+                permission_mode: "confirm",
+                model: "model",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 2,
+            },
+        )
+        .unwrap();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO sidebar_project_order(project_id,position) VALUES (?1,0)",
+                [&project.id],
+            )
+            .unwrap();
+        store
+            .conn()
+            .execute_batch(
+                "CREATE TRIGGER fail_project_delete BEFORE DELETE ON projects \
+             BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END",
+            )
+            .unwrap();
+        assert!(remove(store.conn(), &project.id).is_err());
+        assert_eq!(
+            super::find(store.conn(), &project.id).unwrap(),
+            Some(project.clone())
+        );
+        assert_eq!(
+            threads::find(store.conn(), "owned")
+                .unwrap()
+                .unwrap()
+                .project_id,
+            project.id
+        );
+        assert_eq!(
+            sidebar_organization::read(store.conn())
+                .unwrap()
+                .project_order,
+            vec![project.id]
+        );
     }
 
     #[test]

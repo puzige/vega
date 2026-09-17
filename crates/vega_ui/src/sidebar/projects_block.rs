@@ -272,18 +272,36 @@ impl ProjectsBlock {
         }
     }
 
-    /// Removes the project row (database only; files on disk are never
-    /// touched — S2 ruling: no confirmation layer).
+    /// Unregisters the project and detaches its tasks in the store's A8-02
+    /// transaction. The route change observes the same draft-navigation and
+    /// task-mutation fences as other Sidebar writes; no files are touched.
     pub(super) fn remove_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        if task_mutation_busy(cx) {
+            self.error = Some("任务正在保存，请稍后重试移除项目".into());
+            cx.notify();
+            return;
+        }
+        if project_worker_is_active(project_id, cx) {
+            self.error = Some("项目任务仍在运行，请先停止并等待执行结束后重试移除项目".into());
+            cx.notify();
+            return;
+        }
+        if !crate::navigation::allow_task_navigation(None, cx) {
+            return;
+        }
+        crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, |store| {
             projects::remove(store.conn(), project_id)
                 .map_err(|error| format!("项目移除失败：{error}"))
         });
+        crate::navigation::finish_task_mutation(cx);
         match result {
-            Ok(_) => {
+            Ok(removed) => {
                 self.error = None;
                 self.reload(cx);
-                cx.emit(ProjectsBlockEvent::Removed(project_id.to_string()));
+                if removed {
+                    cx.emit(ProjectsBlockEvent::Removed(project_id.to_string()));
+                }
             }
             Err(message) => {
                 self.error = Some(message);

@@ -386,6 +386,10 @@ impl VegaWindow {
         let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
         let worker_sender = sender.clone();
         let config_path = self.composer_config_path();
+        // A8-02: register synchronously before spawn. The worker closure owns
+        // the token through its last tool/provider call, even if this window
+        // cancels or closes before the worker can acknowledge termination.
+        let worker_activity = vega_ui::sidebar::register_project_worker(&thread.project_id, cx);
         #[cfg(test)]
         let provider_override = self.agent_provider_override.clone();
         #[cfg(test)]
@@ -409,6 +413,7 @@ impl VegaWindow {
                     #[cfg(test)]
                     worker_start_probe,
                 );
+                drop(worker_activity);
             });
         if worker.is_err() {
             stream.update(cx, |stream, cx| stream.finish_composer_run(false, cx));

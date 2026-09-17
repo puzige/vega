@@ -55,3 +55,6 @@ pub use sidebar_organization::*;
 
 mod provider_settings;
 pub use provider_settings::*;
+
+mod project_worker;
+pub use project_worker::*;

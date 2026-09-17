@@ -44,6 +44,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
+    sync::Arc,
 };
 
 use gpui_kit::component::{
@@ -160,6 +161,27 @@ pub fn show_persisted(cx: &mut App) {
 pub struct SelectedProject(pub Option<String>);
 
 impl Global for SelectedProject {}
+
+/// Thin GPUI bridge for the conversation layer's worker-lifetime registry.
+/// It belongs to the app, not a particular window or sidebar instance.
+pub struct ProjectWorkerActivity(pub vega_conversation::types::ProjectWorkerActivity);
+
+impl Global for ProjectWorkerActivity {}
+
+/// Acquire ownership before spawning a project Agent worker. The returned
+/// token must live inside the worker closure until that worker truly exits.
+pub fn register_project_worker(project_id: &str, cx: &mut App) -> Arc<()> {
+    if cx.try_global::<ProjectWorkerActivity>().is_none() {
+        cx.set_global(ProjectWorkerActivity(Default::default()));
+    }
+    cx.update_global::<ProjectWorkerActivity, _>(|activity, _| activity.0.register(project_id))
+}
+
+/// Fail closed on project unregistration while any window's worker is alive.
+pub fn project_worker_is_active(project_id: &str, cx: &App) -> bool {
+    cx.try_global::<ProjectWorkerActivity>()
+        .is_some_and(|activity| activity.0.is_active(project_id))
+}
 
 /// The opened-thread content column is rendered by the window root since
 /// S3-T17: an inline [`crate::conversation_stream::ConversationStream`] view

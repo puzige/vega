@@ -1957,3 +1957,224 @@ async fn r69_r68_project_popup_opens_and_dismisses_on_the_draft_route(
         "the draft route is unchanged by a popup interaction"
     );
 }
+
+/// A8-02: the real Sidebar menu unregisters a project with a durable task,
+/// but the task and its messages survive as a standalone route. This covers
+/// the window's cached route and authority, not just the SQL primitive.
+#[gpui_kit::test]
+async fn a8_remove_project_keeps_open_task_and_clears_project_authority(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let removed_project = f.project_id.clone();
+    let project_path = f._repo.path().to_path_buf();
+    f.submit("retained task", cx);
+    pump_test_app(cx, |cx| {
+        f.root
+            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            && f.thread_rows() == 1
+    });
+    let opened = cx.update(|cx| {
+        cx.global::<OpenedThread>()
+            .0
+            .clone()
+            .expect("durable route")
+    });
+    assert_eq!(opened.project_id, removed_project);
+    assert!(!f.absent("environment-rail", cx));
+    let message_count = f.message_rows(&opened.id);
+    assert!(message_count > 0);
+    f.input(cx).update(cx, |input, cx| {
+        input.set_text("unsent before unregister", cx)
+    });
+    let project_menu: &'static str =
+        Box::leak(format!("project-more-{}", removed_project).into_boxed_str());
+    pump_test_app(cx, |cx| !f.absent(project_menu, cx));
+
+    // Drive the production project action menu. A single registered project
+    // has just its Remove Project entry at index zero.
+    f.click(project_menu, cx);
+    assert!(!f.absent("organization-menu-0", cx));
+    f.click("organization-menu-0", cx);
+    let standalone_row: &'static str =
+        Box::leak(format!("standalone-thread-row-{}", opened.id).into_boxed_str());
+    let stale_project_row: &'static str =
+        Box::leak(format!("project-header-{}", removed_project).into_boxed_str());
+    pump_test_app(cx, |cx| {
+        f.absent(stale_project_row, cx) && !f.absent(standalone_row, cx)
+    });
+
+    assert!(
+        project_path.is_dir(),
+        "unregister never removes the local folder"
+    );
+    assert_eq!(f.thread_rows(), 0);
+    assert_eq!(f.standalone_rows(), 1);
+    assert_eq!(f.message_rows(&opened.id), message_count);
+    assert!(
+        vega_store::projects::find(f.store().conn(), &removed_project)
+            .expect("project lookup")
+            .is_none()
+    );
+    cx.update(|cx| {
+        assert!(cx.global::<SelectedProject>().0.is_none());
+        assert!(
+            cx.global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_none_or(|thread| thread.project_binding().is_none()),
+            "old project must not remain the workspace authority"
+        );
+    });
+    assert!(
+        f.absent("environment-rail", cx),
+        "the project-only Environment rail must close"
+    );
+    let removed_project_task: &'static str =
+        Box::leak(format!("project-thread-row-{}", opened.id).into_boxed_str());
+    assert!(f.absent(removed_project_task, cx));
+
+    f.click(standalone_row, cx);
+    pump_test_app(cx, |cx| {
+        cx.update(|cx| {
+            cx.global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|thread| thread.id == opened.id && thread.is_standalone())
+        })
+    });
+    assert!(f.absent("environment-rail", cx));
+    assert_eq!(f.message_rows(&opened.id), message_count);
+    assert_eq!(
+        f.input(cx)
+            .read_with(cx, |input, _| input.text().to_owned()),
+        "unsent before unregister",
+        "the normal draft-navigation guard must preserve the open task's unsent input"
+    );
+}
+
+/// A8-02: another window's real provider worker retains its registered
+/// workspace until it exits. The production menu must refuse to detach its
+/// task while blocked, then accept the same action after worker termination.
+#[gpui_kit::test]
+async fn a8_other_window_cannot_remove_project_while_worker_is_alive(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    f.submit("first durable task", cx);
+    pump_test_app(cx, |cx| {
+        f.thread_rows() == 1
+            && f.root
+                .read_with(cx, |root, _| root.agent_controller.active.is_none())
+    });
+
+    // A second real Vega window shares App globals and the same mounted
+    // Sidebar/store, but does not own the first window's Agent controller.
+    let second_root = cx.new(VegaWindow::new);
+    second_root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(f.config_path.clone());
+    });
+    let second_window_root = second_root.clone();
+    let second_window = cx.update(|cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1403.), px(860.)),
+                    cx,
+                ))),
+                ..Default::default()
+            },
+            move |_, _| second_window_root,
+        )
+        .expect("second project window")
+    });
+    cx.run_until_parked();
+
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let probe = f
+        .root
+        .read_with(cx, |root, _| root.agent_worker_start_probe.clone());
+    *probe
+        .provider_construction_gate
+        .lock()
+        .expect("existing worker gate") = Some((entered_tx, release_rx));
+    f.submit("run blocked at provider construction", cx);
+    pump_test_app(cx, |cx| {
+        f.root
+            .read_with(cx, |root, _| root.agent_controller.active.is_some())
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("real worker reached provider construction");
+    assert!(cx.update(|cx| { vega_ui::sidebar::project_worker_is_active(&f.project_id, cx) }));
+    let route_before = cx.update(|cx| cx.global::<OpenedThread>().0.clone().expect("run route"));
+
+    let project_menu: &'static str =
+        Box::leak(format!("project-more-{}", f.project_id).into_boxed_str());
+    let click_second = |selector: &'static str, cx: &mut gpui_kit::TestAppContext| {
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(second_window.into(), cx);
+        let target = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("second window missing {selector}"));
+        visual.simulate_click(target.center(), Modifiers::default());
+        visual.run_until_parked();
+    };
+    click_second(project_menu, cx);
+    click_second("organization-menu-0", cx);
+    assert!(
+        vega_store::projects::find(f.store().conn(), &f.project_id)
+            .expect("blocked project lookup")
+            .is_some()
+    );
+    assert_eq!(f.thread_rows(), 1);
+    assert_eq!(f.standalone_rows(), 0);
+    cx.update(|cx| {
+        assert_eq!(
+            cx.global::<SelectedProject>().0.as_deref(),
+            Some(f.project_id.as_str())
+        );
+        assert_eq!(cx.global::<OpenedThread>().0.as_ref(), Some(&route_before));
+    });
+    assert!(
+        f.root
+            .read_with(cx, |root, _| root.agent_controller.active.is_some())
+    );
+
+    // Stop is asynchronous: cancellation alone must not release the folder
+    // while the blocked worker still owns its execution context.
+    f.root.update(cx, |root, cx| root.cancel_active_agent(cx));
+    assert!(f.root.read_with(cx, |root, _| {
+        root.agent_controller
+            .active
+            .as_ref()
+            .is_some_and(|active| active.cancel.is_cancelled())
+    }));
+    click_second(project_menu, cx);
+    click_second("organization-menu-0", cx);
+    assert!(
+        vega_store::projects::find(f.store().conn(), &f.project_id)
+            .expect("cancelled worker still owns project")
+            .is_some()
+    );
+    assert_eq!(f.thread_rows(), 1);
+    assert_eq!(f.standalone_rows(), 0);
+
+    release_tx.send(()).expect("release exact worker");
+    pump_test_app(cx, |cx| {
+        f.root
+            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+    });
+    assert!(!cx.update(|cx| { vega_ui::sidebar::project_worker_is_active(&f.project_id, cx) }));
+    click_second(project_menu, cx);
+    click_second("organization-menu-0", cx);
+    pump_test_app(cx, |_| {
+        vega_store::projects::find(f.store().conn(), &f.project_id)
+            .expect("removed project lookup")
+            .is_none()
+    });
+    assert_eq!(f.thread_rows(), 0);
+    assert_eq!(f.standalone_rows(), 1);
+}

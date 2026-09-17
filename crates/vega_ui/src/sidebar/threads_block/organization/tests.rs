@@ -159,6 +159,93 @@ fn sessions(f: &Fixture, cx: &gpui_kit::TestAppContext) -> Entity<ThreadsBlock> 
 }
 
 #[gpui_kit::test]
+async fn a8_project_menu_detaches_tasks_into_one_standalone_projection(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let project_tasks = conversation::list_threads(&store, "p", None).unwrap();
+    assert_eq!(project_tasks.len(), 5);
+    let archived = project_tasks
+        .iter()
+        .find(|thread| thread.id != f.first.id)
+        .unwrap();
+    conversation::set_thread_pinned(&store, &f.first.id, true).unwrap();
+    conversation::set_thread_status(&store, &archived.id, ThreadStatus::Archived).unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    assert_eq!(
+        snapshot(&f)
+            .projects
+            .iter()
+            .map(|project| project.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["p", "q"]
+    );
+    click(&f, cx, "project-more-p");
+    // With p first of two projects, the menu's first item moves it down;
+    // index 1 is the existing "移除项目（保留文件）" action.
+    click(&f, cx, "organization-menu-1");
+    cx.run_until_parked();
+
+    let state = snapshot(&f);
+    assert_eq!(
+        state
+            .projects
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["q"]
+    );
+    assert_eq!(
+        state.threads.len(),
+        6,
+        "all five target tasks and the unrelated task survive"
+    );
+    for thread in state
+        .threads
+        .iter()
+        .filter(|thread| thread.id != f.other.id)
+    {
+        assert!(
+            thread.is_standalone(),
+            "removed-project tasks are genuinely unbound"
+        );
+        let pinned = format!("pinned-thread-row-{}", thread.id);
+        let recent = format!("standalone-thread-row-{}", thread.id);
+        let project = format!("project-thread-row-{}", thread.id);
+        let visible = usize::from(!absent(&f, cx, &pinned))
+            + usize::from(!absent(&f, cx, &recent))
+            + usize::from(!absent(&f, cx, &project));
+        assert_eq!(
+            visible,
+            usize::from(thread.status == ThreadStatus::Active),
+            "task {} has exactly its expected projection",
+            thread.id
+        );
+    }
+    assert!(absent(&f, cx, "project-header-p"));
+    assert!(!absent(&f, cx, "project-header-q"));
+    f.sidebar.read_with(cx, |sidebar, cx| {
+        assert!(sidebar.projects_block.read(cx).error.is_none());
+        assert!(sidebar.sessions_block.read(cx).error.is_none());
+    });
+    cx.update(|cx| {
+        assert!(cx.global::<SelectedProject>().0.is_none());
+        assert!(cx.global::<OpenedThread>().0.is_none());
+    });
+
+    click(&f, cx, format!("pinned-thread-row-{}", f.first.id));
+    cx.update(|cx| {
+        let opened = cx.global::<OpenedThread>().0.as_ref().unwrap();
+        assert_eq!(opened.id, f.first.id);
+        assert!(opened.is_standalone());
+        assert!(cx.global::<SelectedProject>().0.is_none());
+    });
+}
+
+#[gpui_kit::test]
 async fn r15_route_guard_preserves_draft_and_switches_project_tasks(
     cx: &mut gpui_kit::TestAppContext,
 ) {

@@ -195,3 +195,45 @@ async fn r14_registration_completion_cannot_mutate_replaced_database_owner(
         1
     );
 }
+
+/// A8-02: the real block shows an actionable inline error and performs zero
+/// store writes while another window's worker owns this project folder.
+#[gpui_kit::test]
+async fn a8_live_project_worker_blocks_removal_until_its_token_exits(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("owned.sqlite")).unwrap();
+    store.migrate().unwrap();
+    let project =
+        projects::create(store.conn(), dir.path().to_str().unwrap(), "owned", None).unwrap();
+    cx.update(|cx| {
+        cx.set_global(VegaStore(Ok(store)));
+        cx.set_global(SelectedProject(Some(project.id.clone())));
+        cx.set_global(OpenedThread(None));
+        cx.set_global(ProjectsCollapsed(false));
+        cx.set_global(SidebarCollapsed(false));
+    });
+    let view = cx.new(ProjectsBlock::new);
+    let worker = cx.update(|cx| register_project_worker(&project.id, cx));
+    view.update(cx, |view, cx| view.remove_project(&project.id, cx));
+    view.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.error.as_deref(),
+            Some("项目任务仍在运行，请先停止并等待执行结束后重试移除项目")
+        );
+        assert_eq!(view.projects.len(), 1);
+        let store = cx.global::<VegaStore>().0.as_ref().unwrap();
+        assert!(projects::find(store.conn(), &project.id).unwrap().is_some());
+        assert_eq!(
+            cx.global::<SelectedProject>().0.as_deref(),
+            Some(project.id.as_str())
+        );
+    });
+    drop(worker);
+    view.update(cx, |view, cx| view.remove_project(&project.id, cx));
+    view.read_with(cx, |view, cx| {
+        assert!(view.error.is_none());
+        assert!(view.projects.is_empty());
+        let store = cx.global::<VegaStore>().0.as_ref().unwrap();
+        assert!(projects::find(store.conn(), &project.id).unwrap().is_none());
+    });
+}
