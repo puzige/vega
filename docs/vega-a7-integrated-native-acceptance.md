@@ -1,11 +1,16 @@
 # A7 integrated native acceptance
 
-Status: IN PROGRESS · 2026-09-17 · Primary owner: Codex
+Status: PARTIAL PASS · 2026-09-17 · Primary owner: Codex
+
+CPA credential, `hy3` text and read-only tool use pass in the installed native
+app. `glm-5.3-flash` remains blocked by external CPA quota; the draft/Pricing
+repair is covered by mounted production-window E2E but was not repeated
+manually on the final installed build.
 
 ## Integrated candidate
 
-- Branch: `feat/a7-usable-e2e` at `f9e12ab` before the follow-up
-  acceptance update (A7-01 + A7-02).
+- Branch: `feat/a7-usable-e2e` at `586d633` before this report update
+  (A7-01/A7-02 plus runtime failure, tool-fragment and Pricing-draft fixes).
 - `cargo fmt --all -- --check`: PASS.
 - `./scripts/cargo-lock.sh test --workspace`: PASS, including doctests;
   existing load-sensitive ignored tests remain ignored.
@@ -13,10 +18,19 @@ Status: IN PROGRESS · 2026-09-17 · Primary owner: Codex
   PASS.
 - `./scripts/cargo-lock.sh xtask package`: PASS; signed candidate at
   `dist/Vega.app`; `codesign --verify --deep --strict` PASS.
-- Candidate and now-installed executable SHA-256:
+- First candidate executable SHA-256:
   `c0d26c89e4d277d83830b502be07b0a4d4a576bdf6345b59bf2e65db56b8d8f5`.
   The previous installed executable was
   `62928924b8a37cc2ae4e9bece2d8dabd1c660112a2fcffe56ccfe83e3d895112`.
+- Final installed executable SHA-256:
+  `c3ebf1a2c9d1a85412807c7633aef93a1a4bdb711ab94aaff80505624c9b069a`.
+  Its signature and candidate/install hash equality were verified. The
+  previous installed A7 bundle is recoverable at
+  `/tmp/vega-a7-final.jgZIaq/Vega.app.previous`.
+- On the final integration commit, `./scripts/cargo-lock.sh test --workspace`,
+  `cargo fmt --all -- --check`, and
+  `./scripts/cargo-lock.sh clippy --workspace --all-targets -- -D warnings`
+  all exited 0. `./scripts/cargo-lock.sh xtask package` exited 0.
 
 ## Real native UI
 
@@ -72,12 +86,28 @@ this task does not perform data cleanup or migration.
 9. Retyped `Reply with exactly VEGA_E2E_OK.` in the Vega UI and submitted.
    The model replied `VEGA_E2E_OK` in the conversation. This is the first
    complete native text-message success on the installed build.
-10. In the same task, requested a read-only inspection of the project's
-    `README.md`. Vega rendered nine failed/corrupt tool cards and no final
-    answer. The durable tool calls have empty tool names, `{}` inputs and
+10. In the same task on the first candidate, requested a read-only inspection
+    of the project's `README.md`. Vega rendered nine failed/corrupt tool
+    cards and no final answer. The durable tool calls have empty tool names, `{}` inputs and
     `rejected` status (`run_mode` / unavailable tool). Tool-use E2E is not
-    passing; a dedicated implementation task is investigating the parser and
-    permission path. No project files were changed by this test.
+    passing in that build. No project files were changed by this test.
+
+## Final installed native regression
+
+11. Integrated the fixes, ran the combined workspace tests/strict lint/format
+    and packaged a signed app. Quit the first candidate, backed it up, then
+    installed the final candidate. The default `hy3`, local CPA credential
+    and zero-rate Pricing entry persisted; no key was exposed.
+12. From the visible Vega new-task composer, sent a read-only request to
+    inspect the selected project's `README.md`. The app rendered the correct
+    first heading `R13 Alpha workspace` and a green `read · 已完成` tool card.
+    SQLite confirmed one `read` tool call with `success` status and a
+    read-only approval source; the project Git worktree remained clean.
+13. Reopened the earlier `glm-5.3-flash` failed task. The conversation now
+    visibly states that the reply failed and advises checking provider
+    status/quota before retry. The specific live quota diagnosis is covered
+    by production tests, not claimed from this historical row because the
+    original provider body was intentionally not persisted.
 
 ## External provider status and remaining acceptance
 
@@ -90,10 +120,13 @@ this task does not perform data cleanup or migration.
 - Vega's Providers `glm-5.3-flash` connection test reported a 15-second
   timeout; the direct Pi quota response took about 29 seconds. The test's
   timeout therefore does not distinguish this upstream quota failure.
-- Credential import, first-message submission and a real text reply are
-  verified with `hy3`. `glm-5.3-flash` remains unavailable until its CPA
-  quota changes. Safe tool execution and draft-preserving Pricing recovery
-  are not verified. The current silent failed-assistant UI is being handled
-  as a separate follow-up defect.
-- The candidate is installed with a recoverable previous-app backup. No
-  remote push or merge was performed.
+- Credential import, first-message submission, a real text reply, a real
+  read-only tool call and persisted-failure visibility are verified on the
+  installed build. `glm-5.3-flash` remains unavailable until its CPA quota
+  changes. Pricing repair passed mounted-window E2E (zero row before price
+  repair, exact draft retained on return, exactly one row after resubmit),
+  but final native manual repetition was not performed.
+- The temporary `hy3` zero-rate local Pricing entry should be replaced with
+  actual CPA rates if its billing changes; it is not a verified tariff.
+  Historical failed/empty test tasks were not deleted. No remote push or
+  merge was performed.
