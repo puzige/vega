@@ -148,18 +148,45 @@ impl Render for VegaWindow {
                         _ => None,
                     };
                     let stream = match cached {
-                        Some(view) => view,
+                        Some(view) => {
+                            // A8-01: the same draft id intentionally keeps
+                            // the same stream (and Composer input/focus), but
+                            // project selection may have changed around it.
+                            // Only the window-owned unpersisted draft may
+                            // cross that project boundary in place.
+                            let needs_rebind = draft_route
+                                && view.read(cx).route_project_id() != thread.project_id;
+                            let label = if needs_rebind {
+                                self.sidebar
+                                    .read(cx)
+                                    .project_label(&thread.project_id, cx)
+                                    .unwrap_or_default()
+                            } else {
+                                String::new()
+                            };
+                            view.update(cx, |stream, cx| {
+                                stream.set_draft_route(draft_route, cx);
+                                if needs_rebind {
+                                    stream.rebind_draft_project(thread.clone(), label, cx);
+                                }
+                            });
+                            view
+                        }
                         None => {
                             if let Some((_, previous)) = self.stream_view.take() {
                                 self.cancel_active_agent(cx);
                                 previous.update(cx, |stream, cx| stream.timeout_permission(cx));
                             }
                             let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
-                            if let Some(label) =
-                                self.sidebar.read(cx).project_label(&thread.project_id, cx)
-                            {
-                                view.update(cx, |stream, cx| stream.set_project_label(label, cx));
-                            }
+                            let label = self
+                                .sidebar
+                                .read(cx)
+                                .project_label(&thread.project_id, cx)
+                                .unwrap_or_default();
+                            view.update(cx, |stream, cx| {
+                                stream.set_draft_route(draft_route, cx);
+                                stream.set_project_label(label, cx);
+                            });
                             // A2-14/R1: this frame only projects the durable
                             // thread and the already loaded in-memory model
                             // catalog. Config IO is scheduled below on a
@@ -381,21 +408,7 @@ impl Render for VegaWindow {
                     if returning_from_settings {
                         stream.update(cx, |stream, cx| stream.focus_composer(window, cx));
                     }
-                    // R69 R15: with no project selected the home route keeps
-                    // the existing guidance copy and the `显示侧栏` entry above
-                    // the real composer, which materializes as a standalone
-                    // task on first submit.
-                    if draft_route && thread.is_standalone() {
-                        div()
-                            .size_full()
-                            .flex()
-                            .flex_col()
-                            .child(self.render_home_guidance(!sidebar_visible, colors, cx))
-                            .child(div().flex_1().min_h_0().child(stream))
-                            .into_any_element()
-                    } else {
-                        stream.into_any_element()
-                    }
+                    stream.into_any_element()
                 }
             }
         };
@@ -692,110 +705,5 @@ impl VegaWindow {
         } else {
             vega_ui::sidebar::toggle_persisted(cx);
         }
-    }
-
-    fn empty_add_project_clicked(
-        &mut self,
-        _: &MouseUpEvent,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.sidebar.update(cx, Sidebar::open_project_picker);
-    }
-
-    fn empty_show_sidebar_clicked(
-        &mut self,
-        _: &MouseUpEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        window.dispatch_action(Box::new(ToggleSidebar), cx);
-    }
-
-    /// R69 R15: the project-less home route keeps the §4.6 guidance copy and
-    /// the `显示侧栏` entry, now sitting above the **real** composer instead of
-    /// a click-to-create placeholder. The `添加项目文件夹以开始…` affordance stays
-    /// reachable and still opens the production folder picker.
-    fn render_home_guidance(
-        &mut self,
-        sidebar_hidden: bool,
-        colors: ThemeColors,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let show_sidebar = sidebar_hidden.then(|| {
-            div()
-                .px_3()
-                .py_1()
-                .rounded_md()
-                .text_size(px(Typography::SIDEBAR))
-                .text_color(colors.text_secondary)
-                .cursor_pointer()
-                .hover(move |style| style.bg(colors.bg_hover))
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(Self::empty_show_sidebar_clicked),
-                )
-                .child("显示侧栏")
-                .into_any_element()
-        });
-        div()
-            .w_full()
-            .flex_shrink_0()
-            .px(px(Layout::CONTENT_PADDING))
-            .pt(px(Layout::CONTENT_PADDING))
-            .child(
-                div()
-                    .w_full()
-                    .max_w(px(Layout::CONTENT_MAX_WIDTH))
-                    .mx_auto()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_size(px(Typography::EMPTY_STATE_TITLE))
-                            .font_weight(Typography::EMPTY_STATE_TITLE_WEIGHT)
-                            .text_color(colors.text_primary)
-                            .child("先添加一个项目"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_secondary)
-                            .child("添加一个文件夹后，就可以创建任务并开始工作。"),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                            .mx_auto()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .debug_selector(|| "home-guidance-add-project".into())
-                                    .px_3()
-                                    .py_1()
-                                    .rounded_md()
-                                    .border_1()
-                                    .border_color(colors.border_subtle)
-                                    .bg(colors.bg_elevated)
-                                    .text_size(px(Typography::SIDEBAR))
-                                    .text_color(colors.text_secondary)
-                                    .cursor_pointer()
-                                    .hover(move |style| style.bg(colors.bg_hover))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(Self::empty_add_project_clicked),
-                                    )
-                                    .child("添加项目文件夹以开始…"),
-                            )
-                            .children(show_sidebar),
-                    ),
-            )
-            .into_any_element()
     }
 }

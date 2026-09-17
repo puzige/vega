@@ -41,6 +41,13 @@ impl CurrentHead {
         self.pending = None;
         self.next_refresh = Instant::now();
     }
+
+    pub(super) fn reset_route(&mut self) {
+        self.invalidate();
+        self.target = None;
+        self.state = None;
+        self.resolving = false;
+    }
 }
 fn database(cx: &App) -> Option<PathBuf> {
     cx.try_global::<VegaStore>()?
@@ -61,9 +68,7 @@ impl BranchSelector {
     pub(super) fn poll_current_head(&mut self, cx: &mut Context<Self>) {
         let owner = database(cx);
         if !self.active_head_owner(cx) || owner != self.current_head.database {
-            self.current_head.invalidate();
-            self.current_head.target = None;
-            self.current_head.state = None;
+            self.current_head.reset_route();
             self.current_head.database = owner;
             if !self.active_head_owner(cx) {
                 return;
@@ -94,13 +99,13 @@ impl BranchSelector {
             cx.spawn(async move |this, cx| {
                 let target = worker.await;
                 this.update(cx, |this, cx| {
-                    this.current_head.resolving = false;
                     if this.current_head.generation != generation
                         || database(cx).as_ref() != Some(&owner)
                         || !this.active_head_owner(cx)
                     {
                         return;
                     }
+                    this.current_head.resolving = false;
                     this.current_head.target = target;
                     if this.current_head.target.is_none() {
                         this.current_head.state = Some(ProjectBranchState::Unknown);

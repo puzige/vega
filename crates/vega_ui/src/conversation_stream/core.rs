@@ -140,6 +140,8 @@ pub struct ConversationStream {
     pub(crate) model_menu_scroll: ScrollHandle,
     pub(crate) compact_workspace: bool,
     pub(crate) project_label: String,
+    /// Window-owned R69 draft route, never inferred from a durable `Thread`.
+    pub(crate) draft_route: bool,
     /// R49 utility-bar project menu rows (`(id, name)`), loaded from the same
     /// store query the sidebar's `ProjectsBlock` renders and only while the
     /// folder chip's menu is being opened — never during a frame.
@@ -368,6 +370,7 @@ impl ConversationStream {
             model_menu_scroll: ScrollHandle::new(),
             compact_workspace: false,
             project_label: String::new(),
+            draft_route: false,
             utility_projects: Vec::new(),
             utility_projects_open: false,
             utility_project_query: String::new(),
@@ -467,6 +470,49 @@ impl ConversationStream {
             self.controller_error = None;
             cx.notify();
         }
+    }
+
+    /// Projects the window's draft status without changing a durable thread.
+    /// The app root owns this bit because `Thread` mirrors the database row.
+    pub fn set_draft_route(&mut self, draft: bool, cx: &mut Context<Self>) {
+        if self.draft_route != draft {
+            self.draft_route = draft;
+            cx.notify();
+        }
+    }
+
+    /// Project identity of the route currently projected by this cached view.
+    pub fn route_project_id(&self) -> &str {
+        &self.thread.project_id
+    }
+
+    /// Rebinds an unmaterialized draft in place. Its stable stream and input
+    /// entities retain text, focus, model and settings; only project-scoped
+    /// controllers and cached data are invalidated before the new route runs.
+    pub fn rebind_draft_project(
+        &mut self,
+        thread: Thread,
+        label: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.draft_route || thread.id != self.thread.id || !self.entries.is_empty() {
+            return false;
+        }
+        if thread.project_id == self.thread.project_id {
+            return true;
+        }
+        self.close_composer_popovers(cx);
+        self.branch_selector.update(cx, |selector, cx| {
+            selector.rebind_draft_project(&thread.project_id, cx);
+        });
+        self.commit_panel.update(cx, |panel, cx| {
+            panel.rebind_draft_project(&thread.project_id, cx);
+        });
+        self.invalidate_file_index(cx);
+        self.thread = thread;
+        self.project_label = label;
+        cx.notify();
+        true
     }
 
     /// Projects only a renamed title onto the cached route entity. The window

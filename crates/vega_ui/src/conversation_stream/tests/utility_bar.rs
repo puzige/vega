@@ -613,13 +613,29 @@ async fn r49_folder_chip_selects_another_project_from_the_shared_rows(cx: &mut T
 }
 
 #[gpui_kit::test]
-async fn r49_utility_bar_is_absent_without_a_project_context(cx: &mut TestAppContext) {
-    let (window, _stream, _events) = open_controller_stream(cx, "r49-no-project");
+async fn r49_committed_empty_session_keeps_its_project_fence_but_a8_draft_can_choose(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _events) = open_controller_stream(cx, "r49-no-project");
     install_utility_globals(cx, &[], None);
     assert!(
         VisualTestContext::from_window(window.into(), cx)
             .debug_bounds("composer-utility-bar")
             .is_none(),
-        "a route without a project context renders no utility bar"
+        "a committed task whose selection mismatches stays behind the R49 fence"
+    );
+    stream.update(cx, |stream, cx| {
+        stream.set_draft_route(true, cx);
+        let mut draft = stream.thread.clone();
+        draft.project_id.clear();
+        assert!(stream.rebind_draft_project(draft, String::new(), cx));
+    });
+    bounds(window, "composer-utility-bar", cx);
+    bounds(window, "composer-utility-project-chip", cx);
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-utility-branch-chip")
+            .is_none(),
+        "an unbound draft has only the project chip"
     );
 }

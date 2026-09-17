@@ -17,6 +17,7 @@ use gpui_kit::{
     Bounds, Modifiers, Pixels, VisualTestContext, WindowBounds, WindowOptions, px, size,
 };
 use vega_conversation::types::{PermissionMode, ThreadMode, ThreadStatus};
+use vega_ui::branch_selector::BranchListRequested;
 use vega_ui::conversation_stream::{ComposerDefaultsRequested, ThreadSettingsRequested};
 use vega_ui::sidebar::SelectedProject;
 
@@ -31,6 +32,7 @@ struct DraftFixture {
     data_root: TempDir,
     database_path: std::path::PathBuf,
     project_id: String,
+    second_project_id: Option<String>,
     root: Entity<VegaWindow>,
     window: gpui_kit::WindowHandle<VegaWindow>,
     provider: Arc<vega_runtime::MockProvider>,
@@ -51,6 +53,17 @@ impl DraftFixture {
         repo: TempDir,
         unpriced_model: Option<&str>,
     ) -> Self {
+        Self::open_with_registration(cx, with_project, with_project, repo, None, unpriced_model)
+    }
+
+    fn open_with_registration(
+        cx: &mut gpui_kit::TestAppContext,
+        register_project: bool,
+        select_project: bool,
+        repo: TempDir,
+        second_repo: Option<&std::path::Path>,
+        unpriced_model: Option<&str>,
+    ) -> Self {
         let config_root = tempfile::tempdir().expect("r69 config root");
         let config_path = config_root.path().join("config.toml");
         model_selection_config(&config_path);
@@ -69,7 +82,7 @@ impl DraftFixture {
         let database_path = data_root.path().join("vega.db");
         let store = Store::open(&database_path).expect("r69 store");
         store.migrate().expect("r69 migrations");
-        let project_id = if with_project {
+        let project_id = if register_project {
             vega_store::projects::create(
                 store.conn(),
                 repo.path().to_str().expect("UTF-8 r69 repo"),
@@ -81,6 +94,16 @@ impl DraftFixture {
         } else {
             String::new()
         };
+        let second_project_id = second_repo.map(|path| {
+            vega_store::projects::create(
+                store.conn(),
+                path.to_str().expect("UTF-8 a8 second repo"),
+                "a8-second-project",
+                None,
+            )
+            .expect("a8 second project")
+            .id
+        });
 
         cx.update(|cx| {
             gpui_kit::init(cx);
@@ -92,7 +115,7 @@ impl DraftFixture {
             cx.set_global(vega_ui::sidebar::ProjectsCollapsed(false));
             cx.set_global(vega_ui::sidebar::SessionsCollapsed(false));
             cx.set_global(VegaStore(Ok(store)));
-            cx.set_global(SelectedProject(with_project.then(|| project_id.clone())));
+            cx.set_global(SelectedProject(select_project.then(|| project_id.clone())));
             // The home route: no opened thread, so the window installs its draft.
             cx.set_global(OpenedThread(None));
             vega_ui::init(cx);
@@ -136,6 +159,7 @@ impl DraftFixture {
             data_root,
             database_path,
             project_id,
+            second_project_id,
             root,
             window,
             provider,
@@ -152,6 +176,30 @@ impl DraftFixture {
         repo: TempDir,
     ) -> Self {
         let fixture = Self::open_with_repo(cx, with_project, repo);
+        pump_test_app(cx, |cx| {
+            fixture.root.read_with(cx, |root, _| {
+                root.draft.is_some()
+                    && root.stream_view.is_some()
+                    && !root.model_catalog_loading
+                    && root.configured_models.is_some()
+            })
+        });
+        fixture
+    }
+
+    fn home_with_project_choices(
+        cx: &mut gpui_kit::TestAppContext,
+        select_project: bool,
+        second_repo: Option<&std::path::Path>,
+    ) -> Self {
+        let fixture = Self::open_with_registration(
+            cx,
+            true,
+            select_project,
+            diff_controller_repo(),
+            second_repo,
+            None,
+        );
         pump_test_app(cx, |cx| {
             fixture.root.read_with(cx, |root, _| {
                 root.draft.is_some()
@@ -232,6 +280,17 @@ impl DraftFixture {
         gpui_kit::VisualTestContext::from_window(self.window.into(), cx)
             .debug_bounds(selector)
             .is_none()
+    }
+
+    fn click(&self, selector: &'static str, cx: &mut gpui_kit::TestAppContext) {
+        let bounds = self.bounds(selector, cx);
+        let mut visual = VisualTestContext::from_window(self.window.into(), cx);
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    fn project_row_selector(project_id: &str) -> &'static str {
+        Box::leak(format!("composer-utility-project-row-{project_id}").into_boxed_str())
     }
 
     /// Types into the real composer and submits through the production key
@@ -900,8 +959,12 @@ async fn r69_a11_no_project_home_route_is_still_a_usable_composer(
 
     let composer = f.bounds("composer-shell", cx);
     assert!(f32::from(composer.size.height) >= Layout::COMPOSER_MIN_HEIGHT);
-    // R15: the existing guidance copy and the 显示侧栏 entry are kept.
-    f.bounds("home-guidance-add-project", cx);
+    // A8-01 supersedes R15: the project choice is in the real Composer,
+    // with no competing folder-picker prompt on the home route.
+    f.bounds("composer-utility-bar", cx);
+    f.bounds("composer-utility-project-chip", cx);
+    assert!(f.absent("composer-utility-branch-chip", cx));
+    assert!(f.absent("home-guidance-add-project", cx));
     let input = f.input(cx);
     input.update(cx, |input, cx| input.set_text("standalone draft", cx));
     assert_eq!(
@@ -918,6 +981,295 @@ async fn r69_a11_no_project_home_route_is_still_a_usable_composer(
     assert_eq!(standalone.len(), 1);
     assert_eq!(standalone[0].id, draft.id);
     assert_eq!(standalone[0].project_id, "");
+}
+
+/// A8-01: registered folders are reachable from a project-less draft's real
+/// Composer. Choosing one rebinds the cached stream without materializing a
+/// task or replacing its input/focus, and first submit uses that final choice.
+#[gpui_kit::test]
+async fn a8_unbound_home_draft_chooses_registered_project_in_composer(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home_with_project_choices(cx, false, None);
+    let draft = f.draft(cx);
+    let stream = f.stream(cx);
+    let input = f.input(cx);
+    assert!(draft.is_standalone());
+    assert_eq!(
+        cx.update(|cx| cx.global::<SelectedProject>().0.clone()),
+        None
+    );
+    f.bounds("composer-shell", cx);
+    f.bounds("composer-utility-bar", cx);
+    f.bounds("composer-utility-project-chip", cx);
+    assert!(f.absent("composer-utility-branch-chip", cx));
+    assert!(f.absent("home-guidance-add-project", cx));
+
+    input.update(cx, |input, cx| {
+        input.set_text("choose a registered project", cx)
+    });
+    let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+    f.window
+        .update(cx, |_, window, cx| window.focus(&focus, cx))
+        .expect("a8 composer focus");
+    f.click("composer-utility-project-chip", cx);
+    f.bounds("composer-utility-project-menu", cx);
+    let row = DraftFixture::project_row_selector(&f.project_id);
+    f.bounds(row, cx);
+    f.click(row, cx);
+
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.draft
+                .as_ref()
+                .is_some_and(|draft| draft.project_id == f.project_id)
+                && root
+                    .branch_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.identity.project_id == f.project_id)
+        })
+    });
+    assert_eq!(f.draft(cx).id, draft.id);
+    assert_eq!(f.stream(cx).entity_id(), stream.entity_id());
+    assert_eq!(f.input(cx).entity_id(), input.entity_id());
+    assert_eq!(
+        input.read_with(cx, |input, _| input.text().to_owned()),
+        "choose a registered project"
+    );
+    assert!(
+        f.window
+            .update(cx, |_, window, _| focus.is_focused(window))
+            .expect("a8 focus state"),
+        "project choice returns focus to the same Composer input"
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.route_project_id().to_owned()),
+        f.project_id
+    );
+    f.bounds("composer-utility-branch-chip", cx);
+    assert_eq!(f.thread_rows(), 0);
+    assert_eq!(f.standalone_rows(), 0);
+
+    f.submit("choose a registered project", cx);
+    let rows = vega_store::threads::list_by_project(f.store().conn(), &f.project_id, None)
+        .expect("a8 chosen-project task rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, draft.id);
+    assert_eq!(rows[0].project_id, f.project_id);
+    assert_eq!(f.standalone_rows(), 0);
+}
+
+/// A8-01: A→B is one draft, not a label-only switch. The very next branch
+/// request must carry B's project id, and B is the sole durable binding.
+#[gpui_kit::test]
+async fn a8_draft_switches_a_to_b_and_branches_only_in_b(cx: &mut gpui_kit::TestAppContext) {
+    let second_repo = artifact_controller_repo();
+    let f = DraftFixture::home_with_project_choices(cx, true, Some(second_repo.path()));
+    let second = f.second_project_id.clone().expect("a8 B project");
+    let draft = f.draft(cx);
+    let stream = f.stream(cx);
+    let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+    let input = f.input(cx);
+    input.update(cx, |input, cx| input.set_text("project B work", cx));
+    // The existing draft settings path owns the permission choice; project
+    // switching must carry it, and the initial model/mode, into the INSERT.
+    stream.update(cx, |_, cx| {
+        cx.emit(ThreadSettingsRequested {
+            thread_id: draft.id.clone(),
+            mode: None,
+            permission_mode: Some(PermissionMode::ReadOnly),
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(f.draft(cx).permission_mode, PermissionMode::ReadOnly);
+
+    f.click("composer-utility-project-chip", cx);
+    f.click(DraftFixture::project_row_selector(&second), cx);
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.branch_controller
+                .active
+                .as_ref()
+                .is_some_and(|active| active.identity.project_id == second)
+        })
+    });
+    assert_eq!(f.draft(cx).id, draft.id);
+    assert_eq!(f.draft(cx).project_id, second);
+    assert_eq!(f.draft(cx).permission_mode, PermissionMode::ReadOnly);
+    assert_eq!(f.draft(cx).mode, draft.mode);
+    assert_eq!(f.draft(cx).model, draft.model);
+    assert_eq!(f.stream(cx).entity_id(), stream.entity_id());
+    assert_eq!(f.input(cx).entity_id(), input.entity_id());
+    assert_eq!(
+        input.read_with(cx, |input, _| input.text().to_owned()),
+        "project B work"
+    );
+    assert_eq!(
+        selector.read_with(cx, |selector, _| selector.route().1.to_owned()),
+        second
+    );
+
+    let requests = Arc::new(Mutex::new(Vec::<BranchListRequested>::new()));
+    let observed = requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(&selector, move |_, request: &BranchListRequested, _| {
+            observed
+                .lock()
+                .expect("a8 branch requests")
+                .push(request.clone());
+        })
+        .detach();
+    });
+    f.click("composer-utility-branch-chip", cx);
+    assert!(selector.read_with(cx, |selector, _| selector.is_open()));
+    assert_eq!(requests.lock().expect("a8 immediate requests").len(), 1);
+    pump_test_app(cx, |cx| {
+        selector.read_with(cx, |selector, _| selector.snapshot_generation().is_some())
+    });
+    let requests = requests.lock().expect("a8 observed requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].thread_id, draft.id);
+    assert_eq!(requests[0].project_id, second);
+    drop(requests);
+    selector.update(cx, |selector, cx| {
+        assert!(selector.request_close(cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(f.thread_rows(), 0);
+    assert_eq!(f.standalone_rows(), 0);
+
+    f.submit("project B work", cx);
+    let store = f.store();
+    let rows =
+        vega_store::threads::list_by_project(store.conn(), &second, None).expect("a8 B task rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, draft.id);
+    assert_eq!(rows[0].project_id, second);
+    assert_eq!(rows[0].permission_mode, PermissionMode::ReadOnly.as_str());
+    assert_eq!(rows[0].mode, draft.mode.as_str());
+    assert_eq!(rows[0].model, draft.model);
+    assert_eq!(f.thread_rows(), 0, "A receives no task row");
+}
+
+/// A8-01: detaching the same A→B draft clears project-scoped controller and
+/// popup state, yet keeps the Composer and writes exactly one standalone row.
+#[gpui_kit::test]
+async fn a8_draft_switches_a_to_b_to_detached_without_stale_branch(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let second_repo = artifact_controller_repo();
+    let f = DraftFixture::home_with_project_choices(cx, true, Some(second_repo.path()));
+    let second = f.second_project_id.clone().expect("a8 B project");
+    let draft = f.draft(cx);
+    let stream = f.stream(cx);
+    let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+    let input = f.input(cx);
+    input.update(cx, |input, cx| input.set_text("detached work", cx));
+
+    f.click("composer-utility-project-chip", cx);
+    f.click(DraftFixture::project_row_selector(&second), cx);
+    pump_test_app(cx, |cx| f.draft(cx).project_id == second);
+    f.click("composer-utility-branch-chip", cx);
+    pump_test_app(cx, |cx| {
+        selector.read_with(cx, |selector, _| selector.snapshot_generation().is_some())
+    });
+    assert!(selector.read_with(cx, |selector, _| selector.is_open()));
+    f.click("composer-utility-project-chip", cx);
+    assert!(!selector.read_with(cx, |selector, _| selector.is_open()));
+    f.bounds("composer-utility-project-menu", cx);
+    assert!(f.absent("branch-selector-popup", cx));
+    f.click("composer-utility-project-detach", cx);
+
+    pump_test_app(cx, |cx| {
+        f.draft(cx).is_standalone()
+            && f.root
+                .read_with(cx, |root, _| root.branch_controller.active.is_none())
+    });
+    assert_eq!(f.draft(cx).id, draft.id);
+    assert_eq!(f.stream(cx).entity_id(), stream.entity_id());
+    assert_eq!(f.input(cx).entity_id(), input.entity_id());
+    assert_eq!(
+        input.read_with(cx, |input, _| input.text().to_owned()),
+        "detached work"
+    );
+    assert_eq!(
+        selector.read_with(cx, |selector, _| selector.route().1.to_owned()),
+        ""
+    );
+    assert_eq!(
+        stream
+            .read_with(cx, |stream, _| stream.commit_panel())
+            .read_with(cx, |panel, _| panel.route().1.to_owned()),
+        ""
+    );
+    f.bounds("composer-utility-bar", cx);
+    f.bounds("composer-utility-project-chip", cx);
+    assert!(f.absent("composer-utility-branch-chip", cx));
+    assert!(f.absent("composer-utility-project-menu", cx));
+    assert!(f.absent("branch-selector-popup", cx));
+    assert_eq!(f.thread_rows(), 0);
+    assert_eq!(f.standalone_rows(), 0);
+
+    f.submit("detached work", cx);
+    let rows =
+        vega_store::threads::list_standalone(f.store().conn(), Some(ThreadStatus::Active.as_str()))
+            .expect("a8 standalone task rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, draft.id);
+    assert_eq!(rows[0].project_id, "");
+    assert_eq!(f.thread_rows(), 0);
+}
+
+/// A8-01 does not turn the shared selection chip into a durable task move.
+/// An existing empty session can still expose the older R49 bar, but choosing
+/// another project changes only navigation selection, never its stored row.
+#[gpui_kit::test]
+async fn a8_existing_empty_task_keeps_its_durable_project_binding(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let second_repo = artifact_controller_repo();
+    let f = DraftFixture::home_with_project_choices(cx, true, Some(second_repo.path()));
+    let second = f.second_project_id.clone().expect("a8 B project");
+    let store = f.store();
+    let committed = vega_conversation::threads::create_thread(
+        &store,
+        &f.project_id,
+        "gpt-5.6-terra",
+        PermissionMode::Confirm.as_str(),
+    )
+    .expect("a8 existing task");
+    cx.update(|cx| {
+        cx.set_global(OpenedThread(Some(committed.clone())));
+        cx.refresh_windows();
+    });
+    cx.run_until_parked();
+    f.bounds("composer-utility-bar", cx);
+    f.click("composer-utility-project-chip", cx);
+    f.click(DraftFixture::project_row_selector(&second), cx);
+
+    assert_eq!(
+        cx.update(|cx| cx.global::<SelectedProject>().0.clone()),
+        Some(second.clone())
+    );
+    let opened = cx
+        .update(|cx| cx.global::<OpenedThread>().0.clone())
+        .expect("a8 durable route still open");
+    assert_eq!(opened.id, committed.id);
+    assert_eq!(opened.project_id, f.project_id);
+    let stored = vega_store::threads::find(store.conn(), &committed.id)
+        .expect("a8 durable read")
+        .expect("a8 durable row");
+    assert_eq!(stored.project_id, f.project_id);
+    assert_eq!(f.thread_rows(), 1);
+    assert_eq!(
+        vega_store::threads::list_by_project(store.conn(), &second, None)
+            .expect("a8 B rows")
+            .len(),
+        0
+    );
+    assert_eq!(f.message_rows(&committed.id), 0);
+    assert!(f.absent("composer-utility-bar", cx));
 }
 
 /// A12: the sidebar's [新建任务] entry lands on the draft route without

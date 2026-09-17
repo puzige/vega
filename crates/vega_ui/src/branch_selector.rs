@@ -561,6 +561,21 @@ impl BranchSelector {
         (&self.thread_id, &self.project_id)
     }
 
+    /// Changes the project of the window-owned unmaterialized draft while
+    /// retaining this entity and its event subscriptions. Old snapshots and
+    /// pending operations cannot be reused for the new repository.
+    pub fn rebind_draft_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        if self.project_id == project_id {
+            return;
+        }
+        self.project_id = project_id.to_owned();
+        self.model = BranchSelectorModel::default();
+        self.current_head.reset_route();
+        self.disabled = false;
+        self.search.update(cx, |search, cx| search.clear(cx));
+        cx.notify();
+    }
+
     pub fn is_open(&self) -> bool {
         self.model.is_open()
     }

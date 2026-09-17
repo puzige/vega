@@ -64,6 +64,18 @@ impl CommitPanel {
         (&self.thread_id, &self.project_id)
     }
 
+    /// Keeps the cached panel's route aligned with an unmaterialized draft.
+    /// The app never opens a commit controller for a draft, so no prepared
+    /// operation may cross this boundary.
+    pub fn rebind_draft_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
+        if self.project_id == project_id {
+            return;
+        }
+        self.project_id = project_id.to_owned();
+        self.model = CommitPanelModel::default();
+        cx.notify();
+    }
+
     pub fn is_open(&self) -> bool {
         self.model.is_open()
     }

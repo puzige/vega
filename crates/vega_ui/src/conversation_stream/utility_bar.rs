@@ -1,9 +1,9 @@
 //! R49 composer utility bar: the two-chip strip (folder / branch) that sits
 //! directly above the composer card on the new-task page.
 //!
-//! The bar is a new-task-page affordance only — it renders while the current
-//! route still resolves a project context and the conversation has no messages
-//! yet, exactly like Codex's `ComposerHomeUtilityBar`. It reuses the existing
+//! The bar is a new-task-page affordance only — it renders on an empty draft
+//! even before a project is chosen, or on the existing matching-project
+//! empty-session route. It reuses the existing
 //! data sources: the composer's own project label (projected from
 //! `sidebar.project_label` by the app layer) and the sidebar's project rows
 //! (`vega_store::projects`), so no second project pipeline exists.
@@ -51,15 +51,18 @@ fn project_menu_width(viewport: Pixels) -> Pixels {
 }
 
 impl ConversationStream {
-    /// Whether the R49 utility bar renders at all: the route resolves a
-    /// project context (the opened task is bound to the currently selected
-    /// project) **and** the conversation has no messages yet.
+    /// Whether the utility bar renders: a window-owned draft can choose its
+    /// project here, while the older committed empty-session route still
+    /// requires its binding to match the shared selection.
     ///
     /// This is a real render-visibility predicate. The bar is never mounted
     /// hidden and never occupies zero height.
     pub(crate) fn utility_bar_visible(&self, cx: &App) -> bool {
         if !self.entries.is_empty() {
             return false;
+        }
+        if self.draft_route {
+            return true;
         }
         let Some(binding) = self.thread.project_binding() else {
             return false;
@@ -106,7 +109,9 @@ impl ConversationStream {
                     .bg(colors.bg_sidebar)
                     .rounded_t(px(Layout::COMPOSER_UTILITY_BAR_RADIUS))
                     .child(self.render_utility_project_chip(window, cx))
-                    .child(self.render_utility_branch_chip()),
+                    .when(!self.thread.is_standalone(), |bar| {
+                        bar.child(self.render_utility_branch_chip())
+                    }),
             )
             .into_any_element()
     }
@@ -124,7 +129,9 @@ impl ConversationStream {
     /// capture is what makes "click the chip again" close (R68 §2).
     fn render_utility_project_chip(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = if self.project_label.is_empty() {
+        let label = if self.thread.is_standalone() {
+            "选择项目".to_string()
+        } else if self.project_label.is_empty() {
             "项目".to_string()
         } else {
             self.project_label.clone()
@@ -181,7 +188,8 @@ impl ConversationStream {
     /// The lightweight project menu above the folder chip (R49 §2.5): the same
     /// rows the sidebar's project block lists, projected from the same store
     /// query. Selection writes the shared [`SelectedProject`] global and
-    /// refreshes the windows; it never re-binds the durable task.
+    /// refreshes the windows. The window root rebinds only its unmaterialized
+    /// draft; a durable task keeps its stored project identity.
     ///
     /// The popup opens **upward**. The composer sits at the window's bottom
     /// edge, so a downward popup would leave the viewport; this is the minimal
@@ -248,8 +256,8 @@ impl ConversationStream {
                 })
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        this.select_utility_project(&activate_id, cx);
+                    cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+                        this.select_utility_project(&activate_id, window, cx);
                     }),
                 )
                 .child(crate::icons::icon(
@@ -341,7 +349,9 @@ impl ConversationStream {
                     true,
                     "",
                     colors,
-                    cx.listener(|this, _: &MouseUpEvent, _, cx| this.detach_utility_project(cx)),
+                    cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                        this.detach_utility_project(window, cx)
+                    }),
                 )),
         )
         .with_priority(2)
@@ -435,9 +445,15 @@ impl ConversationStream {
 
     /// Applies a project choice from the folder chip's menu: the shared
     /// selection global is rewritten and every window repaints.
-    fn select_utility_project(&mut self, project_id: &str, cx: &mut Context<Self>) {
+    fn select_utility_project(
+        &mut self,
+        project_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         cx.set_global(SelectedProject(Some(project_id.to_string())));
         self.utility_projects_open = false;
+        self.focus_composer(window, cx);
         cx.refresh_windows();
         cx.notify();
     }
@@ -445,12 +461,12 @@ impl ConversationStream {
     /// R62 R10: the menu's `不关联项目` row. It writes the same shared
     /// selection global with `None` — the exact state the sidebar's
     /// project-removal path already produces — so no second deselect
-    /// mechanism exists. The utility bar's own visibility predicate then
-    /// stops matching the durable binding, which is what makes the bar
-    /// disappear with the project context (R49 §2.4).
-    fn detach_utility_project(&mut self, cx: &mut Context<Self>) {
+    /// mechanism exists. A draft remains on the bar with `选择项目`; a durable
+    /// empty session remains bound and follows the older R49 visibility fence.
+    fn detach_utility_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.set_global(SelectedProject(None));
         self.utility_projects_open = false;
+        self.focus_composer(window, cx);
         cx.refresh_windows();
         cx.notify();
     }
