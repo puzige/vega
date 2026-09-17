@@ -82,17 +82,17 @@ impl RunFailureKind {
 fn provider_has_quota_code(message: &str) -> bool {
     // OpenAiProvider prefixes a bounded response snippet with `...): `.
     // Parsing only the JSON body avoids interpreting arbitrary prose (or a
-    // secret that happens to contain the marker) as a quota error.
+    // secret that happens to contain the marker) as a quota error. CPA sends
+    // `code` at the top level; other compatible providers nest it in `error`.
     let Some((_, body)) = message.split_once("): ") else {
         return false;
     };
     let Ok(response) = serde_json::from_str::<serde_json::Value>(body) else {
         return false;
     };
-    response
-        .pointer("/error/code")
-        .and_then(|code| code.as_str())
-        == Some("insufficient_user_quota")
+    ["/error/code", "/code"].into_iter().any(|pointer| {
+        response.pointer(pointer).and_then(|code| code.as_str()) == Some("insufficient_user_quota")
+    })
 }
 
 /// Runtime-to-UI/store unique event stream (tech-spec §3).
@@ -496,6 +496,25 @@ mod run_failure_tests {
             !RunFailureKind::from_runtime(&spoofed)
                 .message()
                 .contains(SENTINEL)
+        );
+    }
+
+    #[test]
+    fn quota_accepts_cpa_top_level_code_without_exposing_response_body() {
+        const SENTINEL: &str = "PRIVATE_CPA_RESPONSE_SENTINEL";
+        let response = format!(
+            "chat/completions request failed (HTTP 400): {{\"message\":\"credit insufficient {SENTINEL}\",\"type\":\"api_error\",\"param\":\"\",\"code\":\"insufficient_user_quota\"}}"
+        );
+        let error = provider(Some(400), &response);
+        let kind = RunFailureKind::from_runtime(&error);
+        assert_eq!(kind, RunFailureKind::ProviderQuota);
+        assert!(kind.message().contains("额度不足"));
+        assert!(!kind.message().contains(SENTINEL));
+
+        let wrong_status = provider(Some(503), &response);
+        assert_eq!(
+            RunFailureKind::from_runtime(&wrong_status),
+            RunFailureKind::ProviderHttp(503)
         );
     }
 
