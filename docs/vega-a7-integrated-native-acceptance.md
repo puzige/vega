@@ -55,6 +55,30 @@ Status: IN PROGRESS · 2026-09-17 · Primary owner: Codex
 The earlier historical empty thread from the old build remains untouched;
 this task does not perform data cleanup or migration.
 
+## Second native pass: working text model and uncovered defects
+
+7. Direct Pi requests with the imported CPA credential returned `PI_OK` for
+   `hy3` and `deepseek-v4.1-flash`. Vega's configured/priced
+   `deepseek-v4-flash` is a different ID; a direct Pi request for that ID
+   returned `unknown provider for model`. Switched Vega's default model to
+   `hy3` through Settings → General.
+8. Vega's first `hy3` submission was redirected to Settings → Pricing because
+   `hy3` was not priced. The route cleared the exact unsent draft and left a
+   durable empty `hy3` thread (zero messages). Via Settings → Pricing, added
+   `hy3` as a custom model with all four USD-per-million rates at `0` as a
+   **temporary local estimate only**: CPA accepted the tested `hy3` request
+   with zero account balance, but its long-term tariff is not verified. No
+   config file was manually edited.
+9. Retyped `Reply with exactly VEGA_E2E_OK.` in the Vega UI and submitted.
+   The model replied `VEGA_E2E_OK` in the conversation. This is the first
+   complete native text-message success on the installed build.
+10. In the same task, requested a read-only inspection of the project's
+    `README.md`. Vega rendered nine failed/corrupt tool cards and no final
+    answer. The durable tool calls have empty tool names, `{}` inputs and
+    `rejected` status (`run_mode` / unavailable tool). Tool-use E2E is not
+    passing; a dedicated implementation task is investigating the parser and
+    permission path. No project files were changed by this test.
+
 ## External provider status and remaining acceptance
 
 - Read-only Pi metadata showed current `cpa` matches Vega's selected base
@@ -66,9 +90,10 @@ this task does not perform data cleanup or migration.
 - Vega's Providers `glm-5.3-flash` connection test reported a 15-second
   timeout; the direct Pi quota response took about 29 seconds. The test's
   timeout therefore does not distinguish this upstream quota failure.
-- Credential import and first-message submission are verified. A real model
-  reply and safe tool action still require external CPA balance or another
-  working provider. The current silent failed-assistant UI is being handled
-  as a separate follow-up defect; it is not a live-provider pass.
+- Credential import, first-message submission and a real text reply are
+  verified with `hy3`. `glm-5.3-flash` remains unavailable until its CPA
+  quota changes. Safe tool execution and draft-preserving Pricing recovery
+  are not verified. The current silent failed-assistant UI is being handled
+  as a separate follow-up defect.
 - The candidate is installed with a recoverable previous-app backup. No
   remote push or merge was performed.
