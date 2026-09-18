@@ -19,6 +19,12 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 5. **遇阻**：按 exec-guide §6 用 `[BLOCKED]` 格式上报，禁止自创方案绕过。
 6. **验收强制 E2E-first**：优先以真实 production 入口、owned temp repo 与真实 controller 的端到端证据验收；test-only seam 仅保留无法由 E2E 稳定证明的安全不变量，证据分级与留存格式见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
+## 问题与需求收集
+
+- 按 [Issue 与看板工作流](docs/vega-issue-workflow.md) 收集明确要跟踪的 Vega 问题和需求。**登记不等于承诺立即修复**：暂时无法处理时，先查重并记录 Issue，给用户链接和真实状态，不把它假装成进行中。
+- GitHub Issue 是执行事项与证据的单一入口，GitHub Project 只管理流转状态；Notion PRD 管产品目标，本仓 `docs/` 管实现规格。Issue 本身不替代上述 spec，也不授权卡外代码实现。
+- 无法访问 Project 时，不得声称已入看板；如已获授权且可创建 Issue，先保留 Issue 并明确说明待关联。仓库公开，截图、日志和复现信息必须脱敏。
+
 ## 提交与 PR
 
 - 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 [vega-features.md](docs/vega-features.md)）

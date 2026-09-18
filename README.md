@@ -26,6 +26,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 |---|---|
 | [vega-review-current-status.md](docs/vega-review-current-status.md) | 当前本地交付、真实验收结果、待办和历史报告勘误入口 |
 | [vega-prd.md](docs/vega-prd.md) | PRD v0.3.3：7 项锁定决策、模块 A1-A12、5 Phase 路线图 |
+| [vega-issue-workflow.md](docs/vega-issue-workflow.md) | 问题/需求的 GitHub Issue 收集、Project 流转与 PRD/spec 分工 |
 | [vega-feature-teardown.md](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
 | [vega-features.md](docs/vega-features.md) | 96 个功能点全表（Phase 1 P0 ×38） |
 | [vega-design-guidelines.md](docs/vega-design-guidelines.md) | Vega 原生设计守则：视觉语言、语义 token、状态与 UI 变更检查表 |
