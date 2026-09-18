@@ -163,6 +163,8 @@ async fn a8_project_menu_detaches_tasks_into_one_standalone_projection(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
+    let project_path = f.dir.path().join("p");
+    std::fs::create_dir(&project_path).unwrap();
     let store = Store::open(f.dir.path().join("organization.db")).unwrap();
     let project_tasks = conversation::list_threads(&store, "p", None).unwrap();
     assert_eq!(project_tasks.len(), 5);
@@ -184,9 +186,16 @@ async fn a8_project_menu_detaches_tasks_into_one_standalone_projection(
         vec!["p", "q"]
     );
     click(&f, cx, "project-more-p");
-    // With p first of two projects, the menu's first item moves it down;
-    // index 1 is the existing "移除项目（保留文件）" action.
-    click(&f, cx, "organization-menu-1");
+    let menu_items = sessions(&f, cx).read_with(cx, |block, _| block.organization_menu_items());
+    assert_eq!(menu_items.len(), 1, "project menu has one action");
+    assert_eq!(menu_items[0].0, "移除项目");
+    assert!(matches!(
+        &menu_items[0].1,
+        MenuCommand::RemoveProject(id) if id == "p"
+    ));
+    assert!(!absent(&f, cx, "organization-menu-0"));
+    assert!(absent(&f, cx, "organization-menu-1"));
+    click(&f, cx, "organization-menu-0");
     cx.run_until_parked();
 
     let state = snapshot(&f);
@@ -202,6 +211,17 @@ async fn a8_project_menu_detaches_tasks_into_one_standalone_projection(
         state.threads.len(),
         6,
         "all five target tasks and the unrelated task survive"
+    );
+    assert!(project_path.is_dir(), "removal preserves local files");
+    assert_eq!(
+        state
+            .threads
+            .iter()
+            .find(|thread| thread.id == f.other.id)
+            .unwrap()
+            .project_id,
+        "q",
+        "unrelated task remains bound to its project"
     );
     for thread in state
         .threads

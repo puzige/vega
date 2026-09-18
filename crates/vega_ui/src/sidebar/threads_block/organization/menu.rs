@@ -1,6 +1,6 @@
 use super::*;
 impl ThreadsBlock {
-    fn organization_menu_items(&self) -> Vec<(String, MenuCommand)> {
+    pub(super) fn organization_menu_items(&self) -> Vec<(String, MenuCommand)> {
         let Some(org) = &self.organization else {
             return Vec::new();
         };
@@ -97,38 +97,7 @@ impl ThreadsBlock {
                 ));
             }
             OrganizationMenu::Project(id) => {
-                let mut ordered: Vec<_> = snapshot.project_order.clone();
-                ordered.extend(
-                    snapshot
-                        .projects
-                        .iter()
-                        .filter(|p| !snapshot.project_order.contains(&p.id))
-                        .map(|p| p.id.clone()),
-                );
-                if let Some(index) = ordered.iter().position(|p| p == id) {
-                    if index > 0 {
-                        items.push((
-                            "项目上移".into(),
-                            MenuCommand::Apply(SidebarOrganizationAction::MoveProject {
-                                project_id: id.clone(),
-                                before_id: Some(ordered[index - 1].clone()),
-                            }),
-                        ));
-                    }
-                    if index + 1 < ordered.len() {
-                        items.push((
-                            "项目下移".into(),
-                            MenuCommand::Apply(SidebarOrganizationAction::MoveProject {
-                                project_id: id.clone(),
-                                before_id: ordered.get(index + 2).cloned(),
-                            }),
-                        ));
-                    }
-                }
-                items.push((
-                    "移除项目（保留文件）".into(),
-                    MenuCommand::RemoveProject(id.clone()),
-                ));
+                items.push(("移除项目".into(), MenuCommand::RemoveProject(id.clone())));
             }
         }
         items
