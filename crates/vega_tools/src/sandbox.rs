@@ -18,6 +18,7 @@ const TEMP_BASE: &str = "/private/tmp";
 const PROFILE: &str = r#"(version 1)
 (allow default)
 (deny file-write*)
+(allow file-write* (literal "/dev/null"))
 (allow file-write* (subpath (param "PROJECT_ROOT")))
 (allow file-write* (subpath (param "TEMP_ROOT")))
 (deny file-write* (subpath (param "GIT_ENTRY")))

@@ -1,6 +1,7 @@
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::os::unix::process::CommandExt as _;
+use std::path::Path;
 use std::process::{Command as StdCommand, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,6 +28,42 @@ fn tools() -> (TempDir, Tools) {
 
 fn quote(path: &std::path::Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn fixture_git(root: &Path, args: &[&str]) -> String {
+    let output = StdCommand::new("/usr/bin/git")
+        .args(args)
+        .current_dir(root)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "owned fixture Git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn init_owned_git_repo(root: &Path) -> String {
+    fixture_git(root, &["init", "-b", "main"]);
+    fixture_git(root, &["config", "--local", "user.name", "Vega Test"]);
+    fixture_git(
+        root,
+        &[
+            "config",
+            "--local",
+            "user.email",
+            "vega-test@example.invalid",
+        ],
+    );
+    fixture_git(root, &["config", "--local", "commit.gpgsign", "false"]);
+    fixture_git(root, &["config", "--local", "core.hooksPath", "/dev/null"]);
+    fs::write(root.join("tracked.txt"), "owned fixture\n").unwrap();
+    fixture_git(root, &["add", "tracked.txt"]);
+    fixture_git(root, &["commit", "-m", "owned fixture"]);
+    fixture_git(root, &["rev-parse", "--short", "HEAD"])
 }
 
 async fn run(tools: &Tools, raw: &str) -> Result<crate::BashOutput, crate::BashError> {
@@ -275,6 +312,109 @@ async fn sandbox_blocks_outside_git_entry_and_actual_gitdir() {
     assert!(!outside_target.exists());
     assert!(!git_target.exists());
     assert!(project.path().join(".git").is_file());
+}
+
+#[tokio::test]
+async fn sandbox_real_git_reads_and_dev_null_redirection_work_without_git_mutation() {
+    let project = tempdir().unwrap();
+    let expected_commit = init_owned_git_repo(project.path());
+    let head_before = fs::read_to_string(project.path().join(".git/HEAD")).unwrap();
+    let main_ref = project.path().join(".git/refs/heads/main");
+    let main_before = fs::read_to_string(&main_ref).unwrap();
+    let tools = Tools::new(project.path()).unwrap();
+
+    let output = run(
+        &tools,
+        r#"{"cmd":"/usr/bin/git rev-parse --short HEAD && /usr/bin/git --no-optional-locks status --short --branch && print discarded >/dev/null && print R71_READ_OK","timeout_ms":5000}"#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.exit_code, 0, "{}", output.text);
+    assert_eq!(
+        output.text.lines().collect::<Vec<_>>(),
+        [expected_commit.as_str(), "## main", "R71_READ_OK"]
+    );
+
+    let mutation = run(
+        &tools,
+        r#"{"cmd":"/usr/bin/git branch should-not-exist","timeout_ms":5000}"#,
+    )
+    .await
+    .unwrap();
+    assert_ne!(mutation.exit_code, 0);
+    assert!(
+        !project
+            .path()
+            .join(".git/refs/heads/should-not-exist")
+            .exists()
+    );
+    assert_eq!(
+        fs::read_to_string(project.path().join(".git/HEAD")).unwrap(),
+        head_before
+    );
+    assert_eq!(fs::read_to_string(main_ref).unwrap(), main_before);
+}
+
+#[tokio::test]
+async fn sandbox_real_worktree_git_reads_but_external_gitdir_and_sibling_stay_read_only() {
+    let owned = tempdir().unwrap();
+    let project = owned.path().join("project");
+    let worktree = owned.path().join("worktree");
+    fs::create_dir(&project).unwrap();
+    let expected_commit = init_owned_git_repo(&project);
+    fixture_git(
+        &project,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let git_entry = worktree.join(".git");
+    let entry_before = fs::read_to_string(&git_entry).unwrap();
+    let actual_gitdir = std::path::PathBuf::from(
+        entry_before
+            .trim()
+            .strip_prefix("gitdir: ")
+            .expect("owned Git worktree indirection"),
+    );
+    assert!(!actual_gitdir.starts_with(&worktree));
+    let gitdir_sentinel = actual_gitdir.join("r71-sentinel");
+    let sibling_sentinel = owned.path().join("sibling-sentinel");
+    fs::write(&gitdir_sentinel, "unchanged").unwrap();
+    fs::write(&sibling_sentinel, "unchanged").unwrap();
+    let tools = Tools::new(&worktree).unwrap();
+
+    let output = run(
+        &tools,
+        r#"{"cmd":"/usr/bin/git rev-parse --short HEAD && /usr/bin/git --no-optional-locks status --short --branch && print discarded >/dev/null && print R71_WORKTREE_OK","timeout_ms":5000}"#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(output.exit_code, 0, "{}", output.text);
+    assert_eq!(
+        output.text.lines().collect::<Vec<_>>(),
+        [expected_commit.as_str(), "## feature", "R71_WORKTREE_OK"]
+    );
+
+    let command = format!(
+        "print changed > {} 2>/dev/null; print changed > {} 2>/dev/null; print changed > .git 2>/dev/null; print R71_FENCES_OK",
+        quote(&sibling_sentinel),
+        quote(&gitdir_sentinel)
+    );
+    let raw = serde_json::json!({"cmd": command, "timeout_ms": 5000}).to_string();
+    let fences = run(&tools, &raw).await.unwrap();
+    assert_eq!(fences.exit_code, 0, "{}", fences.text);
+    assert!(fences.text.ends_with("R71_FENCES_OK"));
+    assert_eq!(fs::read_to_string(sibling_sentinel).unwrap(), "unchanged");
+    assert_eq!(fs::read_to_string(gitdir_sentinel).unwrap(), "unchanged");
+    assert_eq!(fs::read_to_string(git_entry).unwrap(), entry_before);
+    assert_eq!(
+        fixture_git(&project, &["rev-parse", "--short", "feature"]),
+        expected_commit
+    );
 }
 
 #[tokio::test]
