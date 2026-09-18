@@ -79,6 +79,9 @@ pub struct ConversationStream {
     pub(crate) hydration: HistoryHydration,
     /// Exact active durable assistant id and its stream-entry index.
     pub(crate) active_agent_message: Option<(String, usize)>,
+    /// Whether the current Markdown segment contains text; a tool boundary
+    /// may leave the active run without a segment until the next text delta.
+    pub(crate) active_segment_has_text: bool,
     /// Most recently finished assistant entry, retained until the typed Plan
     /// projection can replace it in place.
     pub(crate) last_finished_agent_message: Option<(String, usize)>,
@@ -337,6 +340,7 @@ impl ConversationStream {
             summary_cards: HashMap::new(),
             hydration: HistoryHydration::default(),
             active_agent_message: None,
+            active_segment_has_text: false,
             last_finished_agent_message: None,
             meter: ConversationMeter::default(),
             composer_history: Vec::new(),

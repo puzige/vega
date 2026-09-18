@@ -525,6 +525,23 @@ async fn cross_thread_call_id_collision_fails_before_execution() {
         },
     )
     .unwrap();
+    vega_store::messages::insert(
+        store.conn(),
+        &vega_store::messages::MessageRow {
+            id: "other-message".into(),
+            thread_id: "thread-2".into(),
+            seq: 1,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: String::new(),
+            status: "done".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
     tool_calls::insert(
         store.conn(),
         tool_calls::NewToolCall {
@@ -610,6 +627,23 @@ async fn cross_thread_call_id_collision_fails_before_execution() {
 #[tokio::test]
 async fn same_thread_call_id_with_changed_input_cannot_overwrite_audit_row() {
     let (store, dir, _project_id) = setup();
+    vega_store::messages::insert(
+        store.conn(),
+        &vega_store::messages::MessageRow {
+            id: "prior-message".into(),
+            thread_id: "thread-1".into(),
+            seq: 1,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: String::new(),
+            status: "done".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
     tool_calls::insert(
         store.conn(),
         tool_calls::NewToolCall {

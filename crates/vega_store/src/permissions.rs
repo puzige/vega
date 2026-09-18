@@ -289,7 +289,7 @@ mod tests {
             .unwrap();
         // R15 appends migration 0005, rebuilding only the nullable task
         // binding while preserving the same ten logical tables.
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
         assert_eq!(table_count, 10);
     }
 }

@@ -165,11 +165,15 @@ pub fn count_by_message(
 
 /// Inserts a proposed tool call.
 pub fn insert(conn: &Connection, call: NewToolCall<'_>) -> Result<(), rusqlite::Error> {
-    conn.execute(
-        "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, status, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    let inserted = conn.execute(
+        "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, status, created_at, text_offset_bytes) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, length(CAST(content AS BLOB)) \
+         FROM messages WHERE id = ?3 AND thread_id = ?2 AND role = 'assistant'",
         params![call.id, call.thread_id, call.message_id, call.seq, call.tool, call.input_json, call.status, call.created_at],
     )?;
+    if inserted != 1 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
     Ok(())
 }
 
@@ -188,10 +192,11 @@ pub fn insert_validation_rejected(
     conn: &Connection,
     rejected: ValidationRejectedToolCall<'_>,
 ) -> Result<(), ToolCallTransitionError> {
-    conn.execute(
+    let inserted = conn.execute(
         "INSERT INTO tool_calls \
-         (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'rejected', ?8, ?9, ?10)",
+         (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) \
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, 'rejected', ?8, ?9, ?10, length(CAST(content AS BLOB)) \
+         FROM messages WHERE id = ?3 AND thread_id = ?2 AND role = 'assistant'",
         params![
             rejected.call.id,
             rejected.call.thread_id,
@@ -205,6 +210,9 @@ pub fn insert_validation_rejected(
             rejected.finished_at,
         ],
     )?;
+    if inserted != 1 {
+        return Err(ToolCallTransitionError::InvalidTransition);
+    }
     Ok(())
 }
 

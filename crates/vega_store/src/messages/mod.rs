@@ -322,6 +322,8 @@ pub struct PageToolCall {
     pub id: String,
     pub message_id: String,
     pub seq: i64,
+    /// UTF-8 byte offset in the owning message; NULL for pre-R70 audits.
+    pub text_offset_bytes: Option<i64>,
     pub tool: String,
     pub input_json: String,
     pub output_text: Option<String>,
@@ -332,7 +334,7 @@ pub struct PageToolCall {
 }
 
 const PAGE_TOOL_COLUMNS: &str = "id, message_id, seq, tool, input_json, output_text, \
-                                 status, approval, exit_code, duration_ms";
+                                 status, approval, exit_code, duration_ms, text_offset_bytes";
 
 /// Reads one keyset page of durable history ending at `cursor`, oldest→newest.
 ///
@@ -405,6 +407,7 @@ fn page_tool_calls(
                 approval: row.get(7)?,
                 exit_code: row.get(8)?,
                 duration_ms: row.get(9)?,
+                text_offset_bytes: row.get(10)?,
             })
         })?
         .collect::<Result<_, _>>()?;

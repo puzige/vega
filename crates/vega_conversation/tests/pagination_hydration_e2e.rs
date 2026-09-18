@@ -397,6 +397,16 @@ async fn real_run_hydrates_tools_costs_summary_and_redacts_inputs() -> Result<()
     .await?;
     assert!(!run.interrupted && !run.failed);
 
+    let rejected_offset: i64 = store.conn().query_row(
+        "SELECT text_offset_bytes FROM tool_calls WHERE id='write-1'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        rejected_offset,
+        "Checking the repository first.".len() as i64
+    );
+
     // Hydrate through the production restart entry.
     let page = restart_history_page(&store, THREAD, 200)?;
     let mut tool_inputs = Vec::new();
@@ -450,6 +460,225 @@ async fn real_run_hydrates_tools_costs_summary_and_redacts_inputs() -> Result<()
         ),
         "the safe audit summary keeps the path and drops the body"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn r70_controller_offsets_reopen_in_event_order() -> Result<(), Box<dyn Error>> {
+    let (store, workspace) = open_store()?;
+    let tools = vega_tools::Tools::new(workspace.path().join("repo"))?;
+    let read = |id: &str| ProviderEvent::ToolUse {
+        id: id.into(),
+        name: "read".into(),
+        input_json: r#"{"path":"lib.rs"}"#.into(),
+    };
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("甲".into()),
+            read("r70-a"),
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("乙".into()),
+            read("r70-b"),
+            read("r70-c"),
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("丙".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+    ]);
+    let run = vega_conversation::agent::run_thread_task_with_pricing(
+        &store,
+        &provider,
+        &tools,
+        THREAD,
+        "按顺序读取",
+        "Use tools.",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        Default::default(),
+        None,
+        Some(catalog()),
+    )
+    .await?;
+    assert!(!run.failed && !run.interrupted);
+    let message_id = run.assistant_message_id;
+    let durable: String = store.conn().query_row(
+        "SELECT content FROM messages WHERE id=?1",
+        [&message_id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(durable, "甲乙丙");
+    let mut stmt = store.conn().prepare(
+        "SELECT id, message_id, text_offset_bytes FROM tool_calls WHERE thread_id=?1 ORDER BY seq",
+    )?;
+    let audit: Vec<(String, String, Option<i64>)> = stmt
+        .query_map([THREAD], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    assert_eq!(
+        audit,
+        vec![
+            ("r70-a".into(), message_id.clone(), Some(3)),
+            ("r70-b".into(), message_id.clone(), Some(6)),
+            ("r70-c".into(), message_id.clone(), Some(6)),
+        ]
+    );
+    drop(stmt);
+    drop(store);
+    let reopened = Store::open(database_path(&workspace))?;
+    reopened.migrate()?;
+    let page = restart_history_page(&reopened, THREAD, 200)?;
+    let timeline: Vec<String> = page
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            HistoryEntry::AssistantText { content, .. } if !content.is_empty() => {
+                Some(content.clone())
+            }
+            HistoryEntry::Tool { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(timeline, ["甲", "r70-a", "乙", "r70-b", "r70-c", "丙"]);
+    assert!(
+        matches!(page.entries.last(), Some(HistoryEntry::Summary { summary, .. })
+        if summary.message_id == message_id)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn r70_legacy_and_corrupt_offsets_are_not_guessed() -> Result<(), Box<dyn Error>> {
+    let (store, _workspace) = open_store()?;
+    seed_exchanges(&store, 1, 1)?;
+    let conn = store.conn();
+    conn.execute(
+        "UPDATE messages SET content='甲乙' WHERE id='seed-assistant-1'",
+        [],
+    )?;
+    let insert = |id: &str, seq: i64, offset: Option<i64>| -> Result<(), Box<dyn Error>> {
+        let offset = offset.map_or_else(|| "NULL".to_string(), |value| value.to_string());
+        conn.execute_batch(&format!(
+            "INSERT INTO tool_calls (id,thread_id,message_id,seq,tool,input_json,status,created_at,text_offset_bytes) \
+             VALUES ('{id}','{THREAD}','seed-assistant-1',{seq},'read','{{\"path\":\"lib.rs\"}}','success',1,{offset})"
+        ))?;
+        Ok(())
+    };
+    insert("old", 1, None)?;
+    let legacy = history::latest_history_page(&store, THREAD, 200)?;
+    let owner: Vec<String> = legacy
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            HistoryEntry::AssistantText { content, .. } => Some(content.clone()),
+            HistoryEntry::Tool { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(owner, ["甲乙", "old"]);
+    insert("mixed", 2, Some(3))?;
+    let mixed = history::latest_history_page(&store, THREAD, 200)?;
+    let owner: Vec<String> = mixed
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            HistoryEntry::AssistantText { content, .. } => Some(content.clone()),
+            HistoryEntry::Tool { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(owner, ["甲乙", "old", "mixed"]);
+    conn.execute("DELETE FROM tool_calls WHERE id='old'", [])?;
+    for bad in [1_i64, 7_i64] {
+        conn.execute(
+            "UPDATE tool_calls SET text_offset_bytes=?1 WHERE id='mixed'",
+            [bad],
+        )?;
+        let error = history::latest_history_page(&store, THREAD, 200).unwrap_err();
+        assert!(matches!(
+            error,
+            vega_conversation::types::ConversationError::CorruptRow(_)
+        ));
+        assert!(!error.to_string().contains("lib.rs"));
+    }
+    conn.execute(
+        "UPDATE tool_calls SET text_offset_bytes=6 WHERE id='mixed'",
+        [],
+    )?;
+    insert("backward", 3, Some(3))?;
+    let error = history::latest_history_page(&store, THREAD, 200).unwrap_err();
+    assert!(matches!(
+        error,
+        vega_conversation::types::ConversationError::CorruptRow(_)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn r70_failed_run_after_tool_keeps_bounded_tail() -> Result<(), Box<dyn Error>> {
+    let (store, workspace) = open_store()?;
+    let tools = vega_tools::Tools::new(workspace.path().join("repo"))?;
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("甲".into()),
+            ProviderEvent::ToolUse {
+                id: "before-failure".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"lib.rs"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::Error {
+            status: Some(503),
+            message: "private provider body".into(),
+            retryable: false,
+        }],
+    ]);
+    let run = vega_conversation::agent::run_thread_task_with_pricing(
+        &store,
+        &provider,
+        &tools,
+        THREAD,
+        "失败路径",
+        "Use tools.",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        Default::default(),
+        None,
+        Some(catalog()),
+    )
+    .await?;
+    assert!(run.failed);
+    let page = restart_history_page(&store, THREAD, 200)?;
+    let owner: Vec<String> = page
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            HistoryEntry::AssistantText {
+                content, status, ..
+            } if *status == AssistantStatus::Failed => {
+                assert!(content.is_empty());
+                Some("failed-tail".into())
+            }
+            HistoryEntry::AssistantText { content, .. } => Some(content.clone()),
+            HistoryEntry::Tool { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(owner, ["甲", "before-failure", "failed-tail"]);
+    assert!(!format!("{page:?}").contains("private provider body"));
     Ok(())
 }
 

@@ -7,7 +7,7 @@ use gpui_kit::{Focusable, TestAppContext, WindowHandle};
 use tokio_util::sync::CancellationToken;
 use vega_conversation::agent::PermissionHook;
 use vega_conversation::types::{
-    Microcents, PermissionDecision, PermissionMode, PermissionRequest, Plan, PlanStatus,
+    Approval, Microcents, PermissionDecision, PermissionMode, PermissionRequest, Plan, PlanStatus,
     ReadOnlyToolKind, SummaryCost, TaskCostSummary, TaskSummaryOutcome, ThreadMode, ThreadStatus,
     ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection, ToolResult,
 };
@@ -32,6 +32,7 @@ mod permissions_cards;
 mod r64_popup_deferred;
 mod r68_popup_dismiss;
 mod scroll_follow;
+mod timeline;
 mod utility_bar;
 mod utility_menu_coordination;
 mod variable_height;

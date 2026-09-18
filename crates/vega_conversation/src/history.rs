@@ -24,17 +24,16 @@ use crate::types::{
     tool_card_result_projection,
 };
 
-/// One hydratable conversation entry in ascending seq position. Tool cards
-/// attach directly after their owning assistant message in persisted
-/// call-seq order; the durable model cannot reconstruct the exact mid-stream
-/// interleaving, so this fixed adjacency is the hydration contract.
+/// One hydratable conversation entry in ascending message position. R70
+/// offsets interleave new tool audits with independently finalized text
+/// segments; legacy audits retain their original text-then-tools order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryEntry {
     /// Durable user text (the synthetic approval instruction is controller
     /// capability, not conversation content, and is dropped — same rule as
     /// Composer history).
     UserText { seq: i64, content: String },
-    /// Durable assistant text turn with its terminal state.
+    /// One durable assistant text segment with its terminal state on the tail.
     AssistantText {
         seq: i64,
         message_id: String,
@@ -183,27 +182,27 @@ fn assemble(
     // page so the hydrated transcript keeps the card in sequence position.
     if attach_summary
         && let Some(summary) = crate::summary::latest_task_summary(store, thread_id, None)?
-        && let Some(position) = entries.iter().position(|entry| {
+        && let Some(position) = entries.iter().rposition(|entry| {
             matches!(
                 entry,
                 HistoryEntry::AssistantText { message_id, .. }
+                    | HistoryEntry::Tool { message_id, .. }
                     if *message_id == summary.message_id
             )
         })
     {
         let assistant_seq = match &entries[position] {
             HistoryEntry::AssistantText { seq, .. } => *seq,
-            _ => unreachable!("position matched an assistant entry"),
+            HistoryEntry::Tool { .. } => page
+                .rows
+                .iter()
+                .find(|row| row.id == summary.message_id)
+                .map(|row| row.seq)
+                .ok_or_else(|| ConversationError::CorruptRow("summary owner missing".into()))?,
+            _ => unreachable!("position matched an owner entry"),
         };
-        // Skip the owner's attached tool cards: the summary aggregates
-        // the whole task and belongs after them.
-        let mut insert_at = position + 1;
-        while insert_at < entries.len() && matches!(&entries[insert_at], HistoryEntry::Tool { .. })
-        {
-            insert_at += 1;
-        }
         entries.insert(
-            insert_at,
+            position + 1,
             HistoryEntry::Summary {
                 seq: assistant_seq,
                 summary,
@@ -282,12 +281,8 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                             row.status
                         ))
                     })?;
-                    entries.push(HistoryEntry::AssistantText {
-                        seq: row.seq,
-                        message_id: row.id.clone(),
-                        content: row.content.clone(),
-                        status,
-                    });
+                    let calls = calls_by_message.remove(row.id.as_str()).unwrap_or_default();
+                    project_assistant(row, status, &calls, &mut entries)?;
                 }
             },
             other => {
@@ -310,6 +305,53 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
         )));
     }
     Ok(entries)
+}
+
+fn project_assistant(
+    row: &vega_store::messages::MessageRow,
+    status: AssistantStatus,
+    calls: &[&PageToolCall],
+    entries: &mut Vec<HistoryEntry>,
+) -> Result<(), ConversationError> {
+    // One NULL makes the whole message legacy. Prior content has no exact
+    // boundary, so never infer positions from timestamps or adjacent text.
+    if calls.iter().any(|call| call.text_offset_bytes.is_none()) {
+        entries.push(HistoryEntry::AssistantText {
+            seq: row.seq,
+            message_id: row.id.clone(),
+            content: row.content.clone(),
+            status,
+        });
+        entries.extend(calls.iter().map(|call| tool_entry(call)));
+        return Ok(());
+    }
+    let mut start = 0;
+    for call in calls {
+        let offset = call
+            .text_offset_bytes
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|offset| *offset >= start && row.content.is_char_boundary(*offset))
+            .ok_or_else(|| ConversationError::CorruptRow("invalid tool text offset".into()))?;
+        if offset > start {
+            entries.push(HistoryEntry::AssistantText {
+                seq: row.seq,
+                message_id: row.id.clone(),
+                content: row.content[start..offset].to_string(),
+                status: AssistantStatus::Done,
+            });
+        }
+        entries.push(tool_entry(call));
+        start = offset;
+    }
+    if start < row.content.len() || calls.is_empty() || status == AssistantStatus::Failed {
+        entries.push(HistoryEntry::AssistantText {
+            seq: row.seq,
+            message_id: row.id.clone(),
+            content: row.content[start..].to_string(),
+            status,
+        });
+    }
+    Ok(())
 }
 
 /// Reduces one raw audit row into the owned safe projection. Unknown or

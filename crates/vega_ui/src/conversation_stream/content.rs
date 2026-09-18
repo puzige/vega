@@ -185,7 +185,9 @@ impl ConversationStream {
         self.list_prepend(prepended_entries);
         if prepended_entries > 0 {
             // Entry indices booked before the prepend must follow their turns.
-            if let Some((_, index)) = &mut self.active_agent_message {
+            if let Some((_, index)) = &mut self.active_agent_message
+                && *index != usize::MAX
+            {
                 *index += prepended_entries;
             }
             if let Some((_, index)) = &mut self.last_finished_agent_message {
@@ -516,19 +518,36 @@ impl ConversationStream {
                 });
                 self.list_append(entry_index);
                 self.active_agent_message = Some((message_id, entry_index));
+                self.active_segment_has_text = false;
                 cx.notify();
             }
             ConversationEvent::TextDelta { message_id, delta } => {
                 let Some((active_id, entry_index)) = self.active_agent_message.as_ref() else {
                     return;
                 };
-                if active_id != &message_id {
+                if active_id != &message_id || delta.is_empty() {
                     return;
                 }
+                let entry_index = if *entry_index == usize::MAX {
+                    let index = self.entries.len();
+                    self.entries.push(StreamEntry::Assistant {
+                        stream: Box::new(MarkdownStream::new()),
+                        model: StreamModel::default(),
+                        failure: None,
+                    });
+                    self.list_append(index);
+                    if let Some((_, active_index)) = &mut self.active_agent_message {
+                        *active_index = index;
+                    }
+                    index
+                } else {
+                    *entry_index
+                };
                 if let Some(StreamEntry::Assistant { stream, .. }) =
-                    self.entries.get_mut(*entry_index)
+                    self.entries.get_mut(entry_index)
                 {
                     stream.append(&delta);
+                    self.active_segment_has_text = true;
                     cx.notify();
                 }
             }
@@ -543,6 +562,7 @@ impl ConversationStream {
                     self.install_pending_permission(cx);
                     return;
                 }
+                self.close_active_segment_before_tool();
                 let call_id = call.id.clone();
                 let card = cx.new(|_| ToolCard::proposed(&call));
                 cx.observe(&card, |this, card, cx| {
@@ -587,6 +607,10 @@ impl ConversationStream {
                     });
                     self.invalidate_tool_card(&card);
                 } else {
+                    // Validation rejection/conflict can be terminal without
+                    // a prior proposal event. Its first visible card is
+                    // still a Markdown boundary in the accepted timeline.
+                    self.close_active_segment_before_tool();
                     let card = if result.invalid.is_some() {
                         ToolCard::invalid_terminal(&result)
                     } else {
@@ -612,6 +636,12 @@ impl ConversationStream {
                 if let Some(message_id) = message_id {
                     // A stale event must not annotate the currently active
                     // assistant turn (nor overwrite a newer composer error).
+                    if let Some((active_id, entry_index)) = self.active_agent_message.as_ref()
+                        && active_id == &message_id
+                        && *entry_index == usize::MAX
+                    {
+                        self.append_empty_terminal_segment();
+                    }
                     if let Some((active_id, entry_index)) = self.active_agent_message.as_ref()
                         && active_id == &message_id
                         && let Some(StreamEntry::Assistant {
@@ -652,9 +682,53 @@ impl ConversationStream {
             model.sync(&snapshot, &self.counters);
         }
         self.invalidate_item(Some(*entry_index));
-        self.last_finished_agent_message = self.active_agent_message.take();
+        self.last_finished_agent_message = self
+            .active_agent_message
+            .take()
+            .filter(|(_, index)| *index != usize::MAX);
+        self.active_segment_has_text = false;
         self.timeout_permission(cx);
         cx.notify();
+    }
+
+    /// Freeze the Markdown parser at a tool boundary. A later provider round
+    /// gets a fresh parser so unfinished fences/tables cannot absorb it.
+    fn close_active_segment_before_tool(&mut self) {
+        let Some((_, index)) = self.active_agent_message.as_ref() else {
+            return;
+        };
+        let index = *index;
+        if index == usize::MAX {
+            return;
+        }
+        if self.active_segment_has_text {
+            if let Some(StreamEntry::Assistant { stream, model, .. }) = self.entries.get_mut(index)
+            {
+                stream.finish();
+                model.sync(&stream.snapshot(), &self.counters);
+            }
+            self.invalidate_item(Some(index));
+        } else {
+            self.entries.remove(index);
+            self.list_remove(index);
+        }
+        if let Some((_, active_index)) = &mut self.active_agent_message {
+            *active_index = usize::MAX;
+        }
+        self.active_segment_has_text = false;
+    }
+
+    fn append_empty_terminal_segment(&mut self) {
+        let index = self.entries.len();
+        self.entries.push(StreamEntry::Assistant {
+            stream: Box::new(MarkdownStream::new()),
+            model: StreamModel::default(),
+            failure: None,
+        });
+        self.list_append(index);
+        if let Some((_, active_index)) = &mut self.active_agent_message {
+            *active_index = index;
+        }
     }
 
     /// Fails only the permission request bound to this terminal call. A late

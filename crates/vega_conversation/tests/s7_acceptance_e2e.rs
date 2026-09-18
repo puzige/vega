@@ -579,7 +579,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     let user_version: i64 = reopened
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(user_version, 5, "exactly the five authorized migrations");
+    assert_eq!(user_version, 6, "exactly the six authorized migrations");
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",

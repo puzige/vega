@@ -67,6 +67,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_token_usage_pricing.sql"),
     include_str!("../migrations/0004_sidebar_organization.sql"),
     include_str!("../migrations/0005_standalone_threads.sql"),
+    include_str!("../migrations/0006_tool_text_offset.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -172,7 +173,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::Store;
+    use super::{Store, tool_calls};
     use rusqlite::ErrorCode;
     use tempfile::tempdir;
 
@@ -235,9 +236,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_5() {
+    fn migrated_store_is_wal_at_user_version_6() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 5);
+        assert_eq!(user_version(&store), 6);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -264,7 +265,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 5);
+        assert_eq!(user_version(&store), 6);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -300,7 +301,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 5);
+        assert_eq!(user_version(&store), 6);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -335,6 +336,74 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "lost data from {table}");
         }
+    }
+
+    #[test]
+    fn r70_version_five_migration_retains_unknown_legacy_offsets() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("r70-legacy.db")).unwrap();
+        store
+            .conn()
+            .execute_batch(concat!(
+                include_str!("../migrations/0001_init.sql"),
+                include_str!("../migrations/0002_plan_review.sql"),
+                include_str!("../migrations/0003_token_usage_pricing.sql"),
+                include_str!("../migrations/0004_sidebar_organization.sql"),
+                include_str!("../migrations/0005_standalone_threads.sql"),
+            ))
+            .unwrap();
+        store
+            .conn()
+            .pragma_update(None, "user_version", 5_u32)
+            .unwrap();
+        store.conn().execute_batch(
+            "INSERT INTO projects VALUES ('p','/tmp/r70-owned','p',NULL,1,1); \
+             INSERT INTO threads (id,project_id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) \
+               VALUES ('t','p','t','execute','auto','mock','active',0,0,1,1); \
+             INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) \
+               VALUES ('m','t',1,'assistant','text','甲乙','done',1); \
+             INSERT INTO tool_calls (id,thread_id,message_id,seq,tool,input_json,status,created_at) \
+               VALUES ('old','t','m',1,'read','{}','success',1);"
+        ).unwrap();
+        store.migrate().unwrap();
+        assert_eq!(user_version(&store), 6);
+        let old: Option<i64> = store
+            .conn()
+            .query_row(
+                "SELECT text_offset_bytes FROM tool_calls WHERE id='old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(old, None);
+        tool_calls::insert(
+            store.conn(),
+            tool_calls::NewToolCall {
+                id: "new",
+                thread_id: "t",
+                message_id: "m",
+                seq: 2,
+                tool: "read",
+                input_json: "{}",
+                status: "success",
+                created_at: 2,
+            },
+        )
+        .unwrap();
+        let new: i64 = store
+            .conn()
+            .query_row(
+                "SELECT text_offset_bytes FROM tool_calls WHERE id='new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new, 6, "UTF-8 byte length, not character count");
+        let tables: i64 = store.conn().query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(tables, 10);
     }
 
     #[test]
@@ -373,7 +442,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 5);
+        assert_eq!(user_version(&store), 6);
         for table in [
             "messages",
             "tool_calls",
