@@ -40,6 +40,7 @@ pub(crate) fn render_entry(
     let row_t0 = Instant::now();
     let colors = theme(cx).colors;
     let item = match entry {
+        StreamEntry::Thinking { card } => div().child(card.clone()).into_any_element(),
         StreamEntry::User { lines } => user_message_item(lines, &colors),
         StreamEntry::Assistant { model, failure, .. } => markdown_item(model, *failure, &colors),
         StreamEntry::Tool { card } => {
@@ -211,7 +212,7 @@ pub(crate) fn message_run_style(color: Rgba) -> TextStyle {
     }
 }
 
-/// Base run style for a monospace block (code lines, table rows): the 12.5px
+/// Base run style for a monospace block (code lines): the 12.5px
 /// code tier (ui-spec §3).
 pub(crate) fn code_run_style(color: Rgba) -> TextStyle {
     TextStyle {
@@ -299,6 +300,9 @@ pub(crate) fn heading_style(level: u8) -> (f32, FontWeight) {
 /// applies here: text blocks wrap; vertical rhythm comes from per-kind
 /// padding. Fixed heights remain only inside cards' compact subrows.
 pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement {
+    if let Some(table) = &line.table {
+        return render_table(line.block_id, table, colors);
+    }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
         .w_full()
@@ -378,23 +382,7 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                 ))
                 .into_any_element()
         }
-        LineKind::TableHeader => item
-            .bg(colors.bg_hover)
-            .text_color(colors.text_primary)
-            .child(div().px_2().child(block_text(
-                &line.spans,
-                code_run_style(colors.text_primary),
-                colors,
-            )))
-            .into_any_element(),
-        LineKind::TableRow => item
-            .text_color(colors.text_primary)
-            .child(div().px_2().child(block_text(
-                &line.spans,
-                code_run_style(colors.text_primary),
-                colors,
-            )))
-            .into_any_element(),
+        LineKind::Table => item.into_any_element(),
         LineKind::ListItem => {
             let indent = "  ".repeat(line.depth);
             let mut row = div().flex().flex_row();
@@ -432,6 +420,65 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
             ))
             .into_any_element(),
     }
+}
+
+/// Keep all rows in one scroll region and give every column the same share
+/// of its width. Text measurement then wraps inside each cell, independent
+/// of CJK fallback glyph widths or inline font changes.
+fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> AnyElement {
+    let ordinal = table.ordinal;
+    let columns = table.alignments.len();
+    let mut body = div()
+        .w_full()
+        .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
+        .flex_shrink_0()
+        .flex()
+        .flex_col();
+    for (row_index, cells) in table.rows.iter().enumerate() {
+        let mut row = div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(colors.border_subtle)
+            .when(row_index == 0, |row| row.bg(colors.bg_hover));
+        for (column, spans) in cells.iter().enumerate() {
+            let mut style = message_run_style(colors.text_primary);
+            if row_index == 0 {
+                style.font_weight = Typography::HEADING_CARD_WEIGHT;
+            }
+            let alignment = match table.alignments[column] {
+                TableAlignment::Center => gpui_kit::TextAlign::Center,
+                TableAlignment::Right => gpui_kit::TextAlign::Right,
+                _ => gpui_kit::TextAlign::Left,
+            };
+            row = row.child(
+                div()
+                    .debug_selector(move || {
+                        format!("markdown-table-{block_id}-{ordinal}-{row_index}-{column}")
+                    })
+                    .flex_1()
+                    .min_w_0()
+                    .px_2()
+                    .py_1()
+                    .text_align(alignment)
+                    .child(block_text(spans, style, colors)),
+            );
+        }
+        body = body.child(row);
+    }
+    div()
+        .id(gpui_kit::SharedString::from(format!(
+            "markdown-table-{block_id}-{ordinal}"
+        )))
+        .debug_selector(move || format!("markdown-table-{block_id}-{ordinal}"))
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .overflow_x_scroll()
+        .child(body)
+        .into_any_element()
 }
 
 // ─── sample document (演示注入载荷) ──────────────────────────────────────────

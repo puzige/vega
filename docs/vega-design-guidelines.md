@@ -187,6 +187,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 - utility bar chip 样式（取代 R49 对触发器的旧定义）：两个触发器均高 28px、水平 padding 8px、全胶囊；保留 `icon(16px, text_secondary)` + `label(Typography::SIDEBAR, text_primary)`、内部 `gap_2`。静止无边框且底色透明；hover 或对应菜单打开时显示专用主题覆盖色，文字和图标不参与透明度变化；关闭并移走指针后恢复透明。浅色覆盖色为 Vega 自主选定的 `#DBDBDB × 0.6`，叠在 `#FAF9F9` 上约为 `#E7E7E7`；深色为白色 × 0.10，叠在 `#191919` 上约为 `#303030`。分支保留 GitBranch 图标。文件夹 chip tooltip「切换项目」、分支 chip tooltip「切换分支」。这些为产品目标，不代表第三方内部实现。详见 [utility chip states](vega-utility-chip-states.md)；非 composer 的 R19 带框触发器不变。
 - 文件夹 chip 打开项目下拉（列出 sidebar 已有项目）；无项目草稿显示「选择项目」。选中、切换或解除项目时，草稿绑定及 Composer/分支上下文必须与共享 `SelectedProject` 同步，不得只换全局选择而留下旧任务绑定；复用既有项目数据源，不新建数据管道。分支 chip 复用既有 `BranchSelector`（open/close/切换/pending/错误码/focus/滚动语义不变），仅由挂载点切换 trigger chrome（`set_chip_chrome`），非 git 项目按既有 `NonGit` 语义隐藏。详见 [A8-01](vega-a8-composer-project-entry.md)。
 - Context、mode、permission、model、thinking 与 send/stop 必须连接已有 controller 和 guard。状态缺失时隐藏或禁用，不造假。
+- Issue #58：权限选择扩展为只读、确认、自动、完全访问四项；自动保持沙箱，完全访问显式关闭 bash 的 OS 沙箱且仍保留危险确认。完全访问使用共享 Warning 图标及 warning token，复用既有菜单布局与键盘路径；详见 [Full access 规格](vega-issue-58-full-access.md)。
 - 不显示装饰性的 token/cost 仪表。成本信息只在有真实账单/计数来源的产品位置展示。
 - 默认使用实色语义表面。玻璃、blur、Web `data-composer-*` 变体和单行 44px 胶囊不属于当前 GPUI 契约；若产品确需新增，必须单独 spec。
 

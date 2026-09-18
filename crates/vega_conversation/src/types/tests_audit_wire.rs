@@ -24,6 +24,7 @@ fn permission_mode_round_trips_and_rejects_unknown_values() {
         ("readonly", PermissionMode::ReadOnly),
         ("confirm", PermissionMode::Confirm),
         ("auto", PermissionMode::Auto),
+        ("full_access", PermissionMode::FullAccess),
     ] {
         assert_eq!(PermissionMode::parse(raw), Some(mode));
         assert_eq!(mode.as_str(), raw);
@@ -75,6 +76,7 @@ fn every_legal_structured_audit_round_trips() {
         audit(Approval::Deny, ApprovalSource::RunMode, None),
         audit(Approval::Always, ApprovalSource::Rule, None),
         audit(Approval::Once, ApprovalSource::Auto, None),
+        audit(Approval::Once, ApprovalSource::FullAccess, None),
         audit(Approval::Once, ApprovalSource::User, None),
         audit(Approval::Always, ApprovalSource::User, None),
         ApprovalAudit {
@@ -138,6 +140,7 @@ fn unknown_and_semantically_impossible_values_fail_closed() {
         r#"{"decision":"once","note":null,"source":"danger","danger":null}"#,
         r#"{"decision":"once","note":null,"source":"rule","danger":null}"#,
         r#"{"decision":"always","note":null,"source":"auto","danger":null}"#,
+        r#"{"decision":"always","note":null,"source":"full_access","danger":null}"#,
         r#"{"decision":"once","note":"not valid","source":"user","danger":null}"#,
         r#"{"decision":"deny","note":null,"source":"readonly_tool","danger":null}"#,
         r#"{"decision":"once","note":null,"source":"danger","danger":{"rule_id":"","decision":"once","note":null}}"#,

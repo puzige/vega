@@ -1,8 +1,8 @@
 //! Pure permission decisions for mutating tools.
 //!
 //! This module deliberately contains no execution capability. An approved
-//! decision authorizes a later prepared-tool call; bash still performs its
-//! mandatory spawn-time sandbox and hardlink preflight in `vega_tools`.
+//! decision authorizes a later prepared-tool call; only FullAccess selects
+//! direct shell execution instead of the default sandbox in `vega_tools`.
 
 /// Thread run mode used by the headless permission boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,12 +24,14 @@ pub enum RuntimePermissionMode {
     Confirm,
     /// Approve non-dangerous mutations automatically.
     Auto,
+    /// Approve ordinary mutations and run bash without the OS sandbox.
+    FullAccess,
 }
 
 /// Mutating tool vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeMutatingTool {
-    /// Sandboxed shell command.
+    /// Shell command subject to the selected execution policy.
     Bash,
     /// Fenced file write.
     Write,
@@ -116,6 +118,8 @@ pub enum RuntimeApprovalSource {
     Rule,
     /// Auto policy.
     Auto,
+    /// Explicit Full access policy.
+    FullAccess,
     /// Ordinary user confirmation.
     User,
     /// Permission timeout.
@@ -259,7 +263,7 @@ pub fn decide_capability(
     }
 }
 
-/// Applies the fixed Execute order: danger → ReadOnly → rule → Auto → Confirm.
+/// Applies Execute order: danger → ReadOnly → rule → Auto/FullAccess → Confirm.
 pub fn decide_execute_permission(
     eligibility: RuntimeExecuteEligibility,
     facts: RuntimeExecutePermission,
@@ -293,6 +297,13 @@ pub fn decide_execute_permission(
         RuntimePermissionMode::Auto => Ok(approved(
             RuntimeApprovalDecision::Once,
             RuntimeApprovalSource::Auto,
+            None,
+            None,
+            false,
+        )),
+        RuntimePermissionMode::FullAccess => Ok(approved(
+            RuntimeApprovalDecision::Once,
+            RuntimeApprovalSource::FullAccess,
             None,
             None,
             false,
@@ -617,7 +628,11 @@ mod tests {
                 Some(RuntimeApprovalSource::ReadOnly)
             );
 
-            for mode in [RuntimePermissionMode::Confirm, RuntimePermissionMode::Auto] {
+            for mode in [
+                RuntimePermissionMode::Confirm,
+                RuntimePermissionMode::Auto,
+                RuntimePermissionMode::FullAccess,
+            ] {
                 let mut input = facts(tool, mode);
                 input.exact_rule_matches = true;
                 let outcome = decide(input).unwrap();
@@ -639,6 +654,11 @@ mod tests {
                 audit(&outcome).map(|a| a.source),
                 Some(RuntimeApprovalSource::Auto)
             );
+            let outcome = decide(facts(tool, RuntimePermissionMode::FullAccess)).unwrap();
+            assert_eq!(
+                audit(&outcome).map(|a| a.source),
+                Some(RuntimeApprovalSource::FullAccess)
+            );
             assert!(matches!(
                 decide(facts(tool, RuntimePermissionMode::Confirm)).unwrap(),
                 RuntimePermissionOutcome::Prompt(RuntimePermissionPrompt { danger: None, .. })
@@ -652,6 +672,7 @@ mod tests {
             RuntimePermissionMode::ReadOnly,
             RuntimePermissionMode::Confirm,
             RuntimePermissionMode::Auto,
+            RuntimePermissionMode::FullAccess,
         ] {
             let mut input = facts(RuntimeMutatingTool::Bash, mode);
             input.danger = Some(RuntimeDangerFacts {

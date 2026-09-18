@@ -23,6 +23,7 @@ async fn r57_plus_menu_permission_group_marks_and_requests_exact_mode(cx: &mut T
         "composer-action-permission-readonly",
         "composer-action-permission-confirm",
         "composer-action-permission-auto",
+        "composer-action-permission-full_access",
         "composer-action-mode-ask",
         "composer-action-mode-plan",
         "composer-action-mode-execute",

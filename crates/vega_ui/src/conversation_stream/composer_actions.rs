@@ -10,10 +10,11 @@ const MODE_ORDER: [ThreadMode; 3] = [ThreadMode::Ask, ThreadMode::Plan, ThreadMo
 /// (R57 P1's `+` menu and R62 R8's picker). P2b removed the bottom-row
 /// dropdown; these two surfaces are what keep the permission mode reachable,
 /// and sharing the order is what keeps them from drifting (R62 R9).
-pub(crate) const PERMISSION_ORDER: [PermissionMode; 3] = [
+pub(crate) const PERMISSION_ORDER: [PermissionMode; 4] = [
     PermissionMode::ReadOnly,
     PermissionMode::Confirm,
     PermissionMode::Auto,
+    PermissionMode::FullAccess,
 ];
 
 /// The exact slash command for one run mode. Single source for both the
@@ -34,48 +35,37 @@ pub(crate) fn permission_label(mode: PermissionMode) -> &'static str {
         PermissionMode::ReadOnly => "只读",
         PermissionMode::Confirm => "确认",
         PermissionMode::Auto => "自动",
+        PermissionMode::FullAccess => "完全访问",
     }
 }
 
-/// R62 R8: the second line of a permission row, taken from the reference
-/// implementation's per-option descriptions (2026-09-14 screenshot):
-/// `Always ask to edit external files and use the internet` /
-/// `Only ask for actions detected as potentially unsafe` /
-/// `Unrestricted access to the internet and any file on your computer`.
-///
-/// The wording follows Vega's own vocabulary rather than translating the
-/// reference literally: Vega's `PermissionMode` doc comments define 只读 as
-/// "ask every time", 确认 as "ask only for potentially unsafe actions" and
-/// 自动 as "unrestricted access", and the spec's §7 table fixes these three
-/// descriptions. They live beside [`permission_label`] so every surface that
-/// lists permission modes reads one projection.
+/// Shared descriptions; I58-R7 distinguishes automatic approval from bypassing
+/// the OS sandbox without changing the existing approval controller.
 pub(crate) fn permission_description(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::ReadOnly => "每次都询问",
         PermissionMode::Confirm => "仅对潜在不安全操作询问",
-        PermissionMode::Auto => "不受限访问",
+        PermissionMode::Auto => "自动批准，使用沙箱",
+        PermissionMode::FullAccess => "不使用沙箱，危险操作仍需确认",
     }
 }
 
-/// R62 R8: the per-row glyph, matching the reference implementation's
-/// three-option picker (open hand / shield / warning triangle).
+/// Per-row glyph; FullAccess shares the existing warning triangle (I58-R7).
 pub(crate) fn permission_icon(mode: PermissionMode) -> crate::icons::Icon {
     match mode {
         PermissionMode::ReadOnly => crate::icons::Icon::Hand,
         PermissionMode::Confirm => crate::icons::Icon::Shield,
-        PermissionMode::Auto => crate::icons::Icon::Warning,
+        PermissionMode::Auto | PermissionMode::FullAccess => crate::icons::Icon::Warning,
     }
 }
 
-/// R62 R8: whether a permission row renders in the warning ink. Only
-/// `自动`/Full access does, matching the reference implementation's orange
-/// third row (and the bottom row's pre-existing warning-coloured status).
+/// Keep Auto's existing warning ink and explicitly mark FullAccess (I58-R7).
 pub(crate) fn permission_is_warning(mode: PermissionMode) -> bool {
-    mode == PermissionMode::Auto
+    matches!(mode, PermissionMode::Auto | PermissionMode::FullAccess)
 }
 
 /// R63: the debug selector naming **which glyph** [`permission_icon`] chose,
-/// so the test harness can tell the three modes apart by what the chip
+/// so the test harness can identify the glyph by what the chip
 /// actually painted.
 ///
 /// An icon renders as an `AnyElement` into the sprite atlas and carries no
@@ -85,7 +75,7 @@ pub(crate) fn permission_is_warning(mode: PermissionMode) -> bool {
 /// **value** the caller is about to paint (not to the mode), so the tag and
 /// the glyph are one value with one source: there is no second `match` on the
 /// mode here that could drift from [`permission_icon`], and a glyph outside
-/// the three named modes is reported as such rather than mislabelled.
+/// the three named glyphs is reported as such rather than mislabelled.
 pub(crate) fn permission_icon_selector(icon: crate::icons::Icon) -> &'static str {
     match icon {
         crate::icons::Icon::Hand => "composer-permission-status-icon-hand",
@@ -151,6 +141,9 @@ impl ComposerActionRow {
             Self::Permission(PermissionMode::ReadOnly) => "composer-action-permission-readonly",
             Self::Permission(PermissionMode::Confirm) => "composer-action-permission-confirm",
             Self::Permission(PermissionMode::Auto) => "composer-action-permission-auto",
+            Self::Permission(PermissionMode::FullAccess) => {
+                "composer-action-permission-full_access"
+            }
         }
     }
 
@@ -167,6 +160,9 @@ impl ComposerActionRow {
             }
             Self::Permission(PermissionMode::Confirm) => "composer-action-permission-confirm-check",
             Self::Permission(PermissionMode::Auto) => "composer-action-permission-auto-check",
+            Self::Permission(PermissionMode::FullAccess) => {
+                "composer-action-permission-full_access-check"
+            }
         }
     }
 }
@@ -590,11 +586,18 @@ impl ConversationStream {
                     .gap_1()
                     .rounded_md()
                     .text_size(px(Typography::SIDEBAR))
-                    .text_color(if selected || highlighted {
-                        colors.brand_primary
-                    } else {
-                        colors.text_primary
-                    })
+                    .text_color(
+                        if matches!(
+                            row,
+                            ComposerActionRow::Permission(PermissionMode::FullAccess)
+                        ) {
+                            colors.warning
+                        } else if selected || highlighted {
+                            colors.brand_primary
+                        } else {
+                            colors.text_primary
+                        },
+                    )
                     .when(highlighted, |row| row.bg(colors.bg_active))
                     .cursor_pointer()
                     .hover(move |row| row.bg(colors.bg_hover))
@@ -615,6 +618,18 @@ impl ConversationStream {
                             })
                             .w(px(Typography::SIDEBAR))
                             .flex_shrink_0(),
+                    )
+                    .when(
+                        matches!(
+                            row,
+                            ComposerActionRow::Permission(PermissionMode::FullAccess)
+                        ),
+                        |row| {
+                            row.child(crate::icons::icon(
+                                crate::icons::Icon::Warning,
+                                colors.warning,
+                            ))
+                        },
                     )
                     .child(label)
                     .into_any_element(),

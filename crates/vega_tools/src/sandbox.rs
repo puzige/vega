@@ -127,22 +127,8 @@ impl SandboxConfig {
         hooks: &ExecutionHooks,
     ) -> Result<Child, BashError> {
         let mut command = self.command(hooks.profile(), temp_root);
-        command
-            .arg("--")
-            .arg(SHELL)
-            .arg("-lc")
-            .arg(format!("exec 2>&1\n{command_text}"));
-        command.current_dir(&self.project_root);
-        command.stdin(Stdio::null());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::null());
-        command.process_group(0);
-        hooks.note_spawn();
-        let mut command = Command::from(command);
-        command.kill_on_drop(true);
-        command
-            .spawn()
-            .map_err(|_| BashError::new(BashErrorCode::SpawnFailed))
+        command.arg("--").arg(SHELL);
+        spawn_shell(command, &self.project_root, command_text, temp_root, hooks)
     }
 
     fn command(&self, profile: &str, temp_root: &TempRoot) -> StdCommand {
@@ -164,6 +150,49 @@ impl SandboxConfig {
             .env("TEMPDIR", temp_root.param());
         command
     }
+}
+
+pub(crate) fn spawn_full_access_shell(
+    project_root: &Path,
+    command_text: &str,
+    temp_root: &TempRoot,
+    hooks: &ExecutionHooks,
+) -> Result<Child, BashError> {
+    spawn_shell(
+        StdCommand::new(SHELL),
+        project_root,
+        command_text,
+        temp_root,
+        hooks,
+    )
+}
+
+fn spawn_shell(
+    mut command: StdCommand,
+    project_root: &Path,
+    command_text: &str,
+    temp_root: &TempRoot,
+    hooks: &ExecutionHooks,
+) -> Result<Child, BashError> {
+    temp_root.validate_identity()?;
+    command
+        .arg("-lc")
+        .arg(format!("exec 2>&1\n{command_text}"))
+        .current_dir(project_root)
+        .env("TMPDIR", temp_root.param())
+        .env("TMP", temp_root.param())
+        .env("TEMP", temp_root.param())
+        .env("TEMPDIR", temp_root.param())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0);
+    hooks.note_spawn();
+    let mut command = Command::from(command);
+    command.kill_on_drop(true);
+    command
+        .spawn()
+        .map_err(|_| BashError::new(BashErrorCode::SpawnFailed))
 }
 
 pub(crate) struct TempRoot {

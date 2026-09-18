@@ -12,6 +12,7 @@ fn entry_kinds_at(stream: &ConversationStream, indices: &[usize]) -> Vec<&'stati
         .iter()
         .filter_map(|index| {
             stream.entries.get(*index).map(|entry| match entry {
+                StreamEntry::Thinking { .. } => "thinking",
                 StreamEntry::User { .. } => "user",
                 StreamEntry::Assistant { .. } => "assistant",
                 StreamEntry::Tool { .. } => "tool",
@@ -32,6 +33,15 @@ fn assistant_line_text(entry: &StreamEntry) -> String {
             .iter()
             .chain(model.pending_lines.iter())
             .map(|line| {
+                if let Some(table) = &line.table {
+                    return table
+                        .rows
+                        .iter()
+                        .flatten()
+                        .flatten()
+                        .map(|span| span.text.as_str())
+                        .collect::<String>();
+                }
                 line.spans
                     .iter()
                     .map(|span| span.text.as_str())

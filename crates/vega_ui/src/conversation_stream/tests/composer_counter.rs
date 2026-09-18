@@ -49,6 +49,19 @@ async fn composer_counter_projects_estimate_calibration_and_fences(cx: &mut Test
     assert_eq!(streaming.tokens, 1, "3 unicode scalars ceil-divided by 4");
     assert!(streaming.provisional);
     assert_eq!(streaming.display(), "≈1 tok · ≈US$0.000002");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ThinkingDelta {
+                message_id: "assistant".into(),
+                delta: "reasoning is not answer tokens".into(),
+            },
+            cx,
+        );
+    });
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.meter_snapshot()),
+        streaming
+    );
 
     // Calibration replaces the estimate in place; late duplicate usage on
     // the finished message cannot re-add.

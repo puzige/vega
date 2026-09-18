@@ -18,6 +18,8 @@
 //! They are recorded as literals rather than derived, because the A1 claim is
 //! precisely "these numbers did not change" — a relative assertion would miss
 //! a uniform shift of every layer.
+//! Issue #58 explicitly adds a fourth permission row: that picker keeps its
+//! recorded left edge, width and bottom anchor, growing upward by one row.
 //!
 //! ## What these tests cannot pin
 //!
@@ -150,19 +152,30 @@ fn open_picker_stream(
     (window, stream)
 }
 
-/// R64 A1 / R62 R8: the permission picker keeps the geometry it had before the
-/// `deferred` wrap — anchored to the chip's top edge with `left_0()` (R61's
-/// anchoring technique), 350px wide, 188px tall for the three rows.
+/// R64 A1 / I58-R7: preserve the original left edge, width and bottom anchor.
+/// The fourth row adds 48.5px: height = 188 + 48.5 = 236.5, so the top moves
+/// from 826.5 to 778 while bottom = 826.5 + 188 = 1014.5 stays fixed.
 #[gpui_kit::test]
 async fn r64_permission_picker_bounds_match_the_baseline(cx: &mut TestAppContext) {
     let (window, _stream, _events) = open_controller_stream(cx, "r64-a1-permission");
     install_utility_globals(cx, &[], Some(PROJECT_BINDING));
     click(window, "composer-permission-status", cx);
-    assert_baseline(
-        bounds(window, "composer-permission-picker", cx),
-        (445.0, 826.5, 350.0, 188.0),
-        "the permission picker",
-        "composer-permission-picker",
+    let picker = bounds(window, "composer-permission-picker", cx);
+    assert_eq!(
+        (
+            f32::from(picker.left()),
+            f32::from(picker.size.width),
+            f32::from(picker.bottom())
+        ),
+        (445.0, 350.0, 1014.5),
+        "I58 must retain the R64 left edge, width and bottom anchor"
+    );
+    let added_row = bounds(window, "composer-permission-option-full_access", cx);
+    assert_eq!(f32::from(added_row.size.height), 48.5);
+    assert_eq!(
+        (f32::from(picker.top()), f32::from(picker.size.height)),
+        (778.0, 236.5),
+        "I58 must grow upward by exactly the fourth row's 48.5px"
     );
 }
 

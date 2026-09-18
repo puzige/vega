@@ -16,6 +16,7 @@ pub(crate) enum PreparedRuntimeCall {
         call: RuntimeToolCall,
         tools: vega_tools::Tools,
         prepared: vega_tools::PreparedBash,
+        full_access: bool,
     },
     InvalidWriteEdit {
         call: RuntimeToolCall,
@@ -209,6 +210,7 @@ pub(crate) fn prepare_runtime_call(
                 call: raw_call,
                 tools: base_tools.clone(),
                 prepared,
+                full_access: config.permission_mode == RuntimePermissionMode::FullAccess,
             }),
             Err(error) => Ok(PreparedRuntimeCall::InvalidBash {
                 call: raw_call,
@@ -592,8 +594,15 @@ pub(crate) async fn execute_prepared_waiting(
             call,
             tools,
             prepared,
+            full_access,
         } => {
-            let result = tools.execute_bash(prepared, cancel.child_token()).await;
+            let result = if full_access {
+                tools
+                    .execute_bash_full_access(prepared, cancel.child_token())
+                    .await
+            } else {
+                tools.execute_bash(prepared, cancel.child_token()).await
+            };
             match result {
                 Ok(output) => (
                     RuntimeToolResult {
@@ -978,7 +987,7 @@ pub(crate) fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> 
             },
             ToolDefinition {
                 name: "bash".to_string(),
-                description: "Run a sandboxed command at the project root after approval."
+                description: "Run a command at the project root after approval. Bash uses an OS sandbox unless the user selected Full access."
                     .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",

@@ -311,6 +311,8 @@ impl Typography {
 pub struct Layout;
 
 impl Layout {
+    /// Minimum readable Markdown table column: eight message ems.
+    pub const MARKDOWN_TABLE_COLUMN_MIN_WIDTH: f32 = 8.0 * Typography::MESSAGE;
     /// Leading space reserved for native macOS titlebar controls.
     pub const TITLEBAR_LEADING_INSET: f32 = 96.0;
     /// Exact interactive surface used by shared titlebar controls.

@@ -174,7 +174,7 @@ pub struct PricingSettingsRequested(pub bool);
 impl Global for PricingSettingsRequested {}
 
 /// Fixed permission-mode vocabulary (matches `vega_store::config::Defaults`).
-const PERMISSION_MODES: [&str; 3] = ["readonly", "confirm", "auto"];
+const PERMISSION_MODES: [&str; 4] = ["readonly", "confirm", "auto", "full_access"];
 
 /// Status placeholder shown only when the local store contains the reference;
 /// the key value itself is never rendered (safety red line).

@@ -1,4 +1,4 @@
-//! R62 §7: the bottom row's permission chip opens a three-row picker.
+//! R62 §7 and I58-R7: the bottom row's permission chip opens a four-row picker.
 //!
 //! Contract source: `docs/vega-r62-slider-card-three-rows.md` §7 (R7/R8/R9)
 //! and §9 (A9/A10/A11). Every case mounts the real [`ConversationStream`] in a
@@ -49,11 +49,11 @@ fn bounds(
         .unwrap_or_else(|| panic!("missing {selector}"))
 }
 
-/// A9: clicking `composer-permission-status` opens the picker, the three rows
+/// A9/I58-R7: clicking `composer-permission-status` opens the picker, the four rows
 /// are present in the reference implementation's order, and the current mode
 /// carries the checkmark.
 #[gpui_kit::test]
-async fn r62_permission_chip_opens_the_three_row_picker(cx: &mut TestAppContext) {
+async fn r62_permission_chip_opens_the_four_row_picker(cx: &mut TestAppContext) {
     let (window, _stream, _events) = open_controller_stream(cx, "r62-permission-picker");
 
     // The chip is inert until clicked: no picker in the first frame.
@@ -68,14 +68,16 @@ async fn r62_permission_chip_opens_the_three_row_picker(cx: &mut TestAppContext)
         "clicking the permission chip must open the picker"
     );
 
-    // All three rows, in `PERMISSION_ORDER` order.
+    // All four rows, in `PERMISSION_ORDER` order (I58-R7).
     let readonly = bounds(window, "composer-permission-option-readonly", cx);
     let confirm = bounds(window, "composer-permission-option-confirm", cx);
     let auto = bounds(window, "composer-permission-option-auto", cx);
+    let full_access = bounds(window, "composer-permission-option-full_access", cx);
     assert!(
         f32::from(readonly.top()) < f32::from(confirm.top())
-            && f32::from(confirm.top()) < f32::from(auto.top()),
-        "the rows must render top-to-bottom as 只读 / 确认 / 自动"
+            && f32::from(confirm.top()) < f32::from(auto.top())
+            && f32::from(auto.top()) < f32::from(full_access.top()),
+        "the rows must render top-to-bottom as 只读 / 确认 / 自动 / 完全访问"
     );
 
     // The fixture thread is `confirm`, so exactly that row is marked — and the
@@ -168,12 +170,13 @@ async fn r62_picker_selection_requests_the_exact_mode_and_follows_the_ack(cx: &m
 async fn r62_plus_menu_permission_group_agrees_with_the_picker(cx: &mut TestAppContext) {
     let (window, stream, _events) = open_controller_stream(cx, "r62-permission-entries");
 
-    // The `+` menu still carries all three rows.
+    // The `+` menu carries all four rows (I58-R7).
     click_composer_add(window, cx);
     for selector in [
         "composer-action-permission-readonly",
         "composer-action-permission-confirm",
         "composer-action-permission-auto",
+        "composer-action-permission-full_access",
     ] {
         assert!(mounted(window, selector, cx), "{selector} must be visible");
     }
@@ -341,6 +344,11 @@ async fn r63_permission_chip_glyph_follows_the_mode(cx: &mut TestAppContext) {
             "composer-permission-status-icon-hand",
         ),
         (
+            PermissionMode::FullAccess,
+            "composer-permission-status-icon-warning",
+            "composer-permission-status-icon-hand",
+        ),
+        (
             PermissionMode::Confirm,
             "composer-permission-status-icon-shield",
             "composer-permission-status-icon-warning",
@@ -388,5 +396,6 @@ fn permission_row_selector(mode: PermissionMode) -> &'static str {
         PermissionMode::ReadOnly => "composer-permission-option-readonly",
         PermissionMode::Confirm => "composer-permission-option-confirm",
         PermissionMode::Auto => "composer-permission-option-auto",
+        PermissionMode::FullAccess => "composer-permission-option-full_access",
     }
 }

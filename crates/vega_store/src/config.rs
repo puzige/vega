@@ -119,7 +119,7 @@ impl Default for ProviderConfig {
 pub struct Defaults {
     /// Default model ID for new conversations.
     pub model: String,
-    /// Default permission mode: `"readonly"` | `"confirm"` | `"auto"`.
+    /// Default permission mode: `"readonly"` | `"confirm"` | `"auto"` | `"full_access"`.
     /// Defaults to `"confirm"` (phase1-plan E5 safe default).
     pub permission_mode: String,
 }

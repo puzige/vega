@@ -271,6 +271,7 @@ pub(crate) fn prepare_run_with_reasoning(
                     crate::types::PermissionMode::ReadOnly => RuntimePermissionMode::ReadOnly,
                     crate::types::PermissionMode::Confirm => RuntimePermissionMode::Confirm,
                     crate::types::PermissionMode::Auto => RuntimePermissionMode::Auto,
+                    crate::types::PermissionMode::FullAccess => RuntimePermissionMode::FullAccess,
                 },
                 checkpoint_scope_id(&thread.project_id, &thread_id),
                 thread_id,
@@ -611,6 +612,7 @@ pub(crate) fn bash_danger_audit_matches(input_json: &str, approval: &ApprovalAud
         ApprovalSource::RunMode
         | ApprovalSource::Rule
         | ApprovalSource::Auto
+        | ApprovalSource::FullAccess
         | ApprovalSource::User
         | ApprovalSource::Validation
         | ApprovalSource::ReadonlyTool
@@ -655,6 +657,7 @@ pub(crate) fn approval_source_matches(
                 ApprovalSource::User
                     | ApprovalSource::Rule
                     | ApprovalSource::Auto
+                    | ApprovalSource::FullAccess
                     | ApprovalSource::Legacy
             ),
         },
@@ -677,6 +680,7 @@ pub(crate) fn approval_source_matches(
                 ApprovalSource::User
                     | ApprovalSource::Rule
                     | ApprovalSource::Auto
+                    | ApprovalSource::FullAccess
                     | ApprovalSource::Danger
                     | ApprovalSource::Legacy
             ),

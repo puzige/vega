@@ -46,8 +46,10 @@ pub enum PermissionMode {
     ReadOnly,
     /// Ask before mutations.
     Confirm,
-    /// Auto-approve except hard-blocked dangerous commands.
+    /// Auto-approve ordinary mutations with sandboxed bash.
     Auto,
+    /// Auto-approve ordinary mutations and run bash without the OS sandbox.
+    FullAccess,
 }
 
 impl PermissionMode {
@@ -57,15 +59,17 @@ impl PermissionMode {
             Self::ReadOnly => "readonly",
             Self::Confirm => "confirm",
             Self::Auto => "auto",
+            Self::FullAccess => "full_access",
         }
     }
 
-    /// Parses the exact `readonly|confirm|auto` vocabulary.
+    /// Parses the exact `readonly|confirm|auto|full_access` vocabulary.
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "readonly" => Some(Self::ReadOnly),
             "confirm" => Some(Self::Confirm),
             "auto" => Some(Self::Auto),
+            "full_access" => Some(Self::FullAccess),
             _ => None,
         }
     }
@@ -112,6 +116,8 @@ pub enum ApprovalSource {
     Rule,
     /// Auto permission mode.
     Auto,
+    /// Full access permission mode.
+    FullAccess,
     /// Ordinary permission-card response.
     User,
     /// Permission timeout.
@@ -134,6 +140,7 @@ impl ApprovalSource {
             Self::RunMode => "run_mode",
             Self::Rule => "rule",
             Self::Auto => "auto",
+            Self::FullAccess => "full_access",
             Self::User => "user",
             Self::Timeout => "timeout",
             Self::Validation => "validation",
@@ -150,6 +157,7 @@ impl ApprovalSource {
             "run_mode" => Some(Self::RunMode),
             "rule" => Some(Self::Rule),
             "auto" => Some(Self::Auto),
+            "full_access" => Some(Self::FullAccess),
             "user" => Some(Self::User),
             "timeout" => Some(Self::Timeout),
             "validation" => Some(Self::Validation),
@@ -364,7 +372,7 @@ impl ApprovalAudit {
             ApprovalSource::Rule => {
                 self.decision == Approval::Always && self.note.is_none() && self.danger.is_none()
             }
-            ApprovalSource::Auto => {
+            ApprovalSource::Auto | ApprovalSource::FullAccess => {
                 self.decision == Approval::Once && self.note.is_none() && self.danger.is_none()
             }
             ApprovalSource::User => self.danger.is_none(),
@@ -421,6 +429,7 @@ pub fn approval_audit_from_runtime(audit: &vega_runtime::RuntimeApprovalAudit) -
             vega_runtime::RuntimeApprovalSource::RunMode => ApprovalSource::RunMode,
             vega_runtime::RuntimeApprovalSource::Rule => ApprovalSource::Rule,
             vega_runtime::RuntimeApprovalSource::Auto => ApprovalSource::Auto,
+            vega_runtime::RuntimeApprovalSource::FullAccess => ApprovalSource::FullAccess,
             vega_runtime::RuntimeApprovalSource::User => ApprovalSource::User,
             vega_runtime::RuntimeApprovalSource::Timeout => ApprovalSource::Timeout,
             vega_runtime::RuntimeApprovalSource::Validation => ApprovalSource::Validation,
@@ -448,6 +457,7 @@ pub fn approval_audit_to_runtime(audit: &ApprovalAudit) -> vega_runtime::Runtime
             ApprovalSource::RunMode => vega_runtime::RuntimeApprovalSource::RunMode,
             ApprovalSource::Rule => vega_runtime::RuntimeApprovalSource::Rule,
             ApprovalSource::Auto => vega_runtime::RuntimeApprovalSource::Auto,
+            ApprovalSource::FullAccess => vega_runtime::RuntimeApprovalSource::FullAccess,
             ApprovalSource::User => vega_runtime::RuntimeApprovalSource::User,
             ApprovalSource::Timeout => vega_runtime::RuntimeApprovalSource::Timeout,
             ApprovalSource::Validation => vega_runtime::RuntimeApprovalSource::Validation,

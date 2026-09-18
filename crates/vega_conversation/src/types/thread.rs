@@ -90,7 +90,7 @@ pub struct Thread {
     pub title: String,
     /// Run mode (`ask|plan|execute`).
     pub mode: ThreadMode,
-    /// Permission mode (`readonly|confirm|auto`).
+    /// Permission mode (`readonly|confirm|auto|full_access`).
     pub permission_mode: PermissionMode,
     /// Model id; empty string until a provider is configured (S4).
     pub model: String,

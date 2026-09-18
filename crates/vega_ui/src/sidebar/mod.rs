@@ -232,7 +232,7 @@ impl Global for VegaStore {}
 pub struct NewTaskDefaults {
     /// `defaults.model` (empty until a provider is configured).
     pub model: String,
-    /// `defaults.permission_mode` (`readonly` | `confirm` | `auto`).
+    /// `defaults.permission_mode` (`readonly` | `confirm` | `auto` | `full_access`).
     pub permission_mode: String,
 }
 

@@ -38,7 +38,7 @@ CREATE TABLE threads (
   project_id TEXT NOT NULL REFERENCES projects(id),
   title TEXT NOT NULL DEFAULT '',
   mode TEXT NOT NULL DEFAULT 'execute',   -- ask|plan|execute
-  permission_mode TEXT NOT NULL DEFAULT 'confirm',  -- readonly|confirm|auto
+  permission_mode TEXT NOT NULL DEFAULT 'confirm',  -- readonly|confirm|auto|full_access
   model TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',  -- active|archived
   pinned INTEGER NOT NULL DEFAULT 0,
@@ -109,7 +109,7 @@ S5 的 `0002_plan_review.sql` 只给 `messages` 添加三个 nullable 列：`pla
 
 新 Plan 完成事务先确认 thread.mode 仍为 plan；若旧 plan approve 已抢先切到 execute，本次 completion fail closed。确认后把该 thread 除 `current_message_id` 外全部现存 pending plan 更新为 `abandoned`、`plan_review_note='superseded'`、同一 `plan_reviewed_at`，再插入或标记 current plan 为 pending；后一步失败必须回滚 supersede。Plan approve/change/abandon 则先执行带 `id + kind='plan' + plan_status='pending'` 的 conditional update，确认 affected rows == 1 后才允许改变 thread.mode 或插入 review user message；否则整个操作无后续写入。SQLite 事务串行化后：completion 先赢则旧 approval affected rows=0；旧 approve 先赢则 completion 因 mode 非 plan 失败；两个 completion 依次提交时最后完成者是唯一 pending。这是应用事务不变量，不虚称 DDL 唯一约束。
 
-S5 起 `tool_calls.approval` 精确写四个顶层字段：`{"decision":"once|always|deny","note":null|string,"source":"…","danger":null|object}`。非 null danger 精确为 `{"rule_id":"…","decision":"once|always|deny","note":null|string}`。source 只取 `danger|readonly|run_mode|rule|auto|user|timeout|validation|readonly_tool|recovery|legacy`。danger+ReadOnly 时顶层为 deny/readonly，nested danger 保留 once|always；danger deny/timeout 时顶层为 deny/danger|timeout，nested decision=deny。读取端接受 S4 裸 `once|always|deny`，内存归一为同 decision、note=null、source=legacy、danger=null，且不重写历史行；裸值仅为 read-only compatibility，所有 S5 新写必须为严格 JSON。其他缺字段、额外字段、未知值或损坏 JSON 全部 fail closed。
+S5 起 `tool_calls.approval` 精确写四个顶层字段：`{"decision":"once|always|deny","note":null|string,"source":"…","danger":null|object}`。非 null danger 精确为 `{"rule_id":"…","decision":"once|always|deny","note":null|string}`。source 只取 `danger|readonly|run_mode|rule|auto|full_access|user|timeout|validation|readonly_tool|recovery|legacy`（`full_access` 由 Issue #58 新增）。danger+ReadOnly 时顶层为 deny/readonly，nested danger 保留 once|always；danger deny/timeout 时顶层为 deny/danger|timeout，nested decision=deny。读取端接受 S4 裸 `once|always|deny`，内存归一为同 decision、note=null、source=legacy、danger=null，且不重写历史行；裸值仅为 read-only compatibility，所有 S5 新写必须为严格 JSON。其他缺字段、额外字段、未知值或损坏 JSON 全部 fail closed。
 
 S5 的 valid write/edit `input_json` 改为不含正文的 strict audit projection。write exact JSON 为 `{"audit_version":"write_edit_v1","tool":"write","path":"<normalized-relative>","content_bytes":N,"fingerprint_v1":"<64 lower hex>"}`；edit exact JSON 为 `{"audit_version":"write_edit_v1","tool":"edit","path":"<normalized-relative>","old_string_bytes":N,"new_string_bytes":N,"fingerprint_v1":"<64 lower hex>"}`。JSON key order 无语义；整数必须能严格解码为 u64（拒绝负数、小数与 overflow）；missing/extra/wrong-type、错误常量、非法规范相对 path 或非 64-byte lowercase hex fingerprint 一律 fail closed。fingerprint 输入为 ASCII domain `vega.write-edit.fingerprint.v1\0`，随后按顺序编码 tool、path、write.content 或 edit.old_string/edit.new_string，每个字段均为 `u64` big-endian length + 原始 UTF-8 bytes。实现用仓内 safe Rust 和公开 SHA-256 test vectors，不引新依赖。恢复时重算，严格解码 projection，并同时比较 DB `tool` 与 projection `tool`、规范 path、fingerprint；任一不符即 call-id conflict，绝不执行或复用。raw content 无恢复例外，永不持久化。
 
@@ -148,7 +148,7 @@ pub enum ToolCallStatus { PendingApproval, Approved, Rejected, Running, Success,
 //         PendingApproval → Rejected（终态）；Running → Cancelled（中断）
 //         validation pre-gate → Rejected（原子插入终态，不产生权限等待）
 
-pub enum PermissionMode { ReadOnly, Confirm, Auto }   // 对应 UI：只读/变更前确认/全自动
+pub enum PermissionMode { ReadOnly, Confirm, Auto, FullAccess }   // 只读/确认/自动(沙箱)/完全访问
 pub enum RunMode { Ask, Plan, Execute }               // 三模式（A2-09）
 
 pub struct TokenUsage { pub input: u64, pub output: u64, pub cache_read: u64, pub cache_write: u64 }
@@ -187,7 +187,7 @@ pub struct DangerAudit {
 }
 
 pub enum ApprovalSource {
-    Danger, ReadOnly, RunMode, Rule, Auto, User, Timeout,
+    Danger, ReadOnly, RunMode, Rule, Auto, FullAccess, User, Timeout,
     Validation, ReadonlyTool, Recovery, Legacy,
 }
 
@@ -317,11 +317,12 @@ tool_call 到达
  3. 步骤 1 已获用户确认？→ Approved 本次；always 可存规则但下次 danger 仍回步骤 1
  4. permissions 表命中 project + tool + exact pattern？→ Approved
  5. permission_mode == Auto？→ Approved
+ 5b. permission_mode == FullAccess？→ Approved（bash 不使用 OS 沙箱；仍经过上述 danger 门禁）
  6. permission_mode == Confirm？→ 弹普通权限卡，等待用户；10 分钟超时 Rejected
  7. 每个裁决与状态推进先写 tool_calls；always 幂等写 permissions
 ```
 
-validation step -2 是 permission 前置安全边界：invalid write/edit 不产生 PermissionRequest、不泄露 raw input、不执行，并在脱敏 terminal row 持久化完成后才把 invalid tool_result 加回 provider 上下文。capability step -1 随后拦 Ask/Plan 的 valid mutating call；Ask/Plan 只注册 read/glob/grep，hallucinated write/edit/bash 以 `source=run_mode` Rejected，不弹 danger 卡。danger-first 顺序只适用于具备 Execute 资格的 valid mutating calls。Execute 内步骤不可交换：rule/Auto 永远不能绕过 danger，危险卡批准也永远不能绕过 ReadOnly。
+validation step -2 是 permission 前置安全边界：invalid write/edit 不产生 PermissionRequest、不泄露 raw input、不执行，并在脱敏 terminal row 持久化完成后才把 invalid tool_result 加回 provider 上下文。capability step -1 随后拦 Ask/Plan 的 valid mutating call；Ask/Plan 只注册 read/glob/grep，hallucinated write/edit/bash 以 `source=run_mode` Rejected，不弹 danger 卡。danger-first 顺序只适用于具备 Execute 资格的 valid mutating calls。Execute 内步骤不可交换：rule/Auto/FullAccess 永远不能绕过 danger，危险卡批准也永远不能绕过 ReadOnly。
 
 **Phase 1 exact rule**：`permissions.tool` 为 `bash|write|edit`；bash pattern 是原始完整 cmd，write/edit pattern 是围栏校验后的规范项目相对路径；字节级精确匹配，不折叠空白、不作 glob/regex。通配权限后置，必须另行 spec。
 
@@ -352,6 +353,8 @@ validation step -2 是 permission 前置安全边界：invalid write/edit 不产
 - 解析/字段/path fence 任一失败时改走 §2 `write_edit_invalid_v1` 投影；计算 exact raw JSON hash 后立即丢弃 raw input，持久化 deny/validation terminal row。invalid tool_result 只含 tool + stable code（例如 `Tool error: invalid write input (malformed_json)`），不得回显 path、body 或原 JSON，也不得进入 permission hook/dispatcher。
 
 #### 4.4.2 bash
+
+> 2026-09-18 · Issue #58 用户裁决：新增独立 FullAccess（`full_access`），Auto 仍保留沙箱。Execute + FullAccess 直接启动 shell，绕过下面仅适用于沙箱模式的 Seatbelt、profile 自测与 hardlink preflight；不会在沙箱失败时自动降级。其余模式继续按下文执行，危险确认与进程/输出生命周期保持不变。具体范围和验收见 [Issue 58 规格](vega-issue-58-full-access.md)。
 
 - bash 仅接收 `cmd` 与可选 `timeout_ms`；调用方不存在 cwd 参数。timeout 缺省 120_000ms，0 与不可表示值拒绝。执行固定为 `/bin/zsh -lc`，cwd 固定 canonical project root，无 PTY。
 - 所有生产 bash 都由 `/usr/bin/sandbox-exec` 启动。workspace-write profile 基线 deny `file-write*`，只放行 project root 与当次 Vega-owned temp exact subpath，再 deny `.git` 与实际 gitdir；禁止 broad-allow 共享 `/private/tmp`，网络按 tech-risks §4 workspace-write 档开放。sandbox-exec 缺失/profile 自测失败必须 fail closed，禁止裸 shell。

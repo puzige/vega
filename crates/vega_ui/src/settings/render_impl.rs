@@ -574,7 +574,11 @@ impl SettingsView {
                             cx.notify();
                         }),
                     )
-                    .child(current.clone())
+                    .child(if current == "full_access" {
+                        "完全访问".to_string()
+                    } else {
+                        current.clone()
+                    })
                     .child(crate::icons::icon(
                         if self.mode_open {
                             crate::icons::Icon::ChevronDown
@@ -588,6 +592,10 @@ impl SettingsView {
                 column.children(PERMISSION_MODES.iter().map(|mode| {
                     let selected = *mode == current;
                     div()
+                        .id(gpui_kit::SharedString::from(format!(
+                            "settings-permission-option-{mode}"
+                        )))
+                        .debug_selector(move || format!("settings-permission-option-{mode}"))
                         .px_2()
                         .py_1()
                         .rounded_md()
@@ -605,7 +613,21 @@ impl SettingsView {
                                 this.select_mode(mode, cx);
                             }),
                         )
-                        .child(*mode)
+                        .when(*mode == "full_access", |row| {
+                            row.flex()
+                                .items_center()
+                                .gap_2()
+                                .text_color(colors.warning)
+                                .child(crate::icons::icon(
+                                    crate::icons::Icon::Warning,
+                                    colors.warning,
+                                ))
+                        })
+                        .child(if *mode == "full_access" {
+                            "完全访问"
+                        } else {
+                            *mode
+                        })
                 }))
             })
             .into_any_element()

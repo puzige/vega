@@ -105,6 +105,7 @@ fn bash_input_is_strict_and_defaults_timeout() {
         "{}",
         r#"{"cmd":1}"#,
         r#"{"cmd":"pwd","cwd":"/"}"#,
+        r#"{"cmd":"pwd","full_access":true}"#,
         r#"{"cmd":"pwd","timeout_ms":0}"#,
         r#"{"cmd":"pwd","timeout_ms":null}"#,
         r#"{"cmd":"pwd","timeout_ms":-1}"#,
@@ -754,4 +755,164 @@ async fn signal_group_treats_an_already_exited_child_as_gone() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     signal_group(pgid, "-TERM").await.unwrap();
     child.wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn full_access_writes_sibling_and_commits_while_default_remains_sandboxed() {
+    let owned = tempdir().unwrap();
+    let project = owned.path().join("project");
+    fs::create_dir(&project).unwrap();
+    init_owned_git_repo(&project);
+    let tools = Tools::new(&project).unwrap();
+    let marker = owned.path().join("sibling-marker");
+    let command = format!(
+        "print full-access > {} && print new > added.txt && /usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgsign=false add added.txt && /usr/bin/git -c core.hooksPath=/dev/null -c commit.gpgsign=false commit -m full-access",
+        quote(&marker)
+    );
+    let prepared = tools
+        .prepare_bash_json(&serde_json::json!({"cmd": command}).to_string())
+        .unwrap();
+    let output = tools
+        .execute_bash_full_access(prepared, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(output.exit_code, 0, "{}", output.text);
+    assert_eq!(fs::read_to_string(&marker).unwrap(), "full-access\n");
+    assert_eq!(fixture_git(&project, &["show", "HEAD:added.txt"]), "new");
+
+    let blocked = owned.path().join("blocked-marker");
+    let output = run(
+        &tools,
+        &serde_json::json!({"cmd": format!("print blocked > {}", quote(&blocked))}).to_string(),
+    )
+    .await
+    .unwrap();
+    assert_ne!(output.exit_code, 0);
+    assert!(!blocked.exists());
+    let output = run(&tools, r#"{"cmd":"/usr/bin/git branch blocked-branch"}"#)
+        .await
+        .unwrap();
+    assert_ne!(output.exit_code, 0);
+    assert!(fixture_git(&project, &["branch", "--list", "blocked-branch"]).is_empty());
+    assert_eq!(
+        run(&tools, r#"{"cmd":"print allowed > allowed.txt"}"#)
+            .await
+            .unwrap()
+            .exit_code,
+        0
+    );
+    assert_eq!(
+        fs::read_to_string(project.join("allowed.txt")).unwrap(),
+        "allowed\n"
+    );
+}
+
+#[tokio::test]
+async fn full_access_skips_sandbox_profile_and_project_hardlink_scan() {
+    let (project, tools) = tools();
+    let outside = tempdir().unwrap();
+    fs::write(outside.path().join("source"), "owned").unwrap();
+    fs::hard_link(outside.path().join("source"), project.path().join("linked")).unwrap();
+    let prepared = tools
+        .prepare_bash_json(r#"{"cmd":"print updated > linked"}"#)
+        .unwrap();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let hooks = ExecutionHooks {
+        profile_override: Some("invalid seatbelt profile".into()),
+        spawn_count: Some(spawns.clone()),
+        ..ExecutionHooks::default()
+    };
+    let output = tools
+        .execute_bash_inner(prepared, CancellationToken::new(), &hooks, true)
+        .await
+        .unwrap();
+    assert_eq!(output.exit_code, 0);
+    assert_eq!(
+        spawns.load(Ordering::SeqCst),
+        1,
+        "no sandbox self-test child"
+    );
+    assert_eq!(
+        fs::read_to_string(outside.path().join("source")).unwrap(),
+        "updated\n"
+    );
+    assert_eq!(
+        run(&tools, r#"{"cmd":"true"}"#).await.unwrap_err().code(),
+        BashErrorCode::HardlinkPreflight
+    );
+}
+
+#[tokio::test]
+async fn full_access_cancel_and_timeout_reap_shell_descendant_and_private_temp() {
+    for cancelled in [true, false] {
+        let (project, tools) = tools();
+        let raw = serde_json::json!({
+            "cmd": "print $$ > shell.pid; print -r -- $TMPDIR > temp.path; sleep 30 & print $! > child.pid; wait",
+            "timeout_ms": if cancelled { 10000 } else { 600 }
+        }).to_string();
+        let prepared = tools.prepare_bash_json(&raw).unwrap();
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task =
+            tokio::spawn(
+                async move { tools.execute_bash_full_access(prepared, task_cancel).await },
+            );
+        let shell_pid = wait_for_pid(&project.path().join("shell.pid")).await;
+        let child_pid = wait_for_pid(&project.path().join("child.pid")).await;
+        let temp_path = fs::read_to_string(project.path().join("temp.path")).unwrap();
+        assert_eq!(
+            fs::symlink_metadata(temp_path.trim())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        if cancelled {
+            cancel.cancel();
+        }
+        let error = task.await.unwrap().unwrap_err();
+        assert_eq!(
+            error.code(),
+            if cancelled {
+                BashErrorCode::Cancelled
+            } else {
+                BashErrorCode::TimedOut
+            }
+        );
+        assert!(process_is_gone(shell_pid));
+        assert!(process_is_gone(child_pid));
+        assert!(!Path::new(temp_path.trim()).exists());
+    }
+}
+
+#[tokio::test]
+async fn full_access_preserves_scope_binding_and_precancel() {
+    let (project, tools) = tools();
+    let other = Tools::new(project.path()).unwrap();
+    let prepared = tools
+        .prepare_bash_json(r#"{"cmd":"print unsafe > marker"}"#)
+        .unwrap();
+    assert_eq!(
+        other
+            .execute_bash_full_access(prepared, CancellationToken::new())
+            .await
+            .unwrap_err()
+            .code(),
+        BashErrorCode::ScopeMismatch
+    );
+    let prepared = tools
+        .prepare_bash_json(r#"{"cmd":"print unsafe > marker"}"#)
+        .unwrap();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert_eq!(
+        tools
+            .execute_bash_full_access(prepared, cancel)
+            .await
+            .unwrap_err()
+            .code(),
+        BashErrorCode::Cancelled
+    );
+    assert!(!project.path().join("marker").exists());
 }

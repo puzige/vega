@@ -401,7 +401,8 @@ impl ConversationStream {
     /// How should ChatGPT actions be approved?          Learn more
     ///   <icon> 只读 / 每次都询问
     ///   <icon> 确认 / 仅对潜在不安全操作询问
-    ///   <icon> 自动 / 不受限访问                              ✓
+    ///   <icon> 自动 / 自动批准，使用沙箱
+    ///   <icon> 完全访问 / 不使用沙箱，危险操作仍需确认          ✓
     /// ```
     ///
     /// Every row's icon, label and description come from the shared

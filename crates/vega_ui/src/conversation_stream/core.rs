@@ -82,6 +82,9 @@ pub struct ConversationStream {
     /// Whether the current Markdown segment contains text; a tool boundary
     /// may leave the active run without a segment until the next text delta.
     pub(crate) active_segment_has_text: bool,
+    pub(crate) active_thinking: Option<Entity<ThinkingBlock>>,
+    pub(crate) thinking_bytes: usize,
+    pub(crate) thinking_blocks: usize,
     /// Most recently finished assistant entry, retained until the typed Plan
     /// projection can replace it in place.
     pub(crate) last_finished_agent_message: Option<(String, usize)>,
@@ -340,6 +343,9 @@ impl ConversationStream {
             summary_cards: HashMap::new(),
             hydration: HistoryHydration::default(),
             active_agent_message: None,
+            active_thinking: None,
+            thinking_bytes: 0,
+            thinking_blocks: 0,
             active_segment_has_text: false,
             last_finished_agent_message: None,
             meter: ConversationMeter::default(),
@@ -1179,7 +1185,7 @@ impl ConversationStream {
                 None => true,
             },
             // Tool proposals/results carry no assistant id; the meter gates
-            // them on its own run state. Thinking is never visible output.
+            // them on its own run state. Thinking is excluded from answer estimates.
             ConversationEvent::ToolCallProposed { .. }
             | ConversationEvent::ToolCallApproved { .. }
             | ConversationEvent::ToolCallOutput { .. }

@@ -246,7 +246,7 @@ pub fn set_permission_mode(
     mode: &str,
     now: i64,
 ) -> Result<usize, rusqlite::Error> {
-    if !matches!(mode, "readonly" | "confirm" | "auto") {
+    if !matches!(mode, "readonly" | "confirm" | "auto" | "full_access") {
         return Ok(0);
     }
     conn.execute(

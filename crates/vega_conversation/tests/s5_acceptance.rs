@@ -29,6 +29,175 @@ const EDIT_MIDDLE: &str = "S5_EDIT_MIDDLE_SENTINEL";
 const EDIT_FINAL: &str = "S5_EDIT_FINAL_SENTINEL";
 const DENIAL_NOTE: &str = "S5 operator denied the command";
 
+#[tokio::test]
+async fn full_access_persisted_mode_runs_real_shell_and_restores_sandbox()
+-> Result<(), Box<dyn Error>> {
+    use vega_conversation::history::{HistoryEntry, restart_history_page};
+    use vega_conversation::threads::set_thread_permission_mode;
+    use vega_conversation::types::PermissionMode;
+
+    let owned = tempdir()?;
+    let project_root = owned.path().join("project");
+    fs::create_dir(&project_root)?;
+    let database = owned.path().join("vega.db");
+    let store = Store::open(&database)?;
+    store.migrate()?;
+    let project = projects::create(
+        store.conn(),
+        project_root.to_str().ok_or("UTF-8 path")?,
+        "full-access-fixture",
+        None,
+    )?;
+    for id in ["full-access-thread", "confirm-neighbor"] {
+        threads::create(
+            store.conn(),
+            threads::NewThread {
+                id,
+                project_id: &project.id,
+                title: "Full access fixture",
+                mode: "execute",
+                permission_mode: "confirm",
+                model: "mock-full-access",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )?;
+    }
+    set_thread_permission_mode(&store, "full-access-thread", PermissionMode::FullAccess)?;
+    drop(store);
+    let store = Store::open(&database)?;
+    assert_eq!(
+        threads::find(store.conn(), "full-access-thread")?
+            .ok_or("missing thread")?
+            .permission_mode,
+        "full_access"
+    );
+    assert_eq!(
+        threads::find(store.conn(), "confirm-neighbor")?
+            .ok_or("missing neighbor")?
+            .permission_mode,
+        "confirm"
+    );
+    let tools = Tools::new(&project_root)?;
+
+    for (index, (thread_id, mode, source)) in [
+        (
+            "full-access-thread",
+            PermissionMode::FullAccess,
+            ApprovalSource::FullAccess,
+        ),
+        (
+            "confirm-neighbor",
+            PermissionMode::Confirm,
+            ApprovalSource::User,
+        ),
+        (
+            "full-access-thread",
+            PermissionMode::Auto,
+            ApprovalSource::Auto,
+        ),
+        (
+            "full-access-thread",
+            PermissionMode::Confirm,
+            ApprovalSource::User,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        set_thread_permission_mode(&store, thread_id, mode)?;
+        let call_id = format!("full-access-call-{index}");
+        // All shell writes target files created by this owned fixture.
+        let command = if mode == PermissionMode::FullAccess {
+            "print full > ../sibling-0 && print committed > tracked.txt && /usr/bin/git init -b main && /usr/bin/git add tracked.txt && /usr/bin/git -c user.name=VegaFixture -c user.email=fixture@example.invalid -c core.hooksPath=/dev/null -c commit.gpgsign=false commit -m fixture".to_owned()
+        } else {
+            format!("print allowed > inside-{index}; print denied > ../sibling-{index}")
+        };
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: call_id.clone(),
+                    name: "bash".into(),
+                    input_json: serde_json::json!({"cmd": command}).to_string(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+            vec![ScriptStep::events(vec![
+                ProviderEvent::TextDelta("done".into()),
+                ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                },
+            ])],
+        ]);
+        let hook = ScriptedPermissionHook::new([PermissionDecision::Once]);
+        let run = run_thread_task_with_permission_sink(
+            &store,
+            &provider,
+            &tools,
+            thread_id,
+            "exercise persisted permission",
+            "Deterministic fixture",
+            CancellationToken::new(),
+            &hook,
+            |_| Ok(()),
+        )
+        .await?;
+        assert!(!run.failed && !run.interrupted);
+        assert_eq!(
+            hook.requests().len(),
+            usize::from(mode == PermissionMode::Confirm)
+        );
+        let state = tool_calls::find_state(store.conn(), &call_id)?.ok_or("missing tool audit")?;
+        let audit = ApprovalAudit::from_json(state.approval.as_deref().ok_or("missing approval")?)?;
+        assert_eq!(audit.source, source);
+        assert_eq!(audit.decision, Approval::Once);
+        assert_eq!(state.status, "success"); // Shell completion preserves its real exit code separately.
+        if mode == PermissionMode::FullAccess {
+            assert_eq!(state.exit_code, Some(0));
+            assert_eq!(
+                fs::read_to_string(owned.path().join("sibling-0"))?,
+                "full\n"
+            );
+            let output = std::process::Command::new("/usr/bin/git")
+                .args(["show", "HEAD:tracked.txt"])
+                .current_dir(&project_root)
+                .output()?;
+            assert!(output.status.success());
+            assert_eq!(output.stdout, b"committed\n");
+        } else {
+            assert_ne!(state.exit_code, Some(0));
+            assert!(!owned.path().join(format!("sibling-{index}")).exists());
+            assert_eq!(
+                fs::read_to_string(project_root.join(format!("inside-{index}")))?,
+                "allowed\n"
+            );
+        }
+    }
+    drop(store);
+    let store = Store::open(&database)?;
+    let page = restart_history_page(&store, "full-access-thread", 100)?;
+    assert_eq!(
+        page.entries
+            .iter()
+            .filter(|entry| matches!(entry, HistoryEntry::Tool { .. }))
+            .count(),
+        3
+    );
+    let state = tool_calls::find_state(store.conn(), "full-access-call-0")?
+        .ok_or("missing recovered audit")?;
+    assert_eq!(state.status, "success");
+    assert_eq!(
+        ApprovalAudit::from_json(state.approval.as_deref().ok_or("approval")?)?.source,
+        ApprovalSource::FullAccess
+    );
+    Ok(())
+}
+
 #[derive(Clone)]
 struct ScriptedPermissionHook {
     decisions: Arc<Mutex<VecDeque<PermissionDecision>>>,

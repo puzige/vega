@@ -279,7 +279,9 @@ mod file_reference;
 mod model;
 mod render;
 mod render_rows;
+mod thinking;
 mod thinking_slider;
+use thinking::ThinkingBlock;
 mod utility_bar;
 
 #[cfg(test)]

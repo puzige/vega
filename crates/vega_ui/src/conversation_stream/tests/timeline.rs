@@ -5,6 +5,7 @@ fn timeline(stream: &ConversationStream) -> Vec<String> {
         .entries
         .iter()
         .map(|entry| match entry {
+            StreamEntry::Thinking { .. } => "thinking".into(),
             StreamEntry::Assistant { model, failure, .. } => {
                 let text: String = model
                     .committed_lines

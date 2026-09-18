@@ -651,7 +651,7 @@ fn permission_mode_accepts_only_the_fixed_set() {
         assert_eq!(config.defaults.permission_mode, mode);
     }
     assert!(select_permission_mode(&mut config, "yolo").is_err());
-    assert_eq!(config.defaults.permission_mode, "auto");
+    assert_eq!(config.defaults.permission_mode, "full_access");
 }
 
 #[test]

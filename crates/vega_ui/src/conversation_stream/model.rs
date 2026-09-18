@@ -120,10 +120,8 @@ pub(crate) enum LineKind {
     Paragraph,
     /// List row; marker text (`"1."`, `"•"`) lives in [`StreamLine::marker`].
     ListItem,
-    /// Table header row.
-    TableHeader,
-    /// Table body row.
-    TableRow,
+    /// One structured table, including its header and body rows.
+    Table,
     /// Code line (monospace on `code_bg`).
     Code,
     /// Block-quote line (left bar + secondary color).
@@ -156,6 +154,16 @@ pub(crate) struct StreamLine {
     /// Nesting depth for list rows (2-space indent per level).
     pub depth: usize,
     pub spans: Vec<StreamSpan>,
+    pub table: Option<Arc<StreamTable>>,
+}
+
+/// Cached styled cells; the first row is the header. Column geometry belongs
+/// to the renderer, never to whitespace padding in the text content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StreamTable {
+    pub ordinal: usize,
+    pub alignments: Vec<TableAlignment>,
+    pub rows: Vec<Vec<Vec<StreamSpan>>>,
 }
 
 impl StreamLine {
@@ -167,13 +175,13 @@ impl StreamLine {
             marker: String::new(),
             depth: 0,
             spans: Vec::new(),
+            table: None,
         }
     }
 }
 
-/// Display width of a string: CJK/fullwidth characters count as 2 columns so
-/// table column padding stays visually aligned in mixed text (spike §5.2 CJK
-/// caution; pure function, unit-tested).
+/// Display width of a string: CJK/fullwidth characters count as 2 columns
+/// for bounded tool/permission summary projections (spike §5.2 CJK caution).
 pub(crate) fn display_width(text: &str) -> usize {
     text.chars()
         .map(|ch| {
@@ -407,94 +415,36 @@ pub(crate) fn flatten_table(block_id: u64, table: &TableBlock, out: &mut Vec<Str
     if table.header.is_empty() {
         return;
     }
-    // 列宽 = 各列显示宽最大值（CJK 计 2），对齐按 GFM 分隔行（§5.3 表格分支）。
     let columns = table.header.len();
-    let mut widths = vec![0usize; columns];
-    let mut header_cells = Vec::with_capacity(columns);
-    for (column, cell) in table.header.iter().enumerate() {
-        let text = inline_plain(&cell.spans);
-        widths[column] = widths[column].max(display_width(&text));
-        header_cells.push(text);
-    }
-    let mut body: Vec<Vec<String>> = Vec::with_capacity(table.rows.len());
-    for row in &table.rows {
-        let mut cells = Vec::with_capacity(columns);
-        for (column, cell) in row.iter().enumerate().take(columns) {
-            let text = inline_plain(&cell.spans);
-            widths[column] = widths[column].max(display_width(&text));
-            cells.push(text);
-        }
-        // 畸形表的缺列补空（保持每行列数一致）。
-        cells.resize(columns, String::new());
-        body.push(cells);
-    }
-    let alignment_of = |column: usize| {
-        table
-            .alignments
-            .get(column)
-            .copied()
-            .unwrap_or(TableAlignment::None)
-    };
-    let pad = |text: &str, width: usize, alignment: TableAlignment| {
-        let padding = width.saturating_sub(display_width(text));
-        match alignment {
-            TableAlignment::Right => format!("{}{text}", " ".repeat(padding)),
-            TableAlignment::Center => {
-                let left = padding / 2;
-                format!("{}{text}{}", " ".repeat(left), " ".repeat(padding - left))
-            }
-            _ => format!("{text}{}", " ".repeat(padding)),
-        }
-    };
-    let mut header_line = StreamLine::new(block_id, LineKind::TableHeader);
-    for (column, text) in header_cells.iter().enumerate() {
-        if column > 0 {
-            header_line.spans.push(StreamSpan {
-                text: " │ ".to_string(),
-                style: SpanStyle::Plain,
-            });
-        }
-        header_line.spans.push(StreamSpan {
-            text: pad(text, widths[column], alignment_of(column)),
-            style: SpanStyle::Plain,
-        });
-    }
-    out.push(header_line);
-    for row in body {
-        let mut line = StreamLine::new(block_id, LineKind::TableRow);
-        for (column, text) in row.iter().enumerate() {
-            if column > 0 {
-                line.spans.push(StreamSpan {
-                    text: " │ ".to_string(),
-                    style: SpanStyle::Plain,
-                });
-            }
-            line.spans.push(StreamSpan {
-                text: pad(text, widths[column], alignment_of(column)),
-                style: SpanStyle::Plain,
-            });
-        }
-        out.push(line);
-    }
-}
-
-/// Plain-text projection of inline spans (table cells lose inline styling in
-/// this card's row model; content is preserved verbatim).
-pub(crate) fn inline_plain(spans: &[Inline]) -> String {
-    pub(crate) fn push(spans: &[Inline], out: &mut String) {
-        for span in spans {
-            match span {
-                Inline::Text(text) | Inline::Code(text) => out.push_str(text),
-                Inline::Emphasis(inner) | Inline::Strong(inner) | Inline::Strikethrough(inner) => {
-                    push(inner, out)
-                }
-                Inline::Link { spans: inner, .. } => push(inner, out),
-            }
-        }
-    }
-    let mut out = String::new();
-    push(spans, &mut out);
-    out
+    let rows = std::iter::once(&table.header)
+        .chain(table.rows.iter())
+        .map(|row| {
+            (0..columns)
+                .map(|column| {
+                    let mut spans = Vec::new();
+                    if let Some(cell) = row.get(column) {
+                        flatten_inlines(&cell.spans, &mut spans);
+                    }
+                    coalesce(spans)
+                })
+                .collect()
+        })
+        .collect();
+    let mut line = StreamLine::new(block_id, LineKind::Table);
+    line.table = Some(Arc::new(StreamTable {
+        ordinal: out.iter().filter(|line| line.table.is_some()).count(),
+        alignments: (0..columns)
+            .map(|column| {
+                table
+                    .alignments
+                    .get(column)
+                    .copied()
+                    .unwrap_or(TableAlignment::None)
+            })
+            .collect(),
+        rows,
+    }));
+    out.push(line);
 }
 
 // ─── diff/materialization engine (P3: 冻结块只物化一次) ──────────────────────
@@ -691,6 +641,8 @@ impl StreamModel {
 /// 外侧」实现 —— 不进入 MarkdownStream，T15 管线零侵入；每段 assistant 流
 /// 拥有独立的 final 终结语义（回放结束 `finish()`，tech-spec §5.4）。
 pub(crate) enum StreamEntry {
+    /// Live reasoning is deliberately separate from persisted answer text.
+    Thinking { card: Entity<ThinkingBlock> },
     /// Local user echo (Composer send): static rows, materialized once.
     User { lines: Vec<StreamLine> },
     /// One assistant turn: a whole [`MarkdownStream`] plus its diff model.
@@ -716,6 +668,7 @@ pub(crate) enum StreamEntry {
 impl StreamEntry {
     pub(crate) fn row_count(&self, cx: &App) -> usize {
         match self {
+            StreamEntry::Thinking { card } => 1 + usize::from(card.read(cx).expanded),
             StreamEntry::User { lines } => lines.len(),
             StreamEntry::Assistant { model, failure, .. } => {
                 model.row_count() + usize::from(failure.is_some())

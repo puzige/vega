@@ -32,6 +32,7 @@ mod permissions_cards;
 mod r64_popup_deferred;
 mod r68_popup_dismiss;
 mod scroll_follow;
+mod thinking;
 mod timeline;
 mod utility_bar;
 mod utility_menu_coordination;
@@ -246,6 +247,7 @@ fn hydrated_entry_kinds(stream: &ConversationStream) -> Vec<&'static str> {
         .entries
         .iter()
         .map(|entry| match entry {
+            StreamEntry::Thinking { .. } => "thinking",
             StreamEntry::User { .. } => "user",
             StreamEntry::Assistant { .. } => "assistant",
             StreamEntry::Tool { .. } => "tool",

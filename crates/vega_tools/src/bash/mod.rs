@@ -1,4 +1,4 @@
-//! Strict, permission-handoff-friendly, sandboxed bash execution.
+//! Strict, permission-handoff-friendly bash execution with a sandboxed default.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::Tools;
 use crate::error::{BashError, BashErrorCode};
 use crate::output::{BASH_READ_CHUNK_BYTES, BashOutput, BashOutputCollector, CollectedBashOutput};
-use crate::sandbox::{ExecutionHooks, SandboxConfig, TempRoot};
+use crate::sandbox::{ExecutionHooks, SandboxConfig, TempRoot, spawn_full_access_shell};
 
 /// Default bash timeout required by the Phase 1 tool contract.
 pub const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
@@ -92,7 +92,18 @@ impl Tools {
         prepared: PreparedBash,
         cancel: CancellationToken,
     ) -> Result<BashOutput, BashError> {
-        self.execute_bash_inner(prepared, cancel, &ExecutionHooks::default())
+        self.execute_bash_inner(prepared, cancel, &ExecutionHooks::default(), false)
+            .await
+    }
+
+    /// Execute an approved Full access call with current-user OS permissions.
+    /// The caller must authorize this policy independently of provider JSON.
+    pub async fn execute_bash_full_access(
+        &self,
+        prepared: PreparedBash,
+        cancel: CancellationToken,
+    ) -> Result<BashOutput, BashError> {
+        self.execute_bash_inner(prepared, cancel, &ExecutionHooks::default(), true)
             .await
     }
 
@@ -101,6 +112,7 @@ impl Tools {
         prepared: PreparedBash,
         cancel: CancellationToken,
         hooks: &ExecutionHooks,
+        full_access: bool,
     ) -> Result<BashOutput, BashError> {
         if self.instance_id != prepared.instance_id || self.root != prepared.project_root {
             return Err(BashError::new(BashErrorCode::ScopeMismatch));
@@ -109,11 +121,15 @@ impl Tools {
             return Err(BashError::new(BashErrorCode::Cancelled));
         }
 
-        let sandbox = SandboxConfig::new(&self.root)?;
+        let sandbox = if full_access {
+            None
+        } else {
+            Some(SandboxConfig::new(&self.root)?)
+        };
         let temp_root = TempRoot::create()?;
         hooks.note_temp_created(temp_root.path());
         let result = self
-            .execute_bash_with_temp(prepared, cancel, hooks, &sandbox, &temp_root)
+            .execute_bash_with_temp(prepared, cancel, hooks, sandbox.as_ref(), &temp_root)
             .await;
         if result.cleanup_safe {
             hooks.note_before_cleanup(temp_root.path());
@@ -131,25 +147,31 @@ impl Tools {
         prepared: PreparedBash,
         cancel: CancellationToken,
         hooks: &ExecutionHooks,
-        sandbox: &SandboxConfig,
+        sandbox: Option<&SandboxConfig>,
         temp_root: &TempRoot,
     ) -> BashAttempt {
-        if let Err(error) = sandbox.preflight(temp_root, hooks) {
-            return BashAttempt::safe(Err(error));
-        }
-        let self_test = sandbox.self_test(temp_root, hooks).await;
-        if let Err(error) = self_test.result {
-            return BashAttempt {
-                result: Err(error),
-                cleanup_safe: self_test.cleanup_safe,
-            };
+        if let Some(sandbox) = sandbox {
+            if let Err(error) = sandbox.preflight(temp_root, hooks) {
+                return BashAttempt::safe(Err(error));
+            }
+            let self_test = sandbox.self_test(temp_root, hooks).await;
+            if let Err(error) = self_test.result {
+                return BashAttempt {
+                    result: Err(error),
+                    cleanup_safe: self_test.cleanup_safe,
+                };
+            }
         }
         if cancel.is_cancelled() {
             return BashAttempt::safe(Err(BashError::new(BashErrorCode::Cancelled)));
         }
 
         let started = Instant::now();
-        let mut child = match sandbox.spawn_shell(&prepared.command, temp_root, hooks) {
+        let spawned = match sandbox {
+            Some(sandbox) => sandbox.spawn_shell(&prepared.command, temp_root, hooks),
+            None => spawn_full_access_shell(&self.root, &prepared.command, temp_root, hooks),
+        };
+        let mut child = match spawned {
             Ok(child) => child,
             Err(error) => return BashAttempt::safe(Err(error)),
         };
@@ -246,7 +268,8 @@ impl Tools {
         cancel: CancellationToken,
         hooks: &ExecutionHooks,
     ) -> Result<BashOutput, BashError> {
-        self.execute_bash_inner(prepared, cancel, hooks).await
+        self.execute_bash_inner(prepared, cancel, hooks, false)
+            .await
     }
 }
 

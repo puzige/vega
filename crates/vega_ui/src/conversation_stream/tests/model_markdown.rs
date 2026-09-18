@@ -12,7 +12,7 @@ fn page_boundary_anchor_is_delegated_to_splice_preserved_scroll_top() {
 }
 
 #[test]
-fn table_maps_header_and_rows_with_padded_alignment() {
+fn table_preserves_cells_and_alignment_without_text_padding() {
     let node = RenderNode::Table(TableBlock {
         alignments: vec![TableAlignment::Left, TableAlignment::Right],
         header: vec![
@@ -33,15 +33,222 @@ fn table_maps_header_and_rows_with_padded_alignment() {
         ]],
     });
     let lines = flatten_nodes(7, &[node], BlockOrigin::Committed);
-    // 表头一行 + 表体一行；两列 → cell+分隔+cell = 3 span。
-    assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0].kind, LineKind::TableHeader);
-    assert_eq!(lines[0].spans.len(), 3);
-    // 右对齐列按显示宽（CJK=2）补空格："列A" 宽 3 → "B" 前补 3 空格。
-    assert_eq!(spans_text(&lines[0]), "列A │    B");
-    assert_eq!(lines[1].kind, LineKind::TableRow);
-    // "数据" 宽 4 使第 2 列宽为 4；"1" 左对齐补到 3 宽。
-    assert_eq!(spans_text(&lines[1]), "1   │ 数据");
+    // I59 replaces the old padded-string table contract with real cells.
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].kind, LineKind::Table);
+    assert!(lines[0].spans.is_empty());
+    let table = lines[0].table.as_ref().expect("structured table");
+    assert_eq!(
+        table.alignments,
+        [TableAlignment::Left, TableAlignment::Right]
+    );
+    let text: Vec<Vec<String>> = table
+        .rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.iter().map(|span| span.text.as_str()).collect())
+                .collect()
+        })
+        .collect();
+    assert_eq!(text, [vec!["列A", "B"], vec!["1", "数据"]]);
+}
+
+const ISSUE59_TABLE: &str = "| # | 问题 | 选项 | 建议 |\n\
+    |:---|:---|:---:|---:|\n\
+    | A | 中文长内容需要在单元格内部换行，不能破坏表头和表体的列边界。 | **保留** `FullAccess` | 显式确认 |\n\
+    | B | 转义竖线 a\\|b | `very_long_identifier_without_spaces_abcdefghijklmnopqrstuvwxyz` | 不丢失内容 |\n\n\
+    ```text\n| fenced | stays code |\n```\n\n- 保留列表\n\n普通正文\n";
+
+fn issue59_model(chunks: Vec<String>) -> StreamModel {
+    let mut stream = MarkdownStream::new();
+    let mut model = StreamModel::default();
+    let counters = StreamCounters::default();
+    for chunk in chunks {
+        stream.append(&chunk);
+        model.sync(&stream.snapshot(), &counters);
+    }
+    stream.finish();
+    model.sync(&stream.snapshot(), &counters);
+    model
+}
+
+#[test]
+fn issue59_streaming_and_history_preserve_table_inline_and_block_semantics() {
+    let history = issue59_model(vec![ISSUE59_TABLE.into()]);
+    let streamed = issue59_model(split_deltas(ISSUE59_TABLE, 59));
+    let semantic = |model: &StreamModel| {
+        model
+            .committed_lines
+            .iter()
+            .map(|line| (line.kind, line.spans.clone(), line.table.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(semantic(&streamed), semantic(&history));
+    let table = history
+        .committed_lines
+        .iter()
+        .find_map(|line| line.table.as_ref())
+        .expect("table");
+    assert_eq!(table.rows.len(), 3);
+    assert!(table.rows.iter().all(|row| row.len() == 4));
+    assert_eq!(table.rows[1][2][0].style, SpanStyle::Strong);
+    assert!(
+        table.rows[1][2]
+            .iter()
+            .any(|span| span.style == SpanStyle::Code && span.text == "FullAccess")
+    );
+    assert_eq!(table.rows[2][1][0].text, "转义竖线 a|b");
+    assert!(
+        history.committed_lines.iter().any(
+            |line| line.kind == LineKind::Code && spans_text(line) == "| fenced | stays code |"
+        )
+    );
+    assert!(
+        history
+            .committed_lines
+            .iter()
+            .any(|line| line.kind == LineKind::ListItem && spans_text(line) == "保留列表")
+    );
+    assert!(
+        history
+            .committed_lines
+            .iter()
+            .any(|line| line.kind == LineKind::Paragraph && spans_text(line) == "普通正文")
+    );
+}
+
+struct TableView(StreamModel);
+impl Render for TableView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(markdown_item(
+            &self.0,
+            None,
+            &vega_theme::Theme::light().colors,
+        ))
+    }
+}
+
+#[gpui_kit::test]
+fn issue59_real_table_cells_align_wrap_and_stay_inside_local_scroll(cx: &mut TestAppContext) {
+    let model = issue59_model(vec![ISSUE59_TABLE.into()]);
+    // The first block is assigned id 1 by the production streaming parser.
+    assert_eq!(model.committed_lines[0].block_id, 1);
+    let (_view, visual) = cx.add_window_view(|_, _| TableView(model));
+    for width in [820.0, 320.0] {
+        visual.simulate_resize(gpui_kit::size(px(width), px(1000.)));
+        visual.run_until_parked();
+        let viewport = visual
+            .debug_bounds("markdown-table-1-0")
+            .expect("scroll viewport");
+        assert_eq!(viewport.size.width, px(width));
+        let selectors = [
+            [
+                "markdown-table-1-0-0-0",
+                "markdown-table-1-0-0-1",
+                "markdown-table-1-0-0-2",
+                "markdown-table-1-0-0-3",
+            ],
+            [
+                "markdown-table-1-0-1-0",
+                "markdown-table-1-0-1-1",
+                "markdown-table-1-0-1-2",
+                "markdown-table-1-0-1-3",
+            ],
+            [
+                "markdown-table-1-0-2-0",
+                "markdown-table-1-0-2-1",
+                "markdown-table-1-0-2-2",
+                "markdown-table-1-0-2-3",
+            ],
+        ];
+        let bounds = selectors
+            .map(|row| row.map(|selector| visual.debug_bounds(selector).expect("real cell")));
+        for row in &bounds {
+            for (column, cell) in row.iter().enumerate() {
+                assert!(cell.size.width >= px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH));
+                assert!(cell.size.height > px(0.));
+                assert_eq!(cell.left(), bounds[0][column].left());
+                assert_eq!(cell.right(), bounds[0][column].right());
+                assert_eq!(cell.top(), row[0].top());
+                assert_eq!(cell.bottom(), row[0].bottom());
+                if column > 0 {
+                    assert_eq!(cell.left(), row[column - 1].right());
+                }
+            }
+        }
+        assert!(
+            bounds[1][1].size.height > bounds[0][1].size.height,
+            "CJK wraps into a taller row"
+        );
+        if width == 320.0 {
+            assert_eq!(bounds[0][3].right() - bounds[0][0].left(), px(480.));
+            assert!(
+                bounds[0][3].right() > viewport.right(),
+                "wide table is confined to local scrolling"
+            );
+        } else {
+            assert_eq!(bounds[0][3].right(), viewport.right());
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn issue59_nested_tables_keep_independent_horizontal_scroll(cx: &mut TestAppContext) {
+    let table = "> | A | B | C | D |\n> |---|---|---|---|\n> | 中 | 文 | 代 | 码 |\n";
+    let model = issue59_model(vec![format!("{table}>\n{table}")]);
+    let tables: Vec<_> = model
+        .committed_lines
+        .iter()
+        .filter(|line| line.table.is_some())
+        .collect();
+    assert_eq!(tables.len(), 2);
+    assert_eq!(
+        tables[0].block_id, tables[1].block_id,
+        "one enclosing quote block"
+    );
+    assert_eq!(tables[0].block_id, 1);
+    assert_eq!(tables[0].table.as_ref().unwrap().ordinal, 0);
+    assert_eq!(tables[1].table.as_ref().unwrap().ordinal, 1);
+    let (_view, visual) = cx.add_window_view(|_, _| TableView(model));
+    visual.simulate_resize(gpui_kit::size(px(320.), px(600.)));
+    visual.run_until_parked();
+    let first_before = visual.debug_bounds("markdown-table-1-0-0-0").unwrap();
+    let second_before = visual.debug_bounds("markdown-table-1-1-0-0").unwrap();
+    let first_viewport = visual.debug_bounds("markdown-table-1-0").unwrap();
+    visual.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: first_viewport.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-80.), px(0.))),
+        modifiers: gpui_kit::Modifiers::default(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    visual.run_until_parked();
+    let first_after = visual.debug_bounds("markdown-table-1-0-0-0").unwrap();
+    let second_after = visual.debug_bounds("markdown-table-1-1-0-0").unwrap();
+    assert_eq!(first_after.left(), first_before.left() - px(80.));
+    assert_eq!(
+        second_after, second_before,
+        "scrolling first table leaves second unchanged"
+    );
+    let second_viewport = visual.debug_bounds("markdown-table-1-1").unwrap();
+    visual.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: second_viewport.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-40.), px(0.))),
+        modifiers: gpui_kit::Modifiers::default(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("markdown-table-1-0-0-0").unwrap(),
+        first_after
+    );
+    assert_eq!(
+        visual
+            .debug_bounds("markdown-table-1-1-0-0")
+            .unwrap()
+            .left(),
+        second_before.left() - px(40.)
+    );
 }
 
 #[test]

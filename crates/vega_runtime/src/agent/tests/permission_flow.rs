@@ -105,7 +105,12 @@ async fn permission_wait_is_first_wins_fail_closed_and_cancels_child_token() {
 
 #[tokio::test]
 async fn ask_valid_mutations_are_safe_run_mode_rejections_without_hook_or_execution() {
-    for mode in [RuntimeRunMode::Ask, RuntimeRunMode::Plan] {
+    for (mode, permission) in [
+        (RuntimeRunMode::Ask, RuntimePermissionMode::Confirm),
+        (RuntimeRunMode::Plan, RuntimePermissionMode::Confirm),
+        (RuntimeRunMode::Ask, RuntimePermissionMode::FullAccess),
+        (RuntimeRunMode::Plan, RuntimePermissionMode::FullAccess),
+    ] {
         let project = tempdir().unwrap();
         let data = tempdir().unwrap();
         fs::write(project.path().join("note.txt"), "old").unwrap();
@@ -138,7 +143,7 @@ async fn ask_valid_mutations_are_safe_run_mode_rejections_without_hook_or_execut
             }])],
         ]);
         let mut req = request(Vec::new());
-        req.tool_config = tool_config(mode, RuntimePermissionMode::Confirm, checkpoint.clone());
+        req.tool_config = tool_config(mode, permission, checkpoint.clone());
         let calls = Arc::new(AtomicUsize::new(0));
         let hook = FixedHook {
             calls: calls.clone(),
@@ -380,6 +385,24 @@ async fn permission_modes_rules_and_danger_ordering_reach_the_dispatcher() {
             0,
             RuntimeToolStatus::Rejected,
             RuntimeApprovalSource::ReadOnly,
+        ),
+        (
+            RuntimePermissionMode::FullAccess,
+            false,
+            RuntimeUserDecision::Deny { note: None },
+            "printf full-access",
+            0,
+            RuntimeToolStatus::Success,
+            RuntimeApprovalSource::FullAccess,
+        ),
+        (
+            RuntimePermissionMode::FullAccess,
+            true,
+            RuntimeUserDecision::Deny { note: None },
+            "rm -rf /",
+            1,
+            RuntimeToolStatus::Rejected,
+            RuntimeApprovalSource::Danger,
         ),
         (
             RuntimePermissionMode::Confirm,

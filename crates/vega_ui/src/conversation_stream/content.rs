@@ -510,6 +510,7 @@ impl ConversationStream {
                     return;
                 }
                 self.last_finished_agent_message = None;
+                self.active_thinking = None;
                 let entry_index = self.entries.len();
                 self.entries.push(StreamEntry::Assistant {
                     stream: Box::new(MarkdownStream::new()),
@@ -528,6 +529,7 @@ impl ConversationStream {
                 if active_id != &message_id || delta.is_empty() {
                     return;
                 }
+                self.active_thinking = None;
                 let entry_index = if *entry_index == usize::MAX {
                     let index = self.entries.len();
                     self.entries.push(StreamEntry::Assistant {
@@ -551,7 +553,10 @@ impl ConversationStream {
                     cx.notify();
                 }
             }
-            ConversationEvent::ThinkingDelta { .. } | ConversationEvent::UsageUpdated { .. } => {}
+            ConversationEvent::ThinkingDelta { message_id, delta } => {
+                self.append_thinking(&message_id, &delta, cx);
+            }
+            ConversationEvent::UsageUpdated { .. } => {}
             ConversationEvent::ToolCallProposed { call } => {
                 if let Some(existing) = self.tool_cards.get(&call.id) {
                     existing.update(cx, |card, cx| {
@@ -656,6 +661,9 @@ impl ConversationStream {
                     self.finish_agent_message(&message_id, cx);
                 } else {
                     self.controller_error = Some(failure.message());
+                    if let Some((message_id, _)) = self.active_agent_message.clone() {
+                        self.finish_agent_message(&message_id, cx);
+                    }
                     self.timeout_permission(cx);
                     cx.notify();
                 }
@@ -670,6 +678,7 @@ impl ConversationStream {
         if active_id != message_id {
             return;
         }
+        self.active_thinking = None;
         // finish() 丢弃 pending 并把尾块冻结为 committed（version bump）：
         // 这是从 mutable tail 摘除前的最后一次显式失效（C4 白名单），必须
         // 在本帧内完成最终物化——否则批量 ingress 末批 [delta…, Finished]
@@ -693,7 +702,8 @@ impl ConversationStream {
 
     /// Freeze the Markdown parser at a tool boundary. A later provider round
     /// gets a fresh parser so unfinished fences/tables cannot absorb it.
-    fn close_active_segment_before_tool(&mut self) {
+    pub(crate) fn close_active_segment_before_tool(&mut self) {
+        self.active_thinking = None;
         let Some((_, index)) = self.active_agent_message.as_ref() else {
             return;
         };

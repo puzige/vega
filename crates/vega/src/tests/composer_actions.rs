@@ -154,6 +154,59 @@ fn assert_terminal(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
 }
 
 #[gpui_kit::test]
+async fn i61_provider_reasoning_reaches_live_ui_without_persisting_as_answer(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.executor().allow_parking();
+    use vega_runtime::{ProviderEvent, ScriptStep, StopReason};
+    let provider = Arc::new(vega_runtime::MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ThinkingDelta("inspect ".into()),
+            ProviderEvent::ThinkingDelta("owned context".into()),
+            ProviderEvent::TextDelta("Checking context. ".into()),
+            ProviderEvent::ToolUse {
+                id: "thinking-grep".into(),
+                name: "grep".into(),
+                input_json: r#"{"pattern":"owned","path":"."}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ThinkingDelta("validate result".into()),
+            ProviderEvent::TextDelta("Context checked.".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+    ]));
+    let f = fixture(cx, provider.clone());
+    edit(&f, "check owned context", cx);
+    cx.simulate_keystrokes(f.window.into(), "cmd-enter");
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 2
+            && f.root
+                .read_with(cx, |root, _| root.agent_controller.active.is_none())
+    });
+    let answer: String = f.store.conn().query_row(
+        "SELECT content FROM messages WHERE thread_id = ?1 AND role = 'assistant' ORDER BY seq DESC LIMIT 1",
+        [&f.thread.id], |row| row.get(0),
+    ).expect("persisted answer");
+    assert!(answer.contains("Checking context.") && answer.contains("Context checked."));
+    assert!(!answer.contains("inspect") && !answer.contains("validate result"));
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    assert!(visual.debug_bounds("thinking-block").is_some());
+    assert!(visual.debug_bounds("thinking-content").is_none());
+    let toggle = visual
+        .debug_bounds("thinking-toggle")
+        .expect("production thinking header");
+    visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_some());
+}
+
+#[gpui_kit::test]
 async fn r11_composer_preparation_stop_preserves_draft_and_prevents_late_start(
     cx: &mut gpui_kit::TestAppContext,
 ) {
@@ -458,6 +511,111 @@ async fn r57_plus_menu_permission_selection_persists_through_the_real_controller
             .is_none()
     );
     // A local permission change never starts a run.
+    assert!(provider.requests().is_empty());
+    assert_eq!(
+        f.root
+            .read_with(cx, |root, _| root.agent_worker_start_probe.load()),
+        0
+    );
+}
+
+#[gpui_kit::test]
+async fn i58_full_access_mouse_keyboard_and_reopen_use_the_real_controller(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![]));
+    let f = fixture(cx, provider.clone());
+    click(&f, "composer-permission-status", cx);
+    click(&f, "composer-permission-option-full_access", cx);
+    let persisted = vega_conversation::threads::open_thread(&f.store, &f.thread.id)
+        .expect("picker persisted full access");
+    assert_eq!(persisted.permission_mode, PermissionMode::FullAccess);
+    assert_eq!(
+        f.stream
+            .read_with(cx, |stream, _| stream.thread_permission_mode()),
+        PermissionMode::FullAccess
+    );
+
+    click(&f, "composer-permission-status", cx);
+    assert!(
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("composer-permission-option-full_access-check")
+            .is_some()
+    );
+    click(&f, "composer-permission-option-confirm", cx);
+    click(&f, "composer-add", cx);
+    click(&f, "composer-action-permission-full_access", cx);
+    assert_eq!(
+        vega_conversation::threads::open_thread(&f.store, &f.thread.id)
+            .expect("plus menu persisted full access")
+            .permission_mode,
+        PermissionMode::FullAccess
+    );
+    click(&f, "composer-permission-status", cx);
+    click(&f, "composer-permission-option-confirm", cx);
+    click(&f, "composer-add", cx);
+    // file, ask, plan, execute, readonly, confirm, auto, full_access.
+    cx.simulate_keystrokes(f.window.into(), "down down down down down down down enter");
+    cx.run_until_parked();
+    let reopened_store = Store::open(f._data.path().join("vega.db")).expect("reopen owned DB");
+    let reopened = vega_conversation::threads::open_thread(&reopened_store, &f.thread.id)
+        .expect("reopen full access thread");
+    assert_eq!(reopened.permission_mode, PermissionMode::FullAccess);
+
+    // Visit another real thread, then reopen the persisted original through
+    // the production navigation controller: permission never leaks by route.
+    let other = vega_conversation::threads::create_thread(
+        &f.store,
+        &f.thread.project_id,
+        "gpt-5.6-terra",
+        "confirm",
+    )
+    .expect("independent thread");
+    f.root.update(cx, |root, cx| {
+        assert!(root.accept_palette_thread(other, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        f.root.read_with(cx, |root, cx| {
+            root.stream_view
+                .as_ref()
+                .expect("other stream")
+                .1
+                .read(cx)
+                .thread_permission_mode()
+        }),
+        PermissionMode::Confirm
+    );
+    f.root.update(cx, |root, cx| {
+        assert!(root.accept_palette_thread(reopened, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        f.root.read_with(cx, |root, cx| {
+            root.stream_view
+                .as_ref()
+                .expect("reopened stream")
+                .1
+                .read(cx)
+                .thread_permission_mode()
+        }),
+        PermissionMode::FullAccess
+    );
+    click(&f, "composer-add", cx);
+    assert!(
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("composer-action-permission-full_access-check")
+            .is_some()
+    );
+    click(&f, "composer-action-permission-full_access", cx);
+    click(&f, "composer-permission-status", cx);
+    click(&f, "composer-permission-option-confirm", cx);
+    assert_eq!(
+        vega_conversation::threads::open_thread(&f.store, &f.thread.id)
+            .expect("restored confirm")
+            .permission_mode,
+        PermissionMode::Confirm
+    );
     assert!(provider.requests().is_empty());
     assert_eq!(
         f.root
