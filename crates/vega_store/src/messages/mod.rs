@@ -304,6 +304,8 @@ pub enum PageRequestError {
 /// owner redaction before any UI sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessagePage {
+    /// Ordered, bounded explicit image attachments for this exact page.
+    pub images: Vec<crate::image_attachments::ImageRow>,
     /// Terminal rows in ascending `seq` order (streaming excluded, like
     /// [`recent`]; `interrupted`/`failed` rows are durable and included).
     pub rows: Vec<MessageRow>,
@@ -370,9 +372,11 @@ pub fn page_before(
         None
     };
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
+    let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
     Ok(MessagePage {
+        images,
         rows,
         older_cursor,
         tool_calls,

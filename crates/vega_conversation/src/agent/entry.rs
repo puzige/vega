@@ -420,7 +420,7 @@ pub(crate) async fn run_thread_task_with_permission_config_and_reasoning<F>(
     system_prompt: &str,
     cancel: CancellationToken,
     permission_hook: &dyn PermissionHook,
-    mut event_sink: F,
+    event_sink: F,
     actor_config: PersistenceActorConfig,
     persisted_user_message_id: Option<String>,
     pricing_catalog: Option<vega_token::PricingCatalog>,
@@ -429,6 +429,53 @@ pub(crate) async fn run_thread_task_with_permission_config_and_reasoning<F>(
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
+    run_thread_task_with_images_and_reasoning(
+        store,
+        provider,
+        tools,
+        thread_id,
+        user_content,
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        actor_config,
+        persisted_user_message_id,
+        pricing_catalog,
+        reasoning,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Issue 63: freezes validated images with the user turn before durable acknowledgment.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_thread_task_with_images_and_reasoning<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    user_content: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    mut event_sink: F,
+    actor_config: PersistenceActorConfig,
+    persisted_user_message_id: Option<String>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
+    images: Vec<crate::types::ImageAttachment>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    crate::attachments::validate_images(&images)
+        .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
+    if persisted_user_message_id.is_some() && !images.is_empty() {
+        return Err(ConversationError::CorruptRow(
+            "cannot replace persisted instruction images".into(),
+        ));
+    }
     let user_message_id = persisted_user_message_id
         .clone()
         .unwrap_or_else(|| ulid::Ulid::generate().to_string());
@@ -456,7 +503,7 @@ where
     let preparation_pricing = pricing_catalog;
     let preparation_reasoning = reasoning;
     let prepared = match tokio::task::spawn_blocking(move || {
-        prepare_run_with_reasoning(
+        prepare_run_with_images_and_reasoning(
             preparation_path,
             preparation_thread_id,
             preparation_user_content,
@@ -467,6 +514,7 @@ where
             preparation_uses_existing_user,
             preparation_pricing,
             preparation_reasoning,
+            images,
         )
     })
     .await

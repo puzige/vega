@@ -92,6 +92,7 @@ where
     F: FnMut(RuntimeEvent) -> Fut,
     Fut: Future<Output = Result<(), VegaError>>,
 {
+    crate::images::validate_messages(&request.history)?;
     if let Some(reasoning) = &request.reasoning {
         reasoning.validate()?;
         if reasoning.model != request.model {

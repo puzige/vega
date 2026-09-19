@@ -7,6 +7,7 @@
 //! must not appear here yet.
 
 use std::sync::Arc;
+pub use vega_runtime::ImageAttachment;
 
 use serde::{Deserialize, Deserializer, Serialize};
 

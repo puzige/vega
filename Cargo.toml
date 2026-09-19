@@ -18,6 +18,8 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+base64 = "=0.22.1"
 # 基础依赖（exec-guide §5 白名单）：版本精确锁定（=x.y.z），crate 内以 `workspace = true` 引用
 tokio = "=1.53.1"
 serde = "=1.0.229"

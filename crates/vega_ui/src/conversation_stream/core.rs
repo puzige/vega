@@ -36,6 +36,11 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) attachments: Vec<(u64, attachments::ImagePreview)>,
+    pub(crate) attachment_generation: u64,
+    pub(crate) attachment_import_pending: bool,
+    pub(crate) attachment_error: Option<&'static str>,
+    pub(crate) submitted_attachments: Vec<(u64, attachments::ImagePreview)>,
     pub(crate) thread: Thread,
     /// 消息块列表（T18）：user 回显与 assistant 流交替，顺序即会话顺序。
     pub(crate) entries: Vec<StreamEntry>,
@@ -232,8 +237,10 @@ impl ConversationStream {
         permission_queue: PermissionQueue,
         cx: &mut Context<Self>,
     ) -> Self {
-        let input =
-            cx.new(|cx| TextInput::new_multiline(cx, "描述任务，或用 @ 引用文件", COMPOSER_ROWS));
+        let input = cx.new(|cx| {
+            TextInput::new_multiline(cx, "描述任务，或用 @ 引用文件", COMPOSER_ROWS)
+                .with_image_paste()
+        });
         let branch_selector = cx.new(|cx| {
             let mut selector =
                 BranchSelector::new(thread.id.clone(), thread.project_id.clone(), cx);
@@ -270,6 +277,13 @@ impl ConversationStream {
             this.sync_at_query(&input, cx);
         })
         .detach();
+        cx.subscribe(
+            &input,
+            |this, _, event: &crate::text_input::ImagePaste, cx| {
+                this.paste_images(event.0.clone(), cx);
+            },
+        )
+        .detach();
         let mut listener = permission_queue.subscribe();
         let permission_listener_task = cx.spawn(async move |this, cx| {
             while listener.changed().await {
@@ -287,6 +301,20 @@ impl ConversationStream {
                 .is_some_and(|settings| settings.0)
             {
                 this.timeout_permission(cx);
+            }
+        })
+        .detach();
+        cx.observe_global::<crate::sidebar::OpenedThread>(|this, cx| {
+            if cx
+                .try_global::<crate::sidebar::OpenedThread>()
+                .is_some_and(|route| {
+                    route
+                        .0
+                        .as_ref()
+                        .is_none_or(|thread| thread.id != this.thread.id)
+                })
+            {
+                this.cancel_image_import(cx);
             }
         })
         .detach();
@@ -324,6 +352,11 @@ impl ConversationStream {
         )
         .detach();
         Self {
+            attachments: Vec::new(),
+            attachment_generation: 0,
+            attachment_import_pending: false,
+            attachment_error: None,
+            submitted_attachments: Vec::new(),
             thread,
             entries: Vec::new(),
             counters: Arc::new(StreamCounters::default()),

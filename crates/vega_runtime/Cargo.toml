@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+image = { workspace = true }
+base64 = { workspace = true }
 # 网络组（exec-guide §5 白名单，S4-T19 首次激活）：OpenAI 兼容 SSE 流式 provider
 tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util"] }
 # macros：tokio::select!（cancel 竞争与退避睡眠）；rt：#[tokio::test] 的运行时

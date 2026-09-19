@@ -42,6 +42,7 @@ pub(crate) fn render_entry(
     let item = match entry {
         StreamEntry::Thinking { card } => div().child(card.clone()).into_any_element(),
         StreamEntry::User { lines } => user_message_item(lines, &colors),
+        StreamEntry::UserImages { images } => attachments::render_user_images(images),
         StreamEntry::Assistant { model, failure, .. } => markdown_item(model, *failure, &colors),
         StreamEntry::Tool { card } => {
             let card = card.clone();

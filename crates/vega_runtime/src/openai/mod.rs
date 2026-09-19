@@ -129,6 +129,7 @@ impl OpenAiProvider {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
+        crate::images::validate_messages(&req.messages)?;
         if let Some(reasoning) = &req.reasoning {
             reasoning.validate()?;
             if reasoning.model != req.model {
@@ -219,6 +220,22 @@ pub(crate) fn build_request_body(req: &ChatRequest) -> serde_json::Value {
                 "role": message.role.as_str(),
                 "content": message.content,
             });
+            // Issue 63 R7: keep text-only protocol unchanged; images remain in
+            // the immutable user history for every subsequent tool round.
+            if message.role == crate::ChatRole::User && !message.images.is_empty() {
+                use base64::Engine;
+                let mut parts = Vec::new();
+                if !message.content.is_empty() {
+                    parts.push(serde_json::json!({"type": "text", "text": message.content}));
+                }
+                for image in &message.images {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(image.bytes());
+                    parts.push(serde_json::json!({"type": "image_url", "image_url": {
+                        "url": format!("data:{};base64,{encoded}", image.mime_type())
+                    }}));
+                }
+                wire["content"] = serde_json::Value::Array(parts);
+            }
             if let Some(reasoning_content) = &message.reasoning_content {
                 wire["reasoning_content"] = serde_json::Value::String(reasoning_content.clone());
             }

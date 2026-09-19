@@ -346,6 +346,8 @@ impl Layout {
     pub const COMPOSER_RADIUS: f32 = 20.0;
     /// Minimum height of the primary composer shell.
     pub const COMPOSER_MIN_HEIGHT: f32 = 100.0;
+    /// Issue 63: bounded attachment preview, shared by draft and user turn.
+    pub const ATTACHMENT_THUMBNAIL: f32 = 72.0;
     /// R59 R5: maximum height of a composer model-picker floating layer.
     ///
     /// R57 shipped no bound at all, so appending the tier slider to the model

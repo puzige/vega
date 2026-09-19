@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_ten_tables_at_user_version_five() {
+    fn schema_has_eleven_tables_at_user_version_seven() {
         let store = store();
         let user_version: i64 = store
             .conn()
@@ -287,9 +287,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        // R15 appends migration 0005, rebuilding only the nullable task
-        // binding while preserving the same ten logical tables.
-        assert_eq!(user_version, 6);
-        assert_eq!(table_count, 10);
+        // Issue 63 adds migration 0007's attachment table while preserving
+        // the existing permission schema and the other ten logical tables.
+        assert_eq!(user_version, 7);
+        assert_eq!(table_count, 11);
     }
 }

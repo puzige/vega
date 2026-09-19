@@ -645,6 +645,9 @@ pub(crate) enum StreamEntry {
     Thinking { card: Entity<ThinkingBlock> },
     /// Local user echo (Composer send): static rows, materialized once.
     User { lines: Vec<StreamLine> },
+    UserImages {
+        images: Vec<attachments::ImagePreview>,
+    },
     /// One assistant turn: a whole [`MarkdownStream`] plus its diff model.
     Assistant {
         stream: Box<MarkdownStream>,
@@ -670,6 +673,7 @@ impl StreamEntry {
         match self {
             StreamEntry::Thinking { card } => 1 + usize::from(card.read(cx).expanded),
             StreamEntry::User { lines } => lines.len(),
+            StreamEntry::UserImages { .. } => 1,
             StreamEntry::Assistant { model, failure, .. } => {
                 model.row_count() + usize::from(failure.is_some())
             }

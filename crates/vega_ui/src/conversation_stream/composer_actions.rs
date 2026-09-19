@@ -105,6 +105,7 @@ pub(crate) const PERMISSION_PICKER_LEARN_MORE: &str = "了解更多";
 /// click dispatch all consume this one projection, so they cannot drift.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ComposerActionRow {
+    AddImages,
     /// `@` project-file reference (menu only).
     FileReference,
     /// One `/ask` `/plan` `/execute` thread-mode command.
@@ -116,6 +117,7 @@ enum ComposerActionRow {
 impl ComposerActionRow {
     fn label(self) -> &'static str {
         match self {
+            Self::AddImages => "添加图片",
             Self::FileReference => "项目文件引用",
             Self::Mode(mode) => mode_command(mode),
             Self::Permission(mode) => permission_label(mode),
@@ -125,6 +127,7 @@ impl ComposerActionRow {
     /// Whether this row shows the thread's current authoritative value.
     fn is_selected(self, thread: &Thread) -> bool {
         match self {
+            Self::AddImages => false,
             Self::FileReference => false,
             Self::Mode(mode) => thread.mode == mode,
             Self::Permission(mode) => thread.permission_mode == mode,
@@ -134,6 +137,7 @@ impl ComposerActionRow {
     /// Stable selector for the production click and keyboard tests.
     fn selector(self) -> &'static str {
         match self {
+            Self::AddImages => "composer-action-images",
             Self::FileReference => "composer-action-file",
             Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask",
             Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan",
@@ -151,6 +155,7 @@ impl ComposerActionRow {
     /// this row holds the thread's authoritative value.
     fn check_selector(self) -> &'static str {
         match self {
+            Self::AddImages => "composer-action-images-check",
             Self::FileReference => "composer-action-file-check",
             Self::Mode(ThreadMode::Ask) => "composer-action-mode-ask-check",
             Self::Mode(ThreadMode::Plan) => "composer-action-mode-plan-check",
@@ -224,6 +229,7 @@ impl ComposerActions {
                     .into_iter()
                     .map(ComposerActionRow::Permission),
             );
+            rows.push(ComposerActionRow::AddImages);
         }
         rows
     }
@@ -476,6 +482,10 @@ impl ConversationStream {
             return;
         };
         match row {
+            ComposerActionRow::AddImages => {
+                self.actions.menu = false;
+                self.pick_images(cx);
+            }
             ComposerActionRow::FileReference => self.insert_file_reference_token(window, cx),
             ComposerActionRow::Mode(mode) => self.select_composer_mode(mode, window, cx),
             ComposerActionRow::Permission(mode) => {

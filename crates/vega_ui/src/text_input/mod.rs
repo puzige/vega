@@ -73,6 +73,7 @@ pub(crate) struct LineLayout {
 /// set the field renders [`MASK_CHAR`] per character and refuses cut/copy, so
 /// the real value is never shown or extracted through the UI.
 pub struct TextInput {
+    image_paste: bool,
     focus_handle: FocusHandle,
     content: SharedString,
     placeholder: SharedString,
@@ -107,6 +108,18 @@ pub struct TextInput {
 mod element;
 mod input_handler;
 mod state;
+
+/// Explicit Composer-only clipboard intent; never log clipboard payloads.
+pub struct ImagePaste(pub std::sync::Arc<ClipboardItem>);
+impl gpui_kit::EventEmitter<ImagePaste> for TextInput {}
+
+impl TextInput {
+    /// Enables attachment paste only for the conversation Composer.
+    pub fn with_image_paste(mut self) -> Self {
+        self.image_paste = true;
+        self
+    }
+}
 
 #[cfg(test)]
 mod tests;

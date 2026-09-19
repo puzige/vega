@@ -149,6 +149,7 @@ impl ConversationStream {
     /// value that raced the durable write.
     pub(crate) fn submit_message(&mut self, cx: &mut Context<Self>) {
         if self.actions.running
+            || self.attachment_import_pending
             || self.actions.pending_mode.is_some()
             || self.composer_submit_pending
             || self.approved_not_started
@@ -161,11 +162,17 @@ impl ConversationStream {
         // 仍由 app 在 provider 构造前执行。
         self.close_file_selector_and_cancel(cx);
         let text = self.input.read(cx).text().to_string();
-        if text.is_empty() {
+        if text.is_empty() && self.attachments.is_empty() {
             return;
         }
         self.composer_submit_pending = true;
+        self.submitted_attachments = self.attachments.clone();
         cx.emit(ComposerSubmitted {
+            images: self
+                .attachments
+                .iter()
+                .map(|(_, image)| image.image.clone())
+                .collect(),
             thread_id: self.thread.id.clone(),
             content: text,
             reasoning: self.frozen_reasoning_for_submit(),
@@ -196,11 +203,22 @@ impl ConversationStream {
             lines: user_message_lines(block_id, content),
         });
         self.list_append(index);
+        let submitted = std::mem::take(&mut self.submitted_attachments);
+        self.attachments
+            .retain(|(id, _)| !submitted.iter().any(|(sent, _)| sent == id));
+        if !submitted.is_empty() {
+            let index = self.entries.len();
+            self.entries.push(StreamEntry::UserImages {
+                images: submitted.into_iter().map(|(_, image)| image).collect(),
+            });
+            self.list_append(index);
+        }
         cx.notify();
     }
 
     /// Re-arms submit after preparation failed before any durable message.
     pub fn reject_composer_submission(&mut self, cx: &mut Context<Self>) {
+        self.submitted_attachments.clear();
         if self.composer_submit_pending {
             self.composer_submit_pending = false;
             cx.notify();

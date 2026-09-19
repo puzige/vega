@@ -1,7 +1,7 @@
 use super::*;
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_run_with_reasoning(
+pub(crate) fn prepare_run_with_images_and_reasoning(
     database_path: PathBuf,
     thread_id: String,
     user_content: String,
@@ -12,6 +12,7 @@ pub(crate) fn prepare_run_with_reasoning(
     uses_existing_user: bool,
     pricing_catalog: Option<vega_token::PricingCatalog>,
     reasoning: Option<FrozenReasoning>,
+    images: Vec<crate::types::ImageAttachment>,
 ) -> Result<PreparedRun, ConversationError> {
     #[cfg(not(test))]
     let _ = &config;
@@ -155,6 +156,15 @@ pub(crate) fn prepare_run_with_reasoning(
         )
         .map_err(runtime_store_error)?;
     }
+    for (ordinal, image) in images.iter().enumerate() {
+        vega_store::image_attachments::insert(
+            &transaction,
+            &user_message_id,
+            ordinal,
+            image.bytes(),
+        )
+        .map_err(runtime_store_error)?;
+    }
     let assistant_seq =
         messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
     messages::insert(
@@ -177,18 +187,49 @@ pub(crate) fn prepare_run_with_reasoning(
     )
     .map_err(runtime_store_error)?;
 
-    let history = messages::recent(&transaction, &thread_id, HISTORY_WINDOW)
-        .map_err(runtime_store_error)?
+    let history_rows =
+        messages::recent(&transaction, &thread_id, HISTORY_WINDOW).map_err(runtime_store_error)?;
+    let stored_images =
+        vega_store::image_attachments::for_messages(&transaction, &thread_id, &history_rows)
+            .map_err(runtime_store_error)?;
+    if stored_images.iter().any(|image| {
+        history_rows
+            .iter()
+            .any(|row| row.id == image.message_id && row.role != "user")
+    }) {
+        return Err(ConversationError::CorruptRow(
+            "images on non-user message".into(),
+        ));
+    }
+    let history = history_rows
         .into_iter()
-        .filter_map(|message| {
+        // Existing system/other history rows were never injected into prompts.
+        .filter(|message| matches!(message.role.as_str(), "user" | "assistant"))
+        .map(|message| {
             let role = match message.role.as_str() {
-                "user" => Some(vega_runtime::ChatRole::User),
-                "assistant" => Some(vega_runtime::ChatRole::Assistant),
-                _ => None,
-            }?;
-            Some(vega_runtime::ChatMessage::new(role, message.content))
+                "user" => vega_runtime::ChatRole::User,
+                "assistant" => vega_runtime::ChatRole::Assistant,
+                _ => return Err(ConversationError::CorruptRow("invalid history role".into())),
+            };
+            let mut chat = vega_runtime::ChatMessage::new(role, message.content);
+            chat.images = stored_images
+                .iter()
+                .filter(|image| image.message_id == message.id)
+                .map(|image| {
+                    crate::types::ImageAttachment::from_bytes(image.encoded.clone())
+                        .map_err(|error| ConversationError::CorruptRow(error.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::attachments::validate_images(&chat.images)
+                .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
+            if role != vega_runtime::ChatRole::User && !chat.images.is_empty() {
+                return Err(ConversationError::CorruptRow(
+                    "images on non-user message".into(),
+                ));
+            }
+            Ok(chat)
         })
-        .collect();
+        .collect::<Result<Vec<_>, ConversationError>>()?;
     let completed_tool_results = tool_calls::terminal_results(&transaction, &thread_id)
         .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
         .into_iter()

@@ -12,6 +12,7 @@ fn entry_kinds_at(stream: &ConversationStream, indices: &[usize]) -> Vec<&'stati
         .iter()
         .filter_map(|index| {
             stream.entries.get(*index).map(|entry| match entry {
+                StreamEntry::UserImages { .. } => "user-images",
                 StreamEntry::Thinking { .. } => "thinking",
                 StreamEntry::User { .. } => "user",
                 StreamEntry::Assistant { .. } => "assistant",

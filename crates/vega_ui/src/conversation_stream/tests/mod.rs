@@ -18,6 +18,7 @@ use vega_markdown::{ListItem, TableCell};
 
 type DecisionFuture = Pin<Box<dyn Future<Output = PermissionDecision> + Send>>;
 
+mod attachments;
 mod branch_popup_upward;
 mod composer_actions;
 mod composer_counter;
@@ -247,6 +248,7 @@ fn hydrated_entry_kinds(stream: &ConversationStream) -> Vec<&'static str> {
         .entries
         .iter()
         .map(|entry| match entry {
+            StreamEntry::UserImages { .. } => "user-images",
             StreamEntry::Thinking { .. } => "thinking",
             StreamEntry::User { .. } => "user",
             StreamEntry::Assistant { .. } => "assistant",

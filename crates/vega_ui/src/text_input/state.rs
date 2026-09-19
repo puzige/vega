@@ -5,6 +5,7 @@ impl TextInput {
     /// renders bullets.
     pub fn new(cx: &mut Context<Self>, placeholder: impl Into<SharedString>, masked: bool) -> Self {
         Self {
+            image_paste: false,
             focus_handle: cx.focus_handle(),
             content: "".into(),
             placeholder: placeholder.into(),
@@ -350,7 +351,32 @@ impl TextInput {
     }
 
     pub(crate) fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        let item = cx.read_from_clipboard();
+        if self.image_paste
+            && item.as_ref().is_some_and(|item| {
+                item.entries().iter().any(|entry| {
+                    matches!(
+                        entry,
+                        gpui_kit::ClipboardEntry::Image(_)
+                            | gpui_kit::ClipboardEntry::ExternalPaths(_)
+                    )
+                })
+            })
+        {
+            if let Some(item) = item {
+                if !item
+                    .entries()
+                    .iter()
+                    .any(|entry| matches!(entry, gpui_kit::ClipboardEntry::ExternalPaths(_)))
+                    && let Some(text) = item.text()
+                {
+                    self.replace_text_in_range(None, &text.replace("\r\n", "\n"), window, cx);
+                }
+                cx.emit(ImagePaste(std::sync::Arc::new(item)));
+            }
+            return;
+        }
+        if let Some(text) = item.and_then(|item| item.text()) {
             // Multi-line keeps line breaks (normalized to \n); single-line
             // inputs flatten them.
             let text = if self.multiline {

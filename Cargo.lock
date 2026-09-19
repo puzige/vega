@@ -7923,7 +7923,9 @@ dependencies = [
 name = "vega_conversation"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures",
+ "image",
  "libc",
  "portable-pty",
  "serde",
@@ -7958,8 +7960,10 @@ dependencies = [
 name = "vega_runtime"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "eventsource-stream",
  "futures",
+ "image",
  "reqwest",
  "rusqlite",
  "serde_json",

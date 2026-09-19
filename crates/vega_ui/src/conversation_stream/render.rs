@@ -116,7 +116,8 @@ impl ConversationStream {
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
         let can_send = !self.actions.running
             && self.actions.pending_mode.is_none()
-            && !self.input.read(cx).text().is_empty()
+            && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
+            && !self.attachment_import_pending
             && !self.composer_submit_pending
             && !self.approved_not_started
             && !self.trusted_action_busy
@@ -142,6 +143,7 @@ impl ConversationStream {
             .child(
                 div()
                     .debug_selector(|| "composer-shell".into())
+                    .on_drop(cx.listener(Self::drop_images))
                     .w_full()
                     .max_w(px(Layout::COMPOSER_MAX_WIDTH))
                     .min_h(px(Layout::COMPOSER_MIN_HEIGHT))
@@ -179,6 +181,12 @@ impl ConversationStream {
                     .rounded(px(Layout::COMPOSER_RADIUS))
                     .shadow_sm()
                     .p_3()
+                    .when(
+                        !self.attachments.is_empty()
+                            || self.attachment_import_pending
+                            || self.attachment_error.is_some(),
+                        |el| el.child(self.render_attachments(cx)),
+                    )
                     .child(
                         div()
                             .relative()

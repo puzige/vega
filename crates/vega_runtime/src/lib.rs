@@ -77,6 +77,8 @@ pub use agent::{
     run_agent_with_permission_sink, run_agent_with_sink,
 };
 pub use error::VegaError;
+pub mod images;
+pub use images::ImageAttachment;
 pub use mock::{MockProvider, ScriptStep};
 pub use openai::OpenAiProvider;
 pub use permission::{

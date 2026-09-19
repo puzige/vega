@@ -288,7 +288,7 @@ impl VegaWindow {
             return;
         }
         let pending_user_content = match &run {
-            PendingAgentRun::UserMessage(content) => Some(content.clone()),
+            PendingAgentRun::UserMessage(content) => Some(content.content.clone()),
             PendingAgentRun::ApprovedPlan(_) => None,
         };
         let pending_approved_instruction = match &run {
@@ -552,7 +552,8 @@ impl VegaWindow {
         request: &ComposerSubmitted,
         cx: &mut Context<Self>,
     ) {
-        if request.content.is_empty() || !self.owns_stream_request(&stream, &request.thread_id, cx)
+        if (request.content.is_empty() && request.images.is_empty())
+            || !self.owns_stream_request(&stream, &request.thread_id, cx)
         {
             return;
         }
@@ -587,6 +588,7 @@ impl VegaWindow {
         let config_path = self.composer_config_path();
         let model = stream.read(cx).displayed_model().to_owned();
         let content = request.content.clone();
+        let images = request.images.clone();
         let thread_id = request.thread_id.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker_model = model.clone();
@@ -623,6 +625,7 @@ impl VegaWindow {
                         stream.clone(),
                         thread_id.clone(),
                         content.clone(),
+                        images.clone(),
                         reasoning.clone(),
                         lease,
                         outcome,
@@ -644,6 +647,7 @@ impl VegaWindow {
         stream: Entity<ConversationStream>,
         thread_id: String,
         content: String,
+        images: Vec<vega_conversation::types::ImageAttachment>,
         reasoning: Option<FrozenReasoning>,
         lease: TrustedActionToken,
         outcome: Result<(), ProviderPreflightFailure>,
@@ -693,7 +697,7 @@ impl VegaWindow {
         self.start_agent_run_with_reasoning(
             stream,
             &thread_id,
-            PendingAgentRun::UserMessage(content),
+            PendingAgentRun::UserMessage(crate::app_agent::UserSubmission { content, images }),
             reasoning,
             cx,
         );

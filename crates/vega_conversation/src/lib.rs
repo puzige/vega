@@ -6,6 +6,7 @@
 
 pub mod agent;
 mod artifact;
+pub mod attachments;
 mod git_workspace;
 pub mod history;
 pub mod plans;

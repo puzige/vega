@@ -92,6 +92,11 @@ impl ConversationStream {
         let mut hydrated: Vec<StreamEntry> = Vec::new();
         for entry in page.entries {
             match entry {
+                HistoryEntry::UserImages { images, .. } => {
+                    hydrated.push(StreamEntry::UserImages {
+                        images: self.history_image_previews(images, cx),
+                    });
+                }
                 HistoryEntry::UserText { content, .. } => {
                     let block_id = self.user_block_seq;
                     self.user_block_seq += 1;

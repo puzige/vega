@@ -55,7 +55,9 @@
 //! The stream is memory-only (S3 has no message persistence): opening a
 //! thread constructs empty entries; restarting clears the conversation.
 
+mod attachments;
 pub mod bench;
+use vega_conversation::types::ImageAttachment;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -157,6 +159,7 @@ pub struct ThreadSettingsRequested {
 /// Composer submission routed to the application controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComposerSubmitted {
+    pub images: Vec<ImageAttachment>,
     pub thread_id: String,
     pub content: String,
     /// Run-start reasoning snapshot captured from the displayed exact

@@ -11,6 +11,7 @@ use crate::types::{ConversationEvent, ToolCallStatus};
 
 mod failure_paths;
 mod history_permissions;
+mod images;
 mod permissions;
 mod plan_approval;
 mod stream_persistence;

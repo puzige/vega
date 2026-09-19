@@ -33,6 +33,11 @@ pub enum HistoryEntry {
     /// capability, not conversation content, and is dropped — same rule as
     /// Composer history).
     UserText { seq: i64, content: String },
+    /// Explicit images directly following their owning user text.
+    UserImages {
+        seq: i64,
+        images: Vec<crate::types::ImageAttachment>,
+    },
     /// One durable assistant text segment with its terminal state on the tail.
     AssistantText {
         seq: i64,
@@ -222,6 +227,14 @@ fn assemble(
 /// Any row outside the typed vocabulary fails closed: hydration never
 /// silently drops durable content.
 fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationError> {
+    if page.images.iter().any(|image| {
+        !page
+            .rows
+            .iter()
+            .any(|row| row.id == image.message_id && row.role == "user")
+    }) {
+        return Err(ConversationError::CorruptRow("invalid image owner".into()));
+    }
     let mut calls_by_message: HashMap<&str, Vec<&PageToolCall>> = HashMap::new();
     for call in &page.tool_calls {
         calls_by_message
@@ -251,6 +264,23 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                     seq: row.seq,
                     content: row.content.clone(),
                 });
+                let images = page
+                    .images
+                    .iter()
+                    .filter(|image| image.message_id == row.id)
+                    .map(|image| {
+                        crate::types::ImageAttachment::from_bytes(image.encoded.clone())
+                            .map_err(|error| ConversationError::CorruptRow(error.to_string()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                crate::attachments::validate_images(&images)
+                    .map_err(|error| ConversationError::CorruptRow(error.to_string()))?;
+                if !images.is_empty() {
+                    entries.push(HistoryEntry::UserImages {
+                        seq: row.seq,
+                        images,
+                    });
+                }
             }
             "assistant" => match row.kind.as_str() {
                 "plan" => {

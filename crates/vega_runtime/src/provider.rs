@@ -274,6 +274,8 @@ impl ChatRole {
 /// One chat message (`role` + `content`, tech-spec §4.1 ChatRequest).
 #[derive(Clone, PartialEq, Eq)]
 pub struct ChatMessage {
+    /// Explicit validated user images; never attached to other roles.
+    pub images: Vec<crate::ImageAttachment>,
     /// Sender role.
     pub role: ChatRole,
     /// Plain-text content (markdown lives here verbatim).
@@ -295,6 +297,7 @@ impl std::fmt::Debug for ChatMessage {
             .debug_struct("ChatMessage")
             .field("role", &self.role)
             .field("content_bytes", &self.content.len())
+            .field("image_count", &self.images.len())
             .field(
                 "tool_call_id_bytes",
                 &self.tool_call_id.as_ref().map(String::len),
@@ -312,6 +315,7 @@ impl ChatMessage {
     /// Builds a message from a role and any string-like content.
     pub fn new(role: ChatRole, content: impl Into<String>) -> Self {
         Self {
+            images: Vec::new(),
             role,
             content: content.into(),
             tool_call_id: None,
@@ -323,6 +327,7 @@ impl ChatMessage {
     /// Builds the assistant turn that requested `tool_calls`.
     pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ChatToolCall>) -> Self {
         Self {
+            images: Vec::new(),
             role: ChatRole::Assistant,
             content: content.into(),
             tool_call_id: None,
@@ -344,12 +349,14 @@ impl ChatMessage {
             tool_call_id: None,
             tool_calls,
             reasoning_content,
+            images: Vec::new(),
         }
     }
 
     /// Builds a tool-result message associated with `call_id`.
     pub fn tool_result(call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
+            images: Vec::new(),
             role: ChatRole::Tool,
             content: content.into(),
             tool_call_id: Some(call_id.into()),

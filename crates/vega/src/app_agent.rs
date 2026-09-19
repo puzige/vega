@@ -38,8 +38,28 @@ pub(crate) const SYSTEM_PROMPT: &str =
     "You are Vega, a careful coding agent working inside the selected project.";
 
 pub(crate) enum PendingAgentRun {
-    UserMessage(String),
+    UserMessage(UserSubmission),
     ApprovedPlan(String),
+}
+
+/// Frozen explicit user payload, never reconstructed from a later UI draft.
+pub(crate) struct UserSubmission {
+    pub content: String,
+    pub images: Vec<vega_conversation::types::ImageAttachment>,
+}
+
+impl From<String> for UserSubmission {
+    fn from(content: String) -> Self {
+        Self {
+            content,
+            images: Vec::new(),
+        }
+    }
+}
+impl From<&str> for UserSubmission {
+    fn from(content: &str) -> Self {
+        content.to_owned().into()
+    }
 }
 
 pub(crate) enum AgentUpdate {
@@ -683,7 +703,8 @@ pub(crate) fn run_agent_worker(
                 })
         };
         let result = match run {
-            PendingAgentRun::UserMessage(content) => {
+            PendingAgentRun::UserMessage(submission) => {
+                let content = submission.content;
                 // A2-12: resolve `@path` tokens against the project root and
                 // inject the referenced file contents ahead of the user text
                 // (bounded: 8 files, 16 KiB each, 48 KiB total). A failure is
@@ -718,7 +739,7 @@ pub(crate) fn run_agent_worker(
                     return Err(());
                 }
                 runtime.block_on(
-                    vega_conversation::agent::run_thread_task_with_pricing_and_reasoning(
+                    vega_conversation::agent::run_thread_task_with_images_and_reasoning(
                         &store,
                         provider.as_ref(),
                         &tools,
@@ -732,6 +753,7 @@ pub(crate) fn run_agent_worker(
                         None,
                         pricing_catalog,
                         Some(reasoning),
+                        submission.images,
                     ),
                 )
             }

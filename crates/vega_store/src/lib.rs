@@ -39,6 +39,7 @@
 
 pub mod config;
 pub mod git_detect;
+pub mod image_attachments;
 pub mod keystore;
 pub mod messages;
 pub mod palette;
@@ -68,6 +69,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_sidebar_organization.sql"),
     include_str!("../migrations/0005_standalone_threads.sql"),
     include_str!("../migrations/0006_tool_text_offset.sql"),
+    include_str!("../migrations/0007_image_attachments.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -193,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_ten_tables() {
+    fn migrate_creates_exactly_the_eleven_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -210,6 +212,7 @@ mod tests {
         assert_eq!(
             tables,
             vec![
+                "image_attachments",
                 "messages",
                 "permissions",
                 "projects",
@@ -236,9 +239,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_6() {
+    fn migrated_store_is_wal_at_user_version_7() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 6);
+        assert_eq!(user_version(&store), 7);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -260,12 +263,47 @@ mod tests {
     }
 
     #[test]
+    fn issue63_version_six_upgrade_adds_attachments_without_rebuilding_messages() {
+        let (store, _dir) = open_temp_store();
+        store
+            .conn()
+            .execute_batch("DROP TABLE image_attachments; PRAGMA user_version = 6;")
+            .unwrap();
+        let before: String = store
+            .conn()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'messages'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        store.migrate().unwrap();
+        assert_eq!(user_version(&store), 7);
+        let after: String = store
+            .conn()
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'messages'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        let attachment_count: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM image_attachments", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(attachment_count, 0);
+    }
+
+    #[test]
     fn migrate_is_idempotent() {
         let (store, _dir) = open_temp_store();
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 6);
+        assert_eq!(user_version(&store), 7);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -301,7 +339,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 6);
+        assert_eq!(user_version(&store), 7);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -319,7 +357,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 10);
+        assert_eq!(tables, 11);
         for table in [
             "projects",
             "threads",
@@ -366,7 +404,7 @@ mod tests {
                VALUES ('old','t','m',1,'read','{}','success',1);"
         ).unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 6);
+        assert_eq!(user_version(&store), 7);
         let old: Option<i64> = store
             .conn()
             .query_row(
@@ -403,7 +441,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 10);
+        assert_eq!(tables, 11);
     }
 
     #[test]
@@ -442,7 +480,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 6);
+        assert_eq!(user_version(&store), 7);
         for table in [
             "messages",
             "tool_calls",

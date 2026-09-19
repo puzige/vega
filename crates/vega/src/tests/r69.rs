@@ -21,6 +21,63 @@ use vega_ui::branch_selector::BranchListRequested;
 use vega_ui::conversation_stream::{ComposerDefaultsRequested, ThreadSettingsRequested};
 use vega_ui::sidebar::SelectedProject;
 
+/// Issue 63: actual clipboard → lazy standalone Composer → preflight → worker
+/// → durable message → provider boundary. Only network/provider is replaced.
+#[gpui_kit::test]
+async fn issue63_standalone_first_image_submit_crosses_app_worker_and_persists(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let f = DraftFixture::home(cx, false);
+    let input = f.input(cx);
+    let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+    f.window
+        .update(cx, |_, window, cx| window.focus(&focus, cx))
+        .expect("image composer focus");
+    let bytes = include_bytes!("../../../../assets/logo/raster/vega-icon-f1-original.png").to_vec();
+    cx.update(|cx| {
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_image(
+            &gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, bytes.clone()),
+        ))
+    });
+    cx.dispatch_action(f.window.into(), vega_ui::text_input::Paste);
+    cx.run_until_parked();
+    assert!(!f.absent("composer-attachments", cx));
+    assert_eq!(f.standalone_rows(), 0);
+    f.disable_provider();
+    f.submit("", cx);
+    assert!(!f.wait_for_preflight_error(cx).is_empty());
+    assert!(!f.absent("composer-attachments", cx));
+    assert_eq!(f.standalone_rows(), 0);
+    assert!(f.provider.requests().is_empty());
+    f.repair_provider();
+    f.submit("", cx);
+    pump_test_app(cx, |cx| {
+        !f.provider.requests().is_empty()
+            && f.root
+                .read_with(cx, |root, _| root.agent_controller.active.is_none())
+    });
+    assert_eq!(f.standalone_rows(), 1);
+    let requests = f.provider.requests();
+    let user = requests[0]
+        .messages
+        .iter()
+        .find(|message| message.role == vega_runtime::ChatRole::User)
+        .expect("image user message");
+    assert_eq!(user.images.len(), 1);
+    assert_eq!(user.images[0].bytes(), bytes);
+    assert_eq!(user.content, "");
+    let count: i64 = f
+        .store()
+        .conn()
+        .query_row("SELECT COUNT(*) FROM image_attachments", [], |row| {
+            row.get(0)
+        })
+        .expect("durable image count");
+    assert_eq!(count, 1);
+    assert!(f.absent("composer-attachments", cx));
+}
+
 /// Owned project + config + window at the production viewport. The window is
 /// mounted exactly like `r45_mount_project_window`, but the home route is the
 /// subject, so the fixture leaves `OpenedThread` empty (the draft is installed

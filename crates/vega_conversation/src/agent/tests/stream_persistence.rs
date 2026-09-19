@@ -108,6 +108,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     assert_eq!(
         tables,
         vec![
+            "image_attachments",
             "messages",
             "permissions",
             "projects",

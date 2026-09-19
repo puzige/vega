@@ -327,6 +327,7 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
     assert_eq!(
         tables,
         [
+            "image_attachments",
             "messages",
             "permissions",
             "projects",
