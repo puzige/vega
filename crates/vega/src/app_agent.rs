@@ -628,6 +628,12 @@ pub(crate) fn run_agent_worker(
             .as_deref()
             .and_then(|path| vega_store::config::read_from(path).ok())
             .and_then(|config| unique_provider_for_model(&config, &thread.model));
+        // A supplied config path is an authority claim. Even test-only
+        // provider overrides must not let an ambiguous/missing owner fall
+        // through to the synthetic `unknown` model-context policy.
+        if config_path.is_some() && configured_provider.is_none() {
+            return Err(());
+        }
         let provider_name = configured_provider
             .as_ref()
             .map_or("unknown", |provider| provider.name.as_str());

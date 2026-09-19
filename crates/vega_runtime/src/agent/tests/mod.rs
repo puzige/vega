@@ -164,21 +164,21 @@ fn request(history: Vec<ChatMessage>) -> AgentRequest {
 }
 
 #[tokio::test]
-async fn issue76_configured_request_uses_reserved_max_tokens_and_one_system_message() {
+async fn issue76_model_output_capacity_does_not_force_a_generation_cap() {
     let project = tempdir().unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
     let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
         stop_reason: StopReason::End,
     }])]);
     let mut req = request(vec![ChatMessage::new(ChatRole::User, "hello")]);
-    req.context_budget = Some(ContextBudget::new(10_000, 2_000, true).unwrap());
+    req.context_budget = Some(ContextBudget::new(428_000, 128_000, true).unwrap());
     req.context_source_version = Some(1);
     run_agent(&provider, &tools, req, CancellationToken::new())
         .await
         .unwrap();
     let requests = provider.requests();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].max_tokens, Some(2_000));
+    assert_eq!(requests[0].max_tokens, None);
     assert_eq!(
         requests[0]
             .messages
@@ -195,6 +195,26 @@ async fn issue76_configured_request_uses_reserved_max_tokens_and_one_system_mess
     )
     .unwrap();
     assert_eq!(estimate.input_tokens, separate.input_tokens);
+}
+
+#[tokio::test]
+async fn issue76_explicit_generation_cap_is_bounded_by_model_output_capacity() {
+    for (requested, expected) in [(512, 512), (200_000, 128_000)] {
+        let project = tempdir().unwrap();
+        let tools = vega_tools::Tools::new(project.path()).unwrap();
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]);
+        let mut req = request(vec![ChatMessage::new(ChatRole::User, "hello")]);
+        req.max_tokens = Some(requested);
+        req.context_budget = Some(ContextBudget::new(428_000, 128_000, true).unwrap());
+        run_agent(&provider, &tools, req, CancellationToken::new())
+            .await
+            .unwrap();
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].max_tokens, Some(expected));
+    }
 }
 
 #[tokio::test]

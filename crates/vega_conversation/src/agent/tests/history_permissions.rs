@@ -4,6 +4,47 @@ use vega_store::permissions;
 
 type UsageRow = (Option<String>, i64, Option<String>, Option<String>);
 
+fn save_issue76_model_policy(store: &Store, input_limit: u64, output_reserve: u64) {
+    vega_store::context_compaction::save_model_policy(
+        store.conn(),
+        &vega_store::context_compaction::ModelContextPolicy {
+            provider: "mock-provider".into(),
+            model: "mock-model".into(),
+            input_limit: Some(input_limit),
+            output_reserve: Some(output_reserve),
+            automatic_compaction: true,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+}
+
+async fn run_issue76_model_owned(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    user_content: &str,
+    system_prompt: &str,
+    pricing: Option<vega_token::PricingCatalog>,
+) -> Result<ConversationRun, ConversationError> {
+    run_thread_task_with_permission_config_and_reasoning(
+        store,
+        provider,
+        tools,
+        "thread-1",
+        user_content,
+        system_prompt,
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |_| Ok(()),
+        PersistenceActorConfig::default(),
+        None,
+        pricing,
+        Some(FrozenReasoning::unknown("mock-provider", "mock-model")),
+    )
+    .await
+}
+
 struct GatedSummaryProvider {
     started: std::sync::Arc<tokio::sync::Notify>,
     release: std::sync::Arc<tokio::sync::Notify>,
@@ -581,18 +622,7 @@ async fn issue76_configured_run_uses_summary_provider_then_primary_and_installs_
         )
         .unwrap();
     }
-    vega_store::context_compaction::save_settings(
-        store.conn(),
-        &vega_store::context_compaction::ContextSettings {
-            thread_id: "thread-1".into(),
-            model: "mock-model".into(),
-            context_limit: Some(20_000),
-            output_reserve: 1_000,
-            automatic_compaction: true,
-            updated_at: 1,
-        },
-    )
-    .unwrap();
+    save_issue76_model_policy(&store, 19_000, 1_000);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
@@ -614,14 +644,13 @@ async fn issue76_configured_run_uses_summary_provider_then_primary_and_installs_
             },
         ])],
     ]);
-    let run = run_thread_task(
+    let run = run_issue76_model_owned(
         &store,
         &provider,
         &tools,
-        "thread-1",
         "current constraint",
         "primary system",
-        CancellationToken::new(),
+        None,
     )
     .await
     .unwrap();
@@ -634,7 +663,7 @@ async fn issue76_configured_run_uses_summary_provider_then_primary_and_installs_
             .content
             .contains("context-compaction")
     );
-    assert_eq!(requests[1].max_tokens, Some(1_000));
+    assert_eq!(requests[1].max_tokens, None);
     assert!(
         requests[1]
             .messages
@@ -657,14 +686,13 @@ async fn issue76_configured_run_uses_summary_provider_then_primary_and_installs_
             stop_reason: StopReason::End,
         },
     ])]);
-    run_thread_task(
+    run_issue76_model_owned(
         &store,
         &reopened_provider,
         &tools,
-        "thread-1",
         "next turn after restart",
         "primary system",
-        CancellationToken::new(),
+        None,
     )
     .await
     .unwrap();
@@ -884,18 +912,7 @@ async fn issue76_priced_summary_usage_is_a_thread_level_audit_row() {
         )
         .unwrap();
     }
-    vega_store::context_compaction::save_settings(
-        store.conn(),
-        &vega_store::context_compaction::ContextSettings {
-            thread_id: "thread-1".into(),
-            model: "mock-model".into(),
-            context_limit: Some(15_000),
-            output_reserve: 1_000,
-            automatic_compaction: true,
-            updated_at: 1,
-        },
-    )
-    .unwrap();
+    save_issue76_model_policy(&store, 14_000, 1_000);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
@@ -917,18 +934,12 @@ async fn issue76_priced_summary_usage_is_a_thread_level_audit_row() {
             },
         ])],
     ]);
-    let run = run_thread_task_with_pricing(
+    let run = run_issue76_model_owned(
         &store,
         &provider,
         &tools,
-        "thread-1",
         "priced current",
         "system",
-        CancellationToken::new(),
-        &RejectPermissionHook,
-        |_| Ok(()),
-        PersistenceActorConfig::default(),
-        None,
         Some(issue76_priced_catalog()),
     )
     .await
@@ -985,18 +996,7 @@ async fn issue76_summary_usage_received_before_failure_is_persisted_without_chec
         )
         .unwrap();
     }
-    vega_store::context_compaction::save_settings(
-        store.conn(),
-        &vega_store::context_compaction::ContextSettings {
-            thread_id: "thread-1".into(),
-            model: "mock-model".into(),
-            context_limit: Some(20_000),
-            output_reserve: 1_000,
-            automatic_compaction: true,
-            updated_at: 1,
-        },
-    )
-    .unwrap();
+    save_issue76_model_policy(&store, 19_000, 1_000);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new(vec![
         ScriptStep::events(vec![ProviderEvent::Usage {
@@ -1011,14 +1011,13 @@ async fn issue76_summary_usage_received_before_failure_is_persisted_without_chec
             retryable: false,
         },
     ]);
-    let result = run_thread_task(
+    let result = run_issue76_model_owned(
         &store,
         &provider,
         &tools,
-        "thread-1",
         "failed summary current",
         "system",
-        CancellationToken::new(),
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -1523,18 +1522,7 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
         )
         .unwrap();
     }
-    vega_store::context_compaction::save_settings(
-        store.conn(),
-        &vega_store::context_compaction::ContextSettings {
-            thread_id: "thread-1".into(),
-            model: "mock-model".into(),
-            context_limit: Some(11_000),
-            output_reserve: 1_000,
-            automatic_compaction: true,
-            updated_at: 1,
-        },
-    )
-    .unwrap();
+    save_issue76_model_policy(&store, 10_000, 1_000);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
@@ -1566,14 +1554,13 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
             },
         ])],
     ]);
-    let run = run_thread_task(
+    let run = run_issue76_model_owned(
         &store,
         &provider,
         &tools,
-        "thread-1",
         "tool threshold current",
         "system",
-        CancellationToken::new(),
+        None,
     )
     .await
     .unwrap();

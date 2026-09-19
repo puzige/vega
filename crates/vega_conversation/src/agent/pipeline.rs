@@ -275,24 +275,62 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         crate::types::PermissionMode::parse(&thread.permission_mode).ok_or_else(|| {
             ConversationError::CorruptRow(format!("permission_mode: {}", thread.permission_mode))
         })?;
-    let context_settings =
-        vega_store::context_compaction::load_settings(&transaction, &thread_id, &thread.model)
-            .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?;
-    let context_budget = match context_settings.as_ref().and_then(|settings| {
-        settings.context_limit.map(|limit| {
-            vega_runtime::ContextBudget::new(
-                limit,
-                settings.output_reserve,
-                settings.automatic_compaction,
+    if reasoning
+        .as_ref()
+        .is_some_and(|selection| selection.model != thread.model)
+    {
+        return Err(ConversationError::CorruptRow(
+            "frozen context model changed".into(),
+        ));
+    }
+    // #76 correction: the app worker has already checked that this frozen
+    // provider/model is the unique enabled selection. Legacy per-thread rows
+    // have no provider identity, so they are never a runtime fallback. Read
+    // the model policy once in this accepted-turn snapshot; tool rounds reuse
+    // the resulting immutable ContextBudget in AgentRequest.
+    let context_policy = reasoning
+        .as_ref()
+        .map(|selection| {
+            vega_store::context_compaction::load_model_policy(
+                &transaction,
+                &selection.provider,
+                &selection.model,
             )
         })
-    }) {
-        Some(Ok(budget)) => Some(budget),
-        Some(Err(_)) => {
-            return Err(ConversationError::CorruptRow(
-                "invalid persisted context budget".into(),
-            ));
-        }
+        .transpose()
+        .map_err(|error| runtime_store_error(std::io::Error::other(error.to_string())))?
+        .flatten()
+        .or_else(|| {
+            reasoning.as_ref().map(|selection| {
+                vega_store::context_compaction::ModelContextPolicy::assumed_default(
+                    &selection.provider,
+                    &selection.model,
+                )
+            })
+        });
+    let context_budget = match context_policy.as_ref() {
+        Some(policy) => match (policy.input_limit, policy.output_reserve) {
+            (Some(input), Some(reserve)) => {
+                // Settings exposes independent input/output numbers. The
+                // runtime's existing total/reserve representation has the
+                // same input budget only after checked B + O conversion.
+                let total = input.checked_add(reserve).ok_or_else(|| {
+                    ConversationError::CorruptRow("invalid persisted context budget".into())
+                })?;
+                Some(
+                    vega_runtime::ContextBudget::new(total, reserve, policy.automatic_compaction)
+                        .map_err(|_| {
+                        ConversationError::CorruptRow("invalid persisted context budget".into())
+                    })?,
+                )
+            }
+            (None, None) => None,
+            _ => {
+                return Err(ConversationError::CorruptRow(
+                    "partial persisted context budget".into(),
+                ));
+            }
+        },
         None => None,
     };
     #[cfg(test)]

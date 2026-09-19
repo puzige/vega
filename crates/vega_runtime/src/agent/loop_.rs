@@ -491,9 +491,12 @@ where
             model: request.model.clone(),
             messages: messages.clone(),
             tools: tool_definitions,
-            max_tokens: context_budget
-                .map(|budget| budget.output_reserve() as u32)
-                .or(request.max_tokens),
+            // The reserved output capacity protects the input budget; it is
+            // not a request to generate that many tokens on every round.
+            // Keep provider defaults when no explicit generation cap exists.
+            max_tokens: request.max_tokens.map(|cap| {
+                context_budget.map_or(cap, |budget| cap.min(budget.output_reserve() as u32))
+            }),
             reasoning: request.reasoning.clone(),
         };
         let mut stream = match provider.chat_stream(chat_request, cancel.clone()).await {
