@@ -99,6 +99,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             .collect::<Result<Vec<_>, _>>()?
     };
     let now = now_ms();
+    let title_eligible_payload = !user_content.trim().is_empty() || !images.is_empty();
     if uses_existing_user {
         let existing = messages::find(&transaction, &user_message_id)
             .map_err(runtime_store_error)?
@@ -165,6 +166,25 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         )
         .map_err(runtime_store_error)?;
     }
+    // R1/R4: claim inside the accepted first-user transaction, before assistant insertion.
+    let title_request = if !uses_existing_user && title_eligible_payload {
+        match config.automatic_title.clone() {
+            Some(request)
+                if vega_store::threads::claim_auto_title(
+                    &transaction,
+                    &thread_id,
+                    &user_message_id,
+                    &request.fallback(),
+                )
+                .map_err(runtime_store_error)? =>
+            {
+                Some(request)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     let assistant_seq =
         messages::next_seq(&transaction, &thread_id).map_err(runtime_store_error)?;
     messages::insert(
@@ -285,6 +305,15 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     let foreign_call_ids =
         tool_calls::foreign_call_ids(&transaction, &thread_id).map_err(runtime_store_error)?;
     transaction.commit().map_err(runtime_store_error)?;
+    if let Some(request) = title_request {
+        request.launch(
+            database_path.clone(),
+            thread_id.clone(),
+            user_message_id.clone(),
+            thread.model.clone(),
+            pricing_catalog.clone(),
+        );
+    }
 
     Ok(PreparedRun {
         database_path,

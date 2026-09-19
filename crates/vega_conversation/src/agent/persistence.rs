@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
+    pub automatic_title: Option<crate::types::AutomaticTitleRequest>,
     #[cfg(test)]
     pub(crate) snapshot_writes: Option<Arc<AtomicUsize>>,
     #[cfg(test)]
@@ -29,6 +30,14 @@ pub(crate) enum InjectedPersistenceFailure {
 }
 
 impl PersistenceActorConfig {
+    pub fn with_automatic_title(
+        mut self,
+        request: Option<crate::types::AutomaticTitleRequest>,
+    ) -> Self {
+        self.automatic_title = request;
+        self
+    }
+
     pub(crate) fn delay_command(&self) {
         #[cfg(test)]
         if let Some(delay) = self.command_delay {

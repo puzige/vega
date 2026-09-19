@@ -184,6 +184,7 @@ async fn production_agent_request_first_keeps_permission_until_proposal_ingress(
                 None,
                 None,
                 None,
+                None,
                 Some(provider),
                 Arc::new(AgentWorkerStartProbe::default()),
             );
@@ -343,7 +344,7 @@ theme = "light"
         // Both paths are owned fixture seams: catalog reads stay off the
         // user's config, while the worker never constructs a real provider.
         root.model_selection_config_override = Some(config_path.clone());
-        root.agent_provider_override = Some(provider.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
     });
     let window_root = root.clone();
     let window = cx
@@ -771,6 +772,7 @@ fn deferred_provider_construction_cancel_starts_no_request_or_durable_message() 
                 None,
                 None,
                 None,
+                None,
                 Some(provider),
                 probe,
             )
@@ -860,6 +862,7 @@ fn local_credential_preparation_failure_has_no_durable_messages() {
             sender,
             None,
             Some(config_path.clone()),
+            None,
             None,
             None,
             Arc::new(AgentWorkerStartProbe::default()),

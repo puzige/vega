@@ -110,7 +110,7 @@ impl ThinkingSliderFixture {
         let root = cx.new(VegaWindow::new);
         root.update(cx, |root, cx| {
             root.model_selection_config_override = Some(config_path);
-            root.agent_provider_override = Some(provider.clone());
+            root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
             root.stream_view = Some((thread.id.clone(), stream.clone()));
             // The production stream subscriptions (render.rs): only the tier
             // intent matters here, and it travels the real handler.
@@ -730,7 +730,7 @@ async fn reasoning_authority_reconcile_error_blocks_controller_before_provider(
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, cx| {
         root.model_selection_config_override = Some(config_path);
-        root.agent_provider_override = Some(provider.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
         root.stream_view = Some((thread.id.clone(), stream.clone()));
         root.configured_models = Some(vec![thread.model.clone()]);
         root.configured_reasoning = Some(vec![ReasoningProfileProjection::unknown(
@@ -835,7 +835,7 @@ async fn settings_unknown_reasoning_template_saves_reads_back_and_reaches_mock_r
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, _| {
         root.model_selection_config_override = Some(config_path.clone());
-        root.agent_provider_override = Some(provider.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
         root.stream_view = Some((thread.id.clone(), stream.clone()));
     });
     cx.update(|cx| {
@@ -1025,7 +1025,7 @@ async fn frozen_reasoning_owner_change_same_model_fails_before_provider(
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, cx| {
         root.model_selection_config_override = Some(config_path.clone());
-        root.agent_provider_override = Some(provider.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
         root.stream_view = Some((thread.id.clone(), stream.clone()));
         root.configured_models = Some(vec![thread.model.clone()]);
         root.configured_reasoning = Some(vec![ReasoningProfileProjection {

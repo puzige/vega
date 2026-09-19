@@ -608,6 +608,7 @@ pub(crate) fn run_agent_worker(
     // Optional UI-captured reasoning snapshot. When absent (legacy callers),
     // the worker resolves the exact profile once before the first request.
     reasoning: Option<vega_runtime::FrozenReasoning>,
+    title_notifications: Option<mpsc::Sender<()>>,
     #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
     #[cfg(test)] worker_start_probe: Arc<AgentWorkerStartProbe>,
 ) {
@@ -705,6 +706,8 @@ pub(crate) fn run_agent_worker(
         let result = match run {
             PendingAgentRun::UserMessage(submission) => {
                 let content = submission.content;
+                // #65 R2: freeze only composer text, before expanding referenced files.
+                let title_source = content.clone();
                 // A2-12: resolve `@path` tokens against the project root and
                 // inject the referenced file contents ahead of the user text
                 // (bounded: 8 files, 16 KiB each, 48 KiB total). A failure is
@@ -733,6 +736,14 @@ pub(crate) fn run_agent_worker(
                     )
                 };
                 let provider = make_provider()?;
+                let automatic_title = title_notifications.map(|notifications| {
+                    vega_conversation::types::AutomaticTitleRequest::new(
+                        &title_source,
+                        provider.clone(),
+                        tokio_util::sync::CancellationToken::new(),
+                        notifications,
+                    )
+                });
                 // local credential storage access is synchronous. A route cancellation while
                 // it was waiting must not start a late durable/network run.
                 if cancel.is_cancelled() {
@@ -749,7 +760,8 @@ pub(crate) fn run_agent_worker(
                         cancel,
                         &permission_queue,
                         event_sink,
-                        vega_conversation::agent::PersistenceActorConfig::default(),
+                        vega_conversation::agent::PersistenceActorConfig::default()
+                            .with_automatic_title(automatic_title),
                         None,
                         pricing_catalog,
                         Some(reasoning),

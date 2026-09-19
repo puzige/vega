@@ -6,6 +6,7 @@
 //! types (runtime events, chat messages, tool calls) belong to S3/S4 and
 //! must not appear here yet.
 
+pub use crate::automatic_titles::AutomaticTitleRequest;
 use std::sync::Arc;
 pub use vega_runtime::ImageAttachment;
 

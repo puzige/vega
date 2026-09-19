@@ -5,6 +5,101 @@ use super::*;
 const AGENT_PREFLIGHT_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
 impl VegaWindow {
+    /// #65 R6: independent of primary Finished/generation/route polling.
+    pub(crate) fn watch_automatic_titles(
+        &mut self,
+        database: std::path::PathBuf,
+        owner: String,
+        receiver: mpsc::Receiver<()>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let mut retry = false;
+            let mut io_failures = 0;
+            loop {
+                cx.background_executor().timer(AGENT_EVENT_POLL).await;
+                match if retry { Ok(()) } else { receiver.try_recv() } {
+                    Ok(()) => {
+                        let Ok(epoch) = this.update(cx, |_, cx| {
+                            if !retry {
+                                vega_ui::navigation::begin_task_mutation(cx);
+                                vega_ui::navigation::finish_task_mutation(cx);
+                            }
+                            cx.global::<vega_ui::navigation::TaskMutationState>().epoch
+                        }) else {
+                            break;
+                        };
+                        let path = database.clone();
+                        let read_owner = owner.clone();
+                        let title = cx
+                            .background_executor()
+                            .spawn(async move {
+                                let store = vega_store::Store::open(path).map_err(|_| ())?;
+                                vega_conversation::threads::read_thread_title(&store, &read_owner)
+                                    .map_err(|_| ())
+                            })
+                            .await;
+                        let title = match title {
+                            Ok(title) => {
+                                io_failures = 0;
+                                title
+                            }
+                            Err(()) => {
+                                io_failures += 1;
+                                retry = io_failures < 3;
+                                if !retry {
+                                    tracing::warn!(
+                                        operation = "read_title",
+                                        "automatic title refresh failed"
+                                    );
+                                    io_failures = 0;
+                                }
+                                continue;
+                            }
+                        };
+                        let applied = this.update(cx, |this, cx| {
+                            this.apply_automatic_title(&owner, epoch, title, cx)
+                        });
+                        let Ok(applied) = applied else {
+                            break;
+                        };
+                        // Coalesce a fresh read on next tick after any intervening mutation,
+                        // even if the naming worker has already disconnected.
+                        retry = !applied;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                    Err(mpsc::TryRecvError::Disconnected) => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn apply_automatic_title(
+        &mut self,
+        owner: &str,
+        epoch: u64,
+        title: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if cx.global::<vega_ui::navigation::TaskMutationState>().epoch != epoch {
+            return false;
+        }
+        if let Some(title) = title {
+            let mut opened = OpenedThread(cx.global::<OpenedThread>().0.clone());
+            if let Some(thread) = opened.0.as_mut()
+                && thread.id == owner
+            {
+                thread.title = title;
+                cx.set_global(opened);
+            }
+        }
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.reload_sessions(cx));
+        cx.notify();
+        true
+    }
+
     pub(crate) fn workspace_tool_terminal(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -384,6 +479,13 @@ impl VegaWindow {
             stream.install_meter_estimator(meter_estimator, cx)
         });
         let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
+        let (title_sender, title_receiver) = mpsc::channel();
+        self.watch_automatic_titles(
+            database_path.clone(),
+            thread_id.to_string(),
+            title_receiver,
+            cx,
+        );
         let worker_sender = sender.clone();
         let config_path = self.composer_config_path();
         // A8-02: register synchronously before spawn. The worker closure owns
@@ -408,6 +510,7 @@ impl VegaWindow {
                     Some(pricing_catalog),
                     config_path,
                     reasoning,
+                    Some(title_sender),
                     #[cfg(test)]
                     provider_override,
                     #[cfg(test)]

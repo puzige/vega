@@ -227,6 +227,34 @@ async fn retry_policy_zero_makes_exactly_one_local_http_attempt() {
 }
 
 #[tokio::test]
+async fn automatic_title_once_disables_retries_without_mutating_primary_policy() {
+    let success = sse_response(
+        &[r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#],
+        true,
+    );
+    let server = spawn_server(scripted_server(vec![
+        status_response("500 Internal Server Error", &[], "first"),
+        status_response("500 Internal Server Error", &[], "second"),
+        success,
+    ]))
+    .await;
+    let provider = provider_for(&server, fast_policy(1));
+    assert!(
+        provider
+            .chat_stream_once(request(), CancellationToken::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(server.connection_count(), 1);
+    let stream = provider
+        .chat_stream(request(), CancellationToken::new())
+        .await
+        .unwrap();
+    let _ = collect_events(stream, 8).await;
+    assert_eq!(server.connection_count(), 3);
+}
+
+#[tokio::test]
 async fn mismatched_reasoning_model_fails_before_loopback_http() {
     let server = spawn_server(scripted_server(vec![])).await;
     let provider = provider_for(&server, fast_policy(1));

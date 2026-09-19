@@ -535,6 +535,15 @@ impl std::fmt::Debug for ProviderEvent {
 /// that connection setup, retries, and cancellation all happen inside the
 /// future while the loop only polls events afterwards.
 pub trait Provider: Send + Sync {
+    /// A single auxiliary request, without transport retries. Implementations
+    /// with retrying transports must override this entry point.
+    fn chat_stream_once(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
+        self.chat_stream(req, cancel)
+    }
     /// Starts a streaming chat completion for `req`; `cancel` aborts the
     /// attempt (and later the stream) as soon as it fires.
     fn chat_stream(

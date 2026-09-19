@@ -115,7 +115,7 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui_kit::
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, _| {
         root.stream_view = Some((thread.id.clone(), stream.clone()));
-        root.agent_provider_override = Some(provider.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
     });
     let window_root = root.clone();
     let _window: gpui_kit::WindowHandle<PricingWindowHarness> = cx

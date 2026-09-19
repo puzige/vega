@@ -199,6 +199,15 @@ impl OpenAiProvider {
 }
 
 impl Provider for OpenAiProvider {
+    fn chat_stream_once(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
+        let mut this = self.clone();
+        this.retry.max_retries = 0;
+        Box::pin(async move { this.stream_response(req, cancel).await })
+    }
     fn chat_stream(
         &self,
         req: ChatRequest,

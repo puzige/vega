@@ -66,7 +66,7 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, cx| {
         root.model_selection_config_override = Some(config_path.clone());
-        root.agent_provider_override = Some(provider.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
         root.stream_view = Some((thread.id.clone(), stream.clone()));
         root.start_model_catalog_load(cx);
     });
@@ -278,7 +278,7 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
     let restarted_root = cx.new(VegaWindow::new);
     restarted_root.update(cx, |root, cx| {
         root.model_selection_config_override = Some(config_path.clone());
-        root.agent_provider_override = Some(provider.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
         root.stream_view = Some((thread.id.clone(), restarted_stream.clone()));
         root.start_model_catalog_load(cx);
     });

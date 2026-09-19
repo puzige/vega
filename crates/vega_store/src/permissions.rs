@@ -289,7 +289,7 @@ mod tests {
             .unwrap();
         // Issue 63 adds migration 0007's attachment table while preserving
         // the existing permission schema and the other ten logical tables.
-        assert_eq!(user_version, 7);
+        assert_eq!(user_version, 8);
         assert_eq!(table_count, 11);
     }
 }

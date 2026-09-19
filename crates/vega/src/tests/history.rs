@@ -248,6 +248,7 @@ fn at_reference_injection_persists_across_reopen() {
         None,
         None,
         None,
+        None,
         #[cfg(test)]
         Some(provider),
         Arc::new(AgentWorkerStartProbe::default()),
@@ -298,6 +299,7 @@ fn at_reference_rejection_keeps_provider_at_zero_calls() {
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![
         vega_runtime::ScriptStep::text("must not run"),
     ]));
+    let (title_sender, title_receiver) = mpsc::channel();
     let (sender, receiver) = mpsc::sync_channel::<AgentUpdate>(AGENT_EVENT_CAPACITY);
     run_agent_worker(
         database_path.clone(),
@@ -310,6 +312,7 @@ fn at_reference_rejection_keeps_provider_at_zero_calls() {
         None,
         None,
         None,
+        Some(title_sender),
         #[cfg(test)]
         Some(provider.clone()),
         Arc::new(AgentWorkerStartProbe::default()),
@@ -323,6 +326,10 @@ fn at_reference_rejection_keeps_provider_at_zero_calls() {
     assert!(
         provider.requests().is_empty(),
         "resolver failure precedes provider"
+    );
+    assert!(
+        title_receiver.try_recv().is_err(),
+        "preflight failure never schedules naming"
     );
 
     let reopened = Store::open(&database_path).expect("reopen rejection store");
@@ -402,7 +409,7 @@ async fn at_reference_real_subscription_indexes_and_injects_request(
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, _| {
         root.model_selection_config_override = Some(config_path);
-        root.agent_provider_override = Some(provider.clone())
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()))
     });
     let window_root = root.clone();
     let _window = cx

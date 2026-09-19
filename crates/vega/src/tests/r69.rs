@@ -188,7 +188,7 @@ impl DraftFixture {
         ]));
         root.update(cx, |root, _| {
             root.model_selection_config_override = Some(config_path.clone());
-            root.agent_provider_override = Some(provider.clone());
+            root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
         });
         let window_root = root.clone();
         let window = cx.update(|cx| {
@@ -570,7 +570,8 @@ async fn r69_a3_first_submit_materializes_the_draft_under_its_own_id(
     // R2: every other field is the one the draft carried. The store returns
     // DDL strings, so compare against the same vocabulary the draft encodes.
     assert_eq!(rows[0].project_id, draft.project_id);
-    assert_eq!(rows[0].title, "");
+    // #65 R1: durable first submission now installs its fallback atomically.
+    assert_eq!(rows[0].title, "materialize me");
     assert_eq!(rows[0].model, draft.model);
     assert_eq!(rows[0].permission_mode, draft.permission_mode.as_str());
     assert_eq!(rows[0].mode, ThreadMode::Execute.as_str());
@@ -1609,7 +1610,7 @@ async fn a7_first_submit_provider_quota_failure_is_visible_and_durable(
         },
     ]));
     f.root.update(cx, |root, _| {
-        root.agent_provider_override = Some(failed_provider.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(failed_provider.clone()));
     });
 
     f.submit("hi", cx);
@@ -1668,7 +1669,7 @@ async fn a7_provider_http_failure_uses_safe_fallback(cx: &mut gpui_kit::TestAppC
         },
     ]));
     f.root.update(cx, |root, _| {
-        root.agent_provider_override = Some(failed_provider.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(failed_provider.clone()));
     });
     f.submit("status fallback", cx);
     pump_test_app(cx, |cx| {

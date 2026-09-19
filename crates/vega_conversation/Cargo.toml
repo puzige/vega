@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 futures = { workspace = true }
+tracing.workspace = true
 # threads 表主键 ulid 在本 crate 内生成（T11 裁决：create_thread 内部生成）
 ulid = { workspace = true }
 

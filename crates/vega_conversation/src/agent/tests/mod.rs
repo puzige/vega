@@ -9,6 +9,7 @@ use vega_runtime::{MockProvider, ProviderEvent, ScriptStep, StopReason};
 use super::*;
 use crate::types::{ConversationEvent, ToolCallStatus};
 
+mod automatic_titles;
 mod failure_paths;
 mod history_permissions;
 mod images;

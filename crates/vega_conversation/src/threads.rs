@@ -440,9 +440,17 @@ pub fn update_thread(
     Ok(())
 }
 
-/// Opens a thread: bumps `threads.updated_at` and the owning project's
-/// `last_opened_at` (single transaction in the store layer) and returns the
-/// refreshed thread.
+/// Read only title metadata without recording a visit or changing recency (#65 R5).
+pub fn read_thread_title(
+    store: &Store,
+    thread_id: &str,
+) -> Result<Option<String>, ConversationError> {
+    Ok(store::find(store.conn(), thread_id)
+        .map_err(store_error)?
+        .map(|row| row.title))
+}
+
+/// Opens a thread: bumps task/project activity timestamps and returns it.
 pub fn open_thread(store: &Store, thread_id: &str) -> Result<Thread, ConversationError> {
     let row = store::open_thread(store.conn(), thread_id, now_ms())
         .map_err(store_error)?

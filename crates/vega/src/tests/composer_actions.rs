@@ -42,7 +42,7 @@ fn fixture(
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, _| {
         root.model_selection_config_override = Some(config);
-        root.agent_provider_override = Some(provider);
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider));
     });
     let window_root = root.clone();
     let window = cx.update(|cx| {

@@ -70,6 +70,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0005_standalone_threads.sql"),
     include_str!("../migrations/0006_tool_text_offset.sql"),
     include_str!("../migrations/0007_image_attachments.sql"),
+    include_str!("../migrations/0008_auto_titles.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -239,9 +240,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_7() {
+    fn migrated_store_is_wal_at_user_version_8() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 7);
+        assert_eq!(user_version(&store), 8);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -264,11 +265,13 @@ mod tests {
 
     #[test]
     fn issue63_version_six_upgrade_adds_attachments_without_rebuilding_messages() {
-        let (store, _dir) = open_temp_store();
-        store
-            .conn()
-            .execute_batch("DROP TABLE image_attachments; PRAGMA user_version = 6;")
-            .unwrap();
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("vega.db")).unwrap();
+        // #65 R4: build the actual historical schema, not a partial downgrade.
+        for migration in super::MIGRATIONS.iter().take(6) {
+            store.conn().execute_batch(migration).unwrap();
+        }
+        store.conn().pragma_update(None, "user_version", 6).unwrap();
         let before: String = store
             .conn()
             .query_row(
@@ -278,7 +281,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 7);
+        assert_eq!(user_version(&store), 8);
         let after: String = store
             .conn()
             .query_row(
@@ -298,12 +301,41 @@ mod tests {
     }
 
     #[test]
+    fn automatic_title_version_seven_preserves_legacy_and_empty_eligibility() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("db")).unwrap();
+        for migration in super::MIGRATIONS.iter().take(7) {
+            store.conn().execute_batch(migration).unwrap();
+        }
+        store.conn().pragma_update(None, "user_version", 7).unwrap();
+        store.conn().execute_batch("INSERT INTO threads (id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) VALUES ('named','手动','ask','confirm','m','active',0,0,1,1),('populated','','ask','confirm','m','active',0,0,1,1),('empty','','ask','confirm','m','active',0,0,1,1); INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('u','populated',1,'user','text','hi','done',1);").unwrap();
+        store.migrate().unwrap();
+        assert_eq!(user_version(&store), 8);
+        let rows: Vec<(String, String, String)> = store
+            .conn()
+            .prepare("SELECT id,title,auto_title_state FROM threads ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("empty".into(), "".into(), "eligible".into()),
+                ("named".into(), "手动".into(), "legacy".into()),
+                ("populated".into(), "".into(), "legacy".into())
+            ]
+        );
+    }
+
+    #[test]
     fn migrate_is_idempotent() {
         let (store, _dir) = open_temp_store();
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 7);
+        assert_eq!(user_version(&store), 8);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -339,7 +371,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 7);
+        assert_eq!(user_version(&store), 8);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -404,7 +436,7 @@ mod tests {
                VALUES ('old','t','m',1,'read','{}','success',1);"
         ).unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 7);
+        assert_eq!(user_version(&store), 8);
         let old: Option<i64> = store
             .conn()
             .query_row(
@@ -480,7 +512,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 7);
+        assert_eq!(user_version(&store), 8);
         for table in [
             "messages",
             "tool_calls",

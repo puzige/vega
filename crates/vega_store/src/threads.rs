@@ -178,7 +178,7 @@ pub fn rename(
     now: i64,
 ) -> Result<usize, rusqlite::Error> {
     conn.execute(
-        "UPDATE threads SET title = ?1, updated_at = ?2 WHERE id = ?3",
+        "UPDATE threads SET title = ?1, updated_at = ?2, auto_title_state = 'manual' WHERE id = ?3",
         params![title, now, id],
     )
 }
@@ -319,6 +319,7 @@ pub fn update(
     let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     if let Some(value) = title {
         clauses.push("title = ?");
+        clauses.push("auto_title_state = 'manual'");
         values.push(Box::new(value.to_string()));
     }
     if let Some(value) = status {
@@ -342,6 +343,126 @@ pub fn update(
         &sql,
         rusqlite::params_from_iter(values.iter().map(|v| v.as_ref())),
     )
+}
+
+/// Issue 65: claim the first durable turn within its owning write transaction.
+/// Neither provisional nor generated titles represent user activity.
+pub fn claim_auto_title(
+    conn: &Connection,
+    id: &str,
+    message_id: &str,
+    fallback: &str,
+) -> rusqlite::Result<bool> {
+    Ok(conn.execute("UPDATE threads SET title = ?3, auto_title_state = 'claimed', auto_title_claim = ?2 WHERE id = ?1 AND title = '' AND auto_title_state = 'eligible' AND EXISTS (SELECT 1 FROM messages WHERE id = ?2 AND thread_id = ?1 AND role = 'user') AND NOT EXISTS (SELECT 1 FROM messages WHERE thread_id = ?1 AND id != ?2)", params![id, message_id, fallback])? == 1)
+}
+
+/// Applies only an unmodified title claim; manual rename wins even after ABA.
+pub fn finish_auto_title(
+    conn: &Connection,
+    id: &str,
+    message_id: &str,
+    title: &str,
+) -> rusqlite::Result<bool> {
+    Ok(conn.execute("UPDATE threads SET title = ?3, auto_title_state = 'generated' WHERE id = ?1 AND auto_title_state = 'claimed' AND auto_title_claim = ?2", params![id, message_id, title])? == 1)
+}
+
+#[cfg(test)]
+mod auto_title_tests {
+    use super::*;
+    fn seed(conn: &Connection) {
+        create_standalone(
+            conn,
+            NewThread {
+                id: "t",
+                project_id: "",
+                title: "",
+                mode: "ask",
+                permission_mode: "confirm",
+                model: "mock",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 10,
+                updated_at: 20,
+            },
+        )
+        .unwrap();
+    }
+    fn user(conn: &Connection) {
+        conn.execute("INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('u','t',1,'user','text','hello','done',10)", []).unwrap();
+    }
+    #[test]
+    fn automatic_title_claim_is_atomic_once_and_persistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let store = crate::Store::open(&path).unwrap();
+        store.migrate().unwrap();
+        seed(store.conn());
+        {
+            let tx = store.immediate_transaction().unwrap();
+            user(&tx);
+            assert!(claim_auto_title(&tx, "t", "u", "fallback").unwrap());
+            tx.rollback().unwrap();
+        }
+        assert_eq!(find(store.conn(), "t").unwrap().unwrap().title, "");
+        user(store.conn());
+        assert!(claim_auto_title(store.conn(), "t", "u", "fallback").unwrap());
+        assert!(!claim_auto_title(store.conn(), "t", "u", "again").unwrap());
+        drop(store);
+        let store = crate::Store::open(&path).unwrap();
+        assert!(!claim_auto_title(store.conn(), "t", "u", "again").unwrap());
+        assert!(!finish_auto_title(store.conn(), "t", "wrong", "wrong").unwrap());
+        assert!(finish_auto_title(store.conn(), "t", "u", "generated").unwrap());
+        let row = find(store.conn(), "t").unwrap().unwrap();
+        assert_eq!(row.title, "generated");
+        assert_eq!(row.updated_at, 20);
+        assert!(!finish_auto_title(store.conn(), "t", "u", "again").unwrap());
+    }
+    #[test]
+    fn automatic_title_manual_same_text_and_aba_both_writers_win() {
+        for generic in [false, true] {
+            for aba in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let store = crate::Store::open(dir.path().join("db")).unwrap();
+                store.migrate().unwrap();
+                seed(store.conn());
+                user(store.conn());
+                assert!(claim_auto_title(store.conn(), "t", "u", "fallback").unwrap());
+                for text in if aba {
+                    vec!["manual", "fallback"]
+                } else {
+                    vec!["fallback"]
+                } {
+                    if generic {
+                        update(store.conn(), "t", Some(text), None, None, None).unwrap();
+                    } else {
+                        rename(store.conn(), "t", text, 30).unwrap();
+                    }
+                }
+                assert!(!finish_auto_title(store.conn(), "t", "u", "generated").unwrap());
+                assert_eq!(find(store.conn(), "t").unwrap().unwrap().title, "fallback");
+            }
+        }
+    }
+    #[test]
+    fn automatic_title_no_draft_backfill_or_resurrection() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::Store::open(dir.path().join("db")).unwrap();
+        store.migrate().unwrap();
+        seed(store.conn());
+        assert!(!claim_auto_title(store.conn(), "t", "u", "fallback").unwrap());
+        user(store.conn());
+        store.conn().execute("INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('old','t',2,'assistant','text','old','done',10)", []).unwrap();
+        assert!(!claim_auto_title(store.conn(), "t", "u", "fallback").unwrap());
+        store
+            .conn()
+            .execute("DELETE FROM messages WHERE id='old'", [])
+            .unwrap();
+        assert!(claim_auto_title(store.conn(), "t", "u", "fallback").unwrap());
+        delete_thread(store.conn(), "t").unwrap();
+        assert!(!finish_auto_title(store.conn(), "t", "u", "generated").unwrap());
+        assert!(find(store.conn(), "t").unwrap().is_none());
+    }
 }
 
 /// Open-thread touch semantics (A1-02): bumps `threads.updated_at` and the
