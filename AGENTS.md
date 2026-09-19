@@ -14,7 +14,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 1. **不在 `master` 上直接做功能开发**——用 feature 分支（`feat/<task-id>-<slug>`，如 `feat/t01-scaffold`）。
 2. **动手前先 `git fetch && git rebase origin/master`**。
-3. **任务来源**：`docs/vega-s*-tasks.md` 任务卡（如 T01-T08）。一张卡 = 一个 PR。卡外工作先问。
+3. **任务来源**：默认从 [GitHub Project](https://github.com/users/puzige/projects/2/views/1?system_template=kanban) 的 Ready 卡取任务，用户指定任务优先；关联 `docs/vega-s*-tasks.md` 等规格。一张卡 = 一个 PR。卡外工作先问。取卡、实现与交付必须使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)，验收、合并、任务分支/worktree 清理及卡片回写全部完成后才能关闭。
 4. **主 agent 角色**：协调、验收、集成；**代码实现委托给专用 subagent**，主上下文不被实现细节污染。
 5. **遇阻**：按 exec-guide §6 用 `[BLOCKED]` 格式上报，禁止自创方案绕过。
 6. **验收强制 E2E-first**：优先以真实 production 入口、owned temp repo 与真实 controller 的端到端证据验收；test-only seam 仅保留无法由 E2E 稳定证明的安全不变量，证据分级与留存格式见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
@@ -322,6 +322,8 @@ R68 就踩了：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-hei
 - schema 只增不删，走 `migrations/` 递增文件
 
 ## 行为技能
+
+- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：看板取卡到关闭的工程交付流程；测试用例先行、真实 E2E 与持久截图、并行隔离、master 集成及清理的统一完成标准。
 
 - [karpathy-guidelines](.agents/skills/karpathy-guidelines/SKILL.md)：写/审/重构代码时的
   行为准则（最小改动、表面化假设、可验证成功判据）。**冲突时以本文件与 exec-guide 为准**，
