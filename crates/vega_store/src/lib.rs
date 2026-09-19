@@ -51,6 +51,7 @@ pub mod projects;
 pub mod reasoning;
 pub mod recovery;
 pub mod sidebar_organization;
+pub mod skills;
 // T11（A1-02）：threads 表 SQL 层（projects 域函数归 T10）。
 pub mod threads;
 pub mod token_usage;
@@ -77,6 +78,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0010_context_compaction_status.sql"),
     include_str!("../migrations/0011_model_context_policies.sql"),
     include_str!("../migrations/0012_mcp_servers.sql"),
+    include_str!("../migrations/0013_skills.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -183,7 +185,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::{Store, tool_calls};
+    use super::{Store, skills, tool_calls};
     use rusqlite::ErrorCode;
     use tempfile::tempdir;
 
@@ -203,7 +205,56 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_seventeen_tables() {
+    fn issue74_version_twelve_upgrade_adds_skills_without_losing_mcp_or_thread_rows() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("issue74-v12.db")).unwrap();
+        for migration in super::MIGRATIONS.iter().take(12) {
+            store.conn().execute_batch(migration).unwrap();
+        }
+        store
+            .conn()
+            .pragma_update(None, "user_version", 12_u32)
+            .unwrap();
+        store
+            .conn()
+            .execute_batch(
+                "INSERT INTO projects (id,path,name,created_at,last_opened_at) \
+                   VALUES ('p','/owned/project','project',1,1); \
+                 INSERT INTO threads (id,project_id,model,created_at,updated_at) \
+                   VALUES ('t','p','model',1,1); \
+                 INSERT INTO mcp_servers \
+                   (id,display_name,transport,local_executable,local_args_json, \
+                    local_env_refs_json,created_at,updated_at) \
+                   VALUES ('mcp-one','owned','local','/bin/echo','[]','[]',1,1);",
+            )
+            .unwrap();
+
+        store.migrate().unwrap();
+        assert_eq!(user_version(&store), 13);
+        let settings = skills::read_settings(store.conn()).unwrap();
+        assert!(!settings.global_enabled);
+        assert!(!settings.automatic_enabled);
+        let retained: (i64, i64) = store
+            .conn()
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM threads WHERE id = 't'), \
+                 (SELECT COUNT(*) FROM mcp_servers WHERE id = 'mcp-one')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(retained, (1, 1));
+        let foreign_key_errors: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_key_errors, 0);
+    }
+
+    #[test]
+    fn migrate_creates_exactly_the_twenty_four_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -234,6 +285,13 @@ mod tests {
                 "sidebar_memberships",
                 "sidebar_organization",
                 "sidebar_project_order",
+                "skill_activation_audits",
+                "skill_approvals",
+                "skill_project_settings",
+                "skill_run_snapshots",
+                "skill_settings",
+                "skill_sources",
+                "thread_skill_pins",
                 "threads",
                 "token_usage",
                 "tool_calls",
@@ -253,9 +311,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_12() {
+    fn migrated_store_is_wal_at_user_version_13() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 12);
+        assert_eq!(user_version(&store), 13);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -294,7 +352,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 12);
+        assert_eq!(user_version(&store), 13);
         let after: String = store
             .conn()
             .query_row(
@@ -323,7 +381,7 @@ mod tests {
         store.conn().pragma_update(None, "user_version", 7).unwrap();
         store.conn().execute_batch("INSERT INTO threads (id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) VALUES ('named','手动','ask','confirm','m','active',0,0,1,1),('populated','','ask','confirm','m','active',0,0,1,1),('empty','','ask','confirm','m','active',0,0,1,1); INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('u','populated',1,'user','text','hi','done',1);").unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 12);
+        assert_eq!(user_version(&store), 13);
         let rows: Vec<(String, String, String)> = store
             .conn()
             .prepare("SELECT id,title,auto_title_state FROM threads ORDER BY id")
@@ -348,7 +406,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 12);
+        assert_eq!(user_version(&store), 13);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -384,7 +442,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 12);
+        assert_eq!(user_version(&store), 13);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -402,7 +460,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 17);
+        assert_eq!(tables, 24);
         for table in [
             "projects",
             "threads",
@@ -449,7 +507,7 @@ mod tests {
                VALUES ('old','t','m',1,'read','{}','success',1);"
         ).unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 12);
+        assert_eq!(user_version(&store), 13);
         let old: Option<i64> = store
             .conn()
             .query_row(
@@ -486,7 +544,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 17);
+        assert_eq!(tables, 24);
     }
 
     #[test]
@@ -525,7 +583,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 12);
+        assert_eq!(user_version(&store), 13);
         for table in [
             "messages",
             "tool_calls",

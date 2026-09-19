@@ -1,5 +1,6 @@
 //! Exact-root discovery and descriptor-relative reads. No ambient home scan.
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::ffi::{CString, OsStr, OsString};
@@ -12,20 +13,55 @@ use std::path::{Component, Path, PathBuf};
 
 /// Maximum UTF-8 size of one `SKILL.md` file.
 pub const MAX_SKILL_BYTES: usize = 128 * 1024;
-const MAX_REFERENCE_BYTES: usize = 32 * 1024;
+pub(super) const MAX_REFERENCE_BYTES: usize = 32 * 1024;
 const MAX_CANDIDATES_PER_ROOT: usize = 128;
-const MAX_RESOURCE_PATH_BYTES: usize = 1024;
+pub(super) const MAX_RESOURCE_PATH_BYTES: usize = 1024;
 
 /// The caller-controlled source tier; imported roots must have prior UI consent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceKind {
     Project,
     VegaGlobal,
     Imported { order: usize },
 }
 
+/// Scope only; UI priority is deliberately not part of a consent identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SourceScope {
+    Project,
+    VegaGlobal,
+    Imported,
+}
+
+/// Durable identity of an approved source, without its UI ordering or alias.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SourceIdentity {
+    scope: SourceScope,
+    canonical_root: PathBuf,
+    root_dev: u64,
+    root_ino: u64,
+}
+
+impl SourceIdentity {
+    pub fn scope(&self) -> SourceScope {
+        self.scope
+    }
+
+    pub fn canonical_root(&self) -> &Path {
+        &self.canonical_root
+    }
+
+    pub fn device(&self) -> u64 {
+        self.root_dev
+    }
+
+    pub fn inode(&self) -> u64 {
+        self.root_ino
+    }
+}
+
 impl SourceKind {
-    fn priority(self) -> (u8, usize) {
+    pub(super) fn priority(self) -> (u8, usize) {
         match self {
             Self::Project => (0, 0),
             Self::VegaGlobal => (1, 0),
@@ -35,7 +71,7 @@ impl SourceKind {
 }
 
 /// Content-safe failures. Paths and file bytes are intentionally omitted.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkillError {
     RootChanged,
     UnsafePath,
@@ -49,6 +85,10 @@ pub enum SkillError {
     MalformedYaml,
     ForbiddenTag,
     Stale,
+    NotActivated,
+    OverBudget,
+    AggregateLimit,
+    Cancelled,
     Io,
 }
 
@@ -68,6 +108,10 @@ impl SkillError {
             Self::MalformedYaml => "malformed_yaml",
             Self::ForbiddenTag => "forbidden_tag",
             Self::Stale => "stale",
+            Self::NotActivated => "not_activated",
+            Self::OverBudget => "over_budget",
+            Self::AggregateLimit => "aggregate_limit",
+            Self::Cancelled => "cancelled",
             Self::Io => "io",
         }
     }
@@ -76,7 +120,7 @@ impl SkillError {
 /// A bound exact root. The configured path may itself be a symlink only for
 /// a UI-approved external import; all paths beneath the canonical root are
 /// opened without following symlinks.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillSource {
     kind: SourceKind,
     configured_root: PathBuf,
@@ -86,9 +130,10 @@ pub struct SkillSource {
 }
 
 /// A bounded candidate with only its name, source identity and content hash.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillCandidate {
     pub name: String,
+    pub description: String,
     pub source: SkillSource,
     pub sha256: String,
     pub size_bytes: usize,
@@ -167,9 +212,34 @@ impl SkillSource {
         self.kind
     }
 
+    /// Identity for UI consent persistence; reordering imports does not change it.
+    pub fn identity(&self) -> SourceIdentity {
+        SourceIdentity {
+            scope: match self.kind {
+                SourceKind::Project => SourceScope::Project,
+                SourceKind::VegaGlobal => SourceScope::VegaGlobal,
+                SourceKind::Imported { .. } => SourceScope::Imported,
+            },
+            canonical_root: self.canonical_root.clone(),
+            root_dev: self.root_dev,
+            root_ino: self.root_ino,
+        }
+    }
+
     /// Return the approved canonical target for Settings provenance display.
     pub fn canonical_root(&self) -> &Path {
         &self.canonical_root
+    }
+
+    /// Validate stored shape without reading a source. An unactivated Skill
+    /// still passes the live descriptor/hash fence on its later load.
+    pub(super) fn snapshot_shape_valid(&self) -> bool {
+        self.configured_root.is_absolute()
+            && self.canonical_root.is_absolute()
+            && self.configured_root.as_os_str().as_bytes().len() <= 4096
+            && self.canonical_root.as_os_str().as_bytes().len() <= 4096
+            && !self.configured_root.as_os_str().as_bytes().contains(&0)
+            && !self.canonical_root.as_os_str().as_bytes().contains(&0)
     }
 
     fn ensure_current(&self) -> Result<File, SkillError> {
@@ -233,8 +303,9 @@ impl SkillSource {
             }
             match self.read_skill_md(name) {
                 Ok(bytes) => match super::frontmatter::parse_skill_md(&bytes, name) {
-                    Ok(_) => discovered.candidates.push(SkillCandidate {
+                    Ok(document) => discovered.candidates.push(SkillCandidate {
                         name: name.into(),
+                        description: document.metadata.description,
                         source: self.clone(),
                         sha256: sha256(&bytes),
                         size_bytes: bytes.len(),
@@ -288,11 +359,7 @@ impl SkillSource {
 
     /// Read one on-demand UTF-8 reference. This never executes scripts.
     pub fn read_reference(&self, name: &str, path: &str) -> Result<String, SkillError> {
-        if !valid_name(name) || path.len() > MAX_RESOURCE_PATH_BYTES {
-            return Err(SkillError::UnsafePath);
-        }
-        let components = normal_components(Path::new(path))?;
-        if components.len() < 2 || components[0] != OsStr::new("references") {
+        if !valid_name(name) || !valid_reference_path(path) {
             return Err(SkillError::UnsafePath);
         }
         let bytes = self.read_relative(&Path::new(name).join(path), MAX_REFERENCE_BYTES)?;
@@ -414,6 +481,16 @@ pub(super) fn valid_name(name: &str) -> bool {
         && bytes
             .iter()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
+pub(super) fn valid_reference_path(path: &str) -> bool {
+    if path.len() > MAX_RESOURCE_PATH_BYTES {
+        return false;
+    }
+    match normal_components(Path::new(path)) {
+        Ok(components) => components.len() >= 2 && components[0] == OsStr::new("references"),
+        Err(_) => false,
+    }
 }
 
 fn normal_components(path: &Path) -> Result<Vec<OsString>, SkillError> {
