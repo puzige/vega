@@ -1,4 +1,5 @@
 use super::*;
+use crate::{ContextCheck, ContextCompactionRequest, ContextRuntimeError};
 
 /// Runs the S4 headless agent loop with real fenced read/glob/grep tools.
 pub async fn run_agent(
@@ -86,6 +87,35 @@ pub async fn run_agent_with_permission_sink<F, Fut>(
     request: AgentRequest,
     cancel: CancellationToken,
     permission_hook: &dyn RuntimePermissionHook,
+    sink: F,
+) -> Result<AgentOutcome, VegaError>
+where
+    F: FnMut(RuntimeEvent) -> Fut,
+    Fut: Future<Output = Result<(), VegaError>>,
+{
+    run_agent_with_permission_sink_and_context(
+        provider,
+        tools,
+        request,
+        cancel,
+        permission_hook,
+        None,
+        sink,
+    )
+    .await
+}
+
+/// Permission-aware loop variant with a conversation-owned borrowed
+/// compaction hook.  The borrowed form lets the conversation layer use the
+/// provider/store lifetime it already owns without forcing runtime to depend
+/// on that layer or to manufacture an `Arc` from a borrowed provider.
+pub async fn run_agent_with_permission_sink_and_context<F, Fut>(
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    request: AgentRequest,
+    cancel: CancellationToken,
+    permission_hook: &dyn RuntimePermissionHook,
+    external_context_hook: Option<&dyn crate::ContextCompactionHook>,
     mut sink: F,
 ) -> Result<AgentOutcome, VegaError>
 where
@@ -111,8 +141,21 @@ where
     }
 
     let mut messages = Vec::with_capacity(request.history.len() + 1);
-    messages.push(ChatMessage::new(ChatRole::System, request.system_prompt));
+    let system_prompt = request.system_prompt.clone();
+    messages.push(ChatMessage::new(ChatRole::System, system_prompt.clone()));
     messages.extend(request.history);
+    let context_budget = request.context_budget;
+    let request_context_hook = request.context_compaction_hook.clone();
+    let context_operation_id = request
+        .context_operation_id
+        .clone()
+        .unwrap_or_else(|| ulid::Ulid::generate().to_string());
+    let mut context_source_version = request.context_source_version;
+    let mut context_source_fingerprint = request.context_source_fingerprint.clone();
+    // Durable source identity is paired with a local live-projection revision:
+    // tool rounds can append content before SQLite's fingerprint catches up.
+    let mut live_projection_revision = 0_u64;
+    let mut attempted_context_source = None::<(u64, Option<String>, u64)>;
     let mut completed = request.completed_tool_results;
     let tool_config = request.tool_config;
     let mut exact_rules: HashSet<RuntimeExactRule> =
@@ -137,6 +180,307 @@ where
             ));
         }
 
+        let tool_definitions = tool_definitions(tool_config.run_mode);
+        if let Some(budget) = context_budget {
+            let estimate = crate::estimate_wire_context(&messages, &tool_definitions)
+                .map_err(|error| VegaError::Context(error.into()))?;
+            let check = budget
+                .check(estimate)
+                .map_err(|error| VegaError::Context(error.into()))?;
+            let should_compact = matches!(check, ContextCheck::Triggered | ContextCheck::OverLimit)
+                && budget.automatic_compaction();
+            if should_compact {
+                let source_version = context_source_version.unwrap_or_default();
+                let source_fingerprint = context_source_fingerprint.clone();
+                if attempted_context_source
+                    == Some((
+                        source_version,
+                        source_fingerprint.clone(),
+                        live_projection_revision,
+                    ))
+                {
+                    return Err(VegaError::Context(ContextRuntimeError::AlreadyAttempted));
+                }
+                let hook = external_context_hook.or(request_context_hook.as_deref());
+                let Some(hook) = hook else {
+                    return Err(VegaError::Context(ContextRuntimeError::MissingHook));
+                };
+                if cancel.is_cancelled() {
+                    emit!(events, sink, RuntimeEvent::Interrupted);
+                    return Ok(outcome(
+                        events,
+                        messages,
+                        final_text,
+                        tool_call_count,
+                        executed_tool_call_count,
+                        true,
+                        false,
+                    ));
+                }
+                let target_tokens = budget
+                    .target_tokens()
+                    .map_err(|error| VegaError::Context(error.into()))?;
+                let generation = live_projection_revision.saturating_add(1);
+                // The source fence is deliberately not the operation
+                // identity: a retry can observe the same source fingerprint
+                // after a crash.  The conversation-owned run id (normally
+                // the assistant message id) plus this run-local generation
+                // keeps pending/terminal rows from different attempts
+                // independent.  Source metadata remains in the status row.
+                let operation_key = format!(
+                    "{context_operation_id}:context-generation-{generation}:attempt-{}",
+                    ulid::Ulid::generate()
+                );
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::ContextCompactionStatusUpdated {
+                        status: crate::ContextCompactionStatusUpdate {
+                            operation_key: operation_key.clone(),
+                            generation,
+                            phase: crate::ContextCompactionPhase::Started,
+                            source_version,
+                            estimated_tokens: estimate.input_tokens,
+                            input_budget: budget.input_budget(),
+                            target_tokens,
+                            usage: crate::ContextCompactionUsageState::Pending,
+                            failure: None,
+                        },
+                    }
+                );
+                attempted_context_source = Some((
+                    source_version,
+                    source_fingerprint.clone(),
+                    live_projection_revision,
+                ));
+                let compacted = hook
+                    .compact(
+                        ContextCompactionRequest {
+                            system_prompt: system_prompt.clone(),
+                            messages: messages.iter().skip(1).cloned().collect(),
+                            tools: tool_definitions.clone(),
+                            budget,
+                            estimate,
+                            target_tokens,
+                            source_version,
+                            source_fingerprint,
+                            require_source_fence: false,
+                            source_owner_id: Some(context_operation_id.clone()),
+                        },
+                        cancel.clone(),
+                    )
+                    .await;
+                let compacted = match compacted {
+                    Ok(compacted) => compacted,
+                    Err(failure) => {
+                        let usage_state = failure.usage.as_ref().map_or(
+                            crate::ContextCompactionUsageState::Unknown,
+                            |usage| crate::ContextCompactionUsageState::Known {
+                                priced: usage.pricing.is_some(),
+                            },
+                        );
+                        if let Some(usage) = failure.usage {
+                            emit!(
+                                events,
+                                sink,
+                                RuntimeEvent::ContextCompactionUsageUpdated { usage }
+                            );
+                        }
+                        if cancel.is_cancelled() {
+                            emit!(
+                                events,
+                                sink,
+                                RuntimeEvent::ContextCompactionStatusUpdated {
+                                    status: crate::ContextCompactionStatusUpdate {
+                                        operation_key: operation_key.clone(),
+                                        generation,
+                                        phase: crate::ContextCompactionPhase::Cancelled,
+                                        source_version,
+                                        estimated_tokens: estimate.input_tokens,
+                                        input_budget: budget.input_budget(),
+                                        target_tokens,
+                                        usage: usage_state,
+                                        failure: Some(
+                                            crate::ContextCompactionStatusFailure::Cancelled,
+                                        ),
+                                    },
+                                }
+                            );
+                            emit!(events, sink, RuntimeEvent::Interrupted);
+                            return Ok(outcome(
+                                events,
+                                messages,
+                                final_text,
+                                tool_call_count,
+                                executed_tool_call_count,
+                                true,
+                                false,
+                            ));
+                        }
+                        emit!(
+                            events,
+                            sink,
+                            RuntimeEvent::ContextCompactionStatusUpdated {
+                                status: crate::ContextCompactionStatusUpdate {
+                                    operation_key: operation_key.clone(),
+                                    generation,
+                                    phase: crate::ContextCompactionPhase::Failed,
+                                    source_version,
+                                    estimated_tokens: estimate.input_tokens,
+                                    input_budget: budget.input_budget(),
+                                    target_tokens,
+                                    usage: usage_state,
+                                    failure: Some(
+                                        crate::ContextCompactionStatusFailure::from_error(
+                                            failure.error.as_ref(),
+                                        ),
+                                    ),
+                                },
+                            }
+                        );
+                        return Err(*failure.error);
+                    }
+                };
+                let usage_state = compacted.usage.as_ref().map_or(
+                    crate::ContextCompactionUsageState::Unknown,
+                    |usage| crate::ContextCompactionUsageState::Known {
+                        priced: usage.pricing.is_some(),
+                    },
+                );
+                if let Some(usage) = compacted.usage.clone() {
+                    emit!(
+                        events,
+                        sink,
+                        RuntimeEvent::ContextCompactionUsageUpdated { usage }
+                    );
+                }
+                if compacted
+                    .messages
+                    .iter()
+                    .any(|message| message.role == ChatRole::System)
+                {
+                    emit!(
+                        events,
+                        sink,
+                        RuntimeEvent::ContextCompactionStatusUpdated {
+                            status: crate::ContextCompactionStatusUpdate {
+                                operation_key: operation_key.clone(),
+                                generation,
+                                phase: crate::ContextCompactionPhase::Failed,
+                                source_version,
+                                estimated_tokens: estimate.input_tokens,
+                                input_budget: budget.input_budget(),
+                                target_tokens,
+                                usage: usage_state,
+                                failure: Some(
+                                    crate::ContextCompactionStatusFailure::InvalidSummary,
+                                ),
+                            },
+                        }
+                    );
+                    return Err(VegaError::Context(
+                        ContextRuntimeError::SystemMessageInResult,
+                    ));
+                }
+                let system = messages.first().cloned().ok_or(VegaError::Context(
+                    ContextRuntimeError::SystemMessageInResult,
+                ))?;
+                let mut next_messages = Vec::with_capacity(compacted.messages.len() + 1);
+                next_messages.push(system);
+                next_messages.extend(compacted.messages);
+                let compacted_estimate =
+                    crate::estimate_wire_context(&next_messages, &tool_definitions)
+                        .map_err(|error| VegaError::Context(error.into()))?;
+                let target_tokens = budget
+                    .target_tokens()
+                    .map_err(|error| VegaError::Context(error.into()))?;
+                if compacted_estimate.input_tokens > target_tokens
+                    || compacted_estimate.input_tokens > budget.input_budget()
+                {
+                    emit!(
+                        events,
+                        sink,
+                        RuntimeEvent::ContextCompactionStatusUpdated {
+                            status: crate::ContextCompactionStatusUpdate {
+                                operation_key: operation_key.clone(),
+                                generation,
+                                phase: crate::ContextCompactionPhase::Failed,
+                                source_version,
+                                estimated_tokens: estimate.input_tokens,
+                                input_budget: budget.input_budget(),
+                                target_tokens,
+                                usage: usage_state,
+                                failure: Some(crate::ContextCompactionStatusFailure::OverLimit,),
+                            },
+                        }
+                    );
+                    return Err(VegaError::Context(ContextRuntimeError::ResultOverLimit {
+                        estimated_tokens: compacted_estimate.input_tokens,
+                        target_tokens,
+                    }));
+                }
+                if cancel.is_cancelled() {
+                    // The hook has already installed a valid durable
+                    // checkpoint, but the run must not replace its live
+                    // request projection or issue another provider call after
+                    // cancellation.  Report the durable result separately.
+                    emit!(
+                        events,
+                        sink,
+                        RuntimeEvent::ContextCompactionStatusUpdated {
+                            status: crate::ContextCompactionStatusUpdate {
+                                operation_key: operation_key.clone(),
+                                generation,
+                                phase: crate::ContextCompactionPhase::Succeeded,
+                                source_version,
+                                estimated_tokens: estimate.input_tokens,
+                                input_budget: budget.input_budget(),
+                                target_tokens,
+                                usage: usage_state,
+                                failure: None,
+                            },
+                        }
+                    );
+                    emit!(events, sink, RuntimeEvent::Interrupted);
+                    return Ok(outcome(
+                        events,
+                        messages,
+                        final_text,
+                        tool_call_count,
+                        executed_tool_call_count,
+                        true,
+                        false,
+                    ));
+                }
+                messages = next_messages;
+                live_projection_revision = generation;
+                context_source_version = Some(compacted.source_version);
+                context_source_fingerprint = compacted.source_fingerprint;
+                emit!(
+                    events,
+                    sink,
+                    RuntimeEvent::ContextCompactionStatusUpdated {
+                        status: crate::ContextCompactionStatusUpdate {
+                            operation_key,
+                            generation,
+                            phase: crate::ContextCompactionPhase::Succeeded,
+                            source_version,
+                            estimated_tokens: estimate.input_tokens,
+                            input_budget: budget.input_budget(),
+                            target_tokens,
+                            usage: usage_state,
+                            failure: None,
+                        },
+                    }
+                );
+            } else if matches!(check, ContextCheck::OverLimit) {
+                return Err(VegaError::Context(ContextRuntimeError::OverLimit {
+                    estimated_tokens: estimate.input_tokens,
+                    input_budget: budget.input_budget(),
+                }));
+            }
+        }
+
         // C3: the logical provider call start is frozen immediately before
         // the first `chat_stream`; provider-internal HTTP retries reuse this
         // exact timestamp, later rounds capture a fresh one.
@@ -146,8 +490,10 @@ where
         let chat_request = ChatRequest {
             model: request.model.clone(),
             messages: messages.clone(),
-            tools: tool_definitions(tool_config.run_mode),
-            max_tokens: request.max_tokens,
+            tools: tool_definitions,
+            max_tokens: context_budget
+                .map(|budget| budget.output_reserve() as u32)
+                .or(request.max_tokens),
             reasoning: request.reasoning.clone(),
         };
         let mut stream = match provider.chat_stream(chat_request, cancel.clone()).await {
@@ -695,5 +1041,6 @@ where
                 ));
             }
         }
+        live_projection_revision = live_projection_revision.saturating_add(1);
     }
 }

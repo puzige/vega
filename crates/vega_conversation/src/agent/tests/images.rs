@@ -35,6 +35,11 @@ async fn issue63_controller_http_tool_round_and_restart_preserve_exact_images() 
                     Err(error) => panic!("bounded owned server accept failed: {error}"),
                 }
             };
+            // Darwin can propagate the listener's O_NONBLOCK flag to the
+            // accepted socket.  Clear it before relying on SO_RCVTIMEO;
+            // otherwise the first read may return WouldBlock instead of
+            // waiting for the real HTTP request.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();

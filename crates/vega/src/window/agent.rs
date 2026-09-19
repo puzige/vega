@@ -305,6 +305,7 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
+        self.cancel_manual_context_for_stream(&stream);
         if self
             .agent_controller
             .active
@@ -433,12 +434,14 @@ impl VegaWindow {
         let pricing_catalog = self.pricing_controller.catalog_for_run(&thread.model);
 
         let permission_queue = stream.read(cx).permission_queue();
+        self.invalidate_context_load();
         let (generation, cancel) = self.agent_controller.begin(
             thread_id.to_string(),
             stream.clone(),
             pending_user_content,
             pending_approved_instruction,
         );
+        self.begin_context_primary_owner(generation);
         stream.update(cx, ConversationStream::begin_composer_run);
         self.begin_artifact_agent_generation(generation, &stream);
         // S7-T39/C3: the provisional estimator freezes the run-start
@@ -530,6 +533,7 @@ impl VegaWindow {
                                 } => (success, run, reference_failure, credential_failure),
                             };
                         let cancelled = finished_run.cancel.is_cancelled();
+                        this.refresh_context_projection(false, cx);
                         let cancelled = stream
                             .update(cx, |stream, cx| stream.finish_composer_run(cancelled, cx));
                         let ActiveAgentRun {

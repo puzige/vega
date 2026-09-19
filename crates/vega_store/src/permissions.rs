@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_eleven_tables_at_user_version_seven() {
+    fn schema_has_fourteen_tables_at_current_user_version() {
         let store = store();
         let user_version: i64 = store
             .conn()
@@ -287,9 +287,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        // Issue 63 adds migration 0007's attachment table while preserving
-        // the existing permission schema and the other ten logical tables.
-        assert_eq!(user_version, 8);
-        assert_eq!(table_count, 11);
+        // Issue 76 adds the two context-compaction tables while preserving
+        // the existing permission schema and raw transcript tables.
+        assert_eq!(user_version, 10);
+        assert_eq!(table_count, 14);
     }
 }

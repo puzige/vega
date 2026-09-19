@@ -14,6 +14,8 @@ fn automatic_title_production_worker_records_real_http_wire() {
         while connections.len() < 2 && std::time::Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut socket, _)) => {
+                    // Darwin may inherit O_NONBLOCK; timeouts do not clear it.
+                    socket.set_nonblocking(false).unwrap();
                     let captured = captured.clone();
                     connections.push(std::thread::spawn(move || {
                         socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();

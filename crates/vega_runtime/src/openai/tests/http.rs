@@ -120,6 +120,11 @@ async fn empty_name_stream_continuations_execute_one_real_read_and_observe() {
             tool_config: crate::RuntimeToolConfig::default(),
             pricing_catalog: None,
             reasoning: None,
+            context_budget: None,
+            context_source_version: None,
+            context_source_fingerprint: None,
+            context_operation_id: None,
+            context_compaction_hook: None,
         },
         CancellationToken::new(),
     )

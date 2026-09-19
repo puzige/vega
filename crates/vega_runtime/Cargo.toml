@@ -20,6 +20,8 @@ rusqlite = { workspace = true }
 vega_tools = { workspace = true }
 # S7-T38 冻结计价能力（run-start immutable selection；tech-spec §1 允许边）
 vega_token = { workspace = true }
+# Existing ULID facility used for durable compaction attempt identity.
+ulid = { workspace = true }
 
 [dev-dependencies]
 # 多线程测试运行时（#[tokio::test]；macros/rt 已在主依赖启用）

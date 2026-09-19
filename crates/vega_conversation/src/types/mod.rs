@@ -14,6 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 /// Stable, content-free pricing settings failure vocabulary.
 mod artifact;
+mod context;
 mod events;
 mod meter;
 mod permission;
@@ -31,6 +32,7 @@ mod tests_audit_wire;
 mod tests_conversion;
 
 pub use artifact::*;
+pub use context::*;
 pub use events::*;
 pub use meter::*;
 pub use permission::*;

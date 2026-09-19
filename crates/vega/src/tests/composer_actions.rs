@@ -2,6 +2,9 @@
 use super::*;
 use gpui_kit::{Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, px, size};
 
+#[path = "context_compaction.rs"]
+mod context_compaction;
+
 struct Fixture {
     _data: TempDir,
     repo: TempDir,

@@ -200,6 +200,23 @@ pub struct AgentRequest {
     /// Immutable provider/model thinking selection. `None` keeps the legacy
     /// provider-default request for callers that have no profile declaration.
     pub reasoning: Option<FrozenReasoning>,
+    /// Optional total-context budget frozen for this run.  `None` preserves
+    /// the legacy request path and does not trigger compaction or override
+    /// `max_tokens`.
+    pub context_budget: Option<crate::ContextBudget>,
+    /// Durable source version used to fence at most one automatic compaction
+    /// attempt per source projection.
+    pub context_source_version: Option<u64>,
+    /// Durable source fingerprint paired with the source version fence.
+    pub context_source_fingerprint: Option<String>,
+    /// Stable identity for this run/attempt, supplied by the conversation
+    /// owner (normally the newly-created assistant message id).  It keeps
+    /// durable compaction status rows from conflating a retry that happens
+    /// to observe the same source fingerprint with an earlier attempt.
+    pub context_operation_id: Option<String>,
+    /// Conversation-owned compaction implementation.  The runtime invokes it
+    /// only before a primary provider request and never persists its result.
+    pub context_compaction_hook: Option<crate::SharedContextCompactionHook>,
 }
 
 impl fmt::Debug for AgentRequest {
@@ -216,6 +233,20 @@ impl fmt::Debug for AgentRequest {
             )
             .field("tool_config", &self.tool_config)
             .field("reasoning", &self.reasoning)
+            .field("context_budget", &self.context_budget)
+            .field("context_source_version", &self.context_source_version)
+            .field(
+                "context_source_fingerprint_bytes",
+                &self.context_source_fingerprint.as_ref().map(String::len),
+            )
+            .field(
+                "context_operation_id_bytes",
+                &self.context_operation_id.as_ref().map(String::len),
+            )
+            .field(
+                "has_context_compaction_hook",
+                &self.context_compaction_hook.is_some(),
+            )
             .finish()
     }
 }
@@ -418,6 +449,20 @@ pub enum RuntimeEvent {
         /// Exact pricing provenance; `None` keeps S4 legacy/unpriced rows.
         pricing: Option<RuntimeUsagePricing>,
     },
+    /// Usage received from a summary request.  Conversation persists this
+    /// as context-compaction accounting rather than attaching it to a normal
+    /// assistant prose row.
+    ContextCompactionUsageUpdated {
+        /// Token counts and frozen pricing provenance from the summary call.
+        usage: crate::ContextCompactionUsage,
+    },
+    /// Content-free lifecycle metadata for a summary operation.  Conversation
+    /// keeps this separate from assistant prose and maps it to its shared
+    /// status record.
+    ContextCompactionStatusUpdated {
+        /// Lifecycle phase and bounded request metadata.
+        status: crate::ContextCompactionStatusUpdate,
+    },
     /// Natural/length/limit convergence.
     Finished(RuntimeFinishReason),
     /// Cancellation was observed.
@@ -483,6 +528,14 @@ impl fmt::Debug for RuntimeEvent {
                 .field("cost_microcents", cost_microcents)
                 .field("priced", &pricing.is_some())
                 .finish(),
+            Self::ContextCompactionUsageUpdated { usage } => formatter
+                .debug_struct("ContextCompactionUsageUpdated")
+                .field("usage", usage)
+                .finish(),
+            Self::ContextCompactionStatusUpdated { status } => formatter
+                .debug_struct("ContextCompactionStatusUpdated")
+                .field("status", status)
+                .finish(),
             Self::Finished(reason) => formatter.debug_tuple("Finished").field(reason).finish(),
             Self::Interrupted => formatter.write_str("Interrupted"),
             Self::Error(_) => formatter.write_str("Error([redacted])"),
@@ -530,5 +583,9 @@ mod tools_exec;
 #[cfg(test)]
 mod tests;
 
-pub use loop_::{run_agent, run_agent_with_permission_sink, run_agent_with_sink};
+pub use loop_::{
+    run_agent, run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,
+    run_agent_with_sink,
+};
+pub use tools_exec::tool_definitions;
 pub(crate) use tools_exec::*;

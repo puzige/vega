@@ -21,6 +21,7 @@ mod artifact;
 mod branch;
 mod commit;
 mod commit_reconcile;
+mod context;
 mod diff;
 mod file_index;
 pub(crate) mod navigation;
@@ -112,6 +113,7 @@ pub(crate) struct VegaWindow {
     /// is durable (or the draft was just materialized).
     pub(crate) draft: Option<Thread>,
     pub(crate) agent_controller: AppAgentController,
+    pub(crate) context_controller: context::ContextController,
     pub(crate) file_index_controller: FileIndexController,
     pub(crate) diff_controller: DiffController,
     pub(crate) artifact_controller: ArtifactController,
@@ -212,6 +214,7 @@ impl VegaWindow {
 
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         cx.observe_global::<OpenedThread>(|this, cx| {
+            this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
             this.close_diff_if_route_stale(cx);
             this.close_artifact_if_route_stale(cx);
@@ -233,6 +236,7 @@ impl VegaWindow {
         })
         .detach();
         cx.observe_global::<SettingsOpen>(|this, cx| {
+            this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
             this.close_diff_if_route_stale(cx);
             this.close_artifact_if_route_stale(cx);
@@ -269,6 +273,7 @@ impl VegaWindow {
             stream_view: None,
             draft: None,
             agent_controller: AppAgentController::default(),
+            context_controller: context::ContextController::default(),
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),
             workspace: workspace::Workspace::default(),
@@ -319,6 +324,7 @@ impl VegaWindow {
     }
 
     pub(crate) fn window_terminal_cleanup(&mut self) {
+        self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
         if let Some(active) = self.agent_controller.active.take() {
             active.cancel.cancel();

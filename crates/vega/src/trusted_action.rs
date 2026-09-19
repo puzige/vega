@@ -13,6 +13,10 @@ pub(crate) enum TrustedActionKind {
     /// A7-01: provider/model and owner-only credential readiness before a
     /// composer submission may materialize or start a run.
     AgentPreflight,
+    /// Conversation context settings and manual summary operations own the
+    /// same single-flight gate as sends and model changes until workers drain.
+    ContextSettings,
+    ContextCompaction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

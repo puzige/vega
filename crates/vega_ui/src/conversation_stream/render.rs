@@ -115,6 +115,7 @@ impl ConversationStream {
         let file_selector_active =
             self.file_selector.is_open() || self.file_selector_wanted || self.file_index_loading;
         let can_send = !self.actions.running
+            && !self.context_operation_busy()
             && self.actions.pending_mode.is_none()
             && (!self.input.read(cx).text().is_empty() || !self.attachments.is_empty())
             && !self.attachment_import_pending
@@ -228,6 +229,7 @@ impl ConversationStream {
                                 .debug_selector(|| "composer-add".into()),
                             )
                             .child(self.render_permission_status(cx))
+                            .child(self.render_context_control(window, cx))
                             .child(div().flex_1())
                             .child(self.render_model_selector(cx))
                             .when(
@@ -282,6 +284,7 @@ impl ConversationStream {
                     ),
             )
             .child(self.render_composer_run_status(cx))
+            .children(self.render_context_status(cx))
             .when(self.composer_submit_pending, |composer| {
                 composer.child(
                     div()

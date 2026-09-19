@@ -7,7 +7,72 @@ use tempfile::tempdir;
 
 use super::loop_::reasoning_budget_violation;
 use super::*;
-use crate::{MockProvider, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol, ScriptStep};
+use crate::{
+    ContextBudget, ContextCompactionFailure, ContextCompactionHook, ContextCompactionRequest,
+    ContextCompactionResult, ContextRuntimeError, MockProvider, ReasoningChoice,
+    ReasoningDisabledWire, ReasoningProtocol, ScriptStep,
+};
+
+struct RecordingCompactionHook {
+    calls: Arc<AtomicUsize>,
+    messages: Vec<ChatMessage>,
+    source_version: u64,
+}
+
+struct TailPreservingCompactionHook {
+    calls: Arc<AtomicUsize>,
+    observed: Arc<Mutex<Vec<ChatMessage>>>,
+}
+
+impl ContextCompactionHook for TailPreservingCompactionHook {
+    fn compact<'a>(
+        &'a self,
+        request: ContextCompactionRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Ok(mut observed) = self.observed.lock() {
+            *observed = request.messages.clone();
+        }
+        let last_user = request
+            .messages
+            .iter()
+            .rposition(|message| message.role == ChatRole::User)
+            .unwrap_or(request.messages.len());
+        let mut messages = vec![ChatMessage::new(ChatRole::User, "summary")];
+        messages.extend(request.messages[last_user..].iter().cloned());
+        async move {
+            Ok(ContextCompactionResult {
+                messages,
+                source_version: request.source_version + 1,
+                source_fingerprint: request.source_fingerprint,
+                usage: None,
+            })
+        }
+        .boxed()
+    }
+}
+
+impl ContextCompactionHook for RecordingCompactionHook {
+    fn compact<'a>(
+        &'a self,
+        _request: ContextCompactionRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let messages = self.messages.clone();
+        let source_version = self.source_version;
+        async move {
+            Ok(ContextCompactionResult {
+                messages,
+                source_version,
+                source_fingerprint: None,
+                usage: None,
+            })
+        }
+        .boxed()
+    }
+}
 
 mod loop_tools;
 mod permission_flow;
@@ -90,7 +155,164 @@ fn request(history: Vec<ChatMessage>) -> AgentRequest {
         tool_config: RuntimeToolConfig::default(),
         pricing_catalog: None,
         reasoning: None,
+        context_budget: None,
+        context_source_version: None,
+        context_source_fingerprint: None,
+        context_operation_id: None,
+        context_compaction_hook: None,
     }
+}
+
+#[tokio::test]
+async fn issue76_configured_request_uses_reserved_max_tokens_and_one_system_message() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    }])]);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "hello")]);
+    req.context_budget = Some(ContextBudget::new(10_000, 2_000, true).unwrap());
+    req.context_source_version = Some(1);
+    run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].max_tokens, Some(2_000));
+    assert_eq!(
+        requests[0]
+            .messages
+            .iter()
+            .filter(|message| message.role == ChatRole::System)
+            .count(),
+        1
+    );
+    let estimate = crate::estimate_wire_context(&requests[0].messages, &requests[0].tools).unwrap();
+    let separate = crate::estimate_chat_context(
+        "Be precise.",
+        &[ChatMessage::new(ChatRole::User, "hello")],
+        &requests[0].tools,
+    )
+    .unwrap();
+    assert_eq!(estimate.input_tokens, separate.input_tokens);
+}
+
+#[tokio::test]
+async fn issue76_over_budget_has_zero_provider_requests_without_auto_compaction() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    }])]);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(4_000))]);
+    req.context_budget = Some(ContextBudget::new(1_000, 100, false).unwrap());
+    let error = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .expect_err("over-budget request must fail before provider");
+    assert!(matches!(
+        error,
+        VegaError::Context(ContextRuntimeError::OverLimit { .. })
+    ));
+    assert!(provider.requests().is_empty());
+}
+
+#[tokio::test]
+async fn issue76_auto_compaction_precedes_tool_round_and_is_once_per_source() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "read-1".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"missing"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hook = RecordingCompactionHook {
+        calls: calls.clone(),
+        messages: vec![ChatMessage::new(ChatRole::User, "historical summary")],
+        source_version: 8,
+    };
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(4_000))]);
+    req.context_budget = Some(ContextBudget::new(5_000, 500, true).unwrap());
+    req.context_source_version = Some(7);
+    req.context_compaction_hook = Some(Arc::new(hook));
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 2);
+    assert!(outcome.executed_tool_call_count <= 1);
+    let second = &provider.requests()[1].messages;
+    assert!(
+        second
+            .iter()
+            .any(|message| { message.tool_calls.iter().any(|call| call.id == "read-1") })
+    );
+}
+
+#[tokio::test]
+async fn issue76_auto_compaction_triggers_after_tool_result_without_reexecution() {
+    let project = tempdir().unwrap();
+    fs::write(project.path().join("large.txt"), "z".repeat(3_000)).unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "read-after".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"large.txt"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let hook = TailPreservingCompactionHook {
+        calls: calls.clone(),
+        observed: observed.clone(),
+    };
+    let mut req = request(vec![
+        ChatMessage::new(ChatRole::User, "old constraint ".repeat(600)),
+        ChatMessage::new(ChatRole::Assistant, "old answer"),
+        ChatMessage::new(ChatRole::User, "current goal"),
+    ]);
+    req.context_budget = Some(ContextBudget::new(16_000, 1_000, true).unwrap());
+    req.context_source_version = Some(7);
+    req.context_compaction_hook = Some(Arc::new(hook));
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(outcome.executed_tool_call_count, 1);
+    let observed = observed.lock().unwrap();
+    let assistant = observed
+        .iter()
+        .find(|message| {
+            message
+                .tool_calls
+                .iter()
+                .any(|call| call.id == "read-after")
+        })
+        .expect("hook sees the live assistant tool group");
+    assert_eq!(assistant.tool_calls[0].id, "read-after");
+    assert!(observed.iter().any(|message| {
+        message.role == ChatRole::Tool && message.tool_call_id.as_deref() == Some("read-after")
+    }));
+    assert_eq!(provider.requests().len(), 2);
 }
 
 async fn run_bash_permission_case(

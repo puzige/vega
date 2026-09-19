@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use super::{
-    ConversationError, ConversationEvent, Microcents, ThreadMode, ThreadStatus, TokenUsage,
-    from_runtime_event,
+    ContextCompactionStatus, ContextCompactionStatusRecord, ContextCompactionUsageState,
+    ConversationError, ConversationEvent, ConversationMeter, Microcents, ThreadMode, ThreadStatus,
+    TokenUsage, UsagePricing, from_runtime_event,
 };
 
 #[test]
@@ -98,6 +99,70 @@ fn converts_text_thinking_and_usage_runtime_events() {
             ..
         })
     ));
+}
+
+#[test]
+fn converts_content_free_compaction_status_and_preserves_unknown_usage() {
+    let event = vega_runtime::RuntimeEvent::ContextCompactionStatusUpdated {
+        status: vega_runtime::ContextCompactionStatusUpdate {
+            operation_key: "source-fingerprint".into(),
+            generation: 7,
+            phase: vega_runtime::ContextCompactionPhase::Succeeded,
+            source_version: 11,
+            estimated_tokens: 8_000,
+            input_budget: 8_000,
+            target_tokens: 6_000,
+            usage: vega_runtime::ContextCompactionUsageState::Unknown,
+            failure: None,
+        },
+    };
+    let Some(ConversationEvent::ContextCompactionStatus { record }) =
+        from_runtime_event("assistant-message", &event)
+    else {
+        panic!("status event must cross the conversation boundary");
+    };
+    assert_eq!(record.generation, 7);
+    assert_eq!(record.status, ContextCompactionStatus::Succeeded);
+    assert_eq!(record.source_version, Some(11));
+    assert_eq!(record.usage, ContextCompactionUsageState::Unknown);
+}
+
+#[test]
+fn unknown_summary_usage_keeps_later_primary_cost_unknown() {
+    let mut meter = ConversationMeter::default();
+    meter.apply(&ConversationEvent::ContextCompactionStatus {
+        record: ContextCompactionStatusRecord {
+            generation: 1,
+            status: ContextCompactionStatus::Succeeded,
+            updated_at: 0,
+            estimated_tokens: Some(8_000),
+            input_budget: Some(8_000),
+            target_tokens: Some(6_000),
+            source_version: Some(2),
+            failure: None,
+            usage: ContextCompactionUsageState::Unknown,
+        },
+    });
+    meter.apply(&ConversationEvent::MessageStarted {
+        message_id: "assistant".into(),
+        seq: 1,
+    });
+    meter.apply(&ConversationEvent::UsageUpdated {
+        message_id: "assistant".into(),
+        usage: TokenUsage {
+            input: 10,
+            output: 2,
+            cache_read: 0,
+            cache_write: 0,
+        },
+        cost: Microcents(12),
+        pricing: Some(UsagePricing {
+            version: "test".into(),
+            profile: "base".into(),
+            call_started_at: 1,
+        }),
+    });
+    assert_eq!(meter.snapshot().cost, None);
 }
 
 #[test]

@@ -204,6 +204,15 @@ impl ConversationMeter {
         }
     }
 
+    /// Restores durable uncertainty from a summary operation that did not
+    /// produce Usage.  This is intentionally idempotent and does not add
+    /// tokens or cost: the summary row, when available, is restored through
+    /// the normal aggregate path separately.
+    pub fn restore_unknown_context_usage(&mut self) {
+        self.unpriced_seen = true;
+        self.calibrated_cost = None;
+    }
+
     /// Clears run-scoped state when a run ends outside the event path
     /// (spawn failure, controller error).
     pub fn end_run(&mut self) {
@@ -294,6 +303,60 @@ impl ConversationMeter {
                     }
                 }
                 true
+            }
+            ConversationEvent::ContextCompactionUsageUpdated {
+                usage,
+                cost,
+                pricing,
+            } => {
+                let call_tokens = usage
+                    .input
+                    .checked_add(usage.output)
+                    .and_then(|total| total.checked_add(usage.cache_read))
+                    .and_then(|total| total.checked_add(usage.cache_write));
+                let Some(call_tokens) = call_tokens else {
+                    self.degrade();
+                    return true;
+                };
+                let Some(tokens) = self.calibrated_tokens.checked_add(call_tokens) else {
+                    self.degrade();
+                    return true;
+                };
+                self.calibrated_tokens = tokens;
+                match pricing {
+                    None => {
+                        self.unpriced_seen = true;
+                        self.calibrated_cost = None;
+                    }
+                    Some(_) if !self.unpriced_seen => {
+                        self.calibrated_cost = match (self.calibrated_cost, cost) {
+                            (Some(total), Some(cost)) => total.checked_add(cost.0),
+                            (None, Some(cost)) => Some(cost.0),
+                            _ => None,
+                        };
+                        if self.calibrated_cost.is_none() {
+                            self.degrade();
+                            return true;
+                        }
+                    }
+                    Some(_) => {}
+                }
+                true
+            }
+            ConversationEvent::ContextCompactionStatus { record } => {
+                match record.usage {
+                    // A summary without Usage is not a zero-cost call.  Latch
+                    // the same fail-closed state used for legacy/unpriced
+                    // rows, so a later priced primary cannot mask it.
+                    ContextCompactionUsageState::Unknown
+                    | ContextCompactionUsageState::Known { priced: false } => {
+                        self.unpriced_seen = true;
+                        self.calibrated_cost = None;
+                        true
+                    }
+                    ContextCompactionUsageState::Pending
+                    | ContextCompactionUsageState::Known { priced: true } => false,
+                }
             }
             ConversationEvent::MessageFinished { .. }
             | ConversationEvent::Interrupted { .. }

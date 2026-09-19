@@ -149,6 +149,7 @@ impl ConversationStream {
     /// value that raced the durable write.
     pub(crate) fn submit_message(&mut self, cx: &mut Context<Self>) {
         if self.actions.running
+            || self.context_operation_busy()
             || self.attachment_import_pending
             || self.actions.pending_mode.is_some()
             || self.composer_submit_pending

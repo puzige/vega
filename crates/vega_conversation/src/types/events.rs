@@ -95,6 +95,14 @@ fn provider_has_quota_code(message: &str) -> bool {
     })
 }
 
+fn now_unix_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
+}
+
 /// Runtime-to-UI/store unique event stream (tech-spec §3).
 #[derive(Clone)]
 pub enum ConversationEvent {
@@ -157,6 +165,24 @@ pub enum ConversationEvent {
         /// Exact pricing provenance (S7-T38); `None` keeps the S4
         /// legacy/unpriced semantics.
         pricing: Option<UsagePricing>,
+    },
+    /// Usage from a historical-summary provider call. It is separate from
+    /// ordinary assistant usage because a manual/automatic summary has no
+    /// assistant prose message id.
+    ContextCompactionUsageUpdated {
+        /// Token counts actually supplied by the summary provider.
+        usage: TokenUsage,
+        /// Integer cost when the frozen catalog could price the model.
+        cost: Option<Microcents>,
+        /// Frozen pricing provenance, absent for unpriced/unknown models.
+        pricing: Option<UsagePricing>,
+    },
+    /// Content-free lifecycle state for a historical-summary operation.
+    /// `Unknown` usage is intentionally observable so a priced primary call
+    /// cannot make an incompletely accounted run look fully priced.
+    ContextCompactionStatus {
+        /// Safe status metadata; no transcript or provider payloads.
+        record: ContextCompactionStatusRecord,
     },
     /// Assistant message converged.
     MessageFinished {
@@ -227,6 +253,22 @@ impl std::fmt::Debug for ConversationEvent {
                 .field("usage", usage)
                 .field("cost", cost)
                 .field("priced", &pricing.is_some())
+                .finish(),
+            Self::ContextCompactionUsageUpdated {
+                usage,
+                cost,
+                pricing,
+            } => formatter
+                .debug_struct("ContextCompactionUsageUpdated")
+                .field("usage", usage)
+                .field("cost", cost)
+                .field("priced", &pricing.is_some())
+                .finish(),
+            Self::ContextCompactionStatus { record } => formatter
+                .debug_struct("ContextCompactionStatus")
+                .field("generation", &record.generation)
+                .field("status", &record.status)
+                .field("usage", &record.usage)
                 .finish(),
             Self::MessageFinished {
                 message_id,
@@ -349,6 +391,91 @@ pub(crate) fn from_runtime_event(
                 call_started_at: pricing.call_started_at,
             }),
         }),
+        RuntimeEvent::ContextCompactionUsageUpdated { usage } => {
+            Some(ConversationEvent::ContextCompactionUsageUpdated {
+                usage: TokenUsage {
+                    input: usage.usage.input,
+                    output: usage.usage.output,
+                    cache_read: usage.usage.cache_read,
+                    cache_write: usage.usage.cache_write,
+                },
+                cost: usage
+                    .pricing
+                    .is_some()
+                    .then_some(Microcents(usage.cost_microcents)),
+                pricing: usage.pricing.as_ref().map(|pricing| UsagePricing {
+                    version: pricing.version.clone(),
+                    profile: pricing.profile.clone(),
+                    call_started_at: pricing.call_started_at,
+                }),
+            })
+        }
+        RuntimeEvent::ContextCompactionStatusUpdated { status } => {
+            let usage = match status.usage {
+                vega_runtime::ContextCompactionUsageState::Pending => {
+                    ContextCompactionUsageState::Pending
+                }
+                vega_runtime::ContextCompactionUsageState::Known { priced } => {
+                    ContextCompactionUsageState::Known { priced }
+                }
+                vega_runtime::ContextCompactionUsageState::Unknown => {
+                    ContextCompactionUsageState::Unknown
+                }
+            };
+            let failure = match status.failure {
+                None => None,
+                Some(vega_runtime::ContextCompactionStatusFailure::Cancelled) => {
+                    Some(ContextCompactionFailureCode::Cancelled)
+                }
+                Some(vega_runtime::ContextCompactionStatusFailure::SourceChanged) => {
+                    Some(ContextCompactionFailureCode::SourceChanged)
+                }
+                Some(vega_runtime::ContextCompactionStatusFailure::NoCompactablePrefix) => {
+                    Some(ContextCompactionFailureCode::NoCompactablePrefix)
+                }
+                Some(vega_runtime::ContextCompactionStatusFailure::TooLarge) => {
+                    Some(ContextCompactionFailureCode::TooLarge)
+                }
+                Some(vega_runtime::ContextCompactionStatusFailure::InvalidSummary) => {
+                    Some(ContextCompactionFailureCode::InvalidSummary)
+                }
+                Some(vega_runtime::ContextCompactionStatusFailure::ImagesUnsupported) => {
+                    Some(ContextCompactionFailureCode::ImagesUnsupported)
+                }
+                Some(vega_runtime::ContextCompactionStatusFailure::OverLimit) => {
+                    Some(ContextCompactionFailureCode::OverLimit)
+                }
+                Some(vega_runtime::ContextCompactionStatusFailure::Unavailable) => {
+                    Some(ContextCompactionFailureCode::Unavailable)
+                }
+            };
+            Some(ConversationEvent::ContextCompactionStatus {
+                record: ContextCompactionStatusRecord {
+                    generation: status.generation,
+                    status: match status.phase {
+                        vega_runtime::ContextCompactionPhase::Started => {
+                            ContextCompactionStatus::Compacting
+                        }
+                        vega_runtime::ContextCompactionPhase::Succeeded => {
+                            ContextCompactionStatus::Succeeded
+                        }
+                        vega_runtime::ContextCompactionPhase::Failed => {
+                            ContextCompactionStatus::Failed
+                        }
+                        vega_runtime::ContextCompactionPhase::Cancelled => {
+                            ContextCompactionStatus::Cancelled
+                        }
+                    },
+                    updated_at: now_unix_millis(),
+                    estimated_tokens: Some(status.estimated_tokens),
+                    input_budget: Some(status.input_budget),
+                    target_tokens: Some(status.target_tokens),
+                    source_version: Some(status.source_version),
+                    failure,
+                    usage,
+                },
+            })
+        }
         RuntimeEvent::Finished(reason) => Some(ConversationEvent::MessageFinished {
             message_id: message_id.to_string(),
             stop_reason: match reason {

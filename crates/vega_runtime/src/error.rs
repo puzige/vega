@@ -54,6 +54,10 @@ pub enum VegaError {
         /// Observed count at failure (metadata only).
         observed_bytes: usize,
     },
+    /// Context budget or compaction hook failure.  The nested type is
+    /// metadata-only and deliberately excludes historical prompt content.
+    #[error(transparent)]
+    Context(#[from] crate::ContextRuntimeError),
 }
 
 impl fmt::Debug for VegaError {
@@ -94,6 +98,7 @@ impl fmt::Debug for VegaError {
                 .field("limit_bytes", limit_bytes)
                 .field("observed_bytes", observed_bytes)
                 .finish(),
+            Self::Context(error) => formatter.debug_tuple("Context").field(error).finish(),
         }
     }
 }

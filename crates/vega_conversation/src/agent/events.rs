@@ -407,6 +407,88 @@ pub(crate) fn persist_runtime_event(
                 },
             )?;
         }
+        RuntimeEvent::ContextCompactionUsageUpdated { usage } => {
+            // A summary request is not an assistant prose turn.  Persist its
+            // actual token event as thread-level usage with no fabricated
+            // message id; unpriced rows retain the established NULL pricing
+            // provenance and zero-cost placeholder semantics.
+            token_usage::insert(
+                store.conn(),
+                token_usage::NewTokenUsage {
+                    thread_id,
+                    message_id: None,
+                    model,
+                    input_tokens: usage.usage.input,
+                    output_tokens: usage.usage.output,
+                    cache_read_tokens: usage.usage.cache_read,
+                    cache_write_tokens: usage.usage.cache_write,
+                    cost_microcents: usage.cost_microcents,
+                    created_at: now_ms(),
+                    pricing_version: usage
+                        .pricing
+                        .as_ref()
+                        .map(|pricing| pricing.version.as_str()),
+                    pricing_profile: usage
+                        .pricing
+                        .as_ref()
+                        .map(|pricing| pricing.profile.as_str()),
+                    call_started_at: usage
+                        .pricing
+                        .as_ref()
+                        .map(|pricing| pricing.call_started_at),
+                },
+            )?;
+        }
+        RuntimeEvent::ContextCompactionStatusUpdated { .. } => {
+            let RuntimeEvent::ContextCompactionStatusUpdated { status } = event else {
+                unreachable!()
+            };
+            let phase = match status.phase {
+                vega_runtime::ContextCompactionPhase::Started => "started",
+                vega_runtime::ContextCompactionPhase::Succeeded => "succeeded",
+                vega_runtime::ContextCompactionPhase::Failed => "failed",
+                vega_runtime::ContextCompactionPhase::Cancelled => "cancelled",
+            };
+            let usage_state = match status.usage {
+                vega_runtime::ContextCompactionUsageState::Pending => "pending",
+                vega_runtime::ContextCompactionUsageState::Known { priced: true } => "known_priced",
+                vega_runtime::ContextCompactionUsageState::Known { priced: false } => {
+                    "known_unpriced"
+                }
+                vega_runtime::ContextCompactionUsageState::Unknown => "unknown",
+            };
+            let failure = status.failure.map(|failure| match failure {
+                vega_runtime::ContextCompactionStatusFailure::Cancelled => "cancelled",
+                vega_runtime::ContextCompactionStatusFailure::SourceChanged => "source_changed",
+                vega_runtime::ContextCompactionStatusFailure::NoCompactablePrefix => {
+                    "no_compactable_prefix"
+                }
+                vega_runtime::ContextCompactionStatusFailure::TooLarge => "too_large",
+                vega_runtime::ContextCompactionStatusFailure::InvalidSummary => "invalid_summary",
+                vega_runtime::ContextCompactionStatusFailure::ImagesUnsupported => {
+                    "images_unsupported"
+                }
+                vega_runtime::ContextCompactionStatusFailure::OverLimit => "over_limit",
+                vega_runtime::ContextCompactionStatusFailure::Unavailable => "unavailable",
+            });
+            vega_store::context_compaction::insert_status(
+                store.conn(),
+                vega_store::context_compaction::NewContextCompactionStatus {
+                    thread_id,
+                    model,
+                    operation_key: &status.operation_key,
+                    generation: status.generation,
+                    phase,
+                    usage_state,
+                    failure,
+                    source_version: status.source_version,
+                    estimated_tokens: status.estimated_tokens,
+                    input_budget: status.input_budget,
+                    target_tokens: status.target_tokens,
+                    created_at: now_ms(),
+                },
+            )?;
+        }
         RuntimeEvent::Finished(_) => {
             if is_plan {
                 messages::complete_plan(

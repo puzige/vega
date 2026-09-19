@@ -36,6 +36,7 @@ impl ModelPickerLevel {
 /// the virtualized message stream, and the fixed-bottom Composer. One entity
 /// per open thread; rebuilt by the window root when another thread opens.
 pub struct ConversationStream {
+    pub(crate) context_control: context_control::ContextControl,
     pub(crate) attachments: Vec<(u64, attachments::ImagePreview)>,
     pub(crate) attachment_generation: u64,
     pub(crate) attachment_import_pending: bool,
@@ -196,6 +197,9 @@ pub struct ConversationStream {
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
+impl EventEmitter<ContextSettingsRequested> for ConversationStream {}
+impl EventEmitter<ContextCompactionRequested> for ConversationStream {}
+impl EventEmitter<ContextCompactionCancelRequested> for ConversationStream {}
 impl EventEmitter<OpenWorkspaceDiffRequested> for ConversationStream {}
 impl EventEmitter<OpenCommitPanelRequested> for ConversationStream {}
 impl EventEmitter<WorkspaceToolTerminal> for ConversationStream {}
@@ -352,6 +356,7 @@ impl ConversationStream {
         )
         .detach();
         Self {
+            context_control: context_control::ContextControl::new(cx),
             attachments: Vec::new(),
             attachment_generation: 0,
             attachment_import_pending: false,
@@ -505,6 +510,9 @@ impl ConversationStream {
     /// authoritative thread, never an independent optimistic value.
     pub fn apply_thread(&mut self, thread: Thread, cx: &mut Context<Self>) {
         if thread.id == self.thread.id && thread.project_id == self.thread.project_id {
+            if thread.model != self.thread.model {
+                self.reset_context_control(cx);
+            }
             if !thread.model.is_empty() {
                 self.composer_defaults.model = thread.model.clone();
             }
@@ -669,6 +677,9 @@ impl ConversationStream {
         }
         let mut projected = current_thread;
         projected.model = model.to_owned();
+        if model != self.thread.model {
+            self.reset_context_control(cx);
+        }
         self.thread = projected;
         self.composer_defaults.model = model.to_owned();
         self.controller_error = None;
@@ -951,6 +962,9 @@ impl ConversationStream {
         }
         let mut projected = current_thread;
         projected.model = model.to_owned();
+        if model != self.thread.model {
+            self.reset_context_control(cx);
+        }
         self.composer_defaults.model = model.to_owned();
         self.thread = projected;
         self.model_selection_pending = None;
@@ -1222,7 +1236,10 @@ impl ConversationStream {
             | ConversationEvent::ToolCallApproved { .. }
             | ConversationEvent::ToolCallOutput { .. }
             | ConversationEvent::ToolCallFinished { .. } => true,
-            ConversationEvent::ThinkingDelta { .. } => false,
+            ConversationEvent::ThinkingDelta { .. }
+            | ConversationEvent::ContextCompactionStatus { .. } => false,
+            // R7: app accepts these only after its thread/run ownership fence.
+            ConversationEvent::ContextCompactionUsageUpdated { .. } => true,
         };
         if accepted && self.meter.apply(event) {
             cx.notify();

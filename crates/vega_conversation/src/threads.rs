@@ -9,6 +9,7 @@
 //! open. Storage failures surface as [`ConversationError`] values.
 
 use vega_store::Store;
+use vega_store::context_compaction;
 use vega_store::messages as store_messages;
 use vega_store::projects as store_projects;
 use vega_store::threads as store;
@@ -61,11 +62,22 @@ pub fn thread_usage_seed(
         .and_then(|total| total.checked_add(aggregate.cache_read_tokens))
         .and_then(|total| total.checked_add(aggregate.cache_write_tokens))
         .ok_or_else(|| ConversationError::Store("token usage aggregate overflow".to_string()))?;
+    let unknown_summary_usage = store::find(store.conn(), thread_id)
+        .map_err(store_error)?
+        .filter(|thread| !thread.model.trim().is_empty())
+        .map(|_| context_compaction::has_unknown_usage_for_thread(store.conn(), thread_id))
+        .transpose()
+        .map_err(store_error)?
+        .unwrap_or(false);
     Ok(RestoredUsage {
         tokens,
-        cost: match aggregate.cost {
-            token_usage::AggregateCost::Priced(cost) => Some(Microcents(cost)),
-            token_usage::AggregateCost::Unavailable => None,
+        cost: if unknown_summary_usage {
+            None
+        } else {
+            match aggregate.cost {
+                token_usage::AggregateCost::Priced(cost) => Some(Microcents(cost)),
+                token_usage::AggregateCost::Unavailable => None,
+            }
         },
     })
 }

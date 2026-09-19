@@ -589,12 +589,27 @@ where
     let permission_adapter = RuntimePermissionAdapter {
         shared: permission_hook,
     };
-    let runtime_future = run_agent_with_permission_sink(
+    let context_hook = prepared.request.context_budget.map(|_| {
+        ConversationCompactionHook::new(
+            provider,
+            prepared.database_path.clone(),
+            thread_id,
+            prepared.model.clone(),
+            prepared.request.reasoning.clone(),
+            prepared.request.pricing_catalog.clone(),
+        )
+    });
+    let context_hook_ref = context_hook
+        .as_ref()
+        .map(|hook| hook as &dyn vega_runtime::ContextCompactionHook);
+    let runtime_request = prepared.request.clone();
+    let runtime_future = run_agent_with_permission_sink_and_context(
         provider,
         tools,
-        prepared.request,
+        runtime_request,
         task_cancel,
         &permission_adapter,
+        context_hook_ref,
         move |event| {
             let sender = runtime_sender.clone();
             async move {

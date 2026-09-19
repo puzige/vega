@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use vega_runtime::{
     AgentRequest, FrozenReasoning, Provider, RuntimeEvent, RuntimeExactRule, RuntimeMutatingTool,
     RuntimePermissionHook, RuntimePermissionMode, RuntimeRunMode, RuntimeToolConfig,
-    RuntimeToolStatus, RuntimeUserDecision, VegaError, run_agent_with_permission_sink,
+    RuntimeToolStatus, RuntimeUserDecision, VegaError, run_agent_with_permission_sink_and_context,
 };
 use vega_store::{Store, messages, permissions, token_usage, tool_calls};
 
@@ -28,7 +28,6 @@ use crate::types::{
     permission_request_from_runtime,
 };
 
-const HISTORY_WINDOW: usize = 50;
 const TEXT_BATCH_MAX_DELAY: Duration = Duration::from_millis(4);
 const TEXT_BATCH_MAX_BYTES: usize = 4 * 1024;
 const PERSISTENCE_CHANNEL_CAPACITY: usize = 64;
@@ -46,6 +45,7 @@ pub trait PermissionHook: Send + Sync {
     ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>>;
 }
 
+mod compaction;
 mod entry;
 mod events;
 mod permission_queue;
@@ -55,6 +55,10 @@ mod pipeline;
 #[cfg(test)]
 mod tests;
 
+pub use compaction::{
+    ConversationCompactionHook, compact_thread_manually, compact_thread_manually_accounted,
+    read_context_projection, read_context_settings, save_context_settings,
+};
 pub use entry::*;
 pub(crate) use events::*;
 pub use permission_queue::*;

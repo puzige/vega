@@ -108,6 +108,9 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     assert_eq!(
         tables,
         vec![
+            "context_checkpoints",
+            "context_compaction_status",
+            "context_settings",
             "image_attachments",
             "messages",
             "permissions",

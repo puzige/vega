@@ -180,6 +180,17 @@ impl VegaWindow {
             return AgentBatchIngress::Stale;
         }
         for event in batch.events {
+            if matches!(
+                event,
+                ConversationEvent::ContextCompactionUsageUpdated { .. }
+            ) && !self.owns_primary_context_event(generation, stream, cx)
+            {
+                continue;
+            }
+            if let ConversationEvent::ContextCompactionStatus { record } = event {
+                self.project_automatic_context(generation, stream, record, cx);
+                continue;
+            }
             self.observe_artifact_event(generation, stream, &event, cx);
             if matches!(event, ConversationEvent::MessageStarted { .. })
                 && let Some(content) = self

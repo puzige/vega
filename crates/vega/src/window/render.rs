@@ -209,6 +209,27 @@ impl Render for VegaWindow {
                                 this.persist_thread_settings(stream.clone(), request, cx);
                             })
                             .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &ContextSettingsRequested, cx| {
+                                    this.persist_context_settings(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &ContextCompactionRequested, cx| {
+                                    this.start_context_compaction(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &ContextCompactionCancelRequested, cx| {
+                                    this.cancel_context_operation(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.review_plan(stream.clone(), request, cx);
                             })
@@ -377,6 +398,7 @@ impl Render for VegaWindow {
                             view
                         }
                     };
+                    self.sync_context_route(&stream, cx);
                     // Settings close invalidates the catalog even when this
                     // thread entity remains cached; restart the worker on
                     // the next visible frame so newly saved providers/models

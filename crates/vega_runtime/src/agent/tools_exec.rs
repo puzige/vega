@@ -915,7 +915,10 @@ pub(crate) fn truncate_output_lines(text: &str) -> String {
     kept.join("\n")
 }
 
-pub(crate) fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
+/// Returns the exact primary-wire tool schemas for one run mode.  Conversation
+/// services use the same authority when estimating/manual-compacting a request
+/// so controllers never reconstruct a drifted schema locally.
+pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     let mut definitions = vec![
         ToolDefinition {
             name: "read".to_string(),

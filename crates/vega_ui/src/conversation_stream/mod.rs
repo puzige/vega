@@ -277,6 +277,10 @@ mod composer;
 mod composer_actions;
 use composer_actions::ComposerActions;
 mod content;
+mod context_control;
+pub use vega_conversation::types::{
+    ContextCompactionCancelRequested, ContextCompactionRequested, ContextSettingsRequested,
+};
 mod core;
 mod file_reference;
 mod model;

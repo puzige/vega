@@ -575,11 +575,13 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     )?;
     assert_eq!(restored_tools, 1, "real tool card restores");
 
-    // R13 adds four organization metadata tables via authorized migration 0004.
+    // R13 adds four organization metadata tables via authorized migration 0004;
+    // #76 adds the three context projection/status tables via migrations 0009
+    // and 0010.
     let user_version: i64 = reopened
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(user_version, 8, "exactly the eight authorized migrations");
+    assert_eq!(user_version, 10, "exactly the ten authorized migrations");
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -590,6 +592,9 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     assert_eq!(
         tables,
         vec![
+            "context_checkpoints",
+            "context_compaction_status",
+            "context_settings",
             "image_attachments",
             "messages",
             "permissions",
@@ -602,7 +607,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "token_usage",
             "tool_calls",
         ],
-        "exactly the eleven authorized tables"
+        "exactly the fourteen authorized tables"
     );
     Ok(())
 }

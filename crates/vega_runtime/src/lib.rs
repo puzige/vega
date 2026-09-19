@@ -61,6 +61,7 @@
 //! ```
 
 mod agent;
+mod context;
 mod error;
 mod mock;
 mod openai;
@@ -73,8 +74,17 @@ pub use agent::{
     CompletedToolCall, PERMISSION_TIMEOUT, REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES,
     REASONING_TURN_MAX_BYTES, RuntimeEvent, RuntimeExactRule, RuntimeFinishReason,
     RuntimePermissionHook, RuntimeTokenUsage, RuntimeToolCall, RuntimeToolConfig,
-    RuntimeToolResult, RuntimeToolStatus, TOOL_CALL_LIMIT, run_agent,
-    run_agent_with_permission_sink, run_agent_with_sink,
+    RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing, TOOL_CALL_LIMIT, run_agent,
+    run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,
+    run_agent_with_sink, tool_definitions,
+};
+pub use context::{
+    CONTEXT_ESTIMATOR_VERSION, ContextBudget, ContextCheck, ContextCompactionFailure,
+    ContextCompactionHook, ContextCompactionPhase, ContextCompactionRequest,
+    ContextCompactionResult, ContextCompactionStatusFailure, ContextCompactionStatusUpdate,
+    ContextCompactionUsage, ContextCompactionUsageState, ContextEstimate, ContextEstimateError,
+    ContextRuntimeError, SharedContextCompactionHook, classify_context, estimate_chat_context,
+    estimate_wire_context,
 };
 pub use error::VegaError;
 pub mod images;

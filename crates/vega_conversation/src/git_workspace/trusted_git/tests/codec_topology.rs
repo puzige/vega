@@ -79,6 +79,11 @@ fn commit_redaction_all_public_provider_carriers_hide_sentinels() {
         ),
         pricing_catalog: None,
         reasoning: None,
+        context_budget: None,
+        context_source_version: None,
+        context_source_fingerprint: None,
+        context_operation_id: None,
+        context_compaction_hook: None,
     };
     let agent_outcome = vega_runtime::AgentOutcome {
         events: vec![runtime_event.clone()],

@@ -363,6 +363,7 @@ impl ConversationStream {
     /// durable plan-card projection can be checked without touching SQLite.
     pub fn model_selection_blocked(&self, cx: &App) -> bool {
         self.actions.running
+            || self.context_operation_busy()
             || self.composer_submit_pending
             || self.approved_not_started
             || self.trusted_action_busy
@@ -561,7 +562,9 @@ impl ConversationStream {
             ConversationEvent::ThinkingDelta { message_id, delta } => {
                 self.append_thinking(&message_id, &delta, cx);
             }
-            ConversationEvent::UsageUpdated { .. } => {}
+            ConversationEvent::UsageUpdated { .. }
+            | ConversationEvent::ContextCompactionUsageUpdated { .. }
+            | ConversationEvent::ContextCompactionStatus { .. } => {}
             ConversationEvent::ToolCallProposed { call } => {
                 if let Some(existing) = self.tool_cards.get(&call.id) {
                     existing.update(cx, |card, cx| {
