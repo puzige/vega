@@ -7,6 +7,41 @@ use super::{
 };
 
 #[test]
+fn loaded_skill_audit_projects_only_safe_identity() {
+    let audit = vega_runtime::skills::ActivationAudit {
+        name: "reviewer".into(),
+        source_label: Some("project:reviewed".into()),
+        source_scope: Some(vega_runtime::skills::SourceScope::Project),
+        content_sha256: Some("a".repeat(64)),
+        origin: vega_runtime::skills::ActivationOrigin::ExplicitUser,
+        status: "loaded",
+    };
+    let event = vega_runtime::RuntimeEvent::SkillActivation {
+        audit: audit.clone(),
+        binding: None,
+        snapshot: None,
+    };
+    let Some(ConversationEvent::SkillActivated { message_id, skill }) =
+        from_runtime_event("assistant-1", &event)
+    else {
+        panic!("loaded audit should become a safe active indicator");
+    };
+    assert_eq!(message_id, "assistant-1");
+    assert_eq!(skill.name, "reviewer");
+    assert_eq!(skill.source_label, "project:reviewed");
+    assert_eq!(skill.content_sha256, "a".repeat(64));
+    let failed = vega_runtime::RuntimeEvent::SkillActivation {
+        audit: vega_runtime::skills::ActivationAudit {
+            status: "unavailable",
+            ..audit
+        },
+        binding: None,
+        snapshot: None,
+    };
+    assert!(from_runtime_event("assistant-1", &failed).is_none());
+}
+
+#[test]
 fn conversation_runtime_error_debug_and_display_redact_provider_payload() {
     const SENTINEL: &str = "VEGA_CONVERSATION_PROVIDER_SENTINEL";
     let error = ConversationError::Runtime(Arc::new(vega_runtime::VegaError::Provider {

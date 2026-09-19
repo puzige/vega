@@ -181,6 +181,9 @@ impl ConversationStream {
                     self.tool_cards.insert(call_id, card.clone());
                     hydrated.push(StreamEntry::Tool { card });
                 }
+                HistoryEntry::SkillActivation { activation, .. } => {
+                    hydrated.push(StreamEntry::SkillActivation { activation });
+                }
             }
         }
         let prepended_entries = hydrated.len();
@@ -517,6 +520,7 @@ impl ConversationStream {
                 }
                 self.last_finished_agent_message = None;
                 self.active_thinking = None;
+                self.active_skills.clear();
                 let entry_index = self.entries.len();
                 self.entries.push(StreamEntry::Assistant {
                     stream: Box::new(MarkdownStream::new()),
@@ -561,6 +565,20 @@ impl ConversationStream {
             }
             ConversationEvent::ThinkingDelta { message_id, delta } => {
                 self.append_thinking(&message_id, &delta, cx);
+            }
+            ConversationEvent::SkillActivated { message_id, skill } => {
+                if self
+                    .active_agent_message
+                    .as_ref()
+                    .is_some_and(|(active, _)| active == &message_id)
+                    && !self
+                        .active_skills
+                        .iter()
+                        .any(|item| item.name == skill.name)
+                {
+                    self.active_skills.push(skill);
+                    cx.notify();
+                }
             }
             ConversationEvent::UsageUpdated { .. }
             | ConversationEvent::ContextCompactionUsageUpdated { .. }
@@ -687,6 +705,7 @@ impl ConversationStream {
             return;
         }
         self.active_thinking = None;
+        self.active_skills.clear();
         // finish() 丢弃 pending 并把尾块冻结为 committed（version bump）：
         // 这是从 mutable tail 摘除前的最后一次显式失效（C4 白名单），必须
         // 在本帧内完成最终物化——否则批量 ingress 末批 [delta…, Finished]

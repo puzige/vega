@@ -578,11 +578,15 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     // R13 adds four organization metadata tables via authorized migration 0004;
     // #76 adds context projection/status tables and the model-policy table
     // through migrations 0009–0011. #73 adds MCP metadata and a credential
-    // cleanup outbox in migration 0012; no credential values enter either table.
+    // cleanup outbox in migration 0012; #74 Skills adds migration 0013.
+    // No credential values enter either MCP table.
     let user_version: i64 = reopened
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(user_version, 12, "exactly the twelve authorized migrations");
+    assert_eq!(
+        user_version, 13,
+        "exactly the thirteen authorized migrations"
+    );
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -607,11 +611,18 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "sidebar_memberships",
             "sidebar_organization",
             "sidebar_project_order",
+            "skill_activation_audits",
+            "skill_approvals",
+            "skill_project_settings",
+            "skill_run_snapshots",
+            "skill_settings",
+            "skill_sources",
+            "thread_skill_pins",
             "threads",
             "token_usage",
             "tool_calls",
         ],
-        "exactly the seventeen authorized tables"
+        "exactly the twenty-four authorized tables"
     );
     Ok(())
 }

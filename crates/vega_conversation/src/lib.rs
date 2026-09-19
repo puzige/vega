@@ -44,3 +44,6 @@ pub use provider_settings::ProviderSettingsService;
 
 mod mcp_settings;
 pub use mcp_settings::{McpRunReadiness, McpServerSettingsService, McpSettingsError};
+
+mod skill_settings;
+pub use skill_settings::{SkillSettingsError, SkillSettingsService};

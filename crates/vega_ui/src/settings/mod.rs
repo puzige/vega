@@ -218,6 +218,7 @@ mod provider_management;
 mod reasoning_render;
 mod reasoning_state;
 mod render_impl;
+mod skills;
 mod state;
 mod usage;
 pub use usage::UsageReloadRequested;

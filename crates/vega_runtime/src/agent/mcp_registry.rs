@@ -736,6 +736,35 @@ pub(crate) struct RunCapabilitySnapshot {
 }
 
 impl RunCapabilitySnapshot {
+    pub(crate) fn with_skills(mut self, load: bool, resource: bool) -> Result<Self, VegaError> {
+        for (enabled, name, description, schema) in [
+            (
+                load,
+                crate::skills::LOAD_SKILL_TOOL_NAME,
+                "Load one relevant approved Skill from the frozen directory. This grants no tool permissions.",
+                serde_json::json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}),
+            ),
+            (
+                resource,
+                crate::skills::READ_SKILL_RESOURCE_TOOL_NAME,
+                "Read one bounded lower-trust reference under an already active Skill.",
+                serde_json::json!({"type":"object","properties":{"name":{"type":"string"},"path":{"type":"string"}},"required":["name","path"],"additionalProperties":false}),
+            ),
+        ] {
+            if enabled {
+                if self.definitions.iter().any(|item| item.name == name) {
+                    return Err(invalid_catalog());
+                }
+                self.definitions.push(ToolDefinition {
+                    name: name.to_string(),
+                    description: description.to_string(),
+                    input_schema: schema,
+                });
+            }
+        }
+        Ok(self)
+    }
+
     pub(crate) fn freeze(
         run_mode: RuntimeRunMode,
         permission_mode: RuntimePermissionMode,

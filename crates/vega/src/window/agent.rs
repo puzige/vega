@@ -305,6 +305,14 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
+        if self.trusted_actions.cancel_agent_preparation() {
+            stream.update(cx, |stream, cx| {
+                stream.set_trusted_action_busy(false, cx);
+                stream.reject_composer_submission(cx);
+                stream.finish_composer_run(true, cx);
+            });
+            return;
+        }
         self.cancel_manual_context_for_stream(&stream);
         if self
             .agent_controller
@@ -678,6 +686,7 @@ impl VegaWindow {
         let model = stream.read(cx).displayed_model().to_owned();
         let content = request.content.clone();
         let images = request.images.clone();
+        let skill_intent = request.skill_intent.clone();
         let thread_id = request.thread_id.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker_model = model.clone();
@@ -715,6 +724,7 @@ impl VegaWindow {
                         thread_id.clone(),
                         content.clone(),
                         images.clone(),
+                        skill_intent.clone(),
                         reasoning.clone(),
                         lease,
                         outcome,
@@ -737,6 +747,7 @@ impl VegaWindow {
         thread_id: String,
         content: String,
         images: Vec<vega_conversation::types::ImageAttachment>,
+        skill_intent: Option<SkillSelectionIntent>,
         reasoning: Option<FrozenReasoning>,
         lease: TrustedActionToken,
         outcome: Result<(), ProviderPreflightFailure>,
@@ -772,6 +783,12 @@ impl VegaWindow {
                 });
                 return;
             }
+        }
+        if let Some(intent) = skill_intent {
+            self.start_skill_pin_before_agent(
+                stream, thread_id, content, images, reasoning, intent, cx,
+            );
+            return;
         }
         self.start_agent_run_with_reasoning(
             stream,

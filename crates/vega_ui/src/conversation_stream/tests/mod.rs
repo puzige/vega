@@ -33,6 +33,7 @@ mod permissions_cards;
 mod r64_popup_deferred;
 mod r68_popup_dismiss;
 mod scroll_follow;
+mod skills;
 mod thinking;
 mod timeline;
 mod utility_bar;
@@ -258,6 +259,7 @@ fn hydrated_entry_kinds(stream: &ConversationStream) -> Vec<&'static str> {
             StreamEntry::Permission { .. } => "permission",
             StreamEntry::Plan { .. } => "plan",
             StreamEntry::Summary { .. } => "summary",
+            StreamEntry::SkillActivation { .. } => "skill-activation",
         })
         .collect()
 }

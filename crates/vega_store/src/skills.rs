@@ -944,6 +944,58 @@ pub fn append_activation_audit(
     Ok(())
 }
 
+/// Idempotent terminal marker for one already-persisted activation. It copies
+/// the original model/user origin and contains no body, private path or tool
+/// input. A restarted observer may safely attempt the same marker again.
+pub struct NewSkillRevocationAudit<'a> {
+    pub run_id: &'a str,
+    pub thread_id: &'a str,
+    pub name: &'a str,
+    pub source_scope: &'a str,
+    pub content_sha256: &'a str,
+    pub created_at: i64,
+}
+
+pub fn append_revocation_audit_once(
+    conn: &Connection,
+    input: NewSkillRevocationAudit<'_>,
+) -> Result<bool, SkillStoreError> {
+    if !valid_id(input.run_id)
+        || !valid_id(input.thread_id)
+        || !valid_name(input.name)
+        || !matches!(input.source_scope, "project" | "vega_global" | "imported")
+        || !valid_hash(input.content_sha256)
+    {
+        return Err(SkillStoreError::InvalidInput);
+    }
+    let changed = conn.execute(
+        "INSERT INTO skill_activation_audits \
+         (run_id, thread_id, name, source_scope, content_sha256, origin, status, created_at) \
+         SELECT loaded.run_id, loaded.thread_id, loaded.name, loaded.source_scope, \
+                loaded.content_sha256, loaded.origin, 'revoked', ?1 \
+         FROM skill_activation_audits AS loaded \
+         WHERE loaded.run_id = ?2 AND loaded.thread_id = ?3 AND loaded.name = ?4 \
+           AND loaded.source_scope = ?5 AND loaded.content_sha256 = ?6 \
+           AND loaded.status = 'loaded' \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM skill_activation_audits AS prior \
+             WHERE prior.run_id = loaded.run_id AND prior.thread_id = loaded.thread_id \
+               AND prior.name = loaded.name AND prior.source_scope = loaded.source_scope \
+               AND prior.content_sha256 = loaded.content_sha256 AND prior.status = 'revoked' \
+           ) \
+         ORDER BY loaded.id DESC LIMIT 1",
+        params![
+            input.created_at,
+            input.run_id,
+            input.thread_id,
+            input.name,
+            input.source_scope,
+            input.content_sha256,
+        ],
+    )?;
+    Ok(changed == 1)
+}
+
 /// Bounded, content-free recent audit history for the visible indicator.
 pub fn list_activation_audits(
     conn: &Connection,
@@ -962,6 +1014,119 @@ pub fn list_activation_audits(
         .collect::<Result<Vec<_>, _>>()?;
     audits.reverse();
     Ok(audits)
+}
+
+/// One bounded read snapshot for a transcript page. Audit rows remain visible
+/// after consent changes; only snapshots with a current authority generation,
+/// valid external digest and an aggregate byte budget are offered for runtime
+/// validation. The caller must never treat an audit alone as verified content.
+pub struct SkillHistoryPageRecords {
+    pub audits: Vec<SkillActivationAuditRecord>,
+    pub recoverable_snapshots: Vec<SkillSnapshotRecord>,
+}
+
+pub fn load_history_page_records(
+    conn: &Connection,
+    thread_id: &str,
+    oldest_seq: i64,
+    newest_seq: i64,
+) -> Result<SkillHistoryPageRecords, SkillStoreError> {
+    const MAX_AUDITS: usize = 1_200;
+    const MAX_SNAPSHOT_BYTES: i64 = 8 * 1024 * 1024;
+    if !valid_id(thread_id) || oldest_seq <= 0 || newest_seq < oldest_seq {
+        return Err(SkillStoreError::InvalidInput);
+    }
+    let tx = conn.unchecked_transaction()?;
+    let settings = read_settings(&tx)?;
+    let mut audit_stmt = tx.prepare(
+        "SELECT a.id, a.run_id, a.thread_id, a.name, a.source_scope, \
+         a.content_sha256, a.origin, a.status, a.created_at \
+         FROM skill_activation_audits a JOIN messages m \
+           ON m.id = a.run_id AND m.thread_id = a.thread_id \
+         WHERE a.thread_id = ?1 AND m.role = 'assistant' AND m.kind = 'text' \
+           AND m.seq BETWEEN ?2 AND ?3 AND a.status IN ('loaded', 'revoked') \
+         ORDER BY m.seq, a.id LIMIT ?4",
+    )?;
+    let audits = audit_stmt
+        .query_map(
+            params![thread_id, oldest_seq, newest_seq, 1_201_i64],
+            audit_from_row,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(audit_stmt);
+    if audits.len() > MAX_AUDITS {
+        return Err(SkillStoreError::TooLarge);
+    }
+    // Window over lengths only: private BLOBs are materialized for at most
+    // 8 MiB of runs in one SQL statement, never one query per message.
+    let mut snapshot_stmt = tx.prepare(
+        "WITH eligible AS ( \
+           SELECT s.run_id, m.seq, \
+             SUM(length(s.bytes)) OVER (ORDER BY m.seq, s.run_id) AS total_bytes \
+           FROM skill_run_snapshots s JOIN messages m \
+             ON m.id = s.run_id AND m.thread_id = s.thread_id \
+           WHERE s.thread_id = ?1 AND m.role = 'assistant' AND m.kind = 'text' \
+             AND m.seq BETWEEN ?2 AND ?3 \
+             AND length(s.bytes) BETWEEN 1 AND 1048576 \
+             AND EXISTS (SELECT 1 FROM skill_activation_audits a \
+                         WHERE a.run_id = s.run_id AND a.thread_id = s.thread_id \
+                           AND a.status = 'loaded') \
+         ) \
+         SELECT s.run_id, s.thread_id, s.consent_generation, \
+           s.revocation_generation, s.catalog_sha256, s.snapshot_sha256, \
+           s.bytes, s.updated_at \
+         FROM eligible e JOIN skill_run_snapshots s ON s.run_id = e.run_id \
+         WHERE e.total_bytes <= ?4 ORDER BY e.seq, e.run_id",
+    )?;
+    let rows = snapshot_stmt
+        .query_map(
+            params![thread_id, oldest_seq, newest_seq, MAX_SNAPSHOT_BYTES],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(snapshot_stmt);
+    let mut recoverable_snapshots = Vec::with_capacity(rows.len());
+    for (run_id, thread_id, consent, revoked, catalog, hash, bytes, updated_at) in rows {
+        let (Ok(consent_generation), Ok(revocation_generation)) =
+            (u64::try_from(consent), u64::try_from(revoked))
+        else {
+            continue;
+        };
+        if consent_generation != settings.consent_generation
+            || revocation_generation != settings.revocation_generation
+            || !valid_hash(&catalog)
+            || !valid_hash(&hash)
+            || digest(&bytes) != hash
+        {
+            continue;
+        }
+        recoverable_snapshots.push(SkillSnapshotRecord {
+            run_id,
+            thread_id,
+            consent_generation,
+            revocation_generation,
+            catalog_sha256: catalog,
+            snapshot_sha256: hash,
+            bytes,
+            updated_at,
+        });
+    }
+    tx.commit()?;
+    Ok(SkillHistoryPageRecords {
+        audits,
+        recoverable_snapshots,
+    })
 }
 
 fn audit_from_row(row: &Row<'_>) -> Result<SkillActivationAuditRecord, rusqlite::Error> {
@@ -1502,6 +1667,126 @@ mod tests {
     }
 
     #[test]
+    fn s12_history_page_batch_is_thread_scoped_and_keeps_audit_when_snapshot_stale() {
+        let (_root, store) = store();
+        store
+            .conn()
+            .execute_batch(
+                "INSERT INTO messages \
+                   (id, thread_id, seq, role, kind, content, status, created_at) VALUES \
+                   ('run-one', 'thread-one', 1, 'assistant', 'text', 'done', 'done', 1); \
+                 INSERT INTO threads (id, project_id, model, created_at, updated_at) \
+                   VALUES ('thread-two', 'project-one', 'model', 1, 1); \
+                 INSERT INTO messages \
+                   (id, thread_id, seq, role, kind, content, status, created_at) VALUES \
+                   ('run-two', 'thread-two', 1, 'assistant', 'text', 'other', 'done', 1);",
+            )
+            .unwrap();
+        let body = b"frozen history";
+        let settings = read_settings(store.conn()).unwrap();
+        save_snapshot(
+            store.conn(),
+            NewSkillSnapshot {
+                run_id: "run-one",
+                thread_id: "thread-one",
+                consent_generation: settings.consent_generation,
+                revocation_generation: settings.revocation_generation,
+                catalog_sha256: &"b".repeat(64),
+                snapshot_sha256: &digest(body),
+                bytes: body,
+                updated_at: 2,
+            },
+        )
+        .unwrap();
+        for (run_id, thread_id) in [("run-one", "thread-one"), ("run-two", "thread-one")] {
+            append_activation_audit(
+                store.conn(),
+                NewSkillActivationAudit {
+                    run_id,
+                    thread_id,
+                    name: "reviewer",
+                    source_scope: Some("project"),
+                    content_sha256: Some(&"a".repeat(64)),
+                    origin: "explicit_user",
+                    status: "loaded",
+                    created_at: 2,
+                },
+            )
+            .unwrap();
+        }
+        let page = load_history_page_records(store.conn(), "thread-one", 1, 1).unwrap();
+        assert_eq!(
+            page.audits.len(),
+            1,
+            "foreign message ownership is excluded"
+        );
+        assert_eq!(page.recoverable_snapshots.len(), 1);
+        assert_eq!(page.recoverable_snapshots[0].bytes, body);
+        set_global_settings(store.conn(), true, false).unwrap();
+        let page = load_history_page_records(store.conn(), "thread-one", 1, 1).unwrap();
+        assert_eq!(page.audits.len(), 1, "revocation does not erase history");
+        assert!(page.recoverable_snapshots.is_empty());
+    }
+
+    #[test]
+    fn s12_history_page_snapshot_bytes_are_capped_without_erasing_audits() {
+        let (_root, store) = store();
+        let settings = read_settings(store.conn()).unwrap();
+        let bytes = vec![b'x'; 1024 * 1024];
+        let hash = digest(&bytes);
+        for seq in 1..=9 {
+            let run_id = format!("run-{seq}");
+            store
+                .conn()
+                .execute(
+                    "INSERT INTO messages \
+                     (id, thread_id, seq, role, kind, content, status, created_at) \
+                     VALUES (?1, 'thread-one', ?2, 'assistant', 'text', 'done', 'done', 1)",
+                    params![run_id, seq],
+                )
+                .unwrap();
+            save_snapshot(
+                store.conn(),
+                NewSkillSnapshot {
+                    run_id: &run_id,
+                    thread_id: "thread-one",
+                    consent_generation: settings.consent_generation,
+                    revocation_generation: settings.revocation_generation,
+                    catalog_sha256: &"b".repeat(64),
+                    snapshot_sha256: &hash,
+                    bytes: &bytes,
+                    updated_at: 2,
+                },
+            )
+            .unwrap();
+            append_activation_audit(
+                store.conn(),
+                NewSkillActivationAudit {
+                    run_id: &run_id,
+                    thread_id: "thread-one",
+                    name: "reviewer",
+                    source_scope: Some("project"),
+                    content_sha256: Some(&"a".repeat(64)),
+                    origin: "model",
+                    status: "loaded",
+                    created_at: 2,
+                },
+            )
+            .unwrap();
+        }
+        let page = load_history_page_records(store.conn(), "thread-one", 1, 9).unwrap();
+        assert_eq!(page.audits.len(), 9);
+        assert_eq!(page.recoverable_snapshots.len(), 8);
+        assert_eq!(
+            page.recoverable_snapshots
+                .iter()
+                .map(|snapshot| snapshot.bytes.len())
+                .sum::<usize>(),
+            8 * 1024 * 1024
+        );
+    }
+
+    #[test]
     fn s12_pin_and_content_free_audit_cascade_with_thread() {
         let (_root, store) = store();
         set_project_settings(store.conn(), "project-one", true, false).unwrap();
@@ -1611,6 +1896,46 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn s13_revoked_audit_requires_loaded_activation_and_is_exactly_once() {
+        let (_root, store) = store();
+        let sha = "a".repeat(64);
+        let marker = || NewSkillRevocationAudit {
+            run_id: "run-one",
+            thread_id: "thread-one",
+            name: "reviewer",
+            source_scope: "project",
+            content_sha256: &sha,
+            created_at: 4,
+        };
+        assert!(!append_revocation_audit_once(store.conn(), marker()).unwrap());
+        append_activation_audit(
+            store.conn(),
+            NewSkillActivationAudit {
+                run_id: "run-one",
+                thread_id: "thread-one",
+                name: "reviewer",
+                source_scope: Some("project"),
+                content_sha256: Some(&sha),
+                origin: "model",
+                status: "loaded",
+                created_at: 3,
+            },
+        )
+        .unwrap();
+        assert!(append_revocation_audit_once(store.conn(), marker()).unwrap());
+        assert!(!append_revocation_audit_once(store.conn(), marker()).unwrap());
+        let reopened = Store::open(store.database_path().unwrap()).unwrap();
+        assert!(!append_revocation_audit_once(reopened.conn(), marker()).unwrap());
+        let audits = list_activation_audits(reopened.conn(), "thread-one").unwrap();
+        assert_eq!(audits.len(), 2);
+        assert_eq!(audits[0].status, "loaded");
+        assert_eq!(audits[1].status, "revoked");
+        assert_eq!(audits[1].origin, "model");
+        assert_eq!(audits[1].content_sha256.as_deref(), Some(sha.as_str()));
+        assert!(!format!("{audits:?}").contains("/owned/"));
     }
 
     #[test]

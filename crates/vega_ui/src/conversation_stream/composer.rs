@@ -155,6 +155,7 @@ impl ConversationStream {
             || self.composer_submit_pending
             || self.approved_not_started
             || self.trusted_action_busy
+            || self.skill_mutation_pending
             || self.model_selection_pending.is_some()
         {
             return;
@@ -176,6 +177,7 @@ impl ConversationStream {
                 .collect(),
             thread_id: self.thread.id.clone(),
             content: text,
+            skill_intent: self.skill_intent.clone(),
             reasoning: self.frozen_reasoning_for_submit(),
         });
         cx.notify();

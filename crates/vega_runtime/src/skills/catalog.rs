@@ -392,6 +392,9 @@ impl ActivationReceipt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ActivationAudit {
     pub name: String,
+    /// Opaque UI-safe source label, never a filesystem path. Only a loaded
+    /// Skill has a label; persistence deliberately stores no source text.
+    pub source_label: Option<String>,
     pub source_scope: Option<SourceScope>,
     pub content_sha256: Option<String>,
     pub origin: ActivationOrigin,
@@ -434,6 +437,16 @@ struct ActiveSkill {
     body_sha256: String,
 }
 
+/// Content-free provenance for a frozen activation. Safe for local UI state;
+/// it omits body, reference bytes and private source paths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveSkillSummary {
+    pub name: String,
+    pub source_label: String,
+    pub content_sha256: String,
+    pub source_scope: SourceScope,
+}
+
 /// One direct-user run's immutable catalog and incrementally frozen content.
 /// The host must cancel this session when UI consent is revoked mid-run.
 pub struct SkillRun {
@@ -472,6 +485,23 @@ impl SkillRun {
         self.catalog.model_catalog()
     }
 
+    /// Trusted run binding, if this state was created for durable storage.
+    pub fn binding(&self) -> Option<&RunBinding> {
+        self.binding.as_ref()
+    }
+
+    pub fn active_summaries(&self) -> Vec<ActiveSkillSummary> {
+        self.active
+            .iter()
+            .map(|active| ActiveSkillSummary {
+                name: active.candidate.name.clone(),
+                source_label: active.label.clone(),
+                content_sha256: active.candidate.sha256.clone(),
+                source_scope: active.candidate.source.identity().scope(),
+            })
+            .collect()
+    }
+
     pub fn cancel(&mut self) {
         self.cancelled = true;
     }
@@ -481,10 +511,22 @@ impl SkillRun {
     /// caller must combine it with catalog, messages, schemas and output policy
     /// for the actual next wire-request estimate before returning true.
     pub fn load_model(&mut self, name: &str, fits: impl FnOnce(&str) -> bool) -> ActivationOutcome {
+        self.load_model_for_round(name, true, fits)
+    }
+
+    /// A direct-user run does not make later tool-result-driven model rounds
+    /// direct-user authority. The loop closes this window after any non-load
+    /// tool batch, while preserving already frozen active Skills.
+    pub fn load_model_for_round(
+        &mut self,
+        name: &str,
+        direct_user_round: bool,
+        fits: impl FnOnce(&str) -> bool,
+    ) -> ActivationOutcome {
         if self.cancelled {
             return outcome(name, ActivationOrigin::Model, "cancelled", None);
         }
-        if !self.direct_user {
+        if !self.direct_user || !direct_user_round {
             return outcome(name, ActivationOrigin::Model, "not_direct_user", None);
         }
         if !self.catalog.automatic_enabled {
@@ -580,7 +622,9 @@ impl SkillRun {
             return outcome(&candidate.name, origin, "over_budget", Some(candidate));
         }
         self.active.push(proposed);
-        outcome(&candidate.name, origin, "loaded", Some(candidate))
+        let mut loaded = outcome(&candidate.name, origin, "loaded", Some(candidate));
+        loaded.audit.source_label = Some(entry.label.clone());
+        loaded
     }
 
     /// Rebuild from frozen bodies after every tool round or #76 compaction;
@@ -707,6 +751,7 @@ fn outcome(
         },
         audit: ActivationAudit {
             name,
+            source_label: None,
             source_scope: candidate.map(|item| item.source.identity().scope()),
             content_sha256: candidate.map(|item| item.sha256.clone()),
             origin,

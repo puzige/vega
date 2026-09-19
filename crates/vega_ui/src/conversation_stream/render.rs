@@ -122,6 +122,7 @@ impl ConversationStream {
             && !self.composer_submit_pending
             && !self.approved_not_started
             && !self.trusted_action_busy
+            && !self.skill_mutation_pending
             && self.model_selection_pending.is_none();
         div()
             .px(px(Layout::CONTENT_PADDING))
@@ -229,6 +230,7 @@ impl ConversationStream {
                                 .debug_selector(|| "composer-add".into()),
                             )
                             .child(self.render_permission_status(cx))
+                            .child(self.render_skill_picker(cx))
                             .child(div().flex_1())
                             .child(self.render_model_selector(cx))
                             .when(
@@ -282,6 +284,7 @@ impl ConversationStream {
                             ),
                     ),
             )
+            .child(self.render_active_skills(cx))
             .child(self.render_composer_run_status(cx))
             .when(self.composer_submit_pending, |composer| {
                 composer.child(

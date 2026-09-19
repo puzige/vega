@@ -101,10 +101,19 @@ impl RunBinding {
 
 /// Opaque export. Store `bytes` privately and retain `sha256` in trusted run
 /// metadata independently of those bytes; both are required for restore.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SkillRunSnapshot {
     bytes: Vec<u8>,
     sha256: String,
+}
+
+impl std::fmt::Debug for SkillRunSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SkillRunSnapshot")
+            .field("private_bytes", &self.bytes.len())
+            .finish()
+    }
 }
 
 impl SkillRunSnapshot {

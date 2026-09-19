@@ -7,16 +7,20 @@
 //! stay visible (C7 内容完整性).
 //!
 //! One page load is a bounded constant of store statements: the store reads
-//! the message page and the tool-call batch under one read snapshot, and the
-//! newest page additionally re-projects the S7 summary reference (T40 real
-//! persisted form: durable `token_usage`/`tool_calls` audits keyed by the
-//! terminal assistant message id). No per-message queries anywhere.
+//! the message page and the tool-call batch under one read snapshot, then a
+//! separately bounded Skill audit/snapshot batch (8 MiB maximum) without
+//! source-file reads. The newest page additionally re-projects the S7
+//! summary reference (T40 real persisted form: durable `token_usage`/
+//! `tool_calls` audits keyed by the terminal assistant message id). No
+//! per-message queries anywhere.
 
 use std::collections::HashMap;
 
+use vega_runtime::skills::SourceScope;
 use vega_store::Store;
 use vega_store::messages::{self, MessagePage, PageCursor, PageRequestError, PageToolCall};
 use vega_store::recovery;
+use vega_store::skills::{self, SkillActivationAuditRecord};
 
 use crate::types::{
     Approval, ApprovalAudit, ConversationError, Plan, PlanStatus, TaskCostSummary, ToolCallStatus,
@@ -61,6 +65,72 @@ pub enum HistoryEntry {
         input: Option<ToolCardInputProjection>,
         result: Option<ToolCardResultProjection>,
     },
+    /// Content-free, non-executable provenance for one historically loaded
+    /// Skill. A durable audit alone never confers current authority.
+    SkillActivation {
+        seq: i64,
+        activation: SkillHistoryActivation,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillHistorySource {
+    Project,
+    VegaGlobal,
+    Imported,
+}
+
+impl SkillHistorySource {
+    fn from_audit(value: &str) -> Option<Self> {
+        match value {
+            "project" => Some(Self::Project),
+            "vega_global" => Some(Self::VegaGlobal),
+            "imported" => Some(Self::Imported),
+            _ => None,
+        }
+    }
+
+    fn matches_runtime(self, value: SourceScope) -> bool {
+        matches!(
+            (self, value),
+            (Self::Project, SourceScope::Project)
+                | (Self::VegaGlobal, SourceScope::VegaGlobal)
+                | (Self::Imported, SourceScope::Imported)
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillHistoryOrigin {
+    Model,
+    ExplicitUser,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillHistoryStatus {
+    Loaded,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillHistoryVerification {
+    /// Store SHA, run binding and frozen inner format all validated, and the
+    /// exact activated name/scope/body hash matched this audit.
+    Verified,
+    /// Snapshot absent, stale, over budget or invalid. Audit remains visible
+    /// but is never represented as currently executable authority.
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillHistoryActivation {
+    pub run_id: String,
+    pub name: String,
+    pub source_scope: SkillHistorySource,
+    pub content_sha256: String,
+    pub origin: SkillHistoryOrigin,
+    pub status: SkillHistoryStatus,
+    pub verification: SkillHistoryVerification,
 }
 
 /// Terminal assistant vocabulary a hydrated turn may carry (`streaming` rows
@@ -181,6 +251,37 @@ fn assemble(
     }
     let newest_seq = page.rows.last().map(|row| row.seq);
     let mut entries = project_rows(&page)?;
+    if let (Some(oldest), Some(newest)) = (page.rows.first(), page.rows.last()) {
+        let records =
+            skills::load_history_page_records(store.conn(), thread_id, oldest.seq, newest.seq)
+                .map_err(|error| ConversationError::Store(error.to_string()))?;
+        let by_run = project_skill_history(records);
+        // Insert after each owning assistant's final text/tool segment. This
+        // preserves the ordinary user/tool timeline and never creates a fake
+        // tool call for an explicitly preloaded Skill.
+        for row in page.rows.iter().rev().filter(|row| row.role == "assistant") {
+            let Some(activations) = by_run.get(&row.id) else {
+                continue;
+            };
+            let Some(position) = entries.iter().rposition(|entry| {
+                matches!(entry,
+                    HistoryEntry::AssistantText { message_id, .. }
+                    | HistoryEntry::Tool { message_id, .. }
+                    if message_id == &row.id)
+            }) else {
+                continue;
+            };
+            for activation in activations.iter().rev() {
+                entries.insert(
+                    position + 1,
+                    HistoryEntry::SkillActivation {
+                        seq: row.seq,
+                        activation: activation.clone(),
+                    },
+                );
+            }
+        }
+    }
     // S7 summary reference (C7): the thread's latest terminal assistant task
     // re-projects its cost summary from the durable audits exactly like the
     // restart recovery of S7-T40. Attach it only while its message is on this
@@ -219,6 +320,80 @@ fn assemble(
         older_cursor: page.older_cursor,
         newest_seq,
     })
+}
+
+fn project_skill_history(
+    records: skills::SkillHistoryPageRecords,
+) -> HashMap<String, Vec<SkillHistoryActivation>> {
+    let validated: HashMap<_, _> = records
+        .recoverable_snapshots
+        .iter()
+        .filter_map(|snapshot| {
+            crate::agent::validate_frozen_snapshot(snapshot)
+                .map(|activations| (snapshot.run_id.as_str(), activations))
+        })
+        .collect();
+    let mut by_run: HashMap<String, Vec<SkillHistoryActivation>> = HashMap::new();
+    for audit in records.audits {
+        let Some((scope, hash, origin)) = parsed_skill_audit(&audit) else {
+            continue;
+        };
+        let activations = by_run.entry(audit.run_id.clone()).or_default();
+        let existing = activations.iter_mut().find(|activation| {
+            activation.name == audit.name
+                && activation.source_scope == scope
+                && activation.content_sha256 == hash
+                && activation.origin == origin
+        });
+        if audit.status == "revoked" {
+            if let Some(existing) = existing {
+                existing.status = SkillHistoryStatus::Revoked;
+                existing.verification = SkillHistoryVerification::Unavailable;
+            }
+            continue;
+        }
+        if existing.is_some() {
+            continue;
+        }
+        let content_sha256 = hash.to_string();
+        let verification = if validated.get(audit.run_id.as_str()).is_some_and(|frozen| {
+            frozen.iter().any(|skill| {
+                skill.name == audit.name
+                    && skill.content_sha256 == hash
+                    && scope.matches_runtime(skill.source_scope)
+            })
+        }) {
+            SkillHistoryVerification::Verified
+        } else {
+            SkillHistoryVerification::Unavailable
+        };
+        activations.push(SkillHistoryActivation {
+            run_id: audit.run_id,
+            name: audit.name,
+            source_scope: scope,
+            content_sha256,
+            origin,
+            status: SkillHistoryStatus::Loaded,
+            verification,
+        });
+    }
+    by_run
+}
+
+fn parsed_skill_audit(
+    audit: &SkillActivationAuditRecord,
+) -> Option<(SkillHistorySource, &str, SkillHistoryOrigin)> {
+    let scope = SkillHistorySource::from_audit(audit.source_scope.as_deref()?)?;
+    let hash = audit.content_sha256.as_deref()?;
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let origin = match audit.origin.as_str() {
+        "model" => SkillHistoryOrigin::Model,
+        "explicit_user" => SkillHistoryOrigin::ExplicitUser,
+        _ => return None,
+    };
+    Some((scope, hash, origin))
 }
 
 /// Maps the page rows + batched tool calls into typed entries. Tool calls
@@ -373,7 +548,13 @@ fn project_assistant(
         entries.push(tool_entry(call));
         start = offset;
     }
-    if start < row.content.len() || calls.is_empty() || status == AssistantStatus::Failed {
+    if start < row.content.len()
+        || calls.is_empty()
+        || matches!(
+            status,
+            AssistantStatus::Failed | AssistantStatus::Interrupted
+        )
+    {
         entries.push(HistoryEntry::AssistantText {
             seq: row.seq,
             message_id: row.id.clone(),

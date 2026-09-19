@@ -1,6 +1,53 @@
 use super::*;
 
 #[gpui_kit::test]
+async fn restarted_skill_provenance_is_a_read_only_content_free_history_card(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "skill-history-thread");
+    stream.update(cx, |stream, cx| {
+        stream.apply_history_page(
+            hydration_page(
+                vec![
+                    hydration_user(1, "review"),
+                    hydration_assistant(2, "done"),
+                    HistoryEntry::SkillActivation {
+                        seq: 2,
+                        activation: vega_conversation::history::SkillHistoryActivation {
+                            run_id: "assistant-2".into(),
+                            name: "reviewer".into(),
+                            source_scope: vega_conversation::history::SkillHistorySource::Project,
+                            content_sha256: "a".repeat(64),
+                            origin: vega_conversation::history::SkillHistoryOrigin::ExplicitUser,
+                            status: vega_conversation::history::SkillHistoryStatus::Revoked,
+                            verification:
+                                vega_conversation::history::SkillHistoryVerification::Unavailable,
+                        },
+                    },
+                ],
+                None,
+            ),
+            cx,
+        );
+    });
+    let (rows, interrupted) = stream.read_with(cx, |stream, cx| {
+        let row = stream.entries.last().expect("history Skill card");
+        (
+            row.row_count(cx),
+            stream.actions.running || stream.active_permission.is_some(),
+        )
+    });
+    assert_eq!(rows, 1);
+    assert!(
+        !interrupted,
+        "hydration never resumes an old run or permission"
+    );
+    cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("history-skill-provenance").is_some());
+}
+
+#[gpui_kit::test]
 async fn failed_empty_assistant_hydrates_a_visible_safe_reason(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "failed-history-thread");
     stream.update(cx, |stream, cx| {

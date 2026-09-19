@@ -101,6 +101,13 @@ pub struct ConversationStream {
     /// Submitted drafts, scoped to this thread view.
     pub(crate) composer_history: Vec<String>,
     pub(crate) composer_submit_pending: bool,
+    pub(crate) skill_projection: Option<SkillComposerProjection>,
+    pub(crate) skill_projection_generation: u64,
+    pub(crate) skill_projection_loading: bool,
+    pub(crate) skill_picker_open: bool,
+    pub(crate) skill_mutation_pending: bool,
+    pub(crate) skill_intent: Option<SkillSelectionIntent>,
+    pub(crate) active_skills: Vec<vega_conversation::types::ActiveSkillView>,
     pub(crate) actions: ComposerActions,
     pub(crate) action_focus: [FocusHandle; 2],
     pub(crate) history_cursor: Option<usize>,
@@ -200,6 +207,8 @@ pub struct ConversationStream {
 impl EventEmitter<PlanReviewRequested> for ConversationStream {}
 impl EventEmitter<ThreadSettingsRequested> for ConversationStream {}
 impl EventEmitter<ComposerSubmitted> for ConversationStream {}
+impl EventEmitter<SkillComposerProjectionRequested> for ConversationStream {}
+impl EventEmitter<SkillComposerMutationRequested> for ConversationStream {}
 impl EventEmitter<ContextSettingsRequested> for ConversationStream {}
 impl EventEmitter<ContextCompactionRequested> for ConversationStream {}
 impl EventEmitter<ContextCompactionCancelRequested> for ConversationStream {}
@@ -392,6 +401,13 @@ impl ConversationStream {
             meter: ConversationMeter::default(),
             composer_history: Vec::new(),
             composer_submit_pending: false,
+            skill_projection: None,
+            skill_projection_generation: 0,
+            skill_projection_loading: false,
+            skill_picker_open: false,
+            skill_mutation_pending: false,
+            skill_intent: None,
+            active_skills: Vec::new(),
             actions: ComposerActions::default(),
             action_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             history_cursor: None,
@@ -557,6 +573,7 @@ impl ConversationStream {
             return true;
         }
         self.close_composer_popovers(cx);
+        self.clear_skill_route_state();
         self.branch_selector.update(cx, |selector, cx| {
             selector.rebind_draft_project(&thread.project_id, cx);
         });
@@ -1259,6 +1276,7 @@ impl ConversationStream {
             | ConversationEvent::ToolCallOutput { .. }
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::ThinkingDelta { .. }
+            | ConversationEvent::SkillActivated { .. }
             | ConversationEvent::ContextCompactionStatus { .. } => false,
             // R7: app accepts these only after its thread/run ownership fence.
             ConversationEvent::ContextCompactionUsageUpdated { .. } => true,

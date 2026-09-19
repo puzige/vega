@@ -341,11 +341,32 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
             "sidebar_memberships",
             "sidebar_organization",
             "sidebar_project_order",
+            "skill_activation_audits",
+            "skill_approvals",
+            "skill_project_settings",
+            "skill_run_snapshots",
+            "skill_settings",
+            "skill_sources",
+            "thread_skill_pins",
             "threads",
             "token_usage",
             "tool_calls",
         ]
     );
+    let foreign_key_errors: i64 =
+        store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+    assert_eq!(
+        foreign_key_errors, 0,
+        "all migration foreign keys remain valid"
+    );
+    let integrity: String = store
+        .conn()
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    assert_eq!(integrity, "ok", "the migrated database remains intact");
 
     Ok(())
 }

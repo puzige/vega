@@ -16,6 +16,7 @@ use super::*;
 use gpui_kit::{
     Bounds, Modifiers, Pixels, VisualTestContext, WindowBounds, WindowOptions, px, size,
 };
+use vega_conversation::SkillSettingsService;
 use vega_conversation::types::{PermissionMode, ThreadMode, ThreadStatus};
 use vega_ui::branch_selector::BranchListRequested;
 use vega_ui::conversation_stream::{ComposerDefaultsRequested, ThreadSettingsRequested};
@@ -438,6 +439,320 @@ struct DraftFixture {
     root: Entity<VegaWindow>,
     window: gpui_kit::WindowHandle<VegaWindow>,
     provider: Arc<vega_runtime::MockProvider>,
+}
+
+fn approve_project_skill_for_draft(fixture: &DraftFixture) -> String {
+    let service = SkillSettingsService::new(
+        fixture.database_path.clone(),
+        fixture
+            .config_path
+            .parent()
+            .expect("config root")
+            .to_path_buf(),
+        Some(fixture.project_id.clone()),
+    );
+    let store = fixture.store();
+    let current = || {
+        vega_store::skills::read_settings(store.conn())
+            .expect("skill settings")
+            .consent_generation
+    };
+    let root = service.preview_project_root().expect("project skill root");
+    service
+        .apply(
+            current(),
+            SkillSettingsMutation::LinkRoot {
+                preview_token: root.token,
+            },
+        )
+        .expect("link reviewed root");
+    let source = service
+        .projection()
+        .expect("skill source")
+        .sources
+        .remove(0);
+    let preview = service
+        .preview_skill(&source.id, "reviewer")
+        .expect("review body");
+    let sha = preview.content_sha256.clone();
+    service
+        .apply(
+            current(),
+            SkillSettingsMutation::ApproveSkill {
+                preview_token: preview.token,
+            },
+        )
+        .expect("approve exact SHA");
+    service
+        .apply(
+            current(),
+            SkillSettingsMutation::SetProject {
+                project_id: fixture.project_id.clone(),
+                enabled: true,
+                automatic: false,
+            },
+        )
+        .expect("enable project Skills");
+    service
+        .apply(
+            current(),
+            SkillSettingsMutation::SetSource {
+                source_id: source.id.clone(),
+                enabled: true,
+                automatic: false,
+            },
+        )
+        .expect("enable source");
+    service
+        .apply(
+            current(),
+            SkillSettingsMutation::SetSkill {
+                source_id: source.id,
+                name: "reviewer".into(),
+                enabled: true,
+                automatic: false,
+            },
+        )
+        .expect("enable reviewed Skill");
+    sha
+}
+
+fn skill_draft_fixture(cx: &mut gpui_kit::TestAppContext) -> DraftFixture {
+    let repo = diff_controller_repo();
+    let skill_dir = repo.path().join(".agents/skills/reviewer");
+    fs::create_dir_all(&skill_dir).expect("owned skill directory");
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: reviewer\ndescription: Review changes.\n---\nCheck output.\n",
+    )
+    .expect("owned skill file");
+    let fixture = DraftFixture::home_with_repo(cx, true, repo);
+    approve_project_skill_for_draft(&fixture);
+    fixture
+}
+
+fn choose_draft_skill(fixture: &DraftFixture, cx: &mut gpui_kit::TestAppContext) {
+    fixture.click("composer-skills", cx);
+    pump_test_app(cx, |cx| !fixture.absent("composer-skill-row-reviewer", cx));
+    fixture.click("composer-skill-row-reviewer", cx);
+}
+
+#[gpui_kit::test]
+async fn issue74_first_draft_skill_choice_pins_after_readiness_before_provider(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let fixture = skill_draft_fixture(cx);
+    let draft = fixture.draft(cx);
+    let sha = vega_store::skills::list_approved_skills(fixture.store().conn())
+        .expect("approval")
+        .remove(0)
+        .approved_sha256;
+    choose_draft_skill(&fixture, cx);
+    assert_eq!(
+        fixture.thread_rows(),
+        0,
+        "picker/selection may not materialize R69 draft"
+    );
+    fixture.submit("review this change", cx);
+    pump_test_app(cx, |cx| {
+        fixture.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+        })
+    });
+    let store = fixture.store();
+    let pins = vega_store::skills::list_thread_pins(store.conn(), &draft.id).expect("pin");
+    assert_eq!(pins.len(), 1);
+    assert_eq!(pins[0].approved_sha256, sha);
+    assert_eq!(
+        fixture.provider.requests().len(),
+        1,
+        "activation audits: {:?}; messages: {:?}",
+        vega_store::skills::list_activation_audits(store.conn(), &draft.id).expect("audits"),
+        store
+            .conn()
+            .prepare("SELECT role, status FROM messages WHERE thread_id = ?1")
+            .expect("message query")
+            .query_map([&draft.id], |row| Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?
+            )))
+            .expect("message rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("message states")
+    );
+    assert_eq!(fixture.thread_rows(), 1);
+}
+
+#[gpui_kit::test]
+async fn issue74_unready_provider_preserves_unpersisted_skill_draft(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let fixture = skill_draft_fixture(cx);
+    choose_draft_skill(&fixture, cx);
+    fixture.disable_provider();
+    fixture.submit("still a draft", cx);
+    assert_eq!(fixture.thread_rows(), 0);
+    assert_eq!(fixture.provider.requests().len(), 0);
+    assert_eq!(
+        fixture
+            .input(cx)
+            .read_with(cx, |input, _| input.text().to_string()),
+        "still a draft"
+    );
+}
+
+#[gpui_kit::test]
+async fn issue74_changed_draft_skill_never_sends_and_retry_keeps_intent(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let fixture = skill_draft_fixture(cx);
+    let draft = fixture.draft(cx);
+    choose_draft_skill(&fixture, cx);
+    fs::write(
+        fixture
+            ._repo
+            .path()
+            .join(".agents/skills/reviewer/SKILL.md"),
+        "---\nname: reviewer\ndescription: Review changes.\n---\nChanged body.\n",
+    )
+    .expect("change owned skill before first send");
+    fixture.submit("keep this original input", cx);
+    pump_test_app(cx, |cx| {
+        !fixture
+            .stream(cx)
+            .read_with(cx, |stream, _| stream.composer_submission_pending())
+    });
+    assert_eq!(fixture.provider.requests().len(), 0);
+    assert_eq!(fixture.message_rows(&draft.id), 0);
+    assert!(
+        vega_store::skills::list_thread_pins(fixture.store().conn(), &draft.id)
+            .expect("pins")
+            .is_empty()
+    );
+    assert_eq!(
+        fixture
+            .input(cx)
+            .read_with(cx, |input, _| input.text().to_string()),
+        "keep this original input"
+    );
+    fixture.submit("keep this original input", cx);
+    pump_test_app(cx, |cx| {
+        !fixture
+            .stream(cx)
+            .read_with(cx, |stream, _| stream.composer_submission_pending())
+    });
+    assert_eq!(
+        fixture.provider.requests().len(),
+        0,
+        "retry cannot silently omit a stale Skill"
+    );
+    assert_eq!(fixture.message_rows(&draft.id), 0);
+}
+
+#[gpui_kit::test]
+async fn issue74_repeated_first_send_pins_once(cx: &mut gpui_kit::TestAppContext) {
+    let fixture = skill_draft_fixture(cx);
+    let draft = fixture.draft(cx);
+    choose_draft_skill(&fixture, cx);
+    let input = fixture.input(cx);
+    input.update(cx, |input, cx| input.set_text("one exact request", cx));
+    let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+    fixture
+        .window
+        .update(cx, |_, window, cx| window.focus(&focus, cx))
+        .expect("composer focus");
+    cx.simulate_keystrokes(fixture.window.into(), "cmd-enter cmd-enter");
+    pump_test_app(cx, |cx| {
+        fixture.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+        })
+    });
+    assert_eq!(fixture.provider.requests().len(), 1);
+    assert_eq!(
+        vega_store::skills::list_thread_pins(fixture.store().conn(), &draft.id)
+            .expect("pins")
+            .len(),
+        1
+    );
+}
+
+#[gpui_kit::test]
+async fn issue74_no_skill_first_send_keeps_r69_path(cx: &mut gpui_kit::TestAppContext) {
+    // The same installed UI with no explicit choice still takes R69's
+    // ordinary first-submit route; opening Skills is never mandatory.
+    let plain = DraftFixture::home(cx, true);
+    let plain_id = plain.draft(cx).id;
+    plain.submit("plain R69 request", cx);
+    pump_test_app(cx, |cx| {
+        plain.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+        })
+    });
+    assert_eq!(plain.provider.requests().len(), 1);
+    assert_eq!(plain.thread_rows(), 1);
+    assert!(
+        vega_store::skills::list_thread_pins(plain.store().conn(), &plain_id)
+            .expect("plain pins")
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+async fn issue74_persisted_composer_pin_and_unpin_use_worker_cas(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let fixture = skill_draft_fixture(cx);
+    let thread_id = fixture.draft(cx).id;
+    fixture.submit("ordinary first message", cx);
+    pump_test_app(cx, |cx| {
+        fixture.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+        })
+    });
+    assert_eq!(fixture.provider.requests().len(), 1);
+    assert!(
+        vega_store::skills::list_thread_pins(fixture.store().conn(), &thread_id)
+            .expect("initial pins")
+            .is_empty()
+    );
+    fixture.click("composer-skills", cx);
+    pump_test_app(cx, |cx| !fixture.absent("composer-skill-row-reviewer", cx));
+    fixture.click("composer-skill-row-reviewer", cx);
+    pump_test_app(cx, |cx| {
+        vega_store::skills::list_thread_pins(fixture.store().conn(), &thread_id)
+            .is_ok_and(|pins| pins.len() == 1)
+            && fixture.stream(cx).read_with(cx, |stream, _| {
+                stream.composer_skill_pin_count() == Some(1)
+                    && !stream.composer_skill_mutation_pending()
+            })
+    });
+    let reopened = SkillSettingsService::new(
+        fixture.database_path.clone(),
+        fixture
+            .config_path
+            .parent()
+            .expect("config root")
+            .to_path_buf(),
+        Some(fixture.project_id.clone()),
+    );
+    assert!(
+        reopened
+            .composer_projection(&thread_id)
+            .expect("reopen pin")
+            .pins[0]
+            .available
+    );
+    fixture.click("composer-skills", cx);
+    pump_test_app(cx, |cx| !fixture.absent("composer-skill-row-reviewer", cx));
+    fixture.click("composer-skill-row-reviewer", cx);
+    pump_test_app(cx, |cx| {
+        vega_store::skills::list_thread_pins(fixture.store().conn(), &thread_id)
+            .is_ok_and(|pins| pins.is_empty())
+            && fixture.stream(cx).read_with(cx, |stream, _| {
+                stream.composer_skill_pin_count() == Some(0)
+                    && !stream.composer_skill_mutation_pending()
+            })
+    });
 }
 
 impl DraftFixture {

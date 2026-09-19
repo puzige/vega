@@ -30,6 +30,7 @@ mod pricing;
 mod reasoning;
 mod render;
 mod session;
+mod skills;
 mod workspace;
 
 use self::file_index::*;

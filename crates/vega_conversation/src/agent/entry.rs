@@ -620,6 +620,44 @@ where
     };
 
     prepared.request.tool_config = prepared.request.tool_config.with_mcp_servers(mcp_servers);
+    let skill_launch = super::skills::prepare_skill_run(
+        store,
+        &prepared.project_id,
+        thread_id,
+        &prepared.assistant_message_id,
+        persisted_user_message_id.is_none(),
+    );
+    let skill_launch = match skill_launch {
+        Ok(launch) => launch,
+        Err(error) => {
+            let _ = finish_prepared_failure(
+                prepared.database_path.clone(),
+                prepared.assistant_message_id.clone(),
+            )
+            .await;
+            forward_pipeline_error(
+                &mut event_sink,
+                Some(prepared.assistant_message_id.clone()),
+                Arc::new(VegaError::Tool {
+                    tool: "skill".to_string(),
+                    message: "Skill selection unavailable or settings invalid".to_string(),
+                }),
+            );
+            return Err(error);
+        }
+    };
+    let skill_authority = skill_launch
+        .as_ref()
+        .and_then(|launch| launch.run.binding())
+        .map(|binding| super::skills::authority_probe(database_path.clone(), binding));
+    if let Some(launch) = skill_launch {
+        prepared.request.tool_config = std::mem::take(&mut prepared.request.tool_config)
+            .with_skill_run(launch.run, launch.explicit);
+        if let Some(authority) = &skill_authority {
+            prepared.request.tool_config = std::mem::take(&mut prepared.request.tool_config)
+                .with_skill_authority_probe(Arc::clone(&authority.probe));
+        }
+    }
 
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),
@@ -672,6 +710,14 @@ where
     let (runtime_sender, runtime_receiver) = mpsc::channel(PERSISTENCE_CHANNEL_CAPACITY);
     let task_cancel = cancel.child_token();
     let processor_cancel = task_cancel.clone();
+    let skill_watch_stop = CancellationToken::new();
+    let skill_watch = skill_authority.as_ref().map(|authority| {
+        tokio::spawn(super::skills::watch_authority(
+            Arc::clone(&authority.probe),
+            task_cancel.clone(),
+            skill_watch_stop.clone(),
+        ))
+    });
     let mut streamed_content = String::new();
     let permission_adapter = RuntimePermissionAdapter {
         shared: permission_hook,
@@ -731,6 +777,10 @@ where
         processor_cancel,
     );
     let (runtime_result, processor_result) = tokio::join!(runtime_future, processor_future);
+    skill_watch_stop.cancel();
+    if let Some(watch) = skill_watch {
+        let _ = watch.await;
+    }
     let outcome = match (processor_result, runtime_result) {
         (Ok(()), Ok(outcome)) => {
             if let Err(error) = actor.close().await {
@@ -761,6 +811,36 @@ where
             return Err(ConversationError::Runtime(error));
         }
     };
+    if outcome.interrupted
+        && skill_authority
+            .as_ref()
+            .is_some_and(super::skills::SkillAuthority::observed_revocation)
+    {
+        let summaries = prepared
+            .request
+            .tool_config
+            .active_skill_summaries()
+            .map_err(|error| ConversationError::Runtime(Arc::new(error)))?;
+        for summary in summaries {
+            let scope = match summary.source_scope {
+                vega_runtime::skills::SourceScope::Project => "project",
+                vega_runtime::skills::SourceScope::VegaGlobal => "vega_global",
+                vega_runtime::skills::SourceScope::Imported => "imported",
+            };
+            vega_store::skills::append_revocation_audit_once(
+                store.conn(),
+                vega_store::skills::NewSkillRevocationAudit {
+                    run_id: &prepared.assistant_message_id,
+                    thread_id,
+                    name: &summary.name,
+                    source_scope: scope,
+                    content_sha256: &summary.content_sha256,
+                    created_at: now_ms(),
+                },
+            )
+            .map_err(|_| ConversationError::Store("Skill revocation audit unavailable".into()))?;
+        }
+    }
     Ok(ConversationRun {
         user_message_id: prepared.user_message_id,
         assistant_message_id: prepared.assistant_message_id,
