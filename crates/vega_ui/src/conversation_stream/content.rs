@@ -293,7 +293,7 @@ impl ConversationStream {
         self.model_picker_level
     }
 
-    /// Number of priced model options the selector currently offers. R57 P3
+    /// Number of configured model options the selector offers (#60 R1). R57 P3
     /// acceptance waits on it because the popup (and therefore the slider it
     /// hosts) only opens once the app published the catalog projection.
     #[doc(hidden)]

@@ -877,9 +877,8 @@ impl ConversationStream {
         self.composer_defaults.reasoning_unavailable
     }
 
-    /// Installs the priced model options for the composer selector (A2-14):
-    /// the app layer projects the T36 pricing catalog's model list; the
-    /// stream never reads pricing files.
+    /// Installs configured model options for the composer selector (#60 R1).
+    /// The app supplies the catalog; the stream never reads config files.
     pub fn apply_model_options(&mut self, options: Vec<String>, cx: &mut Context<Self>) {
         self.model_options = options;
         self.model_selector_highlight = self

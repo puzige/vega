@@ -307,8 +307,7 @@ impl VegaWindow {
     /// through the conversation service on a worker thread and acknowledges
     /// with the re-read authoritative thread. The app-level
     /// config.defaults.model (Settings 的"新任务默认模型") is NOT touched.
-    /// Gates: unknown/unpriced (not in the Ready pricing authority) and
-    /// not-uniquely-configured models are rejected fail-closed before any
+    /// #60 R1: not-uniquely-configured models are rejected before any
     /// write; an active run or another trusted action refuses the change.
     /// Every outcome (ack/fail/worker-lost) releases exactly the owner token
     /// echoed by the request.
@@ -353,33 +352,7 @@ impl VegaWindow {
             });
             return;
         }
-        // Ready pricing authority gate: the model must exist exactly (and be
-        // priced) before anything is written. Unknown/unpriced is refused
-        // with the error preserved and no authoritative change.
-        if let Err(code) = self.pricing_controller.select_exact(&request.model) {
-            if let PricingControllerState::Ready {
-                authority,
-                generation,
-                notice,
-                draft,
-                draft_reason,
-                ..
-            } = &self.pricing_controller.state
-            {
-                self.pricing_controller.state = PricingControllerState::Ready {
-                    authority: authority.clone(),
-                    generation: *generation,
-                    notice: *notice,
-                    draft: draft.clone(),
-                    draft_reason: *draft_reason,
-                    error: Some(code),
-                };
-            }
-            stream.update(cx, |stream, cx| {
-                stream.apply_thread_model_failed(&request.thread_id, request.request_id, cx)
-            });
-            return;
-        }
+        // #60 R1: optional price metadata does not decide model availability.
         // Unique configured provider gate: the model must resolve to exactly
         // one configured provider (same rule the real submit path applies).
         // This is a file read, so it happens in the bounded worker below,
@@ -630,22 +603,11 @@ impl VegaWindow {
         }
     }
 
-    /// Projects the intersection of configured, uniquely resolvable models
-    /// and the app-owned Ready pricing authority. Both inputs are immutable
-    /// in-memory projections here; the config read is performed by the worker
-    /// below and pricing is loaded by its existing worker.
+    /// #60 R1: configured, uniquely resolvable models remain available even
+    /// without accounting metadata. Config IO stays in the worker below.
+    /// The existing method name is retained for compatibility with callers.
     pub(crate) fn model_options_for_pricing(&self) -> Vec<String> {
-        let Some(configured) = self.configured_models.as_ref() else {
-            return Vec::new();
-        };
-        let PricingControllerState::Ready { authority, .. } = &self.pricing_controller.state else {
-            return Vec::new();
-        };
-        configured
-            .iter()
-            .filter(|model| authority.contains_exact_model(model))
-            .cloned()
-            .collect()
+        self.configured_models.clone().unwrap_or_default()
     }
 
     /// Starts one worker-side read of the configured provider/model list for

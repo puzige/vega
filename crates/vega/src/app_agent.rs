@@ -286,21 +286,19 @@ impl PricingController {
         }
     }
 
-    pub(crate) fn select_exact(
-        &self,
-        model: &str,
-    ) -> Result<PricingAuthority, PricingSettingsErrorCode> {
-        let PricingControllerState::Ready { authority, .. } = &self.state else {
-            return Err(match self.state {
-                PricingControllerState::Invalid(code) => code,
-                _ => PricingSettingsErrorCode::Busy,
-            });
+    /// #60 R3: accounting is optional. Freeze only committed authority;
+    /// an unsaved/retry draft must never affect a running call's estimate.
+    pub(crate) fn catalog_for_run(&self, model: &str) -> Option<PricingCatalog> {
+        let authority = match &self.state {
+            PricingControllerState::Ready { authority, .. } => authority,
+            PricingControllerState::Saving { previous, .. } => previous,
+            PricingControllerState::Loading
+            | PricingControllerState::Reloading
+            | PricingControllerState::Invalid(_) => return None,
         };
-        if authority.contains_exact_model(model) {
-            Ok(authority.clone())
-        } else {
-            Err(PricingSettingsErrorCode::ModelNotPriced)
-        }
+        authority
+            .contains_exact_model(model)
+            .then(|| authority.catalog())
     }
 }
 

@@ -344,18 +344,6 @@ impl VegaWindow {
         self.start_agent_run_with_reasoning(stream, thread_id, run, reasoning, cx);
     }
 
-    /// Shows the existing Pricing repair route while preserving the current
-    /// authority/draft. Both durable runs and A7 first submits use this one
-    /// projection; only the first-submit caller must check before INSERT.
-    fn open_pricing_repair(&mut self, code: PricingSettingsErrorCode, cx: &mut Context<Self>) {
-        if let PricingControllerState::Ready { error, .. } = &mut self.pricing_controller.state {
-            *error = Some(code);
-        }
-        cx.set_global(vega_ui::settings::PricingSettingsRequested(true));
-        cx.set_global(SettingsOpen(true));
-        self.push_pricing_projection(cx);
-    }
-
     pub(crate) fn start_agent_run_with_reasoning(
         &mut self,
         stream: Entity<ConversationStream>,
@@ -439,26 +427,10 @@ impl VegaWindow {
             return;
         };
 
-        // T37 gate: durable Thread.model must resolve against the app-owned
-        // Ready authority before begin, channel/worker spawn, config,
-        // Keychain, or provider construction. T39 carries the returned
-        // immutable capability into the runtime run (exact pricing for every
-        // provider call) and into the Composer meter's provisional estimator.
-        let pricing_catalog = match self.pricing_controller.select_exact(&thread.model) {
-            Ok(selection) => selection.catalog(),
-            Err(code) => {
-                if pending_user_content.is_some() {
-                    stream.update(cx, ConversationStream::reject_composer_submission);
-                }
-                if pending_approved_instruction.is_some() {
-                    stream.update(cx, ConversationStream::apply_approved_not_started);
-                } else {
-                    stream.update(cx, ConversationStream::apply_agent_error);
-                }
-                self.open_pricing_repair(code, cx);
-                return;
-            }
-        };
+        // #60 R2/R3: missing prices are not a send gate. Runtime and meter
+        // share this one immutable optional snapshot; provider/permission
+        // validation still runs independently through its existing path.
+        let pricing_catalog = self.pricing_controller.catalog_for_run(&thread.model);
 
         let permission_queue = stream.read(cx).permission_queue();
         let (generation, cancel) = self.agent_controller.begin(
@@ -471,10 +443,9 @@ impl VegaWindow {
         self.begin_artifact_agent_generation(generation, &stream);
         // S7-T39/C3: the provisional estimator freezes the run-start
         // selection; it never re-reads pricing files or the live authority.
-        let meter_estimator = vega_conversation::types::RunUsageEstimator::new(
-            &thread.model,
-            pricing_catalog.clone(),
-        );
+        let meter_estimator = pricing_catalog.clone().and_then(|catalog| {
+            vega_conversation::types::RunUsageEstimator::new(&thread.model, catalog)
+        });
         stream.update(cx, |stream, cx| {
             stream.install_meter_estimator(meter_estimator, cx)
         });
@@ -507,7 +478,7 @@ impl VegaWindow {
                     permission_queue,
                     cancel,
                     worker_sender,
-                    Some(pricing_catalog),
+                    pricing_catalog,
                     config_path,
                     reasoning,
                     Some(title_sender),
@@ -777,18 +748,8 @@ impl VegaWindow {
         // rebuilt. A materialization failure keeps the draft installed and
         // surfaces the existing controller error for retry.
         if let Some(draft) = self.draft_for_route(&thread_id) {
-            // A7-01 rule 8: the durable-thread T37 pricing gate below is too
-            // late for a lazy draft. Check its exact model against the same
-            // Ready authority before INSERT, so a missing price opens the
-            // repair page without creating an empty task or losing the text.
-            if let Err(code) = self.pricing_controller.select_exact(&draft.model) {
-                stream.update(cx, |stream, cx| {
-                    stream.reject_composer_submission(cx);
-                    stream.apply_agent_error(cx);
-                });
-                self.open_pricing_repair(code, cx);
-                return;
-            }
+            // #60 R2: provider readiness was checked above; optional prices
+            // must not prevent the first submit from materializing this ID.
             if self.materialize_draft(&draft, cx).is_err() {
                 stream.update(cx, |stream, cx| {
                     stream.reject_composer_submission(cx);

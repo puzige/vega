@@ -21,6 +21,351 @@ use vega_ui::branch_selector::BranchListRequested;
 use vega_ui::conversation_stream::{ComposerDefaultsRequested, ThreadSettingsRequested};
 use vega_ui::sidebar::SelectedProject;
 
+/// #60 P1: the real model menu and selection subscription use configured
+/// provider membership, not whether optional accounting knows the price.
+#[gpui_kit::test]
+async fn issue60_configured_unpriced_model_is_selectable(cx: &mut gpui_kit::TestAppContext) {
+    let model = "issue60-unpriced";
+    let f = DraftFixture::open_with_repo_and_model(cx, true, diff_controller_repo(), Some(model));
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.draft.is_some()
+                && root.stream_view.is_some()
+                && root.configured_models.is_some()
+                && matches!(
+                    root.pricing_controller.state,
+                    PricingControllerState::Ready { .. }
+                )
+        })
+    });
+    assert!(f.root.read_with(cx, |root, _| {
+        root.model_options_for_pricing().contains(&model.to_owned())
+    }));
+    assert_eq!(
+        f.root
+            .read_with(cx, |root, _| root.model_options_for_pricing().len()),
+        3,
+        "priced built-ins absent from provider config must not appear"
+    );
+    let stream = f.stream(cx);
+    for target in ["gpt-5.6-terra", model] {
+        stream.update(cx, |stream, cx| stream.request_model_selection(target, cx));
+        pump_test_app(cx, |cx| {
+            f.root.read_with(cx, |root, _| {
+                root.draft
+                    .as_ref()
+                    .is_some_and(|draft| draft.model == target)
+                    && !root.trusted_actions.is_busy()
+            })
+        });
+    }
+    assert_eq!(f.thread_rows(), 0);
+    assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
+}
+
+/// #60 P2: cmd-enter materializes an unpriced configured draft once and
+/// reaches the production worker instead of taking over the Settings route.
+#[gpui_kit::test]
+async fn issue60_unpriced_first_submit_reaches_provider(cx: &mut gpui_kit::TestAppContext) {
+    let model = "issue60-unpriced";
+    let f = DraftFixture::open_with_repo_and_model(cx, true, diff_controller_repo(), Some(model));
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.draft.is_some()
+                && root.stream_view.is_some()
+                && root.configured_models.is_some()
+                && matches!(
+                    root.pricing_controller.state,
+                    PricingControllerState::Ready { .. }
+                )
+        })
+    });
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::text("unpriced body succeeded"),
+        vega_runtime::ScriptStep::delay(Duration::from_millis(150)),
+        vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::Usage {
+                input: 11,
+                output: 7,
+                cache_read: 2,
+                cache_write: 1,
+            },
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ]),
+    ]));
+    f.root.update(cx, |root, _| {
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()))
+    });
+    let draft = f.draft(cx);
+    f.submit("issue60 first message", cx);
+    assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
+    pump_test_app(cx, |cx| {
+        f.stream(cx)
+            .read_with(cx, |stream, _| stream.meter_snapshot().provisional)
+    });
+    assert!(
+        f.stream(cx)
+            .read_with(cx, |stream, _| stream.has_active_agent())
+    );
+    assert_eq!(
+        f.stream(cx)
+            .read_with(cx, |stream, _| stream.meter_snapshot().cost),
+        None,
+        "streaming text is projected with unknown rather than free cost"
+    );
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+        })
+    });
+    assert_eq!(f.thread_rows(), 1);
+    let saved =
+        vega_conversation::threads::open_thread(&f.store(), &draft.id).expect("same draft id");
+    assert_eq!(saved.model, model);
+    assert_eq!(saved.project_id, draft.project_id);
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.requests()[0].model, model);
+    let content: String = f
+        .store()
+        .conn()
+        .query_row(
+            "SELECT content FROM messages WHERE thread_id = ?1 AND role = 'user'",
+            [&draft.id],
+            |row| row.get(0),
+        )
+        .expect("durable first message");
+    assert_eq!(content, "issue60 first message");
+    let (body, status): (String, String) = f
+        .store()
+        .conn()
+        .query_row(
+            "SELECT content, status FROM messages WHERE thread_id = ?1 AND role = 'assistant'",
+            [&draft.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("durable successful reply");
+    assert_eq!(body, "unpriced body succeeded");
+    assert_eq!(status, "done");
+    let (tokens, price, profile, started): (i64, Option<String>, Option<String>, Option<i64>) = f.store().conn().query_row(
+        "SELECT input_tokens + output_tokens + cache_read_tokens + cache_write_tokens, pricing_version, pricing_profile, call_started_at FROM token_usage WHERE thread_id = ?1", [&draft.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    ).expect("unpriced actual usage");
+    assert_eq!(tokens, 21);
+    assert_eq!((price, profile, started), (None, None, None));
+    let meter = f
+        .stream(cx)
+        .read_with(cx, |stream, _| stream.meter_snapshot());
+    assert_eq!(meter.tokens, 21);
+    assert_eq!(meter.cost, None);
+    assert_eq!(meter.display(), "21 tok · —");
+    let reopened = Store::open(&f.database_path).expect("reopen usage");
+    assert_eq!(
+        vega_store::token_usage::aggregate_by_thread(reopened.conn(), &draft.id)
+            .expect("aggregate")
+            .cost,
+        vega_store::token_usage::AggregateCost::Unavailable
+    );
+    assert_eq!(
+        vega_conversation::summary::latest_task_summary(&reopened, &draft.id, None)
+            .expect("restored summary")
+            .expect("completed summary")
+            .cost,
+        vega_conversation::types::SummaryCost::Unavailable
+    );
+    // P1 persisted selection and reopen use the same production subscription.
+    let stream = f.stream(cx);
+    for target in ["gpt-5.6-terra", model] {
+        stream.update(cx, |stream, cx| stream.request_model_selection(target, cx));
+        pump_test_app(cx, |cx| {
+            f.root
+                .read_with(cx, |root, _| !root.trusted_actions.is_busy())
+                && vega_conversation::threads::open_thread(&f.store(), &draft.id)
+                    .expect("selected persisted model")
+                    .model
+                    == target
+        });
+    }
+    assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
+}
+
+/// #60 P4/P9: unavailable accounting states do not block real sends or the
+/// first-turn auxiliary title call, and an invalid catalog is not rewritten.
+#[gpui_kit::test]
+async fn issue60_unavailable_pricing_states_allow_chat_and_title(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            matches!(
+                root.pricing_controller.state,
+                PricingControllerState::Ready { .. }
+            )
+        })
+    });
+    let draft = f.draft(cx);
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("可选计价测试".into()),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ]),
+    ]));
+    f.root.update(cx, |root, _| {
+        root.agent_provider_override = Some(provider.clone())
+    });
+    for (index, state) in [
+        PricingControllerState::Loading,
+        PricingControllerState::Reloading,
+        PricingControllerState::Invalid(PricingSettingsErrorCode::MalformedCatalog),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index == 2 {
+            fs::write(
+                f.data_root.path().join("pricing.json"),
+                b"invalid owned catalog",
+            )
+            .expect("invalid fixture");
+            assert!(matches!(
+                f.root.read_with(cx, |root, _| root
+                    .pricing_controller
+                    .service
+                    .as_ref()
+                    .expect("pricing service")
+                    .reload()),
+                Err(PricingSettingsErrorCode::MalformedCatalog)
+            ));
+        }
+        f.root
+            .update(cx, |root, _| root.pricing_controller.state = state);
+        f.submit("message without accounting authority", cx);
+        pump_test_app(cx, |cx| {
+            f.root.read_with(cx, |root, _| {
+                root.agent_worker_start_probe.load() == index + 1
+                    && root.agent_controller.active.is_none()
+            })
+        });
+        assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
+        assert_eq!(f.thread_rows(), 1);
+        assert!(f.root.read_with(cx, |root, _| {
+            root.pricing_controller
+                .catalog_for_run("gpt-5.6-terra")
+                .is_none()
+        }));
+    }
+    pump_test_app(cx, |_| {
+        vega_conversation::threads::open_thread(&f.store(), &draft.id)
+            .expect("title projection")
+            .title
+            == "可选计价测试"
+    });
+    assert_eq!(
+        provider.requests().len(),
+        4,
+        "three body requests plus one title"
+    );
+    assert_eq!(
+        fs::read(f.data_root.path().join("pricing.json")).unwrap(),
+        b"invalid owned catalog"
+    );
+    assert!(f.root.read_with(cx, |root, _| matches!(
+        root.pricing_controller.state,
+        PricingControllerState::Invalid(PricingSettingsErrorCode::MalformedCatalog)
+    )));
+    assert_eq!(f.message_rows(&draft.id), 6);
+}
+
+/// #60 P3: approval still creates the durable capability before an unpriced
+/// execute turn can start; price metadata is not an extra approval gate.
+#[gpui_kit::test]
+async fn issue60_unpriced_approved_plan_executes(cx: &mut gpui_kit::TestAppContext) {
+    let f = DraftFixture::open_with_repo_and_model(
+        cx,
+        true,
+        diff_controller_repo(),
+        Some("issue60-plan"),
+    );
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.draft.is_some()
+                && root.stream_view.is_some()
+                && root.configured_models.is_some()
+                && !root.model_catalog_loading
+        })
+    });
+    let draft = f.draft(cx);
+    f.root.update(cx, |root, cx| {
+        root.materialize_draft(&draft, cx).expect("owned plan task")
+    });
+    let store = f.store();
+    vega_conversation::threads::set_thread_mode(&store, &draft.id, ThreadMode::Plan).unwrap();
+    insert(
+        store.conn(),
+        &MessageRow {
+            id: "issue60-plan-message".into(),
+            thread_id: draft.id.clone(),
+            seq: 1,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: String::new(),
+            status: "streaming".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
+    complete_plan(
+        store.conn(),
+        &draft.id,
+        "issue60-plan-message",
+        "Return an acknowledgement without editing files",
+        2,
+    )
+    .unwrap();
+    let thread = vega_conversation::threads::open_thread(&store, &draft.id).unwrap();
+    let stream = f.stream(cx);
+    stream.update(cx, |stream, cx| {
+        stream.apply_authoritative_thread(thread.clone(), cx)
+    });
+    cx.update(|cx| cx.set_global(OpenedThread(Some(thread))));
+    f.root.update(cx, |root, cx| {
+        root.review_plan(
+            stream.clone(),
+            &PlanReviewRequested {
+                thread_id: draft.id.clone(),
+                plan_id: "issue60-plan-message".into(),
+                action: PlanReviewAction::Approve,
+            },
+            cx,
+        )
+    });
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+        })
+    });
+    assert_eq!(f.provider.requests().len(), 1);
+    assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
+    assert_eq!(
+        vega_conversation::plans::list_plans(&store, &draft.id).unwrap()[0].status,
+        PlanStatus::Approved
+    );
+    assert_eq!(
+        vega_conversation::threads::open_thread(&store, &draft.id)
+            .unwrap()
+            .permission_mode,
+        PermissionMode::Confirm
+    );
+    let body: String = store.conn().query_row("SELECT content FROM messages WHERE thread_id = ?1 AND role = 'assistant' AND id != 'issue60-plan-message'", [&draft.id], |row| row.get(0)).unwrap();
+    assert_eq!(body, "r69 ok");
+}
+
 /// Issue 63: actual clipboard → lazy standalone Composer → preflight → worker
 /// → durable message → provider boundary. Only network/provider is replaced.
 #[gpui_kit::test]
@@ -1742,18 +2087,34 @@ async fn a7_foreign_runtime_error_cannot_mark_current_turn(cx: &mut gpui_kit::Te
     f.bounds("assistant-run-failure", cx);
 }
 
-/// A7-01 rule 8: the first-message pricing gate is a readiness failure, not
-/// permission to persist an empty task. The mounted window routes to the
-/// actual Pricing settings view; a settings-originated mutation repairs the
-/// exact model, and its visible Back control returns to the same editable
-/// draft before a second submit uses the ordinary provider boundary.
+/// #60 supersedes A7's price readiness gate: the unpriced first message
+/// succeeds. Explicit Settings pricing changes affect later runs without
+/// creating another task or rewriting historical unknown costs (P7).
 #[gpui_kit::test]
-async fn a7_unpriced_first_submit_preserves_draft_through_pricing_repair(
+async fn a7_unpriced_first_submit_then_optional_pricing_preserves_task_identity(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let model = "a7-unpriced";
     let content = "Reply with exactly VEGA_E2E_OK.";
-    let f = DraftFixture::open_with_repo_and_model(cx, true, diff_controller_repo(), Some(model));
+    let mut f =
+        DraftFixture::open_with_repo_and_model(cx, true, diff_controller_repo(), Some(model));
+    f.provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("priced or unpriced body".into()),
+            vega_runtime::ProviderEvent::Usage {
+                input: 10,
+                output: 5,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ]),
+    ]));
+    f.root.update(cx, |root, _| {
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(f.provider.clone()))
+    });
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
             root.draft.is_some()
@@ -1770,26 +2131,33 @@ async fn a7_unpriced_first_submit_preserves_draft_through_pricing_repair(
     assert_eq!(draft.project_id, f.project_id);
     f.submit(content, cx);
     pump_test_app(cx, |cx| {
-        f.root.read_with(cx, |root, cx| {
-            cx.global::<SettingsOpen>().0 && root.settings_view.is_some()
+        f.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
         })
     });
-    f.bounds("settings-page-pricing", cx);
-    assert_eq!(f.thread_rows(), 0, "an unpriced draft writes no empty task");
-    assert_eq!(f.message_rows(&draft.id), 0);
-    assert_eq!(f.draft(cx).id, draft.id);
+    assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
     assert_eq!(
-        f.input(cx)
-            .read_with(cx, |input, _| input.text().to_owned()),
-        content
+        f.thread_rows(),
+        1,
+        "#60: first unpriced submit materializes once"
     );
-    assert!(f.provider.requests().is_empty());
+    assert_eq!(f.message_rows(&draft.id), 2);
+    assert_eq!(f.provider.requests().len(), 1);
     assert_eq!(
         f.root
             .read_with(cx, |root, _| root.agent_worker_start_probe.load()),
-        0
+        1
     );
-
+    // #60 R5: pricing remains explicitly editable, never a forced repair.
+    cx.update(|cx| {
+        cx.set_global(vega_ui::settings::PricingSettingsRequested(true));
+        cx.set_global(SettingsOpen(true));
+        cx.refresh_windows();
+    });
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| root.settings_view.is_some())
+    });
+    f.bounds("settings-page-pricing", cx);
     let settings = f
         .root
         .read_with(cx, |root, _| root.settings_view.clone())
@@ -1823,7 +2191,7 @@ async fn a7_unpriced_first_submit_preserves_draft_through_pricing_repair(
             )
         })
     });
-    assert_eq!(f.thread_rows(), 0, "adding a price is not a submit");
+    assert_eq!(f.thread_rows(), 1, "adding a price is not a submit");
     let mut visual = VisualTestContext::from_window(f.window.into(), cx);
     let back = visual
         .debug_bounds("settings-back")
@@ -1840,21 +2208,17 @@ async fn a7_unpriced_first_submit_preserves_draft_through_pricing_repair(
                     .is_some_and(|(id, _)| id == &draft.id)
         })
     });
-    let retained = f.draft(cx);
+    let retained = vega_conversation::threads::open_thread(&f.store(), &draft.id)
+        .expect("same task after price edit");
     assert_eq!(retained.id, draft.id);
     assert_eq!(retained.project_id, f.project_id);
     assert_eq!(retained.model, model);
-    assert_eq!(
-        f.input(cx)
-            .read_with(cx, |input, _| input.text().to_owned()),
-        content
-    );
-    assert_eq!(f.thread_rows(), 0);
+    assert_eq!(f.thread_rows(), 1);
 
     f.submit(content, cx);
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
-            root.agent_worker_start_probe.load() == 1
+            root.agent_worker_start_probe.load() == 2
                 && root.agent_controller.active.is_none()
                 && f.thread_rows() == 1
         })
@@ -1864,7 +2228,7 @@ async fn a7_unpriced_first_submit_preserves_draft_through_pricing_repair(
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, draft.id);
     assert_eq!(rows[0].model, model);
-    assert_eq!(f.provider.requests().len(), 1);
+    assert_eq!(f.provider.requests().len(), 2);
     let user_content: String = f
         .store()
         .conn()
@@ -1875,6 +2239,23 @@ async fn a7_unpriced_first_submit_preserves_draft_through_pricing_repair(
         )
         .expect("first durable user message");
     assert_eq!(user_content, content);
+    let usage: Vec<(i64, Option<String>)> = f.store().conn().prepare(
+        "SELECT cost_microcents, pricing_version FROM token_usage WHERE thread_id = ?1 ORDER BY id"
+    ).unwrap().query_map([&draft.id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(
+        usage,
+        // #60 P7: $1/million × (10 input + 5 output) × 1_000_000
+        // stored units/USD ÷ 1_000_000 tokens = 15 legacy microcents.
+        vec![(0, None), (15, Some("pricing_v1".into()))],
+        "#60 P7: later price affects only the later call, with exact integer accounting"
+    );
+    assert_eq!(
+        vega_store::token_usage::aggregate_by_thread(f.store().conn(), &draft.id)
+            .unwrap()
+            .cost,
+        vega_store::token_usage::AggregateCost::Unavailable,
+        "mixed history must not pretend all costs are known"
+    );
 }
 
 /// A3 companion: repeated submits after materialization still produce exactly
