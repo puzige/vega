@@ -229,7 +229,6 @@ impl ConversationStream {
                                 .debug_selector(|| "composer-add".into()),
                             )
                             .child(self.render_permission_status(cx))
-                            .child(self.render_context_control(window, cx))
                             .child(div().flex_1())
                             .child(self.render_model_selector(cx))
                             .when(
@@ -284,7 +283,6 @@ impl ConversationStream {
                     ),
             )
             .child(self.render_composer_run_status(cx))
-            .children(self.render_context_status(cx))
             .when(self.composer_submit_pending, |composer| {
                 composer.child(
                     div()
@@ -1172,6 +1170,17 @@ impl Render for ConversationStream {
                             .child(body),
                     ),
             )
+            // #76 correction: actual compaction lifecycle is conversation
+            // state, never a Composer setting or action. Keep its own band
+            // between the transcript viewport and the Composer surface.
+            .children(self.render_context_status(cx).map(|status| {
+                div()
+                    .debug_selector(|| "context-status-band".into())
+                    .px(px(Layout::CONTENT_PADDING))
+                    .pb_2()
+                    .flex_shrink_0()
+                    .child(status)
+            }))
             .child(self.render_composer(window, cx))
             .when(project_bound, |root| root.child(self.commit_panel.clone()))
             .into_any_element();

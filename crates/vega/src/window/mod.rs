@@ -24,6 +24,7 @@ mod commit_reconcile;
 mod context;
 mod diff;
 mod file_index;
+mod model_context;
 pub(crate) mod navigation;
 mod pricing;
 mod reasoning;

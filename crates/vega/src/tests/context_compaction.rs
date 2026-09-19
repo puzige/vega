@@ -57,21 +57,56 @@ fn input_context(
     cx.simulate_keystrokes(f.window.into(), &keys);
 }
 
-fn save_budget(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
-    click(f, "composer-context", cx);
-    input_context(f, "context-limit-input", "20000", cx);
-    input_context(f, "context-reserve-input", "2000", cx);
-    click(f, "context-save", cx);
+fn open_model_context_editor(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
+    cx.update(|cx| cx.set_global(SettingsOpen(true)));
     pump_test_app(cx, |cx| {
-        !f.stream
-            .read_with(cx, |stream, _| stream.context_operation_busy())
-            && vega_conversation::agent::read_context_settings(
-                &f.store,
-                &f.thread.id,
-                &f.thread.model,
-            )
-            .is_ok_and(|settings| settings.is_some())
+        f.root.read_with(cx, |root, _| root.settings_view.is_some())
     });
+    click(f, "settings-nav-providers", cx);
+    click(f, "model-edit-0", cx);
+    pump_test_app(cx, |cx| {
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("model-context-input")
+            .is_some()
+    });
+}
+
+fn save_legacy_manual_budget(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
+    // The removed manual UI is no longer a configuration path. These fixtures
+    // exercise the still-internal cancellation/restart service and prove old
+    // per-thread rows remain readable without becoming automatic-run fallback.
+    vega_store::context_compaction::save_settings(
+        f.store.conn(),
+        &vega_store::context_compaction::ContextSettings {
+            thread_id: f.thread.id.clone(),
+            model: f.thread.model.clone(),
+            context_limit: Some(20_000),
+            output_reserve: 2_000,
+            automatic_compaction: true,
+            updated_at: 1,
+        },
+    )
+    .expect("legacy manual fixture");
+    f.root
+        .update(cx, |root, cx| root.refresh_context_projection(true, cx));
+    pump_test_app(cx, |cx| {
+        !f.root
+            .read_with(cx, |root, _| root.trusted_actions.is_busy())
+    });
+}
+
+fn request_internal_manual_compaction(f: &Fixture, cx: &mut gpui_kit::TestAppContext) -> u64 {
+    f.stream.update(cx, |stream, cx| {
+        let request_id = stream
+            .reserve_context_operation_id(cx)
+            .expect("operation id");
+        cx.emit(ContextCompactionRequested {
+            thread_id: f.thread.id.clone(),
+            model: f.thread.model.clone(),
+            request_id,
+        });
+        request_id
+    })
 }
 
 #[gpui_kit::test]
@@ -80,26 +115,32 @@ async fn i76_context_settings_real_inputs_persist_and_reopen(cx: &mut gpui_kit::
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![]));
     let f = fixture(cx, provider.clone());
     edit(&f, "keep this draft", cx);
-    save_budget(&f, cx);
+    open_model_context_editor(&f, cx);
+    input_context(&f, "model-context-input", "20000", cx);
+    input_context(&f, "model-context-output", "2000", cx);
+    click(&f, "model-save", cx);
+    pump_test_app(cx, |_| {
+        vega_store::context_compaction::load_model_policy(f.store.conn(), "owned", &f.thread.model)
+            .is_ok_and(|policy| policy.is_some())
+    });
     let reopened = Store::open(f.store.database_path().expect("database")).expect("reopen");
-    let settings =
-        vega_conversation::agent::read_context_settings(&reopened, &f.thread.id, &f.thread.model)
-            .expect("read settings")
-            .expect("persisted settings");
-    assert_eq!(settings.context_limit, Some(20000));
-    assert_eq!(settings.output_reserve, 2000);
+    let policy = vega_store::context_compaction::load_model_policy(
+        reopened.conn(),
+        "owned",
+        &f.thread.model,
+    )
+    .expect("read policy")
+    .expect("persisted policy");
+    assert_eq!(policy.input_limit, Some(20_000));
+    assert_eq!(policy.output_reserve, Some(2_000));
+    assert!(policy.automatic_compaction);
     assert_eq!(draft(&f, cx), "keep this draft");
     assert!(provider.requests().is_empty());
-    f.root
-        .update(cx, |root, cx| root.refresh_context_projection(true, cx));
-    pump_test_app(cx, |cx| {
-        !f.root
-            .read_with(cx, |root, _| root.trusted_actions.is_busy())
-    });
-    assert!(
-        !f.stream
-            .read_with(cx, |stream, _| stream.context_operation_busy())
-    );
+    cx.update(|cx| cx.set_global(SettingsOpen(false)));
+    open_model_context_editor(&f, cx);
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    assert!(visual.debug_bounds("model-context-source").is_some());
+    assert!(visual.debug_bounds("composer-context").is_none());
 }
 
 #[gpui_kit::test]
@@ -109,14 +150,18 @@ async fn i76_context_invalid_input_never_persists_or_calls_provider(
     cx.executor().allow_parking();
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![]));
     let f = fixture(cx, provider.clone());
-    click(&f, "composer-context", cx);
-    input_context(&f, "context-limit-input", "100", cx);
-    input_context(&f, "context-reserve-input", "100", cx);
-    click(&f, "context-save", cx);
+    open_model_context_editor(&f, cx);
+    input_context(&f, "model-context-input", "100", cx);
+    input_context(&f, "model-context-output", "0", cx);
+    click(&f, "model-save", cx);
     cx.run_until_parked();
     assert!(
-        vega_conversation::agent::read_context_settings(&f.store, &f.thread.id, &f.thread.model)
-            .expect("settings")
+        vega_store::context_compaction::load_model_policy(
+            f.store.conn(),
+            "owned",
+            &f.thread.model,
+        )
+            .expect("policy")
             .is_none()
     );
     assert!(
@@ -124,6 +169,60 @@ async fn i76_context_invalid_input_never_persists_or_calls_provider(
             .read_with(cx, |root, _| root.trusted_actions.is_busy())
     );
     assert!(provider.requests().is_empty());
+}
+
+#[gpui_kit::test]
+async fn i76_ambiguous_provider_cannot_freeze_either_model_policy_in_worker(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let provider = Arc::new(vega_runtime::MockProvider::new(reply("must not run")));
+    let f = fixture(cx, provider.clone());
+    let config_path = f._data.path().join("config.toml");
+    let mut config = vega_store::config::read_from(&config_path).expect("config");
+    let mut second = config.providers[0].clone();
+    second.name = "second".into();
+    second.key_ref = "second".into();
+    config.providers.push(second);
+    config.save_to(&config_path).expect("ambiguous config");
+    for (owner, input_limit) in [("owned", 10_000), ("second", 20_000)] {
+        vega_store::context_compaction::save_model_policy(
+            f.store.conn(),
+            &vega_store::context_compaction::ModelContextPolicy {
+                provider: owner.into(),
+                model: f.thread.model.clone(),
+                input_limit: Some(input_limit),
+                output_reserve: Some(2_000),
+                automatic_compaction: true,
+                updated_at: 1,
+            },
+        )
+        .expect("separate policy");
+    }
+    let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
+    run_agent_worker(
+        f.store.database_path().expect("database").into(),
+        f.repo.path().to_path_buf(),
+        f.thread.clone(),
+        PendingAgentRun::UserMessage("ambiguous model owner".into()),
+        vega_conversation::agent::PermissionQueue::new(),
+        tokio_util::sync::CancellationToken::new(),
+        sender,
+        None,
+        Some(config_path),
+        None,
+        None,
+        Some(provider.clone()),
+        Arc::new(AgentWorkerStartProbe::default()),
+    );
+    assert_eq!(drain_agent_updates(&receiver).finished, Some(false));
+    assert!(provider.requests().is_empty());
+    assert!(
+        vega_store::messages::recent(f.store.conn(), &f.thread.id, 10)
+            .expect("messages")
+            .is_empty(),
+        "ambiguous policy selection must fail before transcript mutation"
+    );
 }
 
 #[gpui_kit::test]
@@ -140,10 +239,10 @@ async fn i76_context_manual_real_worker_cancel_retry_preserves_transcript_and_dr
     let f = fixture(cx, provider.clone());
     send_body(&f, "first historical task", cx);
     send_body(&f, "second current task", cx);
-    save_budget(&f, cx);
+    save_legacy_manual_budget(&f, cx);
     edit(&f, "unsent draft stays", cx);
     let before = vega_store::messages::recent(f.store.conn(), &f.thread.id, 100).expect("messages");
-    click(&f, "context-compact", cx);
+    let first_request_id = request_internal_manual_compaction(&f, cx);
     pump_test_app(cx, |_| provider.requests().len() == 3);
     assert!(
         f.root
@@ -160,10 +259,16 @@ async fn i76_context_manual_real_worker_cancel_retry_preserves_transcript_and_dr
         )
         .detach();
     });
-    click(&f, "context-cancel", cx);
+    f.stream.update(cx, |_, cx| {
+        cx.emit(ContextCompactionCancelRequested {
+            thread_id: f.thread.id.clone(),
+            model: f.thread.model.clone(),
+            request_id: first_request_id,
+        });
+    });
     assert!(
         cancelled.load(Ordering::SeqCst),
-        "visible cancel button emits its real intent"
+        "internal cancel intent reaches the real app worker"
     );
     pump_test_app(cx, |cx| {
         f.root
@@ -174,7 +279,7 @@ async fn i76_context_manual_real_worker_cancel_retry_preserves_transcript_and_dr
             .read_with(cx, |stream, _| stream.context_operation_busy())
     );
     assert_eq!(draft(&f, cx), "unsent draft stays");
-    click(&f, "context-compact", cx);
+    request_internal_manual_compaction(&f, cx);
     pump_test_app(cx, |cx| {
         provider.requests().len() == 4
             && f.root
@@ -327,7 +432,7 @@ async fn i76_context_reopened_controller_recovers_abandoned_status_without_busy(
 ) {
     cx.executor().allow_parking();
     let f = fixture(cx, Arc::new(vega_runtime::MockProvider::new(vec![])));
-    save_budget(&f, cx);
+    save_legacy_manual_budget(&f, cx);
     vega_store::context_compaction::insert_status(
         f.store.conn(),
         vega_store::context_compaction::NewContextCompactionStatus {
@@ -452,52 +557,48 @@ async fn i76_context_stale_settings_ack_retires_pending_without_applying_values(
     cx.executor().allow_parking();
     let f = fixture(cx, Arc::new(vega_runtime::MockProvider::new(vec![])));
     edit(&f, "draft survives settings ABA", cx);
-    click(&f, "composer-context", cx);
-    input_context(&f, "context-limit-input", "20000", cx);
-    input_context(&f, "context-reserve-input", "2000", cx);
+    open_model_context_editor(&f, cx);
+    input_context(&f, "model-context-input", "20000", cx);
+    input_context(&f, "model-context-output", "2000", cx);
+    let old_view = f
+        .root
+        .read_with(cx, |root, _| root.settings_view.clone().expect("settings"));
     let routed = Arc::new(AtomicBool::new(false));
     let observed = routed.clone();
-    // Interleave navigation immediately after the real save intent, before
-    // its worker result can run. The same cached stream returns to route A.
+    // Navigate away immediately after the real model-policy save intent,
+    // before its worker ACK can mutate the old SettingsView.
     f.root.update(cx, |_, cx| {
         cx.subscribe(
-            &f.stream,
-            move |root, stream, _: &ContextSettingsRequested, cx| {
+            &old_view,
+            move |_, _, _: &vega_ui::settings::ModelContextSaveRequested, cx| {
                 if observed.swap(true, Ordering::SeqCst) {
                     return;
                 }
-                cx.set_global(SettingsOpen(true));
-                root.cancel_context_if_route_stale(cx);
                 cx.set_global(SettingsOpen(false));
-                root.sync_context_route(&stream, cx);
+                cx.notify();
             },
         )
         .detach();
     });
-    click(&f, "context-save", cx);
-    pump_test_app(cx, |cx| {
-        !f.root
-            .read_with(cx, |root, _| root.trusted_actions.is_busy())
+    click(&f, "model-save", cx);
+    pump_test_app(cx, |_| {
+        vega_store::context_compaction::load_model_policy(f.store.conn(), "owned", &f.thread.model)
+            .is_ok_and(|policy| policy.is_some())
     });
     assert!(routed.load(Ordering::SeqCst));
-    assert!(
-        !f.stream
-            .read_with(cx, |stream, _| stream.context_operation_busy()),
-        "old exact ACK must retire pending even after route ownership changes"
-    );
+    assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
     assert_eq!(draft(&f, cx), "draft survives settings ABA");
-    // Existing input values remain retryable through the same actual button.
-    click(&f, "context-save", cx);
-    pump_test_app(cx, |cx| {
-        !f.stream
-            .read_with(cx, |stream, _| stream.context_operation_busy())
+    open_model_context_editor(&f, cx);
+    let new_view = f.root.read_with(cx, |root, _| {
+        root.settings_view.clone().expect("new settings")
     });
+    assert_ne!(old_view, new_view, "route must replace the old ACK target");
     let saved =
-        vega_conversation::agent::read_context_settings(&f.store, &f.thread.id, &f.thread.model)
-            .expect("settings")
+        vega_store::context_compaction::load_model_policy(f.store.conn(), "owned", &f.thread.model)
+            .expect("policy")
             .expect("saved");
-    assert_eq!(saved.context_limit, Some(20000));
-    assert_eq!(saved.output_reserve, 2000);
+    assert_eq!(saved.input_limit, Some(20_000));
+    assert_eq!(saved.output_reserve, Some(2_000));
 }
 
 #[gpui_kit::test]
@@ -581,7 +682,7 @@ async fn i76_context_metadata_failure_retries_after_real_settings_route_roundtri
 ) {
     cx.executor().allow_parking();
     let f = fixture(cx, Arc::new(vega_runtime::MockProvider::new(vec![])));
-    save_budget(&f, cx);
+    save_legacy_manual_budget(&f, cx);
     f.stream.update(cx, |stream, cx| {
         stream.restore_meter(
             RestoredUsage {

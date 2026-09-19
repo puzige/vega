@@ -23,6 +23,7 @@ use vega_conversation::types::{
     ReasoningDisabledWire, ReasoningProfileProjection, ReasoningProtocol, ReasoningSupport,
 };
 use vega_store::config::{self, AppConfig, ProviderConfig};
+use vega_store::context_compaction::ModelContextPolicy;
 use vega_store::keystore;
 use vega_theme::{Layout, Typography, theme};
 
@@ -65,6 +66,33 @@ pub struct PricingDiscardRequested {
 /// The app uses this as the boundary to refresh its model catalog; it never
 /// carries a credential or requests an in-session model change.
 pub struct SettingsSaved;
+
+/// Settings never opens SQLite itself. The app worker resolves this exact
+/// provider/model policy and sends it back to the active editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelContextLoadRequested {
+    pub request_id: u64,
+    pub provider: String,
+    pub model: String,
+}
+
+/// Typed mutation for the existing provider/model editor. Missing numeric
+/// values together mean an explicitly unknown capacity, not assumed defaults.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelContextSaveRequested {
+    pub request_id: u64,
+    pub provider: String,
+    pub model: String,
+    pub input_limit: Option<u64>,
+    pub output_limit: Option<u64>,
+    pub automatic_compaction: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelContextLoaded {
+    pub policy: Option<ModelContextPolicy>,
+    pub legacy_present: bool,
+}
 
 /// Content-safe error vocabulary for the worker-owned reasoning settings
 /// controller.

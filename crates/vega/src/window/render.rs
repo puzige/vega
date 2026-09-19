@@ -105,6 +105,20 @@ impl Render for VegaWindow {
                 .detach();
                 cx.subscribe(
                     &settings,
+                    |this, view, request: &ModelContextLoadRequested, cx| {
+                        this.request_model_context_load(view.clone(), request, cx);
+                    },
+                )
+                .detach();
+                cx.subscribe(
+                    &settings,
+                    |this, view, request: &ModelContextSaveRequested, cx| {
+                        this.request_model_context_save(view.clone(), request, cx);
+                    },
+                )
+                .detach();
+                cx.subscribe(
+                    &settings,
                     |this, view, request: &ReasoningProfileSaveRequested, cx| {
                         this.request_reasoning_profile_save(view.clone(), request, cx);
                     },

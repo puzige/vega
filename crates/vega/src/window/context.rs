@@ -331,7 +331,7 @@ impl VegaWindow {
         self.refresh_context_projection(true, cx);
     }
 
-    fn context_database(&self, cx: &App) -> Option<PathBuf> {
+    pub(super) fn context_database(&self, cx: &App) -> Option<PathBuf> {
         cx.global::<VegaStore>()
             .0
             .as_ref()

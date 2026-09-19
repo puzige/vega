@@ -22,6 +22,293 @@ fn click(cx: &mut TestAppContext, window: WindowHandle<Harness>, selector: &'sta
 }
 
 #[gpui_kit::test]
+async fn model_context_editor_projects_assumed_unknown_and_saved_states(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let provider = ProviderConfig {
+        name: "owned".into(),
+        enabled: true,
+        base_url: "https://owned.invalid/v1".into(),
+        models: vec!["model-a".into()],
+        key_ref: "owned".into(),
+    };
+    let view = cx.new(|cx| {
+        SettingsView::from_config(
+            AppConfig {
+                providers: vec![provider],
+                ..Default::default()
+            },
+            None,
+            cx,
+        )
+    });
+    let loads = Arc::new(std::sync::Mutex::new(
+        Vec::<ModelContextLoadRequested>::new(),
+    ));
+    let saves = Arc::new(std::sync::Mutex::new(
+        Vec::<ModelContextSaveRequested>::new(),
+    ));
+    cx.update(|cx| {
+        let captured = loads.clone();
+        cx.subscribe(&view, move |_, request: &ModelContextLoadRequested, _| {
+            captured.lock().unwrap().push(request.clone());
+        })
+        .detach();
+        let captured = saves.clone();
+        cx.subscribe(&view, move |_, request: &ModelContextSaveRequested, _| {
+            captured.lock().unwrap().push(request.clone());
+        })
+        .detach();
+    });
+    let window = cx
+        .update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|_| Harness(view.clone()))
+            })
+        })
+        .unwrap();
+    view.update(cx, |view, cx| {
+        view.section = 0;
+        view.provider_management.selected = Some("owned".into());
+        view.provider_command(Command::EditModel("model-a".into()), cx);
+    });
+    let load = loads.lock().unwrap().last().cloned().expect("typed load");
+    assert_eq!(
+        (load.provider.as_str(), load.model.as_str()),
+        ("owned", "model-a")
+    );
+    view.update(cx, |view, cx| {
+        view.apply_model_context_loaded(
+            &load,
+            Ok(ModelContextLoaded {
+                policy: None,
+                legacy_present: true,
+            }),
+            cx,
+        );
+        let editor = view.provider_management.model_editor.as_ref().unwrap();
+        assert_eq!(editor.source, PolicySource::AssumedDefault);
+        assert_eq!(editor.input_limit.read(cx).text(), "300000");
+        assert_eq!(editor.output_limit.read(cx).text(), "128000");
+        assert!(editor.automatic);
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("model-context-source").is_some());
+    assert!(visual.debug_bounds("model-context-legacy-notice").is_some());
+    assert!(visual.debug_bounds("model-context-input").is_some());
+    assert!(visual.debug_bounds("model-context-output").is_some());
+
+    view.update(cx, |view, cx| {
+        view.provider_command(Command::ToggleModelUnknown, cx);
+        view.provider_command(Command::SaveModel, cx);
+    });
+    let save = saves.lock().unwrap().last().cloned().expect("typed save");
+    assert_eq!((save.input_limit, save.output_limit), (None, None));
+    assert!(save.automatic_compaction);
+    view.update(cx, |view, cx| {
+        view.apply_model_context_saved(
+            &save,
+            Ok(ModelContextPolicy::unconfigured("owned", "model-a")),
+            cx,
+        );
+        assert_eq!(
+            view.provider_management
+                .model_editor
+                .as_ref()
+                .unwrap()
+                .source,
+            PolicySource::Unknown
+        );
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("model-context-input").is_none());
+    assert!(visual.debug_bounds("model-context-output").is_none());
+    view.update(cx, |view, cx| {
+        view.provider_command(Command::EditModel("model-a".into()), cx);
+    });
+    let reload = loads.lock().unwrap().last().cloned().expect("reload");
+    assert!(reload.request_id > load.request_id);
+    let saved = ModelContextPolicy {
+        provider: "owned".into(),
+        model: "model-a".into(),
+        input_limit: Some(120_000),
+        output_reserve: Some(16_000),
+        automatic_compaction: false,
+        updated_at: 5,
+    };
+    view.update(cx, |view, cx| {
+        // An old ACK cannot replace the newly opened editor's values.
+        view.apply_model_context_loaded(
+            &load,
+            Ok(ModelContextLoaded {
+                policy: None,
+                legacy_present: false,
+            }),
+            cx,
+        );
+        view.apply_model_context_loaded(
+            &reload,
+            Ok(ModelContextLoaded {
+                policy: Some(saved),
+                legacy_present: false,
+            }),
+            cx,
+        );
+        let editor = view.provider_management.model_editor.as_ref().unwrap();
+        assert_eq!(editor.source, PolicySource::Saved);
+        assert_eq!(editor.input_limit.read(cx).text(), "120000");
+        assert_eq!(editor.output_limit.read(cx).text(), "16000");
+        assert!(!editor.automatic);
+    });
+}
+
+#[gpui_kit::test]
+async fn new_or_renamed_model_stays_in_editor_without_inheriting_an_old_policy(
+    cx: &mut TestAppContext,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.toml");
+    AppConfig {
+        providers: vec![ProviderConfig {
+            name: "owned".into(),
+            enabled: true,
+            base_url: "https://owned.invalid/v1".into(),
+            models: vec![],
+            key_ref: "owned".into(),
+        }],
+        ..Default::default()
+    }
+    .save_to(&path)
+    .unwrap();
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(|cx| SettingsView::from_path(Some(path.clone()), cx));
+    let loads = Arc::new(std::sync::Mutex::new(
+        Vec::<ModelContextLoadRequested>::new(),
+    ));
+    let saves = Arc::new(std::sync::Mutex::new(
+        Vec::<ModelContextSaveRequested>::new(),
+    ));
+    cx.update(|cx| {
+        let captured = loads.clone();
+        cx.subscribe(&view, move |_, request: &ModelContextLoadRequested, _| {
+            captured.lock().unwrap().push(request.clone());
+        })
+        .detach();
+        let captured = saves.clone();
+        cx.subscribe(&view, move |_, request: &ModelContextSaveRequested, _| {
+            captured.lock().unwrap().push(request.clone());
+        })
+        .detach();
+    });
+    view.update(cx, |view, cx| {
+        view.section = 0;
+        view.provider_management.selected = Some("owned".into());
+        view.provider_command(Command::AddModel, cx);
+        view.provider_management
+            .model_editor
+            .as_ref()
+            .unwrap()
+            .model_input
+            .update(cx, |input, cx| input.set_text("new-model", cx));
+        view.provider_command(Command::SaveModel, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        config::read_from(&path).unwrap().providers[0].models,
+        vec!["new-model"]
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| {
+            view.provider_management
+                .model_editor
+                .as_ref()
+                .and_then(|editor| editor.original.as_deref().map(str::to_string))
+        }),
+        Some("new-model".into())
+    );
+    let first_load = loads
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("new model load");
+    view.update(cx, |view, cx| {
+        view.apply_model_context_loaded(
+            &first_load,
+            Ok(ModelContextLoaded {
+                policy: None,
+                legacy_present: false,
+            }),
+            cx,
+        );
+        let editor = view.provider_management.model_editor.as_ref().unwrap();
+        editor
+            .input_limit
+            .update(cx, |input, cx| input.set_text("20000", cx));
+        editor
+            .output_limit
+            .update(cx, |input, cx| input.set_text("2000", cx));
+        view.provider_command(Command::SaveModel, cx);
+    });
+    let save = saves
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("new model policy save");
+    assert_eq!(save.model, "new-model");
+    assert_eq!(
+        (save.input_limit, save.output_limit),
+        (Some(20_000), Some(2_000))
+    );
+    view.update(cx, |view, cx| {
+        view.apply_model_context_saved(
+            &save,
+            Ok(ModelContextPolicy {
+                provider: "owned".into(),
+                model: "new-model".into(),
+                input_limit: Some(20_000),
+                output_reserve: Some(2_000),
+                automatic_compaction: true,
+                updated_at: 1,
+            }),
+            cx,
+        );
+        let editor = view.provider_management.model_editor.as_ref().unwrap();
+        editor
+            .model_input
+            .update(cx, |input, cx| input.set_text("renamed-model", cx));
+        view.provider_command(Command::SaveModel, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        config::read_from(&path).unwrap().providers[0].models,
+        vec!["renamed-model"]
+    );
+    let renamed = loads.lock().unwrap().last().cloned().expect("rename load");
+    assert!(renamed.request_id > first_load.request_id);
+    assert_eq!(renamed.model, "renamed-model");
+    assert_eq!(
+        view.read_with(cx, |view, _| {
+            view.provider_management
+                .model_editor
+                .as_ref()
+                .and_then(|editor| editor.renamed_from.clone())
+        }),
+        Some("new-model".into())
+    );
+}
+
+#[gpui_kit::test]
 async fn pointer_settings_uses_real_service_config_and_loopback_transport(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("config.toml");
