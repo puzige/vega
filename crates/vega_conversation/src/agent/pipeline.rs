@@ -674,7 +674,19 @@ pub(crate) fn validate_recovered_projection(
                     approval.decision == Approval::Once
                         && approval.source == ApprovalSource::User
                         && (output.starts_with("[Untrusted external MCP result]\n")
-                            || output == "Tool error: MCP result failed or exceeded limit")
+                            || matches!(
+                                output,
+                                "Tool error: MCP result failed or exceeded limit"
+                                    | "Tool error: MCP invalid protocol response"
+                                    | "Tool error: MCP protocol error"
+                                    | "Tool error: MCP unsupported transport"
+                                    | "Tool error: MCP unsupported result content"
+                                    | "Tool error: MCP response limit exceeded"
+                                    | "Tool error: MCP request timed out; side-effect outcome unknown"
+                                    | "Tool error: MCP transport failed; side-effect outcome unknown"
+                                    | "Tool error: MCP authorization required or invalid"
+                                    | "Tool error: MCP connection configuration invalid"
+                            ))
                 }
                 RuntimeToolStatus::Cancelled => {
                     approval.decision == Approval::Once
@@ -682,6 +694,7 @@ pub(crate) fn validate_recovered_projection(
                         && matches!(
                             output,
                             "Tool error: MCP call outcome unknown after cancellation"
+                                | "Tool error: MCP call cancelled; side-effect outcome unknown"
                                 | vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
                                 | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
                         )

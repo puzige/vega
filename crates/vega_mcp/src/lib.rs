@@ -2,6 +2,7 @@
 //! persistent credential ownership remain with the later #73 integration layer.
 
 use std::ffi::OsString;
+use std::fmt;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -48,7 +49,7 @@ pub struct LocalServer {
 }
 
 /// A validated tool exposed by a server.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Tool {
     pub name: String,
     pub description: Option<String>,
@@ -56,19 +57,74 @@ pub struct Tool {
     header_params: Vec<wire::HeaderParam>,
 }
 
+impl fmt::Debug for Tool {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Tool")
+            .field("name_bytes", &self.name.len())
+            .field(
+                "description_bytes",
+                &self.description.as_ref().map(String::len),
+            )
+            .field("input_schema_type", &json_type(&self.input_schema))
+            .field("header_params_count", &self.header_params.len())
+            .finish()
+    }
+}
+
 /// A catalog of usable tools and visible rejections.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Catalog {
     pub tools: Vec<Tool>,
     pub rejected: Vec<String>,
 }
 
+impl fmt::Debug for Catalog {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Catalog")
+            .field("tools_count", &self.tools.len())
+            .field("rejected_count", &self.rejected.len())
+            .finish()
+    }
+}
+
 /// The supported text/structured subset of a tool result.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ToolResult {
     pub text: Vec<String>,
     pub structured_content: Option<Value>,
     pub is_error: bool,
+}
+
+impl fmt::Debug for ToolResult {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text_bytes = self
+            .text
+            .iter()
+            .fold(0usize, |total, text| total.saturating_add(text.len()));
+        formatter
+            .debug_struct("ToolResult")
+            .field("text_count", &self.text.len())
+            .field("text_bytes", &text_bytes)
+            .field(
+                "structured_content_type",
+                &self.structured_content.as_ref().map(json_type),
+            )
+            .field("is_error", &self.is_error)
+            .finish()
+    }
+}
+
+fn json_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 /// Safe protocol/transport failure; no server-provided secret-bearing prose.
@@ -112,4 +168,41 @@ pub enum McpError {
     Rpc(i64),
     #[error("MCP result requires an unsupported content capability")]
     UnsupportedResult,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{Catalog, Tool, ToolResult};
+
+    #[test]
+    fn debug_output_never_contains_server_provided_catalog_or_result_content() {
+        const SENTINEL: &str = "FAKE_SECRET_SENTINEL_DO_NOT_LOG_7301";
+        let tool = Tool {
+            name: SENTINEL.into(),
+            description: Some(SENTINEL.into()),
+            input_schema: json!({"type":"object", "description":SENTINEL}),
+            header_params: Vec::new(),
+        };
+        let catalog = Catalog {
+            tools: vec![tool.clone()],
+            rejected: vec![SENTINEL.into()],
+        };
+        let result = ToolResult {
+            text: vec![SENTINEL.into()],
+            structured_content: Some(json!({"secret":SENTINEL})),
+            is_error: true,
+        };
+        for debug in [
+            format!("{tool:?}"),
+            format!("{tool:#?}"),
+            format!("{catalog:?}"),
+            format!("{catalog:#?}"),
+            format!("{result:?}"),
+            format!("{result:#?}"),
+        ] {
+            assert!(!debug.contains(SENTINEL), "unsafe Debug: {debug}");
+        }
+    }
 }

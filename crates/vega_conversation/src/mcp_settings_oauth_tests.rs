@@ -31,6 +31,8 @@ struct FixtureCounts {
     registration_release: Notify,
     force_step_up: AtomicBool,
     challenged_calls: AtomicUsize,
+    resource_scope: Mutex<Option<String>>,
+    challenge_scope: Mutex<Option<String>>,
 }
 
 struct FixtureRequest {
@@ -82,20 +84,32 @@ async fn serve_one(mut stream: TcpStream, origin: &str, counts: &FixtureCounts) 
             == Some("tools/call")
     {
         counts.challenged_calls.fetch_add(1, Ordering::SeqCst);
+        let challenge_scope = counts
+            .challenge_scope
+            .lock()
+            .expect("fixture scope")
+            .clone()
+            .unwrap_or_else(|| "tools:write".into());
         let response = format!(
-            "HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"tools:write\", resource_metadata=\"{origin}/.well-known/oauth-protected-resource/mcp\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"{challenge_scope}\", resource_metadata=\"{origin}/.well-known/oauth-protected-resource/mcp\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
         let _ = stream.write_all(response.as_bytes()).await;
         return;
     }
     let (status, kind, body, extra) = if request.path == "/mcp" {
         if !request.auth {
+            let resource_scope = counts
+                .resource_scope
+                .lock()
+                .expect("fixture scope")
+                .clone()
+                .unwrap_or_else(|| "tools:read".into());
             (
                 401,
                 "text/plain",
                 String::new(),
                 Some(format!(
-                    "WWW-Authenticate: Bearer resource_metadata=\"{origin}/.well-known/oauth-protected-resource/mcp\", scope=\"tools:read\"\r\n"
+                    "WWW-Authenticate: Bearer resource_metadata=\"{origin}/.well-known/oauth-protected-resource/mcp\", scope=\"{resource_scope}\"\r\n"
                 )),
             )
         } else {
@@ -125,12 +139,18 @@ async fn serve_one(mut stream: TcpStream, origin: &str, counts: &FixtureCounts) 
             )
         }
     } else if request.path == "/.well-known/oauth-protected-resource/mcp" {
+        let resource_scope = counts
+            .resource_scope
+            .lock()
+            .expect("fixture scope")
+            .clone()
+            .unwrap_or_else(|| "tools:read".into());
         (
             200,
             "application/json",
             serde_json::json!({
                 "resource":endpoint, "authorization_servers":[issuer],
-                "scopes_supported":["tools:read"]
+                "scopes_supported":[resource_scope]
             })
             .to_string(),
             None,
@@ -279,6 +299,70 @@ async fn browser_callback(redirect_uri: &str, state: &str, issuer: &str) {
         .await
         .expect("callback reply");
     assert!(response.starts_with(b"HTTP/1.1 200 OK"));
+}
+
+#[tokio::test]
+async fn issue73_oauth_metadata_scope_matching_short_owner_secret_never_reaches_ui() {
+    let (endpoint, issuer, counts) = owned_oauth_fixture().await;
+    let data = tempfile::tempdir().expect("database");
+    let config = tempfile::tempdir().expect("config");
+    let service = McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
+    let row = service
+        .create(oauth_form(endpoint, Some("owned-client")))
+        .expect("OAuth row");
+    vega_store::keystore::set_key(config.path(), "provider-short-token", "q7")
+        .expect("fake owner secret");
+    *counts.resource_scope.lock().expect("fixture scope") = Some("q7".into());
+
+    assert!(matches!(
+        service
+            .discover_oauth(&row.id, row.config_revision, true)
+            .await,
+        Err(McpSettingsError::AuthorizationFailed)
+    ));
+    assert!(matches!(
+        service
+            .prepare_oauth(&row.id, row.config_revision, &issuer)
+            .await,
+        Err(McpSettingsError::AuthorizationFailed)
+    ));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let credential_dir = config.path().join("credentials");
+        std::fs::set_permissions(&credential_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("make owner credential store unsafe");
+        assert!(matches!(
+            service
+                .discover_oauth(&row.id, row.config_revision, true)
+                .await,
+            Err(McpSettingsError::Credential)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn issue73_oauth_start_rechecks_secrets_configured_after_preview() {
+    let (endpoint, issuer, _) = owned_oauth_fixture().await;
+    let data = tempfile::tempdir().expect("database");
+    let config = tempfile::tempdir().expect("config");
+    let service = McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
+    let row = service
+        .create(oauth_form(endpoint, Some("owned-client")))
+        .expect("OAuth row");
+    let prepared = service
+        .prepare_oauth(&row.id, row.config_revision, &issuer)
+        .await
+        .expect("safe preview");
+    vega_store::keystore::set_key(config.path(), "provider-new-key", "tools:read")
+        .expect("fake newly configured owner secret");
+
+    assert!(matches!(
+        service.begin_oauth(&prepared.flow_id, true).await,
+        Err(McpSettingsError::AuthorizationFailed)
+    ));
 }
 
 #[tokio::test]
@@ -554,6 +638,7 @@ async fn issue73_real_403_scope_challenge_reaches_settings_without_replaying_fai
             stop_reason: StopReason::End,
         }])],
     ]);
+    *counts.challenge_scope.lock().expect("fixture scope") = Some("q7".into());
     counts.force_step_up.store(true, Ordering::SeqCst);
     let tools = vega_tools::Tools::new(project.path()).expect("tools");
     let challenged_run = readiness.ready_servers[0].clone();
@@ -578,10 +663,24 @@ async fn issue73_real_403_scope_challenge_reaches_settings_without_replaying_fai
     .expect("conversation completes with failed tool");
     assert!(!run.failed);
     assert_eq!(counts.challenged_calls.load(Ordering::SeqCst), 1);
+    vega_store::keystore::set_key(config.path(), "provider-short-token", "q7")
+        .expect("fake owner secret");
+    assert!(matches!(
+        service.step_up_offers(),
+        Err(McpSettingsError::AuthorizationFailed)
+    ));
+    assert!(matches!(
+        service
+            .prepare_verified_step_up(&created.id, identity.config_revision)
+            .await,
+        Err(McpSettingsError::AuthorizationFailed)
+    ));
+    vega_store::keystore::delete_key(config.path(), "provider-short-token")
+        .expect("remove fake owner secret");
     let offers = service.step_up_offers().expect("bound challenge offer");
     assert_eq!(offers.len(), 1);
     assert_eq!(offers[0].server_id, created.id);
-    assert_eq!(offers[0].added_scopes, ["tools:write"]);
+    assert_eq!(offers[0].added_scopes, ["q7"]);
     let restarted = McpServerSettingsService::new(path.clone(), config.path().into());
     assert!(
         restarted
@@ -594,8 +693,8 @@ async fn issue73_real_403_scope_challenge_reaches_settings_without_replaying_fai
         .prepare_verified_step_up(&created.id, offers[0].config_revision)
         .await
         .expect("verified scope preview");
-    assert_eq!(preview.step_up_added_scopes, ["tools:write"]);
-    assert_eq!(preview.requested_scopes, ["tools:read", "tools:write"]);
+    assert_eq!(preview.step_up_added_scopes, ["q7"]);
+    assert_eq!(preview.requested_scopes, ["tools:read", "q7"]);
     assert!(matches!(
         service.begin_oauth(&preview.flow_id, false).await,
         Err(McpSettingsError::ConfirmationRequired)

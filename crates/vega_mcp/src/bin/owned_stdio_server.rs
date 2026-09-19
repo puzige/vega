@@ -16,7 +16,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .get("method")
             .and_then(Value::as_str)
             .ok_or("missing method")?;
-        if matches!(mode.as_str(), "modern" | "cancel-slow" | "cancel-fast")
+        if (matches!(
+            mode.as_str(),
+            "modern" | "cancel-slow" | "cancel-fast" | "exit-on-call"
+        ) || mode.starts_with("modern-catalog-wire-")
+            || mode.starts_with("modern-line-"))
             && request.get("id").is_some()
             && request["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] != "2026-07-28"
         {
@@ -49,6 +53,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if method == "tools/call" && mode == "cancel-slow" {
             continue;
         }
+        if method == "tools/call" && mode == "exit-on-call" {
+            break;
+        }
+        if method == "server/discover" && mode.starts_with("modern-line-") {
+            let response = json!({"jsonrpc":"2.0", "id":id, "result":{
+                "resultType":"complete", "supportedVersions":["2026-07-28"],
+                "capabilities":{"tools":{}}, "ttlMs":0, "cacheScope":"private"
+            }})
+            .to_string();
+            let wire_bytes = 1024 * 1024 + usize::from(mode.ends_with("-over"));
+            let padding = wire_bytes - response.len() - 1;
+            stdout.write_all(response.as_bytes())?;
+            stdout.write_all(" ".repeat(padding).as_bytes())?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
+            continue;
+        }
+        if method == "tools/list" && mode.starts_with("modern-catalog-wire-") {
+            let page = request["params"]["cursor"]
+                .as_str()
+                .and_then(|cursor| cursor.parse::<usize>().ok())
+                .unwrap_or(1);
+            if !(1..=5).contains(&page) {
+                return Err("invalid owned catalog cursor".into());
+            }
+            let mut result = json!({"resultType":"complete", "tools":if page == 1 {
+                vec![json!({"name":"owned", "inputSchema":{"type":"object"}})]
+            } else {
+                Vec::new()
+            }, "ttlMs":0, "cacheScope":"private"});
+            if page < 5 {
+                result["nextCursor"] = json!((page + 1).to_string());
+            }
+            let response = json!({"jsonrpc":"2.0", "id":id, "result":result}).to_string();
+            // Five valid lines sum to exactly 4 MiB, then the over variant
+            // adds one wire byte. Every individual line remains below 1 MiB.
+            let wire_bytes = if page < 5 { 838_861 } else { 838_860 }
+                + usize::from(page == 5 && mode.ends_with("-over"));
+            let padding = wire_bytes - response.len() - 1;
+            stdout.write_all(response.as_bytes())?;
+            stdout.write_all(" ".repeat(padding).as_bytes())?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
+            continue;
+        }
         let response = match method {
             "server/discover" if mode == "oversize" => json!({
                 "jsonrpc":"2.0", "id":id,
@@ -57,7 +106,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "instructions":"x".repeat(1024 * 1024)}
             }),
             "server/discover"
-                if matches!(mode.as_str(), "modern" | "cancel-slow" | "cancel-fast") =>
+                if matches!(
+                    mode.as_str(),
+                    "modern" | "cancel-slow" | "cancel-fast" | "exit-on-call"
+                ) || mode.starts_with("modern-catalog-wire-") =>
             {
                 json!({
                     "jsonrpc": "2.0", "id": id,

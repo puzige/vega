@@ -102,6 +102,76 @@ fn converts_text_thinking_and_usage_runtime_events() {
 }
 
 #[test]
+fn issue73_mcp_safe_proposal_crosses_live_event_boundary_without_raw_arguments() {
+    use super::{McpCallIdentity, ToolCardInputProjection, tool_card_input_projection};
+
+    let identity = McpCallIdentity {
+        server_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        config_revision: 3,
+        exact_tool_name: "echo".into(),
+        arguments_bytes: 19,
+        arguments_sha256: "a".repeat(64),
+        argument_preview: "echo: string".into(),
+    };
+    let safe_input = serde_json::json!({
+        "server_id": identity.server_id,
+        "config_revision": identity.config_revision,
+        "tool": identity.exact_tool_name,
+        "arguments_bytes": identity.arguments_bytes,
+        "arguments_sha256": identity.arguments_sha256,
+        "argument_preview": identity.argument_preview,
+    })
+    .to_string();
+    let alias = identity.alias();
+    let call = vega_runtime::RuntimeToolCall {
+        id: "mcp-live-call".into(),
+        name: alias.clone(),
+        input_json: safe_input.clone(),
+    };
+    let Some(ConversationEvent::ToolCallProposed { call: projected }) = from_runtime_event(
+        "assistant",
+        &vega_runtime::RuntimeEvent::ToolCallProposed(call.clone()),
+    ) else {
+        panic!("validated MCP proposal must reach the live permission card");
+    };
+    assert_eq!(projected.id, call.id);
+    assert_eq!(projected.tool, alias);
+    assert_eq!(projected.input_json, safe_input);
+    assert!(matches!(
+        tool_card_input_projection(&projected),
+        ToolCardInputProjection::Mcp { .. }
+    ));
+
+    let mut with_raw_value: serde_json::Value =
+        serde_json::from_str(&safe_input).expect("safe fixture JSON");
+    with_raw_value["raw_value"] = serde_json::json!("PRIVATE_VALUE");
+
+    for invalid in [
+        vega_runtime::RuntimeToolCall {
+            input_json: r#"{"echo":"PRIVATE_VALUE"}"#.into(),
+            ..call.clone()
+        },
+        vega_runtime::RuntimeToolCall {
+            name: "mcp_01ARZ3NDEKTSV4RRFFQ69G5FAV_wrong".into(),
+            ..call.clone()
+        },
+        vega_runtime::RuntimeToolCall {
+            input_json: with_raw_value.to_string(),
+            ..call.clone()
+        },
+    ] {
+        assert!(
+            from_runtime_event(
+                "assistant",
+                &vega_runtime::RuntimeEvent::ToolCallProposed(invalid)
+            )
+            .is_none(),
+            "raw, extra-field or mismatched MCP proposals must stay closed"
+        );
+    }
+}
+
+#[test]
 fn converts_content_free_compaction_status_and_preserves_unknown_usage() {
     let event = vega_runtime::RuntimeEvent::ContextCompactionStatusUpdated {
         status: vega_runtime::ContextCompactionStatusUpdate {

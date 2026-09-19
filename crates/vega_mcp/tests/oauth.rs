@@ -14,6 +14,7 @@ enum Fixture {
     DynamicInvalid,
     CimdOnly,
     Redirect,
+    MalformedRedirect,
     IssuerMismatch,
     PkceMissing,
     MetadataRedirect,
@@ -609,6 +610,27 @@ async fn m07_manual_bearer_exact_endpoint_and_redirect_never_forward() {
     );
 }
 
+#[tokio::test]
+async fn m07_malformed_redirect_never_forwards_bearer() {
+    let (endpoint, _issuer, mut requests) = fixture(Fixture::MalformedRedirect).await;
+    let credential =
+        BearerCredential::manual(&endpoint, true, "manual-secret".into()).expect("manual binding");
+    assert!(matches!(
+        HttpClient::connect_with_bearer(&endpoint, true, credential).await,
+        Err(McpError::InvalidConfig)
+    ));
+    let first = requests.recv().await.expect("redirecting request");
+    assert_eq!(first.path, "/mcp");
+    assert_eq!(
+        first.headers.get("authorization").map(String::as_str),
+        Some("Bearer manual-secret")
+    );
+    assert!(
+        requests.try_recv().is_err(),
+        "malformed redirect target was never contacted"
+    );
+}
+
 fn form(body: &[u8]) -> HashMap<String, String> {
     let text = std::str::from_utf8(body).expect("form UTF-8");
     reqwest::Url::parse(&format!("http://127.0.0.1/?{text}"))
@@ -706,6 +728,14 @@ fn response(
                 "text/plain",
                 String::new(),
                 vec![("Location", format!("{origin}/other"))],
+            );
+        }
+        if matches!(scenario, Fixture::MalformedRedirect) {
+            return (
+                302,
+                "text/plain",
+                String::new(),
+                vec![("Location", "://invalid-redirect".into())],
             );
         }
         if request.headers.get("authorization").map(String::as_str) != Some("Bearer owned-access") {

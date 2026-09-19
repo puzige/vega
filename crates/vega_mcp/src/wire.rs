@@ -13,7 +13,7 @@ pub(crate) const MAX_LINE_OR_EVENT: usize = 1024 * 1024;
 pub(crate) const MAX_RESPONSE: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_CATALOG: usize = 4 * 1024 * 1024;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct HeaderParam {
     name: String,
     path: Vec<String>,
@@ -199,13 +199,14 @@ impl CatalogBuilder {
         }
     }
 
-    pub(crate) fn add_page(&mut self, value: &Value) -> Result<Option<String>, McpError> {
-        let page_bytes = serde_json::to_vec(value)
-            .map_err(|_| McpError::InvalidMessage)?
-            .len();
+    pub(crate) fn add_page(
+        &mut self,
+        value: &Value,
+        page_wire_bytes: usize,
+    ) -> Result<Option<String>, McpError> {
         self.catalog_bytes = self
             .catalog_bytes
-            .checked_add(page_bytes)
+            .checked_add(page_wire_bytes)
             .ok_or(McpError::LimitExceeded)?;
         if self.catalog_bytes > MAX_CATALOG {
             return Err(McpError::LimitExceeded);
@@ -554,7 +555,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CatalogBuilder, MAX_ARGUMENTS, checked_arguments, header_value, parse_tool_result,
+        CatalogBuilder, MAX_ARGUMENTS, MAX_RESULT, checked_arguments, header_value,
+        parse_tool_result, response_result,
     };
     use crate::McpError;
 
@@ -582,7 +584,12 @@ mod tests {
             ]
         });
         let mut catalog = CatalogBuilder::new(true, true);
-        assert!(catalog.add_page(&page).expect("catalog page").is_none());
+        assert!(
+            catalog
+                .add_page(&page, page.to_string().len())
+                .expect("catalog page")
+                .is_none()
+        );
         let catalog = catalog.finish();
         assert_eq!(catalog.tools.len(), 1);
         assert_eq!(catalog.rejected.len(), 2);
@@ -613,7 +620,12 @@ mod tests {
             {"name":"unsupported_ref", "inputSchema":{"type":"object","properties":{"x":{"$ref":"#/$defs/X"}},"$defs":{"X":{"type":"string"}}}}
         ]});
         let mut catalog = CatalogBuilder::new(false, true);
-        assert!(catalog.add_page(&page).expect("catalog page").is_none());
+        assert!(
+            catalog
+                .add_page(&page, page.to_string().len())
+                .expect("catalog page")
+                .is_none()
+        );
         let catalog = catalog.finish();
         assert_eq!(catalog.tools.len(), 1);
         assert_eq!(catalog.tools[0].name, "valid");
@@ -626,6 +638,67 @@ mod tests {
         assert!(matches!(
             parse_tool_result(&result, true),
             Err(McpError::InvalidMessage)
+        ));
+    }
+
+    #[test]
+    fn m11_tool_error_structured_content_and_unsupported_blocks_are_truthful() {
+        let result = json!({"resultType":"complete", "content":[{"type":"text", "text":"failed"}],
+            "structuredContent":{"code":"owned_failure"}, "isError":true});
+        let parsed = parse_tool_result(&result, true).expect("typed tool error");
+        assert!(parsed.is_error);
+        assert_eq!(parsed.text, ["failed"]);
+        assert_eq!(
+            parsed.structured_content,
+            Some(json!({"code":"owned_failure"}))
+        );
+
+        let rpc = json!({"jsonrpc":"2.0", "id":7, "error":{"code":-32000,"message":"unsafe server prose"}});
+        assert!(matches!(
+            response_result(&rpc, 7),
+            Err(McpError::Rpc(-32000))
+        ));
+
+        for kind in ["image", "audio", "resource"] {
+            let unsupported =
+                json!({"resultType":"complete", "content":[{"type":kind, "data":"owned"}]});
+            assert!(matches!(
+                parse_tool_result(&unsupported, true),
+                Err(McpError::UnsupportedResult)
+            ));
+        }
+        let input_required = json!({"resultType":"input_required", "content":[]});
+        assert!(matches!(
+            parse_tool_result(&input_required, true),
+            Err(McpError::UnsupportedResult)
+        ));
+    }
+
+    #[test]
+    fn m11_serialized_tool_result_rejects_256k_plus_one_without_truncation() {
+        let mut result = json!({"resultType":"complete", "content":[{"type":"text", "text":""}], "isError":false});
+        let base = serde_json::to_vec(&result).expect("owned result").len();
+        result["content"][0]["text"] = serde_json::Value::String("x".repeat(MAX_RESULT - base));
+        assert!(parse_tool_result(&result, true).is_ok());
+        result["content"][0]["text"] = serde_json::Value::String("x".repeat(MAX_RESULT - base + 1));
+        assert!(matches!(
+            parse_tool_result(&result, true),
+            Err(McpError::LimitExceeded)
+        ));
+    }
+
+    #[test]
+    fn m11_serialized_arguments_accept_256k_and_reject_plus_one() {
+        let mut arguments = json!({"input":""});
+        let base = serde_json::to_vec(&arguments)
+            .expect("owned arguments")
+            .len();
+        arguments["input"] = serde_json::Value::String("x".repeat(MAX_ARGUMENTS - base));
+        assert!(checked_arguments(&arguments).is_ok());
+        arguments["input"] = serde_json::Value::String("x".repeat(MAX_ARGUMENTS - base + 1));
+        assert!(matches!(
+            checked_arguments(&arguments),
+            Err(McpError::LimitExceeded)
         ));
     }
 }

@@ -18,6 +18,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use eventsource_stream::{Event as RawEvent, EventStreamError, Eventsource};
@@ -40,6 +41,8 @@ const DONE_SENTINEL: &str = "[DONE]";
 /// Base path appended to the configured base URL.
 const CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 
+type RequestAttemptGuard = Arc<dyn Fn(&ChatRequest) -> Result<(), VegaError> + Send + Sync>;
+
 /// OpenAI-compatible streaming chat provider.
 ///
 /// Cloning is cheap (the HTTP client is an internal `Arc`); every clone
@@ -53,6 +56,10 @@ pub struct OpenAiProvider {
     key: String,
     /// Retry schedule applied while establishing the stream.
     retry: RetryPolicy,
+    /// Owner-only request inspection. This must run for every HTTP attempt,
+    /// including retries after a backoff; it is intentionally omitted from
+    /// Debug output and never enters a wire request.
+    before_attempt: Option<RequestAttemptGuard>,
 }
 
 impl fmt::Debug for OpenAiProvider {
@@ -84,12 +91,24 @@ impl OpenAiProvider {
             base_url: base_url.into(),
             key: key.into(),
             retry: RetryPolicy::default(),
+            before_attempt: None,
         })
     }
 
     /// Overrides the retry schedule (defaults: 1s / 2s / 4s, 3 retries).
     pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
         self.retry = retry;
+        self
+    }
+
+    /// Inspect the request immediately before each HTTP attempt, including
+    /// internal 429/network retries. The callback must not retain or expose
+    /// owner credentials in its error or Debug representation.
+    pub fn with_pre_attempt_guard(
+        mut self,
+        guard: impl Fn(&ChatRequest) -> Result<(), VegaError> + Send + Sync + 'static,
+    ) -> Self {
+        self.before_attempt = Some(Arc::new(guard));
         self
     }
 
@@ -140,6 +159,9 @@ impl OpenAiProvider {
         }
         let mut attempt: u32 = 0;
         loop {
+            if let Some(guard) = &self.before_attempt {
+                guard(&req)?;
+            }
             let send = self.send_attempt(&req);
             let outcome = tokio::select! {
                 biased;

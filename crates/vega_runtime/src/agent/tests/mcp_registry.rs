@@ -1,6 +1,6 @@
 use super::*;
 use crate::agent::mcp_registry::{
-    McpCandidate, McpDispatchOutput, McpToolDispatcher, RunCapabilitySnapshot,
+    McpCandidate, McpDispatchFailure, McpDispatchOutput, McpToolDispatcher, RunCapabilitySnapshot,
 };
 
 struct RecordingDispatcher {
@@ -13,12 +13,13 @@ impl McpToolDispatcher for RecordingDispatcher {
         exact_tool_name: String,
         arguments: Value,
         _cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<McpDispatchOutput, VegaError>> {
+    ) -> BoxFuture<'static, Result<McpDispatchOutput, McpDispatchFailure>> {
         let calls = self.calls.clone();
         async move {
             calls.lock().unwrap().push((exact_tool_name, arguments));
             Ok(McpDispatchOutput {
                 text: "owned-tool-ok".to_string(),
+                structured_content: None,
                 is_error: false,
             })
         }
@@ -59,10 +60,11 @@ impl McpToolDispatcher for NoopDispatcher {
         _exact_tool_name: String,
         _arguments: Value,
         _cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<McpDispatchOutput, VegaError>> {
+    ) -> BoxFuture<'static, Result<McpDispatchOutput, McpDispatchFailure>> {
         async {
             Ok(McpDispatchOutput {
                 text: String::new(),
+                structured_content: None,
                 is_error: false,
             })
         }
@@ -72,6 +74,30 @@ impl McpToolDispatcher for NoopDispatcher {
 
 struct RevokeOnApprovalHook {
     revoke: CancellationToken,
+}
+
+struct RotateCredentialOnApprovalHook {
+    current: Arc<Mutex<String>>,
+    replacement: String,
+}
+
+impl RuntimePermissionHook for RotateCredentialOnApprovalHook {
+    fn request(
+        &self,
+        _prompt: RuntimePermissionPrompt,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>> {
+        async { Ok(RuntimeUserDecision::Timeout) }.boxed()
+    }
+
+    fn request_mcp(
+        &self,
+        _prompt: RuntimeMcpPermissionPrompt,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>> {
+        *self.current.lock().unwrap() = self.replacement.clone();
+        async { Ok(RuntimeUserDecision::Once) }.boxed()
+    }
 }
 
 impl RuntimePermissionHook for RevokeOnApprovalHook {
@@ -103,7 +129,7 @@ impl McpToolDispatcher for ReturnAfterCancelDispatcher {
         _exact_tool_name: String,
         _arguments: Value,
         cancel: CancellationToken,
-    ) -> BoxFuture<'static, Result<McpDispatchOutput, VegaError>> {
+    ) -> BoxFuture<'static, Result<McpDispatchOutput, McpDispatchFailure>> {
         let started = self.started.clone();
         async move {
             if let Some(sender) = started.lock().unwrap().take() {
@@ -112,6 +138,7 @@ impl McpToolDispatcher for ReturnAfterCancelDispatcher {
             cancel.cancelled().await;
             Ok(McpDispatchOutput {
                 text: "late-success-must-not-appear".into(),
+                structured_content: None,
                 is_error: false,
             })
         }
@@ -236,11 +263,12 @@ async fn issue73_execute_mcp_always_asks_once_and_audits_only_digest() {
 }
 
 #[tokio::test]
-async fn issue73_mcp_always_or_denial_never_dispatches() {
+async fn issue73_mcp_always_denial_or_timeout_never_dispatches() {
     let server_id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
     for decision in [
         RuntimeUserDecision::Always,
         RuntimeUserDecision::Deny { note: None },
+        RuntimeUserDecision::Timeout,
     ] {
         let project = tempdir().unwrap();
         let tools = vega_tools::Tools::new(project.path()).unwrap();
@@ -441,6 +469,200 @@ fn issue73_same_name_on_two_servers_has_stable_distinct_provider_aliases() {
 }
 
 #[test]
+fn issue73_run_catalog_accepts_exactly_128_tools_and_rejects_129() {
+    let first = "01K5KK7PZ5J8V2GSBMQKS8W71A";
+    let second = "01K5KK7PZ5J8V2GSBMQKS8W71B";
+    let third = "01K5KK7PZ5J8V2GSBMQKS8W71C";
+    let mut entries = Vec::new();
+    for server in [first, second] {
+        for index in 0..64 {
+            entries.push(candidate(server, &format!("tool_{index}")));
+        }
+    }
+    let snapshot = RunCapabilitySnapshot::freeze(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        entries.clone(),
+    )
+    .unwrap();
+    assert_eq!(snapshot.mcp_count(), 128);
+    entries.push(candidate(third, "overflow"));
+    assert!(
+        RunCapabilitySnapshot::freeze(
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::Confirm,
+            entries,
+        )
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn issue73_mcp_dispatch_failures_are_typed_and_never_show_server_prose() {
+    for (case, response, expected) in [
+        (
+            "protocol",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "error": {"code": -32000, "message": "fake-server-private-prose-73"},
+            }),
+            "MCP protocol error",
+        ),
+        (
+            "unsupported",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "resultType": "complete",
+                    "content": [{"type": "image", "data": "fake-server-private-prose-73"}],
+                    "isError": false,
+                },
+            }),
+            "MCP unsupported result content",
+        ),
+    ] {
+        let owned = tempdir().unwrap();
+        let script = owned.path().join(format!("{case}.sh"));
+        fs::write(
+            &script,
+            format!(
+                r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}}]}}}}'
+      ;;
+    *tools/call*)
+      printf '%s\n' '{response}'
+      ;;
+  esac
+done
+"##,
+                response = response,
+            ),
+        )
+        .unwrap();
+        let ready = McpReadyServer::connect_local(
+            "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
+            1,
+            vega_mcp::LocalServer {
+                executable: "/bin/sh".into(),
+                args: vec![script.to_string_lossy().into_owned()],
+                working_directory: owned.path().into(),
+                environment: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+        let alias = RunCapabilitySnapshot::freeze(
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::Confirm,
+            ready.candidates(),
+        )
+        .unwrap()
+        .definitions()
+        .last()
+        .unwrap()
+        .name
+        .clone();
+        let provider = fake_mcp_provider(alias);
+        let tools = vega_tools::Tools::new(owned.path()).unwrap();
+        let mut req = request(vec![ChatMessage::new(ChatRole::User, "Call owned MCP")]);
+        req.tool_config = tool_config(
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::Confirm,
+            owned.path().into(),
+        )
+        .with_mcp_servers(vec![ready]);
+        let outcome = run_agent_with_permission_sink(
+            &provider,
+            &tools,
+            req,
+            CancellationToken::new(),
+            &ExternalDecisionHook {
+                decision: RuntimeUserDecision::Once,
+                prompts: Arc::new(Mutex::new(Vec::new())),
+            },
+            |_| async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        let output = outcome
+            .events
+            .iter()
+            .find_map(|event| match event {
+                RuntimeEvent::ToolCallFinished(result) => {
+                    assert_eq!(result.status, RuntimeToolStatus::Failed);
+                    Some(result.output.as_str())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(output.contains(expected), "{case}: {output}");
+        assert!(!output.contains("fake-server-private-prose-73"));
+        assert!(provider.requests().iter().all(|request| {
+            request
+                .messages
+                .iter()
+                .all(|message| !message.content.contains("fake-server-private-prose-73"))
+        }));
+    }
+}
+
+#[tokio::test]
+async fn issue73_catalog_reads_owner_credentials_once_for_multiple_tools() {
+    let owned = tempdir().unwrap();
+    let script = owned.path().join("two-tools.sh");
+    fs::write(
+        &script,
+        r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"alpha","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"beta","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}}]}}'
+      ;;
+  esac
+done
+"##,
+    )
+    .unwrap();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let observed = reads.clone();
+    let ready = McpReadyServer::connect_local(
+        "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
+        1,
+        vega_mcp::LocalServer {
+            executable: "/bin/sh".into(),
+            args: vec![script.to_string_lossy().to_string()],
+            working_directory: owned.path().to_path_buf(),
+            environment: Vec::new(),
+        },
+    )
+    .await
+    .unwrap()
+    .with_known_credentials_reader(Arc::new(move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+        Ok(vec!["fake-provider-key-never-in-catalog-73".into()])
+    }));
+    let catalog = RunCapabilitySnapshot::freeze(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        ready.candidates(),
+    )
+    .unwrap();
+    assert_eq!(catalog.mcp_count(), 2);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn issue73_mcp_is_not_advertised_in_ask_plan_or_execute_readonly() {
     let id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
     for (mode, permission) in [
@@ -598,4 +820,442 @@ done
     assert!(provider.requests()[1].messages.iter().any(|message| {
         message.role == ChatRole::Tool && message.content.contains("server-says-ok")
     }));
+}
+
+#[tokio::test]
+async fn issue73_mcp_catalog_echoing_owner_secret_is_never_advertised() {
+    const SECRET: &str = "fake-owner-only-catalog-credential-73";
+    let owned = tempdir().unwrap();
+    let script = owned.path().join("catalog-echo.sh");
+    fs::write(
+        &script,
+        format!(
+            r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","description":"{SECRET}","inputSchema":{{"type":"object","properties":{{"query":{{"type":"string"}}}}}}}}]}}}}'
+      ;;
+  esac
+done
+"##
+        ),
+    )
+    .unwrap();
+    let ready = McpReadyServer::connect_local(
+        "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
+        1,
+        vega_mcp::LocalServer {
+            executable: "/bin/sh".into(),
+            args: vec![script.to_string_lossy().to_string()],
+            working_directory: owned.path().to_path_buf(),
+            environment: vec![("MCP_SECRET".into(), SECRET.into())],
+        },
+    )
+    .await
+    .unwrap();
+    let tools = vega_tools::Tools::new(owned.path()).unwrap();
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "Use MCP")]);
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        owned.path().to_path_buf(),
+    )
+    .with_mcp_servers(vec![ready]);
+    let provider =
+        MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]]);
+    let result = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        &ExternalDecisionHook {
+            decision: RuntimeUserDecision::Once,
+            prompts: Arc::new(Mutex::new(Vec::new())),
+        },
+        |_| async { Ok(()) },
+    )
+    .await;
+    assert!(result.is_err(), "secret-bearing catalog must fail closed");
+    assert!(
+        provider.requests().is_empty(),
+        "no provider projection is allowed"
+    );
+}
+
+#[tokio::test]
+async fn issue73_mcp_schema_secret_with_json_escapes_is_never_advertised() {
+    const SECRET: &str = "fake-\"quoted\\schema-73";
+    let owned = tempdir().unwrap();
+    let script = owned.path().join("schema-echo.sh");
+    let catalog_response = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+            "resultType": "complete",
+            "ttlMs": 0,
+            "cacheScope": "private",
+            "tools": [{
+                "name": "echo",
+                "description": "benign",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "default": SECRET}},
+                },
+            }],
+        },
+    })
+    .to_string();
+    fs::write(
+        &script,
+        format!(
+            r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{catalog_response}'
+      ;;
+  esac
+done
+"##
+        ),
+    )
+    .unwrap();
+    let ready = McpReadyServer::connect_local(
+        "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
+        1,
+        vega_mcp::LocalServer {
+            executable: "/bin/sh".into(),
+            args: vec![script.to_string_lossy().to_string()],
+            working_directory: owned.path().to_path_buf(),
+            environment: vec![("MCP_SECRET".into(), SECRET.into())],
+        },
+    )
+    .await
+    .unwrap();
+    let tools = vega_tools::Tools::new(owned.path()).unwrap();
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "Use MCP")]);
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        owned.path().to_path_buf(),
+    )
+    .with_mcp_servers(vec![ready]);
+    let provider =
+        MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]]);
+    let result = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        &ExternalDecisionHook {
+            decision: RuntimeUserDecision::Once,
+            prompts: Arc::new(Mutex::new(Vec::new())),
+        },
+        |_| async { Ok(()) },
+    )
+    .await;
+    assert!(result.is_err());
+    assert!(provider.requests().is_empty());
+}
+
+#[tokio::test]
+async fn issue73_mcp_success_result_echoing_owner_secret_is_never_published() {
+    const SECRET: &str = "fake-owner-only-result-credential-73";
+    let owned = tempdir().unwrap();
+    let script = owned.path().join("result-echo.sh");
+    fs::write(
+        &script,
+        format!(
+            r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","description":"Owned fixture","inputSchema":{{"type":"object","properties":{{"query":{{"type":"string"}}}}}}}}]}}}}'
+      ;;
+    *tools/call*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"resultType":"complete","content":[{{"type":"text","text":"{SECRET}"}}],"isError":false}}}}'
+      ;;
+  esac
+done
+"##
+        ),
+    )
+    .unwrap();
+    let ready = McpReadyServer::connect_local(
+        "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
+        1,
+        vega_mcp::LocalServer {
+            executable: "/bin/sh".into(),
+            args: vec![script.to_string_lossy().to_string()],
+            working_directory: owned.path().to_path_buf(),
+            environment: vec![("MCP_SECRET".into(), SECRET.into())],
+        },
+    )
+    .await
+    .unwrap();
+    let alias = RunCapabilitySnapshot::freeze(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        ready.candidates(),
+    )
+    .unwrap()
+    .definitions()
+    .last()
+    .unwrap()
+    .name
+    .clone();
+    let provider = fake_mcp_provider(alias);
+    let tools = vega_tools::Tools::new(owned.path()).unwrap();
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "Use MCP")]);
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        owned.path().to_path_buf(),
+    )
+    .with_mcp_servers(vec![ready]);
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        &ExternalDecisionHook {
+            decision: RuntimeUserDecision::Once,
+            prompts: Arc::new(Mutex::new(Vec::new())),
+        },
+        |_| async { Ok(()) },
+    )
+    .await
+    .unwrap();
+    assert!(outcome.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::ToolCallFinished(RuntimeToolResult {
+            status: RuntimeToolStatus::Failed,
+            ..
+        })
+    )));
+    for event in &outcome.events {
+        if let RuntimeEvent::ToolCallFinished(result) = event {
+            assert!(!result.output.contains(SECRET));
+        }
+    }
+    assert!(
+        outcome
+            .messages
+            .iter()
+            .all(|message| !message.content.contains(SECRET))
+    );
+    assert!(provider.requests().iter().all(|request| {
+        request
+            .messages
+            .iter()
+            .all(|message| !message.content.contains(SECRET))
+    }));
+}
+
+#[tokio::test]
+async fn issue73_mcp_result_rechecks_owner_secret_after_concurrent_rotation() {
+    const OLD: &str = "fake-oauth-access-before-refresh-73";
+    const NEW: &str = "fake-oauth-access-after-refresh-73";
+    let owned = tempdir().unwrap();
+    let script = owned.path().join("rotated-result.sh");
+    fs::write(
+        &script,
+        format!(
+            r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}}]}}}}'
+      ;;
+    *tools/call*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"resultType":"complete","content":[{{"type":"text","text":"{NEW}"}}],"isError":false}}}}'
+      ;;
+  esac
+done
+"##
+        ),
+    )
+    .unwrap();
+    let current = Arc::new(Mutex::new(OLD.to_string()));
+    let current_for_reader = current.clone();
+    let ready = McpReadyServer::connect_local(
+        "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
+        1,
+        vega_mcp::LocalServer {
+            executable: "/bin/sh".into(),
+            args: vec![script.to_string_lossy().to_string()],
+            working_directory: owned.path().to_path_buf(),
+            environment: Vec::new(),
+        },
+    )
+    .await
+    .unwrap()
+    .with_known_credentials(vec![OLD.into()])
+    .with_known_credentials_reader(Arc::new(move || {
+        Ok(vec![current_for_reader.lock().map_err(|_| ())?.clone()])
+    }));
+    let alias = RunCapabilitySnapshot::freeze(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        ready.candidates(),
+    )
+    .unwrap()
+    .definitions()
+    .last()
+    .unwrap()
+    .name
+    .clone();
+    let provider = fake_mcp_provider(alias);
+    let tools = vega_tools::Tools::new(owned.path()).unwrap();
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "Use MCP")]);
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        owned.path().to_path_buf(),
+    )
+    .with_mcp_servers(vec![ready]);
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        &RotateCredentialOnApprovalHook {
+            current,
+            replacement: NEW.into(),
+        },
+        |_| async { Ok(()) },
+    )
+    .await
+    .unwrap();
+    assert!(outcome.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::ToolCallFinished(RuntimeToolResult {
+            status: RuntimeToolStatus::Failed,
+            output,
+            ..
+        }) if !output.contains(NEW)
+    )));
+    assert!(provider.requests().iter().all(|request| {
+        request
+            .messages
+            .iter()
+            .all(|message| !message.content.contains(NEW))
+    }));
+}
+
+#[tokio::test]
+async fn issue73_mcp_structured_secret_with_json_escapes_is_rejected_for_both_error_flags() {
+    const SECRET: &str = "fake-\"quoted\\credential-73";
+    for is_error in [false, true] {
+        let owned = tempdir().unwrap();
+        let script = owned.path().join("structured-echo.sh");
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {
+                "resultType": "complete",
+                "content": [{"type": "text", "text": "safe-prefix"}],
+                "structuredContent": {"nested": {"credential": SECRET}},
+                "isError": is_error,
+            },
+        })
+        .to_string();
+        fs::write(
+            &script,
+            format!(
+                r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}}]}}}}'
+      ;;
+    *tools/call*)
+      printf '%s\n' '{response}'
+      ;;
+  esac
+done
+"##
+            ),
+        )
+        .unwrap();
+        let ready = McpReadyServer::connect_local(
+            "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
+            1,
+            vega_mcp::LocalServer {
+                executable: "/bin/sh".into(),
+                args: vec![script.to_string_lossy().to_string()],
+                working_directory: owned.path().to_path_buf(),
+                environment: vec![("MCP_SECRET".into(), SECRET.into())],
+            },
+        )
+        .await
+        .unwrap();
+        let alias = RunCapabilitySnapshot::freeze(
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::Confirm,
+            ready.candidates(),
+        )
+        .unwrap()
+        .definitions()
+        .last()
+        .unwrap()
+        .name
+        .clone();
+        let provider = fake_mcp_provider(alias);
+        let tools = vega_tools::Tools::new(owned.path()).unwrap();
+        let mut req = request(vec![ChatMessage::new(ChatRole::User, "Use MCP")]);
+        req.tool_config = tool_config(
+            RuntimeRunMode::Execute,
+            RuntimePermissionMode::Confirm,
+            owned.path().to_path_buf(),
+        )
+        .with_mcp_servers(vec![ready]);
+        let outcome = run_agent_with_permission_sink(
+            &provider,
+            &tools,
+            req,
+            CancellationToken::new(),
+            &ExternalDecisionHook {
+                decision: RuntimeUserDecision::Once,
+                prompts: Arc::new(Mutex::new(Vec::new())),
+            },
+            |_| async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert!(outcome.events.iter().any(|event| matches!(
+            event,
+            RuntimeEvent::ToolCallFinished(RuntimeToolResult {
+                status: RuntimeToolStatus::Failed,
+                output,
+                ..
+            }) if !output.contains("fake-")
+        )));
+        assert!(provider.requests().iter().all(|request| {
+            request
+                .messages
+                .iter()
+                .all(|message| !message.content.contains("fake-"))
+        }));
+    }
 }

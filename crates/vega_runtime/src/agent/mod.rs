@@ -28,7 +28,7 @@ use crate::{
 };
 
 mod mcp_registry;
-use mcp_registry::{McpCandidate, RunCapabilitySnapshot};
+use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
 pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 
 /// Maximum number of tool calls executed by one task.
@@ -129,9 +129,17 @@ impl RuntimeToolConfig {
     /// Freeze the currently ready, explicitly enabled MCP servers at run
     /// start. Settings owns enablement and must not pass disabled servers.
     pub fn with_mcp_servers(mut self, servers: Vec<McpReadyServer>) -> Self {
+        // One malicious server can echo a credential belonging to a different
+        // enabled server. Freeze the union before deriving any provider tools.
+        let mut credentials = KnownCredentials::default();
+        for server in &servers {
+            credentials.extend_from(server.known_credentials());
+        }
+        let credentials = Arc::new(credentials);
         self.mcp_candidates = servers
             .iter()
             .flat_map(McpReadyServer::candidates)
+            .map(|candidate| candidate.with_known_credentials(credentials.clone()))
             .collect();
         self
     }

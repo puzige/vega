@@ -10,6 +10,8 @@ use vega_store::Store;
 use vega_ui::conversation_stream::*;
 use vega_ui::plan_card::PlanReviewRequested;
 
+type CredentialReader = Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync>;
+
 pub(crate) const AGENT_EVENT_POLL: Duration = Duration::from_millis(4);
 pub(crate) const AGENT_EVENT_CAPACITY: usize = 256;
 pub(crate) const AGENT_EVENT_BATCH: usize = 128;
@@ -737,6 +739,32 @@ pub(crate) fn run_agent_worker_with_mcp(
         // Provider construction stays below the reference resolver so an
         // unresolved @file can terminate with zero provider requests or
         // construction, preserving R5's fail-closed boundary.
+        let mut provider_known_credential = None::<String>;
+        let provider_credential_reader: Option<CredentialReader> = config_path
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .zip(configured_provider.as_ref())
+            .map(|(root, provider)| {
+                let root = root.to_path_buf();
+                let key_ref = provider.key_ref.clone();
+                Arc::new(move || {
+                    vega_store::keystore::get_key(&root, &key_ref)
+                        .map(|key| vec![key])
+                        .map_err(|_| ())
+                }) as CredentialReader
+            });
+        let owner = mcp_service.clone();
+        let selected_provider_reader = provider_credential_reader.clone();
+        let owner_credential_reader: CredentialReader = Arc::new(move || {
+            let mut known = match &owner {
+                Some(service) => service.current_owner_credential_values().map_err(|_| ())?,
+                None => Vec::new(),
+            };
+            if let Some(reader) = &selected_provider_reader {
+                known.extend(reader()?);
+            }
+            Ok(known)
+        });
         let mut make_provider = || -> Result<Arc<dyn vega_runtime::Provider>, ()> {
             #[cfg(test)]
             {
@@ -761,9 +789,21 @@ pub(crate) fn run_agent_worker_with_mcp(
             let key = vega_store::keystore::get_key(root, &provider.key_ref).map_err(|_| {
                 credential_failure = true;
             })?;
-            let provider =
-                vega_runtime::OpenAiProvider::new(provider.base_url, key).map_err(|_| ())?;
+            provider_known_credential = Some(key.clone());
+            let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
+                .map_err(|_| ())?
+                .with_pre_attempt_guard(
+                    vega_conversation::agent::OwnerCredentialProvider::pre_attempt_guard(
+                        owner_credential_reader.clone(),
+                    ),
+                );
             Ok(Arc::new(provider) as Arc<dyn vega_runtime::Provider>)
+        };
+        let guard_provider = |provider: Arc<dyn vega_runtime::Provider>| {
+            Arc::new(vega_conversation::agent::OwnerCredentialProvider::new(
+                provider,
+                owner_credential_reader.clone(),
+            )) as Arc<dyn vega_runtime::Provider>
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -812,7 +852,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             content
                         )
                     };
-                    let provider = make_provider()?;
+                    let provider = guard_provider(make_provider()?);
                     let automatic_title = title_notifications.map(|notifications| {
                         vega_conversation::types::AutomaticTitleRequest::new(
                             &title_source,
@@ -841,6 +881,23 @@ pub(crate) fn run_agent_worker_with_mcp(
                     })?,
                     None => Vec::new(),
                 };
+                    let mcp_servers = mcp_servers
+                        .into_iter()
+                        .map(|server| {
+                            let server = server.with_known_credentials(
+                                provider_known_credential.clone().into_iter().collect(),
+                            );
+                            match (
+                                provider_known_credential.as_ref(),
+                                &provider_credential_reader,
+                            ) {
+                                (Some(_), Some(reader)) => {
+                                    server.with_known_credentials_reader(reader.clone())
+                                }
+                                _ => server,
+                            }
+                        })
+                        .collect();
                     if cancel.is_cancelled() {
                         return Err(());
                     }
@@ -866,7 +923,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                     )
                 }
                 PendingAgentRun::ApprovedPlan(instruction_message_id) => {
-                    let provider = make_provider()?;
+                    let provider = guard_provider(make_provider()?);
                     // local credential storage access is synchronous. A route cancellation while
                     // it was waiting must not start a late durable/network run.
                     if cancel.is_cancelled() {
@@ -887,6 +944,23 @@ pub(crate) fn run_agent_worker_with_mcp(
                     })?,
                     None => Vec::new(),
                 };
+                    let mcp_servers = mcp_servers
+                        .into_iter()
+                        .map(|server| {
+                            let server = server.with_known_credentials(
+                                provider_known_credential.clone().into_iter().collect(),
+                            );
+                            match (
+                                provider_known_credential.as_ref(),
+                                &provider_credential_reader,
+                            ) {
+                                (Some(_), Some(reader)) => {
+                                    server.with_known_credentials_reader(reader.clone())
+                                }
+                                _ => server,
+                            }
+                        })
+                        .collect();
                     if cancel.is_cancelled() {
                         return Err(());
                     }

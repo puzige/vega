@@ -114,6 +114,7 @@ These defaults follow the user's requested remote/UI round trip. Implementation 
 ## 10. Amendments to the frozen implementation detail
 
 - 2026-09-20 security review: clarified the intentionally narrower v1 schema validator, strict `isError`, exact-ID stdio cancellation including timeout/race, typed and bound 403 step-up, and local rejection of wider token scope. These narrow previously stated fail-closed obligations; they do not expand the frozen product boundary or imply full M01–M15 acceptance.
+- 2026-09-20 M11 review: the 15-second connection/discovery ceiling in §3.4 is one end-to-end deadline from starting a connection until its usable catalog is ready, not a separate 15 seconds for each phase. Catalog's cumulative 4 MiB bound counts received JSON-RPC response bytes across `tools/list` pages, including insignificant JSON whitespace, rather than reserialized parsed values. These are the stricter interpretations of the existing ceilings.
 
 ## Primary sources
 

@@ -495,6 +495,18 @@ pub(crate) fn from_runtime_event(
 }
 
 pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Option<ToolCall> {
+    let projected = ToolCall {
+        id: call.id.clone(),
+        tool: call.name.clone(),
+        input_json: call.input_json.clone(),
+    };
+    if call.name.starts_with("mcp_") {
+        // The runtime has already replaced raw MCP arguments with this
+        // value-free identity. Keep its exact alias binding at the live UI
+        // boundary; the generic unknown-tool rule below would drop every
+        // valid MCP proposal before the approval card can appear.
+        return McpCallIdentity::from_tool_call(&projected).map(|_| projected);
+    }
     if matches!(call.name.as_str(), "write" | "edit") {
         let audit = vega_tools::WriteEditAudit::from_json(&call.input_json).ok()?;
         if audit.tool().as_str() != call.name {
@@ -505,11 +517,7 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
     {
         return None;
     }
-    Some(ToolCall {
-        id: call.id.clone(),
-        tool: call.name.clone(),
-        input_json: call.input_json.clone(),
-    })
+    Some(projected)
 }
 
 pub(crate) fn validate_runtime_validation_rejection(

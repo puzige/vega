@@ -46,6 +46,7 @@ pub trait PermissionHook: Send + Sync {
 }
 
 mod compaction;
+mod credential_guard;
 mod entry;
 mod events;
 mod permission_queue;
@@ -59,6 +60,7 @@ pub use compaction::{
     ConversationCompactionHook, compact_thread_manually, compact_thread_manually_accounted,
     read_context_projection, read_context_settings, save_context_settings,
 };
+pub use credential_guard::OwnerCredentialProvider;
 pub use entry::*;
 pub(crate) use events::*;
 pub use permission_queue::*;

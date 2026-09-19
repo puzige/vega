@@ -791,28 +791,43 @@ pub(crate) async fn execute_prepared_waiting(
                 );
             }
             match executed {
-                Ok(output) if output.text.len() <= MCP_RESULT_LIMIT => {
-                    let status = if output.is_error {
-                        RuntimeToolStatus::Failed
-                    } else {
-                        RuntimeToolStatus::Success
-                    };
-                    let mut result = terminal_result(
-                        &call,
-                        format!("[Untrusted external MCP result]\n{}", output.text),
-                        status,
-                        None,
-                    );
-                    if status == RuntimeToolStatus::Success {
-                        result.truncated = Some(false);
+                Ok(output) => match frozen.safe_result_text(&output) {
+                    Ok(text) if text.len() <= MCP_RESULT_LIMIT => {
+                        let status = if output.is_error {
+                            RuntimeToolStatus::Failed
+                        } else {
+                            RuntimeToolStatus::Success
+                        };
+                        let mut result = terminal_result(
+                            &call,
+                            format!("[Untrusted external MCP result]\n{text}"),
+                            status,
+                            None,
+                        );
+                        if status == RuntimeToolStatus::Success {
+                            result.truncated = Some(false);
+                        }
+                        (result, false)
                     }
-                    (result, false)
-                }
-                Err(_) | Ok(_) => (
+                    _ => (
+                        terminal_result(
+                            &call,
+                            "Tool error: MCP result failed or exceeded limit".to_string(),
+                            RuntimeToolStatus::Failed,
+                            None,
+                        ),
+                        false,
+                    ),
+                },
+                Err(error) => (
                     terminal_result(
                         &call,
-                        "Tool error: MCP result failed or exceeded limit".to_string(),
-                        RuntimeToolStatus::Failed,
+                        error.safe_output().to_string(),
+                        if matches!(error, mcp_registry::McpDispatchFailure::Cancelled) {
+                            RuntimeToolStatus::Cancelled
+                        } else {
+                            RuntimeToolStatus::Failed
+                        },
                         None,
                     ),
                     false,

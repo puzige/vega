@@ -264,6 +264,7 @@ impl SettingsView {
     ) {
         // 与 Esc 同效：派发同一动作，由 app 级处理器统一收口。
         self.cancel_provider_operation(cx);
+        self.cancel_mcp_oauth(cx);
         window.dispatch_action(Box::new(CloseSettings), cx);
     }
 
@@ -749,7 +750,8 @@ impl Render for SettingsView {
             1 => ("General", "settings-page-general"),
             2 => ("Reasoning", "settings-page-reasoning"),
             3 => ("Pricing", "settings-page-pricing"),
-            _ => ("Usage", "settings-page-usage"),
+            4 => ("Usage", "settings-page-usage"),
+            _ => ("MCP", "settings-page-mcp"),
         };
         let navigation = [
             (1, "General", "settings-nav-general"),
@@ -757,6 +759,7 @@ impl Render for SettingsView {
             (2, "Reasoning", "settings-nav-reasoning"),
             (3, "Pricing", "settings-nav-pricing"),
             (4, "Usage", "settings-nav-usage"),
+            (5, "MCP", "settings-nav-mcp"),
         ];
         div()
             .id("settings-page")
@@ -806,6 +809,7 @@ impl Render for SettingsView {
                                 |this, event: &gpui_kit::KeyDownEvent, window, cx| {
                                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                         this.cancel_provider_operation(cx);
+                                        this.cancel_mcp_oauth(cx);
                                         window.dispatch_action(Box::new(CloseSettings), cx);
                                         cx.stop_propagation();
                                     }
@@ -832,6 +836,13 @@ impl Render for SettingsView {
                                 move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
                                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                         this.cancel_provider_operation(cx);
+                                        if this.section == 5
+                                            && index != 5
+                                            && (this.mcp.oauth_discovery.is_some()
+                                                || this.mcp.oauth_flow_id.is_some())
+                                        {
+                                            this.cancel_mcp_oauth(cx);
+                                        }
                                         this.section = index;
                                         cx.stop_propagation();
                                         cx.notify();
@@ -850,6 +861,13 @@ impl Render for SettingsView {
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.cancel_provider_operation(cx);
+                                    if this.section == 5
+                                        && index != 5
+                                        && (this.mcp.oauth_discovery.is_some()
+                                            || this.mcp.oauth_flow_id.is_some())
+                                    {
+                                        this.cancel_mcp_oauth(cx);
+                                    }
                                     this.section = index;
                                     cx.notify();
                                 }),
@@ -921,6 +939,9 @@ impl Render for SettingsView {
                                     })
                                     .when(self.section == 4, |body| {
                                         body.child(self.render_usage(cx))
+                                    })
+                                    .when(self.section == 5, |body| {
+                                        body.child(self.render_mcp(cx))
                                     }),
                             ),
                     ),

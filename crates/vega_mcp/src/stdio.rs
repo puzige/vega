@@ -26,6 +26,7 @@ pub struct StdioClient {
     stdout: BufReader<ChildStdout>,
     version: ProtocolVersion,
     next_id: u64,
+    last_response_bytes: usize,
 }
 
 impl StdioClient {
@@ -71,6 +72,7 @@ impl StdioClient {
             stdout: BufReader::new(stdout),
             version: ProtocolVersion::Modern,
             next_id: 1,
+            last_response_bytes: 0,
         };
         let probe_id = client.id()?;
         let probe = modern_request(probe_id, "server/discover", empty_params());
@@ -128,7 +130,7 @@ impl StdioClient {
                 object.insert("cursor".into(), Value::String(value.clone()));
             }
             let result = self.request("tools/list", params, CALL_TIMEOUT).await?;
-            cursor = catalog.add_page(&result)?;
+            cursor = catalog.add_page(&result, self.last_response_bytes)?;
             match &cursor {
                 None => return Ok(catalog.finish()),
                 Some(value) if !seen_cursors.insert(value.clone()) => {
@@ -290,6 +292,7 @@ impl StdioClient {
                 continue;
             }
             if response.get("id") == Some(&Value::from(id)) {
+                self.last_response_bytes = bytes_read;
                 return Ok(response);
             }
         }

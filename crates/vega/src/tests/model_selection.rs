@@ -27,6 +27,14 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
     let config_root = tempfile::tempdir().expect("config root");
     let config_path = config_root.path().join("config.toml");
     model_selection_config(&config_path);
+    // The mock replaces transport only; the production owner-secret guard
+    // still rereads the selected provider's locally configured credential.
+    vega_store::keystore::set_key(
+        config_root.path(),
+        "owned",
+        "fake-owned-provider-key-model-selection-73",
+    )
+    .expect("owned test credential");
 
     let data_root = tempfile::tempdir().expect("data root");
     let database_path = data_root.path().join("vega.db");
@@ -255,6 +263,11 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
     });
     assert_eq!(provider.requests().len(), 1);
     assert_eq!(provider.requests()[0].model, "gpt-5.6-luna");
+    assert!(provider.requests()[0].messages.iter().all(|message| {
+        !message
+            .content
+            .contains("fake-owned-provider-key-model-selection-73")
+    }));
 
     let reopened = Store::open(&database_path).expect("reopen model store");
     let reopened_thread = vega_conversation::threads::open_thread(&reopened, &thread.id)

@@ -212,6 +212,7 @@ const KEY_STORED_PLACEHOLDER: &str = "•••••••已存储";
 /// form, and the default pickers. Holds its own form input buffers, so it
 /// must be cached by the parent across re-renders (it is rebuilt — reloading
 mod helpers;
+mod mcp;
 mod preferences;
 mod provider_management;
 mod reasoning_render;

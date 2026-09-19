@@ -98,6 +98,7 @@ struct RegistryState {
 
 const OAUTH_FLOW_LIFETIME: Duration = Duration::from_secs(180);
 const MAX_OAUTH_FLOWS: usize = 8;
+const MCP_CONNECT_DISCOVER_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct PreparedOAuth {
     server_id: String,
@@ -246,6 +247,47 @@ impl McpServerSettingsService {
         self.registry.lock().map_err(|_| McpSettingsError::Store)
     }
 
+    fn enabled_known_credentials(&self) -> Result<Vec<String>, McpSettingsError> {
+        let store = self.store()?;
+        let mut known = mcp_servers::list(store.conn())?
+            .into_iter()
+            .filter(|row| row.enabled)
+            .map(|row| known_credentials_from_row(&self.config_root, &row))
+            .collect::<Result<Vec<_>, _>>()
+            .map(|groups| groups.into_iter().flatten().collect::<Vec<_>>())?;
+        // The run authority includes all owner-held values, not only the
+        // currently selected provider or enabled servers: a malicious server
+        // can echo another provider's key or a disabled server's old key.
+        known.extend(all_owner_credentials(&self.config_root, &store)?);
+        Ok(known)
+    }
+
+    /// Owner-only current values for the final provider projection boundary.
+    /// This is called again before every model request, including summaries;
+    /// it intentionally includes disabled servers and other Provider keys.
+    pub fn current_owner_credential_values(&self) -> Result<Vec<String>, McpSettingsError> {
+        self.enabled_known_credentials()
+    }
+
+    /// Re-read owner-held values at the final lower-trust Settings boundary.
+    /// A remote scope or metadata string is not safe merely because its syntax
+    /// is valid: a server may echo a short credential in a UI-visible field.
+    fn reject_owner_secret_in_ui<'a>(
+        &self,
+        fields: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), McpSettingsError> {
+        let store = self.store()?;
+        let fields = fields.into_iter().collect::<Vec<_>>();
+        let known = all_owner_credentials(&self.config_root, &store)?;
+        if known
+            .iter()
+            .any(|secret| !secret.is_empty() && fields.iter().any(|field| field.contains(secret)))
+        {
+            return Err(McpSettingsError::AuthorizationFailed);
+        }
+        Ok(())
+    }
+
     /// Read-only list; no process launch, network access or secret retrieval.
     pub fn list(&self) -> Result<Vec<McpServerView>, McpSettingsError> {
         let store = self.store()?;
@@ -363,6 +405,11 @@ impl McpServerSettingsService {
         let resource = vega_mcp::ResourceAuthorization::discover(endpoint, allow_loopback_http)
             .await
             .map_err(map_oauth_error)?;
+        self.reject_owner_secret_in_ui(
+            std::iter::once(resource.resource())
+                .chain(resource.authorization_servers().iter().map(String::as_str))
+                .chain(resource.requested_scopes().iter().map(String::as_str)),
+        )?;
         Ok(McpOAuthDiscovery {
             resource: resource.resource().to_owned(),
             issuers: resource.authorization_servers().to_vec(),
@@ -396,6 +443,11 @@ impl McpServerSettingsService {
             }
         }
         offers.sort_by(|left, right| left.server_id.cmp(&right.server_id));
+        self.reject_owner_secret_in_ui(
+            offers
+                .iter()
+                .flat_map(|offer| offer.added_scopes.iter().map(String::as_str)),
+        )?;
         Ok(offers)
     }
 
@@ -541,6 +593,14 @@ impl McpServerSettingsService {
             .unwrap_or_default();
         let resource_name = resource.resource().to_owned();
         let registration_endpoint = server.registration_endpoint().map(str::to_owned);
+        self.reject_owner_secret_in_ui(
+            std::iter::once(resource_name.as_str())
+                .chain(std::iter::once(selected_issuer))
+                .chain(std::iter::once(redirect_uri.as_str()))
+                .chain(requested_scopes.iter().map(String::as_str))
+                .chain(step_up_added_scopes.iter().map(String::as_str))
+                .chain(registration_endpoint.iter().map(String::as_str)),
+        )?;
         let flow_id = ulid::Ulid::generate().to_string();
         {
             let store = self.store()?;
@@ -605,6 +665,17 @@ impl McpServerSettingsService {
             self.cancel_oauth(&flow_id)?;
             return Err(McpSettingsError::AuthorizationFailed);
         }
+        if let Err(error) = self.reject_owner_secret_in_ui(
+            std::iter::once(resource_name.as_str())
+                .chain(std::iter::once(selected_issuer))
+                .chain(std::iter::once(redirect_uri.as_str()))
+                .chain(requested_scopes.iter().map(String::as_str))
+                .chain(step_up_added_scopes.iter().map(String::as_str))
+                .chain(registration_endpoint.iter().map(String::as_str)),
+        ) {
+            self.cancel_oauth(&flow_id)?;
+            return Err(error);
+        }
         Ok(McpOAuthPreparation {
             flow_id,
             resource: resource_name,
@@ -638,6 +709,14 @@ impl McpServerSettingsService {
         if prepared.created.elapsed() >= OAUTH_FLOW_LIFETIME {
             return Err(McpSettingsError::Conflict);
         }
+        // A Provider key can be configured after the preview but before the
+        // user confirms. Recheck before registration or browser handoff.
+        self.reject_owner_secret_in_ui(
+            std::iter::once(prepared.resource.resource())
+                .chain(std::iter::once(prepared.server.issuer()))
+                .chain(std::iter::once(prepared.redirect_uri.as_str()))
+                .chain(prepared.requested_scopes.iter().map(String::as_str)),
+        )?;
         let (row, epoch, cancel) = {
             let store = self.store()?;
             let mut state = self.lock()?;
@@ -699,6 +778,14 @@ impl McpServerSettingsService {
         let authorization_url = request.authorization_url().to_owned();
         let requested_scopes = prepared.requested_scopes.clone();
         let issuer = prepared.server.issuer().to_owned();
+        if let Err(error) = self.reject_owner_secret_in_ui(
+            std::iter::once(authorization_url.as_str())
+                .chain(std::iter::once(issuer.as_str()))
+                .chain(requested_scopes.iter().map(String::as_str)),
+        ) {
+            self.cancel_oauth(flow_id)?;
+            return Err(error);
+        }
         let insertion = (|| -> Result<(), McpSettingsError> {
             let store = self.store()?;
             let mut state = self.lock()?;
@@ -929,7 +1016,7 @@ impl McpServerSettingsService {
         let connected = tokio::select! {
             biased;
             _ = connecting.cancelled() => return Err(McpSettingsError::Conflict),
-            ready = connect_row(&self.config_root, &row, None) => ready?,
+            ready = connect_row_with_timeout(&self.config_root, &row, None, MCP_CONNECT_DISCOVER_TIMEOUT) => ready?,
         };
         let store = self.store()?;
         let state = self.lock()?;
@@ -951,11 +1038,18 @@ impl McpServerSettingsService {
                 return Err(McpSettingsError::Credential);
             }
         }
+        let ready = connected
+            .ready
+            .with_known_credentials(all_owner_credentials(&self.config_root, &store)?);
+        if ready.catalog_contains_known_credential() {
+            ready.revoke();
+            return Err(McpSettingsError::Connection);
+        }
         let result = McpConnectionTest {
-            tool_names: connected.ready.tool_names(),
-            rejected_tools: connected.ready.rejected_tools().to_vec(),
+            tool_names: ready.tool_names(),
+            rejected_tools: ready.rejected_tools().to_vec(),
         };
-        connected.ready.revoke();
+        ready.revoke();
         Ok(result)
     }
 
@@ -974,11 +1068,23 @@ impl McpServerSettingsService {
         // diagnostics; each `ensure_ready` still CAS-checks its own revision.
         let results =
             futures::future::join_all(rows.iter().map(|row| self.ensure_ready(row))).await;
+        // A server can echo a different enabled server's key. The cross-server
+        // guard therefore includes every currently owner-held credential, not
+        // only those belonging to transports that became ready. Read after
+        // connection so a just-refreshed OAuth token is included as well.
+        let known_credentials = self.enabled_known_credentials()?;
+        let credential_owner = self.clone();
+        let credential_reader: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync> =
+            Arc::new(move || credential_owner.enabled_known_credentials().map_err(|_| ()));
         let mut ready_servers = Vec::new();
         let mut unavailable = Vec::new();
         for (row, result) in rows.into_iter().zip(results) {
             match result {
-                Ok(ready) => ready_servers.push(ready),
+                Ok(ready) => ready_servers.push(
+                    ready
+                        .with_known_credentials(known_credentials.clone())
+                        .with_known_credentials_reader(credential_reader.clone()),
+                ),
                 Err(error) => unavailable.push(McpServerDiagnostic {
                     server_id: row.id,
                     code: error.code().to_owned(),
@@ -1093,7 +1199,7 @@ impl McpServerSettingsService {
         let attempt = tokio::select! {
             biased;
             _ = connecting.cancelled() => return Err(McpSettingsError::Conflict),
-            ready = connect_row(&self.config_root, row, scope_sink) => ready,
+            ready = connect_row_with_timeout(&self.config_root, row, scope_sink, MCP_CONNECT_DISCOVER_TIMEOUT) => ready,
         };
         let connected = match attempt {
             Ok(ready) => ready,
@@ -1443,6 +1549,122 @@ fn env_slots_from_row(row: &McpServerRow) -> Result<Vec<McpEnvSlot>, McpSettings
     Ok(slots)
 }
 
+fn oauth_token_values(envelope: &str) -> Result<Vec<String>, McpSettingsError> {
+    let value: serde_json::Value =
+        serde_json::from_str(envelope).map_err(|_| McpSettingsError::Credential)?;
+    let access = value
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or(McpSettingsError::Credential)?;
+    let mut values = vec![access.to_owned()];
+    if let Some(refresh) = value.get("refresh_token") {
+        match refresh {
+            serde_json::Value::Null => {}
+            serde_json::Value::String(refresh) if !refresh.is_empty() => {
+                values.push(refresh.clone());
+            }
+            _ => return Err(McpSettingsError::Credential),
+        }
+    }
+    Ok(values)
+}
+
+fn all_owner_credentials(
+    config_root: &std::path::Path,
+    store: &Store,
+) -> Result<Vec<String>, McpSettingsError> {
+    // A reference name is not a credential type: a Provider may legitimately
+    // be named `mcp-demo-oauth`. Only validated MCP records can identify an
+    // owner-only OAuth token envelope; every other key is opaque.
+    let mut oauth_refs = HashSet::new();
+    for row in mcp_servers::list(store.conn())? {
+        if row.transport == "remote"
+            && row.remote_auth_mode.as_deref() == Some("oauth")
+            && let Some(reference) = row.remote_credential_ref
+        {
+            if !is_owned_secret_ref(&row.id, &reference) || !reference.ends_with("-oauth") {
+                return Err(McpSettingsError::Credential);
+            }
+            oauth_refs.insert(reference);
+        }
+    }
+    for pending in mcp_servers::pending_cleanup(store.conn())? {
+        if pending.credential_ref.ends_with("-oauth")
+            && is_owned_secret_ref(&pending.server_id, &pending.credential_ref)
+            && mcp_servers::cleanup_target_is_stale(store.conn(), &pending)?
+        {
+            oauth_refs.insert(pending.credential_ref);
+        }
+    }
+    let references = match vega_store::keystore::available_refs(config_root) {
+        Ok(references) => references,
+        Err(vega_store::keystore::Error::Missing) => return Ok(Vec::new()),
+        Err(_) => return Err(McpSettingsError::Credential),
+    };
+    let mut known = Vec::new();
+    for reference in references {
+        let value = match vega_store::keystore::get_key(config_root, &reference) {
+            Ok(value) => value,
+            Err(vega_store::keystore::Error::Missing) => continue,
+            Err(_) => return Err(McpSettingsError::Credential),
+        };
+        if oauth_refs.contains(&reference) {
+            known.extend(oauth_token_values(&value)?);
+        } else {
+            known.push(value);
+        }
+    }
+    Ok(known)
+}
+
+fn known_credentials_from_row(
+    config_root: &std::path::Path,
+    row: &McpServerRow,
+) -> Result<Vec<String>, McpSettingsError> {
+    let references = match row.transport.as_str() {
+        "local" => env_slots_from_row(row)?
+            .into_iter()
+            .map(|slot| slot.credential_ref)
+            .collect::<Vec<_>>(),
+        "remote" if matches!(row.remote_auth_mode.as_deref(), Some("bearer" | "oauth")) => {
+            let expected_suffix = if row.remote_auth_mode.as_deref() == Some("oauth") {
+                "-oauth"
+            } else {
+                "-bearer"
+            };
+            match row.remote_credential_ref.as_ref() {
+                Some(reference)
+                    if is_owned_secret_ref(&row.id, reference)
+                        && reference.ends_with(expected_suffix) =>
+                {
+                    vec![reference.clone()]
+                }
+                Some(_) => return Err(McpSettingsError::Credential),
+                None => Vec::new(),
+            }
+        }
+        "remote" => Vec::new(),
+        _ => return Err(McpSettingsError::Store),
+    };
+    let mut known = Vec::new();
+    for reference in references {
+        let value = match vega_store::keystore::get_key(config_root, &reference) {
+            Ok(value) => value,
+            // A missing reference is not an owner-held value; ensure_ready
+            // already reports that server as unavailable.
+            Err(vega_store::keystore::Error::Missing) => continue,
+            Err(_) => return Err(McpSettingsError::Credential),
+        };
+        if row.remote_auth_mode.as_deref() == Some("oauth") {
+            known.extend(oauth_token_values(&value)?);
+        } else {
+            known.push(value);
+        }
+    }
+    Ok(known)
+}
+
 fn is_owned_secret_ref(id: &str, reference: &str) -> bool {
     if !id
         .parse::<ulid::Ulid>()
@@ -1558,6 +1780,20 @@ fn view(
     })
 }
 
+async fn connect_row_with_timeout(
+    config_root: &std::path::Path,
+    row: &McpServerRow,
+    scope_sink: Option<ScopeChallengeSink>,
+    timeout: Duration,
+) -> Result<ConnectedRow, McpSettingsError> {
+    // A single deadline covers transport negotiation, OAuth refresh where
+    // applicable, and every tools/list page. The transport's own per-phase
+    // ceilings may be stricter, but may never extend this overall budget.
+    tokio::time::timeout(timeout, connect_row(config_root, row, scope_sink))
+        .await
+        .map_err(|_| McpSettingsError::Connection)?
+}
+
 async fn connect_row(
     config_root: &std::path::Path,
     row: &McpServerRow,
@@ -1590,6 +1826,8 @@ async fn connect_row(
                 },
             )
             .await
+            .map_err(|_| McpSettingsError::Connection)?
+            .with_server_display_name(row.display_name.clone())
             .map_err(|_| McpSettingsError::Connection)?;
             Ok(ConnectedRow {
                 ready,
@@ -1602,6 +1840,7 @@ async fn connect_row(
             authorization,
         } => {
             let mut refreshed_oauth = None;
+            let mut known_credentials = Vec::new();
             let client = match authorization {
                 McpRemoteAuthorization::None => {
                     vega_mcp::HttpClient::connect(&endpoint, allow_loopback_http)
@@ -1613,8 +1852,12 @@ async fn connect_row(
                         .remote_credential_ref
                         .as_deref()
                         .ok_or(McpSettingsError::Credential)?;
+                    if !is_owned_secret_ref(&row.id, reference) || !reference.ends_with("-bearer") {
+                        return Err(McpSettingsError::Credential);
+                    }
                     let secret = vega_store::keystore::get_key(config_root, reference)
                         .map_err(|_| McpSettingsError::Credential)?;
+                    known_credentials.push(secret.clone());
                     let bearer =
                         vega_mcp::BearerCredential::manual(&endpoint, allow_loopback_http, secret)
                             .map_err(|_| McpSettingsError::Credential)?;
@@ -1662,6 +1905,7 @@ async fn connect_row(
                         .map_err(map_oauth_error)?;
                     let envelope = vega_store::keystore::get_key(config_root, reference)
                         .map_err(|_| McpSettingsError::Credential)?;
+                    known_credentials.extend(oauth_token_values(&envelope)?);
                     let tokens = oauth_client
                         .restore_owner_only_tokens(&envelope, &resource, &row.id, generation)
                         .map_err(map_oauth_error)?;
@@ -1673,6 +1917,7 @@ async fn connect_row(
                         let envelope = refreshed
                             .to_owner_only_envelope(&row.id, generation)
                             .map_err(map_oauth_error)?;
+                        known_credentials.extend(oauth_token_values(&envelope)?);
                         refreshed_oauth = Some((reference.to_owned(), envelope));
                         refreshed
                     } else {
@@ -1697,7 +1942,10 @@ async fn connect_row(
                 scope_sink,
             )
             .await
-            .map_err(|_| McpSettingsError::Connection)?;
+            .map_err(|_| McpSettingsError::Connection)?
+            .with_server_display_name(row.display_name.clone())
+            .map_err(|_| McpSettingsError::Connection)?
+            .with_known_credentials(known_credentials);
             Ok(ConnectedRow {
                 ready,
                 refreshed_oauth,
@@ -1714,6 +1962,179 @@ mod oauth_tests;
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn issue73_owner_secret_sources_cover_local_bearer_and_both_oauth_tokens() {
+        let config = tempfile::tempdir().unwrap();
+        let id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
+        let mut row = McpServerRow {
+            id: id.into(),
+            display_name: "owned fixture".into(),
+            transport: "local".into(),
+            local_executable: Some("/bin/sh".into()),
+            local_args_json: Some("[]".into()),
+            local_working_directory: None,
+            local_env_refs_json: None,
+            remote_endpoint: None,
+            remote_allow_loopback_http: false,
+            remote_auth_mode: None,
+            remote_credential_ref: None,
+            remote_oauth_issuer: None,
+            remote_oauth_client_id: None,
+            enabled: true,
+            deleting: false,
+            config_revision: 1,
+            last_error_code: None,
+            created_at: 0,
+            updated_at: 0,
+        };
+        let local_ref = format!("mcp-{id}-r1-env-API_KEY");
+        row.local_env_refs_json = Some(
+            serde_json::json!([{
+                "variable": "API_KEY",
+                "credential_ref": local_ref,
+            }])
+            .to_string(),
+        );
+        vega_store::keystore::set_key(config.path(), &local_ref, "fake-local-owner-value-73")
+            .unwrap();
+        assert_eq!(
+            known_credentials_from_row(config.path(), &row).unwrap(),
+            vec!["fake-local-owner-value-73"]
+        );
+
+        row.transport = "remote".into();
+        row.local_env_refs_json = None;
+        row.remote_auth_mode = Some("bearer".into());
+        let bearer_ref = format!("mcp-{id}-r1-bearer");
+        row.remote_credential_ref = Some(bearer_ref.clone());
+        vega_store::keystore::set_key(config.path(), &bearer_ref, "fake-bearer-owner-value-73")
+            .unwrap();
+        assert_eq!(
+            known_credentials_from_row(config.path(), &row).unwrap(),
+            vec!["fake-bearer-owner-value-73"]
+        );
+
+        row.remote_auth_mode = Some("oauth".into());
+        let oauth_ref = format!("mcp-{id}-r1-oauth");
+        row.remote_credential_ref = Some(oauth_ref.clone());
+        vega_store::keystore::set_key(
+            config.path(),
+            &oauth_ref,
+            &serde_json::json!({
+                "access_token": "fake-oauth-access-73",
+                "refresh_token": "fake-oauth-refresh-73",
+                "issuer": "https://fixture.invalid",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            known_credentials_from_row(config.path(), &row).unwrap(),
+            vec!["fake-oauth-access-73", "fake-oauth-refresh-73"]
+        );
+
+        row.remote_credential_ref = Some("provider-api-key".into());
+        assert!(matches!(
+            known_credentials_from_row(config.path(), &row),
+            Err(McpSettingsError::Credential)
+        ));
+    }
+
+    #[test]
+    fn issue73_run_secret_snapshot_includes_other_provider_and_disabled_mcp_values() {
+        const OTHER_PROVIDER: &str = "fake-second-provider-secret-73";
+        const DISABLED_MCP: &str = "fake-disabled-mcp-secret-73";
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        vega_store::keystore::set_key(config.path(), "provider-primary", "fake-primary-73")
+            .unwrap();
+        vega_store::keystore::set_key(config.path(), "provider-secondary", OTHER_PROVIDER).unwrap();
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
+        let disabled = service
+            .create(McpServerForm {
+                display_name: "Disabled owner".into(),
+                transport: McpServerTransport::Local {
+                    executable: "/bin/sh".into(),
+                    args: vec![],
+                    working_directory: Some(data.path().into()),
+                    environment: vec![McpEnvironmentVariable {
+                        variable: "MCP_TOKEN".into(),
+                    }],
+                },
+            })
+            .unwrap();
+        service
+            .set_local_env_secret(
+                &disabled.id,
+                disabled.config_revision,
+                "MCP_TOKEN",
+                DISABLED_MCP.into(),
+            )
+            .unwrap();
+        let known = service.enabled_known_credentials().unwrap();
+        assert!(known.iter().any(|value| value == OTHER_PROVIDER));
+        assert!(known.iter().any(|value| value == DISABLED_MCP));
+        assert!(!service.list().unwrap()[0].enabled);
+    }
+
+    #[test]
+    fn issue73_provider_name_ending_mcp_oauth_is_an_opaque_secret() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        const SECRET: &str = "fake-provider-with-oauth-like-name-73";
+        vega_store::keystore::set_key(config.path(), "mcp-demo-oauth", SECRET).unwrap();
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
+
+        let known = service.enabled_known_credentials().unwrap();
+        assert_eq!(known, vec![SECRET]);
+    }
+
+    #[tokio::test]
+    async fn issue73_settings_test_never_returns_secret_bearing_tool_name() {
+        const SECRET: &str = "fake-provider-key-name-73";
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        vega_store::keystore::set_key(config.path(), "provider-fixture", SECRET).unwrap();
+        let script = data.path().join("echo-provider-key-name.sh");
+        fs::write(
+            &script,
+            format!(
+                r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"{SECRET}","inputSchema":{{"type":"object"}}}}]}}}}'
+      ;;
+  esac
+done
+"##
+            ),
+        )
+        .unwrap();
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().to_path_buf());
+        let saved = service
+            .create(McpServerForm {
+                display_name: "Owned catalog echo".into(),
+                transport: McpServerTransport::Local {
+                    executable: "/bin/sh".into(),
+                    args: vec![script.to_string_lossy().to_string()],
+                    working_directory: Some(data.path().to_path_buf()),
+                    environment: Vec::new(),
+                },
+            })
+            .unwrap();
+        let preview = service
+            .test_connection(&saved.id, saved.config_revision, true)
+            .await;
+        assert!(matches!(preview, Err(McpSettingsError::Connection)));
+    }
 
     #[test]
     fn issue73_oauth_install_revoke_preserves_own_callback_but_cancels_old_flows() {
@@ -2127,6 +2548,60 @@ done
             .unwrap()
             .unwrap();
         assert!(matches!(result, Err(McpSettingsError::Conflict)));
+    }
+
+    #[tokio::test]
+    async fn issue73_connection_deadline_covers_probe_and_catalog_together() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let script = data.path().join("two-slow-phases.sh");
+        let probed = data.path().join("probe-completed");
+        fs::write(
+            &script,
+            r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      sleep 0.18
+      printf 'yes' > "$1"
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
+      ;;
+    *tools/list*)
+      sleep 0.18
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}'
+      ;;
+  esac
+done
+"##,
+        )
+        .unwrap();
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
+        let saved = service
+            .create(McpServerForm {
+                display_name: "Two slow phases".into(),
+                transport: McpServerTransport::Local {
+                    executable: "/bin/sh".into(),
+                    args: vec![
+                        script.to_string_lossy().into_owned(),
+                        probed.to_string_lossy().into_owned(),
+                    ],
+                    working_directory: Some(data.path().into()),
+                    environment: Vec::new(),
+                },
+            })
+            .unwrap();
+        let store = service.store().unwrap();
+        let row = mcp_servers::find(store.conn(), &saved.id).unwrap().unwrap();
+        let started = Instant::now();
+        let result =
+            connect_row_with_timeout(config.path(), &row, None, Duration::from_millis(280)).await;
+        assert!(matches!(result, Err(McpSettingsError::Connection)));
+        assert!(
+            probed.exists(),
+            "probe must finish before the shared deadline expires"
+        );
+        assert!(started.elapsed() < Duration::from_millis(700));
     }
 
     #[test]

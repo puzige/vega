@@ -22,6 +22,7 @@ struct HttpReply {
     status: StatusCode,
     message: Option<Value>,
     session_id: Option<String>,
+    body_bytes: usize,
 }
 
 /// Streamable HTTP MCP client. Bearer credentials must be bound to the exact
@@ -34,6 +35,7 @@ pub struct HttpClient {
     session_id: Option<String>,
     next_id: u64,
     bearer: Option<BearerCredential>,
+    last_response_bytes: usize,
 }
 
 impl HttpClient {
@@ -89,6 +91,7 @@ impl HttpClient {
             session_id: None,
             next_id: 1,
             bearer,
+            last_response_bytes: 0,
         };
         let id = connection.id()?;
         let probe = modern_request(id, "server/discover", empty_params());
@@ -167,7 +170,7 @@ impl HttpClient {
             let result = self
                 .request("tools/list", params, None, CALL_TIMEOUT)
                 .await?;
-            cursor = catalog.add_page(&result)?;
+            cursor = catalog.add_page(&result, self.last_response_bytes)?;
             match &cursor {
                 None => return Ok(catalog.finish()),
                 Some(value) if !seen_cursors.insert(value.clone()) => {
@@ -217,8 +220,20 @@ impl HttpClient {
         };
         let reply = self.post(&request, tool, limit).await?;
         if reply.status != StatusCode::OK {
+            // A non-auth HTTP failure can still carry a matching JSON-RPC
+            // error. Preserve its typed code, never its server-provided prose.
+            // 401 and 403 retain the separate authorization behavior.
+            if !matches!(
+                reply.status,
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            ) && let Some(response) = reply.message.as_ref()
+                && let Err(McpError::Rpc(code)) = response_result(response, id)
+            {
+                return Err(McpError::Rpc(code));
+            }
             return Err(McpError::Transport);
         }
+        self.last_response_bytes = reply.body_bytes;
         let response = reply.message.ok_or(McpError::InvalidMessage)?;
         Ok(response_result(&response, id)?.clone())
     }
@@ -283,7 +298,7 @@ impl HttpClient {
         }
         let expected_id = message.get("id").and_then(Value::as_u64);
         timeout(limit, async {
-            let response = request.send().await.map_err(|_| McpError::Transport)?;
+            let response = request.send().await.map_err(map_http_error)?;
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED {
                 return Err(McpError::AuthRequired);
@@ -314,6 +329,7 @@ impl HttpClient {
                     status,
                     message: None,
                     session_id,
+                    body_bytes: 0,
                 });
             }
             let content_type = response
@@ -322,12 +338,14 @@ impl HttpClient {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or("")
                 .to_owned();
-            let message = if content_type.starts_with("application/json") {
+            let (message, body_bytes) = if content_type.starts_with("application/json") {
                 read_json(response, status.is_success()).await?
             } else if content_type.starts_with("text/event-stream") && status.is_success() {
-                Some(read_sse(response, expected_id.ok_or(McpError::InvalidMessage)?).await?)
+                let (message, bytes) =
+                    read_sse(response, expected_id.ok_or(McpError::InvalidMessage)?).await?;
+                (Some(message), bytes)
             } else if status.is_client_error() || status.is_server_error() {
-                None
+                (None, 0)
             } else {
                 return Err(McpError::InvalidMessage);
             };
@@ -335,6 +353,7 @@ impl HttpClient {
                 status,
                 message,
                 session_id,
+                body_bytes,
             })
         })
         .await
@@ -362,11 +381,15 @@ pub(crate) fn validate_endpoint(url: &Url, allow_loopback_http: bool) -> Result<
     }
 }
 
-async fn read_json(response: reqwest::Response, strict: bool) -> Result<Option<Value>, McpError> {
+async fn read_json(
+    response: reqwest::Response,
+    strict: bool,
+) -> Result<(Option<Value>, usize), McpError> {
     let bytes = read_bounded_bytes(response).await?;
+    let body_bytes = bytes.len();
     match serde_json::from_slice(&bytes) {
-        Ok(message) => Ok(Some(message)),
-        Err(_) if !strict => Ok(None),
+        Ok(message) => Ok((Some(message), body_bytes)),
+        Err(_) if !strict => Ok((None, body_bytes)),
         Err(_) => Err(McpError::InvalidMessage),
     }
 }
@@ -378,7 +401,7 @@ async fn read_bounded_bytes(response: reqwest::Response) -> Result<Vec<u8>, McpE
         .await
         .map_err(|_| McpError::Timeout)?
     {
-        let chunk = chunk.map_err(|_| McpError::Transport)?;
+        let chunk = chunk.map_err(map_http_error)?;
         if bytes.len() + chunk.len() > MAX_RESPONSE {
             return Err(McpError::LimitExceeded);
         }
@@ -387,7 +410,10 @@ async fn read_bounded_bytes(response: reqwest::Response) -> Result<Vec<u8>, McpE
     Ok(bytes)
 }
 
-async fn read_sse(response: reqwest::Response, expected_id: u64) -> Result<Value, McpError> {
+async fn read_sse(
+    response: reqwest::Response,
+    expected_id: u64,
+) -> Result<(Value, usize), McpError> {
     let mut stream = response.bytes_stream();
     let mut event = Vec::new();
     let mut total = 0usize;
@@ -395,7 +421,7 @@ async fn read_sse(response: reqwest::Response, expected_id: u64) -> Result<Value
         .await
         .map_err(|_| McpError::Timeout)?
     {
-        let chunk = chunk.map_err(|_| McpError::Transport)?;
+        let chunk = chunk.map_err(map_http_error)?;
         total = total
             .checked_add(chunk.len())
             .ok_or(McpError::LimitExceeded)?;
@@ -417,13 +443,21 @@ async fn read_sse(response: reqwest::Response, expected_id: u64) -> Result<Value
             if let Some(length) = delimiter {
                 let body_len = event.len() - length;
                 if let Some(message) = parse_sse_event(&event[..body_len], expected_id)? {
-                    return Ok(message);
+                    return Ok((message, total));
                 }
                 event.clear();
             }
         }
     }
     Err(McpError::InvalidMessage)
+}
+
+fn map_http_error(error: reqwest::Error) -> McpError {
+    if error.is_timeout() {
+        McpError::Timeout
+    } else {
+        McpError::Transport
+    }
 }
 
 fn parse_sse_event(bytes: &[u8], expected_id: u64) -> Result<Option<Value>, McpError> {

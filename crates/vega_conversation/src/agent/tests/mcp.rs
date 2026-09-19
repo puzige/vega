@@ -2,7 +2,8 @@ use super::*;
 use crate::McpServerSettingsService;
 use crate::types::{
     ApprovalAudit, ApprovalSource, McpCallIdentity, McpRemoteAuthorization, McpServerForm,
-    McpServerTransport, ToolCall,
+    McpServerTransport, ToolCall, ToolCallStatus, ToolCardInputProjection,
+    ToolCardResultProjection,
 };
 use std::path::Path;
 use std::sync::Arc;
@@ -223,6 +224,263 @@ fn issue73_external_call_persists_all_critical_transitions_and_safe_card() {
     );
     assert_eq!(sequence, 2);
     assert!(!state.input_json.contains("SECRET_ARGUMENT_VALUE"));
+    assert_eq!(
+        messages::finish_streaming(store.conn(), "assistant-mcp", "", "done").unwrap(),
+        1
+    );
+    let history = crate::history::latest_history_page(&store, "thread-1", 32).unwrap();
+    assert!(
+        history.entries.iter().any(|entry| matches!(
+            entry,
+            crate::history::HistoryEntry::Tool {
+                call_id,
+                input: Some(ToolCardInputProjection::Mcp { .. }),
+                result: Some(ToolCardResultProjection::Mcp { status: ToolCallStatus::Success, .. }),
+                ..
+            } if call_id == &call.id
+        )),
+        "restart history keeps the safe MCP result card, not a corrupt placeholder"
+    );
+}
+
+#[tokio::test]
+async fn issue73_rotated_provider_secret_in_historical_mcp_result_is_blocked_after_restart() {
+    const SECRET: &str = "fake-rotated-provider-secret-in-old-mcp-result-73";
+    let (store, project, data, project_id) = setup_external("confirm");
+    let database_path = data.path().join("vega.db");
+    let config_root = data.path().join("config");
+    messages::insert(
+        store.conn(),
+        &messages::MessageRow {
+            id: "user-before-rotation".into(),
+            thread_id: "thread-1".into(),
+            seq: 1,
+            role: "user".into(),
+            kind: "text".into(),
+            content: "Find a harmless value".into(),
+            status: "done".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
+    messages::insert(
+        store.conn(),
+        &messages::MessageRow {
+            id: "assistant-before-rotation".into(),
+            thread_id: "thread-1".into(),
+            seq: 2,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: String::new(),
+            status: "streaming".into(),
+            created_at: 2,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
+    let (call, _) = proposal();
+    let audit = RuntimeApprovalAudit {
+        decision: RuntimeApprovalDecision::Once,
+        note: None,
+        source: RuntimeApprovalSource::User,
+        danger: None,
+    };
+    let mut sequence = 1;
+    for event in [
+        RuntimeEvent::ToolCallProposed(call.clone()),
+        RuntimeEvent::ToolCallApproved {
+            call_id: call.id.clone(),
+            audit: audit.clone(),
+            remember_rule: None,
+        },
+        RuntimeEvent::ToolCallRunning {
+            call_id: call.id.clone(),
+        },
+        RuntimeEvent::ToolCallFinished(RuntimeToolResult {
+            call_id: call.id.clone(),
+            output: format!("[Untrusted external MCP result]\n{SECRET}"),
+            status: RuntimeToolStatus::Success,
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: Some(false),
+            approval: Some(audit),
+            remember_rule: None,
+        }),
+    ] {
+        persist_runtime_event(
+            &store,
+            &project_id,
+            "thread-1",
+            "assistant-before-rotation",
+            "mock-model",
+            false,
+            "",
+            &mut sequence,
+            &event,
+        )
+        .unwrap();
+    }
+    messages::finish_streaming(store.conn(), "assistant-before-rotation", "", "done").unwrap();
+    drop(store);
+
+    vega_store::keystore::set_key(&config_root, "provider-rotated", SECRET).unwrap();
+    let reopened = Store::open(&database_path).unwrap();
+    reopened.migrate().unwrap();
+    let service = McpServerSettingsService::new(database_path, config_root.clone());
+    assert!(
+        service.list().unwrap().is_empty(),
+        "no MCP server is enabled or configured"
+    );
+    let owner = service.clone();
+    let inner = Arc::new(MockProvider::new(vec![ScriptStep::text(
+        "unrelated history still works",
+    )]));
+    let guarded = OwnerCredentialProvider::new(
+        inner.clone(),
+        Arc::new(move || owner.current_owner_credential_values().map_err(|_| ())),
+    );
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let hook = FixedPermissionHook {
+        calls: Arc::new(AtomicUsize::new(0)),
+        decision: PermissionDecision::Once,
+    };
+    let attempt = run_thread_task_with_images_reasoning_and_mcp(
+        &reopened,
+        &guarded,
+        &tools,
+        "thread-1",
+        "Continue without the old secret",
+        "System",
+        CancellationToken::new(),
+        &hook,
+        |_| Ok(()),
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+    )
+    .await;
+    assert!(attempt.is_err() || attempt.is_ok_and(|run| run.failed));
+    assert!(
+        inner.requests().is_empty(),
+        "no provider request may contain the rotated key"
+    );
+    assert_eq!(
+        tool_calls::find_state(reopened.conn(), &call.id)
+            .unwrap()
+            .unwrap()
+            .output_text
+            .as_deref(),
+        Some(format!("[Untrusted external MCP result]\n{SECRET}").as_str()),
+        "the durable audit remains unchanged"
+    );
+
+    vega_store::keystore::set_key(&config_root, "provider-rotated", "different-fake-key-73")
+        .unwrap();
+    let resumed = run_thread_task_with_images_reasoning_and_mcp(
+        &reopened,
+        &guarded,
+        &tools,
+        "thread-1",
+        "Continue with unrelated history",
+        "System",
+        CancellationToken::new(),
+        &hook,
+        |_| Ok(()),
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!resumed.failed);
+    assert_eq!(inner.requests().len(), 1);
+}
+
+#[test]
+fn issue73_unapproved_external_call_replays_as_rejected_mcp_card() {
+    let (store, _dir, project_id) = setup();
+    messages::insert(
+        store.conn(),
+        &messages::MessageRow {
+            id: "assistant-mcp-denied".into(),
+            thread_id: "thread-1".into(),
+            seq: 1,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: String::new(),
+            status: "streaming".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
+    let (call, _) = proposal();
+    let mut sequence = 1;
+    let persist = |event: RuntimeEvent, sequence: &mut i64| {
+        persist_runtime_event(
+            &store,
+            &project_id,
+            "thread-1",
+            "assistant-mcp-denied",
+            "mock-model",
+            false,
+            "",
+            sequence,
+            &event,
+        )
+    };
+    persist(RuntimeEvent::ToolCallProposed(call.clone()), &mut sequence).unwrap();
+    persist(
+        RuntimeEvent::ToolCallFinished(RuntimeToolResult {
+            call_id: call.id.clone(),
+            output: "Tool error: MCP call not approved".into(),
+            status: RuntimeToolStatus::Rejected,
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: None,
+            approval: Some(RuntimeApprovalAudit {
+                decision: RuntimeApprovalDecision::Deny,
+                note: None,
+                source: RuntimeApprovalSource::Timeout,
+                danger: None,
+            }),
+            remember_rule: None,
+        }),
+        &mut sequence,
+    )
+    .unwrap();
+    assert_eq!(
+        messages::finish_streaming(store.conn(), "assistant-mcp-denied", "", "done").unwrap(),
+        1
+    );
+    let history = crate::history::latest_history_page(&store, "thread-1", 32).unwrap();
+    assert!(
+        history.entries.iter().any(|entry| matches!(
+            entry,
+            crate::history::HistoryEntry::Tool {
+                call_id,
+                input: Some(ToolCardInputProjection::Mcp { .. }),
+                result: Some(ToolCardResultProjection::Mcp { status: ToolCallStatus::Rejected, .. }),
+                ..
+            } if call_id == &call.id
+        )),
+        "a timed-out approval must replay as rejected MCP, never as a corrupt result"
+    );
 }
 
 #[test]
@@ -306,6 +564,136 @@ fn issue73_unknown_external_outcome_remains_explicit_after_store_restart() {
     assert!(!card.input_json.contains("SENTINEL_PRIVATE"));
 }
 
+#[test]
+fn issue73_typed_mcp_failures_validate_and_restart_without_accepting_server_prose() {
+    let (call, _) = proposal();
+    let approval = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::User,
+        danger: None,
+    };
+    for output in [
+        "Tool error: MCP protocol error",
+        "Tool error: MCP invalid protocol response",
+        "Tool error: MCP unsupported transport",
+        "Tool error: MCP unsupported result content",
+        "Tool error: MCP response limit exceeded",
+        "Tool error: MCP request timed out; side-effect outcome unknown",
+        "Tool error: MCP transport failed; side-effect outcome unknown",
+        "Tool error: MCP authorization required or invalid",
+        "Tool error: MCP connection configuration invalid",
+    ] {
+        assert!(
+            validate_recovered_projection(
+                "project-1",
+                "thread-1",
+                &call.id,
+                &call.name,
+                &call.input_json,
+                output,
+                RuntimeToolStatus::Failed,
+                &approval,
+                None,
+                None,
+            )
+            .is_ok(),
+            "safe typed failure must validate: {output}"
+        );
+    }
+    assert!(
+        validate_recovered_projection(
+            "project-1",
+            "thread-1",
+            &call.id,
+            &call.name,
+            &call.input_json,
+            "Tool error: MCP fake-server-private-prose-73",
+            RuntimeToolStatus::Failed,
+            &approval,
+            None,
+            None,
+        )
+        .is_err()
+    );
+
+    let (store, directory, project_id) = setup();
+    messages::insert(
+        store.conn(),
+        &messages::MessageRow {
+            id: "assistant-typed-failure".into(),
+            thread_id: "thread-1".into(),
+            seq: 1,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: String::new(),
+            status: "streaming".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
+    let mut sequence = 1;
+    for event in [
+        RuntimeEvent::ToolCallProposed(call.clone()),
+        RuntimeEvent::ToolCallApproved {
+            call_id: call.id.clone(),
+            audit: RuntimeApprovalAudit {
+                decision: RuntimeApprovalDecision::Once,
+                note: None,
+                source: RuntimeApprovalSource::User,
+                danger: None,
+            },
+            remember_rule: None,
+        },
+        RuntimeEvent::ToolCallRunning {
+            call_id: call.id.clone(),
+        },
+        RuntimeEvent::ToolCallFinished(RuntimeToolResult {
+            call_id: call.id.clone(),
+            output: "Tool error: MCP unsupported result content".into(),
+            status: RuntimeToolStatus::Failed,
+            reused: false,
+            exit_code: None,
+            duration_ms: None,
+            truncated: None,
+            approval: Some(RuntimeApprovalAudit {
+                decision: RuntimeApprovalDecision::Once,
+                note: None,
+                source: RuntimeApprovalSource::User,
+                danger: None,
+            }),
+            remember_rule: None,
+        }),
+    ] {
+        persist_runtime_event(
+            &store,
+            &project_id,
+            "thread-1",
+            "assistant-typed-failure",
+            "mock-model",
+            false,
+            "",
+            &mut sequence,
+            &event,
+        )
+        .unwrap();
+    }
+    drop(store);
+    let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+    reopened.migrate().unwrap();
+    let card = tool_calls::find_state(reopened.conn(), &call.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(card.status, "failed");
+    assert_eq!(
+        card.output_text.as_deref(),
+        Some("Tool error: MCP unsupported result content")
+    );
+}
+
 #[tokio::test]
 async fn issue73_owned_stdio_reaches_durable_conversation_and_second_provider_round() {
     let (store, project_dir, data_dir, _) = setup_external("confirm");
@@ -379,6 +767,7 @@ done
         calls: Arc::new(AtomicUsize::new(0)),
         decision: PermissionDecision::Once,
     };
+    let mut live_events = Vec::new();
     let run = run_thread_task_with_images_reasoning_and_mcp(
         &store,
         &provider,
@@ -388,7 +777,10 @@ done
         "System",
         CancellationToken::new(),
         &hook,
-        |_| Ok(()),
+        |event| {
+            live_events.push(event.clone());
+            Ok(())
+        },
         PersistenceActorConfig::default(),
         None,
         None,
@@ -400,6 +792,17 @@ done
     .unwrap();
     ready.revoke();
     assert!(!run.failed);
+    let live_proposal = live_events.iter().find_map(|event| match event {
+        ConversationEvent::ToolCallProposed { call } => Some(call),
+        _ => None,
+    });
+    let live_proposal = live_proposal.expect("owned local MCP proposal reaches the UI event sink");
+    assert_eq!(live_proposal.tool, alias);
+    assert!(!live_proposal.input_json.contains("SENTINEL_PRIVATE"));
+    assert!(matches!(
+        crate::types::tool_card_input_projection(live_proposal),
+        ToolCardInputProjection::Mcp { .. }
+    ));
     assert_eq!(hook.calls.load(Ordering::SeqCst), 1);
     assert_eq!(fs::read_to_string(&calls_log).unwrap().lines().count(), 1);
     assert!(
@@ -418,6 +821,138 @@ done
     assert!(provider.requests()[1].messages.iter().any(|message| {
         message.role == vega_runtime::ChatRole::Tool && message.content.contains("owned-answer")
     }));
+}
+
+#[tokio::test]
+async fn issue73_owner_secret_echo_never_reaches_live_events_provider_or_restart_history() {
+    const SECRET: &str = "fake-durable-owner-credential-73";
+    let (store, project_dir, data_dir, _) = setup_external("confirm");
+    let script = data_dir.path().join("secret-echo-mcp.sh");
+    fs::write(
+        &script,
+        format!(
+            r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","description":"Owned fixture","inputSchema":{{"type":"object"}}}}]}}}}'
+      ;;
+    *tools/call*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"resultType":"complete","content":[{{"type":"text","text":"{SECRET}"}}],"isError":false}}}}'
+      ;;
+  esac
+done
+"##
+        ),
+    )
+    .unwrap();
+    let server_id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
+    let ready = McpReadyServer::connect_local(
+        server_id.into(),
+        1,
+        vega_mcp::LocalServer {
+            executable: "/bin/sh".into(),
+            args: vec![script.to_string_lossy().into_owned()],
+            working_directory: data_dir.path().to_path_buf(),
+            environment: vec![("MCP_SECRET".into(), SECRET.into())],
+        },
+    )
+    .await
+    .unwrap();
+    let alias = McpCallIdentity {
+        server_id: server_id.into(),
+        config_revision: 1,
+        exact_tool_name: "echo".into(),
+        arguments_bytes: 0,
+        arguments_sha256: "0".repeat(64),
+        argument_preview: String::new(),
+    }
+    .alias();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "secret-echo-call".into(),
+                name: alias.clone(),
+                input_json: "{}".into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("Secret refused.".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+    ]);
+    let tools = vega_tools::Tools::new(project_dir.path()).unwrap();
+    let hook = FixedPermissionHook {
+        calls: Arc::new(AtomicUsize::new(0)),
+        decision: PermissionDecision::Once,
+    };
+    let mut live_events = Vec::new();
+    let run = run_thread_task_with_images_reasoning_and_mcp(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Call owned MCP",
+        "System",
+        CancellationToken::new(),
+        &hook,
+        |event| {
+            live_events.push(event.clone());
+            Ok(())
+        },
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        vec![ready.clone()],
+    )
+    .await
+    .unwrap();
+    ready.revoke();
+    assert!(!run.failed);
+    assert_eq!(hook.calls.load(Ordering::SeqCst), 1);
+    assert!(live_events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ToolCallFinished { result, .. }
+            if result.status == ToolCallStatus::Failed && !result.output.contains(SECRET)
+    )));
+    assert!(live_events.iter().all(|event| match event {
+        ConversationEvent::ToolCallOutput { chunk, .. } => !chunk.0.contains(SECRET),
+        ConversationEvent::ToolCallFinished { result, .. } => !result.output.contains(SECRET),
+        _ => true,
+    }));
+    let row = tool_calls::find_state(store.conn(), "secret-echo-call")
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.status, "failed");
+    assert!(!row.output_text.unwrap_or_default().contains(SECRET));
+    assert!(provider.requests().iter().all(|request| {
+        request
+            .messages
+            .iter()
+            .all(|message| !message.content.contains(SECRET))
+    }));
+    let history = crate::history::latest_history_page(&store, "thread-1", 32).unwrap();
+    assert!(history.entries.iter().any(|entry| matches!(
+        entry,
+        crate::history::HistoryEntry::Tool {
+            call_id,
+            result: Some(ToolCardResultProjection::Mcp {
+                status: ToolCallStatus::Failed,
+                ..
+            }),
+            ..
+        } if call_id == "secret-echo-call"
+    )));
 }
 
 #[tokio::test]
@@ -498,6 +1033,7 @@ async fn issue73_owned_remote_http_reaches_durable_conversation_and_second_provi
         calls: Arc::new(AtomicUsize::new(0)),
         decision: PermissionDecision::Once,
     };
+    let mut live_events = Vec::new();
     let run = run_thread_task_with_images_reasoning_and_mcp(
         &store,
         &provider,
@@ -507,7 +1043,10 @@ async fn issue73_owned_remote_http_reaches_durable_conversation_and_second_provi
         "System",
         CancellationToken::new(),
         &hook,
-        |_| Ok(()),
+        |event| {
+            live_events.push(event.clone());
+            Ok(())
+        },
         PersistenceActorConfig::default(),
         None,
         None,
@@ -519,6 +1058,17 @@ async fn issue73_owned_remote_http_reaches_durable_conversation_and_second_provi
     .unwrap();
     ready.revoke();
     assert!(!run.failed);
+    let live_proposal = live_events.iter().find_map(|event| match event {
+        ConversationEvent::ToolCallProposed { call } => Some(call),
+        _ => None,
+    });
+    let live_proposal = live_proposal.expect("owned HTTP MCP proposal reaches the UI event sink");
+    assert_eq!(live_proposal.tool, alias);
+    assert!(!live_proposal.input_json.contains("PRIVATE_REMOTE_ARGUMENT"));
+    assert!(matches!(
+        crate::types::tool_card_input_projection(live_proposal),
+        ToolCardInputProjection::Mcp { .. }
+    ));
     assert_eq!(hook.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         received.try_recv().unwrap()["query"],
@@ -574,6 +1124,294 @@ fn owned_runtime() -> tokio::runtime::Runtime {
         .enable_all()
         .build()
         .expect("owned UI/run runtime")
+}
+
+#[tokio::test]
+async fn issue73_production_entry_exposes_same_name_server_provenance_to_model() {
+    let (store, project_dir, data_dir, _) = setup_external("confirm");
+    let script = data_dir.path().join("same-name-provenance-mcp.sh");
+    fs::write(
+        &script,
+        r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","description":"Same-name owned fixture","inputSchema":{"type":"object"}}]}}'
+      ;;
+    *tools/call*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":"same-name-answer"}],"isError":false}}'
+      ;;
+  esac
+done
+"##,
+    )
+    .expect("owned same-name MCP fixture");
+
+    let local_id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
+    let remote_id = "01K5KK7PZ5J8V2GSBMQKS8W71B";
+    let script_path = script.to_string_lossy().into_owned();
+    let working_directory = data_dir.path().to_path_buf();
+    let make_ready = |server_id: &'static str| {
+        let script_path = script_path.clone();
+        let working_directory = working_directory.clone();
+        async move {
+            McpReadyServer::connect_local(
+                server_id.to_owned(),
+                1,
+                vega_mcp::LocalServer {
+                    executable: "/bin/sh".into(),
+                    args: vec![script_path],
+                    working_directory,
+                    environment: Vec::new(),
+                },
+            )
+            .await
+            .expect("same-name MCP fixture connection")
+        }
+    };
+    let local = make_ready(local_id).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let remote_server = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut stream, request) = read_owned_mcp_http_request(stream).await;
+            let result = match request["method"].as_str().unwrap() {
+                "server/discover" => serde_json::json!({
+                    "resultType": "complete",
+                    "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}},
+                    "ttlMs": 0,
+                    "cacheScope": "private"
+                }),
+                "tools/list" => serde_json::json!({
+                    "resultType": "complete",
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                    "tools": [{
+                        "name": "echo",
+                        "description": "Same-name owned fixture",
+                        "inputSchema": {"type": "object"}
+                    }]
+                }),
+                method => panic!("unexpected same-name MCP method: {method}"),
+            };
+            let response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": result
+            })
+            .to_string();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response.len()
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let remote_client = vega_mcp::HttpClient::connect(&endpoint, true)
+        .await
+        .expect("same-name remote MCP fixture connection");
+    let remote = McpReadyServer::connect_http(remote_id.to_owned(), 1, remote_client)
+        .await
+        .expect("same-name remote MCP discovery");
+    remote_server.await.expect("same-name remote MCP fixture");
+
+    let provider =
+        MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]]);
+    let tools = vega_tools::Tools::new(project_dir.path()).expect("owned project tools");
+    let hook = FixedPermissionHook {
+        calls: Arc::new(AtomicUsize::new(0)),
+        decision: PermissionDecision::Once,
+    };
+    let run = run_thread_task_with_images_reasoning_and_mcp(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Use the local same-name echo tool",
+        "System",
+        CancellationToken::new(),
+        &hook,
+        |_| Ok(()),
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        vec![local, remote],
+    )
+    .await
+    .expect("production conversation entry");
+    assert!(!run.failed);
+
+    let requests = provider.requests();
+    let definitions = requests[0]
+        .tools
+        .iter()
+        .filter(|definition| definition.name.starts_with("mcp_"))
+        .collect::<Vec<_>>();
+    assert_eq!(definitions.len(), 2);
+    let local_alias = McpCallIdentity {
+        server_id: local_id.into(),
+        config_revision: 1,
+        exact_tool_name: "echo".into(),
+        arguments_bytes: 0,
+        arguments_sha256: "0".repeat(64),
+        argument_preview: String::new(),
+    }
+    .alias();
+    let remote_alias = McpCallIdentity {
+        server_id: remote_id.into(),
+        config_revision: 1,
+        exact_tool_name: "echo".into(),
+        arguments_bytes: 0,
+        arguments_sha256: "0".repeat(64),
+        argument_preview: String::new(),
+    }
+    .alias();
+    assert_ne!(local_alias, remote_alias);
+    let local_definition = definitions
+        .iter()
+        .find(|definition| definition.name == local_alias)
+        .expect("local same-name alias");
+    let remote_definition = definitions
+        .iter()
+        .find(|definition| definition.name == remote_alias)
+        .expect("remote same-name alias");
+    assert!(local_definition.description.contains(local_id));
+    assert!(
+        local_definition
+            .description
+            .contains("transport: stdio (local process)")
+    );
+    assert!(local_definition.description.contains("exact tool: echo"));
+    assert!(remote_definition.description.contains(remote_id));
+    assert!(
+        remote_definition
+            .description
+            .contains("transport: Streamable HTTP (remote endpoint)")
+    );
+    assert!(remote_definition.description.contains("exact tool: echo"));
+}
+
+#[tokio::test]
+async fn issue73_production_entry_exposes_same_transport_server_labels_to_model() {
+    let (store, project_dir, data_dir, _) = setup_external("confirm");
+    let script = data_dir.path().join("same-transport-label-mcp.sh");
+    fs::write(
+        &script,
+        r##"#!/bin/sh
+while IFS= read -r request; do
+  case "$request" in
+    *server/discover*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
+      ;;
+    *tools/list*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","description":"Same-name owned fixture","inputSchema":{"type":"object"}}]}}'
+      ;;
+  esac
+done
+"##,
+    )
+    .expect("owned same-transport MCP fixture");
+    let script_path = script.to_string_lossy().into_owned();
+    let working_directory = data_dir.path().to_path_buf();
+    let service = McpServerSettingsService::new(
+        data_dir.path().join("vega.db"),
+        data_dir.path().join("config"),
+    );
+    let make_form = |display_name: &str| McpServerForm {
+        display_name: display_name.into(),
+        transport: McpServerTransport::Local {
+            executable: "/bin/sh".into(),
+            args: vec![script_path.clone()],
+            working_directory: Some(working_directory.clone()),
+            environment: Vec::new(),
+        },
+    };
+    let first = service
+        .create(make_form("Local \"Primary\""))
+        .expect("first same-transport MCP");
+    let second = service
+        .create(make_form("Local Secondary"))
+        .expect("second same-transport MCP");
+    service
+        .set_enabled(&first.id, first.config_revision, true, true)
+        .await
+        .expect("enable first same-transport MCP");
+    service
+        .set_enabled(&second.id, second.config_revision, true, true)
+        .await
+        .expect("enable second same-transport MCP");
+    let readiness = service
+        .ready_for_run()
+        .await
+        .expect("same-transport MCP readiness");
+    assert_eq!(readiness.ready_servers.len(), 2);
+    assert!(readiness.unavailable.is_empty());
+
+    let provider =
+        MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])]]);
+    let tools = vega_tools::Tools::new(project_dir.path()).expect("owned project tools");
+    let hook = FixedPermissionHook {
+        calls: Arc::new(AtomicUsize::new(0)),
+        decision: PermissionDecision::Once,
+    };
+    let run = run_thread_task_with_images_reasoning_and_mcp(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Use the local same-name echo tool",
+        "System",
+        CancellationToken::new(),
+        &hook,
+        |_| Ok(()),
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        None,
+        Vec::new(),
+        readiness.ready_servers,
+    )
+    .await
+    .expect("production conversation entry");
+    assert!(!run.failed);
+
+    let requests = provider.requests();
+    let definitions = requests[0]
+        .tools
+        .iter()
+        .filter(|definition| definition.name.starts_with("mcp_"))
+        .collect::<Vec<_>>();
+    assert_eq!(definitions.len(), 2);
+    assert!(definitions.iter().any(|definition| {
+        definition
+            .description
+            .contains(r#"Configured server label (untrusted): "Local \"Primary\"";"#)
+            && definition
+                .description
+                .contains("transport: stdio (local process)")
+            && definition.description.contains("exact tool: echo")
+    }));
+    assert!(definitions.iter().any(|definition| {
+        definition
+            .description
+            .contains("Configured server label (untrusted): \"Local Secondary\";")
+            && definition
+                .description
+                .contains("transport: stdio (local process)")
+            && definition.description.contains("exact tool: echo")
+    }));
 }
 
 struct OwnedCallSpec<'a> {

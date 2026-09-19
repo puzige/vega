@@ -425,6 +425,40 @@ async fn retry_429_without_retry_after_falls_back_to_backoff() {
 }
 
 #[tokio::test]
+async fn guarded_429_retry_rechecks_and_preserves_normal_retry() {
+    let ok = sse_response(
+        &[
+            r#"{"choices":[{"delta":{"content":"safe"}}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+        ],
+        true,
+    );
+    let server = spawn_server(scripted_server(vec![
+        status_response("429 Too Many Requests", &[], "slow down"),
+        ok,
+    ]))
+    .await;
+    let inspections = Arc::new(AtomicUsize::new(0));
+    let seen = inspections.clone();
+    let provider = provider_for(&server, fast_policy(1)).with_pre_attempt_guard(move |_request| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    let stream = provider
+        .chat_stream(request(), CancellationToken::new())
+        .await
+        .expect("safe retry succeeds");
+    let events = collect_events(stream, 4).await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Ok(ProviderEvent::TextDelta(text)) if text == "safe"))
+    );
+    assert_eq!(inspections.load(Ordering::SeqCst), 2);
+    assert_eq!(server.connection_count(), 2);
+}
+
+#[tokio::test]
 async fn retries_exhausted_returns_non_retryable_provider_error() {
     let server = spawn_server(scripted_server(vec![
         status_response("500 Internal Server Error", &[], "boom"),
