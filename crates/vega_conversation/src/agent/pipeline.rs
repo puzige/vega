@@ -284,8 +284,10 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         ));
     }
     // #76 correction: the app worker has already checked that this frozen
-    // provider/model is the unique enabled selection. Legacy per-thread rows
-    // have no provider identity, so they are never a runtime fallback. Read
+    // provider/model is the unique enabled selection. Direct callers with no
+    // frozen provider stay unbudgeted; a model ID alone cannot select a
+    // provider policy. Legacy per-thread rows have no provider identity, so
+    // they are never a runtime fallback. Read
     // the model policy once in this accepted-turn snapshot; tool rounds reuse
     // the resulting immutable ContextBudget in AgentRequest.
     let context_policy = reasoning

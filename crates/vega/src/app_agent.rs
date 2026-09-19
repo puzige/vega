@@ -624,14 +624,33 @@ pub(crate) fn run_agent_worker(
         // before entering the runtime. The resulting FrozenReasoning is moved
         // into the selected entry point and is never re-read during retries
         // or tool rounds.
-        let configured_provider = config_path
+        let config = config_path
             .as_deref()
-            .and_then(|path| vega_store::config::read_from(path).ok())
-            .and_then(|config| unique_provider_for_model(&config, &thread.model));
-        // A supplied config path is an authority claim. Even test-only
-        // provider overrides must not let an ambiguous/missing owner fall
-        // through to the synthetic `unknown` model-context policy.
-        if config_path.is_some() && configured_provider.is_none() {
+            .and_then(|path| vega_store::config::read_from(path).ok());
+        let configured_provider = config
+            .as_ref()
+            .and_then(|config| unique_provider_for_model(config, &thread.model));
+        // Production must never turn an explicit config path with no unique
+        // enabled owner into a synthetic `unknown` policy. Legacy tests may
+        // inject a provider without a matching config, but an actual two-owner
+        // ambiguity remains forbidden even through that test seam.
+        #[cfg(test)]
+        let allow_test_override = provider_override.is_some()
+            && !config.as_ref().is_some_and(|config| {
+                config
+                    .providers
+                    .iter()
+                    .filter(|provider| {
+                        provider.enabled
+                            && provider.models.iter().any(|model| model == &thread.model)
+                    })
+                    .take(2)
+                    .count()
+                    > 1
+            });
+        #[cfg(not(test))]
+        let allow_test_override = false;
+        if config_path.is_some() && configured_provider.is_none() && !allow_test_override {
             return Err(());
         }
         let provider_name = configured_provider

@@ -332,6 +332,7 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
             "context_settings",
             "image_attachments",
             "messages",
+            "model_context_policies",
             "permissions",
             "projects",
             "sidebar_groups",

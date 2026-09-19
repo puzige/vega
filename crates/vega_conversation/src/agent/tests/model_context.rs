@@ -141,6 +141,27 @@ fn explicit_unknown_model_capacity_keeps_the_sendable_unbudgeted_path() {
 }
 
 #[test]
+fn missing_provider_identity_never_guesses_a_model_policy() {
+    let (store, _dir, _) = setup();
+    save_model_policy(store.conn(), &policy("provider-a", 8_000, 2_000)).unwrap();
+    let prepared = prepare_run_with_images_and_reasoning(
+        store.database_path().unwrap().to_path_buf(),
+        "thread-1".into(),
+        "hello".into(),
+        "system".into(),
+        "user-no-provider".into(),
+        "assistant-no-provider".into(),
+        PersistenceActorConfig::default(),
+        false,
+        None,
+        None,
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(prepared.request.context_budget, None);
+}
+
+#[test]
 fn independent_input_output_limits_convert_to_bounded_total() {
     let (store, _dir, _) = setup();
     save_model_policy(store.conn(), &policy("provider-a", u32::MAX as u64 - 1, 1)).unwrap();

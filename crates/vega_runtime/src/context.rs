@@ -614,16 +614,24 @@ fn estimate_image(image: &crate::ImageAttachment) -> Result<u64, ContextEstimate
     let pixels = u64::from(image.width())
         .checked_mul(u64::from(image.height()))
         .ok_or(ContextEstimateError::Overflow)?;
-    // Encoded bytes are intentionally charged (rather than treated as zero),
-    // with a geometry floor. The original bytes are never sliced or
-    // re-encoded; the result is an explicit approximation for providers whose
-    // image tokenization is not exposed to the client.
+    estimate_image_contribution(bytes, pixels)
+}
+
+fn estimate_image_contribution(bytes: u64, pixels: u64) -> Result<u64, ContextEstimateError> {
+    // The encoded PNG/JPEG size is not its provider token count. Counting
+    // every byte as one token made an ordinary 1024px image exceed the new
+    // 300k default before its first send, even though no old turn could be
+    // compacted. Charge both encoded size (ceil(bytes / 4)) and geometry
+    // (ceil(pixels / 256)), plus a fixed image floor. This remains a bounded,
+    // deliberately nonzero approximation: genuinely large binaries or pixel
+    // counts still cross the input budget. Never alter the actual image bytes.
+    let encoded = bytes.checked_add(3).ok_or(ContextEstimateError::Overflow)? / 4;
     let geometry = pixels
-        .checked_add(1023)
+        .checked_add(255)
         .ok_or(ContextEstimateError::Overflow)?
-        / 1024;
+        / 256;
     1024u64
-        .checked_add(bytes)
+        .checked_add(encoded)
         .and_then(|value| value.checked_add(geometry))
         .ok_or(ContextEstimateError::Overflow)
 }
@@ -773,6 +781,21 @@ mod tests {
             .push(crate::ImageAttachment::from_bytes(bytes.into_inner()).unwrap());
         let estimate = estimate_chat_context("", &[message], &[]).unwrap();
         assert!(estimate.input_tokens >= 1024);
+    }
+
+    #[test]
+    fn issue76_image_estimate_allows_the_owned_png_but_rejects_huge_input() {
+        let bytes =
+            include_bytes!("../../../assets/logo/raster/vega-icon-f1-original.png").to_vec();
+        assert_eq!(bytes.len(), 897_164, "pin the real first-image fixture");
+        let image = crate::ImageAttachment::from_bytes(bytes).unwrap();
+        assert_eq!((image.width(), image.height()), (1024, 1024));
+        assert_eq!(estimate_image(&image).unwrap(), 229_411);
+        assert!(estimate_image(&image).unwrap() < 300_000);
+
+        assert!(estimate_image_contribution(10, 1).unwrap() >= 1024);
+        assert!(estimate_image_contribution(1_200_000, 1).unwrap() > 300_000);
+        assert!(estimate_image_contribution(10, 100_000_000).unwrap() > 300_000);
     }
 
     #[test]
