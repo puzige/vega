@@ -23,8 +23,12 @@ vega_mcp = { workspace = true }
 vega_token = { workspace = true }
 # Existing ULID facility used for durable compaction attempt identity.
 ulid = { workspace = true }
-# #73 stable, collision-checked provider aliases and content-safe argument identity.
+# #73 alias/argument digests and #74 Skills content hashes; already-approved workspace crate.
 sha2 = { workspace = true }
+libc = { workspace = true }
+# Issue #74: exact user-approved YAML parser, locked at the pre-existing version.
+serde = { workspace = true, features = ["derive"] }
+serde-saphyr = { workspace = true, features = ["deserialize"] }
 
 [dev-dependencies]
 # 多线程测试运行时（#[tokio::test]；macros/rt 已在主依赖启用）

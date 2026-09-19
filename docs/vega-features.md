@@ -144,6 +144,7 @@
 - A8-02 连接器配置 UI（启用/禁用/凭据）
 - A8-03 WASI 插件沙箱 + 插件 API（Ph4）
 - A8-04 插件市场 MVP（Ph4）
+- A8-05 Agent Skills v1（项目/全局发现、按需加载、自动触发与 UI 授权；Issue #74，规格见 [vega-issue-74-skills.md](vega-issue-74-skills.md)）
 
 ### A9 · Harness 质量引擎 [Phase 3]
 - A9-01 Trace 可视化（时间轴：思考/工具/耗时/成本逐步回放）
