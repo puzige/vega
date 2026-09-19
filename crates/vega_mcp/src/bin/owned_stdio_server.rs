@@ -16,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .get("method")
             .and_then(Value::as_str)
             .ok_or("missing method")?;
-        if mode == "modern"
+        if matches!(mode.as_str(), "modern" | "cancel-slow" | "cancel-fast")
             && request.get("id").is_some()
             && request["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] != "2026-07-28"
         {
@@ -27,11 +27,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .create(true)
                 .append(true)
                 .open(path)?;
-            writeln!(file, "{method}")?;
+            if mode.starts_with("cancel-") {
+                let id = request
+                    .get("id")
+                    .or_else(|| request.pointer("/params/requestId"));
+                writeln!(
+                    file,
+                    "{method}:{}",
+                    id.and_then(Value::as_u64).ok_or("missing id")?
+                )?;
+            } else {
+                writeln!(file, "{method}")?;
+            }
+        }
+        if method == "notifications/cancelled" && mode == "cancel-slow" {
+            break;
         }
         let Some(id) = request.get("id") else {
             continue;
         };
+        if method == "tools/call" && mode == "cancel-slow" {
+            continue;
+        }
         let response = match method {
             "server/discover" if mode == "oversize" => json!({
                 "jsonrpc":"2.0", "id":id,
@@ -39,11 +56,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "capabilities":{"tools":{}}, "ttlMs":0, "cacheScope":"private",
                     "instructions":"x".repeat(1024 * 1024)}
             }),
-            "server/discover" if mode == "modern" => json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": {"resultType": "complete", "supportedVersions": ["2026-07-28"],
-                    "capabilities": {"tools": {}}, "ttlMs": 0, "cacheScope": "private"}
-            }),
+            "server/discover"
+                if matches!(mode.as_str(), "modern" | "cancel-slow" | "cancel-fast") =>
+            {
+                json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {"resultType": "complete", "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {}}, "ttlMs": 0, "cacheScope": "private"}
+                })
+            }
             "server/discover" if mode == "modern-error" => json!({
                 "jsonrpc": "2.0", "id": id,
                 "error": {"code": -32022, "message": "unsupported version",

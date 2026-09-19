@@ -179,6 +179,7 @@ fn request_permission(queue: &PermissionQueue, call_id: &str, target: &str) -> D
             display_target: target.into(),
             danger_rule_id: None,
             danger_reason: None,
+            external: None,
         },
         CancellationToken::new(),
     );

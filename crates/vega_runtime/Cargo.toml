@@ -7,7 +7,7 @@ edition.workspace = true
 image = { workspace = true }
 base64 = { workspace = true }
 # 网络组（exec-guide §5 白名单，S4-T19 首次激活）：OpenAI 兼容 SSE 流式 provider
-tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util", "sync"] }
 # macros：tokio::select!（cancel 竞争与退避睡眠）；rt：#[tokio::test] 的运行时
 tokio-util = { workspace = true }   # CancellationToken（tech-spec §4.1 cancel 参数）
 futures = { workspace = true }      # BoxFuture/Stream 组合子（手工装箱 trait，零 async-trait）
@@ -18,10 +18,13 @@ thiserror = { workspace = true }
 # VegaError::Store（tech-spec §7 全枚举落 vega_runtime，T19 卡"按需引入"；bundled 仅 vega_store 启用）
 rusqlite = { workspace = true }
 vega_tools = { workspace = true }
+vega_mcp = { workspace = true }
 # S7-T38 冻结计价能力（run-start immutable selection；tech-spec §1 允许边）
 vega_token = { workspace = true }
 # Existing ULID facility used for durable compaction attempt identity.
 ulid = { workspace = true }
+# #73 stable, collision-checked provider aliases and content-safe argument identity.
+sha2 = { workspace = true }
 
 [dev-dependencies]
 # 多线程测试运行时（#[tokio::test]；macros/rt 已在主依赖启用）

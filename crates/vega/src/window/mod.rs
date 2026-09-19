@@ -100,6 +100,9 @@ pub(crate) struct VegaWindow {
     /// (e.g. the theme toggle) never rebuild the form mid-typing; dropped when
     /// settings closes so the next open reloads the config from disk.
     pub(crate) settings_view: Option<Entity<SettingsView>>,
+    /// Clone of the one app-owned MCP revocation domain. Settings and run
+    /// workers must never instantiate independent registries for this DB.
+    pub(crate) mcp_settings: Option<vega_conversation::McpServerSettingsService>,
     pub(crate) pricing_controller: PricingController,
     /// Cached conversation stream for the open thread (id, view). S3-T17:
     /// built lazily on first render of an opened thread; rebuilt when another
@@ -270,6 +273,9 @@ impl VegaWindow {
             palette: crate::app_palette::AppPalette::default(),
             sidebar: cx.new(Sidebar::new),
             settings_view: None,
+            mcp_settings: cx
+                .try_global::<crate::app_agent::AppMcpSettings>()
+                .and_then(|settings| settings.0.clone()),
             pricing_controller: PricingController::new(pricing_service),
             stream_view: None,
             draft: None,

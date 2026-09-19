@@ -3,7 +3,7 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -30,6 +30,7 @@ const MAX_TOKEN_BYTES: usize = 8192;
 pub struct ResourceAuthorization {
     client: Client,
     endpoint: Url,
+    metadata_url: Url,
     resource: String,
     authorization_servers: Vec<String>,
     requested_scopes: Vec<String>,
@@ -100,7 +101,7 @@ impl ResourceAuthorization {
         };
         for url in candidates {
             let response = client
-                .get(url)
+                .get(url.clone())
                 .timeout(AUTH_TIMEOUT)
                 .send()
                 .await
@@ -135,6 +136,7 @@ impl ResourceAuthorization {
             return Ok(Self {
                 client,
                 endpoint,
+                metadata_url: url,
                 resource: resource.to_owned(),
                 authorization_servers: issuers,
                 requested_scopes,
@@ -248,8 +250,8 @@ impl ResourceAuthorization {
                 })
                 .transpose()?;
             return Ok(AuthorizationServer {
-                client: self.client.clone(),
                 endpoint: self.endpoint.clone(),
+                metadata_url: self.metadata_url.clone(),
                 resource: self.resource.clone(),
                 issuer: selected_issuer.to_owned(),
                 authorization_endpoint,
@@ -270,8 +272,8 @@ impl ResourceAuthorization {
 /// Issuer-validated OAuth endpoints and registration capabilities.
 #[derive(Clone)]
 pub struct AuthorizationServer {
-    client: Client,
     endpoint: Url,
+    metadata_url: Url,
     resource: String,
     issuer: String,
     authorization_endpoint: Url,
@@ -291,6 +293,11 @@ impl AuthorizationServer {
     /// DCR is a deprecated compatibility route and requires UI confirmation.
     pub fn supports_dcr(&self) -> bool {
         self.registration_endpoint.is_some()
+    }
+
+    /// Validated DCR URL for display before distinct user confirmation.
+    pub fn registration_endpoint(&self) -> Option<&str> {
+        self.registration_endpoint.as_ref().map(Url::as_str)
     }
 
     /// Whether the AS advertises CIMD, which Vega cannot yet originate.
@@ -340,8 +347,9 @@ impl AuthorizationServer {
             "token_endpoint_auth_method":"none",
             "application_type":"native"
         });
-        let response = self
-            .client
+        // The discovery runtime may already be gone when Settings confirms
+        // DCR. Never reuse its pooled client/reactor across UI operations.
+        let response = auth_client()?
             .post(registration_endpoint.clone())
             .json(&request)
             .timeout(AUTH_TIMEOUT)
@@ -389,6 +397,101 @@ pub struct OAuthClient {
 }
 
 impl OAuthClient {
+    /// Public registration identity, never a client secret.
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    pub fn server_issuer(&self) -> &str {
+        self.server.issuer()
+    }
+
+    /// Restore only from an owner-only secret slot after a fresh protected-
+    /// resource and issuer discovery. The envelope is untrusted until every
+    /// identity component and scope has been revalidated.
+    pub fn restore_owner_only_tokens(
+        &self,
+        envelope: &str,
+        current_resource: &ResourceAuthorization,
+        server_id: &str,
+        revision: u64,
+    ) -> Result<OAuthTokens, McpError> {
+        if envelope.len() > 32 * 1024 || !canonical_server_id(server_id) || revision == 0 {
+            return Err(McpError::CredentialBinding);
+        }
+        let value: Value =
+            serde_json::from_str(envelope).map_err(|_| McpError::CredentialBinding)?;
+        let object = value.as_object().ok_or(McpError::CredentialBinding)?;
+        if object.len() != 13
+            || object.get("version").and_then(Value::as_u64) != Some(1)
+            || object.get("server_id").and_then(Value::as_str) != Some(server_id)
+            || object.get("revision").and_then(Value::as_u64) != Some(revision)
+            || object.get("endpoint").and_then(Value::as_str) != Some(self.server.endpoint.as_str())
+            || object.get("metadata_url").and_then(Value::as_str)
+                != Some(self.server.metadata_url.as_str())
+            || object.get("resource").and_then(Value::as_str) != Some(self.server.resource.as_str())
+            || object.get("issuer").and_then(Value::as_str) != Some(self.server.issuer.as_str())
+            || object.get("client_id").and_then(Value::as_str) != Some(self.client_id.as_str())
+            || current_resource.endpoint != self.server.endpoint
+            || current_resource.metadata_url != self.server.metadata_url
+            || current_resource.resource != self.server.resource
+            || !current_resource
+                .authorization_servers
+                .iter()
+                .any(|issuer| issuer == &self.server.issuer)
+        {
+            return Err(McpError::CredentialBinding);
+        }
+        let access_token = required_string(&value, "access_token", MAX_TOKEN_BYTES)
+            .map_err(|_| McpError::CredentialBinding)?;
+        validate_token(access_token).map_err(|_| McpError::CredentialBinding)?;
+        let refresh_token = match object.get("refresh_token") {
+            Some(Value::String(token)) => {
+                validate_token(token).map_err(|_| McpError::CredentialBinding)?;
+                Some(token.clone())
+            }
+            Some(Value::Null) => None,
+            _ => return Err(McpError::CredentialBinding),
+        };
+        let scopes = envelope_scopes(&value, "scopes")?;
+        let requested_scopes = envelope_scopes(&value, "requested_scopes")?;
+        if scopes.iter().any(|scope| !requested_scopes.contains(scope)) {
+            return Err(McpError::ScopeEscalation);
+        }
+        let expires_at = match object.get("expires_at_unix") {
+            Some(Value::Null) => None,
+            Some(value) => {
+                let expiry = value.as_u64().ok_or(McpError::CredentialBinding)?;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| McpError::CredentialBinding)?
+                    .as_secs();
+                // Expired access tokens may still carry a valid refresh
+                // token. Rehydrate them as expired; bearer_credential() will
+                // reject until OAuthClient::refresh() succeeds.
+                let remaining = expiry.saturating_sub(now);
+                Some(
+                    Instant::now()
+                        .checked_add(Duration::from_secs(remaining))
+                        .ok_or(McpError::CredentialBinding)?,
+                )
+            }
+            None => return Err(McpError::CredentialBinding),
+        };
+        Ok(OAuthTokens {
+            endpoint: self.server.endpoint.clone(),
+            metadata_url: self.server.metadata_url.clone(),
+            resource: self.server.resource.clone(),
+            issuer: self.server.issuer.clone(),
+            client_id: self.client_id.clone(),
+            access_token: access_token.to_owned(),
+            refresh_token,
+            expires_at,
+            scopes,
+            requested_scopes,
+        })
+    }
+
     /// Create a one-shot authorization URL with fresh OS-random state and
     /// PKCE S256. The caller opens this URL only after showing the AS/scope UI.
     pub fn begin_authorization(&self) -> Result<AuthorizationRequest, McpError> {
@@ -414,6 +517,51 @@ impl OAuthClient {
         }
         validate_scopes(&scopes)?;
         self.begin_with_scopes(&scopes)
+    }
+
+    /// Begin a new, consented authorization only for a challenge proven to
+    /// belong to this OAuth client, endpoint and discovered resource.
+    pub fn begin_verified_step_up(
+        &self,
+        tokens: &OAuthTokens,
+        challenge: &ScopeChallenge,
+        explicit_user_confirmation: bool,
+    ) -> Result<AuthorizationRequest, McpError> {
+        let scopes = self.verified_step_up_scopes(tokens, challenge)?;
+        if !explicit_user_confirmation {
+            return Err(McpError::ConsentRequired);
+        }
+        self.begin_with_scopes(&scopes)
+    }
+
+    /// Validate the exact credential/challenge binding and return the bounded
+    /// union for a Settings preview, without minting state or opening a URL.
+    pub fn verified_step_up_scopes(
+        &self,
+        tokens: &OAuthTokens,
+        challenge: &ScopeChallenge,
+    ) -> Result<Vec<String>, McpError> {
+        if tokens.endpoint != self.server.endpoint
+            || tokens.resource != self.server.resource
+            || tokens.issuer != self.server.issuer
+            || tokens.client_id != self.client_id
+            || tokens.metadata_url != self.server.metadata_url
+            || challenge.endpoint != tokens.endpoint
+            || challenge.resource != tokens.resource
+            || challenge.issuer != tokens.issuer
+            || challenge.client_id != tokens.client_id
+            || challenge.metadata_url != tokens.metadata_url
+        {
+            return Err(McpError::CredentialBinding);
+        }
+        let mut scopes = tokens.requested_scopes.clone();
+        for scope in &challenge.scopes {
+            if !scopes.contains(scope) {
+                scopes.push(scope.clone());
+            }
+        }
+        validate_scopes(&scopes)?;
+        Ok(scopes)
     }
 
     fn begin_with_scopes(&self, scopes: &[String]) -> Result<AuthorizationRequest, McpError> {
@@ -502,6 +650,7 @@ impl OAuthClient {
             &self.client_id,
             None,
             &pending.scopes,
+            &pending.scopes,
         )
     }
 
@@ -532,14 +681,16 @@ impl OAuthClient {
             &self.server,
             &self.client_id,
             Some(refresh),
+            &tokens.requested_scopes,
             &tokens.scopes,
         )
     }
 
     async fn token_request(&self, form: &[(&str, &str)]) -> Result<Value, McpError> {
-        let response = self
-            .server
-            .client
+        // Code exchange and refresh can run on different short-lived Tokio
+        // runtimes from metadata discovery and from each other. A fresh
+        // policy-constrained client owns only the current runtime's sockets.
+        let response = auth_client()?
             .post(self.server.token_endpoint.clone())
             .form(form)
             .timeout(AUTH_TIMEOUT)
@@ -580,6 +731,7 @@ impl AuthorizationRequest {
 /// This type deliberately has no Debug or serialization implementation.
 pub struct OAuthTokens {
     endpoint: Url,
+    metadata_url: Url,
     resource: String,
     issuer: String,
     client_id: String,
@@ -587,9 +739,70 @@ pub struct OAuthTokens {
     refresh_token: Option<String>,
     expires_at: Option<Instant>,
     scopes: Vec<String>,
+    requested_scopes: Vec<String>,
 }
 
 impl OAuthTokens {
+    /// Sensitive transfer format for Vega's owner-only keystore only. Never
+    /// place this string in SQLite, UI state, logs or conversation history.
+    pub fn to_owner_only_envelope(
+        &self,
+        server_id: &str,
+        revision: u64,
+    ) -> Result<String, McpError> {
+        if !canonical_server_id(server_id) || revision == 0 {
+            return Err(McpError::CredentialBinding);
+        }
+        validate_token(&self.access_token)?;
+        if let Some(refresh) = &self.refresh_token {
+            validate_token(refresh)?;
+        }
+        validate_scopes(&self.scopes)?;
+        validate_scopes(&self.requested_scopes)?;
+        if self
+            .scopes
+            .iter()
+            .any(|scope| !self.requested_scopes.contains(scope))
+        {
+            return Err(McpError::ScopeEscalation);
+        }
+        let expires_at_unix = match self.expires_at {
+            Some(expiry) => {
+                let remaining = expiry.saturating_duration_since(Instant::now()).as_secs();
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| McpError::CredentialBinding)?;
+                Some(
+                    now.as_secs()
+                        .checked_add(remaining)
+                        .ok_or(McpError::CredentialBinding)?,
+                )
+            }
+            None => None,
+        };
+        let envelope = json!({
+            "version": 1,
+            "server_id": server_id,
+            "revision": revision,
+            "endpoint": self.endpoint.as_str(),
+            "metadata_url": self.metadata_url.as_str(),
+            "resource": self.resource,
+            "issuer": self.issuer,
+            "client_id": self.client_id,
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "expires_at_unix": expires_at_unix,
+            "scopes": self.scopes,
+            "requested_scopes": self.requested_scopes,
+        });
+        let serialized =
+            serde_json::to_string(&envelope).map_err(|_| McpError::CredentialBinding)?;
+        if serialized.len() > 32 * 1024 {
+            return Err(McpError::CredentialBinding);
+        }
+        Ok(serialized)
+    }
+
     /// Create a transport credential only after comparing freshly discovered
     /// resource metadata. A changed issuer/resource cannot reuse this token.
     pub fn bearer_credential(
@@ -600,6 +813,7 @@ impl OAuthTokens {
             return Err(McpError::AuthRequired);
         }
         if self.endpoint != current_resource.endpoint
+            || self.metadata_url != current_resource.metadata_url
             || self.resource != current_resource.resource
             || !current_resource
                 .authorization_servers
@@ -612,6 +826,12 @@ impl OAuthTokens {
             endpoint: self.endpoint.clone(),
             secret: self.access_token.clone(),
             expires_at: self.expires_at,
+            oauth: Some(OAuthBinding {
+                metadata_url: self.metadata_url.clone(),
+                resource: self.resource.clone(),
+                issuer: self.issuer.clone(),
+                client_id: self.client_id.clone(),
+            }),
         })
     }
 
@@ -625,6 +845,12 @@ impl OAuthTokens {
     pub fn scopes(&self) -> &[String] {
         &self.scopes
     }
+
+    /// Scopes Vega explicitly requested in the previous authorization round.
+    /// This is display metadata only; access/refresh token values stay private.
+    pub fn requested_scopes(&self) -> &[String] {
+        &self.requested_scopes
+    }
 }
 
 /// In-memory explicit bearer value. The endpoint binding is checked on every
@@ -633,6 +859,38 @@ pub struct BearerCredential {
     endpoint: Url,
     secret: String,
     expires_at: Option<Instant>,
+    oauth: Option<OAuthBinding>,
+}
+
+struct OAuthBinding {
+    metadata_url: Url,
+    resource: String,
+    issuer: String,
+    client_id: String,
+}
+
+/// Bounded 403 scope step-up requirement bound to the original OAuth identity.
+/// Debug intentionally omits untrusted scope strings and resource paths.
+pub struct ScopeChallenge {
+    endpoint: Url,
+    metadata_url: Url,
+    resource: String,
+    issuer: String,
+    client_id: String,
+    scopes: Vec<String>,
+}
+
+impl std::fmt::Debug for ScopeChallenge {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ScopeChallenge(..)")
+    }
+}
+
+impl ScopeChallenge {
+    /// Validated new scope tokens to show in the explicit consent UI.
+    pub fn scopes(&self) -> &[String] {
+        &self.scopes
+    }
 }
 
 impl BearerCredential {
@@ -649,6 +907,7 @@ impl BearerCredential {
             endpoint,
             secret,
             expires_at: None,
+            oauth: None,
         })
     }
 
@@ -664,11 +923,57 @@ impl BearerCredential {
         self.expires_at
             .is_some_and(|expiry| Instant::now() >= expiry)
     }
+
+    pub(crate) fn scope_challenge(
+        &self,
+        endpoint: &Url,
+        headers: &reqwest::header::HeaderMap,
+    ) -> Result<Option<ScopeChallenge>, McpError> {
+        let Some(binding) = &self.oauth else {
+            return Ok(None);
+        };
+        if &self.endpoint != endpoint {
+            return Err(McpError::CredentialBinding);
+        }
+        let mut parsed = None;
+        for raw in headers.get_all(WWW_AUTHENTICATE) {
+            let raw = raw.to_str().map_err(|_| McpError::AuthSecurity)?;
+            if let Some(challenge) = parse_bearer_challenge(raw)?
+                && parsed.replace(challenge).is_some()
+            {
+                return Err(McpError::AuthSecurity);
+            }
+        }
+        let Some(challenge) = parsed else {
+            return Ok(None);
+        };
+        if challenge.error.as_deref() != Some("insufficient_scope") {
+            return Ok(None);
+        }
+        if challenge.scopes.is_empty() {
+            return Err(McpError::AuthSecurity);
+        }
+        if let Some(metadata) = challenge.resource_metadata {
+            let metadata = secure_url(&metadata, endpoint.scheme() == "http")?;
+            if metadata != binding.metadata_url {
+                return Err(McpError::AuthSecurity);
+            }
+        }
+        Ok(Some(ScopeChallenge {
+            endpoint: endpoint.clone(),
+            metadata_url: binding.metadata_url.clone(),
+            resource: binding.resource.clone(),
+            issuer: binding.issuer.clone(),
+            client_id: binding.client_id.clone(),
+            scopes: challenge.scopes,
+        }))
+    }
 }
 
 struct BearerChallenge {
     resource_metadata: Option<String>,
     scopes: Vec<String>,
+    error: Option<String>,
 }
 
 fn parse_bearer_challenge(raw: &str) -> Result<Option<BearerChallenge>, McpError> {
@@ -679,6 +984,7 @@ fn parse_bearer_challenge(raw: &str) -> Result<Option<BearerChallenge>, McpError
     let entries = split_auth_parameters(raw)?;
     let mut resource_metadata = None;
     let mut scopes = Vec::new();
+    let mut error = None;
     let mut seen_scope = false;
     let mut in_bearer = false;
     for entry in entries {
@@ -734,12 +1040,15 @@ fn parse_bearer_challenge(raw: &str) -> Result<Option<BearerChallenge>, McpError
                 scopes = value.split_whitespace().map(str::to_owned).collect();
                 validate_scopes(&scopes)?;
             }
+            "error" if error.is_some() || value.is_empty() => return Err(McpError::AuthSecurity),
+            "error" => error = Some(value.to_owned()),
             _ => {}
         }
     }
     Ok(in_bearer.then_some(BearerChallenge {
         resource_metadata,
         scopes,
+        error,
     }))
 }
 
@@ -965,13 +1274,43 @@ fn validate_scopes(scopes: &[String]) -> Result<(), McpError> {
         || scopes.iter().any(|scope| {
             scope.is_empty()
                 || scope.len() > 128
-                || scope.chars().any(char::is_whitespace)
-                || scope.chars().any(char::is_control)
+                || !scope
+                    .bytes()
+                    .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
         })
     {
         return Err(McpError::AuthSecurity);
     }
     Ok(())
+}
+
+fn envelope_scopes(document: &Value, key: &str) -> Result<Vec<String>, McpError> {
+    let values = document
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or(McpError::CredentialBinding)?;
+    let scopes = values
+        .iter()
+        .map(|value| value.as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()
+        .ok_or(McpError::CredentialBinding)?;
+    validate_scopes(&scopes).map_err(|_| McpError::CredentialBinding)?;
+    let unique: std::collections::HashSet<_> = scopes.iter().collect();
+    if unique.len() != scopes.len() {
+        return Err(McpError::CredentialBinding);
+    }
+    Ok(scopes)
+}
+
+fn canonical_server_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 26
+        && bytes
+            .first()
+            .is_some_and(|byte| (b'0'..=b'7').contains(byte)) && bytes.iter().all(|byte| {
+        byte.is_ascii_digit()
+            || matches!(byte, b'A'..=b'H' | b'J'..=b'K' | b'M'..=b'N' | b'P'..=b'T' | b'V'..=b'Z')
+    })
 }
 
 fn valid_client_id(value: &str) -> bool {
@@ -1050,6 +1389,7 @@ fn parse_tokens(
     client_id: &str,
     prior_refresh: Option<&str>,
     requested_scopes: &[String],
+    allowed_scopes: &[String],
 ) -> Result<OAuthTokens, McpError> {
     let access_token = required_string(&document, "access_token", MAX_TOKEN_BYTES)?;
     validate_token(access_token)?;
@@ -1078,13 +1418,20 @@ fn parse_tokens(
     let scopes = if let Some(scope) = document.get("scope") {
         let raw = scope.as_str().ok_or(McpError::AuthSecurity)?;
         let scopes: Vec<String> = raw.split_whitespace().map(str::to_owned).collect();
+        if scopes.is_empty() {
+            return Err(McpError::AuthSecurity);
+        }
         validate_scopes(&scopes)?;
         scopes
     } else {
-        requested_scopes.to_vec()
+        allowed_scopes.to_vec()
     };
+    if scopes.iter().any(|scope| !allowed_scopes.contains(scope)) {
+        return Err(McpError::ScopeEscalation);
+    }
     Ok(OAuthTokens {
         endpoint: server.endpoint.clone(),
+        metadata_url: server.metadata_url.clone(),
         resource: server.resource.clone(),
         issuer: server.issuer.clone(),
         client_id: client_id.to_owned(),
@@ -1092,12 +1439,127 @@ fn parse_tokens(
         refresh_token,
         expires_at,
         scopes,
+        requested_scopes: requested_scopes.to_vec(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_owner_only_envelope_rejects_cross_server_revision_issuer_and_scope_widening() {
+        let endpoint = Url::parse("https://mcp.example/mcp").expect("endpoint");
+        let metadata_url =
+            Url::parse("https://mcp.example/.well-known/oauth-protected-resource/mcp")
+                .expect("metadata");
+        let resource = ResourceAuthorization {
+            client: auth_client().expect("client"),
+            endpoint: endpoint.clone(),
+            metadata_url: metadata_url.clone(),
+            resource: endpoint.to_string(),
+            authorization_servers: vec!["https://issuer.example".into()],
+            requested_scopes: vec!["read".into()],
+            allow_loopback_http: false,
+        };
+        let server = AuthorizationServer {
+            endpoint: endpoint.clone(),
+            metadata_url,
+            resource: resource.resource.clone(),
+            issuer: "https://issuer.example".into(),
+            authorization_endpoint: Url::parse("https://issuer.example/authorize")
+                .expect("authorization endpoint"),
+            token_endpoint: Url::parse("https://issuer.example/token").expect("token endpoint"),
+            registration_endpoint: None,
+            cimd_advertised: false,
+            iss_required: true,
+            scopes: vec!["read".into()],
+        };
+        let client = server
+            .pre_registered(
+                "owned-client",
+                server.issuer(),
+                "http://127.0.0.1:48765/callback",
+            )
+            .expect("pre-registration");
+        let tokens = OAuthTokens {
+            endpoint,
+            metadata_url: resource.metadata_url.clone(),
+            resource: resource.resource.clone(),
+            issuer: server.issuer().into(),
+            client_id: client.client_id().into(),
+            access_token: "secret-access".into(),
+            refresh_token: Some("secret-refresh".into()),
+            expires_at: None,
+            scopes: vec!["read".into()],
+            requested_scopes: vec!["read".into()],
+        };
+        let server_a = "01J00000000000000000000000";
+        let server_b = "01J00000000000000000000001";
+        let envelope = tokens
+            .to_owner_only_envelope(server_a, 7)
+            .expect("owner-only envelope");
+        let restored = client
+            .restore_owner_only_tokens(&envelope, &resource, server_a, 7)
+            .expect("exact binding");
+        assert!(restored.bearer_credential(&resource).is_ok());
+        assert!(matches!(
+            client.restore_owner_only_tokens(&envelope, &resource, server_b, 7),
+            Err(McpError::CredentialBinding)
+        ));
+        assert!(matches!(
+            client.restore_owner_only_tokens(&envelope, &resource, server_a, 8),
+            Err(McpError::CredentialBinding)
+        ));
+        let mut widened: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+        widened["scopes"] = json!(["read", "write"]);
+        assert!(matches!(
+            client.restore_owner_only_tokens(&widened.to_string(), &resource, server_a, 7),
+            Err(McpError::ScopeEscalation)
+        ));
+        let mut changed_issuer: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+        changed_issuer["issuer"] = json!("https://other.example");
+        assert!(matches!(
+            client.restore_owner_only_tokens(&changed_issuer.to_string(), &resource, server_a, 7),
+            Err(McpError::CredentialBinding)
+        ));
+        for (field, replacement) in [
+            ("metadata_url", json!("https://other.example/prm")),
+            ("resource", json!("https://other.example/mcp")),
+            ("client_id", json!("other-client")),
+        ] {
+            let mut changed: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+            changed[field] = replacement;
+            assert!(matches!(
+                client.restore_owner_only_tokens(&changed.to_string(), &resource, server_a, 7),
+                Err(McpError::CredentialBinding)
+            ));
+        }
+        let mut duplicated: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+        duplicated["scopes"] = json!(["read", "read"]);
+        assert!(matches!(
+            client.restore_owner_only_tokens(&duplicated.to_string(), &resource, server_a, 7),
+            Err(McpError::CredentialBinding)
+        ));
+        let mut expired: Value = serde_json::from_str(&envelope).expect("envelope JSON");
+        expired["expires_at_unix"] = json!(1);
+        let expired = client
+            .restore_owner_only_tokens(&expired.to_string(), &resource, server_a, 7)
+            .expect("expired token may only be refreshed");
+        assert!(expired.is_expired());
+        assert!(matches!(
+            expired.bearer_credential(&resource),
+            Err(McpError::AuthRequired)
+        ));
+        assert!(matches!(
+            client.restore_owner_only_tokens("{", &resource, server_a, 7),
+            Err(McpError::CredentialBinding)
+        ));
+        assert!(matches!(
+            client.restore_owner_only_tokens(&"x".repeat(32 * 1024 + 1), &resource, server_a, 7),
+            Err(McpError::CredentialBinding)
+        ));
+    }
 
     #[test]
     fn bearer_challenge_parser_is_bounded_and_does_not_panic_on_unicode() {
@@ -1127,6 +1589,18 @@ mod tests {
             mixed.resource_metadata.as_deref(),
             Some("https://mcp.example/prm")
         );
+        assert!(matches!(
+            parse_bearer_challenge(
+                "Bearer error=\"insufficient_scope\", error=\"insufficient_scope\", scope=\"tools:write\""
+            ),
+            Err(McpError::AuthSecurity)
+        ));
+        assert!(matches!(
+            parse_bearer_challenge(
+                "Bearer error=\"insufficient_scope\", scope=\"tools:write\\bad\""
+            ),
+            Err(McpError::AuthSecurity)
+        ));
     }
 
     #[test]
@@ -1147,6 +1621,10 @@ mod tests {
         let resource = ResourceAuthorization {
             client: auth_client().expect("client"),
             endpoint: endpoint.clone(),
+            metadata_url: Url::parse(
+                "https://mcp.example/.well-known/oauth-protected-resource/mcp",
+            )
+            .expect("metadata"),
             resource: endpoint.to_string(),
             authorization_servers: vec!["https://new-issuer.example".into()],
             requested_scopes: Vec::new(),
@@ -1154,6 +1632,7 @@ mod tests {
         };
         let tokens = OAuthTokens {
             endpoint,
+            metadata_url: resource.metadata_url.clone(),
             resource: resource.resource.clone(),
             issuer: "https://old-issuer.example".into(),
             client_id: "old-client".into(),
@@ -1161,6 +1640,7 @@ mod tests {
             refresh_token: None,
             expires_at: None,
             scopes: Vec::new(),
+            requested_scopes: Vec::new(),
         };
         assert!(matches!(
             tokens.bearer_credential(&resource),

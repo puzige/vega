@@ -373,6 +373,7 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
             started: std::time::Instant::now(),
             terminal_message_id: None,
             terminal_failure: None,
+            mcp_unavailable: Vec::new(),
         });
     });
     failure_stream.update(cx, |stream, cx| {

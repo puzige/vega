@@ -179,6 +179,14 @@ impl VegaWindow {
         if !self.agent_controller.matches(generation, thread_id, stream) {
             return AgentBatchIngress::Stale;
         }
+        if !batch.mcp_unavailable.is_empty()
+            && let Some(active) = self.agent_controller.active.as_mut()
+        {
+            active.mcp_unavailable.extend(batch.mcp_unavailable);
+            stream.update(cx, |stream, cx| {
+                stream.apply_mcp_unavailable(&active.mcp_unavailable, cx)
+            });
+        }
         for event in batch.events {
             if matches!(
                 event,
@@ -236,7 +244,7 @@ impl VegaWindow {
         }
         AgentBatchIngress::Finished {
             success,
-            run,
+            run: Box::new(run),
             reference_failure,
             credential_failure: batch.credential_failure,
         }

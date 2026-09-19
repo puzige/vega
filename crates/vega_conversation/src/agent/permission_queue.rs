@@ -426,6 +426,13 @@ pub(crate) fn valid_permission_request(request: &PermissionRequest) -> bool {
     if request.call_id.is_empty() || request.display_target.is_empty() {
         return false;
     }
+    if let Some(identity) = &request.external {
+        return request.danger_rule_id.is_none()
+            && request.danger_reason.is_none()
+            && identity.is_valid()
+            && request.tool == identity.alias()
+            && request.display_target == identity.permission_target();
+    }
     let danger_valid = match (&request.danger_rule_id, &request.danger_reason) {
         (None, None) => true,
         (Some(rule), Some(reason)) => !rule.is_empty() && !reason.is_empty(),
@@ -472,6 +479,24 @@ impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
         self.shared
             .request(permission_request_from_runtime(&prompt), cancel)
             .map(|decision| decision.map(permission_decision_to_runtime))
+            .boxed()
+    }
+
+    fn request_mcp(
+        &self,
+        prompt: vega_runtime::RuntimeMcpPermissionPrompt,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>> {
+        self.shared
+            .request(mcp_permission_request_from_runtime(&prompt), cancel)
+            .map(|decision| {
+                decision.map(|decision| match decision {
+                    PermissionDecision::Once => RuntimeUserDecision::Once,
+                    PermissionDecision::Deny { note } => RuntimeUserDecision::Deny { note },
+                    PermissionDecision::Always => RuntimeUserDecision::Deny { note: None },
+                    PermissionDecision::Timeout => RuntimeUserDecision::Timeout,
+                })
+            })
             .boxed()
     }
 }

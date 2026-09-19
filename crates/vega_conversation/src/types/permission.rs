@@ -88,6 +88,8 @@ pub struct PermissionRequest {
     pub danger_rule_id: Option<String>,
     /// Stable danger reason for a danger prompt.
     pub danger_reason: Option<String>,
+    /// Exact external-call identity. `None` for Vega-owned tools.
+    pub external: Option<McpCallIdentity>,
 }
 
 /// UI decision returned to the runtime permission hook.
@@ -415,6 +417,30 @@ pub fn permission_request_from_runtime(
         display_target: prompt.target.display_target.clone(),
         danger_rule_id: prompt.danger.as_ref().map(|danger| danger.rule_id.clone()),
         danger_reason: prompt.danger.as_ref().map(|danger| danger.reason.clone()),
+        external: None,
+    }
+}
+
+/// Maps a runtime external-tool prompt to the same strict identity projected
+/// from the durable proposal. Raw argument values never cross this boundary.
+pub fn mcp_permission_request_from_runtime(
+    prompt: &vega_runtime::RuntimeMcpPermissionPrompt,
+) -> PermissionRequest {
+    let identity = McpCallIdentity {
+        server_id: prompt.server_id.clone(),
+        config_revision: prompt.config_revision,
+        exact_tool_name: prompt.exact_tool_name.clone(),
+        arguments_bytes: prompt.arguments_bytes as u64,
+        arguments_sha256: prompt.arguments_sha256.clone(),
+        argument_preview: prompt.argument_preview.clone(),
+    };
+    PermissionRequest {
+        call_id: prompt.call_id.clone(),
+        tool: identity.alias(),
+        display_target: identity.permission_target(),
+        danger_rule_id: None,
+        danger_reason: None,
+        external: Some(identity),
     }
 }
 

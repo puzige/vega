@@ -76,6 +76,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                 events: vec![ConversationEvent::ToolCallProposed {
                     call: artifact_write_call("stale-generation", "artifact.txt", 6),
                 }],
+                mcp_unavailable: Vec::new(),
                 reference_failure: None,
                 credential_failure: false,
                 finished: None,
@@ -131,6 +132,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
             &stream,
             AgentBatch {
                 events: Vec::new(),
+                mcp_unavailable: Vec::new(),
                 reference_failure: None,
                 credential_failure: false,
                 finished: Some(false),
@@ -156,6 +158,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                     events: vec![ConversationEvent::ToolCallProposed {
                         call: artifact_write_call("cancelled-id", "artifact.txt", 6),
                     }],
+                    mcp_unavailable: Vec::new(),
                     reference_failure: None,
                     credential_failure: false,
                     finished: None,
@@ -178,6 +181,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                 &stream,
                 AgentBatch {
                     events: Vec::new(),
+                    mcp_unavailable: Vec::new(),
                     reference_failure: None,
                     credential_failure: false,
                     finished: Some(false),
@@ -212,6 +216,7 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
                             false,
                         ),
                     }],
+                    mcp_unavailable: Vec::new(),
                     reference_failure: None,
                     credential_failure: false,
                     finished: None,

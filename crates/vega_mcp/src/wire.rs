@@ -161,10 +161,11 @@ pub(crate) fn parse_tool_result(value: &Value, modern: bool) -> Result<ToolResul
                 .to_owned(),
         );
     }
-    let is_error = value
-        .get("isError")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let is_error = match value.get("isError") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(McpError::InvalidMessage),
+    };
     Ok(ToolResult {
         text,
         structured_content: value.get("structuredContent").cloned(),
@@ -275,7 +276,10 @@ fn parse_tool(raw: &Value, http: bool) -> Result<Tool, ()> {
         return Err(());
     }
     let schema = object.get("inputSchema").ok_or(())?;
-    if !schema.is_object() || schema.get("type").and_then(Value::as_str) != Some("object") {
+    let mut nodes = 0;
+    if validate_schema(schema, 0, &mut nodes).is_err()
+        || schema.get("type").and_then(Value::as_str) != Some("object")
+    {
         return Err(());
     }
     let header_params = if http {
@@ -294,6 +298,117 @@ fn parse_tool(raw: &Value, http: bool) -> Result<Tool, ()> {
         input_schema: schema.clone(),
         header_params,
     })
+}
+
+fn validate_schema(node: &Value, depth: usize, nodes: &mut usize) -> Result<(), ()> {
+    *nodes = nodes.checked_add(1).ok_or(())?;
+    if depth > 32 || *nodes > 512 {
+        return Err(());
+    }
+    let object = node.as_object().ok_or(())?;
+    let kind = object.get("type").and_then(Value::as_str).ok_or(())?;
+    if !matches!(
+        kind,
+        "object" | "array" | "string" | "integer" | "number" | "boolean" | "null"
+    ) {
+        return Err(());
+    }
+    for (key, value) in object {
+        match key.as_str() {
+            "type" => {}
+            "title" | "description" | "format" => {
+                if !value.is_string() {
+                    return Err(());
+                }
+            }
+            "default" | "const" => {}
+            "enum" => {
+                let items = value.as_array().ok_or(())?;
+                if items.is_empty() || items.len() > 128 {
+                    return Err(());
+                }
+                for (index, item) in items.iter().enumerate() {
+                    if !item.is_string() {
+                        return Err(());
+                    }
+                    if items[..index].contains(item) {
+                        return Err(());
+                    }
+                }
+            }
+            "properties" if kind == "object" => {
+                let properties = value.as_object().ok_or(())?;
+                if properties.len() > 128 {
+                    return Err(());
+                }
+                for child in properties.values() {
+                    validate_schema(child, depth + 1, nodes)?;
+                }
+            }
+            "required" if kind == "object" => {
+                let required = value.as_array().ok_or(())?;
+                let mut seen = HashSet::new();
+                for item in required {
+                    if !seen.insert(item.as_str().ok_or(())?) {
+                        return Err(());
+                    }
+                }
+            }
+            "additionalProperties" if kind == "object" => {
+                if !value.is_boolean() {
+                    validate_schema(value, depth + 1, nodes)?;
+                }
+            }
+            "items" if kind == "array" => validate_schema(value, depth + 1, nodes)?,
+            "minLength" | "maxLength" if kind == "string" => {
+                if value.as_u64().is_none() {
+                    return Err(());
+                }
+            }
+            "minItems" | "maxItems" if kind == "array" => {
+                if value.as_u64().is_none() {
+                    return Err(());
+                }
+            }
+            "minProperties" | "maxProperties" if kind == "object" => {
+                if value.as_u64().is_none() {
+                    return Err(());
+                }
+            }
+            "minimum" | "maximum" if matches!(kind, "integer" | "number") => {
+                if !value.is_number() {
+                    return Err(());
+                }
+            }
+            "x-mcp-header" if matches!(kind, "string" | "integer" | "boolean") => {
+                if !value.as_str().is_some_and(valid_header_token) {
+                    return Err(());
+                }
+            }
+            _ => return Err(()),
+        }
+    }
+    for (min, max) in [
+        ("minLength", "maxLength"),
+        ("minItems", "maxItems"),
+        ("minProperties", "maxProperties"),
+    ] {
+        if let (Some(min), Some(max)) = (
+            object.get(min).and_then(Value::as_u64),
+            object.get(max).and_then(Value::as_u64),
+        ) && min > max
+        {
+            return Err(());
+        }
+    }
+    if let (Some(min), Some(max)) = (
+        object.get("minimum").and_then(Value::as_f64),
+        object.get("maximum").and_then(Value::as_f64),
+    ) && min > max
+    {
+        return Err(());
+    }
+    Ok(())
 }
 
 fn collect_header_params(schema: &Value) -> Result<Vec<HeaderParam>, ()> {
@@ -333,9 +448,6 @@ fn inspect_schema(
                 });
             }
             for (key, value) in object {
-                if key == "x-mcp-header" {
-                    continue;
-                }
                 if key == "properties" && reachable {
                     let properties = value.as_object().ok_or(())?;
                     for (property, child) in properties {
@@ -343,7 +455,7 @@ fn inspect_schema(
                         next.push(property.clone());
                         inspect_schema(child, true, &next, params, seen)?;
                     }
-                } else {
+                } else if matches!(key.as_str(), "items" | "additionalProperties") {
                     inspect_schema(value, false, path, params, seen)?;
                 }
             }
@@ -360,6 +472,7 @@ fn inspect_schema(
 
 fn valid_header_token(value: &str) -> bool {
     !value.is_empty()
+        && value.len() <= 128
         && value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric()
                 || matches!(
@@ -486,6 +599,33 @@ mod tests {
         assert!(matches!(
             parse_tool_result(&image, true),
             Err(McpError::UnsupportedResult)
+        ));
+    }
+
+    #[test]
+    fn malformed_or_unsupported_schema_is_rejected_before_catalog_advertisement() {
+        let page = json!({"resultType":"complete", "ttlMs":0, "cacheScope":"private", "tools":[
+            {"name":"valid", "inputSchema":{"type":"object","properties":{"term":{"type":"string","minLength":1}},"required":["term"]}},
+            {"name":"required_number", "inputSchema":{"type":"object","required":7}},
+            {"name":"duplicate_required", "inputSchema":{"type":"object","required":["x","x"]}},
+            {"name":"items_number", "inputSchema":{"type":"object","properties":{"x":{"type":"array","items":7}}}},
+            {"name":"invalid_type", "inputSchema":{"type":"object","properties":{"x":{"type":"unknown"}}}},
+            {"name":"unsupported_ref", "inputSchema":{"type":"object","properties":{"x":{"$ref":"#/$defs/X"}},"$defs":{"X":{"type":"string"}}}}
+        ]});
+        let mut catalog = CatalogBuilder::new(false, true);
+        assert!(catalog.add_page(&page).expect("catalog page").is_none());
+        let catalog = catalog.finish();
+        assert_eq!(catalog.tools.len(), 1);
+        assert_eq!(catalog.tools[0].name, "valid");
+        assert_eq!(catalog.rejected.len(), 5);
+    }
+
+    #[test]
+    fn non_boolean_is_error_never_becomes_success() {
+        let result = json!({"resultType":"complete", "content":[], "isError":"true"});
+        assert!(matches!(
+            parse_tool_result(&result, true),
+            Err(McpError::InvalidMessage)
         ));
     }
 }

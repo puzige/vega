@@ -20,6 +20,9 @@ enum Fixture {
     ExpiredToken,
     RefreshRejected,
     LegacyProtected,
+    InsufficientScope,
+    InsufficientScopeWrongMetadata,
+    TokenExcessScope,
 }
 
 struct Request {
@@ -27,6 +30,77 @@ struct Request {
     path: String,
     headers: HashMap<String, String>,
     body: Vec<u8>,
+}
+
+async fn on_new_runtime<T: Send + 'static>(
+    operation: impl std::future::Future<Output = T> + Send + 'static,
+) -> T {
+    tokio::task::spawn_blocking(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("owned short-lived runtime")
+            .block_on(operation)
+    })
+    .await
+    .expect("owned worker")
+}
+
+#[tokio::test]
+async fn m06_dcr_token_and_refresh_survive_separate_destroyed_tokio_runtimes() {
+    let (endpoint, issuer, mut requests) = fixture(Fixture::Dynamic).await;
+    let redirect = "http://127.0.0.1:54321/callback";
+    // Settings intentionally runs each UI operation on a separate worker.
+    // The AS client must not retain a socket/reactor from discovery and then
+    // reuse it for DCR, code exchange or refresh after that runtime is gone.
+    for _ in 0..8 {
+        let discovery_endpoint = endpoint.clone();
+        let discovery_issuer = issuer.clone();
+        let (resource, server) = on_new_runtime(async move {
+            let resource = ResourceAuthorization::discover(&discovery_endpoint, true).await?;
+            let server = resource.discover_server(&discovery_issuer).await?;
+            Ok::<_, McpError>((resource, server))
+        })
+        .await
+        .expect("discover in first runtime");
+        let client = on_new_runtime(async move { server.register_dcr(redirect, true).await })
+            .await
+            .expect("DCR in second runtime");
+        let pending = client.begin_authorization().expect("fresh PKCE request");
+        let browser = reqwest::Url::parse(pending.authorization_url()).expect("browser URL");
+        let query: HashMap<_, _> = browser.query_pairs().into_owned().collect();
+        let callback = format!(
+            "{redirect}?code=owned-code&state={}&iss={issuer}",
+            query["state"]
+        );
+        let (client, tokens) = on_new_runtime(async move {
+            let tokens = client.finish_authorization(pending, &callback).await?;
+            Ok::<_, McpError>((client, tokens))
+        })
+        .await
+        .expect("token exchange in third runtime");
+        assert!(tokens.bearer_credential(&resource).is_ok());
+        let renewed = on_new_runtime(async move { client.refresh(&tokens).await })
+            .await
+            .expect("refresh in fourth runtime");
+        assert!(renewed.bearer_credential(&resource).is_ok());
+    }
+    let mut seen = Vec::new();
+    while let Ok(request) = requests.try_recv() {
+        seen.push(request);
+    }
+    assert_eq!(
+        seen.iter()
+            .filter(|request| request.path == "/register")
+            .count(),
+        8
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|request| request.path == "/token")
+            .count(),
+        16
+    );
 }
 
 #[tokio::test]
@@ -99,6 +173,117 @@ async fn m06_preregistered_oauth_pkce_issuer_resource_and_authenticated_tool_cal
     let refresh = form(&token_requests[1].body);
     assert_eq!(refresh["resource"], endpoint);
     assert_eq!(refresh["refresh_token"], "owned-refresh");
+}
+
+#[tokio::test]
+async fn m06_403_scope_step_up_is_typed_and_bound_to_original_oauth_resource() {
+    for scenario in [
+        Fixture::InsufficientScope,
+        Fixture::InsufficientScopeWrongMetadata,
+    ] {
+        let (endpoint, issuer, mut requests) = fixture(scenario).await;
+        let resource = ResourceAuthorization::discover(&endpoint, true)
+            .await
+            .expect("PRM");
+        let server = resource.discover_server(&issuer).await.expect("AS");
+        let redirect = "http://127.0.0.1:54321/callback";
+        let client = server
+            .pre_registered("owned-client", &issuer, redirect)
+            .expect("client");
+        let pending = client.begin_authorization().expect("auth start");
+        let url = reqwest::Url::parse(pending.authorization_url()).expect("URL");
+        let state = url
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .expect("state")
+            .1;
+        let callback = format!("{redirect}?code=owned-code&state={state}&iss={issuer}");
+        let tokens = client
+            .finish_authorization(pending, &callback)
+            .await
+            .expect("token");
+        let mut mcp = HttpClient::connect_with_bearer(
+            &endpoint,
+            true,
+            tokens.bearer_credential(&resource).expect("bound bearer"),
+        )
+        .await
+        .expect("MCP");
+        let tools = mcp.list_tools().await.expect("tools");
+        let result = mcp
+            .call_tool(&tools.tools[0], json!({"echo":"needs write"}))
+            .await;
+        if matches!(scenario, Fixture::InsufficientScope) {
+            let challenge = match result {
+                Err(McpError::InsufficientScope(challenge)) => challenge,
+                other => panic!("expected typed step-up challenge, got {other:?}"),
+            };
+            assert_eq!(challenge.scopes(), ["tools:write"]);
+            assert!(matches!(
+                client.begin_verified_step_up(&tokens, &challenge, false),
+                Err(McpError::ConsentRequired)
+            ));
+            let other_client = server
+                .pre_registered("other-client", &issuer, redirect)
+                .expect("other client");
+            assert!(matches!(
+                other_client.begin_verified_step_up(&tokens, &challenge, true),
+                Err(McpError::CredentialBinding)
+            ));
+            let step_up = client
+                .begin_verified_step_up(&tokens, &challenge, true)
+                .expect("confirmed bound step-up");
+            let url = reqwest::Url::parse(step_up.authorization_url()).expect("step-up URL");
+            let scope = url
+                .query_pairs()
+                .find(|(key, _)| key == "scope")
+                .expect("scope")
+                .1;
+            assert_eq!(scope, "fallback:read tools:write");
+        } else {
+            assert!(matches!(result, Err(McpError::AuthSecurity)));
+        }
+        let seen = drain(&mut requests);
+        assert_eq!(
+            seen.iter()
+                .filter(|request| request.path == "/mcp"
+                    && serde_json::from_slice::<Value>(&request.body)
+                        .ok()
+                        .is_some_and(|body| body["method"] == "tools/call"))
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn m06_token_response_cannot_silently_expand_requested_scope() {
+    let (endpoint, issuer, mut requests) = fixture(Fixture::TokenExcessScope).await;
+    let resource = ResourceAuthorization::discover(&endpoint, true)
+        .await
+        .expect("PRM");
+    let server = resource.discover_server(&issuer).await.expect("AS");
+    let redirect = "http://127.0.0.1:54321/callback";
+    let client = server
+        .pre_registered("owned-client", &issuer, redirect)
+        .expect("client");
+    let pending = client.begin_authorization().expect("auth start");
+    let url = reqwest::Url::parse(pending.authorization_url()).expect("URL");
+    let state = url
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .expect("state")
+        .1;
+    let callback = format!("{redirect}?code=owned-code&state={state}&iss={issuer}");
+    assert!(matches!(
+        client.finish_authorization(pending, &callback).await,
+        Err(McpError::ScopeEscalation)
+    ));
+    assert!(
+        !drain(&mut requests)
+            .iter()
+            .any(|request| request.path == "/mcp" && request.headers.contains_key("authorization"))
+    );
 }
 
 #[tokio::test]
@@ -532,7 +717,8 @@ fn response(
                     Vec::new(),
                 );
             }
-            let headers = if matches!(scenario, Fixture::PreRegistered) {
+            let headers = if matches!(scenario, Fixture::PreRegistered | Fixture::TokenExcessScope)
+            {
                 vec![(
                     "WWW-Authenticate",
                     format!(
@@ -546,6 +732,28 @@ fn response(
         }
         let body: Value = serde_json::from_slice(&request.body).expect("MCP JSON");
         let id = body["id"].clone();
+        if matches!(
+            scenario,
+            Fixture::InsufficientScope | Fixture::InsufficientScopeWrongMetadata
+        ) && body["method"] == "tools/call"
+        {
+            let metadata = if matches!(scenario, Fixture::InsufficientScope) {
+                format!("{origin}/.well-known/oauth-protected-resource/mcp")
+            } else {
+                format!("{origin}/other-resource-metadata")
+            };
+            return (
+                403,
+                "text/plain",
+                String::new(),
+                vec![(
+                    "WWW-Authenticate",
+                    format!(
+                        "Bearer error=\"insufficient_scope\", scope=\"tools:write\", resource_metadata=\"{metadata}\""
+                    ),
+                )],
+            );
+        }
         if matches!(scenario, Fixture::LegacyProtected) {
             match body["method"].as_str().expect("legacy method") {
                 "server/discover" => {
@@ -654,7 +862,17 @@ fn response(
         } else {
             3600
         };
-        return (200, "application/json", json!({"access_token":"owned-access", "refresh_token":"owned-refresh", "token_type":"Bearer", "expires_in":expiry, "scope":"tools:read"}).to_string(), Vec::new());
+        let scope = if matches!(scenario, Fixture::TokenExcessScope) {
+            "tools:read tools:admin"
+        } else if matches!(
+            scenario,
+            Fixture::PreRegistered | Fixture::ExpiredToken | Fixture::RefreshRejected
+        ) {
+            "tools:read"
+        } else {
+            "fallback:read"
+        };
+        return (200, "application/json", json!({"access_token":"owned-access", "refresh_token":"owned-refresh", "token_type":"Bearer", "expires_in":expiry, "scope":scope}).to_string(), Vec::new());
     }
     panic!("unexpected fixture path: {}", request.path);
 }

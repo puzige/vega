@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio::time::{Duration, sleep};
+use tokio_util::sync::CancellationToken;
 use vega_mcp::{HttpClient, LocalServer, McpError, ProtocolVersion, StdioClient};
 
 #[tokio::test]
@@ -81,6 +83,124 @@ async fn m11_stdio_oversized_line_is_rejected_before_parsing() {
         StdioClient::connect(server).await,
         Err(McpError::LimitExceeded)
     ));
+}
+
+#[tokio::test]
+async fn m12_stdio_stop_cancels_exact_inflight_call_id() {
+    let temp = tempfile::tempdir().expect("owned cwd");
+    let trace = temp.path().join("cancel.txt");
+    let server = LocalServer {
+        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        args: vec!["cancel-slow".into(), trace.to_string_lossy().into_owned()],
+        working_directory: temp.path().into(),
+        environment: Vec::new(),
+    };
+    let mut client = StdioClient::connect(server).await.expect("connect");
+    let catalog = client.list_tools().await.expect("tools");
+    let cancel = CancellationToken::new();
+    let signal = cancel.clone();
+    let trace_for_signal = trace.clone();
+    let trigger = tokio::spawn(async move {
+        for _ in 0..100 {
+            if std::fs::read_to_string(&trace_for_signal)
+                .is_ok_and(|value| value.contains("tools/call:3"))
+            {
+                signal.cancel();
+                return;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        panic!("call never reached owned server");
+    });
+    let result = client
+        .call_tool_with_cancel(
+            &catalog.tools[0],
+            json!({"echo":"slow"}),
+            &cancel,
+            Duration::from_secs(2),
+        )
+        .await;
+    trigger.await.expect("trigger task");
+    assert!(matches!(result, Err(McpError::Cancelled)));
+    client.shutdown().await.expect("child reaped");
+    let trace = std::fs::read_to_string(trace).expect("cancel trace");
+    assert!(
+        trace.contains("tools/call:3\nnotifications/cancelled:3\n"),
+        "{trace}"
+    );
+}
+
+#[tokio::test]
+async fn m12_stdio_timeout_cancels_inflight_call_but_completed_call_does_not() {
+    let temp = tempfile::tempdir().expect("owned cwd");
+    let slow_trace = temp.path().join("timeout.txt");
+    let server = LocalServer {
+        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        args: vec![
+            "cancel-slow".into(),
+            slow_trace.to_string_lossy().into_owned(),
+        ],
+        working_directory: temp.path().into(),
+        environment: Vec::new(),
+    };
+    let mut client = StdioClient::connect(server).await.expect("connect");
+    let catalog = client.list_tools().await.expect("tools");
+    assert!(matches!(
+        client
+            .call_tool_with_cancel(
+                &catalog.tools[0],
+                json!({"echo":"slow"}),
+                &CancellationToken::new(),
+                Duration::from_millis(80)
+            )
+            .await,
+        Err(McpError::Timeout)
+    ));
+    client.shutdown().await.expect("child reaped");
+    let trace = std::fs::read_to_string(slow_trace).expect("timeout trace");
+    assert!(
+        trace.contains("tools/call:3\nnotifications/cancelled:3\n"),
+        "{trace}"
+    );
+
+    let fast_trace = temp.path().join("fast.txt");
+    let server = LocalServer {
+        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        args: vec![
+            "cancel-fast".into(),
+            fast_trace.to_string_lossy().into_owned(),
+        ],
+        working_directory: temp.path().into(),
+        environment: Vec::new(),
+    };
+    let mut client = StdioClient::connect(server).await.expect("connect");
+    let catalog = client.list_tools().await.expect("tools");
+    let cancel = CancellationToken::new();
+    client
+        .call_tool_with_cancel(
+            &catalog.tools[0],
+            json!({"echo":"fast"}),
+            &cancel,
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("completed");
+    cancel.cancel();
+    assert!(matches!(
+        client
+            .call_tool_with_cancel(
+                &catalog.tools[0],
+                json!({"echo":"must not dispatch"}),
+                &cancel,
+                Duration::from_secs(2),
+            )
+            .await,
+        Err(McpError::Cancelled)
+    ));
+    client.shutdown().await.expect("child reaped");
+    let trace = std::fs::read_to_string(fast_trace).expect("fast trace");
+    assert!(trace.contains("tools/call:3\n"), "{trace}");
+    assert!(!trace.contains("notifications/cancelled"), "{trace}");
 }
 
 #[tokio::test]

@@ -1,10 +1,10 @@
 # Issue #73 — MCP v1 test-first delivery matrix
 
-Status: **frozen test matrix / headless slices running; full M01–M15 acceptance pending** · 2026-09-20
+Status: **frozen test matrix / isolated headless slice complete, shared integration in progress; full M01–M15 acceptance pending** · 2026-09-20
 
 Contract: [vega-issue-73-mcp.md](vega-issue-73-mcp.md) · Issue: https://github.com/puzige/vega/issues/73
 
-This is the frozen implementation input, not post-hoc acceptance. The isolated `vega_mcp` protocol/transport/OAuth crate and owned fixtures are under implementation and focused tests have run, but no shared Agent Loop/Settings integration, native UI evidence, PR, merge or Project status change has occurred in this branch. The full matrix rows remain **NOT RUN** because their model/UI/audit/restart conditions are not yet met. A CIMD-only service needs the separately identified public HTTPS metadata identity; pre-registered and DCR-capable services do not wait for it.
+This is the frozen implementation input, not post-hoc acceptance. The isolated `vega_mcp` protocol/transport/OAuth crate and owned fixtures passed their focused gate; shared Agent Loop/Settings/Store work is in progress. No native UI evidence, PR, merge or Project status change has occurred in this branch. The full matrix rows remain **NOT RUN** because their model/UI/audit/restart conditions are not yet met. A CIMD-only service needs the separately identified public HTTPS metadata identity; pre-registered and DCR-capable services do not wait for it.
 
 ## Test matrix
 

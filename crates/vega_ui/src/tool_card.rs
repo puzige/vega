@@ -337,6 +337,7 @@ impl ToolCard {
             (Some(ToolCardInputProjection::Bash { .. }), _) => "bash",
             (Some(ToolCardInputProjection::Write { .. }), _) => "write",
             (Some(ToolCardInputProjection::Edit { .. }), _) => "edit",
+            (Some(ToolCardInputProjection::Mcp { .. }), _) => "MCP",
             (None, Some(ToolCardResultProjection::InvalidRejected { tool, .. })) => tool.as_str(),
             _ => "tool",
         }
@@ -449,6 +450,10 @@ impl ToolCard {
             (Some(ToolCardInputProjection::ReadOnly { .. }), _) => {
                 Some(self.status_label().to_string())
             }
+            (Some(ToolCardInputProjection::Mcp { identity, .. }), _) => Some(format!(
+                "{} · server {} · external result is untrusted",
+                identity.exact_tool_name, identity.server_id
+            )),
             _ => Some(CORRUPT_LABEL.to_string()),
         }
     }
@@ -490,7 +495,8 @@ fn wrap_display_rows(text: &str) -> Vec<String> {
 fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> {
     let output = match projection {
         ToolCardResultProjection::Bash { output, .. }
-        | ToolCardResultProjection::ReadOnly { output, .. } => output,
+        | ToolCardResultProjection::ReadOnly { output, .. }
+        | ToolCardResultProjection::Mcp { output, .. } => output,
         _ => return Vec::new(),
     };
     output.lines().map(str::to_string).collect()

@@ -288,6 +288,13 @@ impl HttpClient {
             if status == StatusCode::UNAUTHORIZED {
                 return Err(McpError::AuthRequired);
             }
+            if status == StatusCode::FORBIDDEN
+                && let Some(credential) = &self.bearer
+                && let Some(challenge) =
+                    credential.scope_challenge(&self.endpoint, response.headers())?
+            {
+                return Err(McpError::InsufficientScope(Box::new(challenge)));
+            }
             if status.is_redirection() {
                 return Err(McpError::InvalidConfig);
             }

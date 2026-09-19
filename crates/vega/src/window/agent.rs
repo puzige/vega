@@ -462,6 +462,7 @@ impl VegaWindow {
         );
         let worker_sender = sender.clone();
         let config_path = self.composer_config_path();
+        let mcp_settings = self.mcp_settings.clone();
         // A8-02: register synchronously before spawn. The worker closure owns
         // the token through its last tool/provider call, even if this window
         // cancels or closes before the worker can acknowledge termination.
@@ -473,7 +474,7 @@ impl VegaWindow {
         let worker = std::thread::Builder::new()
             .name("vega-agent".into())
             .spawn(move || {
-                run_agent_worker(
+                run_agent_worker_with_mcp(
                     database_path,
                     project_path,
                     thread,
@@ -485,6 +486,7 @@ impl VegaWindow {
                     config_path,
                     reasoning,
                     Some(title_sender),
+                    mcp_settings,
                     #[cfg(test)]
                     provider_override,
                     #[cfg(test)]
@@ -540,8 +542,9 @@ impl VegaWindow {
                             pending_user_content: pending_user,
                             pending_approved_instruction,
                             terminal_failure,
+                            mcp_unavailable,
                             ..
-                        } = finished_run;
+                        } = *finished_run;
                         let approved_not_started = pending_approved_instruction.is_some();
                         if pending_user.is_some() {
                             stream.update(cx, ConversationStream::reject_composer_submission);
@@ -608,6 +611,14 @@ impl VegaWindow {
                                 } else {
                                     stream.apply_agent_error(cx);
                                 }
+                            });
+                        }
+                        if !mcp_unavailable.is_empty() {
+                            let warning_stream = this
+                                .current_cached_stream_for_thread(&thread_id, cx)
+                                .unwrap_or_else(|| stream.clone());
+                            warning_stream.update(cx, |stream, cx| {
+                                stream.apply_mcp_unavailable(&mcp_unavailable, cx)
                             });
                         }
                         if let Some(pending) = pending_review {

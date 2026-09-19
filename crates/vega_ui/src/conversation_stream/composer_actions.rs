@@ -264,6 +264,7 @@ impl ConversationStream {
         self.actions.menu = false;
         self.actions.slash = None;
         self.controller_error = None;
+        self.mcp_warning = None;
         cx.notify();
     }
 

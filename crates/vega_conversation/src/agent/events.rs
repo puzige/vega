@@ -572,6 +572,16 @@ pub(crate) fn required_tool_state(
 pub(crate) fn validate_runtime_proposal(
     call: &vega_runtime::RuntimeToolCall,
 ) -> Result<(), VegaError> {
+    if call.name.starts_with("mcp_") {
+        let projected = crate::types::ToolCall {
+            id: call.id.clone(),
+            tool: call.name.clone(),
+            input_json: call.input_json.clone(),
+        };
+        return crate::types::McpCallIdentity::from_tool_call(&projected)
+            .map(|_| ())
+            .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if matches!(call.name.as_str(), "write" | "edit") {
         let audit = vega_tools::WriteEditAudit::from_json(&call.input_json)
             .map_err(|_| safe_audit_error(&call.name))?;
@@ -683,6 +693,14 @@ pub(crate) fn validate_runtime_approval_event(
     shared
         .to_json()
         .map_err(|_| safe_audit_error(&state.tool))?;
+    if state.tool.starts_with("mcp_")
+        && (shared.decision != Approval::Once
+            || shared.source != ApprovalSource::User
+            || shared.danger.is_some()
+            || remember.is_some())
+    {
+        return Err(safe_audit_error(&state.tool));
+    }
     if !approval_source_matches(
         &state.tool,
         RuntimeToolStatus::Success,

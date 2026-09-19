@@ -1,7 +1,21 @@
 use super::*;
+use mcp_registry::FrozenMcpTool;
+use sha2::{Digest, Sha256};
+
+const MCP_ARGUMENT_LIMIT: usize = 256 * 1024;
+const MCP_RESULT_LIMIT: usize = 256 * 1024;
 
 pub(crate) enum PreparedRuntimeCall {
     Readonly(RuntimeToolCall),
+    Mcp {
+        call: RuntimeToolCall,
+        arguments: Value,
+        frozen: FrozenMcpTool,
+        prompt: RuntimeMcpPermissionPrompt,
+    },
+    InvalidMcp {
+        call: RuntimeToolCall,
+    },
     Write {
         call: RuntimeToolCall,
         tools: vega_tools::Tools,
@@ -48,6 +62,8 @@ impl PreparedRuntimeCall {
             | Self::RunModeMutation(call)
             | Self::InvalidWriteEdit { call, .. }
             | Self::InvalidBash { call, .. }
+            | Self::InvalidMcp { call }
+            | Self::Mcp { call, .. }
             | Self::Write { call, .. }
             | Self::Edit { call, .. }
             | Self::Bash { call, .. } => call,
@@ -90,8 +106,18 @@ pub(crate) enum Authorization {
 pub(crate) fn prepare_runtime_call(
     base_tools: &vega_tools::Tools,
     config: &RuntimeToolConfig,
+    capabilities: &RunCapabilitySnapshot,
     raw_call: RuntimeToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {
+    if let Some(frozen) = capabilities.mcp_tool(&raw_call.name) {
+        return prepare_mcp_call(raw_call, frozen.clone());
+    }
+    if raw_call.name.starts_with("mcp_") {
+        return Ok(PreparedRuntimeCall::Unknown(RuntimeToolCall {
+            input_json: "{}".to_string(),
+            ..raw_call
+        }));
+    }
     match raw_call.name.as_str() {
         "read" | "glob" | "grep" => Ok(PreparedRuntimeCall::Readonly(raw_call)),
         "write" | "edit" => {
@@ -224,6 +250,83 @@ pub(crate) fn prepare_runtime_call(
     }
 }
 
+fn prepare_mcp_call(
+    raw_call: RuntimeToolCall,
+    frozen: FrozenMcpTool,
+) -> Result<PreparedRuntimeCall, VegaError> {
+    let raw_bytes = raw_call.input_json.as_bytes();
+    let digest = Sha256::digest(raw_bytes);
+    let digest_hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let parsed = (raw_bytes.len() <= MCP_ARGUMENT_LIMIT)
+        .then(|| serde_json::from_str::<Value>(&raw_call.input_json).ok())
+        .flatten()
+        .filter(Value::is_object);
+    let field_preview = parsed.as_ref().and_then(Value::as_object).map(|object| {
+        let mut fields = object
+            .iter()
+            .take(16)
+            .map(|(key, value)| {
+                let safe_key = if key.len() <= 64
+                    && key
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                {
+                    key.as_str()
+                } else {
+                    "[redacted field]"
+                };
+                let kind = match value {
+                    Value::Null => "null",
+                    Value::Bool(_) => "boolean",
+                    Value::Number(_) => "number",
+                    Value::String(_) => "string",
+                    Value::Array(_) => "array",
+                    Value::Object(_) => "object",
+                };
+                format!("{safe_key}: {kind}")
+            })
+            .collect::<Vec<_>>();
+        if object.len() > fields.len() {
+            fields.push("…".to_string());
+        }
+        fields.join(", ")
+    });
+    let safe_json = serde_json::json!({
+        "server_id": frozen.server_id(),
+        "config_revision": frozen.config_revision(),
+        "tool": frozen.exact_tool_name(),
+        "arguments_bytes": raw_bytes.len(),
+        "arguments_sha256": digest_hex,
+        "argument_preview": field_preview.as_deref().unwrap_or("invalid arguments"),
+    })
+    .to_string();
+    let call = RuntimeToolCall {
+        input_json: safe_json,
+        ..raw_call
+    };
+    let Some(arguments) = parsed else {
+        return Ok(PreparedRuntimeCall::InvalidMcp { call });
+    };
+    let prompt = RuntimeMcpPermissionPrompt {
+        call_id: call.id.clone(),
+        server_id: frozen.server_id().to_string(),
+        config_revision: frozen.config_revision(),
+        exact_tool_name: frozen.exact_tool_name().to_string(),
+        arguments_bytes: raw_bytes.len(),
+        arguments_sha256: digest_hex,
+        argument_preview: field_preview.unwrap_or_default(),
+    };
+    Ok(PreparedRuntimeCall::Mcp {
+        call,
+        arguments,
+        frozen,
+        prompt,
+    })
+}
+
 pub(crate) fn invalid_runtime_call(
     raw_call: RuntimeToolCall,
     invalid: vega_tools::InvalidMutation,
@@ -256,6 +359,73 @@ pub(crate) async fn authorize_call(
     cancel: &CancellationToken,
 ) -> Result<Authorization, VegaError> {
     match prepared {
+        PreparedRuntimeCall::InvalidMcp { call } => Ok(Authorization::Terminal(terminal_result(
+            call,
+            "Tool error: invalid or oversized MCP arguments".to_string(),
+            RuntimeToolStatus::Rejected,
+            Some(validation_audit()),
+        ))),
+        PreparedRuntimeCall::Mcp {
+            call,
+            frozen,
+            prompt,
+            ..
+        } => {
+            if config.run_mode != RuntimeRunMode::Execute
+                || config.permission_mode == RuntimePermissionMode::ReadOnly
+            {
+                return Ok(Authorization::Terminal(terminal_result(
+                    call,
+                    "Tool error: denied by run mode".to_string(),
+                    RuntimeToolStatus::Rejected,
+                    Some(run_mode_denial()),
+                )));
+            }
+            if cancel.is_cancelled() || frozen.is_revoked() {
+                return Ok(cancelled_permission(call));
+            }
+            let decision =
+                wait_for_mcp_permission(hook, prompt.clone(), config.permission_timeout, cancel)
+                    .await;
+            let audit = match decision {
+                RuntimeUserDecision::Once => RuntimeApprovalAudit {
+                    decision: RuntimeApprovalDecision::Once,
+                    note: None,
+                    source: RuntimeApprovalSource::User,
+                    danger: None,
+                },
+                RuntimeUserDecision::Deny { .. } | RuntimeUserDecision::Always => {
+                    RuntimeApprovalAudit {
+                        decision: RuntimeApprovalDecision::Deny,
+                        note: None,
+                        source: RuntimeApprovalSource::User,
+                        danger: None,
+                    }
+                }
+                RuntimeUserDecision::Timeout => RuntimeApprovalAudit {
+                    decision: RuntimeApprovalDecision::Deny,
+                    note: None,
+                    source: RuntimeApprovalSource::Timeout,
+                    danger: None,
+                },
+            };
+            if audit.decision == RuntimeApprovalDecision::Once
+                && !frozen.is_revoked()
+                && !cancel.is_cancelled()
+            {
+                Ok(Authorization::Approved {
+                    audit,
+                    remember_rule: None,
+                })
+            } else {
+                Ok(Authorization::Terminal(terminal_result(
+                    call,
+                    "Tool error: MCP call not approved".to_string(),
+                    RuntimeToolStatus::Rejected,
+                    Some(audit),
+                )))
+            }
+        }
         PreparedRuntimeCall::InvalidWriteEdit { call, result } => {
             Ok(Authorization::Terminal(terminal_result(
                 call,
@@ -355,6 +525,24 @@ pub(crate) async fn authorize_call(
             .await
         }
     }
+}
+
+async fn wait_for_mcp_permission(
+    hook: &dyn RuntimePermissionHook,
+    prompt: RuntimeMcpPermissionPrompt,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> RuntimeUserDecision {
+    let prompt_cancel = cancel.child_token();
+    let future = hook.request_mcp(prompt, prompt_cancel.clone());
+    let decision = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => RuntimeUserDecision::Timeout,
+        _ = tokio::time::sleep(timeout) => RuntimeUserDecision::Timeout,
+        response = future => response.unwrap_or(RuntimeUserDecision::Timeout),
+    };
+    prompt_cancel.cancel();
+    decision
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -545,6 +733,92 @@ pub(crate) async fn execute_prepared_waiting(
     cancel: &CancellationToken,
 ) -> (RuntimeToolResult, bool) {
     match prepared {
+        PreparedRuntimeCall::InvalidMcp { call } => (
+            terminal_result(
+                &call,
+                "Tool error: invalid or oversized MCP arguments".to_string(),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            ),
+            false,
+        ),
+        PreparedRuntimeCall::Mcp {
+            call,
+            arguments,
+            frozen,
+            ..
+        } => {
+            if frozen.is_revoked() || cancel.is_cancelled() {
+                return (
+                    terminal_result(
+                        &call,
+                        CANCELLED_BEFORE_EXECUTION_OUTPUT.to_string(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                );
+            }
+            let call_cancel = cancel.child_token();
+            let revoked = frozen.revoked_token();
+            let dispatch = frozen.dispatch(arguments, call_cancel.clone());
+            tokio::pin!(dispatch);
+            let executed = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    call_cancel.cancel();
+                    dispatch.await
+                },
+                _ = revoked.cancelled() => {
+                    call_cancel.cancel();
+                    dispatch.await
+                },
+                result = &mut dispatch => result,
+            };
+            call_cancel.cancel();
+            // A reply racing with revoke is not evidence that the configured
+            // authority was still live when the remote side acted. Never
+            // publish its content as a successful trusted completion.
+            if cancel.is_cancelled() || revoked.is_cancelled() {
+                return (
+                    terminal_result(
+                        &call,
+                        "Tool error: MCP call outcome unknown after cancellation".to_string(),
+                        RuntimeToolStatus::Cancelled,
+                        None,
+                    ),
+                    true,
+                );
+            }
+            match executed {
+                Ok(output) if output.text.len() <= MCP_RESULT_LIMIT => {
+                    let status = if output.is_error {
+                        RuntimeToolStatus::Failed
+                    } else {
+                        RuntimeToolStatus::Success
+                    };
+                    let mut result = terminal_result(
+                        &call,
+                        format!("[Untrusted external MCP result]\n{}", output.text),
+                        status,
+                        None,
+                    );
+                    if status == RuntimeToolStatus::Success {
+                        result.truncated = Some(false);
+                    }
+                    (result, false)
+                }
+                Err(_) | Ok(_) => (
+                    terminal_result(
+                        &call,
+                        "Tool error: MCP result failed or exceeded limit".to_string(),
+                        RuntimeToolStatus::Failed,
+                        None,
+                    ),
+                    false,
+                ),
+            }
+        }
         PreparedRuntimeCall::Readonly(call) => {
             execute_readonly_waiting(base_tools, &call, cancel).await
         }

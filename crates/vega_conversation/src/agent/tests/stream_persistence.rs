@@ -112,6 +112,8 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "context_compaction_status",
             "context_settings",
             "image_attachments",
+            "mcp_secret_cleanup",
+            "mcp_servers",
             "messages",
             "model_context_policies",
             "permissions",

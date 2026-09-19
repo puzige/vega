@@ -13,10 +13,17 @@ mod wire;
 
 pub use auth::{
     AuthorizationRequest, AuthorizationServer, BearerCredential, OAuthClient, OAuthTokens,
-    ResourceAuthorization,
+    ResourceAuthorization, ScopeChallenge,
 };
 pub use http::HttpClient;
 pub use stdio::StdioClient;
+
+/// Validate an exact endpoint in Settings without sending any network request.
+/// Connection performs the same check again before dispatch.
+pub fn validate_endpoint_url(endpoint: &str, allow_loopback_http: bool) -> Result<(), McpError> {
+    let url = reqwest::Url::parse(endpoint).map_err(|_| McpError::InvalidConfig)?;
+    http::validate_endpoint(&url, allow_loopback_http)
+}
 
 /// The preferred modern MCP revision.
 pub const MODERN_VERSION: &str = "2026-07-28";
@@ -77,6 +84,8 @@ pub enum McpError {
     Transport,
     #[error("MCP request timed out")]
     Timeout,
+    #[error("MCP request cancelled")]
+    Cancelled,
     #[error("MCP server returned an invalid protocol message")]
     InvalidMessage,
     #[error("MCP message exceeded a size or count limit")]
@@ -87,6 +96,10 @@ pub enum McpError {
     AuthDiscovery,
     #[error("MCP authorization failed a security validation")]
     AuthSecurity,
+    #[error("MCP authorization server granted scope beyond the approved request")]
+    ScopeEscalation,
+    #[error("MCP server requires additional authorization scopes")]
+    InsufficientScope(Box<ScopeChallenge>),
     #[error("MCP authorization requires an explicit user confirmation")]
     ConsentRequired,
     #[error("this authorization server requires a public HTTPS Client ID Metadata identity")]

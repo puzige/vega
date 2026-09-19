@@ -5,7 +5,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::time::timeout;
+use tokio::time::{Instant, sleep_until, timeout};
+use tokio_util::sync::CancellationToken;
 
 use crate::wire::{
     CatalogBuilder, MAX_LINE_OR_EVENT, MAX_RESPONSE, checked_arguments, empty_params,
@@ -145,15 +146,77 @@ impl StdioClient {
         tool: &Tool,
         arguments: Value,
     ) -> Result<ToolResult, McpError> {
+        self.call_tool_with_cancel(tool, arguments, &CancellationToken::new(), CALL_TIMEOUT)
+            .await
+    }
+
+    /// Send one approved call with an explicit stop signal and at most the
+    /// v1 call deadline. A stopped or timed-out child is never reused.
+    pub async fn call_tool_with_cancel(
+        &mut self,
+        tool: &Tool,
+        arguments: Value,
+        cancel: &CancellationToken,
+        limit: Duration,
+    ) -> Result<ToolResult, McpError> {
         checked_arguments(&arguments)?;
-        let result = self
-            .request(
-                "tools/call",
-                json!({"name": tool.name, "arguments": arguments}),
-                CALL_TIMEOUT,
-            )
-            .await?;
+        if cancel.is_cancelled() {
+            return Err(McpError::Cancelled);
+        }
+        let limit = limit.min(CALL_TIMEOUT);
+        if limit.is_zero() {
+            return Err(McpError::Timeout);
+        }
+        let deadline = Instant::now() + limit;
+        let id = self.id()?;
+        let params = json!({"name": tool.name, "arguments": arguments});
+        let request = match self.version {
+            ProtocolVersion::Modern => modern_request(id, "tools/call", params),
+            ProtocolVersion::Legacy => legacy_request(id, "tools/call", params),
+        };
+        match timeout(limit, self.write_message(&request)).await {
+            Ok(result) => result?,
+            Err(_) => {
+                // A partially written frame cannot be safely followed by a
+                // cancellation frame. Reap the child without guessing its ID.
+                self.reap_cancelled_child().await;
+                return Err(McpError::Timeout);
+            }
+        }
+        let response = tokio::select! {
+            biased;
+            response = self.read_response(id) => response,
+            _ = cancel.cancelled() => Err(McpError::Cancelled),
+            _ = sleep_until(deadline) => Err(McpError::Timeout),
+        };
+        let response = match response {
+            Ok(value) => value,
+            Err(error @ (McpError::Cancelled | McpError::Timeout)) => {
+                let reason = if matches!(error, McpError::Timeout) {
+                    "Call timed out"
+                } else {
+                    "User requested cancellation"
+                };
+                let notification = json!({"jsonrpc":"2.0", "method":"notifications/cancelled",
+                    "params":{"requestId":id, "reason":reason}});
+                let _ = timeout(SHUTDOWN_TIMEOUT, self.write_message(&notification)).await;
+                self.reap_cancelled_child().await;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let result = response_result(&response, id)?.clone();
         parse_tool_result(&result, self.version == ProtocolVersion::Modern)
+    }
+
+    async fn reap_cancelled_child(&mut self) {
+        if !matches!(
+            timeout(SHUTDOWN_TIMEOUT, self.child.wait()).await,
+            Ok(Ok(_))
+        ) {
+            let _ = self.child.kill().await;
+            let _ = self.child.wait().await;
+        }
     }
 
     /// Close stdin, wait briefly for an orderly exit, then force-reap if necessary.
@@ -202,30 +265,34 @@ impl StdioClient {
     ) -> Result<Value, McpError> {
         timeout(limit, async {
             self.write_message(&request).await?;
-            let mut bytes_read = 0usize;
-            loop {
-                let line = self.read_line_limited().await?;
-                bytes_read = bytes_read
-                    .checked_add(line.len())
-                    .ok_or(McpError::LimitExceeded)?;
-                if bytes_read > MAX_RESPONSE {
-                    return Err(McpError::LimitExceeded);
-                }
-                let response: Value =
-                    serde_json::from_slice(&line).map_err(|_| McpError::InvalidMessage)?;
-                if response.get("method").is_some() {
-                    if response.get("id").is_some() {
-                        return Err(McpError::UnsupportedResult);
-                    }
-                    continue;
-                }
-                if response.get("id") == Some(&Value::from(id)) {
-                    return Ok(response);
-                }
-            }
+            self.read_response(id).await
         })
         .await
         .map_err(|_| McpError::Timeout)?
+    }
+
+    async fn read_response(&mut self, id: u64) -> Result<Value, McpError> {
+        let mut bytes_read = 0usize;
+        loop {
+            let line = self.read_line_limited().await?;
+            bytes_read = bytes_read
+                .checked_add(line.len())
+                .ok_or(McpError::LimitExceeded)?;
+            if bytes_read > MAX_RESPONSE {
+                return Err(McpError::LimitExceeded);
+            }
+            let response: Value =
+                serde_json::from_slice(&line).map_err(|_| McpError::InvalidMessage)?;
+            if response.get("method").is_some() {
+                if response.get("id").is_some() {
+                    return Err(McpError::UnsupportedResult);
+                }
+                continue;
+            }
+            if response.get("id") == Some(&Value::from(id)) {
+                return Ok(response);
+            }
+        }
     }
 
     async fn write_message(&mut self, message: &Value) -> Result<(), McpError> {

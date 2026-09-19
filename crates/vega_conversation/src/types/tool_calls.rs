@@ -278,6 +278,12 @@ pub enum ToolCardInputProjection {
         old_string_bytes: u64,
         new_string_bytes: u64,
     },
+    /// Strictly parsed value-free identity for an external MCP call.
+    Mcp {
+        alias: String,
+        identity: McpCallIdentity,
+        permission_target: String,
+    },
     /// Fixed fail-closed projection for an invalid/unknown input shape.
     Corrupt,
 }
@@ -290,6 +296,7 @@ impl ToolCardInputProjection {
             Self::Bash { .. } => Some("bash"),
             Self::Write { .. } => Some("write"),
             Self::Edit { .. } => Some("edit"),
+            Self::Mcp { alias, .. } => Some(alias),
             Self::Corrupt => None,
         }
     }
@@ -299,6 +306,9 @@ impl ToolCardInputProjection {
         match self {
             Self::Bash { command } => Some(command),
             Self::Write { path, .. } | Self::Edit { path, .. } => Some(path),
+            Self::Mcp {
+                permission_target, ..
+            } => Some(permission_target),
             Self::ReadOnly { .. } | Self::Corrupt => None,
         }
     }
@@ -318,6 +328,12 @@ pub enum ToolCardResultProjection {
     },
     /// Bounded generic read/glob/grep output.
     ReadOnly {
+        status: ToolCallStatus,
+        output: String,
+        reused: bool,
+    },
+    /// Bounded lower-trust result from a third-party MCP server.
+    Mcp {
         status: ToolCallStatus,
         output: String,
         reused: bool,
@@ -353,6 +369,16 @@ pub enum ToolCardResultProjection {
 
 /// Strictly reduces a shared safe proposal to the fields T27 may retain.
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
+    if call.tool.starts_with("mcp_") {
+        return McpCallIdentity::from_tool_call(call).map_or(
+            ToolCardInputProjection::Corrupt,
+            |identity| ToolCardInputProjection::Mcp {
+                alias: call.tool.clone(),
+                permission_target: identity.permission_target(),
+                identity,
+            },
+        );
+    }
     match call.tool.as_str() {
         "read" | "glob" | "grep" => {
             if serde_json::from_str::<serde_json::Value>(&call.input_json)
@@ -472,6 +498,24 @@ pub fn tool_card_result_projection(
                 return ToolCardResultProjection::Corrupt;
             }
             ToolCardResultProjection::ReadOnly {
+                status: result.status,
+                output: result.output.clone(),
+                reused: result.reused,
+            }
+        }
+        ToolCardInputProjection::Mcp { .. } => {
+            if !is_terminal(result.status)
+                || result.exit_code.is_some()
+                || result.duration_ms.is_some()
+                || result.output.len() > 256 * 1024 + 64
+                || match result.status {
+                    ToolCallStatus::Success => !success_truncation_valid(result),
+                    _ => result.truncated.is_some(),
+                }
+            {
+                return ToolCardResultProjection::Corrupt;
+            }
+            ToolCardResultProjection::Mcp {
                 status: result.status,
                 output: result.output.clone(),
                 reused: result.reused,
