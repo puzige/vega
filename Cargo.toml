@@ -5,6 +5,7 @@ members = [
     "crates/vega_ui",
     "crates/vega_conversation",
     "crates/vega_runtime",
+    "crates/vega_mcp",
     "crates/vega_tools",
     "crates/vega_markdown",
     "crates/vega_store",
