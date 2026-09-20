@@ -1,6 +1,46 @@
 use super::*;
 
 #[gpui_kit::test]
+async fn issue90_bash_validation_terminal_is_actionable_and_never_prompts(cx: &mut TestAppContext) {
+    init_permission_test(cx);
+    let (window, queue) = open_permission_stream(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.apply_event(
+                ConversationEvent::ToolCallFinished {
+                    call_id: "invalid-bash".into(),
+                    result: ToolResult {
+                        status: ToolCallStatus::Rejected,
+                        output: "Tool error: invalid bash input. Use {\"cmd\":\"rg ...\"}. cmd must be a non-empty string; timeout_ms, if provided, must be a positive integer. Other fields, including command, are unsupported.".into(),
+                        reused: false,
+                        exit_code: None,
+                        duration_ms: None,
+                        truncated: None,
+                        invalid: Some(vega_conversation::types::InvalidToolProjection::new(
+                            vega_conversation::types::InvalidToolKind::Bash,
+                            vega_conversation::types::InvalidToolCode::InvalidInput,
+                        )),
+                    },
+                },
+                cx,
+            );
+        })
+        .expect("stream window");
+    cx.run_until_parked();
+    let text = window
+        .update(cx, |stream, _, cx| {
+            stream.tool_cards["invalid-bash"].read(cx).visible_text()
+        })
+        .expect("stream window");
+    assert!(text.contains(
+        "bash · 已拒绝 参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
+    ));
+    assert!(!text.contains("工具结果损坏"));
+    assert!(!queue.has_pending());
+    assert!(!has_active_permission(window, cx));
+}
+
+#[gpui_kit::test]
 async fn permission_queue_installs_matching_card_and_once_resolves(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);

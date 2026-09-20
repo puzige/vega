@@ -783,6 +783,105 @@ async fn invalid_write_is_atomically_audited_without_execution() {
 }
 
 #[tokio::test]
+async fn issue90_invalid_bash_round_trips_through_real_store_and_history() {
+    let (store, project, data, _project_id) = setup_external("confirm");
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "bad-bash".into(),
+                name: "bash".into(),
+                input_json: r#"{"command":"printf SECRET_BASH > issue90-marker"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let permission_calls = Arc::new(AtomicUsize::new(0));
+    let run = run_thread_task_with_permission_sink(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Check",
+        "System",
+        CancellationToken::new(),
+        &FixedPermissionHook {
+            calls: permission_calls.clone(),
+            decision: PermissionDecision::Once,
+        },
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(permission_calls.load(Ordering::SeqCst), 0);
+    assert!(!project.path().join("issue90-marker").exists());
+    assert!(!run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ToolCallProposed { call } if call.id == "bad-bash"
+    )));
+    assert!(run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ToolCallFinished { call_id, result }
+            if call_id == "bad-bash"
+                && result.status == ToolCallStatus::Rejected
+                && result.output == vega_runtime::BASH_INVALID_INPUT_OUTPUT
+                && result.invalid.is_some()
+    )));
+    let row: (String, String, String, String, Option<i32>, Option<i64>) = store
+        .conn()
+        .query_row(
+            "SELECT input_json, status, approval, output_text, exit_code, duration_ms FROM tool_calls WHERE id = 'bad-bash'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        )
+        .unwrap();
+    assert!(vega_runtime::InvalidBashAudit::from_json(&row.0).is_some());
+    assert!(!row.0.contains("SECRET_BASH"));
+    assert_eq!(row.1, "rejected");
+    assert_eq!(row.3, vega_runtime::BASH_INVALID_INPUT_OUTPUT);
+    assert!(row.4.is_none() && row.5.is_none());
+    let approval = ApprovalAudit::from_json(&row.2).unwrap();
+    assert_eq!(approval.decision, Approval::Deny);
+    assert_eq!(approval.source, ApprovalSource::Validation);
+    let second = &provider.requests()[1];
+    let feedback = second
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("bad-bash"))
+        .unwrap();
+    assert_eq!(feedback.content, vega_runtime::BASH_INVALID_INPUT_OUTPUT);
+    assert!(
+        !second
+            .messages
+            .iter()
+            .any(|message| message.content.contains("SECRET_BASH"))
+    );
+
+    drop(store);
+    let reopened = Store::open(data.path().join("vega.db")).unwrap();
+    let history = crate::history::restart_history_page(&reopened, "thread-1", 20).unwrap();
+    assert!(history.entries.iter().any(|entry| matches!(
+        entry,
+        crate::history::HistoryEntry::Tool {
+            call_id,
+            status: ToolCallStatus::Rejected,
+            input: None,
+            result: Some(crate::types::ToolCardResultProjection::InvalidRejected {
+                tool: crate::types::InvalidToolKind::Bash,
+                code: crate::types::InvalidToolCode::InvalidInput,
+                ..
+            }),
+            ..
+        } if call_id == "bad-bash"
+    )));
+}
+
+#[tokio::test]
 #[ignore = "load-sensitive: asserts a wall-clock budget (<1000ms), fails under parallel test load; run with --ignored"]
 async fn cancellation_is_persisted_as_interrupted_under_one_second() {
     let (store, dir, _project_id) = setup();

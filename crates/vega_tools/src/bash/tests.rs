@@ -103,6 +103,9 @@ fn bash_input_is_strict_and_defaults_timeout() {
 
     for raw in [
         "{}",
+        r#"{"command":"pwd"}"#,
+        r#"{"cmd":"pwd","command":"false"}"#,
+        r#"{"cmd":""}"#,
         r#"{"cmd":1}"#,
         r#"{"cmd":"pwd","cwd":"/"}"#,
         r#"{"cmd":"pwd","full_access":true}"#,

@@ -291,6 +291,174 @@ async fn production_agent_request_first_keeps_permission_until_proposal_ingress(
 }
 
 #[gpui_kit::test]
+async fn issue90_production_controller_routes_invalid_bash_without_permission_and_restores_it(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let repo = diff_controller_repo();
+    let data = tempfile::tempdir().expect("issue90 data root");
+    let database_path = data.path().join("vega.db");
+    let store = Store::open(&database_path).expect("issue90 store");
+    store.migrate().expect("issue90 migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        repo.path().to_str().expect("UTF-8 issue90 repo"),
+        "issue90-e2e",
+        None,
+    )
+    .expect("issue90 project");
+    let thread = vega_conversation::threads::create_thread(
+        &store,
+        &project.id,
+        "mock",
+        PermissionMode::Confirm.as_str(),
+    )
+    .expect("issue90 thread");
+    let queue = vega_conversation::agent::PermissionQueue::new();
+    cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+    let stream = cx
+        .new(|cx| ConversationStream::new_with_permission_queue(thread.clone(), queue.clone(), cx));
+    let root = cx.new(VegaWindow::new);
+    root.update(cx, |root, _| {
+        root.stream_view = Some((thread.id.clone(), stream.clone()));
+    });
+    let window_root = root.clone();
+    let _window = cx
+        .update(|cx| {
+            cx.open_window(Default::default(), move |_, cx| {
+                cx.new(|_| AgentWindowHarness { root: window_root })
+            })
+        })
+        .expect("issue90 window");
+    let provider = Arc::new(vega_runtime::MockProvider::new_rounds(vec![
+        vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::ToolUse {
+                id: "issue90-bash".into(),
+                name: "bash".into(),
+                input_json: r#"{"command":"printf SECRET_BASH > issue90-marker"}"#.into(),
+            },
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::ToolUse,
+            },
+        ])],
+        vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("corrected".into()),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ])],
+    ]));
+    let (generation, cancel) = root.update(cx, |root, _| {
+        root.agent_controller.begin(
+            thread.id.clone(),
+            stream.clone(),
+            Some("run invalid bash".into()),
+            None,
+        )
+    });
+    let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
+    let worker_cancel = cancel.clone();
+    let worker_thread = std::thread::spawn({
+        let project_path = repo.path().to_path_buf();
+        let worker_thread = thread.clone();
+        let worker_queue = queue.clone();
+        let worker_provider = provider.clone();
+        let worker_database_path = database_path.clone();
+        move || {
+            run_agent_worker(
+                worker_database_path,
+                project_path,
+                worker_thread,
+                PendingAgentRun::UserMessage("run invalid bash".into()),
+                worker_queue,
+                worker_cancel,
+                sender,
+                None,
+                None,
+                None,
+                None,
+                Some(worker_provider),
+                Arc::new(AgentWorkerStartProbe::default()),
+            );
+        }
+    });
+    let mut worker = AgentWorkerGuard {
+        cancel,
+        handle: Some(worker_thread),
+    };
+    let mut saw_invalid_terminal = false;
+    let mut saw_proposal = false;
+    let mut finished = false;
+    for _ in 0..400 {
+        let batch = drain_agent_updates(&receiver);
+        saw_invalid_terminal |= batch.events.iter().any(|event| {
+            matches!(
+                event,
+                ConversationEvent::ToolCallFinished { call_id, result }
+                    if call_id == "issue90-bash"
+                        && result.status == vega_conversation::types::ToolCallStatus::Rejected
+                        && result.invalid.is_some()
+            )
+        });
+        saw_proposal |= batch.events.iter().any(|event| {
+            matches!(
+                event,
+                ConversationEvent::ToolCallProposed { call } if call.id == "issue90-bash"
+            )
+        });
+        if !batch.events.is_empty() || batch.finished.is_some() {
+            finished = root.update(cx, |root, cx| {
+                matches!(
+                    root.apply_agent_batch_ingress(generation, &thread.id, &stream, batch, cx),
+                    AgentBatchIngress::Finished { success: true, .. }
+                )
+            });
+            if finished {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if !finished {
+        worker.cancel.cancel();
+    }
+    worker
+        .handle
+        .take()
+        .expect("issue90 worker")
+        .join()
+        .expect("issue90 join");
+    assert!(finished && saw_invalid_terminal && !saw_proposal);
+    assert!(!queue.has_pending());
+    assert!(!stream.read_with(cx, |stream, _| stream.has_active_permission_card()));
+    assert!(!repo.path().join("issue90-marker").exists());
+    let feedback = provider.requests()[1]
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("issue90-bash"))
+        .map(|message| message.content.clone());
+    assert_eq!(
+        feedback.as_deref(),
+        Some(vega_runtime::BASH_INVALID_INPUT_OUTPUT)
+    );
+
+    let reopened = Store::open(&database_path).expect("issue90 reopened store");
+    let history = vega_conversation::history::restart_history_page(&reopened, &thread.id, 20)
+        .expect("history");
+    assert!(history.entries.iter().any(|entry| matches!(
+        entry,
+        vega_conversation::history::HistoryEntry::Tool {
+            call_id,
+            input: None,
+            result: Some(vega_conversation::types::ToolCardResultProjection::InvalidRejected {
+                tool: vega_conversation::types::InvalidToolKind::Bash,
+                ..
+            }),
+            ..
+        } if call_id == "issue90-bash"
+    )));
+}
+
+#[gpui_kit::test]
 async fn production_agent_start_entry_surfaces_write_permission_and_continues(
     cx: &mut gpui_kit::TestAppContext,
 ) {

@@ -70,8 +70,9 @@ mod provider;
 mod retry;
 
 pub use agent::{
-    AgentOutcome, AgentRequest, CALL_ID_CONFLICT_OUTPUT, CANCELLED_BEFORE_EXECUTION_OUTPUT,
-    CompletedToolCall, McpReadyServer, McpRevocationLease, PERMISSION_TIMEOUT,
+    AgentOutcome, AgentRequest, BASH_INVALID_INPUT_OUTPUT, CALL_ID_CONFLICT_OUTPUT,
+    CANCELLED_BEFORE_EXECUTION_OUTPUT, CompletedToolCall, InvalidBashAudit,
+    LEGACY_BASH_INVALID_INPUT_OUTPUT, McpReadyServer, McpRevocationLease, PERMISSION_TIMEOUT,
     REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES, REASONING_TURN_MAX_BYTES, RuntimeEvent,
     RuntimeExactRule, RuntimeFinishReason, RuntimePermissionHook, RuntimeTokenUsage,
     RuntimeToolCall, RuntimeToolConfig, RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing,

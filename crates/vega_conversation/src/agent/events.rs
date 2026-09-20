@@ -664,6 +664,14 @@ pub(crate) fn validate_runtime_proposal(
 }
 
 pub(crate) fn tool_inputs_semantically_equal(tool: &str, left: &str, right: &str) -> bool {
+    if tool == "bash"
+        && let (Some(left), Some(right)) = (
+            vega_runtime::InvalidBashAudit::from_json(left),
+            vega_runtime::InvalidBashAudit::from_json(right),
+        )
+    {
+        return left == right;
+    }
     if !matches!(tool, "write" | "edit") {
         return left == right;
     }
@@ -686,6 +694,11 @@ pub(crate) fn validate_runtime_validation_event(
     call: &vega_runtime::RuntimeToolCall,
     result: &vega_runtime::RuntimeToolResult,
 ) -> Result<(), VegaError> {
+    if call.name == "bash" {
+        return crate::types::validate_runtime_validation_rejection(call, result)
+            .map(|_| ())
+            .ok_or_else(|| safe_audit_error(&call.name));
+    }
     let invalid = vega_tools::InvalidWriteEditAudit::from_json(&call.input_json)
         .map_err(|_| safe_audit_error(&call.name))?;
     let approval = result

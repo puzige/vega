@@ -42,6 +42,85 @@ fn loaded_skill_audit_projects_only_safe_identity() {
 }
 
 #[test]
+fn issue90_bash_validation_event_requires_exact_safe_audit_and_terminal_facts() {
+    use super::{InvalidToolCode, InvalidToolKind};
+    use vega_runtime::{
+        RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeToolCall,
+        RuntimeToolResult, RuntimeToolStatus,
+    };
+
+    let call = RuntimeToolCall {
+        id: "bad-bash".into(),
+        name: "bash".into(),
+        input_json: vega_runtime::InvalidBashAudit::from_raw(
+            r#"{"command":"SECRET_BASH_COMMAND"}"#,
+        )
+        .unwrap()
+        .to_json()
+        .unwrap(),
+    };
+    let result = RuntimeToolResult {
+        call_id: call.id.clone(),
+        output: vega_runtime::BASH_INVALID_INPUT_OUTPUT.into(),
+        status: RuntimeToolStatus::Rejected,
+        reused: false,
+        exit_code: None,
+        duration_ms: None,
+        truncated: None,
+        approval: Some(RuntimeApprovalAudit {
+            decision: RuntimeApprovalDecision::Deny,
+            note: None,
+            source: RuntimeApprovalSource::Validation,
+            danger: None,
+        }),
+        remember_rule: None,
+    };
+    let event = |call: RuntimeToolCall, result: RuntimeToolResult| {
+        vega_runtime::RuntimeEvent::ToolCallValidationRejected { call, result }
+    };
+    assert!(matches!(
+        from_runtime_event("assistant", &event(call.clone(), result.clone())),
+        Some(ConversationEvent::ToolCallFinished { result, .. })
+            if result.invalid.is_some_and(|invalid|
+                invalid.tool() == InvalidToolKind::Bash
+                    && invalid.code() == InvalidToolCode::InvalidInput)
+    ));
+
+    let mut wrong_id = result.clone();
+    wrong_id.call_id = "different".into();
+    let mut wrong_output = result.clone();
+    wrong_output.output = "SECRET_FORGED_RESULT".into();
+    let mut wrong_status = result.clone();
+    wrong_status.status = RuntimeToolStatus::Failed;
+    let mut wrong_metadata = result.clone();
+    wrong_metadata.duration_ms = Some(1);
+    let mut wrong_approval = result.clone();
+    wrong_approval.approval.as_mut().unwrap().source = RuntimeApprovalSource::User;
+    for forged in [
+        wrong_id,
+        wrong_output,
+        wrong_status,
+        wrong_metadata,
+        wrong_approval,
+    ] {
+        assert!(from_runtime_event("assistant", &event(call.clone(), forged)).is_none());
+    }
+    assert!(
+        from_runtime_event(
+            "assistant",
+            &event(
+                RuntimeToolCall {
+                    input_json: r#"{"command":"SECRET_BASH_COMMAND"}"#.into(),
+                    ..call
+                },
+                result
+            )
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn conversation_runtime_error_debug_and_display_redact_provider_payload() {
     const SENTINEL: &str = "VEGA_CONVERSATION_PROVIDER_SENTINEL";
     let error = ConversationError::Runtime(Arc::new(vega_runtime::VegaError::Provider {

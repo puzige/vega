@@ -23,9 +23,9 @@ use vega_store::recovery;
 use vega_store::skills::{self, SkillActivationAuditRecord};
 
 use crate::types::{
-    Approval, ApprovalAudit, ConversationError, Plan, PlanStatus, TaskCostSummary, ToolCallStatus,
-    ToolCardInputProjection, ToolCardResultProjection, ToolResult, tool_card_input_projection,
-    tool_card_result_projection,
+    Approval, ApprovalAudit, ApprovalSource, ConversationError, InvalidToolCode, InvalidToolKind,
+    Plan, PlanStatus, TaskCostSummary, ToolCallStatus, ToolCardInputProjection,
+    ToolCardResultProjection, ToolResult, tool_card_input_projection, tool_card_result_projection,
 };
 
 /// One hydratable conversation entry in ascending message position. R70
@@ -571,18 +571,62 @@ fn project_assistant(
 /// content from an unverifiable row.
 fn tool_entry(call: &PageToolCall) -> HistoryEntry {
     let status = ToolCallStatus::parse(&call.status).unwrap_or(ToolCallStatus::Failed);
-    let approval = call
+    let approval_audit = call
         .approval
         .as_deref()
-        .and_then(|raw| ApprovalAudit::from_json(raw).ok())
-        .map(|audit| audit.decision);
+        .and_then(|raw| ApprovalAudit::from_json(raw).ok());
+    let approval = approval_audit.as_ref().map(|audit| audit.decision);
+    let bash_invalid = call.tool == "bash"
+        && status == ToolCallStatus::Rejected
+        && approval_audit.as_ref().is_some_and(|audit| {
+            audit.decision == Approval::Deny
+                && audit.source == ApprovalSource::Validation
+                && audit.note.is_none()
+                && audit.danger.is_none()
+        })
+        && call.exit_code.is_none()
+        && call.duration_ms.is_none()
+        && match call.output_text.as_deref() {
+            Some(vega_runtime::BASH_INVALID_INPUT_OUTPUT) => {
+                vega_runtime::InvalidBashAudit::from_json(&call.input_json).is_some()
+            }
+            Some(vega_runtime::LEGACY_BASH_INVALID_INPUT_OUTPUT) => {
+                vega_tools::bash_permission_signature(&call.input_json).is_err()
+            }
+            _ => false,
+        };
+    if bash_invalid {
+        return HistoryEntry::Tool {
+            seq: call.seq,
+            message_id: call.message_id.clone(),
+            call_id: call.id.clone(),
+            status,
+            approval,
+            input: None,
+            result: Some(ToolCardResultProjection::InvalidRejected {
+                tool: InvalidToolKind::Bash,
+                code: InvalidToolCode::InvalidInput,
+                reused: true,
+            }),
+        };
+    }
+    let invalid_bash_claim = call.tool == "bash"
+        && (approval_audit
+            .as_ref()
+            .is_some_and(|audit| audit.source == ApprovalSource::Validation)
+            || matches!(
+                call.output_text.as_deref(),
+                Some(vega_runtime::BASH_INVALID_INPUT_OUTPUT)
+                    | Some(vega_runtime::LEGACY_BASH_INVALID_INPUT_OUTPUT)
+            ));
     let proposal = crate::types::ToolCall {
         id: call.id.clone(),
         tool: call.tool.clone(),
         input_json: call.input_json.clone(),
     };
     let input = tool_card_input_projection(&proposal);
-    let (input, result) = if matches!(input, ToolCardInputProjection::Corrupt)
+    let (input, result) = if invalid_bash_claim
+        || matches!(input, ToolCardInputProjection::Corrupt)
         || matches!(
             status,
             ToolCallStatus::PendingApproval | ToolCallStatus::Approved | ToolCallStatus::Running
@@ -611,5 +655,64 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
         approval,
         input,
         result,
+    }
+}
+
+#[cfg(test)]
+mod issue90_tests {
+    use super::*;
+
+    fn old_invalid_bash_row() -> PageToolCall {
+        PageToolCall {
+            id: "old-bash".into(),
+            message_id: "assistant".into(),
+            seq: 1,
+            text_offset_bytes: None,
+            tool: "bash".into(),
+            input_json: r#"{"command":"SECRET_HISTORICAL_COMMAND"}"#.into(),
+            output_text: Some("Tool error: invalid bash input (invalid_input)".into()),
+            status: "rejected".into(),
+            approval: Some(
+                r#"{"decision":"deny","note":null,"source":"validation","danger":null}"#.into(),
+            ),
+            exit_code: None,
+            duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn legacy_invalid_bash_hydrates_as_safe_rejection_only_for_exact_validation_row() {
+        let row = old_invalid_bash_row();
+        assert!(matches!(
+            tool_entry(&row),
+            HistoryEntry::Tool {
+                status: ToolCallStatus::Rejected,
+                input: None,
+                result: Some(result),
+                ..
+            } if !matches!(result, ToolCardResultProjection::Corrupt)
+        ));
+
+        for tamper in 0..5 {
+            let mut row = old_invalid_bash_row();
+            match tamper {
+                0 => row.status = "failed".into(),
+                1 => {
+                    row.approval = Some(
+                        r#"{"decision":"deny","note":null,"source":"user","danger":null}"#.into(),
+                    )
+                }
+                2 => row.exit_code = Some(0),
+                3 => row.output_text = Some("SECRET_FORGED_OUTPUT".into()),
+                _ => row.input_json = r#"{"cmd":"printf valid"}"#.into(),
+            }
+            assert!(matches!(
+                tool_entry(&row),
+                HistoryEntry::Tool {
+                    result: Some(ToolCardResultProjection::Corrupt),
+                    ..
+                }
+            ));
+        }
     }
 }

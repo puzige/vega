@@ -108,6 +108,8 @@ impl std::fmt::Debug for ToolOutputChunk {
 /// Mutating tool identity for an invalid-input terminal projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidToolKind {
+    /// Invalid `bash` provider input.
+    Bash,
     /// Invalid `write` provider input.
     Write,
     /// Invalid `edit` provider input.
@@ -118,6 +120,7 @@ impl InvalidToolKind {
     /// Stable tool name safe for UI display.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Bash => "bash",
             Self::Write => "write",
             Self::Edit => "edit",
         }
@@ -127,6 +130,7 @@ impl InvalidToolKind {
 /// Closed validation-code vocabulary safe for an invalid tool card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InvalidToolCode {
+    InvalidInput,
     MalformedJson,
     InputNotObject,
     UnexpectedField,
@@ -158,6 +162,7 @@ impl InvalidToolCode {
     /// Stable content-free wire label.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::InvalidInput => "invalid_input",
             Self::MalformedJson => "malformed_json",
             Self::InputNotObject => "input_not_object",
             Self::UnexpectedField => "unexpected_field",
@@ -226,7 +231,7 @@ pub struct ToolResult {
     pub duration_ms: Option<u64>,
     /// Exact live truncation fact; absent on persisted recovery.
     pub truncated: Option<bool>,
-    /// Typed content-free projection for the atomic invalid write/edit path.
+    /// Typed content-free projection for an atomic invalid tool path.
     /// All ordinary terminal paths keep this absent.
     pub invalid: Option<InvalidToolProjection>,
 }
@@ -542,23 +547,31 @@ fn valid_skill_sha256(value: &str) -> bool {
 }
 
 /// Strictly reduces a terminal result. `input=None` is legal only for the
-/// atomic invalid write/edit terminal projection.
+/// atomic invalid write/edit/bash terminal projection.
 pub fn tool_card_result_projection(
     input: Option<&ToolCardInputProjection>,
     result: &ToolResult,
 ) -> ToolCardResultProjection {
     if let Some(invalid) = result.invalid {
+        let expected = match (invalid.tool(), invalid.code()) {
+            (InvalidToolKind::Bash, InvalidToolCode::InvalidInput) => {
+                vega_runtime::BASH_INVALID_INPUT_OUTPUT.to_string()
+            }
+            (InvalidToolKind::Bash, _) | (_, InvalidToolCode::InvalidInput) => {
+                return ToolCardResultProjection::Corrupt;
+            }
+            (tool, code) => format!(
+                "Tool error: invalid {} input ({})",
+                tool.as_str(),
+                code.as_str()
+            ),
+        };
         if input.is_none()
             && result.status == ToolCallStatus::Rejected
             && result.exit_code.is_none()
             && result.duration_ms.is_none()
             && result.truncated.is_none()
-            && result.output
-                == format!(
-                    "Tool error: invalid {} input ({})",
-                    invalid.tool().as_str(),
-                    invalid.code().as_str()
-                )
+            && result.output == expected
         {
             return ToolCardResultProjection::InvalidRejected {
                 tool: invalid.tool(),
@@ -889,6 +902,7 @@ pub(crate) fn mutation_cancelled_success_matches(
     result: &ToolResult,
 ) -> bool {
     match tool {
+        InvalidToolKind::Bash => false,
         InvalidToolKind::Write => vega_tools::WriteSuccessOutput::from_json(&result.output)
             .is_ok_and(|success| {
                 success.path == path && Some(success.bytes_written) == expected_write_bytes
