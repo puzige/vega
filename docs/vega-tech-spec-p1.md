@@ -356,7 +356,7 @@ validation step -2 是 permission 前置安全边界：invalid write/edit 不产
 
 > 2026-09-18 · Issue #58 用户裁决：新增独立 FullAccess（`full_access`），Auto 仍保留沙箱。Execute + FullAccess 直接启动 shell，绕过下面仅适用于沙箱模式的 Seatbelt、profile 自测与 hardlink preflight；不会在沙箱失败时自动降级。其余模式继续按下文执行，危险确认与进程/输出生命周期保持不变。具体范围和验收见 [Issue 58 规格](vega-issue-58-full-access.md)。
 
-- bash 仅接收 `cmd` 与可选 `timeout_ms`；调用方不存在 cwd 参数。timeout 缺省 120_000ms，0 与不可表示值拒绝。执行固定为 `/bin/zsh -lc`，cwd 固定 canonical project root，无 PTY。
+- bash 仅接收 `cmd` 与可选 `timeout_ms`；调用方不存在 cwd 参数。timeout 缺省 120_000ms，0 与不可表示值拒绝。执行固定为 `/bin/zsh -lc`，cwd 固定 canonical project root，无 PTY。参数误用的固定反馈、安全工具卡与旧记录恢复按 [Issue #90 规格](vega-issue90-bash-validation.md)；`command` 别名不得执行。
 - 所有生产 bash 都由 `/usr/bin/sandbox-exec` 启动。workspace-write profile 基线 deny `file-write*`，只放行 project root 与当次 Vega-owned temp exact subpath，再 deny `.git` 与实际 gitdir；禁止 broad-allow 共享 `/private/tmp`，网络按 tech-risks §4 workspace-write 档开放。sandbox-exec 缺失/profile 自测失败必须 fail closed，禁止裸 shell。
 - 每个 bash call 在 spawn 前以独占创建方式于 canonical `/private/tmp` 下建立不可预测的专用目录，权限必须收紧为 0700；记录其初始 dev/inode，并在 profile 参数化前验证 `symlink_metadata` 为目录、不是 symlink、canonical path 仍位于 `/private/tmp`、dev/inode 未变。`TMPDIR`、`TMP`、`TEMP`、`TEMPDIR` 全设为此 exact path；不得把真实路径写入 tool wire、output、event、SQLite 或普通错误文本。
 - Seatbelt 是 path-based，不能阻止任一可写根内预存 hardlink 修改其他路径的同一 inode。每次 spawn 前必须对 canonical project root 与专用 temp dir 执行 no-follow 扫描：project 覆盖 hidden/ignored entry，只跳过 profile 已强制只读的 `.git` entry 与已发现实际 gitdir；temp dir 不跳过任何 entry。任一普通文件 Unix `nlink > 1`，或目录遍历、`symlink_metadata`/metadata 读取失败，均以 hardlink preflight failure 终止且不得创建子进程。不得用 canonicalize 跟随 entry symlink 做此扫描。
