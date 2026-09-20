@@ -10,6 +10,19 @@ fn skill_runtime_error() -> VegaError {
     }
 }
 
+fn compaction_usage_state(
+    usages: &[crate::ContextCompactionUsage],
+    complete: bool,
+) -> crate::ContextCompactionUsageState {
+    if !complete || usages.is_empty() {
+        crate::ContextCompactionUsageState::Unknown
+    } else {
+        crate::ContextCompactionUsageState::Known {
+            priced: usages.iter().all(|usage| usage.pricing.is_some()),
+        }
+    }
+}
+
 fn skill_authority_current(config: Option<&RuntimeSkillConfig>) -> bool {
     config
         .and_then(|skills| skills.authority_probe.as_ref())
@@ -170,13 +183,8 @@ where
         .await;
     let (compacted, usage_state) = match compacted {
         Ok(compacted) => {
-            let usage_state = compacted.usage.as_ref().map_or(
-                crate::ContextCompactionUsageState::Unknown,
-                |usage| crate::ContextCompactionUsageState::Known {
-                    priced: usage.pricing.is_some(),
-                },
-            );
-            if let Some(usage) = compacted.usage.clone() {
+            let usage_state = compaction_usage_state(&compacted.usages, compacted.usage_complete);
+            for usage in compacted.usages.iter().cloned() {
                 let event = RuntimeEvent::ContextCompactionUsageUpdated { usage };
                 sink(event.clone()).await?;
                 events.push(event);
@@ -184,13 +192,8 @@ where
             (compacted, usage_state)
         }
         Err(failure) => {
-            let usage_state = failure.usage.as_ref().map_or(
-                crate::ContextCompactionUsageState::Unknown,
-                |usage| crate::ContextCompactionUsageState::Known {
-                    priced: usage.pricing.is_some(),
-                },
-            );
-            if let Some(usage) = failure.usage {
+            let usage_state = compaction_usage_state(&failure.usages, failure.usage_complete);
+            for usage in failure.usages {
                 let event = RuntimeEvent::ContextCompactionUsageUpdated { usage };
                 sink(event.clone()).await?;
                 events.push(event);
@@ -868,13 +871,9 @@ where
                 let compacted = match compacted {
                     Ok(compacted) => compacted,
                     Err(failure) => {
-                        let usage_state = failure.usage.as_ref().map_or(
-                            crate::ContextCompactionUsageState::Unknown,
-                            |usage| crate::ContextCompactionUsageState::Known {
-                                priced: usage.pricing.is_some(),
-                            },
-                        );
-                        if let Some(usage) = failure.usage {
+                        let usage_state =
+                            compaction_usage_state(&failure.usages, failure.usage_complete);
+                        for usage in failure.usages {
                             emit!(
                                 events,
                                 sink,
@@ -936,13 +935,9 @@ where
                         return Err(*failure.error);
                     }
                 };
-                let usage_state = compacted.usage.as_ref().map_or(
-                    crate::ContextCompactionUsageState::Unknown,
-                    |usage| crate::ContextCompactionUsageState::Known {
-                        priced: usage.pricing.is_some(),
-                    },
-                );
-                if let Some(usage) = compacted.usage.clone() {
+                let usage_state =
+                    compaction_usage_state(&compacted.usages, compacted.usage_complete);
+                for usage in compacted.usages.iter().cloned() {
                     emit!(
                         events,
                         sink,

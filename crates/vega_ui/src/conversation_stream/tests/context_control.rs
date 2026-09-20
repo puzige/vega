@@ -45,6 +45,17 @@ fn status(generation: u64, status: Status) -> ContextCompactionStatusRecord {
     }
 }
 
+#[test]
+fn issue88_internal_stage_limit_and_model_budget_have_distinct_copy() {
+    let mut record = status(1, Status::Failed);
+    record.failure = Some(Failure::TooLarge);
+    assert!(status_label(&record).contains("安全分段上限"));
+    assert!(!status_label(&record).contains("模型容量"));
+    record.failure = Some(Failure::OverLimit);
+    assert!(status_label(&record).contains("模型上下文预算不足"));
+    assert!(!status_label(&record).contains("安全分段上限"));
+}
+
 #[gpui_kit::test]
 async fn context_ui_unknown_usage_restore_is_idempotent_and_load_error_is_not_usage(
     cx: &mut TestAppContext,

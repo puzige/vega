@@ -50,6 +50,42 @@ struct GatedSummaryProvider {
     release: std::sync::Arc<tokio::sync::Notify>,
 }
 
+struct MutatingSecondStageProvider {
+    inner: MockProvider,
+    database_path: std::path::PathBuf,
+    calls: AtomicUsize,
+}
+
+impl vega_runtime::Provider for MutatingSecondStageProvider {
+    fn chat_stream(
+        &self,
+        request: vega_runtime::ChatRequest,
+        cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            let store = Store::open(&self.database_path).unwrap();
+            messages::insert(
+                store.conn(),
+                &messages::MessageRow {
+                    id: "concurrent-user".into(),
+                    thread_id: "thread-1".into(),
+                    seq: 4,
+                    role: "user".into(),
+                    kind: "text".into(),
+                    content: "arrived while staged summary was in flight".into(),
+                    status: "done".into(),
+                    created_at: 4,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .unwrap();
+        }
+        self.inner.chat_stream(request, cancel)
+    }
+}
+
 impl vega_runtime::Provider for GatedSummaryProvider {
     fn chat_stream(
         &self,
@@ -1588,6 +1624,503 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
         vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
             .unwrap()
             .is_some()
+    );
+}
+
+#[tokio::test]
+async fn issue88_long_completed_tool_history_compacts_and_continues_same_run() {
+    let (store, dir, _project_id) = setup();
+    for seq in 1..=8_i64 {
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: format!("long-history-{seq}"),
+                thread_id: "thread-1".into(),
+                seq,
+                role: if seq % 2 == 1 { "user" } else { "assistant" }.into(),
+                kind: "text".into(),
+                content: format!("historical-{seq}-{}", "x".repeat(100_000)),
+                status: "done".into(),
+                created_at: seq,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+    }
+    let approval = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::ReadonlyTool,
+        danger: None,
+    }
+    .to_json()
+    .unwrap();
+    for seq in 1..=120_i64 {
+        store
+            .conn()
+            .execute(
+                r#"INSERT INTO tool_calls
+                 (id, thread_id, message_id, seq, tool, input_json, output_text, status,
+                  approval, created_at, finished_at, text_offset_bytes)
+                 VALUES (?1, 'thread-1', 'long-history-8', ?2, 'read', '{"path":"lib.rs"}', ?3,
+                         'success', ?4, ?2, ?2, ?5)"#,
+                (
+                    format!("old-call-{seq:03}"),
+                    seq,
+                    format!("result-{seq:03}-{}", "r".repeat(1_700)),
+                    &approval,
+                    100_013_i64,
+                ),
+            )
+            .unwrap();
+    }
+    save_issue76_model_policy(&store, 300_000, 128_000);
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("continued after long history".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+
+    let run = run_issue76_model_owned(
+        &store,
+        &provider,
+        &tools,
+        "current user request",
+        "system",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(run.content, "continued after long history");
+    let requests = provider.requests();
+    assert!(
+        requests.len() >= 3,
+        "at least two stages and a primary request"
+    );
+    assert!(
+        requests[..requests.len() - 1]
+            .iter()
+            .all(|request| request.tools.is_empty())
+    );
+    let summary_sources = requests[..requests.len() - 1]
+        .iter()
+        .map(|request| {
+            assert!(
+                request
+                    .messages
+                    .iter()
+                    .map(|message| message.content.len())
+                    .sum::<usize>()
+                    <= 128 * 1024
+            );
+            request.messages[1].content.as_str()
+        })
+        .collect::<Vec<_>>();
+    for seq in 1..=120_i64 {
+        let call_id = format!("old-call-{seq:03}");
+        assert!(
+            summary_sources
+                .iter()
+                .any(|source| source.contains(&call_id)),
+            "completed call {call_id} must reach a summarization stage"
+        );
+    }
+    assert!(!requests.last().unwrap().tools.is_empty());
+    assert!(
+        vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM context_checkpoints WHERE thread_id = 'thread-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "all stages must yield one durable checkpoint"
+    );
+}
+
+fn seed_issue88_large_tool_result(store: &Store, input: &str, output: &str) {
+    for (id, seq, role) in [
+        ("earlier-user", 1_i64, "user"),
+        ("earlier-assistant", 2_i64, "assistant"),
+        ("newest-user", 3_i64, "user"),
+    ] {
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: id.into(),
+                thread_id: "thread-1".into(),
+                seq,
+                role: role.into(),
+                kind: "text".into(),
+                content: format!("message-{seq}"),
+                status: "done".into(),
+                created_at: seq,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+    }
+    let approval = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::ReadonlyTool,
+        danger: None,
+    }
+    .to_json()
+    .unwrap();
+    store
+        .conn()
+        .execute(
+            r#"INSERT INTO tool_calls
+             (id, thread_id, message_id, seq, tool, input_json, output_text, status,
+              approval, created_at, finished_at, text_offset_bytes)
+             VALUES ('long-result', 'thread-1', 'earlier-assistant', 1, 'read', ?1, ?2,
+                     'success', ?3, 2, 2, 9)"#,
+            (input, output, &approval),
+        )
+        .unwrap();
+}
+
+fn save_issue88_manual_settings(store: &Store) {
+    vega_store::context_compaction::save_settings(
+        store.conn(),
+        &vega_store::context_compaction::ContextSettings {
+            thread_id: "thread-1".into(),
+            model: "mock-model".into(),
+            context_limit: Some(428_000),
+            output_reserve: 128_000,
+            automatic_compaction: true,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_without_loss() {
+    let (store, dir, _project_id) = setup();
+    let input = format!(r#"{{"path":"{}"}}"#, "i".repeat(20_000));
+    let output = "0123456789abcdef".repeat(14_000);
+    seed_issue88_large_tool_result(&store, &input, &output);
+    let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("bounded summary".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    let budget = vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap();
+    let result = compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        Vec::new(),
+        budget,
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(result.messages[0].content.contains("bounded summary"));
+    let requests = provider.requests();
+    assert!(requests.len() >= 2);
+    let mut reconstructed_input = String::new();
+    let mut reconstructed_output = String::new();
+    let mut output_parts = Vec::new();
+    for request in &requests {
+        assert!(request.tools.is_empty());
+        let wire_bytes: usize = request
+            .messages
+            .iter()
+            .map(|message| message.content.len())
+            .sum();
+        assert!(wire_bytes <= 128 * 1024, "bounded summary request");
+        let estimate = vega_runtime::estimate_wire_context(&request.messages, &[]).unwrap();
+        assert!(estimate.input_tokens <= budget.input_budget());
+        for line in request.messages[1].content.lines() {
+            if line.starts_with("tool read input id=long-result seq=1 status=success excerpt ") {
+                reconstructed_input.push_str(line.rsplit_once(": ").unwrap().1);
+            }
+            if line.starts_with("tool read id=long-result seq=1 status=success output excerpt ") {
+                reconstructed_output.push_str(line.rsplit_once(": ").unwrap().1);
+                output_parts.push(line.split_whitespace().nth(7).unwrap().to_string());
+            }
+        }
+    }
+    assert_eq!(reconstructed_input, input);
+    assert_eq!(reconstructed_output, output);
+    assert!(output_parts.len() > 1);
+    assert!(
+        output_parts
+            .first()
+            .is_some_and(|part| part.starts_with("1/"))
+    );
+    let after = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    assert_eq!(before, after, "raw messages and tool audit are unchanged");
+
+    drop(store);
+    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let next_provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("continued after restart".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    let resumed = run_thread_task(
+        &reopened,
+        &next_provider,
+        &tools,
+        "thread-1",
+        "fresh request after restart",
+        "system",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.content, "continued after restart");
+    let primary = &next_provider.requests()[0].messages;
+    assert_eq!(
+        primary
+            .iter()
+            .filter(|message| message.content.contains("Historical context summary"))
+            .count(),
+        1,
+        "restart must project the durable checkpoint once"
+    );
+    assert!(
+        primary
+            .iter()
+            .any(|message| message.content == "fresh request after restart")
+    );
+    assert!(primary.iter().all(|message| {
+        message.tool_call_id.as_deref() != Some("long-result")
+            && message
+                .tool_calls
+                .iter()
+                .all(|call| call.id != "long-result")
+    }));
+    assert_eq!(
+        reopened
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM tool_calls WHERE id = 'long-result'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+        "restart must not re-execute the historical tool"
+    );
+}
+
+#[tokio::test]
+async fn issue88_empty_completed_tool_result_keeps_an_explicit_paired_marker() {
+    let (store, _dir, _project_id) = setup();
+    seed_issue88_large_tool_result(&store, r#"{"path":"lib.rs"}"#, "");
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("summary with an empty result".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        Vec::new(),
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let request = &provider.requests()[0];
+    assert!(
+        request.messages[1]
+            .content
+            .contains("tool read input id=long-result seq=1 status=success")
+    );
+    assert!(request.messages[1].content.contains(
+        "tool read id=long-result seq=1 status=success output excerpt 1/1 bytes 0..0: (empty)"
+    ));
+}
+
+#[tokio::test]
+async fn issue88_later_stage_failure_and_cancel_preserve_prior_usage_without_checkpoint() {
+    for (second_stage, expected_status, expected_failure) in [
+        (
+            ScriptStep::Error {
+                status: Some(503),
+                message: "later stage unavailable".into(),
+                retryable: false,
+            },
+            ContextCompactionStatus::Failed,
+            ContextCompactionFailureCode::Unavailable,
+        ),
+        (
+            ScriptStep::Cancelled,
+            ContextCompactionStatus::Cancelled,
+            ContextCompactionFailureCode::Cancelled,
+        ),
+    ] {
+        let (store, _dir, _project_id) = setup();
+        seed_issue88_large_tool_result(
+            &store,
+            r#"{"path":"lib.rs"}"#,
+            &"0123456789abcdef".repeat(14_000),
+        );
+        save_issue88_manual_settings(&store);
+        let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::TextDelta("first rolling summary".into()),
+                ProviderEvent::Usage {
+                    input: 101,
+                    output: 11,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                },
+            ])],
+            vec![second_stage],
+        ]);
+        let events = compact_thread_manually_accounted(
+            &store,
+            &provider,
+            "thread-1",
+            "mock-model",
+            "system",
+            CancellationToken::new(),
+            None,
+            None,
+            88,
+        )
+        .await
+        .unwrap();
+        assert_eq!(provider.requests().len(), 2);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ConversationEvent::ContextCompactionUsageUpdated { usage, .. }
+                if usage.input == 101 && usage.output == 11
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ConversationEvent::ContextCompactionStatus { record }
+                if record.status == expected_status && record.failure == Some(expected_failure)
+        )));
+        let usage: (i64, i64, Option<String>) = store
+            .conn()
+            .query_row(
+                "SELECT input_tokens, output_tokens, message_id FROM token_usage \
+                 WHERE thread_id = 'thread-1' ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(usage, (101, 11, None));
+        assert!(
+            vega_store::context_compaction::latest_checkpoint(
+                store.conn(),
+                "thread-1",
+                "mock-model"
+            )
+            .unwrap()
+            .is_none()
+        );
+        let after = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+        assert_eq!(before, after);
+    }
+}
+
+#[tokio::test]
+async fn issue88_staged_source_mutation_rejects_checkpoint_and_accounts_completed_stages() {
+    let (store, dir, _project_id) = setup();
+    seed_issue88_large_tool_result(
+        &store,
+        r#"{"path":"lib.rs"}"#,
+        &"0123456789abcdef".repeat(14_000),
+    );
+    save_issue88_manual_settings(&store);
+    let provider = MutatingSecondStageProvider {
+        inner: MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("rolling summary".into()),
+            ProviderEvent::Usage {
+                input: 103,
+                output: 13,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]),
+        database_path: dir.path().join("vega.db"),
+        calls: AtomicUsize::new(0),
+    };
+    let events = compact_thread_manually_accounted(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        CancellationToken::new(),
+        None,
+        None,
+        89,
+    )
+    .await
+    .unwrap();
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ContextCompactionStatus { record }
+            if record.status == ContextCompactionStatus::Failed
+                && record.failure == Some(ContextCompactionFailureCode::SourceChanged)
+    )));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, ConversationEvent::ContextCompactionUsageUpdated { usage, .. } if usage.input == 103 && usage.output == 13))
+            .count(),
+        2,
+    );
+    assert!(
+        vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE id = 'concurrent-user'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
     );
 }
 

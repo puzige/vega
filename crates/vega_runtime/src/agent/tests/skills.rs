@@ -121,7 +121,8 @@ impl ContextCompactionHook for RevokingSkillCompaction {
                 messages: vec![ChatMessage::new(ChatRole::User, "summary")],
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
-                usage: None,
+                usages: Vec::new(),
+                usage_complete: false,
             })
         })
     }
@@ -165,7 +166,8 @@ impl ContextCompactionHook for CaptureSkillCompaction {
                 messages: vec![ChatMessage::new(ChatRole::User, "summary")],
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
-                usage: None,
+                usages: Vec::new(),
+                usage_complete: false,
             })
         })
     }

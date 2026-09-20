@@ -275,8 +275,10 @@ pub struct ContextCompactionResult {
     pub source_version: u64,
     /// Fingerprint of the source projection used for this result.
     pub source_fingerprint: Option<String>,
-    /// Summary provider usage, when the provider supplied it.
-    pub usage: Option<ContextCompactionUsage>,
+    /// Actual usage from each completed summary stage, in request order.
+    pub usages: Vec<ContextCompactionUsage>,
+    /// False when any stage omitted Usage; known stages still remain billable.
+    pub usage_complete: bool,
 }
 
 impl fmt::Debug for ContextCompactionResult {
@@ -289,7 +291,8 @@ impl fmt::Debug for ContextCompactionResult {
                 "source_fingerprint_bytes",
                 &self.source_fingerprint.as_ref().map(String::len),
             )
-            .field("has_usage", &self.usage.is_some())
+            .field("usage_count", &self.usages.len())
+            .field("usage_complete", &self.usage_complete)
             .finish()
     }
 }
@@ -426,7 +429,9 @@ pub struct ContextCompactionFailure {
     /// Safe typed failure to return to the runtime/conversation boundary.
     pub error: Box<VegaError>,
     /// Usage already observed before failure, if any.
-    pub usage: Option<ContextCompactionUsage>,
+    pub usages: Vec<ContextCompactionUsage>,
+    /// False when any attempted stage omitted Usage.
+    pub usage_complete: bool,
 }
 
 impl ContextCompactionFailure {
@@ -439,7 +444,21 @@ impl ContextCompactionFailure {
     pub fn new(error: VegaError, usage: Option<ContextCompactionUsage>) -> Self {
         Self {
             error: Box::new(error),
-            usage,
+            usage_complete: usage.is_some(),
+            usages: usage.into_iter().collect(),
+        }
+    }
+
+    /// Preserves all completed-stage usage when a later stage fails.
+    pub fn with_usages(
+        error: VegaError,
+        usages: Vec<ContextCompactionUsage>,
+        usage_complete: bool,
+    ) -> Self {
+        Self {
+            error: Box::new(error),
+            usages,
+            usage_complete,
         }
     }
 }
@@ -449,7 +468,8 @@ impl fmt::Debug for ContextCompactionFailure {
         formatter
             .debug_struct("ContextCompactionFailure")
             .field("error", self.error.as_ref())
-            .field("has_usage", &self.usage.is_some())
+            .field("usage_count", &self.usages.len())
+            .field("usage_complete", &self.usage_complete)
             .finish()
     }
 }

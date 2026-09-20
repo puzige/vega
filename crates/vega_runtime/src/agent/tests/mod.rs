@@ -46,7 +46,8 @@ impl ContextCompactionHook for TailPreservingCompactionHook {
                 messages,
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
-                usage: None,
+                usages: Vec::new(),
+                usage_complete: false,
             })
         }
         .boxed()
@@ -67,7 +68,8 @@ impl ContextCompactionHook for RecordingCompactionHook {
                 messages,
                 source_version,
                 source_fingerprint: None,
-                usage: None,
+                usages: Vec::new(),
+                usage_complete: false,
             })
         }
         .boxed()
