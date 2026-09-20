@@ -113,6 +113,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "context_settings",
             "image_attachments",
             "messages",
+            "model_context_policies",
             "permissions",
             "projects",
             "sidebar_groups",

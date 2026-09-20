@@ -13,6 +13,7 @@ mod automatic_titles;
 mod failure_paths;
 mod history_permissions;
 mod images;
+mod model_context;
 mod permissions;
 mod plan_approval;
 mod stream_persistence;

@@ -7,6 +7,7 @@ use vega_conversation::types::{
     ProviderNetworkAction, ProviderNetworkOutcome, ProviderNetworkRequest, ProviderPatchAction,
     ProviderPatchRequest,
 };
+use vega_store::context_compaction::{DEFAULT_MODEL_INPUT_LIMIT, DEFAULT_MODEL_OUTPUT_RESERVE};
 
 #[derive(Default)]
 pub(crate) struct ProviderManagement {
@@ -21,7 +22,33 @@ pub(crate) struct ProviderManagement {
     checked: BTreeSet<String>,
     statuses: BTreeMap<String, String>,
     message: Option<String>,
-    model_editor: Option<(Option<String>, Entity<TextInput>)>,
+    model_editor: Option<ModelEditor>,
+    next_model_context_request: u64,
+    pending_model_reopen: Option<(String, Option<String>)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PolicySource {
+    Loading,
+    AssumedDefault,
+    Saved,
+    Unknown,
+}
+
+struct ModelEditor {
+    original: Option<String>,
+    model_input: Entity<TextInput>,
+    input_limit: Entity<TextInput>,
+    output_limit: Entity<TextInput>,
+    automatic: bool,
+    unknown: bool,
+    source: PolicySource,
+    legacy_present: bool,
+    request_id: u64,
+    saving: bool,
+    loaded_values: Option<(Option<u64>, Option<u64>, bool)>,
+    message: Option<String>,
+    renamed_from: Option<String>,
 }
 impl Drop for ProviderManagement {
     fn drop(&mut self) {
@@ -58,6 +85,8 @@ enum Command {
     EditModel(String),
     DeleteModel(String),
     SaveModel,
+    ToggleModelAutomatic,
+    ToggleModelUnknown,
     Reload,
 }
 
@@ -189,7 +218,37 @@ impl SettingsView {
                 if let Some(model) = &original {
                     input.update(cx, |input, cx| input.set_text(model, cx));
                 }
-                self.provider_management.model_editor = Some((original, input));
+                let input_limit =
+                    cx.new(|cx| TextInput::new(cx, "输入最大 token 数", false).with_tab_stop(true));
+                let output_limit =
+                    cx.new(|cx| TextInput::new(cx, "输出最大 token 数", false).with_tab_stop(true));
+                self.provider_management.next_model_context_request = self
+                    .provider_management
+                    .next_model_context_request
+                    .saturating_add(1);
+                let request_id = self.provider_management.next_model_context_request;
+                self.provider_management.model_editor = Some(ModelEditor {
+                    original: original.clone(),
+                    model_input: input,
+                    input_limit,
+                    output_limit,
+                    automatic: true,
+                    unknown: false,
+                    source: PolicySource::Loading,
+                    legacy_present: false,
+                    request_id,
+                    saving: false,
+                    loaded_values: None,
+                    message: None,
+                    renamed_from: None,
+                });
+                if let (Some(provider), Some(model)) = (self.selected_provider(), original) {
+                    cx.emit(ModelContextLoadRequested {
+                        request_id,
+                        provider: provider.name,
+                        model,
+                    });
+                }
             }
             Command::DeleteModel(model) => {
                 if let Some(p) = self.selected_provider() {
@@ -202,8 +261,12 @@ impl SettingsView {
                 }
             }
             Command::SaveModel => {
-                if let Some((original, input)) = &self.provider_management.model_editor {
-                    let value = input.read(cx).text().to_string();
+                if let Some(editor) = &self.provider_management.model_editor {
+                    if editor.saving {
+                        return;
+                    }
+                    let original = editor.original.clone();
+                    let value = editor.model_input.read(cx).text().to_string();
                     if parse_provider_models(&value).is_err()
                         || value.trim().is_empty()
                         || value.lines().count() != 1
@@ -215,7 +278,18 @@ impl SettingsView {
                             .any(|m| m == value.trim() && Some(m) != original.as_ref())
                         {
                             self.error = Some("模型 ID 已存在".into());
+                        } else if original.as_deref() == Some(value.trim()) {
+                            self.save_model_context(cx);
                         } else {
+                            // A config rename and a SQLite policy mutation
+                            // have different authorities. Never silently
+                            // apply edited limits to the old model identity.
+                            if original.is_some() && self.model_context_values_changed(cx) {
+                                self.error = Some(
+                                    "请先保存模型 ID，再重新打开模型设置修改上下文容量".into(),
+                                );
+                                return;
+                            }
                             if let Some(index) =
                                 p.models.iter().position(|m| Some(m) == original.as_ref())
                             {
@@ -223,12 +297,220 @@ impl SettingsView {
                             } else {
                                 p.models.push(value.trim().into());
                             }
+                            self.provider_management.pending_model_reopen =
+                                Some((value.trim().into(), original.clone()));
                             self.provider_patch(ProviderPatchAction::EditModels(p.models), cx);
                         }
                     }
                 }
             }
+            Command::ToggleModelAutomatic => {
+                if let Some(editor) = self.provider_management.model_editor.as_mut()
+                    && !editor.saving
+                {
+                    editor.automatic = !editor.automatic;
+                }
+            }
+            Command::ToggleModelUnknown => {
+                if let Some(editor) = self.provider_management.model_editor.as_mut()
+                    && !editor.saving
+                {
+                    editor.unknown = !editor.unknown;
+                }
+            }
             Command::Reload => self.reload_providers(cx),
+        }
+        cx.notify();
+    }
+
+    fn model_context_values_changed(&self, cx: &App) -> bool {
+        let Some(editor) = self.provider_management.model_editor.as_ref() else {
+            return false;
+        };
+        let current = if editor.unknown {
+            Some((None, None, editor.automatic))
+        } else {
+            editor
+                .input_limit
+                .read(cx)
+                .text()
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .zip(
+                    editor
+                        .output_limit
+                        .read(cx)
+                        .text()
+                        .trim()
+                        .parse::<u64>()
+                        .ok(),
+                )
+                .map(|(input, output)| (Some(input), Some(output), editor.automatic))
+        };
+        editor.loaded_values.as_ref() != current.as_ref()
+    }
+
+    fn save_model_context(&mut self, cx: &mut Context<Self>) {
+        let Some(provider) = self.selected_provider() else {
+            return;
+        };
+        let Some(editor) = self.provider_management.model_editor.as_mut() else {
+            return;
+        };
+        let Some(model) = editor.original.clone() else {
+            return;
+        };
+        if editor.source == PolicySource::Loading {
+            self.error = Some("正在读取模型上下文配置，请稍后重试".into());
+            return;
+        }
+        let (input_limit, output_limit) = if editor.unknown {
+            (None, None)
+        } else {
+            let input = editor.input_limit.read(cx).text().trim().parse::<u64>();
+            let output = editor.output_limit.read(cx).text().trim().parse::<u64>();
+            match (input, output) {
+                (Ok(input), Ok(output))
+                    if input > 0
+                        && output > 0
+                        && input
+                            .checked_add(output)
+                            .is_some_and(|total| total <= u32::MAX as u64) =>
+                {
+                    (Some(input), Some(output))
+                }
+                _ => {
+                    self.error =
+                        Some("请输入正整数 token 数，且输入与输出之和不超过 4294967295".into());
+                    return;
+                }
+            }
+        };
+        self.provider_management.next_model_context_request = self
+            .provider_management
+            .next_model_context_request
+            .saturating_add(1);
+        let request_id = self.provider_management.next_model_context_request;
+        editor.request_id = request_id;
+        editor.saving = true;
+        editor.message = Some("正在保存模型上下文配置…".into());
+        self.error = None;
+        cx.emit(ModelContextSaveRequested {
+            request_id,
+            provider: provider.name,
+            model,
+            input_limit,
+            output_limit,
+            automatic_compaction: editor.automatic,
+        });
+    }
+
+    /// Only an exact currently open editor accepts this background load.
+    pub fn apply_model_context_loaded(
+        &mut self,
+        request: &ModelContextLoadRequested,
+        result: Result<ModelContextLoaded, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.provider_management.selected.as_deref() != Some(&request.provider) {
+            return;
+        }
+        let Some(editor) = self.provider_management.model_editor.as_mut() else {
+            return;
+        };
+        if editor.request_id != request.request_id
+            || editor.original.as_deref() != Some(&request.model)
+            || editor.saving
+        {
+            return;
+        }
+        match result {
+            Ok(loaded) => {
+                let persisted = loaded.policy.is_some();
+                let policy = loaded.policy.unwrap_or_else(|| {
+                    ModelContextPolicy::assumed_default(&request.provider, &request.model)
+                });
+                editor.source = if policy.input_limit.is_none() {
+                    PolicySource::Unknown
+                } else if persisted {
+                    PolicySource::Saved
+                } else {
+                    PolicySource::AssumedDefault
+                };
+                editor.unknown = policy.input_limit.is_none();
+                editor.automatic = policy.automatic_compaction;
+                editor.legacy_present = loaded.legacy_present;
+                editor.loaded_values = Some((
+                    policy.input_limit,
+                    policy.output_reserve,
+                    policy.automatic_compaction,
+                ));
+                editor.input_limit.update(cx, |input, cx| {
+                    input.set_text(
+                        &policy
+                            .input_limit
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                        cx,
+                    )
+                });
+                editor.output_limit.update(cx, |input, cx| {
+                    input.set_text(
+                        &policy
+                            .output_reserve
+                            .map(|value| value.to_string())
+                            .unwrap_or_default(),
+                        cx,
+                    )
+                });
+                editor.message = None;
+            }
+            Err(error) => {
+                editor.message = Some(error);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Save ACK is fenced by request id and exact provider/model identity.
+    pub fn apply_model_context_saved(
+        &mut self,
+        request: &ModelContextSaveRequested,
+        result: Result<ModelContextPolicy, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.provider_management.selected.as_deref() != Some(&request.provider) {
+            return;
+        }
+        let Some(editor) = self.provider_management.model_editor.as_mut() else {
+            return;
+        };
+        if editor.request_id != request.request_id
+            || editor.original.as_deref() != Some(&request.model)
+            || !editor.saving
+        {
+            return;
+        }
+        editor.saving = false;
+        match result {
+            Ok(policy) => {
+                editor.source = if policy.input_limit.is_none() {
+                    PolicySource::Unknown
+                } else {
+                    PolicySource::Saved
+                };
+                editor.loaded_values = Some((
+                    policy.input_limit,
+                    policy.output_reserve,
+                    policy.automatic_compaction,
+                ));
+                editor.message = Some("已保存；后续请求生效，进行中的请求不受影响".into());
+                self.error = None;
+            }
+            Err(error) => {
+                editor.message = Some(error);
+            }
         }
         cx.notify();
     }
@@ -406,13 +688,21 @@ impl SettingsView {
                             return;
                         }
                         this.provider_management.model_editor = None;
+                        let reopen = this.provider_management.pending_model_reopen.take();
                         this.provider_management.candidates = None;
                         this.provider_management.checked.clear();
                         this.provider_management.statuses.clear();
                         this.provider_management.message = None;
                         this.error = None;
+                        if let Some((model, renamed_from)) = reopen {
+                            this.provider_command(Command::EditModel(model), cx);
+                            if let Some(editor) = this.provider_management.model_editor.as_mut() {
+                                editor.renamed_from = renamed_from;
+                            }
+                        }
                     }
                     Err(error) => {
+                        this.provider_management.pending_model_reopen = None;
                         if generation == this.provider_management.generation {
                             this.error = Some(error.to_string());
                         }
@@ -877,26 +1167,118 @@ impl SettingsView {
                         })),
                 );
             }
-            if let Some((_, input)) = &self.provider_management.model_editor {
-                detail = detail.child(input.clone()).child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(self.provider_button(
-                            "model-save".into(),
-                            "保存模型",
-                            Command::SaveModel,
-                            !busy,
-                            cx,
-                        ))
-                        .child(self.provider_button(
-                            "model-cancel".into(),
-                            "取消",
-                            Command::Cancel,
-                            !busy,
-                            cx,
-                        )),
-                );
+            if let Some(editor) = &self.provider_management.model_editor {
+                let can_edit = !busy && !editor.saving;
+                detail = detail
+                    .child(editor.model_input.clone())
+                    .when(editor.original.is_some(), |detail| {
+                        let source = match editor.source {
+                            PolicySource::Loading => "正在读取模型上下文配置…".to_string(),
+                            PolicySource::AssumedDefault => format!(
+                                "默认假设值：输入 {DEFAULT_MODEL_INPUT_LIMIT} token，输出 {DEFAULT_MODEL_OUTPUT_RESERVE} token；不是供应商验证容量。小窗口模型请按实际能力修改。"
+                            ),
+                            PolicySource::Saved => "已保存的模型容量；请按供应商真实能力核对。".to_string(),
+                            PolicySource::Unknown => "容量未知：仍可发送，但不会按预算自动压缩。".to_string(),
+                        };
+                        detail
+                            .child(
+                                div()
+                                    .debug_selector(|| "model-context-source".into())
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(colors.text_secondary)
+                                    .child(source),
+                            )
+                            .when(editor.legacy_present, |detail| {
+                                detail.child(
+                                    div()
+                                        .debug_selector(|| "model-context-legacy-notice".into())
+                                        .text_size(px(Typography::METADATA))
+                                        .text_color(colors.warning)
+                                        .child("旧会话级上下文设置已保留，但不再生效；请在此配置模型容量。"),
+                                )
+                            })
+                            .children(editor.renamed_from.as_ref().map(|previous| {
+                                div()
+                                    .debug_selector(|| "model-context-rename-notice".into())
+                                    .text_size(px(Typography::METADATA))
+                                    .text_color(colors.warning)
+                                    .child(format!(
+                                        "模型 ID 已从 {previous} 更改；旧 ID 的容量配置不会自动沿用。请检查并保存新模型容量。"
+                                    ))
+                            }))
+                            .when(!editor.unknown, |detail| detail.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .child("输入最大限制（token）")
+                                            .child(
+                                                div()
+                                                    .debug_selector(|| "model-context-input".into())
+                                                    .child(editor.input_limit.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .child("输出最大限制（token）")
+                                            .child(
+                                                div()
+                                                    .debug_selector(|| "model-context-output".into())
+                                                    .child(editor.output_limit.clone()),
+                                            ),
+                                    ),
+                            ))
+                            .child(self.provider_button(
+                                "model-context-auto".into(),
+                                if editor.automatic {
+                                    "自动压缩：开启"
+                                } else {
+                                    "自动压缩：关闭"
+                                },
+                                Command::ToggleModelAutomatic,
+                                can_edit,
+                                cx,
+                            ))
+                            .child(self.provider_button(
+                                "model-context-unknown".into(),
+                                if editor.unknown {
+                                    "容量未知：已选择"
+                                } else {
+                                    "容量未知：未选择"
+                                },
+                                Command::ToggleModelUnknown,
+                                can_edit,
+                                cx,
+                            ))
+                    })
+                    .children(editor.message.as_ref().map(|message| {
+                        div()
+                            .debug_selector(|| "model-context-message".into())
+                            .text_size(px(Typography::METADATA))
+                            .text_color(colors.text_secondary)
+                            .child(message.clone())
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(self.provider_button(
+                                "model-save".into(),
+                                "保存模型设置",
+                                Command::SaveModel,
+                                can_edit,
+                                cx,
+                            ))
+                            .child(self.provider_button(
+                                "model-cancel".into(),
+                                "取消",
+                                Command::Cancel,
+                                can_edit,
+                                cx,
+                            )),
+                    );
             }
             if let Some(models) = self.provider_management.candidates.clone() {
                 for (index, model) in models.into_iter().enumerate() {
@@ -969,9 +1351,17 @@ impl SettingsView {
             .on_key_down(
                 cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "enter"
-                        && this.provider_management.model_editor.as_ref().is_some_and(
-                            |(_, input)| input.read(cx).focus_handle(cx).is_focused(window),
-                        )
+                        && this
+                            .provider_management
+                            .model_editor
+                            .as_ref()
+                            .is_some_and(|editor| {
+                                editor
+                                    .model_input
+                                    .read(cx)
+                                    .focus_handle(cx)
+                                    .is_focused(window)
+                            })
                     {
                         this.provider_command(Command::SaveModel, cx);
                         cx.stop_propagation();

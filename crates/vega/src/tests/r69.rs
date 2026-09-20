@@ -1829,6 +1829,24 @@ async fn a7_first_submit_ambiguous_provider_rejects_before_materialization(
     let f = DraftFixture::home(cx, true);
     let draft_id = f.draft(cx).id;
     f.add_ambiguous_provider();
+    // #76: two exact policy rows do not grant authority to choose one of two
+    // enabled providers with the same model ID. Reject before a worker can
+    // freeze either budget or make a provider request.
+    let store = f.store();
+    for (provider, input_limit) in [("owned", 10_000), ("second", 20_000)] {
+        vega_store::context_compaction::save_model_policy(
+            store.conn(),
+            &vega_store::context_compaction::ModelContextPolicy {
+                provider: provider.into(),
+                model: f.draft(cx).model.clone(),
+                input_limit: Some(input_limit),
+                output_reserve: Some(1_000),
+                automatic_compaction: true,
+                updated_at: 1,
+            },
+        )
+        .expect("distinct model context policy");
+    }
 
     f.submit("ambiguous provider draft", cx);
     let error = f.wait_for_preflight_error(cx);

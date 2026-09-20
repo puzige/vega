@@ -230,6 +230,7 @@ fn r52_load_sensitive_ignores_are_frozen() {
     );
 }
 
+#[track_caller]
 fn pump_test_app(
     cx: &mut gpui_kit::TestAppContext,
     mut ready: impl FnMut(&mut gpui_kit::TestAppContext) -> bool,

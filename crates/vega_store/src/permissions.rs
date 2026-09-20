@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_fourteen_tables_at_current_user_version() {
+    fn schema_has_fifteen_tables_at_current_user_version() {
         let store = store();
         let user_version: i64 = store
             .conn()
@@ -287,9 +287,9 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        // Issue 76 adds the two context-compaction tables while preserving
-        // the existing permission schema and raw transcript tables.
-        assert_eq!(user_version, 10);
-        assert_eq!(table_count, 14);
+        // Issue 76 adds the context-compaction tables and the model-policy
+        // correction while preserving permission and raw transcript tables.
+        assert_eq!(user_version, 11);
+        assert_eq!(table_count, 15);
     }
 }

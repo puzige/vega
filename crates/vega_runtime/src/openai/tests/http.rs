@@ -120,7 +120,7 @@ async fn empty_name_stream_continuations_execute_one_real_read_and_observe() {
             tool_config: crate::RuntimeToolConfig::default(),
             pricing_catalog: None,
             reasoning: None,
-            context_budget: None,
+            context_budget: Some(crate::ContextBudget::new(428_000, 128_000, true).unwrap()),
             context_source_version: None,
             context_source_fingerprint: None,
             context_operation_id: None,
@@ -150,6 +150,12 @@ async fn empty_name_stream_continuations_execute_one_real_read_and_observe() {
     );
     let captured = server.captured();
     assert_eq!(captured.len(), 2);
+    assert!(
+        captured
+            .iter()
+            .all(|request| request.body.get("max_tokens").is_none()),
+        "output capacity must not become an HTTP generation cap in any tool round"
+    );
     let follow_up = &captured[1].body["messages"];
     assert!(follow_up.as_array().is_some_and(|messages| {
         messages.iter().any(|message| {

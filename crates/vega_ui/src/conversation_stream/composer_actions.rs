@@ -367,16 +367,9 @@ impl ConversationStream {
     pub(crate) fn close_composer_actions(
         &mut self,
         _: &CloseComposerActions,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.context_control.open {
-            self.context_control.open = false;
-            self.context_control.trigger.focus(window, cx);
-            cx.stop_propagation();
-            cx.notify();
-            return;
-        }
         if self.input.read(cx).is_composing() {
             cx.propagate();
             return;
@@ -393,15 +386,6 @@ impl ConversationStream {
     /// mode/permission dropdown stops and the thinking chip stop are gone
     /// with their controls.
     fn move_composer_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.context_control.open {
-            if backwards {
-                window.focus_prev(cx);
-            } else {
-                window.focus_next(cx);
-            }
-            cx.stop_propagation();
-            return;
-        }
         if self.input.read(cx).is_composing() {
             cx.propagate();
             return;
@@ -409,7 +393,6 @@ impl ConversationStream {
         let mut controls = vec![
             self.input.read(cx).focus_handle(cx),
             self.action_focus[0].clone(),
-            self.context_control.trigger.clone(),
             self.model_focus.clone(),
         ];
         if self.actions.running || self.composer_submit_pending {

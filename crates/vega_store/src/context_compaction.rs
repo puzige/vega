@@ -19,9 +19,83 @@ use crate::messages::MessageRow;
 /// runtime crate.
 pub const MAX_CONTEXT_VALUE: u64 = u32::MAX as u64;
 
+/// Product default for an unedited model: an editable input/output assumption,
+/// not verified provider metadata. UI must label this distinction explicitly.
+pub const DEFAULT_MODEL_INPUT_LIMIT: u64 = 300_000;
+/// Product default response reserve for an unedited model.
+pub const DEFAULT_MODEL_OUTPUT_RESERVE: u64 = 128_000;
+
 const MAX_SOURCE_ROWS: i64 = 100_000;
 const MAX_SOURCE_TEXT_BYTES: i64 = 64 * 1024 * 1024;
 const MAX_SOURCE_IMAGE_BYTES: i64 = 32 * 1024 * 1024;
+
+/// Context capacity and automatic-compaction policy for one configured
+/// provider/model pair. A missing row uses the editable assumed default;
+/// a saved row with two absent limits stays sendable without a budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelContextPolicy {
+    /// Exact configured provider identity.
+    pub provider: String,
+    /// Exact model identifier under that provider.
+    pub model: String,
+    /// Maximum estimated provider input budget, or `None` when unknown.
+    pub input_limit: Option<u64>,
+    /// Maximum response capability reserved from total context, not a
+    /// per-request generation cap. Both numeric fields are configured together.
+    pub output_reserve: Option<u64>,
+    /// Whether automatic compaction is enabled once capacity is known.
+    pub automatic_compaction: bool,
+    /// Unix-millisecond update time supplied by the caller.
+    pub updated_at: i64,
+}
+
+impl ModelContextPolicy {
+    /// Editable assumption for an unedited provider/model. A missing database
+    /// row keeps its provenance; opening Settings must not auto-save this.
+    pub fn assumed_default(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+            input_limit: Some(DEFAULT_MODEL_INPUT_LIMIT),
+            output_reserve: Some(DEFAULT_MODEL_OUTPUT_RESERVE),
+            automatic_compaction: true,
+            updated_at: 0,
+        }
+    }
+
+    /// Explicit unknown-capacity projection. Unlike an absent row, saving
+    /// this intentionally opts out of budget-based compaction until edited.
+    pub fn unconfigured(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            model: model.into(),
+            input_limit: None,
+            output_reserve: None,
+            automatic_compaction: true,
+            updated_at: 0,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ContextSettingsError> {
+        if self.provider.trim().is_empty() || self.model.trim().is_empty() {
+            return Err(ContextSettingsError::Invalid);
+        }
+        match (self.input_limit, self.output_reserve) {
+            (None, None) => Ok(()),
+            (Some(input), Some(reserve))
+                if input > 0
+                    && input <= MAX_CONTEXT_VALUE
+                    && reserve > 0
+                    && input
+                        .checked_add(reserve)
+                        .is_some_and(|total| total <= MAX_CONTEXT_VALUE) =>
+            {
+                Ok(())
+            }
+            _ => Err(ContextSettingsError::Invalid),
+        }
+    }
+}
 
 /// Per-conversation/model context settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,9 +141,76 @@ pub enum ContextSettingsError {
     /// The exact identity or numeric contract is invalid.
     #[error("context settings are invalid")]
     Invalid,
-    /// The thread/model row could not be persisted.
+    /// The context policy row could not be persisted.
     #[error("context settings persistence failed")]
     Store(#[from] rusqlite::Error),
+}
+
+/// Reads one exact provider/model policy. A missing row intentionally does
+/// not import a legacy per-thread setting whose provider identity is unknown.
+pub fn load_model_policy(
+    conn: &Connection,
+    provider: &str,
+    model: &str,
+) -> Result<Option<ModelContextPolicy>, ContextSettingsError> {
+    if provider.trim().is_empty() || model.trim().is_empty() {
+        return Err(ContextSettingsError::Invalid);
+    }
+    conn.query_row(
+        "SELECT provider, model, input_limit, output_reserve, \
+                automatic_compaction, updated_at \
+         FROM model_context_policies WHERE provider = ?1 AND model = ?2",
+        params![provider, model],
+        model_policy_from_row,
+    )
+    .optional()
+    .map_err(ContextSettingsError::Store)
+}
+
+/// Reports whether pre-correction thread-owned settings exist for this model.
+/// Their provider identity is unknown, so this is only a Settings migration
+/// notice and must never be used as a runtime policy fallback.
+pub fn has_legacy_model_settings(
+    conn: &Connection,
+    model: &str,
+) -> Result<bool, ContextSettingsError> {
+    if model.trim().is_empty() {
+        return Err(ContextSettingsError::Invalid);
+    }
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM context_settings WHERE model = ?1)",
+        [model],
+        |row| row.get(0),
+    )
+    .map_err(ContextSettingsError::Store)
+}
+
+/// Saves a policy without modifying any conversation-owned legacy settings,
+/// checkpoints, or transcript rows.
+pub fn save_model_policy(
+    conn: &Connection,
+    policy: &ModelContextPolicy,
+) -> Result<(), ContextSettingsError> {
+    policy.validate()?;
+    conn.execute(
+        "INSERT INTO model_context_policies \
+            (provider, model, input_limit, output_reserve, automatic_compaction, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+         ON CONFLICT(provider, model) DO UPDATE SET \
+            input_limit = excluded.input_limit, \
+            output_reserve = excluded.output_reserve, \
+            automatic_compaction = excluded.automatic_compaction, \
+            updated_at = excluded.updated_at",
+        params![
+            policy.provider,
+            policy.model,
+            policy.input_limit.map(|value| value as i64),
+            policy.output_reserve.map(|value| value as i64),
+            policy.automatic_compaction,
+            policy.updated_at,
+        ],
+    )?;
+    Ok(())
 }
 
 /// Content-free compaction lifecycle row.  Status/usage vocabulary is kept as
@@ -930,6 +1071,27 @@ fn context_settings_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Contex
     })
 }
 
+fn model_policy_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelContextPolicy> {
+    let input_limit: Option<i64> = row.get(2)?;
+    let output_reserve: Option<i64> = row.get(3)?;
+    let input_limit = input_limit
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| rusqlite::Error::InvalidParameterName("negative input limit".into()))?;
+    let output_reserve = output_reserve
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| rusqlite::Error::InvalidParameterName("negative output reserve".into()))?;
+    Ok(ModelContextPolicy {
+        provider: row.get(0)?,
+        model: row.get(1)?,
+        input_limit,
+        output_reserve,
+        automatic_compaction: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
 fn load_source_inner(
     conn: &Connection,
     thread_id: &str,
@@ -1247,6 +1409,215 @@ mod tests {
             expected_previous_id: previous,
             created_at: 1,
         }
+    }
+
+    #[test]
+    fn missing_model_policy_has_editable_assumed_defaults_without_writing_a_row() {
+        let (store, _directory) = store();
+        assert!(
+            load_model_policy(store.conn(), "provider-a", "model-a")
+                .unwrap()
+                .is_none()
+        );
+        let policy = load_model_policy(store.conn(), "provider-a", "model-a")
+            .unwrap()
+            .unwrap_or_else(|| ModelContextPolicy::assumed_default("provider-a", "model-a"));
+        assert!(policy.automatic_compaction);
+        assert_eq!(policy.input_limit, Some(300_000));
+        assert_eq!(policy.output_reserve, Some(128_000));
+        assert!(
+            load_model_policy(store.conn(), "provider-a", "model-a")
+                .unwrap()
+                .is_none(),
+            "opening the model must not silently persist assumed defaults"
+        );
+    }
+
+    #[test]
+    fn explicit_unknown_capacity_is_distinct_from_missing_policy() {
+        let (store, _directory) = store();
+        let unknown = ModelContextPolicy::unconfigured("provider-a", "model-a");
+        save_model_policy(store.conn(), &unknown).unwrap();
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-a").unwrap(),
+            Some(unknown)
+        );
+    }
+
+    #[test]
+    fn model_policy_is_shared_across_threads_but_isolated_by_provider_and_model() {
+        let (store, directory) = store();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO threads (id, project_id, model, created_at, updated_at) \
+                 VALUES ('other-thread', 'p', 'model-a', 0, 0)",
+                [],
+            )
+            .unwrap();
+        let policy = ModelContextPolicy {
+            provider: "provider-a".into(),
+            model: "model-a".into(),
+            input_limit: Some(8_000),
+            output_reserve: Some(2_000),
+            automatic_compaction: false,
+            updated_at: 10,
+        };
+        save_model_policy(store.conn(), &policy).unwrap();
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-a").unwrap(),
+            Some(policy.clone())
+        );
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-b", "model-a").unwrap(),
+            None
+        );
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-b").unwrap(),
+            None
+        );
+        drop(store);
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        assert_eq!(
+            load_model_policy(reopened.conn(), "provider-a", "model-a").unwrap(),
+            Some(policy)
+        );
+        let count: i64 = reopened
+            .conn()
+            .query_row("SELECT COUNT(*) FROM model_context_policies", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1, "policy does not duplicate per thread");
+    }
+
+    #[test]
+    fn model_policy_rejects_partial_or_inconsistent_numeric_values() {
+        let (store, _directory) = store();
+        let base = ModelContextPolicy {
+            provider: "provider-a".into(),
+            model: "model-a".into(),
+            input_limit: Some(8),
+            output_reserve: Some(2),
+            automatic_compaction: true,
+            updated_at: 1,
+        };
+        for invalid in [
+            ModelContextPolicy {
+                provider: String::new(),
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                model: String::new(),
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                input_limit: Some(0),
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                output_reserve: None,
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                output_reserve: Some(MAX_CONTEXT_VALUE),
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                input_limit: None,
+                ..base.clone()
+            },
+            ModelContextPolicy {
+                input_limit: Some(MAX_CONTEXT_VALUE),
+                ..base.clone()
+            },
+        ] {
+            assert!(matches!(
+                save_model_policy(store.conn(), &invalid),
+                Err(ContextSettingsError::Invalid)
+            ));
+        }
+        assert!(
+            load_model_policy(store.conn(), "provider-a", "model-a")
+                .unwrap()
+                .is_none()
+        );
+        let largest_valid = ModelContextPolicy {
+            input_limit: Some(MAX_CONTEXT_VALUE - 1),
+            output_reserve: Some(1),
+            ..base
+        };
+        save_model_policy(store.conn(), &largest_valid).unwrap();
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-a").unwrap(),
+            Some(largest_valid)
+        );
+    }
+
+    #[test]
+    fn model_policy_does_not_delete_or_import_conflicting_legacy_thread_settings() {
+        let (store, directory) = store();
+        store
+            .conn()
+            .execute(
+                "INSERT INTO threads (id, project_id, model, created_at, updated_at) \
+                 VALUES ('other-thread', 'p', 'model-a', 0, 0)",
+                [],
+            )
+            .unwrap();
+        for (thread_id, limit) in [("t", 10_000), ("other-thread", 20_000)] {
+            save_settings(
+                store.conn(),
+                &ContextSettings {
+                    thread_id: thread_id.into(),
+                    model: "model-a".into(),
+                    context_limit: Some(limit),
+                    output_reserve: 1_000,
+                    automatic_compaction: true,
+                    updated_at: 5,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            load_model_policy(store.conn(), "provider-a", "model-a").unwrap(),
+            None,
+            "legacy rows cannot identify a provider or choose between conflicting limits"
+        );
+        assert!(has_legacy_model_settings(store.conn(), "model-a").unwrap());
+        assert!(!has_legacy_model_settings(store.conn(), "model-b").unwrap());
+        let policy = ModelContextPolicy {
+            provider: "provider-a".into(),
+            model: "model-a".into(),
+            input_limit: Some(28_000),
+            output_reserve: Some(2_000),
+            automatic_compaction: true,
+            updated_at: 6,
+        };
+        save_model_policy(store.conn(), &policy).unwrap();
+        drop(store);
+        let reopened = Store::open(directory.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        assert_eq!(
+            load_model_policy(reopened.conn(), "provider-a", "model-a").unwrap(),
+            Some(policy)
+        );
+        assert!(has_legacy_model_settings(reopened.conn(), "model-a").unwrap());
+        assert_eq!(
+            load_settings(reopened.conn(), "t", "model-a")
+                .unwrap()
+                .unwrap()
+                .context_limit,
+            Some(10_000)
+        );
+        assert_eq!(
+            load_settings(reopened.conn(), "other-thread", "model-a")
+                .unwrap()
+                .unwrap()
+                .context_limit,
+            Some(20_000)
+        );
     }
 
     #[test]
