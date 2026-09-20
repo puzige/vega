@@ -7,6 +7,12 @@ const MCP_RESULT_LIMIT: usize = 256 * 1024;
 
 pub(crate) enum PreparedRuntimeCall {
     Readonly(RuntimeToolCall),
+    MixedRejected(RuntimeToolCall),
+    Skill {
+        call: RuntimeToolCall,
+        action: SkillToolAction,
+    },
+    InvalidSkill(RuntimeToolCall),
     Mcp {
         call: RuntimeToolCall,
         arguments: Value,
@@ -58,6 +64,8 @@ impl PreparedRuntimeCall {
     pub(crate) fn call(&self) -> &RuntimeToolCall {
         match self {
             Self::Readonly(call)
+            | Self::MixedRejected(call)
+            | Self::InvalidSkill(call)
             | Self::Unknown(call)
             | Self::RunModeMutation(call)
             | Self::InvalidWriteEdit { call, .. }
@@ -67,6 +75,7 @@ impl PreparedRuntimeCall {
             | Self::Write { call, .. }
             | Self::Edit { call, .. }
             | Self::Bash { call, .. } => call,
+            Self::Skill { call, .. } => call,
         }
     }
 
@@ -95,6 +104,45 @@ impl PreparedRuntimeCall {
     }
 }
 
+/// In a batch containing `load_skill`, operational calls must never reach
+/// mutation preparation (which may inspect checkpoint state). Keep only the
+/// same bounded audit projection needed for durable rejection.
+pub(crate) fn prepare_mixed_rejection_call(
+    base_tools: &vega_tools::Tools,
+    config: &RuntimeToolConfig,
+    capabilities: &RunCapabilitySnapshot,
+    raw_call: RuntimeToolCall,
+) -> Result<PreparedRuntimeCall, VegaError> {
+    if matches!(raw_call.name.as_str(), "write" | "edit") {
+        let audited = if raw_call.name == "write" {
+            base_tools.audit_write_json(&raw_call.input_json)
+        } else {
+            base_tools.audit_edit_json(&raw_call.input_json)
+        };
+        return match audited {
+            Ok(audit) => Ok(PreparedRuntimeCall::MixedRejected(RuntimeToolCall {
+                input_json: audit
+                    .to_json()
+                    .map_err(|_| safe_prepare_error(&raw_call.name))?,
+                ..raw_call
+            })),
+            Err(vega_tools::PrepareMutationError::Invalid(invalid)) => {
+                invalid_runtime_call(raw_call, invalid)
+            }
+            Err(vega_tools::PrepareMutationError::Internal(_)) => {
+                Err(safe_prepare_error(&raw_call.name))
+            }
+        };
+    }
+    prepare_runtime_call(base_tools, config, capabilities, raw_call)
+}
+
+#[derive(Clone)]
+pub(crate) enum SkillToolAction {
+    Load { name: String },
+    Read { name: String, path: String },
+}
+
 pub(crate) enum Authorization {
     Approved {
         audit: RuntimeApprovalAudit,
@@ -109,6 +157,12 @@ pub(crate) fn prepare_runtime_call(
     capabilities: &RunCapabilitySnapshot,
     raw_call: RuntimeToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {
+    if matches!(
+        raw_call.name.as_str(),
+        crate::skills::LOAD_SKILL_TOOL_NAME | crate::skills::READ_SKILL_RESOURCE_TOOL_NAME
+    ) {
+        return prepare_skill_call(raw_call, capabilities);
+    }
     if let Some(frozen) = capabilities.mcp_tool(&raw_call.name) {
         return prepare_mcp_call(raw_call, frozen.clone());
     }
@@ -250,6 +304,90 @@ pub(crate) fn prepare_runtime_call(
     }
 }
 
+fn prepare_skill_call(
+    raw_call: RuntimeToolCall,
+    capabilities: &RunCapabilitySnapshot,
+) -> Result<PreparedRuntimeCall, VegaError> {
+    if !capabilities
+        .definitions()
+        .iter()
+        .any(|definition| definition.name == raw_call.name)
+    {
+        return Ok(PreparedRuntimeCall::Unknown(RuntimeToolCall {
+            input_json: "{}".to_string(),
+            ..raw_call
+        }));
+    }
+    let parsed = (raw_call.input_json.len() <= 2048)
+        .then(|| serde_json::from_str::<Value>(&raw_call.input_json).ok())
+        .flatten();
+    let Some(object) = parsed.as_ref().and_then(Value::as_object) else {
+        return Ok(PreparedRuntimeCall::InvalidSkill(RuntimeToolCall {
+            input_json: "{}".to_string(),
+            ..raw_call
+        }));
+    };
+    let Some(name) = object.get("name").and_then(Value::as_str).filter(|name| {
+        !name.is_empty()
+            && name.len() <= 64
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    }) else {
+        return Ok(PreparedRuntimeCall::InvalidSkill(RuntimeToolCall {
+            input_json: "{}".to_string(),
+            ..raw_call
+        }));
+    };
+    let (action, safe_json) = if raw_call.name == crate::skills::LOAD_SKILL_TOOL_NAME {
+        if object.len() != 1 {
+            return Ok(PreparedRuntimeCall::InvalidSkill(RuntimeToolCall {
+                input_json: "{}".to_string(),
+                ..raw_call
+            }));
+        }
+        (
+            SkillToolAction::Load {
+                name: name.to_string(),
+            },
+            serde_json::json!({"name":name}).to_string(),
+        )
+    } else {
+        let Some(path) = object
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty() && path.len() <= 1024 && !path.contains('\0'))
+        else {
+            return Ok(PreparedRuntimeCall::InvalidSkill(RuntimeToolCall {
+                input_json: "{}".to_string(),
+                ..raw_call
+            }));
+        };
+        if object.len() != 2 {
+            return Ok(PreparedRuntimeCall::InvalidSkill(RuntimeToolCall {
+                input_json: "{}".to_string(),
+                ..raw_call
+            }));
+        }
+        let path_sha256 = format!("{:x}", Sha256::digest(path.as_bytes()));
+        (
+            SkillToolAction::Read {
+                name: name.to_string(),
+                path: path.to_string(),
+            },
+            serde_json::json!({"name":name,"path_bytes":path.len(),"path_sha256":path_sha256})
+                .to_string(),
+        )
+    };
+    Ok(PreparedRuntimeCall::Skill {
+        call: RuntimeToolCall {
+            input_json: safe_json,
+            ..raw_call
+        },
+        action,
+    })
+}
+
 fn prepare_mcp_call(
     raw_call: RuntimeToolCall,
     frozen: FrozenMcpTool,
@@ -359,6 +497,38 @@ pub(crate) async fn authorize_call(
     cancel: &CancellationToken,
 ) -> Result<Authorization, VegaError> {
     match prepared {
+        PreparedRuntimeCall::MixedRejected(call) => Ok(Authorization::Terminal(terminal_result(
+            call,
+            "Tool error: mixed Skill load batch rejected other tools".to_string(),
+            RuntimeToolStatus::Rejected,
+            Some(validation_audit()),
+        ))),
+        PreparedRuntimeCall::InvalidSkill(call) => Ok(Authorization::Terminal(terminal_result(
+            call,
+            "Tool error: invalid Skill input".to_string(),
+            RuntimeToolStatus::Rejected,
+            Some(validation_audit()),
+        ))),
+        PreparedRuntimeCall::Skill { .. } => {
+            if cancel.is_cancelled() {
+                return Ok(cancelled_permission(prepared.call()));
+            }
+            match decide_capability(config.run_mode, RuntimeToolClass::Readonly) {
+                RuntimeCapabilityOutcome::Approved(audit) => Ok(Authorization::Approved {
+                    audit,
+                    remember_rule: None,
+                }),
+                RuntimeCapabilityOutcome::Rejected(audit) => {
+                    Ok(Authorization::Terminal(terminal_result(
+                        prepared.call(),
+                        "Tool error: denied".to_string(),
+                        RuntimeToolStatus::Rejected,
+                        Some(audit),
+                    )))
+                }
+                RuntimeCapabilityOutcome::ExecuteEligible(_) => Err(safe_permission_error()),
+            }
+        }
         PreparedRuntimeCall::InvalidMcp { call } => Ok(Authorization::Terminal(terminal_result(
             call,
             "Tool error: invalid or oversized MCP arguments".to_string(),
@@ -733,6 +903,24 @@ pub(crate) async fn execute_prepared_waiting(
     cancel: &CancellationToken,
 ) -> (RuntimeToolResult, bool) {
     match prepared {
+        PreparedRuntimeCall::MixedRejected(call) => (
+            terminal_result(
+                &call,
+                "Tool error: mixed Skill load batch rejected other tools".to_string(),
+                RuntimeToolStatus::Rejected,
+                Some(validation_audit()),
+            ),
+            false,
+        ),
+        PreparedRuntimeCall::Skill { call, .. } | PreparedRuntimeCall::InvalidSkill(call) => (
+            terminal_result(
+                &call,
+                "Tool error: Skill dispatcher unavailable".to_string(),
+                RuntimeToolStatus::Failed,
+                None,
+            ),
+            false,
+        ),
         PreparedRuntimeCall::InvalidMcp { call } => (
             terminal_result(
                 &call,

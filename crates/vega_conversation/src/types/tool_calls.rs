@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 
 /// Complete tool proposal emitted to UI/store consumers.
 #[derive(Clone, PartialEq, Eq)]
@@ -253,6 +254,35 @@ pub enum ReadOnlyToolKind {
     Grep,
 }
 
+/// Vega-owned, read-only Skill tools. This is display metadata only and does
+/// not grant the tool or a Skill any permission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillToolKind {
+    Load,
+    ReadResource,
+}
+
+impl SkillToolKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Load => "load_skill",
+            Self::ReadResource => "read_skill_resource",
+        }
+    }
+}
+
+/// Content-free terminal detail for a Skill tool. Resource body/path never
+/// cross into UI-owned card state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkillCardOutcome {
+    Loaded,
+    AlreadyLoaded,
+    ResourceRead { text_bytes: usize, sha256: String },
+    Failed { code: String },
+    Rejected,
+    Cancelled,
+}
+
 impl ReadOnlyToolKind {
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -284,6 +314,14 @@ pub enum ToolCardInputProjection {
         identity: McpCallIdentity,
         permission_target: String,
     },
+    /// Only the validated Skill name and a reference path's length/hash.
+    /// `name=None` represents the exact `{}` invalid-input audit placeholder.
+    Skill {
+        kind: SkillToolKind,
+        name: Option<String>,
+        path_bytes: Option<u64>,
+        path_sha256: Option<String>,
+    },
     /// Fixed fail-closed projection for an invalid/unknown input shape.
     Corrupt,
 }
@@ -297,6 +335,7 @@ impl ToolCardInputProjection {
             Self::Write { .. } => Some("write"),
             Self::Edit { .. } => Some("edit"),
             Self::Mcp { alias, .. } => Some(alias),
+            Self::Skill { kind, .. } => Some(kind.as_str()),
             Self::Corrupt => None,
         }
     }
@@ -309,7 +348,7 @@ impl ToolCardInputProjection {
             Self::Mcp {
                 permission_target, ..
             } => Some(permission_target),
-            Self::ReadOnly { .. } | Self::Corrupt => None,
+            Self::ReadOnly { .. } | Self::Skill { .. } | Self::Corrupt => None,
         }
     }
 }
@@ -336,6 +375,12 @@ pub enum ToolCardResultProjection {
     Mcp {
         status: ToolCallStatus,
         output: String,
+        reused: bool,
+    },
+    /// Strictly decoded content-free result from Vega's Skill tool pair.
+    Skill {
+        status: ToolCallStatus,
+        outcome: SkillCardOutcome,
         reused: bool,
     },
     /// Strict write success with the opaque checkpoint reference discarded.
@@ -369,6 +414,9 @@ pub enum ToolCardResultProjection {
 
 /// Strictly reduces a shared safe proposal to the fields T27 may retain.
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
+    if matches!(call.tool.as_str(), "load_skill" | "read_skill_resource") {
+        return skill_card_input_projection(&call.tool, &call.input_json);
+    }
     if call.tool.starts_with("mcp_") {
         return McpCallIdentity::from_tool_call(call).map_or(
             ToolCardInputProjection::Corrupt,
@@ -424,6 +472,73 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
         },
         _ => ToolCardInputProjection::Corrupt,
     }
+}
+
+fn skill_card_input_projection(tool: &str, input_json: &str) -> ToolCardInputProjection {
+    let kind = match tool {
+        "load_skill" => SkillToolKind::Load,
+        "read_skill_resource" => SkillToolKind::ReadResource,
+        _ => return ToolCardInputProjection::Corrupt,
+    };
+    if input_json == "{}" {
+        return ToolCardInputProjection::Skill {
+            kind,
+            name: None,
+            path_bytes: None,
+            path_sha256: None,
+        };
+    }
+    let Some(object) = serde_json::from_str::<serde_json::Value>(input_json)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return ToolCardInputProjection::Corrupt;
+    };
+    let Some(name) = object.get("name").and_then(serde_json::Value::as_str) else {
+        return ToolCardInputProjection::Corrupt;
+    };
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return ToolCardInputProjection::Corrupt;
+    }
+    let (path_bytes, path_sha256) = match kind {
+        SkillToolKind::Load if object.len() == 1 => (None, None),
+        SkillToolKind::ReadResource if object.len() == 3 => {
+            let Some(path_bytes) = object
+                .get("path_bytes")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|bytes| (1..=1024).contains(bytes))
+            else {
+                return ToolCardInputProjection::Corrupt;
+            };
+            let Some(hash) = object
+                .get("path_sha256")
+                .and_then(serde_json::Value::as_str)
+                .filter(|hash| valid_skill_sha256(hash))
+            else {
+                return ToolCardInputProjection::Corrupt;
+            };
+            (Some(path_bytes), Some(hash.to_string()))
+        }
+        _ => return ToolCardInputProjection::Corrupt,
+    };
+    ToolCardInputProjection::Skill {
+        kind,
+        name: Some(name.to_string()),
+        path_bytes,
+        path_sha256,
+    }
+}
+
+fn valid_skill_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Strictly reduces a terminal result. `input=None` is legal only for the
@@ -521,6 +636,18 @@ pub fn tool_card_result_projection(
                 reused: result.reused,
             }
         }
+        ToolCardInputProjection::Skill {
+            kind,
+            name,
+            path_bytes,
+            path_sha256,
+        } => skill_card_result_projection(
+            *kind,
+            name.as_deref(),
+            *path_bytes,
+            path_sha256.as_deref(),
+            result,
+        ),
         ToolCardInputProjection::Write {
             path,
             content_bytes,
@@ -573,6 +700,137 @@ pub fn tool_card_result_projection(
         }
         ToolCardInputProjection::Corrupt => ToolCardResultProjection::Corrupt,
     }
+}
+
+fn skill_card_result_projection(
+    kind: SkillToolKind,
+    name: Option<&str>,
+    path_bytes: Option<u64>,
+    path_sha256: Option<&str>,
+    result: &ToolResult,
+) -> ToolCardResultProjection {
+    if !is_terminal(result.status)
+        || result.exit_code.is_some()
+        || result.duration_ms.is_some()
+        || result.output.len() > 256 * 1024 + 64
+        || match result.status {
+            ToolCallStatus::Success => !success_truncation_valid(result),
+            _ => result.truncated.is_some(),
+        }
+    {
+        return ToolCardResultProjection::Corrupt;
+    }
+    let outcome = match result.status {
+        ToolCallStatus::Rejected => {
+            let allowed = match result.output.as_str() {
+                "Tool error: invalid Skill input" => name.is_none(),
+                "Tool error: mixed Skill load batch rejected other tools"
+                | "Tool error: permission denied" => true,
+                other => other == vega_store::recovery::RECOVERY_REJECTED_OUTPUT,
+            };
+            if !allowed {
+                return ToolCardResultProjection::Corrupt;
+            }
+            SkillCardOutcome::Rejected
+        }
+        ToolCallStatus::Cancelled => {
+            if !matches!(
+                result.output.as_str(),
+                vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                    | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+            ) {
+                return ToolCardResultProjection::Corrupt;
+            }
+            SkillCardOutcome::Cancelled
+        }
+        ToolCallStatus::Success if kind == SkillToolKind::ReadResource => {
+            let Some(outcome) =
+                skill_reference_outcome(name, path_bytes, path_sha256, &result.output)
+            else {
+                return ToolCardResultProjection::Corrupt;
+            };
+            outcome
+        }
+        ToolCallStatus::Success | ToolCallStatus::Failed => {
+            let Some(outcome) = skill_receipt_outcome(name, &result.output, result.status) else {
+                return ToolCardResultProjection::Corrupt;
+            };
+            outcome
+        }
+        _ => return ToolCardResultProjection::Corrupt,
+    };
+    ToolCardResultProjection::Skill {
+        status: result.status,
+        outcome,
+        reused: result.reused,
+    }
+}
+
+fn skill_receipt_outcome(
+    name: Option<&str>,
+    output: &str,
+    status: ToolCallStatus,
+) -> Option<SkillCardOutcome> {
+    let name = name?;
+    if output.len() > 512 {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(output).ok()?;
+    let object = value.as_object()?;
+    let code = object.get("status")?.as_str()?;
+    if object.len() != 2
+        || object.get("name")?.as_str()? != name
+        || code.is_empty()
+        || code.len() > 64
+        || !code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+    {
+        return None;
+    }
+    match (status, code) {
+        (ToolCallStatus::Success, "loaded") => Some(SkillCardOutcome::Loaded),
+        (ToolCallStatus::Success, "already_loaded") => Some(SkillCardOutcome::AlreadyLoaded),
+        (ToolCallStatus::Failed, "loaded" | "already_loaded") => None,
+        (ToolCallStatus::Failed, other) => Some(SkillCardOutcome::Failed {
+            code: other.to_string(),
+        }),
+        _ => None,
+    }
+}
+
+fn skill_reference_outcome(
+    name: Option<&str>,
+    path_bytes: Option<u64>,
+    path_sha256: Option<&str>,
+    output: &str,
+) -> Option<SkillCardOutcome> {
+    let json = output.strip_prefix("[Lower-trust Skill reference]\n")?;
+    if json.len() > 256 * 1024 {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let reference = value.as_object()?;
+    let path = reference.get("path")?.as_str()?;
+    let text = reference.get("text")?.as_str()?;
+    let text_sha = format!("{:x}", Sha256::digest(text.as_bytes()));
+    let actual_path_sha = format!("{:x}", Sha256::digest(path.as_bytes()));
+    if reference.len() != 5
+        || reference.get("name")?.as_str()? != name?
+        || reference.get("lower_trust")?.as_bool() != Some(true)
+        || reference.get("content_sha256")?.as_str()? != text_sha
+        || path_bytes != Some(path.len() as u64)
+        || path_sha256 != Some(actual_path_sha.as_str())
+        || !path.starts_with("references/")
+        || path.split('/').any(|part| matches!(part, "" | "." | ".."))
+        || text.len() > 32 * 1024
+    {
+        return None;
+    }
+    Some(SkillCardOutcome::ResourceRead {
+        text_bytes: text.len(),
+        sha256: text_sha,
+    })
 }
 
 pub(crate) fn mutation_terminal(

@@ -57,6 +57,7 @@
 
 mod attachments;
 pub mod bench;
+mod skills;
 use vega_conversation::types::ImageAttachment;
 
 use std::collections::HashMap;
@@ -77,7 +78,8 @@ use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
     MeterSnapshot, PermissionMode, Plan, ProviderPreflightFailure, ReasoningChoice,
     ReasoningProfileProjection, ReasoningSupport, RestoredUsage, RunFailureKind, RunUsageEstimator,
-    TaskCostSummary, Thread, ThreadMode,
+    SkillComposerMutation, SkillComposerProjection, SkillSelectionIntent, TaskCostSummary, Thread,
+    ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -162,6 +164,9 @@ pub struct ComposerSubmitted {
     pub images: Vec<ImageAttachment>,
     pub thread_id: String,
     pub content: String,
+    /// Pure UI intent for an unpersisted R69 draft. The app pins only after
+    /// readiness/materialization and a fresh worker-side consent CAS.
+    pub skill_intent: Option<SkillSelectionIntent>,
     /// Run-start reasoning snapshot captured from the displayed exact
     /// provider/model projection. Raw reasoning text is never part of this
     /// event.
@@ -169,6 +174,25 @@ pub struct ComposerSubmitted {
     /// provider-default fallback. The app controller can reject the submit
     /// while keeping the input draft intact.
     pub reasoning: Result<Option<FrozenReasoning>, ReasoningSubmitError>,
+}
+
+/// Read-only, bounded Skills catalog request for this exact route.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SkillComposerProjectionRequested {
+    pub thread_id: String,
+    pub project_id: String,
+    pub draft: bool,
+    pub generation: u64,
+}
+
+/// One persisted-thread UI gesture; no filesystem or Store IO in the view.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SkillComposerMutationRequested {
+    pub thread_id: String,
+    pub project_id: String,
+    pub owner_generation: u64,
+    pub expected_generation: u64,
+    pub mutation: SkillComposerMutation,
 }
 
 /// Reasons a run-start thinking snapshot cannot be submitted. The enum keeps

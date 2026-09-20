@@ -13,6 +13,9 @@ pub(crate) enum TrustedActionKind {
     /// A7-01: provider/model and owner-only credential readiness before a
     /// composer submission may materialize or start a run.
     AgentPreflight,
+    /// #74: exact reviewed Skill pin after draft materialization, before any
+    /// provider request. Stop releases this owner and discards late results.
+    SkillSelection,
     /// Conversation context settings and manual summary operations own the
     /// same single-flight gate as sends and model changes until workers drain.
     ContextSettings,
@@ -84,11 +87,55 @@ impl TrustedActionCoordinator {
             .is_some()
     }
 
+    pub(crate) fn cancel_agent_preparation(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if state.active.is_some_and(|token| {
+            matches!(
+                token.kind,
+                TrustedActionKind::AgentPreflight | TrustedActionKind::SkillSelection
+            )
+        }) {
+            state.active = None;
+            return true;
+        }
+        false
+    }
+
     #[cfg(test)]
     pub(crate) fn active_token(&self) -> Option<TrustedActionToken> {
         self.state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .active
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopping_preparation_discards_late_preflight_and_skill_pin_callbacks() {
+        let gate = TrustedActionCoordinator::default();
+        for kind in [
+            TrustedActionKind::AgentPreflight,
+            TrustedActionKind::SkillSelection,
+        ] {
+            let token = gate.acquire(kind, 0, 0).expect("preparation lease");
+            assert!(gate.cancel_agent_preparation());
+            assert!(
+                !gate.release(token),
+                "late callback must not own the next run"
+            );
+            assert!(!gate.is_busy());
+        }
+        let unrelated = gate
+            .acquire(TrustedActionKind::ModelSelection, 0, 0)
+            .expect("unrelated lease");
+        assert!(!gate.cancel_agent_preparation());
+        assert!(gate.release(unrelated));
     }
 }

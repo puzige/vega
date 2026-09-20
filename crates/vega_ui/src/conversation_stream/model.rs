@@ -666,6 +666,10 @@ pub(crate) enum StreamEntry {
     /// One read-only per-task cost summary card (S7-T40), projected by
     /// `vega_conversation::summary` and applied by the app layer.
     Summary { card: Entity<SummaryCard> },
+    /// Content-free historical Skill provenance; never a live capability.
+    SkillActivation {
+        activation: vega_conversation::history::SkillHistoryActivation,
+    },
 }
 
 impl StreamEntry {
@@ -685,6 +689,7 @@ impl StreamEntry {
                 card.read(cx).summary().outcome
                     != vega_conversation::types::TaskSummaryOutcome::Completed,
             ),
+            StreamEntry::SkillActivation { .. } => 1,
         }
     }
 }

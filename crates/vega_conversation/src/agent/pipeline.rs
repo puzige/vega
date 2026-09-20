@@ -1,4 +1,183 @@
 use super::*;
+use sha2::{Digest, Sha256};
+
+pub(crate) fn valid_skill_call_projection(tool: &str, input_json: &str) -> bool {
+    if input_json == "{}" {
+        return true;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(input_json) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let Some(name) = object.get("name").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return false;
+    }
+    match tool {
+        "load_skill" => object.len() == 1,
+        "read_skill_resource" => {
+            object.len() == 3
+                && object
+                    .get("path_bytes")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|len| (1..=1024).contains(&len))
+                && object
+                    .get("path_sha256")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(valid_sha256)
+        }
+        _ => false,
+    }
+}
+
+fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
+    match tool {
+        "write" | "edit" => vega_tools::WriteEditAudit::from_json(input_json)
+            .is_ok_and(|audit| audit.tool().as_str() == tool),
+        "bash" => vega_tools::bash_permission_signature(input_json).is_ok(),
+        "load_skill" | "read_skill_resource" => valid_skill_call_projection(tool, input_json),
+        _ if tool.starts_with("mcp_") => {
+            let call = crate::types::ToolCall {
+                id: "mixed-batch".to_string(),
+                tool: tool.to_string(),
+                input_json: input_json.to_string(),
+            };
+            crate::types::McpCallIdentity::from_tool_call(&call).is_some()
+        }
+        "read" | "glob" | "grep" => serde_json::from_str::<serde_json::Value>(input_json)
+            .is_ok_and(|value| value.is_object()),
+        _ => input_json == "{}",
+    }
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_skill_status(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+}
+
+fn valid_skill_result(
+    tool: &str,
+    input_json: &str,
+    output: &str,
+    status: RuntimeToolStatus,
+    approval: &ApprovalAudit,
+) -> bool {
+    if !valid_skill_call_projection(tool, input_json) {
+        return false;
+    }
+    if status == RuntimeToolStatus::Rejected {
+        return approval.decision == Approval::Deny
+            && match (approval.source, output) {
+                (ApprovalSource::Validation, "Tool error: invalid Skill input") => {
+                    input_json == "{}"
+                }
+                (
+                    ApprovalSource::Validation,
+                    "Tool error: mixed Skill load batch rejected other tools",
+                ) => true,
+                (ApprovalSource::Timeout, "Tool error: permission denied") => true,
+                (ApprovalSource::Recovery, vega_store::recovery::RECOVERY_REJECTED_OUTPUT) => true,
+                _ => false,
+            };
+    }
+    if status == RuntimeToolStatus::Cancelled {
+        return approval.decision == Approval::Once
+            && approval.source == ApprovalSource::ReadonlyTool
+            && matches!(
+                output,
+                vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                    | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+            );
+    }
+    if approval.decision != Approval::Once || approval.source != ApprovalSource::ReadonlyTool {
+        return false;
+    }
+    let Some(input) = serde_json::from_str::<serde_json::Value>(input_json)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return false;
+    };
+    let Some(name) = input.get("name").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    if tool == "load_skill" || status == RuntimeToolStatus::Failed {
+        if output.len() > 512 {
+            return false;
+        }
+        let Some(receipt) = serde_json::from_str::<serde_json::Value>(output)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+        else {
+            return false;
+        };
+        let Some(receipt_status) = receipt.get("status").and_then(serde_json::Value::as_str) else {
+            return false;
+        };
+        return receipt.len() == 2
+            && receipt.get("name").and_then(serde_json::Value::as_str) == Some(name)
+            && valid_skill_status(receipt_status)
+            && (matches!(receipt_status, "loaded" | "already_loaded")
+                == (status == RuntimeToolStatus::Success));
+    }
+    let Some(json) = output.strip_prefix("[Lower-trust Skill reference]\n") else {
+        return false;
+    };
+    // A 32 KiB UTF-8 reference can expand to six bytes per byte when JSON
+    // escapes control characters. The source/path limits keep 256 KiB above
+    // every valid representation while still bounding persisted output.
+    if json.len() > 256 * 1024 {
+        return false;
+    }
+    let Some(reference) = serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+    else {
+        return false;
+    };
+    let Some(path) = reference.get("path").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(text) = reference.get("text").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let path_sha = format!("{:x}", Sha256::digest(path.as_bytes()));
+    let text_sha = format!("{:x}", Sha256::digest(text.as_bytes()));
+    reference.len() == 5
+        && reference.get("name").and_then(serde_json::Value::as_str) == Some(name)
+        && reference
+            .get("lower_trust")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        && reference
+            .get("content_sha256")
+            .and_then(serde_json::Value::as_str)
+            == Some(text_sha.as_str())
+        && input.get("path_bytes").and_then(serde_json::Value::as_u64) == Some(path.len() as u64)
+        && input.get("path_sha256").and_then(serde_json::Value::as_str) == Some(path_sha.as_str())
+        && path.starts_with("references/")
+        && !path.split('/').any(|part| matches!(part, "" | "." | ".."))
+        && text.len() <= 32 * 1024
+}
 
 /// Rebuilds the provider projection from the bounded durable source.  The
 /// store's terminal-results map remains a separate dedup authority; this
@@ -648,7 +827,26 @@ pub(crate) fn validate_recovered_projection(
             "terminal tool call {call_id} has invalid safe projection"
         ))
     };
+    if status == RuntimeToolStatus::Rejected
+        && approval.decision == Approval::Deny
+        && approval.source == ApprovalSource::Validation
+        && output == "Tool error: mixed Skill load batch rejected other tools"
+        && exit_code.is_none()
+        && duration_ms.is_none()
+        && valid_mixed_skill_rejection_input(tool, input_json)
+    {
+        return Ok(input_json.to_string());
+    }
     match tool {
+        "load_skill" | "read_skill_resource" => {
+            if exit_code.is_some()
+                || duration_ms.is_some()
+                || !valid_skill_result(tool, input_json, output, status, approval)
+            {
+                return Err(corrupt());
+            }
+            Ok(input_json.to_string())
+        }
         _ if tool.starts_with("mcp_") => {
             let projected = crate::types::ToolCall {
                 id: call_id.to_string(),
@@ -1063,6 +1261,16 @@ pub(crate) fn approval_source_matches(
         };
     }
     match tool {
+        "load_skill" | "read_skill_resource" => {
+            if status == RuntimeToolStatus::Rejected {
+                matches!(
+                    source,
+                    ApprovalSource::Validation | ApprovalSource::Recovery | ApprovalSource::Timeout
+                )
+            } else {
+                source == ApprovalSource::ReadonlyTool
+            }
+        }
         "read" | "glob" | "grep" => {
             (status == RuntimeToolStatus::Rejected
                 && matches!(source, ApprovalSource::Recovery | ApprovalSource::Timeout))

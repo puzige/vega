@@ -122,6 +122,13 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "sidebar_memberships",
             "sidebar_organization",
             "sidebar_project_order",
+            "skill_activation_audits",
+            "skill_approvals",
+            "skill_project_settings",
+            "skill_run_snapshots",
+            "skill_settings",
+            "skill_sources",
+            "thread_skill_pins",
             "threads",
             "token_usage",
             "tool_calls"

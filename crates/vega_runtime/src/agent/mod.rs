@@ -5,6 +5,7 @@ use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -18,6 +19,9 @@ use crate::error::VegaError;
 use crate::provider::{
     ChatMessage, ChatRequest, ChatRole, ChatToolCall, FrozenReasoning, Provider, ProviderEvent,
     ReasoningBudgetScope, StopReason, ToolDefinition,
+};
+use crate::skills::{
+    ActivationAudit, ActiveSkillSummary, RunBinding, SkillRun, SkillRunSnapshot, SkillSelection,
 };
 use crate::{
     RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeCapabilityOutcome,
@@ -86,6 +90,7 @@ pub struct RuntimeToolConfig {
     /// Exact project rules loaded at task start.
     pub exact_rules: Vec<RuntimeExactRule>,
     mcp_candidates: Vec<McpCandidate>,
+    skills: Option<RuntimeSkillConfig>,
     foreign_call_ids: HashSet<String>,
     permission_timeout: Duration,
 }
@@ -108,6 +113,7 @@ impl RuntimeToolConfig {
             checkpoint_root,
             exact_rules,
             mcp_candidates: Vec::new(),
+            skills: None,
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
         }
@@ -142,6 +148,46 @@ impl RuntimeToolConfig {
             .map(|candidate| candidate.with_known_credentials(credentials.clone()))
             .collect();
         self
+    }
+
+    /// Attach a trusted, consent-frozen Skills run and exact UI selections.
+    /// The model cannot construct or modify this configuration.
+    pub fn with_skill_run(mut self, run: SkillRun, explicit: Vec<SkillSelection>) -> Self {
+        self.skills = Some(RuntimeSkillConfig {
+            run: Arc::new(Mutex::new(run)),
+            explicit,
+            authority_probe: None,
+        });
+        self
+    }
+
+    /// Trusted Conversation-owned authority fence. A false result cancels
+    /// before the next provider request or operational tool dispatch; the
+    /// model and Skill content cannot supply this probe.
+    pub fn with_skill_authority_probe(
+        mut self,
+        probe: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
+        if let Some(skills) = self.skills.as_mut() {
+            skills.authority_probe = Some(probe);
+        }
+        self
+    }
+
+    /// Content-free active identities for a trusted post-run revocation
+    /// audit. The runtime's shared SkillRun is frozen at this point.
+    pub fn active_skill_summaries(&self) -> Result<Vec<ActiveSkillSummary>, VegaError> {
+        let Some(skills) = &self.skills else {
+            return Ok(Vec::new());
+        };
+        skills
+            .run
+            .lock()
+            .map(|run| run.active_summaries())
+            .map_err(|_| VegaError::Tool {
+                tool: "skill".into(),
+                message: "Skill run state unavailable or invalid".into(),
+            })
     }
 
     fn readonly() -> Self {
@@ -180,8 +226,16 @@ impl fmt::Debug for RuntimeToolConfig {
             .field("exact_rule_count", &self.exact_rules.len())
             .field("foreign_call_id_count", &self.foreign_call_ids.len())
             .field("mcp_candidate_count", &self.mcp_candidates.len())
+            .field("skills_configured", &self.skills.is_some())
             .finish()
     }
+}
+
+#[derive(Clone)]
+struct RuntimeSkillConfig {
+    run: Arc<Mutex<SkillRun>>,
+    explicit: Vec<SkillSelection>,
+    authority_probe: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
 /// Cancellable permission boundary implemented by conversation/UI.
@@ -481,6 +535,18 @@ pub enum RuntimeEvent {
     },
     /// Terminal tool result.
     ToolCallFinished(RuntimeToolResult),
+    /// Content-free activation audit and optional frozen private Store state.
+    /// The conversation adapter persists this before another provider round.
+    SkillActivation {
+        audit: ActivationAudit,
+        binding: Option<RunBinding>,
+        snapshot: Option<SkillRunSnapshot>,
+    },
+    /// Private frozen reference/catalog state, never projected into UI events.
+    SkillSnapshot {
+        binding: RunBinding,
+        snapshot: SkillRunSnapshot,
+    },
     /// Provider usage priced by the frozen run-start catalog (S7-T38).
     UsageUpdated {
         /// Token counts from the provider.
@@ -560,6 +626,15 @@ impl fmt::Debug for RuntimeEvent {
                 .debug_tuple("ToolCallFinished")
                 .field(result)
                 .finish(),
+            Self::SkillActivation {
+                audit, snapshot, ..
+            } => formatter
+                .debug_struct("SkillActivation")
+                .field("name", &audit.name)
+                .field("status", &audit.status)
+                .field("has_private_snapshot", &snapshot.is_some())
+                .finish(),
+            Self::SkillSnapshot { .. } => formatter.write_str("SkillSnapshot([redacted])"),
             Self::UsageUpdated {
                 usage,
                 cost_microcents,

@@ -338,6 +338,7 @@ impl ToolCard {
             (Some(ToolCardInputProjection::Write { .. }), _) => "write",
             (Some(ToolCardInputProjection::Edit { .. }), _) => "edit",
             (Some(ToolCardInputProjection::Mcp { .. }), _) => "MCP",
+            (Some(ToolCardInputProjection::Skill { kind, .. }), _) => kind.as_str(),
             (None, Some(ToolCardResultProjection::InvalidRejected { tool, .. })) => tool.as_str(),
             _ => "tool",
         }
@@ -450,6 +451,34 @@ impl ToolCard {
             (Some(ToolCardInputProjection::ReadOnly { .. }), _) => {
                 Some(self.status_label().to_string())
             }
+            (
+                Some(ToolCardInputProjection::Skill { name, .. }),
+                Some(ToolCardResultProjection::Skill { outcome, .. }),
+            ) => {
+                let name = name.as_deref().unwrap_or("Skill");
+                let detail = match outcome {
+                    vega_conversation::types::SkillCardOutcome::Loaded => "已加载".to_string(),
+                    vega_conversation::types::SkillCardOutcome::AlreadyLoaded => {
+                        "已加载（复用）".to_string()
+                    }
+                    vega_conversation::types::SkillCardOutcome::ResourceRead {
+                        text_bytes,
+                        sha256,
+                    } => format!(
+                        "引用已读取 · {text_bytes} bytes · SHA-256 {}…",
+                        sha256.get(..12).unwrap_or("invalid")
+                    ),
+                    vega_conversation::types::SkillCardOutcome::Failed { code } => {
+                        format!("失败 · {code}")
+                    }
+                    vega_conversation::types::SkillCardOutcome::Rejected => "已拒绝".to_string(),
+                    vega_conversation::types::SkillCardOutcome::Cancelled => "已取消".to_string(),
+                };
+                Some(format!("{name} · {detail}"))
+            }
+            (Some(ToolCardInputProjection::Skill { name, .. }), None) => {
+                Some(name.as_deref().unwrap_or("Skill").to_string())
+            }
             (Some(ToolCardInputProjection::Mcp { identity, .. }), _) => Some(format!(
                 "{} · server {} · external result is untrusted",
                 identity.exact_tool_name, identity.server_id
@@ -529,6 +558,87 @@ mod tests {
             truncated: None,
             invalid: None,
         }
+    }
+
+    #[test]
+    fn skill_load_and_reference_cards_show_success_without_reference_body() {
+        let load = ToolCall {
+            id: "load-reviewer".into(),
+            tool: "load_skill".into(),
+            input_json: r#"{"name":"reviewer"}"#.into(),
+        };
+        let mut load_card = ToolCard::proposed(&load);
+        assert!(load_card.apply_approved(Approval::Once));
+        let mut loaded = result(
+            ToolCallStatus::Success,
+            r#"{"name":"reviewer","status":"loaded"}"#,
+        );
+        loaded.truncated = Some(false);
+        assert!(load_card.apply_finished(&loaded));
+        assert!(load_card.visible_text().contains("load_skill · 已完成"));
+        assert!(!load_card.visible_text().contains(CORRUPT_LABEL));
+
+        let read = ToolCall {
+            id: "read-reviewer".into(),
+            tool: "read_skill_resource".into(),
+            input_json: r#"{"name":"reviewer","path_bytes":19,"path_sha256":"00f28c21b21007f540efab680c48c95d3914621a9ef1e064ebbdb1277d34ef88"}"#.into(),
+        };
+        let mut read_card = ToolCard::proposed(&read);
+        assert!(read_card.apply_approved(Approval::Once));
+        let mut returned = result(
+            ToolCallStatus::Success,
+            "[Lower-trust Skill reference]\n{\"name\":\"reviewer\",\"path\":\"references/notes.md\",\"text\":\"PRIVATE REFERENCE\",\"lower_trust\":true,\"content_sha256\":\"f30f856c035ac9d081141af0397093625c492f488189b61f67f7b258540c75d7\"}",
+        );
+        returned.truncated = Some(false);
+        assert!(read_card.apply_finished(&returned));
+        let visible = read_card.visible_text();
+        assert!(visible.contains("read_skill_resource · 已完成"));
+        assert!(!visible.contains(CORRUPT_LABEL));
+        assert!(!visible.contains("PRIVATE REFERENCE"));
+        assert!(!visible.contains("references/notes.md"));
+    }
+
+    #[test]
+    fn malformed_skill_receipt_or_reference_stays_content_free_corrupt() {
+        let load = ToolCall {
+            id: "load-reviewer".into(),
+            tool: "load_skill".into(),
+            input_json: r#"{"name":"reviewer"}"#.into(),
+        };
+        let mut load_card = ToolCard::proposed(&load);
+        assert!(load_card.apply_approved(Approval::Once));
+        let mut wrong_receipt = result(
+            ToolCallStatus::Success,
+            r#"{"name":"other","status":"loaded","private":"PRIVATE BODY"}"#,
+        );
+        wrong_receipt.truncated = Some(false);
+        assert!(!load_card.apply_finished(&wrong_receipt));
+        assert!(load_card.visible_text().contains(CORRUPT_LABEL));
+        assert!(!load_card.visible_text().contains("PRIVATE BODY"));
+
+        let raw_path = ToolCard::proposed(&ToolCall {
+            id: "unsafe-input".into(),
+            tool: "read_skill_resource".into(),
+            input_json: r#"{"name":"reviewer","path":"/SECRET_ROOT/notes.md"}"#.into(),
+        });
+        assert!(raw_path.visible_text().contains(CORRUPT_LABEL));
+        assert!(!raw_path.visible_text().contains("SECRET_ROOT"));
+
+        let read = ToolCall {
+            id: "read-reviewer".into(),
+            tool: "read_skill_resource".into(),
+            input_json: r#"{"name":"reviewer","path_bytes":19,"path_sha256":"00f28c21b21007f540efab680c48c95d3914621a9ef1e064ebbdb1277d34ef88"}"#.into(),
+        };
+        let mut read_card = ToolCard::proposed(&read);
+        assert!(read_card.apply_approved(Approval::Once));
+        let mut forged_reference = result(
+            ToolCallStatus::Success,
+            "[Lower-trust Skill reference]\n{\"name\":\"reviewer\",\"path\":\"references/notes.md\",\"text\":\"PRIVATE REFERENCE\",\"lower_trust\":true,\"content_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+        );
+        forged_reference.truncated = Some(false);
+        assert!(!read_card.apply_finished(&forged_reference));
+        assert!(read_card.visible_text().contains(CORRUPT_LABEL));
+        assert!(!read_card.visible_text().contains("PRIVATE REFERENCE"));
     }
 
     #[test]

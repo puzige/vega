@@ -91,6 +91,40 @@ pub(crate) fn render_entry(
                 )
                 .into_any_element(),
         },
+        StreamEntry::SkillActivation { activation } => {
+            use vega_conversation::history::{
+                SkillHistoryOrigin, SkillHistorySource, SkillHistoryStatus,
+                SkillHistoryVerification,
+            };
+            let source = match activation.source_scope {
+                SkillHistorySource::Project => "项目",
+                SkillHistorySource::VegaGlobal => "Vega 全局",
+                SkillHistorySource::Imported => "外部导入",
+            };
+            let origin = match activation.origin {
+                SkillHistoryOrigin::Model => "模型加载",
+                SkillHistoryOrigin::ExplicitUser => "用户预载",
+            };
+            let status = match activation.status {
+                SkillHistoryStatus::Loaded => "已加载",
+                SkillHistoryStatus::Revoked => "已撤销",
+            };
+            let verification = match activation.verification {
+                SkillHistoryVerification::Verified => "冻结快照已验证",
+                SkillHistoryVerification::Unavailable => "冻结快照不可用或未验证",
+            };
+            let digest = activation.content_sha256.get(..12).unwrap_or("invalid");
+            div()
+                .debug_selector(|| "history-skill-provenance".to_string())
+                .py_1()
+                .text_size(px(Typography::METADATA))
+                .text_color(colors.text_secondary)
+                .child(format!(
+                    "历史 Skill {} · {} · {} · {} · {} · SHA-256 {}…",
+                    activation.name, source, origin, status, verification, digest
+                ))
+                .into_any_element()
+        }
     };
     if let Ok(mut samples) = counters.row_build_ns.lock() {
         samples.push(row_t0.elapsed().as_nanos());

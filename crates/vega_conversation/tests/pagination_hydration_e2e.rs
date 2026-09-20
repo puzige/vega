@@ -185,7 +185,8 @@ async fn ten_thousand_rows_walk_without_gap_or_duplicate() -> Result<(), Box<dyn
                 | HistoryEntry::AssistantText { seq, .. }
                 | HistoryEntry::Plan { seq, .. }
                 | HistoryEntry::Summary { seq, .. }
-                | HistoryEntry::Tool { seq, .. } => *seq,
+                | HistoryEntry::Tool { seq, .. }
+                | HistoryEntry::SkillActivation { seq, .. } => *seq,
             };
             seen.push(seq);
         }
@@ -439,6 +440,7 @@ async fn real_run_hydrates_tools_costs_summary_and_redacts_inputs() -> Result<()
             }
             HistoryEntry::Plan { .. } => unreachable!("no plans in this run"),
             HistoryEntry::UserImages { .. } => unreachable!("no images in this run"),
+            HistoryEntry::SkillActivation { .. } => unreachable!("no Skills in this run"),
         }
     }
     assert_eq!(assistant_status, Some(AssistantStatus::Done));

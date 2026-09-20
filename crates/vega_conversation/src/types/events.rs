@@ -127,6 +127,11 @@ pub enum ConversationEvent {
         /// Incremental reasoning text.
         delta: String,
     },
+    /// One persisted activation receipt, never Skill body or file path.
+    SkillActivated {
+        message_id: MessageId,
+        skill: ActiveSkillView,
+    },
     /// Tool proposal awaiting the placeholder permission hook.
     ToolCallProposed {
         /// Complete proposal.
@@ -222,6 +227,11 @@ impl std::fmt::Debug for ConversationEvent {
                 .debug_struct("ThinkingDelta")
                 .field("message_id_bytes", &message_id.len())
                 .field("delta_bytes", &delta.len())
+                .finish(),
+            Self::SkillActivated { message_id, skill } => formatter
+                .debug_struct("SkillActivated")
+                .field("message_id_bytes", &message_id.len())
+                .field("name", &skill.name)
                 .finish(),
             Self::ToolCallProposed { call } => formatter
                 .debug_struct("ToolCallProposed")
@@ -372,6 +382,17 @@ pub(crate) fn from_runtime_event(
                 invalid: None,
             },
         }),
+        RuntimeEvent::SkillActivation { audit, .. } if audit.status == "loaded" => {
+            Some(ConversationEvent::SkillActivated {
+                message_id: message_id.to_string(),
+                skill: ActiveSkillView {
+                    name: audit.name.clone(),
+                    source_label: audit.source_label.clone()?,
+                    content_sha256: audit.content_sha256.clone()?,
+                },
+            })
+        }
+        RuntimeEvent::SkillActivation { .. } | RuntimeEvent::SkillSnapshot { .. } => None,
         RuntimeEvent::UsageUpdated {
             usage,
             cost_microcents,
@@ -500,6 +521,10 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         tool: call.name.clone(),
         input_json: call.input_json.clone(),
     };
+    if matches!(call.name.as_str(), "load_skill" | "read_skill_resource") {
+        return crate::agent::valid_skill_call_projection(&call.name, &call.input_json)
+            .then_some(projected);
+    }
     if call.name.starts_with("mcp_") {
         // The runtime has already replaced raw MCP arguments with this
         // value-free identity. Keep its exact alias binding at the live UI

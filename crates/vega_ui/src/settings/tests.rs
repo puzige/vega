@@ -1783,6 +1783,7 @@ async fn r21_settings_shell_opens_general_and_tracks_sidebar_width(cx: &mut Test
             "settings-nav-reasoning",
             "settings-nav-pricing",
             "settings-nav-usage",
+            "settings-nav-skills",
         ]
         .map(|selector| {
             visual

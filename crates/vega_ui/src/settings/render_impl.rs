@@ -265,6 +265,7 @@ impl SettingsView {
         // 与 Esc 同效：派发同一动作，由 app 级处理器统一收口。
         self.cancel_provider_operation(cx);
         self.cancel_mcp_oauth(cx);
+        self.close_skills_session();
         window.dispatch_action(Box::new(CloseSettings), cx);
     }
 
@@ -751,7 +752,9 @@ impl Render for SettingsView {
             2 => ("Reasoning", "settings-page-reasoning"),
             3 => ("Pricing", "settings-page-pricing"),
             4 => ("Usage", "settings-page-usage"),
-            _ => ("MCP", "settings-page-mcp"),
+            5 => ("MCP", "settings-page-mcp"),
+            6 => ("Skills", "settings-page-skills"),
+            _ => ("Usage", "settings-page-usage"),
         };
         let navigation = [
             (1, "General", "settings-nav-general"),
@@ -760,6 +763,7 @@ impl Render for SettingsView {
             (3, "Pricing", "settings-nav-pricing"),
             (4, "Usage", "settings-nav-usage"),
             (5, "MCP", "settings-nav-mcp"),
+            (6, "Skills", "settings-nav-skills"),
         ];
         div()
             .id("settings-page")
@@ -810,6 +814,7 @@ impl Render for SettingsView {
                                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                                         this.cancel_provider_operation(cx);
                                         this.cancel_mcp_oauth(cx);
+                                        this.close_skills_session();
                                         window.dispatch_action(Box::new(CloseSettings), cx);
                                         cx.stop_propagation();
                                     }
@@ -843,6 +848,7 @@ impl Render for SettingsView {
                                         {
                                             this.cancel_mcp_oauth(cx);
                                         }
+                                        this.skills_section_changed(index, cx);
                                         this.section = index;
                                         cx.stop_propagation();
                                         cx.notify();
@@ -868,6 +874,7 @@ impl Render for SettingsView {
                                     {
                                         this.cancel_mcp_oauth(cx);
                                     }
+                                    this.skills_section_changed(index, cx);
                                     this.section = index;
                                     cx.notify();
                                 }),
@@ -940,8 +947,9 @@ impl Render for SettingsView {
                                     .when(self.section == 4, |body| {
                                         body.child(self.render_usage(cx))
                                     })
-                                    .when(self.section == 5, |body| {
-                                        body.child(self.render_mcp(cx))
+                                    .when(self.section == 5, |body| body.child(self.render_mcp(cx)))
+                                    .when(self.section == 6, |body| {
+                                        body.child(self.render_skills(cx))
                                     }),
                             ),
                     ),

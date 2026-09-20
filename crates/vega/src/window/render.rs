@@ -68,10 +68,26 @@ impl Render for VegaWindow {
         let settings_open = cx.global::<SettingsOpen>().0;
         let content: AnyElement = if settings_open {
             self.cancel_active_agent(cx);
+            if self.settings_view.is_none()
+                && let Some((_, stream)) = &self.stream_view
+            {
+                stream.update(cx, ConversationStream::suspend_skill_projection);
+            }
             self.start_model_catalog_load(cx);
             // 设置视图：缓存 Entity，避免主题刷新等重渲染时重建导致表单输入丢失。
             if self.settings_view.is_none() {
                 let config_path = self.composer_config_path();
+                let skills_service = self
+                    .context_database(cx)
+                    .zip(
+                        config_path
+                            .as_deref()
+                            .and_then(std::path::Path::parent)
+                            .map(std::path::Path::to_path_buf),
+                    )
+                    .map(|(database, config_root)| {
+                        SkillSettingsService::new(database, config_root, self.shell_project_id(cx))
+                    });
                 let settings = cx.new(|cx| SettingsView::from_path(config_path, cx));
                 settings.update(cx, |view, cx| {
                     view.install_mcp_service(self.mcp_settings.clone(), cx)
@@ -136,6 +152,7 @@ impl Render for VegaWindow {
                 settings.update(cx, |settings, cx| {
                     settings.apply_pricing_projection(projection, cx);
                     settings.apply_reasoning_projection(reasoning_projection, cx);
+                    settings.set_skills_service(skills_service, cx);
                 });
                 let focus = settings.read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
@@ -255,6 +272,29 @@ impl Render for VegaWindow {
                                 this.submit_composer(stream.clone(), request, cx);
                             })
                             .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &SkillComposerProjectionRequested, cx| {
+                                    this.request_skill_composer_projection(
+                                        stream.clone(),
+                                        request,
+                                        cx,
+                                    );
+                                },
+                            )
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &SkillComposerMutationRequested, cx| {
+                                    this.request_skill_composer_mutation(
+                                        stream.clone(),
+                                        request,
+                                        cx,
+                                    );
+                                },
+                            )
+                            .detach();
+                            view.update(cx, ConversationStream::request_skill_projection);
                             cx.subscribe(
                                 &view,
                                 |this, stream, request: &ComposerStopRequested, cx| {
@@ -445,7 +485,10 @@ impl Render for VegaWindow {
                         }
                     }
                     if returning_from_settings {
-                        stream.update(cx, |stream, cx| stream.focus_composer(window, cx));
+                        stream.update(cx, |stream, cx| {
+                            stream.request_skill_projection(cx);
+                            stream.focus_composer(window, cx);
+                        });
                     }
                     stream.into_any_element()
                 }

@@ -176,6 +176,42 @@ pub(crate) fn persist_runtime_event(
     event: &RuntimeEvent,
 ) -> Result<(), VegaError> {
     match event {
+        RuntimeEvent::SkillSnapshot { binding, snapshot } => {
+            persist_skill_snapshot(store, thread_id, message_id, binding, snapshot)?;
+        }
+        RuntimeEvent::SkillActivation {
+            audit,
+            binding,
+            snapshot,
+        } => {
+            if let Some(snapshot) = snapshot {
+                let binding = binding.as_ref().ok_or_else(|| safe_audit_error("skill"))?;
+                persist_skill_snapshot(store, thread_id, message_id, binding, snapshot)?;
+            }
+            let scope = audit.source_scope.map(|scope| match scope {
+                vega_runtime::skills::SourceScope::Project => "project",
+                vega_runtime::skills::SourceScope::VegaGlobal => "vega_global",
+                vega_runtime::skills::SourceScope::Imported => "imported",
+            });
+            let origin = match audit.origin {
+                vega_runtime::skills::ActivationOrigin::ExplicitUser => "explicit_user",
+                vega_runtime::skills::ActivationOrigin::Model => "model",
+            };
+            vega_store::skills::append_activation_audit(
+                store.conn(),
+                vega_store::skills::NewSkillActivationAudit {
+                    run_id: message_id,
+                    thread_id,
+                    name: &audit.name,
+                    source_scope: scope,
+                    content_sha256: audit.content_sha256.as_deref(),
+                    origin,
+                    status: audit.status,
+                    created_at: now_ms(),
+                },
+            )
+            .map_err(|_| safe_audit_error("skill"))?;
+        }
         RuntimeEvent::ToolCallProposed(call) => {
             validate_runtime_proposal(call)?;
             if let Some(existing) = tool_calls::find_identity(store.conn(), &call.id)? {
@@ -537,6 +573,32 @@ pub(crate) fn persist_runtime_event(
     Ok(())
 }
 
+fn persist_skill_snapshot(
+    store: &Store,
+    thread_id: &str,
+    message_id: &str,
+    binding: &vega_runtime::skills::RunBinding,
+    snapshot: &vega_runtime::skills::SkillRunSnapshot,
+) -> Result<(), VegaError> {
+    if binding.run_id() != message_id || binding.thread_id() != thread_id {
+        return Err(safe_audit_error("skill"));
+    }
+    vega_store::skills::save_snapshot(
+        store.conn(),
+        vega_store::skills::NewSkillSnapshot {
+            run_id: binding.run_id(),
+            thread_id: binding.thread_id(),
+            consent_generation: binding.consent_generation(),
+            revocation_generation: binding.revocation_generation(),
+            catalog_sha256: binding.catalog_sha256(),
+            snapshot_sha256: snapshot.sha256(),
+            bytes: snapshot.bytes(),
+            updated_at: now_ms(),
+        },
+    )
+    .map_err(|_| safe_audit_error("skill"))
+}
+
 pub(crate) fn tool_transition_error(error: tool_calls::ToolCallTransitionError) -> VegaError {
     VegaError::Tool {
         tool: "persistence".to_string(),
@@ -572,6 +634,11 @@ pub(crate) fn required_tool_state(
 pub(crate) fn validate_runtime_proposal(
     call: &vega_runtime::RuntimeToolCall,
 ) -> Result<(), VegaError> {
+    if matches!(call.name.as_str(), "load_skill" | "read_skill_resource") {
+        return super::pipeline::valid_skill_call_projection(&call.name, &call.input_json)
+            .then_some(())
+            .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if call.name.starts_with("mcp_") {
         let projected = crate::types::ToolCall {
             id: call.id.clone(),

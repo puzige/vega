@@ -52,6 +52,7 @@ mod events;
 mod permission_queue;
 mod persistence;
 mod pipeline;
+mod skills;
 
 #[cfg(test)]
 mod tests;
@@ -67,3 +68,5 @@ pub use permission_queue::*;
 pub use persistence::PersistenceActorConfig;
 pub(crate) use persistence::*;
 pub(crate) use pipeline::*;
+pub(crate) use skills::validate_frozen_snapshot;
+pub use skills::{SkillAssistantStatus, SkillRunRecovery, recover_skill_run};
