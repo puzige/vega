@@ -1,12 +1,12 @@
 # Issue #68 · 无思考档位模型选择入口交付记录
 
-> 状态：自动化验收通过；打包与原生窗口验收待完成。
+> 状态：自动化、打包与原生窗口验收通过。
 > 规格：[vega-issue-68-model-picker.md](vega-issue-68-model-picker.md)。
 > 原始日志与截图保存在 worktree 外的本地证据包 `vega-issue68-evidence`；仓库仅记录脱敏摘要和 SHA-256。
 
 ## Freeze
 
-- 验证日期：2026-09-21（Asia/Shanghai）；最终原生验收时间待补。
+- 验证日期：2026-09-21（Asia/Shanghai）；原生验收完成于 02:13。
 - 基线：`origin/master @ 8c1d874`；任务分支：`feat/issue68-model-picker`。
 - 代码与测试 diff SHA-256（不含文档）：`2174141c692ba9a8883336578aa7f17eb8454147dc06747be4a7eef43ae96ea7`。
 - 环境：Darwin arm64；Rust 1.98.0；Cargo 1.98.0；Git 2.55.0。
@@ -33,7 +33,8 @@
 | 首次全量 | 仓库门禁 | `scripts/cargo-lock.sh --wait test --workspace` | 现有 Diff 用例失败，Vega 包 180 通过、1 失败（101），`workspace-test.log` |
 | 首次失败项单独复跑 | 生产测试 | `scripts/cargo-lock.sh --wait test -p vega diff_refresh_intents_keep_content_during_background_and_retry -- --nocapture` | 1 通过、0 失败（0），`diff-retry-isolation.log` |
 | I68-09 串行全量 | 仓库门禁 | `scripts/cargo-lock.sh --wait test --workspace -- --test-threads=1` | 35 组共 1646 通过、0 失败、9 忽略（0），`workspace-test-serial.log` |
-| I68-08 原生窗口；I68-09 打包 | 原生 E2E / 仓库门禁 | 待运行 | 待验收；不得据此关闭卡片 |
+| I68-09 打包 | 仓库门禁 | `scripts/cargo-lock.sh --wait xtask package` | release 构建、签名验证、Info.plist 校验与 zip 生成通过（0），`package.log` |
+| I68-08 原生窗口 | 候选 App + 真实 macOS 窗口 | 打开无档位模型触发器，并分别在浅色和深色主题下捕获窗口 | 两次均直接显示“选择模型”列表，无空白“选择强度”层；`i68-08-light-list.png`、`i68-08-dark-list.png` |
 
 首次全量失败的用例是 `diff_refresh_intents_keep_content_during_background_and_retry`，错误为 `GitFailed`。该用例与模型菜单无关；单独复跑及随后的串行全量均通过。首次失败保留为历史结果，不计为通过。最终改动只有注释在通过上述门禁后作了更新；没有生产逻辑或测试行为变更。
 
@@ -44,10 +45,14 @@
 | I68-03 | 通过 | 有档位模型的原有两级菜单回归 |
 | I68-04 | 通过 | 空列表、保存中和可信操作忙的 GPUI 回归 |
 | I68-05 | 通过 | 能力变更关闭失效 Slider 及恢复回归 |
-| I68-06 | 通过 | 模型确认后的菜单重开与 owned-store controller E2E |
+| I68-06 | 通过 | 模型确认后的菜单重开；owned-store controller E2E 同时覆盖重启保持、保存失败保留原模型并释放忙态 |
 | I68-07 | 通过 | 真实 GPUI 焦点下 Enter、上下移动和 Esc 回归 |
-| I68-08 | 待验收 | 候选构建的浅色、深色原生截图 |
-| I68-09 | 部分通过 | fmt、Clippy、串行 workspace 测试通过；打包待验收 |
+| I68-08 | 通过 | 候选构建的浅色、深色原生截图；同一无档位模型 `gpt-5.6-luna`，点击触发器后均直达模型列表 |
+| I68-09 | 通过 | fmt、Clippy、串行 workspace 测试与候选 App 打包通过 |
+
+候选包来自上述任务分支的已提交代码；打包时只有本交付记录有未提交的文字补充。`dist/Vega.app/Contents/MacOS/vega` 的 SHA-256 为 `6d57278bc067536a9dcba5da97bfc840ec2effd1cef3318291b69b12493c068e`，`dist/Vega-macos-arm64.zip` 为 `0097f2a33e11b9c7e5a3af947e4ee4ad07ad3fb1f2fd52b6d8e7a2e153f0e807`。原生截图必须来自此候选构建；若之后因变基或代码修改重建，需更新哈希并重新验收。
+
+原生验收通过候选包进程和窗口 ID 绑定截图；截图均为 macOS 对该窗口的直接捕获，未使用可能被其他窗口遮挡的屏幕区域截图。候选进程退出后，已恢复测试前的浅色主题，配置文件 SHA-256 与测试前一致；测试时误选的会话模型已恢复为 `gpt-5.6-luna` 并经只读数据库检查确认。随后重新打开用户原有的 `/Applications/Vega.app`。
 
 ## 证据校验
 
@@ -59,9 +64,11 @@
 | `clippy.log` | `85e5f2a773c262debb0312bcfeb2b048bb5de1ad2b618da7dd6f3e4c69ac2f0d` |
 | `workspace-test.log` | `2309dcfc77152e25b31a779137c7db4d14126df1bec81fecc97645d39484594d` |
 | `workspace-test-serial.log` | `adf6c5f50f9767ff44218c11a217dd36abb6345b9dc4ad47273a10765921eecd` |
+| `package.log` | `142326e2e39f8f05b89d416fc27957ca7d99938a4e49e91360d1823fdf0e7b4f` |
+| `i68-08-light-list.png` | `c1ac263316d57162465cfaa648aecc4a6632d9d2ac7fbb8606587616a432c3f1` |
+| `i68-08-dark-list.png` | `f376581d1ca096c537fd4af4f73ea2011d072162a37123d2f6275e2519adbc23` |
 
 ## Residuals
 
-- **NOT RUN**：候选 App 打包、原生浅色/深色窗口操作与持久截图；完成后补充被测构建身份、截图 SHA-256 和 manifest。
 - **ACCEPTED**：仓库原有 9 个 ignored 测试未在本卡启用；模型入口没有新增持久化状态或数据迁移。
 - 回滚方式：撤销本卡的 squash commit；用户现有模型和思考偏好数据不需迁移。
