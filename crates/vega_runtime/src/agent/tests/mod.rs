@@ -46,7 +46,8 @@ impl ContextCompactionHook for TailPreservingCompactionHook {
                 messages,
                 source_version: request.source_version + 1,
                 source_fingerprint: request.source_fingerprint,
-                usage: None,
+                usages: Vec::new(),
+                usage_complete: false,
             })
         }
         .boxed()
@@ -67,7 +68,8 @@ impl ContextCompactionHook for RecordingCompactionHook {
                 messages,
                 source_version,
                 source_fingerprint: None,
-                usage: None,
+                usages: Vec::new(),
+                usage_complete: false,
             })
         }
         .boxed()
@@ -263,7 +265,7 @@ async fn issue76_auto_compaction_precedes_tool_round_and_is_once_per_source() {
         messages: vec![ChatMessage::new(ChatRole::User, "historical summary")],
         source_version: 8,
     };
-    let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(4_000))]);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(14_000))]);
     req.context_budget = Some(ContextBudget::new(5_000, 500, true).unwrap());
     req.context_source_version = Some(7);
     req.context_compaction_hook = Some(Arc::new(hook));
@@ -308,7 +310,7 @@ async fn issue76_auto_compaction_triggers_after_tool_result_without_reexecution(
         observed: observed.clone(),
     };
     let mut req = request(vec![
-        ChatMessage::new(ChatRole::User, "old constraint ".repeat(600)),
+        ChatMessage::new(ChatRole::User, "old constraint ".repeat(2_200)),
         ChatMessage::new(ChatRole::Assistant, "old answer"),
         ChatMessage::new(ChatRole::User, "current goal"),
     ]);

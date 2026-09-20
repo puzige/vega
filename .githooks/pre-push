@@ -27,8 +27,18 @@ for git_local_env_var in $git_local_env_vars; do
 done
 unset git_local_env_var git_local_env_vars
 
+# Worktrees share one target directory. The wrapper accepts Cargo subcommands
+# directly and owns the whole build/test span; fall back to Cargo when absent.
+run_cargo() {
+    if [ -x scripts/cargo-lock.sh ]; then
+        scripts/cargo-lock.sh --wait "$@"
+    else
+        cargo "$@"
+    fi
+}
+
 echo "[pre-push] cargo clippy --all-targets -- -D warnings"
-if ! cargo clippy --all-targets -- -D warnings; then
+if ! run_cargo clippy --all-targets -- -D warnings; then
     echo ""
     echo "[pre-push] FAILED: clippy reported warnings."
     echo "Fix the warnings above, commit, then push again."
@@ -36,19 +46,8 @@ if ! cargo clippy --all-targets -- -D warnings; then
     exit 1
 fi
 
-# All worktrees share one target/ directory, and cargo's own lock covers only
-# the compile phase. Serialize the whole build+test span across worktrees so a
-# concurrent run in a sibling worktree cannot reuse the wrong crate artifacts
-# or make shared-state tests fail spuriously. --wait: a push gate should queue
-# rather than fail just because another worktree is busy.
-if [ -x scripts/cargo-lock.sh ]; then
-    LOCK="scripts/cargo-lock.sh --wait"
-else
-    LOCK=""
-fi
-
 echo "[pre-push] cargo test --workspace"
-if ! $LOCK cargo test --workspace; then
+if ! run_cargo test --workspace; then
     echo ""
     echo "[pre-push] FAILED: tests failed."
     echo "Fix the failing tests above, commit, then push again."
@@ -57,7 +56,7 @@ if ! $LOCK cargo test --workspace; then
 fi
 
 echo "[pre-push] cargo build --workspace"
-if ! $LOCK cargo build --workspace; then
+if ! run_cargo build --workspace; then
     echo ""
     echo "[pre-push] FAILED: build failed."
     echo "Fix the build errors above, commit, then push again."

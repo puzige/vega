@@ -299,9 +299,8 @@ fn status_label(record: &ContextCompactionStatusRecord) -> &'static str {
         Status::Failed => match record.failure {
             Some(Failure::SourceChanged) => "历史已变化，请重试压缩",
             Some(Failure::NoCompactablePrefix) => "暂无可压缩的完整历史",
-            Some(Failure::TooLarge | Failure::OverLimit) => {
-                "上下文超出可处理容量，请调整容量或缩短输入后重试"
-            }
+            Some(Failure::TooLarge) => "历史内容已达到安全分段上限，原始对话已保留；请在新会话继续",
+            Some(Failure::OverLimit) => "模型上下文预算不足，请调整模型容量或缩短当前输入后重试",
             Some(Failure::ImagesUnsupported) => "历史图片无法安全压缩，请使用新的会话",
             Some(Failure::InvalidSummary) => "压缩结果无效，请重试",
             _ => "上下文压缩失败，请重试",
