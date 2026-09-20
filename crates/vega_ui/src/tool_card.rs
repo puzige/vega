@@ -46,7 +46,7 @@ impl ToolCard {
         card
     }
 
-    /// Creates the sole legal proposal-free card: atomic invalid write/edit.
+    /// Creates a validated proposal-free invalid-input card.
     pub fn invalid_terminal(result: &ToolResult) -> Self {
         let projection = tool_card_result_projection(None, result);
         let status = match projection {
@@ -445,6 +445,16 @@ impl ToolCard {
             (_, Some(ToolCardResultProjection::MutationTerminal { .. })) => {
                 Some(self.status_label().to_string())
             }
+            (
+                _,
+                Some(ToolCardResultProjection::InvalidRejected {
+                    tool: vega_conversation::types::InvalidToolKind::Bash,
+                    ..
+                }),
+            ) => Some(
+                "参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
+                    .to_string(),
+            ),
             (_, Some(ToolCardResultProjection::InvalidRejected { code, .. })) => {
                 Some(code.as_str().to_string())
             }
@@ -699,6 +709,26 @@ mod tests {
         let card = ToolCard::invalid_terminal(&result);
         assert!(card.is_invalid_terminal());
         assert_eq!(card.visible_text(), "write · 已拒绝 malformed_json");
+    }
+
+    #[test]
+    fn issue90_hydrated_bash_validation_card_is_safe_and_actionable() {
+        let card = ToolCard::hydrated(
+            None,
+            ToolCallStatus::Rejected,
+            Some(Approval::Deny),
+            Some(ToolCardResultProjection::InvalidRejected {
+                tool: InvalidToolKind::Bash,
+                code: InvalidToolCode::InvalidInput,
+                reused: true,
+            }),
+        );
+        assert!(card.is_invalid_terminal());
+        assert_eq!(
+            card.visible_text(),
+            "bash · 已拒绝 参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
+        );
+        assert!(card.permission_identity().is_none());
     }
 
     #[test]

@@ -549,6 +549,25 @@ pub(crate) fn validate_runtime_validation_rejection(
     call: &vega_runtime::RuntimeToolCall,
     result: &vega_runtime::RuntimeToolResult,
 ) -> Option<InvalidToolProjection> {
+    if call.name == "bash" {
+        let approval = result.approval.as_ref()?;
+        return (vega_runtime::InvalidBashAudit::from_json(&call.input_json).is_some()
+            && call.id == result.call_id
+            && result.status == vega_runtime::RuntimeToolStatus::Rejected
+            && result.output == vega_runtime::BASH_INVALID_INPUT_OUTPUT
+            && result.exit_code.is_none()
+            && result.duration_ms.is_none()
+            && result.truncated.is_none()
+            && result.remember_rule.is_none()
+            && approval.decision == vega_runtime::RuntimeApprovalDecision::Deny
+            && approval.source == vega_runtime::RuntimeApprovalSource::Validation
+            && approval.note.is_none()
+            && approval.danger.is_none())
+        .then_some(InvalidToolProjection::new(
+            InvalidToolKind::Bash,
+            InvalidToolCode::InvalidInput,
+        ));
+    }
     let audit = vega_tools::InvalidWriteEditAudit::from_json(&call.input_json).ok()?;
     let approval = result.approval.as_ref()?;
     let expected = format!(

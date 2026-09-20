@@ -1490,10 +1490,15 @@ where
                 messages.push(ChatMessage::tool_result(call.id, conflict.output));
                 continue;
             }
-            if let PreparedRuntimeCall::InvalidWriteEdit { result, .. } = &prepared {
+            let validation_output = match &prepared {
+                PreparedRuntimeCall::InvalidWriteEdit { result, .. } => Some(result.as_str()),
+                PreparedRuntimeCall::InvalidBash { .. } => Some(BASH_INVALID_INPUT_OUTPUT),
+                _ => None,
+            };
+            if let Some(validation_output) = validation_output {
                 let mut terminal = terminal_result(
                     &call,
-                    result.clone(),
+                    validation_output.to_string(),
                     RuntimeToolStatus::Rejected,
                     Some(validation_audit()),
                 );

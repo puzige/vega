@@ -30,6 +30,29 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
             .iter()
             .all(|tool| tool.input_schema["additionalProperties"] == false)
     );
+    let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
+    assert!(bash.description.contains(r#"{"cmd":"rg ..."}"#));
+    assert!(bash.description.contains("command is unsupported"));
+    assert_eq!(bash.input_schema["required"], serde_json::json!(["cmd"]));
+}
+
+#[test]
+fn issue90_invalid_bash_audit_is_content_free_and_strict() {
+    let raw = r#"{"command":"SECRET_BASH_COMMAND"}"#;
+    let audit = InvalidBashAudit::from_raw(raw).unwrap();
+    let json = audit.to_json().unwrap();
+    assert!(!json.contains("SECRET_BASH_COMMAND"));
+    assert_eq!(InvalidBashAudit::from_json(&json), Some(audit));
+    assert_ne!(
+        InvalidBashAudit::from_raw(raw),
+        InvalidBashAudit::from_raw(r#"{"command":"different"}"#)
+    );
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    value["extra"] = serde_json::Value::Bool(true);
+    assert!(InvalidBashAudit::from_json(&value.to_string()).is_none());
+    value.as_object_mut().unwrap().remove("extra");
+    value["raw_input_sha256"] = serde_json::Value::String("A".repeat(64));
+    assert!(InvalidBashAudit::from_json(&value.to_string()).is_none());
 }
 
 #[tokio::test]
@@ -231,6 +254,100 @@ async fn invalid_write_is_atomic_validation_rejection_before_any_proposal() {
             .iter()
             .any(|event| matches!(event, RuntimeEvent::ToolCallProposed(_)))
     );
+}
+
+#[tokio::test]
+async fn issue90_invalid_bash_is_atomic_and_guides_the_model_without_exposing_input() {
+    let project = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    let checkpoint = data.path().join("checkpoints");
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "bad-bash".into(),
+                name: "bash".into(),
+                input_json: r#"{"command":"printf SECRET_BASH > issue90-marker"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(Vec::new());
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        checkpoint,
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hook = FixedHook {
+        calls: calls.clone(),
+        decision: Some(RuntimeUserDecision::Once),
+    };
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        &hook,
+        |_| async { Ok(()) },
+    )
+    .await
+    .unwrap();
+    let bash_definition = provider.requests()[0]
+        .tools
+        .iter()
+        .find(|definition| definition.name == "bash")
+        .unwrap()
+        .clone();
+    assert!(bash_definition.description.contains(r#"{"cmd":"rg ..."}"#));
+    assert!(
+        bash_definition
+            .description
+            .contains("command is unsupported")
+    );
+    assert_eq!(
+        bash_definition.input_schema["required"],
+        serde_json::json!(["cmd"])
+    );
+    assert_eq!(bash_definition.input_schema["additionalProperties"], false);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(outcome.executed_tool_call_count, 0);
+    assert!(!project.path().join("issue90-marker").exists());
+    assert!(
+        !outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::ToolCallProposed(_)))
+    );
+    assert!(matches!(
+        outcome.events.iter().find(|event| matches!(event, RuntimeEvent::ToolCallValidationRejected { .. })),
+        Some(RuntimeEvent::ToolCallValidationRejected { call, result })
+            if call.id == result.call_id
+                && !call.input_json.contains("SECRET_BASH")
+                && result.status == RuntimeToolStatus::Rejected
+                && result.output.contains("cmd")
+                && result.output.contains("command")
+                && !result.output.contains("SECRET_BASH")
+                && matches!(result.approval, Some(RuntimeApprovalAudit {
+                    source: RuntimeApprovalSource::Validation,
+                    ..
+                }))
+    ));
+    let second_request = &provider.requests()[1];
+    let feedback = second_request
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("bad-bash"))
+        .unwrap();
+    assert_eq!(feedback.content, BASH_INVALID_INPUT_OUTPUT);
+    let wire = serde_json::to_string(&crate::openai::build_request_body(second_request)).unwrap();
+    assert!(wire.contains("cmd"));
+    assert!(!wire.contains("SECRET_BASH"));
 }
 
 #[tokio::test]

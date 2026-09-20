@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use vega_token::{PricingCatalog, PricingProfile};
@@ -46,6 +48,10 @@ pub const REASONING_RUN_MAX_BYTES: usize = 1024 * 1024;
 /// Stable content-free result for a provider call id that conflicts with
 /// persisted owner, tool, or safe input identity.
 pub const CALL_ID_CONFLICT_OUTPUT: &str = "Tool error: persisted call identity conflict";
+/// Fixed actionable feedback for a rejected `bash` argument shape.
+pub const BASH_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid bash input. Use {\"cmd\":\"rg ...\"}. cmd must be a non-empty string; timeout_ms, if provided, must be a positive integer. Other fields, including command, are unsupported.";
+/// Previously persisted feedback for a rejected `bash` argument shape.
+pub const LEGACY_BASH_INVALID_INPUT_OUTPUT: &str = "Tool error: invalid bash input (invalid_input)";
 /// Stable content-free result when cancellation is observed after durable
 /// approval/running but before any tool worker starts.
 pub const CANCELLED_BEFORE_EXECUTION_OUTPUT: &str = "Tool cancelled before execution.";
@@ -54,6 +60,49 @@ const OUTPUT_HALF_LINES: usize = 2_000;
 const OUTPUT_TRUNCATION_MARKER: &str = "…[tool output truncated: middle lines omitted]";
 /// Authoritative production permission wait required by tech-spec §4.3.
 pub const PERMISSION_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Content-free durable identity for a rejected `bash` input. The raw JSON is
+/// discarded before tool events, provider context, or persistence are built.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvalidBashAudit {
+    audit_version: String,
+    raw_input_bytes: u64,
+    raw_input_sha256: String,
+}
+
+impl InvalidBashAudit {
+    /// Hashes the exact raw input behind a domain-separated audit identity.
+    pub fn from_raw(raw: &str) -> Option<Self> {
+        let raw_input_bytes = u64::try_from(raw.len()).ok()?;
+        let mut digest = Sha256::new();
+        digest.update(b"vega.bash.invalid-input.v1\0");
+        digest.update(raw_input_bytes.to_be_bytes());
+        digest.update(raw.as_bytes());
+        Some(Self {
+            audit_version: "bash_invalid_v1".to_string(),
+            raw_input_bytes,
+            raw_input_sha256: format!("{:x}", digest.finalize()),
+        })
+    }
+
+    /// Decodes only the exact safe audit shape and digest vocabulary.
+    pub fn from_json(json: &str) -> Option<Self> {
+        let audit: Self = serde_json::from_str(json).ok()?;
+        (audit.audit_version == "bash_invalid_v1"
+            && audit.raw_input_sha256.len() == 64
+            && audit
+                .raw_input_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+        .then_some(audit)
+    }
+
+    /// Serializes the content-free audit without the raw provider input.
+    pub fn to_json(&self) -> Option<String> {
+        serde_json::to_string(self).ok()
+    }
+}
 
 /// One project-scoped exact permission rule preloaded by conversation.
 #[derive(Clone, PartialEq, Eq, Hash)]

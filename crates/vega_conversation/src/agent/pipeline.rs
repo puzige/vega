@@ -1029,7 +1029,25 @@ pub(crate) fn validate_recovered_projection(
             }
             Err(corrupt())
         }
+        "bash"
+            if status == RuntimeToolStatus::Rejected
+                && approval.decision == Approval::Deny
+                && approval.source == ApprovalSource::Validation
+                && approval.note.is_none()
+                && approval.danger.is_none()
+                && exit_code.is_none()
+                && duration_ms.is_none()
+                && ((output == vega_runtime::BASH_INVALID_INPUT_OUTPUT
+                    && vega_runtime::InvalidBashAudit::from_json(input_json).is_some())
+                    || (output == vega_runtime::LEGACY_BASH_INVALID_INPUT_OUTPUT
+                        && vega_tools::bash_permission_signature(input_json).is_err())) =>
+        {
+            Ok(input_json.to_string())
+        }
         "read" | "glob" | "grep" | "bash" => {
+            if tool == "bash" && approval.source == ApprovalSource::Validation {
+                return Err(corrupt());
+            }
             if !approval_source_matches(tool, status, approval.source, false) {
                 return Err(corrupt());
             }
@@ -1068,11 +1086,6 @@ pub(crate) fn validate_recovered_projection(
                 let output_valid = match status {
                     RuntimeToolStatus::Rejected if approval.source == ApprovalSource::RunMode => {
                         output == "Tool error: denied by run mode"
-                    }
-                    RuntimeToolStatus::Rejected
-                        if approval.source == ApprovalSource::Validation =>
-                    {
-                        output == "Tool error: invalid bash input (invalid_input)"
                     }
                     RuntimeToolStatus::Rejected if approval.source == ApprovalSource::Recovery => {
                         output == vega_store::recovery::RECOVERY_REJECTED_OUTPUT

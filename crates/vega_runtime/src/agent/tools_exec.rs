@@ -45,7 +45,6 @@ pub(crate) enum PreparedRuntimeCall {
     RunModeMutation(RuntimeToolCall),
     InvalidBash {
         call: RuntimeToolCall,
-        code: vega_tools::BashErrorCode,
     },
     Unknown(RuntimeToolCall),
 }
@@ -292,10 +291,17 @@ pub(crate) fn prepare_runtime_call(
                 prepared,
                 full_access: config.permission_mode == RuntimePermissionMode::FullAccess,
             }),
-            Err(error) => Ok(PreparedRuntimeCall::InvalidBash {
-                call: raw_call,
-                code: error.code(),
-            }),
+            Err(_) => {
+                let safe_json = InvalidBashAudit::from_raw(&raw_call.input_json)
+                    .and_then(|audit| audit.to_json())
+                    .ok_or_else(|| safe_prepare_error("bash"))?;
+                Ok(PreparedRuntimeCall::InvalidBash {
+                    call: RuntimeToolCall {
+                        input_json: safe_json,
+                        ..raw_call
+                    },
+                })
+            }
         },
         _ => Ok(PreparedRuntimeCall::Unknown(RuntimeToolCall {
             input_json: "{}".to_string(),
@@ -610,14 +616,12 @@ pub(crate) async fn authorize_call(
             RuntimeToolStatus::Rejected,
             Some(run_mode_denial()),
         ))),
-        PreparedRuntimeCall::InvalidBash { call, code } => {
-            Ok(Authorization::Terminal(terminal_result(
-                call,
-                format!("Tool error: invalid bash input ({})", code.as_str()),
-                RuntimeToolStatus::Rejected,
-                Some(validation_audit()),
-            )))
-        }
+        PreparedRuntimeCall::InvalidBash { call } => Ok(Authorization::Terminal(terminal_result(
+            call,
+            BASH_INVALID_INPUT_OUTPUT.to_string(),
+            RuntimeToolStatus::Rejected,
+            Some(validation_audit()),
+        ))),
         PreparedRuntimeCall::Unknown(call) => Ok(Authorization::Terminal(terminal_result(
             call,
             "Tool error: denied: unavailable tool".to_string(),
@@ -879,6 +883,14 @@ pub(crate) fn conflict_result(call: &RuntimeToolCall) -> RuntimeToolResult {
 }
 
 pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &str) -> bool {
+    if tool == "bash"
+        && let (Some(left), Some(right)) = (
+            InvalidBashAudit::from_json(left),
+            InvalidBashAudit::from_json(right),
+        )
+    {
+        return left == right;
+    }
     if !matches!(tool, "write" | "edit") {
         return left == right;
     }
@@ -1131,10 +1143,10 @@ pub(crate) async fn execute_prepared_waiting(
             ),
             false,
         ),
-        PreparedRuntimeCall::InvalidBash { call, code } => (
+        PreparedRuntimeCall::InvalidBash { call } => (
             terminal_result(
                 &call,
-                format!("Tool error: invalid bash input ({})", code.as_str()),
+                BASH_INVALID_INPUT_OUTPUT.to_string(),
                 RuntimeToolStatus::Rejected,
                 Some(validation_audit()),
             ),
@@ -1467,7 +1479,7 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
             },
             ToolDefinition {
                 name: "bash".to_string(),
-                description: "Run a command at the project root after approval. Bash uses an OS sandbox unless the user selected Full access."
+                description: "Run at project root after approval (sandboxed unless Full access). Use {\"cmd\":\"rg ...\"}; command is unsupported."
                     .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
