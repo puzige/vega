@@ -60,3 +60,21 @@ All rows start NOT RUN. Capture failing regression before implementation where p
 ## Rollback and delivery
 
 Revert this card's integration code without deleting raw history or user files. New schema remains additive; older code may ignore compaction tables. Deliver `docs/vega-issue-76-context-compaction-delivery.md` with exact test outputs/counts, limitations and matrix evidence. Never mark planned/unrun rows PASS.
+
+## Issue #88 amendment — long tool history (2026-09-20)
+
+The #76 implementation reached its 80% trigger with an estimated 259K input against a configured 300K input budget, but failed before contacting the summarizer: the complete historical serialization exceeded the independent `SUMMARY_SOURCE_LIMIT = 128 KiB`. The observed prefix had 122 tool calls and approximately 202 KB of `bash` output. This is a compaction planning failure, not a model-budget failure. The source-byte ceiling may remain a *per-request* safety bound, but may not be a whole-conversation dead end for an otherwise compactable, bounded source.
+
+For #88, process chronological, already-complete historical groups in bounded stages. A tool call and its result remain paired in both provider projections and summarization provenance. A single oversized tool result may be split only into explicitly numbered, bounded, labelled excerpts of the same completed result; each excerpt retains tool identity and position, and every source byte must either reach a summarization stage or produce an explicit typed failure. Do not silently truncate source content, increase one request's limit without a bounded plan, create new tool executions, rewrite raw messages/tool audit, or send oversized requests. Previous committed summary, when present, participates exactly once. Bound stage count and total input by the store's existing source limits, and validate the final projected request against the frozen model budget before committing a checkpoint. Cancellation, provider/usage errors, source mutation, and process restart remain fail-closed per R5–R8. Distinguish `too_large` (internal compaction plan exhausted) from `over_limit` (configured model budget) in UI text.
+
+The successful result must be useful to continue the same agent run and subsequent restart, not merely mark status succeeded. No new dependency, schema migration, credential/config change, or manual-compaction Composer control belongs to #88.
+
+| ID | Setup and operation | Observable pass criterion | Layer |
+| --- | --- | --- | --- |
+| L01 | Reproduce >128 KiB completed history with many tool calls under a 300K input budget | Baseline test fails with `too_large`; repaired automatic path makes bounded summary requests, installs one checkpoint and resumes the primary request in the same run | production conversation/runtime integration |
+| L02 | One completed tool result alone exceeds a stage bound | Every excerpt is labelled and bounded, ordered, linked to the original call/result; no silent byte loss or oversized provider call | unit + provider recorder |
+| L03 | Multi-stage summary cancelled, provider fails, or source changes | No partial checkpoint, no follow-on primary request; known usage from completed stages is accounted, failure is typed | representative fault integration |
+| L04 | Reopen after successful multi-stage checkpoint | Raw messages/tool calls unchanged; provider projection contains one historical summary plus intact newest user turn; no tool is re-executed | store/conversation E2E |
+| L05 | Installed candidate using UI and a real configured provider | Same-session harmless continuation succeeds after automatic compression; status and error copy truthful; screenshot and durable local evidence tied to tested binary | native E2E |
+
+Before implementation, establish L01's red baseline and record its failure. Run the normal full workspace gates, then verify the integrated master tree. Report any row not genuinely executed as NOT RUN rather than PASS.
