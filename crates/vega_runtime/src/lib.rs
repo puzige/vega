@@ -71,12 +71,12 @@ mod retry;
 
 pub use agent::{
     AgentOutcome, AgentRequest, CALL_ID_CONFLICT_OUTPUT, CANCELLED_BEFORE_EXECUTION_OUTPUT,
-    CompletedToolCall, PERMISSION_TIMEOUT, REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES,
-    REASONING_TURN_MAX_BYTES, RuntimeEvent, RuntimeExactRule, RuntimeFinishReason,
-    RuntimePermissionHook, RuntimeTokenUsage, RuntimeToolCall, RuntimeToolConfig,
-    RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing, TOOL_CALL_LIMIT, run_agent,
-    run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,
-    run_agent_with_sink, tool_definitions,
+    CompletedToolCall, McpReadyServer, McpRevocationLease, PERMISSION_TIMEOUT,
+    REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES, REASONING_TURN_MAX_BYTES, RuntimeEvent,
+    RuntimeExactRule, RuntimeFinishReason, RuntimePermissionHook, RuntimeTokenUsage,
+    RuntimeToolCall, RuntimeToolConfig, RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing,
+    TOOL_CALL_LIMIT, run_agent, run_agent_with_permission_sink,
+    run_agent_with_permission_sink_and_context, run_agent_with_sink, tool_definitions,
 };
 pub use context::{
     CONTEXT_ESTIMATOR_VERSION, ContextBudget, ContextCheck, ContextCompactionFailure,
@@ -94,9 +94,9 @@ pub use openai::OpenAiProvider;
 pub use permission::{
     RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeCapabilityOutcome,
     RuntimeDangerAudit, RuntimeDangerFacts, RuntimeExecuteEligibility, RuntimeExecutePermission,
-    RuntimeMutatingTool, RuntimePermissionError, RuntimePermissionMode, RuntimePermissionOutcome,
-    RuntimePermissionPrompt, RuntimePermissionTarget, RuntimeRunMode, RuntimeToolClass,
-    RuntimeUserDecision, decide_capability, decide_execute_permission,
+    RuntimeMcpPermissionPrompt, RuntimeMutatingTool, RuntimePermissionError, RuntimePermissionMode,
+    RuntimePermissionOutcome, RuntimePermissionPrompt, RuntimePermissionTarget, RuntimeRunMode,
+    RuntimeToolClass, RuntimeUserDecision, decide_capability, decide_execute_permission,
 };
 pub use provider::{
     ChatMessage, ChatRequest, ChatRole, ChatToolCall, EventStream, FrozenReasoning, Provider,

@@ -16,6 +16,102 @@ async fn permission_queue_installs_matching_card_and_once_resolves(cx: &mut Test
 }
 
 #[gpui_kit::test]
+async fn issue73_mcp_proposal_mounts_once_approval_and_keeps_terminal_card(
+    cx: &mut TestAppContext,
+) {
+    use vega_conversation::types::McpCallIdentity;
+
+    init_permission_test(cx);
+    let (window, queue) = open_permission_stream(cx);
+    let identity = McpCallIdentity {
+        server_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        config_revision: 3,
+        exact_tool_name: "echo".into(),
+        arguments_bytes: 19,
+        arguments_sha256: "a".repeat(64),
+        argument_preview: "echo: string".into(),
+    };
+    let alias = identity.alias();
+    let call_id = "mcp-owned-call";
+    let call = ToolCall {
+        id: call_id.into(),
+        tool: alias.clone(),
+        input_json: serde_json::json!({
+            "server_id": identity.server_id,
+            "config_revision": identity.config_revision,
+            "tool": identity.exact_tool_name,
+            "arguments_bytes": identity.arguments_bytes,
+            "arguments_sha256": identity.arguments_sha256,
+            "argument_preview": identity.argument_preview,
+        })
+        .to_string(),
+    };
+    let decision = queue.request(
+        PermissionRequest {
+            call_id: call_id.into(),
+            tool: alias,
+            display_target: identity.permission_target(),
+            danger_rule_id: None,
+            danger_reason: None,
+            external: Some(identity),
+        },
+        CancellationToken::new(),
+    );
+    cx.run_until_parked();
+    assert!(!has_active_permission(window, cx));
+
+    propose(window, cx, call);
+    cx.run_until_parked();
+    assert!(has_active_permission(window, cx));
+    let pending = window
+        .update(cx, |stream, _, cx| {
+            stream.tool_cards[call_id].read(cx).visible_text()
+        })
+        .expect("stream window");
+    assert!(pending.contains("MCP · 待批准"));
+    assert!(pending.contains("echo"));
+    assert!(!pending.contains("工具结果损坏"));
+
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert_eq!(decision.await.unwrap(), PermissionDecision::Once);
+    cx.run_until_parked();
+    assert!(!has_active_permission(window, cx));
+    window
+        .update(cx, |stream, _, cx| {
+            stream.apply_event(
+                ConversationEvent::ToolCallApproved {
+                    call_id: call_id.into(),
+                    approval: vega_conversation::types::Approval::Once,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::ToolCallFinished {
+                    call_id: call_id.into(),
+                    result: ToolResult {
+                        status: ToolCallStatus::Success,
+                        output: "[Untrusted external MCP result]\nowned-answer".into(),
+                        reused: false,
+                        exit_code: None,
+                        duration_ms: None,
+                        truncated: Some(false),
+                        invalid: None,
+                    },
+                },
+                cx,
+            );
+        })
+        .expect("stream window");
+    let terminal = window
+        .update(cx, |stream, _, cx| {
+            stream.tool_cards[call_id].read(cx).visible_text()
+        })
+        .expect("stream window");
+    assert!(terminal.contains("MCP · 已完成"));
+    assert!(!terminal.contains("工具结果损坏"));
+}
+
+#[gpui_kit::test]
 async fn permission_request_first_waits_for_matching_proposal(cx: &mut TestAppContext) {
     init_permission_test(cx);
     let (window, queue) = open_permission_stream(cx);

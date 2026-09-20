@@ -158,6 +158,11 @@ where
     let mut attempted_context_source = None::<(u64, Option<String>, u64)>;
     let mut completed = request.completed_tool_results;
     let tool_config = request.tool_config;
+    let capabilities = RunCapabilitySnapshot::freeze(
+        tool_config.run_mode,
+        tool_config.permission_mode,
+        tool_config.mcp_candidates.clone(),
+    )?;
     let mut exact_rules: HashSet<RuntimeExactRule> =
         tool_config.exact_rules.iter().cloned().collect();
     let mut events = Vec::new();
@@ -180,7 +185,7 @@ where
             ));
         }
 
-        let tool_definitions = tool_definitions(tool_config.run_mode);
+        let tool_definitions = capabilities.definitions().to_vec();
         if let Some(budget) = context_budget {
             let estimate = crate::estimate_wire_context(&messages, &tool_definitions)
                 .map_err(|error| VegaError::Context(error.into()))?;
@@ -777,7 +782,7 @@ where
 
         let mut prepared_calls = Vec::with_capacity(calls.len());
         for call in calls {
-            match prepare_runtime_call(tools, &tool_config, call) {
+            match prepare_runtime_call(tools, &tool_config, &capabilities, call) {
                 Ok(prepared) => prepared_calls.push(prepared),
                 Err(error) => {
                     emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));

@@ -41,3 +41,6 @@ pub mod sidebar_organization;
 
 mod provider_settings;
 pub use provider_settings::ProviderSettingsService;
+
+mod mcp_settings;
+pub use mcp_settings::{McpRunReadiness, McpServerSettingsService, McpSettingsError};

@@ -24,8 +24,8 @@ use vega_store::{Store, messages, permissions, token_usage, tool_calls};
 use crate::types::{
     Approval, ApprovalAudit, ApprovalSource, ConversationError, ConversationEvent,
     PermissionDecision, PermissionRequest, ThreadMode, approval_audit_from_runtime,
-    approval_audit_to_runtime, from_runtime_event, permission_decision_to_runtime,
-    permission_request_from_runtime,
+    approval_audit_to_runtime, from_runtime_event, mcp_permission_request_from_runtime,
+    permission_decision_to_runtime, permission_request_from_runtime,
 };
 
 const TEXT_BATCH_MAX_DELAY: Duration = Duration::from_millis(4);
@@ -46,6 +46,7 @@ pub trait PermissionHook: Send + Sync {
 }
 
 mod compaction;
+mod credential_guard;
 mod entry;
 mod events;
 mod permission_queue;
@@ -59,6 +60,7 @@ pub use compaction::{
     ConversationCompactionHook, compact_thread_manually, compact_thread_manually_accounted,
     read_context_projection, read_context_settings, save_context_settings,
 };
+pub use credential_guard::OwnerCredentialProvider;
 pub use entry::*;
 pub(crate) use events::*;
 pub use permission_queue::*;

@@ -21,10 +21,15 @@ use crate::provider::{
 };
 use crate::{
     RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource, RuntimeCapabilityOutcome,
-    RuntimeDangerFacts, RuntimeExecutePermission, RuntimeMutatingTool, RuntimePermissionMode,
-    RuntimePermissionOutcome, RuntimePermissionPrompt, RuntimePermissionTarget, RuntimeRunMode,
-    RuntimeToolClass, RuntimeUserDecision, decide_capability, decide_execute_permission,
+    RuntimeDangerFacts, RuntimeExecutePermission, RuntimeMcpPermissionPrompt, RuntimeMutatingTool,
+    RuntimePermissionMode, RuntimePermissionOutcome, RuntimePermissionPrompt,
+    RuntimePermissionTarget, RuntimeRunMode, RuntimeToolClass, RuntimeUserDecision,
+    decide_capability, decide_execute_permission,
 };
+
+mod mcp_registry;
+use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
+pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 
 /// Maximum number of tool calls executed by one task.
 pub const TOOL_CALL_LIMIT: usize = 100;
@@ -80,6 +85,7 @@ pub struct RuntimeToolConfig {
     pub checkpoint_root: PathBuf,
     /// Exact project rules loaded at task start.
     pub exact_rules: Vec<RuntimeExactRule>,
+    mcp_candidates: Vec<McpCandidate>,
     foreign_call_ids: HashSet<String>,
     permission_timeout: Duration,
 }
@@ -101,6 +107,7 @@ impl RuntimeToolConfig {
             thread_id,
             checkpoint_root,
             exact_rules,
+            mcp_candidates: Vec::new(),
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
         }
@@ -110,6 +117,30 @@ impl RuntimeToolConfig {
     /// exposing their tool inputs or results to this runtime.
     pub fn with_foreign_call_ids(mut self, ids: Vec<String>) -> Self {
         self.foreign_call_ids = ids.into_iter().collect();
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_mcp_candidates(mut self, candidates: Vec<McpCandidate>) -> Self {
+        self.mcp_candidates = candidates;
+        self
+    }
+
+    /// Freeze the currently ready, explicitly enabled MCP servers at run
+    /// start. Settings owns enablement and must not pass disabled servers.
+    pub fn with_mcp_servers(mut self, servers: Vec<McpReadyServer>) -> Self {
+        // One malicious server can echo a credential belonging to a different
+        // enabled server. Freeze the union before deriving any provider tools.
+        let mut credentials = KnownCredentials::default();
+        for server in &servers {
+            credentials.extend_from(server.known_credentials());
+        }
+        let credentials = Arc::new(credentials);
+        self.mcp_candidates = servers
+            .iter()
+            .flat_map(McpReadyServer::candidates)
+            .map(|candidate| candidate.with_known_credentials(credentials.clone()))
+            .collect();
         self
     }
 
@@ -148,6 +179,7 @@ impl fmt::Debug for RuntimeToolConfig {
             .field("checkpoint_root", &"[REDACTED]")
             .field("exact_rule_count", &self.exact_rules.len())
             .field("foreign_call_id_count", &self.foreign_call_ids.len())
+            .field("mcp_candidate_count", &self.mcp_candidates.len())
             .finish()
     }
 }
@@ -160,6 +192,16 @@ pub trait RuntimePermissionHook: Send + Sync {
         prompt: RuntimePermissionPrompt,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>>;
+
+    /// External calls always require a separate one-shot decision. The
+    /// default is fail-closed until a conversation/UI adapter implements it.
+    fn request_mcp(
+        &self,
+        _prompt: RuntimeMcpPermissionPrompt,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<RuntimeUserDecision, VegaError>> {
+        async { Ok(RuntimeUserDecision::Timeout) }.boxed()
+    }
 }
 
 struct RejectPermissionHook;

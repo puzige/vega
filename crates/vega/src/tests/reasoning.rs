@@ -74,6 +74,12 @@ impl ThinkingSliderFixture {
         let config_root = tempfile::tempdir().expect("slider config root");
         let config_path = config_root.path().join("config.toml");
         model_selection_config(&config_path);
+        vega_store::keystore::set_key(
+            config_root.path(),
+            "owned",
+            "fake-owned-provider-key-slider-73",
+        )
+        .expect("owned slider test credential");
         let reasoning_path = config_root.path().join("reasoning.toml");
         let bytes = vega_store::reasoning::encode(&reasoning_config)
             .expect("encode owned reasoning profile");
@@ -792,6 +798,12 @@ async fn settings_unknown_reasoning_template_saves_reads_back_and_reaches_mock_r
     let config_root = tempfile::tempdir().expect("settings reasoning config root");
     let config_path = config_root.path().join("config.toml");
     model_selection_config(&config_path);
+    vega_store::keystore::set_key(
+        config_root.path(),
+        "owned",
+        "fake-owned-provider-key-reasoning-73",
+    )
+    .expect("owned reasoning test credential");
     let reasoning_path = config_root.path().join("reasoning.toml");
     assert!(!reasoning_path.exists());
 

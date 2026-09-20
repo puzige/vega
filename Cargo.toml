@@ -5,6 +5,7 @@ members = [
     "crates/vega_ui",
     "crates/vega_conversation",
     "crates/vega_runtime",
+    "crates/vega_mcp",
     "crates/vega_tools",
     "crates/vega_markdown",
     "crates/vega_store",
@@ -68,6 +69,7 @@ tree-sitter-python = "=0.25.0"
 vega_store = { path = "crates/vega_store" }
 vega_conversation = { path = "crates/vega_conversation" }
 vega_runtime = { path = "crates/vega_runtime" }
+vega_mcp = { path = "crates/vega_mcp" }
 vega_tools = { path = "crates/vega_tools" }
 vega_theme = { path = "crates/vega_theme" }
 vega_ui = { path = "crates/vega_ui" }

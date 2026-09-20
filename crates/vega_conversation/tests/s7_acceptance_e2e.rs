@@ -577,11 +577,12 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
 
     // R13 adds four organization metadata tables via authorized migration 0004;
     // #76 adds context projection/status tables and the model-policy table
-    // through migrations 0009–0011.
+    // through migrations 0009–0011. #73 adds MCP metadata and a credential
+    // cleanup outbox in migration 0012; no credential values enter either table.
     let user_version: i64 = reopened
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(user_version, 11, "exactly the eleven authorized migrations");
+    assert_eq!(user_version, 12, "exactly the twelve authorized migrations");
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
          WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -596,6 +597,8 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "context_compaction_status",
             "context_settings",
             "image_attachments",
+            "mcp_secret_cleanup",
+            "mcp_servers",
             "messages",
             "model_context_policies",
             "permissions",
@@ -608,7 +611,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "token_usage",
             "tool_calls",
         ],
-        "exactly the fifteen authorized tables"
+        "exactly the seventeen authorized tables"
     );
     Ok(())
 }

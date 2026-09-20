@@ -11,7 +11,8 @@ pub struct SettingsView {
     pub(crate) section: usize,
     pub(crate) usage: super::usage::UsageState,
     pub(crate) usage_focuses: [FocusHandle; 6],
-    pub(crate) section_focuses: [FocusHandle; 5],
+    pub(crate) section_focuses: [FocusHandle; 6],
+    pub(crate) mcp: super::mcp::McpSettingsState,
     pub(crate) config: AppConfig,
     pub(crate) config_path: Option<std::path::PathBuf>,
     pub(crate) available_key_refs: Vec<String>,
@@ -122,6 +123,7 @@ impl SettingsView {
         cx.observe_global::<SettingsOpen>(|this, cx| {
             if !cx.global::<SettingsOpen>().0 {
                 this.cancel_provider_operation(cx);
+                this.cancel_mcp_oauth(cx);
             }
         })
         .detach();
@@ -157,6 +159,7 @@ impl SettingsView {
             usage: Default::default(),
             usage_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             section_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            mcp: super::mcp::McpSettingsState::new(cx),
             config,
             config_path: None,
             available_key_refs: Vec::new(),

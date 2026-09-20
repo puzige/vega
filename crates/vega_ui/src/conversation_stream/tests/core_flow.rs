@@ -1,6 +1,35 @@
 use super::*;
 
 #[gpui_kit::test]
+async fn issue73_enabled_mcp_failure_is_visible_without_remote_content(cx: &mut TestAppContext) {
+    let (_, stream, _) = open_controller_stream(cx, "mcp-unavailable");
+    let diagnostic = vega_conversation::types::McpServerDiagnostic {
+        server_id: "01J00000000000000000000000".into(),
+        code: "authorization_required".into(),
+    };
+    stream.update(cx, |stream, cx| {
+        stream.apply_mcp_unavailable(&[diagnostic], cx)
+    });
+    stream.update(cx, |stream, cx| stream.apply_agent_error(cx));
+    let (warning, primary_error) = stream.read_with(cx, |stream, _| {
+        (stream.mcp_warning.clone(), stream.controller_error.clone())
+    });
+    assert_eq!(primary_error.as_deref(), Some("执行未完成，可安全重试"));
+    assert!(warning.as_deref().is_some_and(|message| {
+        message.contains("MCP 服务器不可用")
+            && message.contains("设置 → MCP")
+            && !message.contains("authorization_required")
+            && !message.contains("01J000")
+    }));
+    stream.update(cx, ConversationStream::begin_composer_run);
+    let warning = stream.read_with(cx, |stream, _| stream.mcp_warning.clone());
+    assert!(
+        warning.is_none(),
+        "new run must not inherit old MCP omission"
+    );
+}
+
+#[gpui_kit::test]
 async fn r57_plus_menu_permission_rows_emit_scoped_requests_without_optimistic_state(
     cx: &mut TestAppContext,
 ) {

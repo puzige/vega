@@ -194,6 +194,47 @@ where
     .await
 }
 
+/// Approved-plan resume with the same run-start MCP authority as an ordinary
+/// submitted task. The persisted instruction is reused exactly once; no new
+/// user message or separate capability registry is created.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_approved_plan_task_with_pricing_reasoning_and_mcp<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    instruction_message_id: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
+    event_sink: F,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
+    mcp_servers: Vec<vega_runtime::McpReadyServer>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_images_reasoning_and_mcp(
+        store,
+        provider,
+        tools,
+        thread_id,
+        crate::plans::APPROVAL_INSTRUCTION,
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        PersistenceActorConfig::default(),
+        Some(instruction_message_id.to_string()),
+        pricing_catalog,
+        reasoning,
+        Vec::new(),
+        mcp_servers,
+    )
+    .await
+}
+
 /// Runs a thread task while forwarding each shared event at the actual
 /// runtime boundary. Critical persistence completes before `event_sink` is
 /// invoked; returning an error from the sink stops the task.
@@ -459,12 +500,56 @@ pub async fn run_thread_task_with_images_and_reasoning<F>(
     system_prompt: &str,
     cancel: CancellationToken,
     permission_hook: &dyn PermissionHook,
+    event_sink: F,
+    actor_config: PersistenceActorConfig,
+    persisted_user_message_id: Option<String>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    reasoning: Option<FrozenReasoning>,
+    images: Vec<crate::types::ImageAttachment>,
+) -> Result<ConversationRun, ConversationError>
+where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    run_thread_task_with_images_reasoning_and_mcp(
+        store,
+        provider,
+        tools,
+        thread_id,
+        user_content,
+        system_prompt,
+        cancel,
+        permission_hook,
+        event_sink,
+        actor_config,
+        persisted_user_message_id,
+        pricing_catalog,
+        reasoning,
+        images,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Runs an ordinary task with ready external servers supplied by the app's
+/// Settings controller. The runtime freezes their exact schemas and aliases
+/// before provider round one; no UI or SQLite layer can inject later tools.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_thread_task_with_images_reasoning_and_mcp<F>(
+    store: &Store,
+    provider: &dyn Provider,
+    tools: &vega_tools::Tools,
+    thread_id: &str,
+    user_content: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    permission_hook: &dyn PermissionHook,
     mut event_sink: F,
     actor_config: PersistenceActorConfig,
     persisted_user_message_id: Option<String>,
     pricing_catalog: Option<vega_token::PricingCatalog>,
     reasoning: Option<FrozenReasoning>,
     images: Vec<crate::types::ImageAttachment>,
+    mcp_servers: Vec<vega_runtime::McpReadyServer>,
 ) -> Result<ConversationRun, ConversationError>
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
@@ -502,7 +587,7 @@ where
     let preparation_uses_existing_user = persisted_user_message_id.is_some();
     let preparation_pricing = pricing_catalog;
     let preparation_reasoning = reasoning;
-    let prepared = match tokio::task::spawn_blocking(move || {
+    let mut prepared = match tokio::task::spawn_blocking(move || {
         prepare_run_with_images_and_reasoning(
             preparation_path,
             preparation_thread_id,
@@ -533,6 +618,8 @@ where
             return Err(ConversationError::Runtime(error));
         }
     };
+
+    prepared.request.tool_config = prepared.request.tool_config.with_mcp_servers(mcp_servers);
 
     let actor = match PersistenceActor::start(PersistenceActorStart {
         database_path: prepared.database_path.clone(),

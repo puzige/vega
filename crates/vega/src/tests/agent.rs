@@ -76,6 +76,28 @@ fn same_batch_applies_events_before_terminal() {
     ));
 }
 
+#[test]
+fn issue73_unavailable_enabled_servers_are_not_dropped_from_worker_batch() {
+    let (sender, receiver) = mpsc::sync_channel(4);
+    let diagnostic = vega_conversation::types::McpServerDiagnostic {
+        server_id: "01J00000000000000000000000".into(),
+        code: "authorization_required".into(),
+    };
+    sender
+        .send(AgentUpdate::McpUnavailable(vec![diagnostic.clone()]))
+        .expect("content-free warning");
+    sender
+        .send(AgentUpdate::Finished {
+            success: true,
+            reference_failure: None,
+            credential_failure: false,
+        })
+        .expect("terminal");
+    let batch = drain_agent_updates(&receiver);
+    assert_eq!(batch.mcp_unavailable, vec![diagnostic]);
+    assert_eq!(batch.finished, Some(true));
+}
+
 struct AgentWindowHarness {
     root: Entity<VegaWindow>,
 }

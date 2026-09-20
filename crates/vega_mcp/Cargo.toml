@@ -1,0 +1,28 @@
+[package]
+name = "vega_mcp"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# Launchable owned localhost fixture for native MCP acceptance only. The
+# packaged Vega app never embeds a test OAuth authorization server.
+e2e-fixtures = []
+
+[[bin]]
+name = "owned_oauth_server"
+path = "src/bin/owned_oauth_server.rs"
+required-features = ["e2e-fixtures"]
+
+[dependencies]
+base64 = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

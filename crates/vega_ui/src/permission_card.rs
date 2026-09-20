@@ -46,6 +46,7 @@ struct SafePermissionPrompt {
     command_rows: Vec<String>,
     danger_rule_id: Option<String>,
     danger_reason: Option<String>,
+    external: bool,
 }
 
 impl SafePermissionPrompt {
@@ -56,6 +57,7 @@ impl SafePermissionPrompt {
             command_rows: wrap_command_rows(&request.display_target),
             danger_rule_id: request.danger_rule_id.clone(),
             danger_reason: request.danger_reason.clone(),
+            external: request.external.is_some(),
         }
     }
 
@@ -146,7 +148,11 @@ impl PermissionCard {
             text.push_str(reason);
             text.push_str(" 总是允许仍会在下次危险命令时再次确认");
         }
-        text.push_str(" 允许一次 总是允许 拒绝");
+        if self.prompt.external {
+            text.push_str(" 允许一次 拒绝");
+        } else {
+            text.push_str(" 允许一次 总是允许 拒绝");
+        }
         text
     }
 
@@ -212,6 +218,20 @@ impl PermissionCard {
         if self.note.read(cx).focus_handle(cx).is_focused(window) {
             self.logical_focus = PermissionFocus::Note;
         }
+        if self.prompt.external {
+            let next = match (self.logical_focus, reverse) {
+                (PermissionFocus::AllowOnce, false) => PermissionFocus::Reject,
+                (PermissionFocus::Reject, false) => PermissionFocus::Note,
+                (PermissionFocus::Note | PermissionFocus::Always, false) => {
+                    PermissionFocus::AllowOnce
+                }
+                (PermissionFocus::AllowOnce, true) => PermissionFocus::Note,
+                (PermissionFocus::Reject, true) => PermissionFocus::AllowOnce,
+                (PermissionFocus::Note | PermissionFocus::Always, true) => PermissionFocus::Reject,
+            };
+            self.focus(next, window, cx);
+            return;
+        }
         let next = match (self.prompt.is_danger(), self.logical_focus, reverse) {
             (true, PermissionFocus::AllowOnce, false) => PermissionFocus::Always,
             (true, PermissionFocus::Always, false) => PermissionFocus::Reject,
@@ -240,7 +260,9 @@ impl PermissionCard {
             self.resolve(PermissionDecision::Once, cx);
             true
         } else if self.always_focus.is_focused(window) {
-            self.resolve(PermissionDecision::Always, cx);
+            if !self.prompt.external {
+                self.resolve(PermissionDecision::Always, cx);
+            }
             true
         } else if self.reject_focus.is_focused(window) {
             self.deny(cx);
@@ -291,7 +313,11 @@ impl PermissionCard {
             });
         let action_card = card.clone();
         container = container.on_action(move |_: &PermissionAlways, _, cx| {
-            action_card.update(cx, |card, cx| card.resolve(PermissionDecision::Always, cx));
+            action_card.update(cx, |card, cx| {
+                if !card.prompt.external {
+                    card.resolve(PermissionDecision::Always, cx);
+                }
+            });
         });
         let action_card = card.clone();
         container = container.on_action(move |_: &PermissionDeny, _, cx| {
@@ -380,7 +406,7 @@ impl PermissionCard {
         let once_card = card.clone();
         let always_card = card.clone();
         let reject_card = card.clone();
-        container
+        let mut container = container
             .rounded_bl_lg()
             .rounded_br_lg()
             .justify_end()
@@ -394,8 +420,9 @@ impl PermissionCard {
                 move |_: &MouseUpEvent, _, cx| {
                     once_card.update(cx, |card, cx| card.resolve(PermissionDecision::Once, cx));
                 },
-            ))
-            .child(permission_button(
+            ));
+        if !card.read(cx).prompt.external {
+            container = container.child(permission_button(
                 "总是允许",
                 always,
                 false,
@@ -404,7 +431,9 @@ impl PermissionCard {
                 move |_: &MouseUpEvent, _, cx| {
                     always_card.update(cx, |card, cx| card.resolve(PermissionDecision::Always, cx));
                 },
-            ))
+            ));
+        }
+        container
             .child(permission_button(
                 "拒绝",
                 reject,
@@ -556,6 +585,7 @@ mod tests {
             display_target: target.into(),
             danger_rule_id: danger.then(|| "danger.git_force_push".into()),
             danger_reason: danger.then(|| "强制推送可能覆盖远端历史".into()),
+            external: None,
         };
         let future = queue.request(request, CancellationToken::new());
         let future: DecisionFuture =
@@ -592,6 +622,59 @@ mod tests {
                 }
             })
             .unwrap()
+    }
+
+    #[gpui_kit::test]
+    async fn issue73_external_card_has_no_always_action_or_focus(cx: &mut TestAppContext) {
+        init_test(cx);
+        let queue = PermissionQueue::new();
+        let _listener = queue.subscribe();
+        let identity = vega_conversation::types::McpCallIdentity {
+            server_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+            config_revision: 2,
+            exact_tool_name: "lookup".into(),
+            arguments_bytes: 30,
+            arguments_sha256: "b".repeat(64),
+            argument_preview: "query: string".into(),
+        };
+        let request = PermissionRequest {
+            call_id: "opaque-external-call".into(),
+            tool: identity.alias(),
+            display_target: identity.permission_target(),
+            danger_rule_id: None,
+            danger_reason: None,
+            external: Some(identity),
+        };
+        assert!(
+            request
+                .external
+                .as_ref()
+                .is_some_and(|identity| identity.is_valid())
+        );
+        let future = queue.request(request, CancellationToken::new());
+        let (request, lease) = queue.take_pending().unwrap().into_parts().unwrap();
+        let card = cx.new(|cx| PermissionCard::new(&request, lease, cx));
+        let root_card = card.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, cx| {
+                cx.new(|_| Harness { card: root_card })
+            })
+            .unwrap()
+        });
+        cx.run_until_parked();
+        let visible = card.read_with(cx, |card, _| card.visible_text());
+        assert!(visible.contains("lookup"));
+        assert!(!visible.contains("总是允许"));
+        assert!(!visible.contains("SECRET_ARGUMENT_VALUE"));
+        cx.simulate_keystrokes(window.into(), "tab");
+        assert_eq!(focused(window, &card, cx), PermissionFocus::Reject);
+        cx.simulate_keystrokes(window.into(), "cmd-enter");
+        assert!(!card.read_with(cx, |card, _| card.is_resolved()));
+        cx.simulate_keystrokes(window.into(), "escape");
+        assert_eq!(
+            future.await.unwrap(),
+            PermissionDecision::Deny { note: None }
+        );
     }
 
     #[gpui_kit::test]

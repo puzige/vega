@@ -649,6 +649,78 @@ pub(crate) fn validate_recovered_projection(
         ))
     };
     match tool {
+        _ if tool.starts_with("mcp_") => {
+            let projected = crate::types::ToolCall {
+                id: call_id.to_string(),
+                tool: tool.to_string(),
+                input_json: input_json.to_string(),
+            };
+            if crate::types::McpCallIdentity::from_tool_call(&projected).is_none()
+                || exit_code.is_some()
+                || duration_ms.is_some()
+                || output.len() > 256 * 1024 + 64
+                || approval.danger.is_some()
+                || approval.decision == Approval::Always
+            {
+                return Err(corrupt());
+            }
+            let allowed = match status {
+                RuntimeToolStatus::Success => {
+                    approval.decision == Approval::Once
+                        && approval.source == ApprovalSource::User
+                        && output.starts_with("[Untrusted external MCP result]\n")
+                }
+                RuntimeToolStatus::Failed => {
+                    approval.decision == Approval::Once
+                        && approval.source == ApprovalSource::User
+                        && (output.starts_with("[Untrusted external MCP result]\n")
+                            || matches!(
+                                output,
+                                "Tool error: MCP result failed or exceeded limit"
+                                    | "Tool error: MCP invalid protocol response"
+                                    | "Tool error: MCP protocol error"
+                                    | "Tool error: MCP unsupported transport"
+                                    | "Tool error: MCP unsupported result content"
+                                    | "Tool error: MCP response limit exceeded"
+                                    | "Tool error: MCP request timed out; side-effect outcome unknown"
+                                    | "Tool error: MCP transport failed; side-effect outcome unknown"
+                                    | "Tool error: MCP authorization required or invalid"
+                                    | "Tool error: MCP connection configuration invalid"
+                            ))
+                }
+                RuntimeToolStatus::Cancelled => {
+                    approval.decision == Approval::Once
+                        && approval.source == ApprovalSource::User
+                        && matches!(
+                            output,
+                            "Tool error: MCP call outcome unknown after cancellation"
+                                | "Tool error: MCP call cancelled; side-effect outcome unknown"
+                                | vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
+                                | vega_store::recovery::RECOVERY_CANCELLED_OUTPUT
+                        )
+                }
+                RuntimeToolStatus::Rejected => {
+                    approval.decision == Approval::Deny
+                        && matches!(
+                            (approval.source, output),
+                            (ApprovalSource::RunMode, "Tool error: denied by run mode")
+                                | (
+                                    ApprovalSource::User | ApprovalSource::Timeout,
+                                    "Tool error: MCP call not approved"
+                                )
+                                | (
+                                    ApprovalSource::Validation,
+                                    "Tool error: invalid or oversized MCP arguments"
+                                )
+                                | (
+                                    ApprovalSource::Recovery,
+                                    vega_store::recovery::RECOVERY_REJECTED_OUTPUT
+                                )
+                        )
+                }
+            };
+            allowed.then(|| input_json.to_string()).ok_or_else(corrupt)
+        }
         "write" | "edit" => {
             if exit_code.is_some() || duration_ms.is_some() {
                 return Err(corrupt());
@@ -974,6 +1046,21 @@ pub(crate) fn approval_source_matches(
 ) -> bool {
     if invalid_projection {
         return status == RuntimeToolStatus::Rejected && source == ApprovalSource::Validation;
+    }
+    if tool.starts_with("mcp_") {
+        return match status {
+            RuntimeToolStatus::Rejected => matches!(
+                source,
+                ApprovalSource::RunMode
+                    | ApprovalSource::User
+                    | ApprovalSource::Timeout
+                    | ApprovalSource::Validation
+                    | ApprovalSource::Recovery
+            ),
+            RuntimeToolStatus::Success
+            | RuntimeToolStatus::Failed
+            | RuntimeToolStatus::Cancelled => source == ApprovalSource::User,
+        };
     }
     match tool {
         "read" | "glob" | "grep" => {

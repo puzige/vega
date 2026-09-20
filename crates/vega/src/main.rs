@@ -102,6 +102,25 @@ fn main() {
         // sidebar blocks degrade to inline error bars (ui-spec §4.6).
         vega_ui::sidebar::init(cx);
 
+        // #73: one app-scoped revocation domain is shared by Settings and
+        // every worker. A second service constructed against the same SQLite
+        // file would not be able to revoke already-frozen run handles.
+        let mcp_settings = cx
+            .global::<VegaStore>()
+            .0
+            .as_ref()
+            .ok()
+            .and_then(|store| store.database_path())
+            .and_then(|database| {
+                vega_store::paths::config_dir().map(|config_root| {
+                    vega_conversation::McpServerSettingsService::new(
+                        database.to_path_buf(),
+                        config_root,
+                    )
+                })
+            });
+        cx.set_global(app_agent::AppMcpSettings(mcp_settings));
+
         let bounds = Bounds::centered(
             None,
             size(px(WINDOW_INITIAL_WIDTH), px(WINDOW_INITIAL_HEIGHT)),

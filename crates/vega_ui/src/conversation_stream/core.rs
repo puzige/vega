@@ -108,6 +108,9 @@ pub struct ConversationStream {
     pub(crate) approved_not_started: bool,
     pub(crate) trusted_action_busy: bool,
     pub(crate) controller_error: Option<String>,
+    /// Nonfatal run-start MCP omission. Kept separate so a provider failure
+    /// cannot overwrite it or be overwritten by it.
+    pub(crate) mcp_warning: Option<String>,
     /// Bounded `@file` selector model (A2-12). Pure UI state over the typed
     /// [`FileIndexSnapshot`]; the app layer owns the filesystem walk.
     pub(crate) file_selector: FileSelectorModel,
@@ -396,6 +399,7 @@ impl ConversationStream {
             approved_not_started: false,
             trusted_action_busy: false,
             controller_error: None,
+            mcp_warning: None,
             file_selector: FileSelectorModel::default(),
             file_snapshot: FileIndexSnapshot::default(),
             file_index_loading: false,
@@ -1158,6 +1162,24 @@ impl ConversationStream {
         self.controller_error = Some("执行未完成，可安全重试".into());
         // S7-T39: run-scoped estimate state never survives a failure path.
         self.meter.end_run();
+        cx.notify();
+    }
+
+    /// An enabled-but-unavailable MCP server contributes no tools to this
+    /// run. The count is enough to disclose the omission; the Settings page
+    /// owns the per-server code and no remote error body enters Composer.
+    pub fn apply_mcp_unavailable(
+        &mut self,
+        diagnostics: &[vega_conversation::types::McpServerDiagnostic],
+        cx: &mut Context<Self>,
+    ) {
+        if diagnostics.is_empty() {
+            return;
+        }
+        self.mcp_warning = Some(format!(
+            "{} 个已启用的 MCP 服务器不可用，本轮不提供其工具；请在设置 → MCP 查看详情",
+            diagnostics.len()
+        ));
         cx.notify();
     }
 

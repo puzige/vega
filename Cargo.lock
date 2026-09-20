@@ -7930,12 +7930,14 @@ dependencies = [
  "portable-pty",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tracing",
  "ulid",
+ "vega_mcp",
  "vega_runtime",
  "vega_store",
  "vega_token",
@@ -7958,6 +7960,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vega_mcp"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "futures",
+ "reqwest",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "vega_runtime"
 version = "0.1.0"
 dependencies = [
@@ -7968,11 +7985,13 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "ulid",
+ "vega_mcp",
  "vega_token",
  "vega_tools",
 ]
@@ -7984,6 +8003,7 @@ dependencies = [
  "libc",
  "rusqlite",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",

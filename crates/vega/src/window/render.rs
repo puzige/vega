@@ -73,6 +73,9 @@ impl Render for VegaWindow {
             if self.settings_view.is_none() {
                 let config_path = self.composer_config_path();
                 let settings = cx.new(|cx| SettingsView::from_path(config_path, cx));
+                settings.update(cx, |view, cx| {
+                    view.install_mcp_service(self.mcp_settings.clone(), cx)
+                });
                 crate::app_usage::bind(&settings, cx);
                 cx.subscribe(
                     &settings,

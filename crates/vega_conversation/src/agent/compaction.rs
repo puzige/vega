@@ -1379,6 +1379,60 @@ mod tests {
     use futures::future::pending;
     use vega_runtime::{MockProvider, ScriptStep};
 
+    #[tokio::test]
+    async fn issue73_compaction_projection_rechecks_rotated_owner_secret() {
+        let inner = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("safe summary".to_string()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]);
+        let provider = super::super::OwnerCredentialProvider::new(
+            Arc::new(inner.clone()),
+            Arc::new(|| Ok(vec!["rotated-owner-key".to_string()])),
+        );
+        let request = ChatRequest {
+            model: "mock-model".to_string(),
+            messages: vec![ChatMessage::tool_result(
+                "historic-mcp",
+                "rotated-owner-key",
+            )],
+            ..ChatRequest::default()
+        };
+        let failure = collect_summary_with_timeout(
+            &provider,
+            request,
+            None,
+            CancellationToken::new(),
+            SUMMARY_TIMEOUT,
+        )
+        .await;
+        assert!(matches!(
+            failure,
+            Err(ref failure)
+                if matches!(failure.error.as_ref(), VegaError::Provider { retryable: false, .. })
+        ));
+        assert!(inner.requests().is_empty());
+
+        let clean = ChatRequest {
+            model: "mock-model".to_string(),
+            messages: vec![ChatMessage::tool_result("historic-mcp", "ordinary result")],
+            ..ChatRequest::default()
+        };
+        let summary = collect_summary_with_timeout(
+            &provider,
+            clean,
+            None,
+            CancellationToken::new(),
+            SUMMARY_TIMEOUT,
+        )
+        .await;
+        assert!(matches!(summary, Ok((ref text, _)) if text == "safe summary"));
+        let requests = inner.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].messages[0].content, "ordinary result");
+    }
+
     fn assistant(calls: &[&str]) -> ChatMessage {
         ChatMessage::assistant_with_tools(
             "text",

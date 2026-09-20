@@ -307,6 +307,17 @@ impl ConversationStream {
                     .text_color(colors.danger)
                     .child(error)
             }))
+            .children(self.mcp_warning.clone().map(|warning| {
+                div()
+                    .debug_selector(|| "conversation-mcp-warning".to_string())
+                    .w_full()
+                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                    .mx_auto()
+                    .mt_1()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.warning)
+                    .child(warning)
+            }))
             .into_any_element()
     }
 

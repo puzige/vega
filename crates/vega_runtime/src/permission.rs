@@ -167,6 +167,26 @@ pub struct RuntimePermissionPrompt {
     pub danger: Option<RuntimeDangerFacts>,
 }
 
+/// Content-safe one-call prompt for an external MCP capability. No server
+/// annotation can turn this into a remembered built-in mutation rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeMcpPermissionPrompt {
+    /// Provider call id.
+    pub call_id: String,
+    /// Vega-owned stable server id, not the server's display name.
+    pub server_id: String,
+    /// Exact configuration revision frozen for this run.
+    pub config_revision: u64,
+    /// Exact name advertised by this server.
+    pub exact_tool_name: String,
+    /// UTF-8 bytes in the model-proposed arguments.
+    pub arguments_bytes: usize,
+    /// SHA-256 digest of the exact argument bytes.
+    pub arguments_sha256: String,
+    /// Bounded field/type summary; argument values are not included.
+    pub argument_preview: String,
+}
+
 /// Opaque proof that capability step -1 admitted an Execute mutating call.
 ///
 /// Its fields are private, so callers can obtain it only from

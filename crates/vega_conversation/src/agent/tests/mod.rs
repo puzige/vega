@@ -13,6 +13,7 @@ mod automatic_titles;
 mod failure_paths;
 mod history_permissions;
 mod images;
+mod mcp;
 mod model_context;
 mod permissions;
 mod plan_approval;
@@ -43,6 +44,7 @@ fn permission_request(tool: &str, target: &str) -> PermissionRequest {
         display_target: target.into(),
         danger_rule_id: None,
         danger_reason: None,
+        external: None,
     }
 }
 
