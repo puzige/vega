@@ -163,6 +163,16 @@ pub enum ContextRuntimeError {
     /// supplied by the caller.
     #[error("context compaction is configured but unavailable")]
     MissingHook,
+    /// A bounded summary stage cannot fit its own provider input budget.
+    #[error(
+        "context summary input estimate {estimated_tokens} exceeds input budget {input_budget}"
+    )]
+    SummaryInputOverLimit {
+        /// Deterministic estimate of the summary request input.
+        estimated_tokens: u64,
+        /// Total capacity after reserving output for that summary response.
+        input_budget: u64,
+    },
     /// The hook returned a projection that still cannot fit.
     #[error("context compaction result {estimated_tokens} exceeds target/input budget")]
     ResultOverLimit {
@@ -382,6 +392,9 @@ impl ContextCompactionStatusFailure {
                 Self::NoCompactablePrefix
             }
             VegaError::Context(ContextRuntimeError::SourceTooLarge) => Self::TooLarge,
+            VegaError::Context(ContextRuntimeError::SummaryInputOverLimit { .. }) => {
+                Self::OverLimit
+            }
             VegaError::Context(ContextRuntimeError::ResultOverLimit { .. }) => Self::OverLimit,
             VegaError::Context(ContextRuntimeError::ImagesUnsupported) => Self::ImagesUnsupported,
             VegaError::Context(ContextRuntimeError::OverLimit { .. })

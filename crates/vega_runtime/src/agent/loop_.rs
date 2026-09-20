@@ -1,7 +1,55 @@
+use super::context_accounting::{InputAnchor, InputDecision, PendingInputAnchor};
 use super::tools_exec::SkillToolAction;
 use super::*;
 use crate::skills::{BatchPolicy, classify_tool_batch};
 use crate::{ContextCheck, ContextCompactionRequest, ContextRuntimeError};
+
+fn request_output_cap(
+    max_tokens: Option<u32>,
+    budget: Option<crate::ContextBudget>,
+) -> Option<u32> {
+    max_tokens.map(|cap| budget.map_or(cap, |budget| cap.min(budget.output_reserve() as u32)))
+}
+
+fn input_decision(
+    anchor: Option<&InputAnchor>,
+    messages: &[ChatMessage],
+    tools: &[ToolDefinition],
+    model: &str,
+    reasoning: Option<&FrozenReasoning>,
+    max_tokens: Option<u32>,
+    revision: u64,
+) -> Result<InputDecision, VegaError> {
+    InputAnchor::decide(
+        anchor, messages, tools, model, reasoning, max_tokens, revision,
+    )
+    .map_err(|error| VegaError::Context(error.into()))
+}
+
+fn accounting_event(
+    decision: InputDecision,
+    budget: crate::ContextBudget,
+    stage: ContextAccountingStage,
+) -> Result<RuntimeEvent, VegaError> {
+    Ok(RuntimeEvent::ContextAccountingUpdated(
+        ContextAccountingDecision {
+            source: decision.source,
+            stage,
+            provider_input_baseline: decision.baseline,
+            incremental_estimate: decision.incremental,
+            predicted_input: decision.predicted,
+            input_budget: budget.input_budget(),
+            trigger_tokens: budget
+                .trigger_tokens()
+                .map_err(|error| VegaError::Context(error.into()))?,
+            target_tokens: budget
+                .target_tokens()
+                .map_err(|error| VegaError::Context(error.into()))?,
+            revision: decision.revision,
+            covered_messages: decision.covered_messages,
+        },
+    ))
+}
 
 fn skill_runtime_error() -> VegaError {
     VegaError::Tool {
@@ -46,6 +94,15 @@ fn skill_system_prompt(base: &str, run: &SkillRun) -> Result<String, VegaError> 
     Ok(result)
 }
 
+#[derive(Clone, Copy)]
+struct InputAccounting<'a> {
+    anchor: Option<&'a InputAnchor>,
+    model: &'a str,
+    reasoning: Option<&'a FrozenReasoning>,
+    max_tokens: Option<u32>,
+    revision: u64,
+}
+
 fn skill_fits(
     base: &str,
     catalog: &str,
@@ -53,6 +110,7 @@ fn skill_fits(
     messages: &[ChatMessage],
     tools: &[ToolDefinition],
     budget: Option<crate::ContextBudget>,
+    accounting: InputAccounting<'_>,
 ) -> bool {
     let Some(budget) = budget else {
         return true;
@@ -70,8 +128,16 @@ fn skill_fits(
     if let Some(first) = projected.first_mut() {
         *first = ChatMessage::new(ChatRole::System, system);
     }
-    crate::estimate_wire_context(&projected, tools)
-        .is_ok_and(|estimate| estimate.input_tokens <= budget.input_budget())
+    input_decision(
+        accounting.anchor,
+        &projected,
+        tools,
+        accounting.model,
+        accounting.reasoning,
+        accounting.max_tokens,
+        accounting.revision,
+    )
+    .is_ok_and(|decision| decision.predicted <= budget.input_budget())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -83,6 +149,11 @@ async fn compact_before_skill_rejection<F, Fut>(
     pending_result: Option<&ChatMessage>,
     tools: &[ToolDefinition],
     budget: Option<crate::ContextBudget>,
+    anchor: Option<&InputAnchor>,
+    model: &str,
+    reasoning: Option<&FrozenReasoning>,
+    max_tokens: Option<u32>,
+    revision: u64,
     hook: Option<&dyn crate::ContextCompactionHook>,
     operation_id: &str,
     source_version: &mut Option<u64>,
@@ -138,8 +209,13 @@ where
         projected.push(result.clone());
     }
     projected[0] = ChatMessage::new(ChatRole::System, system.clone());
-    let estimate = crate::estimate_wire_context(&projected, tools)
-        .map_err(|error| VegaError::Context(error.into()))?;
+    let decision = input_decision(
+        anchor, &projected, tools, model, reasoning, max_tokens, revision,
+    )?;
+    let estimate = decision.estimate;
+    let event = accounting_event(decision, budget, ContextAccountingStage::SkillProspect)?;
+    sink(event.clone()).await?;
+    events.push(event);
     let target_tokens = budget
         .target_tokens()
         .map_err(|error| VegaError::Context(error.into()))?;
@@ -222,6 +298,7 @@ where
             return match failure.error.as_ref() {
                 VegaError::Context(
                     ContextRuntimeError::NoCompactablePrefix
+                    | ContextRuntimeError::SummaryInputOverLimit { .. }
                     | ContextRuntimeError::ResultOverLimit { .. },
                 ) => Ok(false),
                 _ if cancel.is_cancelled() => Ok(false),
@@ -304,6 +381,11 @@ fn execute_skill_call(
     messages: &[ChatMessage],
     definitions: &[ToolDefinition],
     budget: Option<crate::ContextBudget>,
+    anchor: Option<&InputAnchor>,
+    model: &str,
+    reasoning: Option<&FrozenReasoning>,
+    max_tokens: Option<u32>,
+    revision: u64,
     direct_user_round: bool,
 ) -> Result<SkillExecution, VegaError> {
     let mut run = config.run.lock().map_err(|_| skill_runtime_error())?;
@@ -324,6 +406,13 @@ fn execute_skill_call(
                     &projected,
                     definitions,
                     budget,
+                    InputAccounting {
+                        anchor,
+                        model,
+                        reasoning,
+                        max_tokens,
+                        revision,
+                    },
                 );
                 if !fits {
                     over_budget_envelope = Some(prospective.to_string());
@@ -385,6 +474,13 @@ fn execute_skill_call(
                     &projected,
                     definitions,
                     budget,
+                    InputAccounting {
+                        anchor,
+                        model,
+                        reasoning,
+                        max_tokens,
+                        revision,
+                    },
                 )
             });
             let (output, success) = match read {
@@ -618,6 +714,8 @@ where
     let mut executed_tool_call_count = 0usize;
     let mut reasoning_run_bytes = 0usize;
     let mut direct_user_skill_round = true;
+    let mut input_anchor: Option<InputAnchor> = None;
+    let mut primary_revision = 0_u64;
 
     if !skill_authority_current(skill_config.as_ref()) {
         cancel.cancel();
@@ -668,6 +766,13 @@ where
                             &messages,
                             capabilities.definitions(),
                             context_budget,
+                            InputAccounting {
+                                anchor: input_anchor.as_ref(),
+                                model: &request.model,
+                                reasoning: request.reasoning.as_ref(),
+                                max_tokens: request_output_cap(request.max_tokens, context_budget),
+                                revision: primary_revision,
+                            },
                         );
                         if !fits {
                             over_budget_envelope = Some(prospective.to_string());
@@ -696,6 +801,11 @@ where
                         None,
                         capabilities.definitions(),
                         context_budget,
+                        input_anchor.as_ref(),
+                        &request.model,
+                        request.reasoning.as_ref(),
+                        request_output_cap(request.max_tokens, context_budget),
+                        primary_revision,
                         hook,
                         &context_operation_id,
                         &mut context_source_version,
@@ -708,6 +818,7 @@ where
                     )
                     .await?
                     {
+                        input_anchor = None;
                         continue;
                     }
                 }
@@ -780,8 +891,21 @@ where
 
         let tool_definitions = capabilities.definitions().to_vec();
         if let Some(budget) = context_budget {
-            let estimate = crate::estimate_wire_context(&messages, &tool_definitions)
-                .map_err(|error| VegaError::Context(error.into()))?;
+            let decision = input_decision(
+                input_anchor.as_ref(),
+                &messages,
+                &tool_definitions,
+                &request.model,
+                request.reasoning.as_ref(),
+                request_output_cap(request.max_tokens, context_budget),
+                primary_revision,
+            )?;
+            let estimate = decision.estimate;
+            emit!(
+                events,
+                sink,
+                accounting_event(decision, budget, ContextAccountingStage::PrimaryPreflight)?
+            );
             let check = budget
                 .check(estimate)
                 .map_err(|error| VegaError::Context(error.into()))?;
@@ -981,6 +1105,24 @@ where
                 let compacted_estimate =
                     crate::estimate_wire_context(&next_messages, &tool_definitions)
                         .map_err(|error| VegaError::Context(error.into()))?;
+                let post_decision = InputDecision {
+                    estimate: compacted_estimate,
+                    source: ContextAccountingSource::Estimated,
+                    baseline: None,
+                    incremental: compacted_estimate.input_tokens,
+                    predicted: compacted_estimate.input_tokens,
+                    revision: primary_revision,
+                    covered_messages: 0,
+                };
+                emit!(
+                    events,
+                    sink,
+                    accounting_event(
+                        post_decision,
+                        budget,
+                        ContextAccountingStage::PostSummaryTarget
+                    )?
+                );
                 let target_tokens = budget
                     .target_tokens()
                     .map_err(|error| VegaError::Context(error.into()))?;
@@ -1043,6 +1185,7 @@ where
                     ));
                 }
                 messages = next_messages;
+                drop(input_anchor.take());
                 live_projection_revision = generation;
                 context_source_version = Some(compacted.source_version);
                 context_source_fingerprint = compacted.source_fingerprint;
@@ -1091,6 +1234,8 @@ where
         }
         let call_started_utc_seconds = unix_utc_seconds();
         let mut usage_seen = false;
+        let mut valid_primary_input = None;
+        let mut anchor_protocol_valid = true;
         let mut reasoning_turn_bytes = 0usize;
         let chat_request = ChatRequest {
             model: request.model.clone(),
@@ -1099,10 +1244,17 @@ where
             // The reserved output capacity protects the input budget; it is
             // not a request to generate that many tokens on every round.
             // Keep provider defaults when no explicit generation cap exists.
-            max_tokens: request.max_tokens.map(|cap| {
-                context_budget.map_or(cap, |budget| cap.min(budget.output_reserve() as u32))
-            }),
+            max_tokens: request_output_cap(request.max_tokens, context_budget),
             reasoning: request.reasoning.clone(),
+        };
+        primary_revision = primary_revision.checked_add(1).ok_or(VegaError::Context(
+            ContextRuntimeError::Estimate(crate::ContextEstimateError::Overflow),
+        ))?;
+        let pending_anchor = if context_budget.is_some() {
+            PendingInputAnchor::from_request(&chat_request)
+                .map_err(|error| VegaError::Context(error.into()))?
+        } else {
+            None
         };
         let mut stream = match provider.chat_stream(chat_request, cancel.clone()).await {
             Ok(stream) => stream,
@@ -1158,6 +1310,9 @@ where
                 next = stream.next() => next,
             };
             let Some(item) = next else { break };
+            if stop_reason.is_some() {
+                anchor_protocol_valid = false;
+            }
             match item {
                 Ok(ProviderEvent::TextDelta(delta)) => {
                     assistant_text.push_str(&delta);
@@ -1257,6 +1412,8 @@ where
                         ));
                     }
                     usage_seen = true;
+                    valid_primary_input =
+                        (input > 0 && cache_read <= input && cache_write <= input).then_some(input);
                     let usage = RuntimeTokenUsage {
                         input,
                         output,
@@ -1377,6 +1534,16 @@ where
                 false,
             ));
         }
+        let normal_terminal = matches!(
+            (stop_reason, calls.is_empty()),
+            (Some(StopReason::End), true) | (Some(StopReason::ToolUse), false)
+        );
+        input_anchor = if anchor_protocol_valid && normal_terminal {
+            pending_anchor
+                .and_then(|pending| valid_primary_input.and_then(|input| pending.complete(input)))
+        } else {
+            None
+        };
         if calls.is_empty() {
             messages.push(ChatMessage::new(ChatRole::Assistant, assistant_text));
             let finish = match stop_reason.unwrap_or(StopReason::End) {
@@ -1690,6 +1857,11 @@ where
                                     &messages,
                                     capabilities.definitions(),
                                     context_budget,
+                                    input_anchor.as_ref(),
+                                    &request.model,
+                                    request.reasoning.as_ref(),
+                                    request_output_cap(request.max_tokens, context_budget),
+                                    primary_revision,
                                     direct_user_skill_round,
                                 )?;
                                 if let Some(prospective) = executed.over_budget_envelope.as_deref()
@@ -1711,6 +1883,11 @@ where
                                         pending_result.as_ref(),
                                         capabilities.definitions(),
                                         context_budget,
+                                        input_anchor.as_ref(),
+                                        &request.model,
+                                        request.reasoning.as_ref(),
+                                        request_output_cap(request.max_tokens, context_budget),
+                                        primary_revision,
                                         hook,
                                         &context_operation_id,
                                         &mut context_source_version,
@@ -1723,6 +1900,7 @@ where
                                     )
                                     .await?
                                     {
+                                        input_anchor = None;
                                         executed = execute_skill_call(
                                             config,
                                             &call,
@@ -1731,6 +1909,11 @@ where
                                             &messages,
                                             capabilities.definitions(),
                                             context_budget,
+                                            input_anchor.as_ref(),
+                                            &request.model,
+                                            request.reasoning.as_ref(),
+                                            request_output_cap(request.max_tokens, context_budget),
+                                            primary_revision,
                                             direct_user_skill_round,
                                         )?;
                                     }

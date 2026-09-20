@@ -1289,7 +1289,8 @@ impl ConversationStream {
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SkillActivated { .. }
-            | ConversationEvent::ContextCompactionStatus { .. } => false,
+            | ConversationEvent::ContextCompactionStatus { .. }
+            | ConversationEvent::ContextAccounting { .. } => false,
             // R7: app accepts these only after its thread/run ownership fence.
             ConversationEvent::ContextCompactionUsageUpdated { .. } => true,
         };

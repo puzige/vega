@@ -71,7 +71,8 @@ mod retry;
 
 pub use agent::{
     AgentOutcome, AgentRequest, BASH_INVALID_INPUT_OUTPUT, CALL_ID_CONFLICT_OUTPUT,
-    CANCELLED_BEFORE_EXECUTION_OUTPUT, CompletedToolCall, InvalidBashAudit,
+    CANCELLED_BEFORE_EXECUTION_OUTPUT, CompletedToolCall, ContextAccountingDecision,
+    ContextAccountingSource, ContextAccountingStage, InvalidBashAudit,
     LEGACY_BASH_INVALID_INPUT_OUTPUT, McpReadyServer, McpRevocationLease, PERMISSION_TIMEOUT,
     REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES, REASONING_TURN_MAX_BYTES, RuntimeEvent,
     RuntimeExactRule, RuntimeFinishReason, RuntimePermissionHook, RuntimeTokenUsage,

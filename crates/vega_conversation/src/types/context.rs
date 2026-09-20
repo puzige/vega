@@ -7,6 +7,36 @@
 
 use super::ThreadMode;
 
+/// Provenance of a live primary input decision; reload always starts Estimated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextAccountingSource {
+    Estimated,
+    UsageAnchored,
+}
+
+/// Local boundary for a run-scoped context decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextAccountingStage {
+    PrimaryPreflight,
+    SkillProspect,
+    PostSummaryTarget,
+}
+
+/// Content-free live accounting, never persisted as historical provider usage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextAccountingRecord {
+    pub source: ContextAccountingSource,
+    pub stage: ContextAccountingStage,
+    pub provider_input_baseline: Option<u64>,
+    pub incremental_estimate: u64,
+    pub predicted_input: u64,
+    pub input_budget: u64,
+    pub trigger_tokens: u64,
+    pub target_tokens: u64,
+    pub revision: u64,
+    pub covered_messages: usize,
+}
+
 /// Lifecycle state exposed by the context control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextCompactionStatus {

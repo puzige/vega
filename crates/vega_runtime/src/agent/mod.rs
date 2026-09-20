@@ -462,6 +462,41 @@ pub struct RuntimeTokenUsage {
     pub cache_write: u64,
 }
 
+/// Origin of a run-local primary input budget decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextAccountingSource {
+    /// Deterministic approximation; no matching completed primary request.
+    Estimated,
+    /// Normalized input usage for an identical sent prefix plus estimated tail.
+    UsageAnchored,
+}
+
+/// Budget boundary represented by content-free accounting metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextAccountingStage {
+    /// Ordinary primary request before send or automatic compaction.
+    PrimaryPreflight,
+    /// Prospective skill activation or reference before accepting its content.
+    SkillProspect,
+    /// A summary result has replaced the projection and needs a local target check.
+    PostSummaryTarget,
+}
+
+/// One decision from the same accounting path that gates a provider request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextAccountingDecision {
+    pub source: ContextAccountingSource,
+    pub stage: ContextAccountingStage,
+    pub provider_input_baseline: Option<u64>,
+    pub incremental_estimate: u64,
+    pub predicted_input: u64,
+    pub input_budget: u64,
+    pub trigger_tokens: u64,
+    pub target_tokens: u64,
+    pub revision: u64,
+    pub covered_messages: usize,
+}
+
 /// Runtime-local tool call, deliberately independent from UI/conversation.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RuntimeToolCall {
@@ -620,6 +655,8 @@ pub enum RuntimeEvent {
         /// Lifecycle phase and bounded request metadata.
         status: crate::ContextCompactionStatusUpdate,
     },
+    /// Safe input accounting decision for one run-local budget boundary.
+    ContextAccountingUpdated(ContextAccountingDecision),
     /// Natural/length/limit convergence.
     Finished(RuntimeFinishReason),
     /// Cancellation was observed.
@@ -702,6 +739,10 @@ impl fmt::Debug for RuntimeEvent {
                 .debug_struct("ContextCompactionStatusUpdated")
                 .field("status", status)
                 .finish(),
+            Self::ContextAccountingUpdated(decision) => formatter
+                .debug_tuple("ContextAccountingUpdated")
+                .field(decision)
+                .finish(),
             Self::Finished(reason) => formatter.debug_tuple("Finished").field(reason).finish(),
             Self::Interrupted => formatter.write_str("Interrupted"),
             Self::Error(_) => formatter.write_str("Error([redacted])"),
@@ -743,6 +784,7 @@ impl fmt::Debug for AgentOutcome {
     }
 }
 
+mod context_accounting;
 mod loop_;
 mod tools_exec;
 

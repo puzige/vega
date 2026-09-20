@@ -1,6 +1,122 @@
 use super::*;
 use gpui_kit::{TestAppContext, VisualTestContext, WindowHandle};
-use vega_conversation::types::{ContextCompactionUsageState, ThreadMode, ThreadStatus};
+use vega_conversation::types::{
+    ContextAccountingRecord, ContextAccountingSource, ContextAccountingStage,
+    ContextCompactionUsageState, ThreadMode, ThreadStatus,
+};
+
+fn accounting(
+    source: ContextAccountingSource,
+    predicted_input: u64,
+    revision: u64,
+) -> ContextAccountingRecord {
+    ContextAccountingRecord {
+        source,
+        stage: ContextAccountingStage::PrimaryPreflight,
+        provider_input_baseline: (source == ContextAccountingSource::UsageAnchored).then_some(500),
+        incremental_estimate: predicted_input.saturating_sub(500),
+        predicted_input,
+        input_budget: 10_000,
+        trigger_tokens: 8_000,
+        target_tokens: 6_000,
+        revision,
+        covered_messages: 2,
+    }
+}
+
+#[gpui_kit::test]
+async fn issue91_live_accounting_fences_reload_and_accepts_fallback_revision(
+    cx: &mut TestAppContext,
+) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                vega_conversation::types::ConversationEvent::MessageStarted {
+                    message_id: "run-one".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            assert!(stream.apply_context_accounting(
+                "context-thread",
+                "mock",
+                "run-one",
+                accounting(ContextAccountingSource::UsageAnchored, 800, 1),
+                cx
+            ));
+            assert_eq!(stream.context_control.estimate, Some(800));
+            assert!(!stream.apply_context_accounting(
+                "other-thread",
+                "mock",
+                "run-one",
+                accounting(ContextAccountingSource::Estimated, 900, 2),
+                cx
+            ));
+            assert!(!stream.apply_context_accounting(
+                "context-thread",
+                "other-model",
+                "run-one",
+                accounting(ContextAccountingSource::Estimated, 900, 2),
+                cx
+            ));
+            assert!(stream.apply_context_projection(
+                "context-thread",
+                "mock",
+                None,
+                Some(9_000),
+                true,
+                cx
+            ));
+            assert_eq!(stream.context_control.estimate, Some(800));
+            assert!(!stream.apply_context_accounting(
+                "context-thread",
+                "mock",
+                "other",
+                accounting(ContextAccountingSource::Estimated, 900, 2),
+                cx
+            ));
+            assert!(!stream.apply_context_accounting(
+                "context-thread",
+                "mock",
+                "run-one",
+                accounting(ContextAccountingSource::Estimated, 900, 0),
+                cx
+            ));
+            assert!(stream.apply_context_accounting(
+                "context-thread",
+                "mock",
+                "run-one",
+                accounting(ContextAccountingSource::Estimated, 1_100, 2),
+                cx
+            ));
+            assert_eq!(stream.context_control.estimate, Some(1_100));
+            assert_eq!(
+                stream
+                    .context_control
+                    .live_accounting
+                    .as_ref()
+                    .unwrap()
+                    .1
+                    .source,
+                ContextAccountingSource::Estimated
+            );
+            stream.finish_composer_run(false, cx);
+            assert!(stream.context_control.live_accounting.is_none());
+            assert_eq!(stream.context_control.estimate, None);
+            assert!(stream.apply_context_projection(
+                "context-thread",
+                "mock",
+                None,
+                Some(1_300),
+                true,
+                cx
+            ));
+            assert_eq!(stream.context_control.estimate, Some(1_300));
+        })
+        .expect("window");
+}
 
 fn setup(cx: &mut TestAppContext) -> WindowHandle<ConversationStream> {
     cx.update(|cx| {
@@ -52,7 +168,7 @@ fn issue88_internal_stage_limit_and_model_budget_have_distinct_copy() {
     assert!(status_label(&record).contains("安全分段上限"));
     assert!(!status_label(&record).contains("模型容量"));
     record.failure = Some(Failure::OverLimit);
-    assert!(status_label(&record).contains("模型上下文预算不足"));
+    assert!(status_label(&record).contains("本地上下文预算检查未通过"));
     assert!(!status_label(&record).contains("安全分段上限"));
 }
 

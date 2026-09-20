@@ -258,6 +258,7 @@ impl ConversationStream {
 
     /// Projects worker ownership, including preparation before a durable message exists.
     pub fn begin_composer_run(&mut self, cx: &mut Context<Self>) {
+        self.clear_live_context_accounting();
         self.actions.running = true;
         self.actions.stopping = false;
         self.actions.stopped = false;
@@ -271,6 +272,7 @@ impl ConversationStream {
 
     /// Terminal-only release: never allow a replacement run while the old worker drains.
     pub fn finish_composer_run(&mut self, cancelled: bool, cx: &mut Context<Self>) -> bool {
+        self.clear_live_context_accounting();
         // A disconnected worker may have no final ConversationEvent. Release only
         // its presentation owner here; durable repair remains the restart path.
         if let Some((message_id, _)) = self.active_agent_message.clone() {

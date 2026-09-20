@@ -82,6 +82,344 @@ mod permission_flow;
 mod skills;
 mod usage_limits;
 
+#[tokio::test]
+async fn issue91_valid_primary_usage_prevents_premature_tool_round_compaction() {
+    let project = tempdir().unwrap();
+    fs::write(project.path().join("large.txt"), "z".repeat(20_000)).unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "read-anchor".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"large.txt"}"#.into(),
+            },
+            ProviderEvent::Usage {
+                input: 500,
+                output: 80,
+                cache_read: 400,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
+    req.context_budget = Some(ContextBudget::new(11_000, 1_000, true).unwrap());
+    req.context_source_version = Some(1);
+    req.context_compaction_hook = Some(Arc::new(RecordingCompactionHook {
+        calls: calls.clone(),
+        messages: vec![ChatMessage::new(ChatRole::User, "summary")],
+        source_version: 2,
+    }));
+    let result = run_agent(&provider, &tools, req, CancellationToken::new()).await;
+    let outcome = result.expect("anchored tool round must complete");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "usage anchor should avoid compaction"
+    );
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    let raw_first = crate::estimate_wire_context(&requests[0].messages, &requests[0].tools)
+        .unwrap()
+        .input_tokens;
+    let raw_second = crate::estimate_wire_context(&requests[1].messages, &requests[1].tools)
+        .unwrap()
+        .input_tokens;
+    assert!(raw_first < 8_000);
+    assert!(raw_second >= 8_000);
+    let decisions = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == ContextAccountingStage::PrimaryPreflight =>
+            {
+                Some(decision)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(decisions.len(), 2);
+    assert_eq!(decisions[0].source, ContextAccountingSource::Estimated);
+    assert_eq!(decisions[0].predicted_input, raw_first);
+    assert_eq!(decisions[1].source, ContextAccountingSource::UsageAnchored);
+    assert_eq!(decisions[1].provider_input_baseline, Some(500));
+    assert_eq!(decisions[1].incremental_estimate, raw_second - raw_first);
+    assert_eq!(decisions[1].predicted_input, 500 + raw_second - raw_first);
+    assert!(decisions[1].predicted_input < decisions[1].trigger_tokens);
+    assert_eq!(decisions[1].revision, 1);
+    assert_eq!(decisions[1].covered_messages, requests[0].messages.len());
+}
+
+#[tokio::test]
+async fn issue91_usage_anchor_still_rejects_a_genuinely_large_tool_tail() {
+    let project = tempdir().unwrap();
+    fs::write(
+        project.path().join("large.txt"),
+        format!("{}\n", "z".repeat(1_000)).repeat(50),
+    )
+    .unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![
+        ProviderEvent::ToolUse {
+            id: "read-large-tail".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"large.txt"}"#.into(),
+        },
+        ProviderEvent::Usage {
+            input: 500,
+            output: 80,
+            cache_read: 400,
+            cache_write: 0,
+        },
+        ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        },
+    ])]]);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
+    req.context_budget = Some(ContextBudget::new(11_000, 1_000, true).unwrap());
+    req.context_source_version = Some(1);
+    req.context_compaction_hook = Some(Arc::new(TailPreservingCompactionHook {
+        calls: calls.clone(),
+        observed: Arc::new(Mutex::new(Vec::new())),
+    }));
+    let result = run_agent(&provider, &tools, req, CancellationToken::new()).await;
+    assert!(
+        matches!(
+            result,
+            Err(VegaError::Context(
+                ContextRuntimeError::ResultOverLimit { .. }
+            ))
+        ),
+        "result={result:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn issue91_missing_zero_or_inconsistent_usage_falls_back_before_next_round() {
+    for usage in [None, Some((0, 0)), Some((100, 101))] {
+        let project = tempdir().unwrap();
+        fs::write(project.path().join("large.txt"), "z".repeat(20_000)).unwrap();
+        let tools = vega_tools::Tools::new(project.path()).unwrap();
+        let mut first = vec![ProviderEvent::ToolUse {
+            id: "read-no-anchor".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"large.txt"}"#.into(),
+        }];
+        if let Some((input, cache_read)) = usage {
+            first.push(ProviderEvent::Usage {
+                input,
+                output: 10,
+                cache_read,
+                cache_write: 0,
+            });
+        }
+        first.push(ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        });
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(first)],
+            vec![ScriptStep::events(vec![ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            }])],
+        ]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
+        req.context_budget = Some(ContextBudget::new(11_000, 1_000, true).unwrap());
+        req.context_source_version = Some(1);
+        req.context_compaction_hook = Some(Arc::new(RecordingCompactionHook {
+            calls: calls.clone(),
+            messages: vec![ChatMessage::new(ChatRole::User, "summary")],
+            source_version: 2,
+        }));
+        let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let decisions = outcome
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RuntimeEvent::ContextAccountingUpdated(decision)
+                    if decision.stage == ContextAccountingStage::PrimaryPreflight =>
+                {
+                    Some(decision)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[1].source, ContextAccountingSource::Estimated);
+        assert_eq!(decisions[1].provider_input_baseline, None);
+        assert_eq!(decisions[1].revision, 1);
+    }
+}
+
+#[tokio::test]
+async fn issue91_unconfigured_run_keeps_legacy_request_without_estimator_bound() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    }])]);
+    let history = ChatMessage::new(ChatRole::User, "x".repeat(64 * 1024 * 1024 + 1));
+    let outcome = run_agent(
+        &provider,
+        &tools,
+        request(vec![history]),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!outcome.failed);
+    assert_eq!(provider.requests().len(), 1);
+    assert!(
+        !outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::ContextAccountingUpdated(_)))
+    );
+}
+
+#[tokio::test]
+async fn issue91_later_missing_usage_retires_anchor_with_monotonic_revision() {
+    let project = tempdir().unwrap();
+    fs::write(project.path().join("a.txt"), "first").unwrap();
+    fs::write(project.path().join("b.txt"), "second").unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "one".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"a.txt"}"#.into(),
+            },
+            ProviderEvent::Usage {
+                input: 500,
+                output: 20,
+                cache_read: 100,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "two".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"b.txt"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
+    req.context_budget = Some(ContextBudget::new(60_000, 1_000, true).unwrap());
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!outcome.failed);
+    assert_eq!(provider.requests().len(), 3);
+    let decisions = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == ContextAccountingStage::PrimaryPreflight =>
+            {
+                Some(decision)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(decisions.len(), 3);
+    assert_eq!(
+        decisions
+            .iter()
+            .map(|decision| decision.source)
+            .collect::<Vec<_>>(),
+        vec![
+            ContextAccountingSource::Estimated,
+            ContextAccountingSource::UsageAnchored,
+            ContextAccountingSource::Estimated,
+        ]
+    );
+    assert_eq!(
+        decisions
+            .iter()
+            .map(|decision| decision.revision)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+}
+
+#[tokio::test]
+async fn issue91_duplicate_done_cannot_anchor_a_following_tool_round() {
+    let project = tempdir().unwrap();
+    fs::write(project.path().join("large.txt"), "z".repeat(20_000)).unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "read-duplicate-done".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"large.txt"}"#.into(),
+            },
+            ProviderEvent::Usage {
+                input: 500,
+                output: 10,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "x".repeat(20_000))]);
+    req.context_budget = Some(ContextBudget::new(11_000, 1_000, true).unwrap());
+    req.context_source_version = Some(1);
+    req.context_compaction_hook = Some(Arc::new(RecordingCompactionHook {
+        calls: calls.clone(),
+        messages: vec![ChatMessage::new(ChatRole::User, "summary")],
+        source_version: 2,
+    }));
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(outcome.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::ContextAccountingUpdated(ContextAccountingDecision {
+            source: ContextAccountingSource::Estimated,
+            revision: 1,
+            ..
+        })
+    )));
+}
+
 struct FixedHook {
     calls: Arc<AtomicUsize>,
     decision: Option<RuntimeUserDecision>,

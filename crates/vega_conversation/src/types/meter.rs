@@ -370,6 +370,7 @@ impl ConversationMeter {
             // Tool progress cannot move the visible-output estimate.
             ConversationEvent::ToolCallApproved { .. }
             | ConversationEvent::ToolCallOutput { .. }
+            | ConversationEvent::ContextAccounting { .. }
             | ConversationEvent::ToolCallFinished { .. } => false,
         }
     }

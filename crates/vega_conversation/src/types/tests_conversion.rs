@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use super::{
-    ContextCompactionStatus, ContextCompactionStatusRecord, ContextCompactionUsageState,
-    ConversationError, ConversationEvent, ConversationMeter, Microcents, ThreadMode, ThreadStatus,
-    TokenUsage, UsagePricing, from_runtime_event,
+    ContextAccountingSource, ContextAccountingStage, ContextCompactionStatus,
+    ContextCompactionStatusRecord, ContextCompactionUsageState, ConversationError,
+    ConversationEvent, ConversationMeter, Microcents, ThreadMode, ThreadStatus, TokenUsage,
+    UsagePricing, from_runtime_event,
 };
 
 #[test]
@@ -309,6 +310,37 @@ fn converts_content_free_compaction_status_and_preserves_unknown_usage() {
     assert_eq!(record.status, ContextCompactionStatus::Succeeded);
     assert_eq!(record.source_version, Some(11));
     assert_eq!(record.usage, ContextCompactionUsageState::Unknown);
+}
+
+#[test]
+fn issue91_runtime_accounting_crosses_facade_without_changing_usage() {
+    let runtime = vega_runtime::RuntimeEvent::ContextAccountingUpdated(
+        vega_runtime::ContextAccountingDecision {
+            source: vega_runtime::ContextAccountingSource::UsageAnchored,
+            stage: vega_runtime::ContextAccountingStage::PrimaryPreflight,
+            provider_input_baseline: Some(85_032),
+            incremental_estimate: 1_000,
+            predicted_input: 86_032,
+            input_budget: 300_000,
+            trigger_tokens: 240_000,
+            target_tokens: 180_000,
+            revision: 2,
+            covered_messages: 12,
+        },
+    );
+    let Some(ConversationEvent::ContextAccounting { message_id, record }) =
+        from_runtime_event("assistant-91", &runtime)
+    else {
+        panic!("accounting event missing");
+    };
+    assert_eq!(message_id, "assistant-91");
+    assert_eq!(record.source, ContextAccountingSource::UsageAnchored);
+    assert_eq!(record.stage, ContextAccountingStage::PrimaryPreflight);
+    assert_eq!(record.provider_input_baseline, Some(85_032));
+    assert_eq!(record.incremental_estimate, 1_000);
+    assert_eq!(record.predicted_input, 86_032);
+    assert_eq!(record.revision, 2);
+    assert_eq!(record.covered_messages, 12);
 }
 
 #[test]

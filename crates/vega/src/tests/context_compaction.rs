@@ -551,6 +551,33 @@ async fn i76_context_model_aba_same_stream_rejects_old_run(cx: &mut gpui_kit::Te
 }
 
 #[gpui_kit::test]
+async fn i91_accounting_event_owner_retires_after_model_aba(cx: &mut gpui_kit::TestAppContext) {
+    cx.executor().allow_parking();
+    let f = fixture(cx, Arc::new(vega_runtime::MockProvider::new(vec![])));
+    let run = f.root.update(cx, |root, cx| {
+        let (run, _) =
+            root.agent_controller
+                .begin(f.thread.id.clone(), f.stream.clone(), None, None);
+        root.begin_context_primary_owner(run);
+        assert!(root.owns_primary_context_event(run, &f.stream, cx));
+        run
+    });
+    let changed =
+        vega_conversation::threads::set_thread_model(&f.store, &f.thread.id, "gpt-5.6-luna")
+            .expect("authoritative model change");
+    f.stream.update(cx, |stream, cx| {
+        stream.apply_authoritative_thread(changed.clone(), cx)
+    });
+    cx.update(|cx| cx.set_global(OpenedThread(Some(changed))));
+    cx.run_until_parked();
+    f.root.update(cx, |root, cx| {
+        root.sync_context_route(&f.stream, cx);
+        assert!(!root.owns_primary_context_event(run, &f.stream, cx));
+        root.agent_controller.finish(run, &f.thread.id, &f.stream);
+    });
+}
+
+#[gpui_kit::test]
 async fn i76_context_stale_settings_ack_retires_pending_without_applying_values(
     cx: &mut gpui_kit::TestAppContext,
 ) {

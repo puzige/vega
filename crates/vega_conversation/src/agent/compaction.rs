@@ -1161,14 +1161,10 @@ fn summary_stage_request(
     ];
     let estimate = estimate_chat_context(SUMMARY_SYSTEM_PROMPT, &messages[1..], &[])
         .map_err(|error| VegaError::Context(error.into()))?;
-    if estimate
-        .input_tokens
-        .saturating_add(request.budget.output_reserve())
-        > request.budget.total_limit()
-    {
-        return Err(context_error(ContextRuntimeError::ResultOverLimit {
+    if estimate.input_tokens > request.budget.input_budget() {
+        return Err(context_error(ContextRuntimeError::SummaryInputOverLimit {
             estimated_tokens: estimate.input_tokens,
-            target_tokens: request.target_tokens,
+            input_budget: request.budget.input_budget(),
         }));
     }
     let max_tokens = SUMMARY_MAX_TOKENS.min(request.budget.output_reserve() as u32);
@@ -1662,6 +1658,46 @@ mod tests {
     use super::*;
     use futures::future::pending;
     use vega_runtime::{MockProvider, ScriptStep};
+
+    #[test]
+    fn summary_input_and_projected_target_report_distinct_budget_stages() {
+        let budget = ContextBudget::new(1_000, 200, true).unwrap();
+        let request = ContextCompactionRequest {
+            system_prompt: "system".into(),
+            messages: vec![],
+            tools: vec![],
+            budget,
+            estimate: estimate_wire_context(&[], &[]).unwrap(),
+            target_tokens: budget.target_tokens().unwrap(),
+            source_version: 1,
+            source_fingerprint: None,
+            require_source_fence: false,
+            source_owner_id: None,
+        };
+        let error =
+            summary_stage_request(&request, "mock", None, None, &"x".repeat(4_000), 1).unwrap_err();
+        assert!(
+            matches!(error, VegaError::Context(ContextRuntimeError::SummaryInputOverLimit { estimated_tokens, input_budget })
+                if estimated_tokens > input_budget && input_budget == budget.input_budget()),
+            "summary input must report the input budget, not the projected target"
+        );
+        assert_eq!(
+            vega_runtime::ContextCompactionStatusFailure::from_error(&error),
+            vega_runtime::ContextCompactionStatusFailure::OverLimit
+        );
+        let projected_target = context_error(ContextRuntimeError::ResultOverLimit {
+            estimated_tokens: request.target_tokens + 1,
+            target_tokens: request.target_tokens,
+        });
+        assert!(matches!(
+            projected_target,
+            VegaError::Context(ContextRuntimeError::ResultOverLimit { .. })
+        ));
+        assert_eq!(
+            vega_runtime::ContextCompactionStatusFailure::from_error(&projected_target),
+            vega_runtime::ContextCompactionStatusFailure::OverLimit
+        );
+    }
 
     #[tokio::test]
     async fn issue88_structured_stream_excludes_checklist_but_retains_full_usage() {
