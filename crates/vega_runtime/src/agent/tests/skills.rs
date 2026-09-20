@@ -628,7 +628,7 @@ async fn issue74_compaction_estimates_actual_skill_system_envelope() {
     ));
     let first = crate::estimate_wire_context(&first_messages, &definitions).unwrap();
     let active = crate::estimate_wire_context(&active_messages, &definitions).unwrap();
-    let input_budget = active.input_tokens + 32;
+    let input_budget = active.input_tokens + 160;
     let budget = ContextBudget::new(input_budget + 100, 100, true).unwrap();
     assert!(first.input_tokens < budget.trigger_tokens().unwrap());
     assert!(active.input_tokens >= budget.trigger_tokens().unwrap());
@@ -1143,7 +1143,7 @@ done
     let active_tokens = crate::estimate_wire_context(&active, &definitions)
         .unwrap()
         .input_tokens;
-    let input_budget = active_tokens + 64;
+    let input_budget = active_tokens + 384;
     assert!(initial_tokens < input_budget * 4 / 5);
     assert!(active_tokens >= input_budget * 4 / 5);
 

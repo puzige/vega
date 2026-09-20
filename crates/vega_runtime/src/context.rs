@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{ChatMessage, ToolDefinition, VegaError};
 
 /// Version stamped on every budget estimate and durable compaction checkpoint.
-pub const CONTEXT_ESTIMATOR_VERSION: &str = "vega-context-estimator-v1";
+pub const CONTEXT_ESTIMATOR_VERSION: &str = "vega-context-estimator-v2";
 
 /// A fixed protocol framing charge applied to every request.
 pub const CONTEXT_PROTOCOL_OVERHEAD_TOKENS: u64 = 32;
@@ -491,9 +491,9 @@ pub fn classify_context(
 /// tool schemas and validated image contributions. The result is explicitly
 /// approximate; provider usage events remain authoritative when available.
 ///
-/// Text is charged in UTF-8 byte units rather than pretending to know the
-/// provider tokenizer. This deterministic upper-side approximation is stable
-/// across model changes, but is intentionally labelled approximate in the UI.
+/// Text and typed JSON are charged with separate UTF-8 byte approximations,
+/// followed by one conservative factor on non-image accounting. This deterministic
+/// approximation is stable across model changes, but remains approximate.
 /// Image bytes and geometry receive a fixed nonzero contribution because
 /// provider image tokenization is model-specific; this policy does not claim
 /// provider-exact image accounting.
@@ -508,6 +508,7 @@ pub fn estimate_chat_context(
         .and_then(|value| value.checked_add(CONTEXT_SAFETY_ALLOWANCE_TOKENS))
         .ok_or(ContextEstimateError::Overflow)?;
     let mut image_count = 0usize;
+    let mut image_tokens = 0u64;
     for message in messages {
         input_tokens = checked_add(input_tokens, CONTEXT_PROTOCOL_OVERHEAD_TOKENS)?;
         input_tokens = checked_add(input_tokens, estimate_text(&message.content)?)?;
@@ -517,7 +518,7 @@ pub fn estimate_chat_context(
         for call in &message.tool_calls {
             input_tokens = checked_add(input_tokens, estimate_text(&call.id)?)?;
             input_tokens = checked_add(input_tokens, estimate_text(&call.name)?)?;
-            input_tokens = checked_add(input_tokens, estimate_text(&call.input_json)?)?;
+            input_tokens = checked_add(input_tokens, estimate_json(&call.input_json)?)?;
         }
         if let Some(call_id) = &message.tool_call_id {
             input_tokens = checked_add(input_tokens, estimate_text(call_id)?)?;
@@ -526,7 +527,7 @@ pub fn estimate_chat_context(
             image_count = image_count
                 .checked_add(1)
                 .ok_or(ContextEstimateError::Overflow)?;
-            input_tokens = checked_add(input_tokens, estimate_image(image)?)?;
+            image_tokens = checked_add(image_tokens, estimate_image(image)?)?;
         }
     }
     let mut tool_count = 0usize;
@@ -536,11 +537,13 @@ pub fn estimate_chat_context(
             .ok_or(ContextEstimateError::Overflow)?;
         let schema = serde_json::to_string(&tool.input_schema)
             .map_err(|_| ContextEstimateError::InputTooLarge)?;
-        for value in [&tool.name, &tool.description, &schema] {
+        for value in [&tool.name, &tool.description] {
             input_tokens = checked_add(input_tokens, estimate_text(value)?)?;
         }
+        input_tokens = checked_add(input_tokens, estimate_json(&schema)?)?;
         input_tokens = checked_add(input_tokens, CONTEXT_PROTOCOL_OVERHEAD_TOKENS)?;
     }
+    input_tokens = checked_add(ceil_ratio(input_tokens, 4, 3)?, image_tokens)?;
     Ok(ContextEstimate {
         input_tokens,
         message_count: messages.len() + 1,
@@ -563,6 +566,7 @@ pub fn estimate_wire_context(
         .checked_add(CONTEXT_SAFETY_ALLOWANCE_TOKENS)
         .ok_or(ContextEstimateError::Overflow)?;
     let mut image_count = 0usize;
+    let mut image_tokens = 0u64;
     for (index, message) in messages.iter().enumerate() {
         // The standalone estimator charges one framing unit for the implicit
         // system slot.  When the loop hands us the already assembled wire
@@ -578,7 +582,7 @@ pub fn estimate_wire_context(
         for call in &message.tool_calls {
             input_tokens = checked_add(input_tokens, estimate_text(&call.id)?)?;
             input_tokens = checked_add(input_tokens, estimate_text(&call.name)?)?;
-            input_tokens = checked_add(input_tokens, estimate_text(&call.input_json)?)?;
+            input_tokens = checked_add(input_tokens, estimate_json(&call.input_json)?)?;
         }
         if let Some(call_id) = &message.tool_call_id {
             input_tokens = checked_add(input_tokens, estimate_text(call_id)?)?;
@@ -587,7 +591,7 @@ pub fn estimate_wire_context(
             image_count = image_count
                 .checked_add(1)
                 .ok_or(ContextEstimateError::Overflow)?;
-            input_tokens = checked_add(input_tokens, estimate_image(image)?)?;
+            image_tokens = checked_add(image_tokens, estimate_image(image)?)?;
         }
     }
     let mut tool_count = 0usize;
@@ -597,11 +601,13 @@ pub fn estimate_wire_context(
             .ok_or(ContextEstimateError::Overflow)?;
         let schema = serde_json::to_string(&tool.input_schema)
             .map_err(|_| ContextEstimateError::InputTooLarge)?;
-        for value in [&tool.name, &tool.description, &schema] {
+        for value in [&tool.name, &tool.description] {
             input_tokens = checked_add(input_tokens, estimate_text(value)?)?;
         }
+        input_tokens = checked_add(input_tokens, estimate_json(&schema)?)?;
         input_tokens = checked_add(input_tokens, CONTEXT_PROTOCOL_OVERHEAD_TOKENS)?;
     }
+    input_tokens = checked_add(ceil_ratio(input_tokens, 4, 3)?, image_tokens)?;
     Ok(ContextEstimate {
         input_tokens,
         message_count: if messages
@@ -623,10 +629,22 @@ fn checked_add(left: u64, right: u64) -> Result<u64, ContextEstimateError> {
 }
 
 fn estimate_text(value: &str) -> Result<u64, ContextEstimateError> {
+    estimate_bytes(value, 4)
+}
+
+fn estimate_json(value: &str) -> Result<u64, ContextEstimateError> {
+    estimate_bytes(value, 2)
+}
+
+fn estimate_bytes(value: &str, divisor: u64) -> Result<u64, ContextEstimateError> {
     if value.len() > MAX_ESTIMATED_BYTES {
         return Err(ContextEstimateError::InputTooLarge);
     }
-    u64::try_from(value.len()).map_err(|_| ContextEstimateError::Overflow)
+    let bytes = u64::try_from(value.len()).map_err(|_| ContextEstimateError::Overflow)?;
+    bytes
+        .checked_add(divisor - 1)
+        .map(|bytes| bytes / divisor)
+        .ok_or(ContextEstimateError::Overflow)
 }
 
 fn estimate_image(image: &crate::ImageAttachment) -> Result<u64, ContextEstimateError> {
@@ -675,6 +693,87 @@ fn floor_ratio(value: u64, numerator: u64, denominator: u64) -> Result<u64, Cont
 mod tests {
     use super::*;
     use crate::{ChatMessage, ChatRole, ChatToolCall, ToolDefinition};
+
+    #[test]
+    fn issue88_a1_v2_text_json_and_wire_use_one_conservative_factor() {
+        assert_eq!(CONTEXT_ESTIMATOR_VERSION, "vega-context-estimator-v2");
+        assert_eq!(estimate_text(&"x".repeat(300)).unwrap(), 75);
+        assert_eq!(estimate_text(&"中".repeat(100)).unwrap(), 75);
+        assert_eq!(estimate_json(&"x".repeat(300)).unwrap(), 150);
+        let user = ChatMessage::new(ChatRole::User, "x".repeat(300));
+        let standalone = estimate_chat_context("", std::slice::from_ref(&user), &[]).unwrap();
+        let wire =
+            estimate_wire_context(&[ChatMessage::new(ChatRole::System, ""), user], &[]).unwrap();
+        assert_eq!(standalone, wire);
+        assert_eq!(standalone.input_tokens, 527);
+        let chinese = estimate_chat_context(
+            "",
+            &[ChatMessage::new(ChatRole::User, "中".repeat(100))],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(chinese.input_tokens, 527);
+
+        let mut assistant = ChatMessage::assistant_with_tools(
+            "",
+            vec![ChatToolCall {
+                id: "id".into(),
+                name: "tool".into(),
+                input_json: "x".repeat(300),
+            }],
+        );
+        assistant.reasoning_content = Some("r".repeat(8));
+        let mixed = estimate_chat_context(
+            "system",
+            &[assistant.clone()],
+            &[ToolDefinition {
+                name: "tool".into(),
+                description: "description".into(),
+                input_schema: serde_json::json!({"kind":"object"}),
+            }],
+        )
+        .unwrap();
+        let mixed_wire = estimate_wire_context(
+            &[ChatMessage::new(ChatRole::System, "system"), assistant],
+            &[ToolDefinition {
+                name: "tool".into(),
+                description: "description".into(),
+                input_schema: serde_json::json!({"kind":"object"}),
+            }],
+        )
+        .unwrap();
+        assert_eq!(mixed, mixed_wire);
+        assert!(mixed.input_tokens > 527);
+        let oversized = "x".repeat(64 * 1024 * 1024 + 1);
+        assert_eq!(
+            estimate_text(&oversized),
+            Err(ContextEstimateError::InputTooLarge)
+        );
+        assert_eq!(
+            estimate_json(&oversized),
+            Err(ContextEstimateError::InputTooLarge)
+        );
+    }
+
+    #[test]
+    fn issue88_a1_image_base_formula_is_unchanged_and_not_scaled_again() {
+        assert_eq!(estimate_image_contribution(10, 256).unwrap(), 1028);
+        let image = image::RgbImage::from_pixel(1, 1, image::Rgb([1, 2, 3]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let image = crate::ImageAttachment::from_bytes(bytes.into_inner()).unwrap();
+        let image_base = estimate_image(&image).unwrap();
+        let mut user = ChatMessage::new(ChatRole::User, "");
+        user.images.push(image);
+        let estimated = estimate_chat_context("", std::slice::from_ref(&user), &[]).unwrap();
+        let wire =
+            estimate_wire_context(&[ChatMessage::new(ChatRole::System, ""), user], &[]).unwrap();
+        assert_eq!(estimated, wire);
+        assert_eq!(
+            estimated.input_tokens,
+            ceil_ratio(32 + 256 + 32, 4, 3).unwrap() + image_base
+        );
+    }
 
     #[test]
     fn issue76_budget_uses_integer_threshold_and_target_without_overflow() {

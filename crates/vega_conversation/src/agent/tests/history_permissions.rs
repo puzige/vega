@@ -56,6 +56,119 @@ struct MutatingSecondStageProvider {
     calls: AtomicUsize,
 }
 
+/// Models a reasoning-capable provider that needs more than 4096 output
+/// tokens before it can finish the requested concise summary.
+struct Issue88OutputCapProvider {
+    requests: std::sync::Mutex<Vec<vega_runtime::ChatRequest>>,
+}
+
+/// Reproduces a provider that finishes the first dense stage but exhausts
+/// its bounded output while processing another similarly large stage.
+struct Issue88DenseSecondStageProvider {
+    requests: std::sync::Mutex<Vec<vega_runtime::ChatRequest>>,
+}
+
+fn issue88_stage_source_bytes(request: &vega_runtime::ChatRequest) -> usize {
+    request.messages[1]
+        .content
+        .rsplit_once("Historical transcript segment ")
+        .and_then(|(_, stage)| stage.split_once(':'))
+        .map(|(_, source)| source.trim_start_matches('\n').len())
+        .unwrap()
+}
+
+struct Issue88LargeRollingSummaryProvider {
+    requests: std::sync::Mutex<Vec<vega_runtime::ChatRequest>>,
+}
+
+impl vega_runtime::Provider for Issue88LargeRollingSummaryProvider {
+    fn chat_stream(
+        &self,
+        request: vega_runtime::ChatRequest,
+        _cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
+        let mut requests = self.requests.lock().unwrap();
+        let first = requests.is_empty();
+        requests.push(request);
+        let text = if first {
+            "s".repeat(24 * 1024)
+        } else {
+            "short rolling summary".to_string()
+        };
+        Box::pin(async move {
+            Ok(Box::pin(futures::stream::iter(vec![
+                Ok(ProviderEvent::TextDelta(text)),
+                Ok(ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                }),
+            ])) as vega_runtime::EventStream)
+        })
+    }
+}
+
+impl vega_runtime::Provider for Issue88DenseSecondStageProvider {
+    fn chat_stream(
+        &self,
+        request: vega_runtime::ChatRequest,
+        _cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
+        let bytes = issue88_stage_source_bytes(&request);
+        let mut requests = self.requests.lock().unwrap();
+        let stage = requests.len();
+        requests.push(request);
+        let exhausted = stage == 1 && bytes > 32 * 1024;
+        let events = vec![
+            Ok(ProviderEvent::TextDelta("bounded rolling summary".into())),
+            Ok(ProviderEvent::Usage {
+                input: 200,
+                output: if exhausted { 8192 } else { 1852 },
+                cache_read: 0,
+                cache_write: 0,
+            }),
+            Ok(ProviderEvent::Done {
+                stop_reason: if exhausted {
+                    StopReason::Length
+                } else {
+                    StopReason::End
+                },
+            }),
+        ];
+        Box::pin(
+            async move { Ok(Box::pin(futures::stream::iter(events)) as vega_runtime::EventStream) },
+        )
+    }
+}
+
+impl vega_runtime::Provider for Issue88OutputCapProvider {
+    fn chat_stream(
+        &self,
+        request: vega_runtime::ChatRequest,
+        _cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
+        let cap = request.max_tokens.unwrap_or_default();
+        self.requests.lock().unwrap().push(request);
+        let events = vec![
+            Ok(ProviderEvent::TextDelta("bounded rolling summary".into())),
+            Ok(ProviderEvent::Usage {
+                input: 200,
+                output: if cap <= 4096 { cap } else { 5000 } as u64,
+                cache_read: 0,
+                cache_write: 0,
+            }),
+            Ok(ProviderEvent::Done {
+                stop_reason: if cap <= 4096 {
+                    StopReason::Length
+                } else {
+                    StopReason::End
+                },
+            }),
+        ];
+        Box::pin(
+            async move { Ok(Box::pin(futures::stream::iter(events)) as vega_runtime::EventStream) },
+        )
+    }
+}
+
 impl vega_runtime::Provider for MutatingSecondStageProvider {
     fn chat_stream(
         &self,
@@ -648,7 +761,7 @@ async fn issue76_configured_run_uses_summary_provider_then_primary_and_installs_
                 seq,
                 role: if seq % 2 == 1 { "user" } else { "assistant" }.into(),
                 kind: "text".into(),
-                content: format!("historical-{seq}-{}", "x".repeat(700)),
+                content: format!("historical-{seq}-{}", "x".repeat(1_000)),
                 status: "done".into(),
                 created_at: seq,
                 plan_status: None,
@@ -658,7 +771,7 @@ async fn issue76_configured_run_uses_summary_provider_then_primary_and_installs_
         )
         .unwrap();
     }
-    save_issue76_model_policy(&store, 19_000, 1_000);
+    save_issue76_model_policy(&store, 9_000, 1_000);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
@@ -938,7 +1051,7 @@ async fn issue76_priced_summary_usage_is_a_thread_level_audit_row() {
                 seq,
                 role: if seq % 2 == 1 { "user" } else { "assistant" }.into(),
                 kind: "text".into(),
-                content: format!("priced-history-{seq}-{}", "x".repeat(900)),
+                content: format!("priced-history-{seq}-{}", "x".repeat(1_700)),
                 status: "done".into(),
                 created_at: seq,
                 plan_status: None,
@@ -948,7 +1061,7 @@ async fn issue76_priced_summary_usage_is_a_thread_level_audit_row() {
         )
         .unwrap();
     }
-    save_issue76_model_policy(&store, 14_000, 1_000);
+    save_issue76_model_policy(&store, 9_000, 1_000);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
@@ -1022,7 +1135,7 @@ async fn issue76_summary_usage_received_before_failure_is_persisted_without_chec
                 seq,
                 role: if seq % 2 == 1 { "user" } else { "assistant" }.into(),
                 kind: "text".into(),
-                content: format!("failed-summary-history-{seq}-{}", "x".repeat(700)),
+                content: format!("failed-summary-history-{seq}-{}", "x".repeat(1_000)),
                 status: "done".into(),
                 created_at: seq,
                 plan_status: None,
@@ -1032,7 +1145,7 @@ async fn issue76_summary_usage_received_before_failure_is_persisted_without_chec
         )
         .unwrap();
     }
-    save_issue76_model_policy(&store, 19_000, 1_000);
+    save_issue76_model_policy(&store, 9_000, 1_000);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new(vec![
         ScriptStep::events(vec![ProviderEvent::Usage {
@@ -1548,7 +1661,7 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
                 seq,
                 role: if seq % 2 == 1 { "user" } else { "assistant" }.into(),
                 kind: "text".into(),
-                content: format!("tool-threshold-history-{seq}-{}", "x".repeat(500)),
+                content: format!("tool-threshold-history-{seq}-{}", "x".repeat(2_300)),
                 status: "done".into(),
                 created_at: seq,
                 plan_status: None,
@@ -1809,6 +1922,63 @@ fn save_issue88_manual_settings(store: &Store) {
     .unwrap();
 }
 
+#[test]
+fn issue88_v1_checkpoint_remains_readable_under_v2_with_shared_wrapper() {
+    let (store, dir, _project_id) = setup();
+    seed_issue88_large_tool_result(&store, r#"{"path":"lib.rs"}"#, "small result");
+    let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    let previous = vega_store::context_compaction::NewContextCheckpoint {
+        thread_id: "thread-1".into(),
+        model: "mock-model".into(),
+        source_version: source.source_version,
+        covered_through_seq: 2,
+        source_fingerprint: source.fingerprint.clone(),
+        summary: "legacy state".into(),
+        estimator_version: "vega-context-estimator-v1".into(),
+        expected_previous_id: None,
+        created_at: 1,
+    };
+    vega_store::context_compaction::install_checkpoint(store.conn(), &previous).unwrap();
+    drop(store);
+    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+    let source = vega_store::context_compaction::load_source(reopened.conn(), "thread-1").unwrap();
+    let checkpoint = vega_store::context_compaction::latest_checkpoint(
+        reopened.conn(),
+        "thread-1",
+        "mock-model",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(checkpoint.estimator_version, "vega-context-estimator-v1");
+    assert_eq!(
+        vega_runtime::CONTEXT_ESTIMATOR_VERSION,
+        "vega-context-estimator-v2"
+    );
+    let history = super::super::pipeline::primary_history_from_context_source_with_checkpoint(
+        &source,
+        Some(&checkpoint),
+        "",
+    )
+    .unwrap();
+    assert_eq!(history[0].role, vega_runtime::ChatRole::User);
+    assert!(history[0].content.contains("legacy state"));
+    assert!(history[0].content.contains("untrusted data"));
+    assert!(history[0].content.contains("continue the current task"));
+    assert!(history.iter().any(|message| message.content == "message-3"));
+    let wire = std::iter::once(vega_runtime::ChatMessage::new(
+        vega_runtime::ChatRole::System,
+        "system",
+    ))
+    .chain(history)
+    .collect::<Vec<_>>();
+    assert!(
+        vega_runtime::estimate_wire_context(&wire, &[])
+            .unwrap()
+            .input_tokens
+            > 0
+    );
+}
+
 #[tokio::test]
 async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_without_loss() {
     let (store, dir, _project_id) = setup();
@@ -1896,6 +2066,22 @@ async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_withou
     .unwrap();
     assert_eq!(resumed.content, "continued after restart");
     let primary = &next_provider.requests()[0].messages;
+    let restored_summary = primary
+        .iter()
+        .find(|message| message.content.contains("Historical context summary"))
+        .unwrap();
+    assert_eq!(restored_summary.content, result.messages[0].content);
+    assert!(restored_summary.content.contains("earlier portion"));
+    assert!(
+        restored_summary
+            .content
+            .contains("retained recent conversation")
+    );
+    assert!(
+        restored_summary
+            .content
+            .contains("continue the current task")
+    );
     assert_eq!(
         primary
             .iter()
@@ -1927,6 +2113,158 @@ async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_withou
             .unwrap(),
         1,
         "restart must not re-execute the historical tool"
+    );
+}
+
+#[tokio::test]
+async fn issue88_reasoning_output_above_4096_finishes_one_bounded_attempt_per_stage() {
+    let (store, _dir, _project_id) = setup();
+    seed_issue88_large_tool_result(
+        &store,
+        r#"{"path":"lib.rs"}"#,
+        &"0123456789abcdef".repeat(14_000),
+    );
+    let provider = Issue88OutputCapProvider {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let result = compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        Vec::new(),
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert!(
+        requests.len() >= 2,
+        "history requires multiple bounded stages"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.max_tokens == Some(8192))
+    );
+    assert_eq!(result.usages.len(), requests.len());
+    assert!(result.usage_complete);
+    assert!(
+        vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn issue88_dense_second_stage_uses_smaller_requests_and_completes() {
+    let (store, _dir, _project_id) = setup();
+    seed_issue88_large_tool_result(
+        &store,
+        r#"{"path":"lib.rs"}"#,
+        &"0123456789abcdef".repeat(14_000),
+    );
+    let provider = Issue88DenseSecondStageProvider {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let result = compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        Vec::new(),
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests.len() > 2, "large history requires smaller stages");
+    assert!(requests.iter().all(|request| {
+        request.max_tokens == Some(8192)
+            && issue88_stage_source_bytes(request) <= 32 * 1024
+            && request
+                .messages
+                .iter()
+                .map(|message| message.content.len())
+                .sum::<usize>()
+                <= 128 * 1024
+    }));
+    assert_eq!(result.usages.len(), requests.len());
+    assert!(result.usage_complete);
+    assert!(
+        vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn issue88_rolling_summary_over_old_combined_target_keeps_all_source() {
+    let (store, _dir, _project_id) = setup();
+    let output = "0123456789abcdef".repeat(14_000);
+    seed_issue88_large_tool_result(&store, r#"{"path":"lib.rs"}"#, &output);
+    let provider = Issue88LargeRollingSummaryProvider {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let result = compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        Vec::new(),
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let requests = provider.requests.lock().unwrap();
+    assert!(requests.len() > 2);
+    let second = &requests[1];
+    let second_bytes = second
+        .messages
+        .iter()
+        .map(|message| message.content.len())
+        .sum::<usize>();
+    assert!(second_bytes > 32 * 1024 && second_bytes <= 128 * 1024);
+    assert!(requests.iter().all(|request| {
+        request
+            .messages
+            .iter()
+            .map(|message| message.content.len())
+            .sum::<usize>()
+            <= 128 * 1024
+    }));
+    let mut reconstructed = String::new();
+    for request in requests.iter() {
+        for line in request.messages[1].content.lines() {
+            if line.starts_with("tool read id=long-result seq=1 status=success output excerpt ") {
+                reconstructed.push_str(line.rsplit_once(": ").unwrap().1);
+            }
+        }
+    }
+    assert_eq!(reconstructed, output);
+    assert!(result.messages[0].content.contains("short rolling summary"));
+    assert_eq!(
+        store
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM context_checkpoints WHERE thread_id = 'thread-1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
     );
 }
 
@@ -2092,7 +2430,8 @@ async fn issue88_staged_source_mutation_rejects_checkpoint_and_accounts_complete
     )
     .await
     .unwrap();
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    let stages = provider.calls.load(Ordering::SeqCst);
+    assert!(stages >= 2);
     assert!(events.iter().any(|event| matches!(
         event,
         ConversationEvent::ContextCompactionStatus { record }
@@ -2104,7 +2443,7 @@ async fn issue88_staged_source_mutation_rejects_checkpoint_and_accounts_complete
             .iter()
             .filter(|event| matches!(event, ConversationEvent::ContextCompactionUsageUpdated { usage, .. } if usage.input == 103 && usage.output == 13))
             .count(),
-        2,
+        stages,
     );
     assert!(
         vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
