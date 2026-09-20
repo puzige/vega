@@ -82,6 +82,245 @@ fn three_tiers() -> Vec<String> {
         .collect()
 }
 
+/// I68-01: a no-tier model still exposes the model catalog through the real
+/// Composer trigger, rather than entering an invisible slider state.
+#[gpui_kit::test]
+async fn i68_no_tier_trigger_mounts_model_list(cx: &mut TestAppContext) {
+    let (window, stream) = open_picker_stream(
+        cx,
+        "i68-no-tiers",
+        vec!["mock".into(), "other-model".into()],
+        Vec::new(),
+        false,
+    );
+
+    click(window, "composer-model", cx);
+
+    assert_eq!(level(&stream, cx), ModelPickerLevel::List);
+    assert!(is_mounted(window, "composer-model-menu", cx));
+    assert!(is_mounted(window, "composer-model-rows", cx));
+    assert!(!is_mounted(window, "composer-thinking-slider", cx));
+    assert_eq!(
+        crate::conversation_stream::render::model_trigger_label("mock", level(&stream, cx), false,),
+        "mock",
+    );
+}
+
+/// I68-02: missing, unavailable, and unusable capability projections all
+/// leave the model catalog reachable without inventing a reasoning tier.
+#[gpui_kit::test]
+async fn i68_missing_or_unusable_profile_opens_list(cx: &mut TestAppContext) {
+    let (window, stream) = open_picker_stream(
+        cx,
+        "i68-missing-profile",
+        vec!["mock".into(), "other-model".into()],
+        three_tiers(),
+        false,
+    );
+
+    for projection in 0..3 {
+        stream.update(cx, |stream, cx| match projection {
+            0 => stream.clear_reasoning_profile(cx),
+            1 => stream.mark_reasoning_unavailable(cx),
+            _ => {
+                let mut profile = ReasoningProfileProjection::unknown("owned", "mock");
+                profile.support = ReasoningSupport::Unknown;
+                profile.efforts = three_tiers();
+                stream.apply_reasoning_profile(profile, cx);
+            }
+        });
+        click(window, "composer-model", cx);
+        assert_eq!(level(&stream, cx), ModelPickerLevel::List);
+        assert!(is_mounted(window, "composer-model-rows", cx));
+        assert!(!is_mounted(window, "composer-thinking-slider", cx));
+        assert_eq!(
+            stream.read_with(cx, |stream, _| stream.thinking_choice().to_string()),
+            "provider_default",
+        );
+        focus_model_trigger(window, &stream, cx);
+        cx.simulate_keystrokes(window.into(), "escape");
+        assert_eq!(level(&stream, cx), ModelPickerLevel::Closed);
+    }
+}
+
+/// I68-04: the existing empty/busy guards remain in front of both picker
+/// levels; no empty list or selection intent is produced.
+#[gpui_kit::test]
+async fn i68_empty_catalog_and_busy_states_do_not_open(cx: &mut TestAppContext) {
+    let (window, stream) = open_picker_stream(cx, "i68-guard", Vec::new(), Vec::new(), false);
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(
+            &stream,
+            move |_, request: &ThreadModelSelectionRequested, _| {
+                captured
+                    .lock()
+                    .expect("requests")
+                    .push(request.model.clone());
+            },
+        )
+        .detach();
+    });
+
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Closed);
+    assert!(!is_mounted(window, "composer-model-menu", cx));
+
+    stream.update(cx, |stream, cx| {
+        stream.apply_model_options(vec!["mock".into(), "other-model".into()], cx);
+        stream.set_trusted_action_busy(true, cx);
+    });
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Closed);
+    stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
+
+    stream.update(cx, |stream, cx| {
+        stream.request_model_selection("other-model", cx);
+    });
+    assert_eq!(
+        requests.lock().expect("requests").as_slice(),
+        &["other-model"]
+    );
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Closed);
+    assert!(!is_mounted(window, "composer-model-menu", cx));
+    assert_eq!(requests.lock().expect("requests").len(), 1);
+}
+
+/// I68-05: a capability refresh closes an already open slider; a later valid
+/// projection restores R59's first level without carrying stale list state.
+#[gpui_kit::test]
+async fn i68_capability_refresh_closes_stale_slider_and_recovers(cx: &mut TestAppContext) {
+    let (window, stream) = open_picker_stream(
+        cx,
+        "i68-capability-refresh",
+        vec!["mock".into(), "other-model".into()],
+        three_tiers(),
+        false,
+    );
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Slider);
+
+    stream.update(cx, ConversationStream::clear_reasoning_profile);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Closed);
+    assert!(!is_mounted(window, "composer-thinking-slider", cx));
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::List);
+
+    focus_model_trigger(window, &stream, cx);
+    cx.simulate_keystrokes(window.into(), "escape");
+    stream.update(cx, |stream, cx| {
+        let mut profile = ReasoningProfileProjection::unknown("owned", "mock");
+        profile.support = ReasoningSupport::Optional;
+        profile.efforts = three_tiers();
+        stream.apply_reasoning_profile(profile, cx);
+    });
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Slider);
+    assert!(is_mounted(window, "composer-thinking-slider", cx));
+}
+
+/// I68-07: the genuine GPUI model focus stop owns Enter, list navigation,
+/// selection and Esc after the no-tier direct-list route.
+#[gpui_kit::test]
+async fn i68_no_tier_keyboard_navigation_and_escape(cx: &mut TestAppContext) {
+    let (window, stream) = open_picker_stream(
+        cx,
+        "i68-keyboard",
+        vec!["mock".into(), "other-model".into()],
+        Vec::new(),
+        false,
+    );
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(
+            &stream,
+            move |_, request: &ThreadModelSelectionRequested, _| {
+                captured
+                    .lock()
+                    .expect("requests")
+                    .push(request.model.clone());
+            },
+        )
+        .detach();
+    });
+    focus_model_trigger(window, &stream, cx);
+
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert_eq!(level(&stream, cx), ModelPickerLevel::List);
+    cx.simulate_keystrokes(window.into(), "escape");
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Closed);
+
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert_eq!(level(&stream, cx), ModelPickerLevel::List);
+    cx.simulate_keystrokes(window.into(), "down");
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.model_selector_highlight),
+        1,
+    );
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Closed);
+    assert_eq!(
+        requests.lock().expect("requests").as_slice(),
+        &["other-model"]
+    );
+}
+
+/// I68-06: the existing durable-save acknowledgement decides when the model
+/// changes; the next trigger follows the newly projected capability. The
+/// owned-store controller round trip remains covered by `model_selection`.
+#[gpui_kit::test]
+async fn i68_acknowledged_model_switch_reopens_at_the_correct_level(cx: &mut TestAppContext) {
+    let (window, stream) = open_picker_stream(
+        cx,
+        "i68-switch",
+        vec!["mock".into(), "tiered-model".into()],
+        Vec::new(),
+        false,
+    );
+    focus_model_trigger(window, &stream, cx);
+    cx.simulate_keystrokes(window.into(), "enter down enter");
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Closed);
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.displayed_model().to_string()),
+        "mock",
+        "selection stays pending until the durable acknowledgement",
+    );
+
+    let thread = stream.read_with(cx, |stream, _| stream.thread.clone());
+    stream.update(cx, |stream, cx| {
+        stream.apply_thread_model_acknowledged(&thread.id, 0, "tiered-model", thread.clone(), cx);
+        let mut profile = ReasoningProfileProjection::unknown("owned", "tiered-model");
+        profile.support = ReasoningSupport::Optional;
+        profile.efforts = three_tiers();
+        stream.apply_reasoning_profile(profile, cx);
+    });
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.displayed_model().to_string()),
+        "tiered-model",
+    );
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Slider);
+
+    click(window, "thinking-slider-title", cx);
+    focus_model_trigger(window, &stream, cx);
+    cx.simulate_keystrokes(window.into(), "up enter");
+    assert_eq!(level(&stream, cx), ModelPickerLevel::Closed);
+    let thread = stream.read_with(cx, |stream, _| stream.thread.clone());
+    stream.update(cx, |stream, cx| {
+        stream.apply_thread_model_acknowledged(&thread.id, 1, "mock", thread.clone(), cx);
+        stream.clear_reasoning_profile(cx);
+    });
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.displayed_model().to_string()),
+        "mock",
+    );
+    click(window, "composer-model", cx);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::List);
+}
+
 fn click(window: WindowHandle<StreamHarness>, selector: &'static str, cx: &mut TestAppContext) {
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let bounds = visual
@@ -1017,20 +1256,20 @@ async fn r59_trigger_toggles_the_slider_level(cx: &mut TestAppContext) {
     assert!(!is_mounted(window, "composer-thinking-slider", cx));
 }
 
-/// R57 R12 regression: a model that declares no tiers mounts no layer at all,
-/// rather than an empty padded card.
+/// I68-01 / R57 R12 regression: a model that declares no tiers opens the
+/// model list directly, without mounting an empty padded slider card.
 #[gpui_kit::test]
-async fn r59_a_model_without_tiers_mounts_no_layer(cx: &mut TestAppContext) {
+async fn i68_model_without_tiers_mounts_list_without_slider(cx: &mut TestAppContext) {
     let (window, stream) =
         open_picker_stream(cx, "r59-no-tiers", twenty_models(), Vec::new(), true);
 
     click(window, "composer-model", cx);
 
-    assert_eq!(level(&stream, cx), ModelPickerLevel::Slider);
+    assert_eq!(level(&stream, cx), ModelPickerLevel::List);
     assert!(
         !is_mounted(window, "composer-thinking-slider", cx),
         "R57 R12: no tiers means no card, not an empty slot"
     );
     assert!(!is_mounted(window, "thinking-slider-card", cx));
-    assert!(!is_mounted(window, "composer-model-menu", cx));
+    assert!(is_mounted(window, "composer-model-menu", cx));
 }

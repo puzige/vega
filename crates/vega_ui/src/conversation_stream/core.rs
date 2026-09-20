@@ -2,9 +2,9 @@ use super::*;
 
 /// R59 §3 R1–R3: which level of the model picker is showing.
 ///
-/// The reference implementation is a two-level drill-down — the model button
-/// opens the tier slider, and the slider's title opens the model list — so the
-/// two views are **mutually exclusive by construction**. R57 mounted the
+/// With tiers, the model button opens the slider and its title opens the list
+/// (R59). Without tiers, the button opens the list directly (I68). The views
+/// are **mutually exclusive by construction**. R57 mounted the
 /// slider as the model menu's last child, which put both on screen at once
 /// (R59 §1 D1/D2/D3); this single enum is what replaces that pair of
 /// independent booleans.
@@ -17,9 +17,9 @@ pub enum ModelPickerLevel {
     /// Nothing is mounted.
     #[default]
     Closed,
-    /// Level one: the thinking-tier slider card (R59 R1).
+    /// The thinking-tier slider card for models with tiers (R59 R1).
     Slider,
-    /// Level two: the model list, reached from the slider's title (R59 R2/R3).
+    /// The model list, reached from the slider title or directly when tiers are absent.
     List,
 }
 
@@ -141,7 +141,7 @@ pub struct ConversationStream {
     /// Provider/model/thinking composer defaults (A2-14). Display state for
     /// the selector; authority is the app-level config seam.
     pub(crate) composer_defaults: ComposerDefaults,
-    /// R57 P3: the thinking-tier slider (P2a) mounted inside the model popup.
+    /// R57 P3: the thinking-tier slider (P2a), shown as a picker layer when tiers exist.
     /// It reads the exact `(provider, model)` profile the stream already
     /// received through [`Self::apply_reasoning_profile`]; this entity owns no
     /// store handle and performs no IO.
@@ -156,7 +156,7 @@ pub struct ConversationStream {
     /// by construction: `render_model_picker_layers` matches on this and
     /// mounts exactly one floating layer per frame (R59 A3).
     pub(crate) model_picker_level: ModelPickerLevel,
-    /// Scroll state for the model list (level two). The list carries an
+    /// Scroll state for the model list. The list carries an
     /// explicit `max_h` (R59 R5), so a long catalog scrolls inside the layer
     /// and the highlighted row is kept in view during keyboard navigation.
     pub(crate) model_menu_scroll: ScrollHandle,
@@ -837,6 +837,11 @@ impl ConversationStream {
         self.thinking_slider.update(cx, |slider, cx| {
             slider.set_model_and_tiers(model_name, tiers, supports_off, current, default_tier, cx);
         });
+        if self.model_picker_level == ModelPickerLevel::Slider
+            && !self.thinking_slider.read(cx).has_tiers()
+        {
+            self.model_picker_level = ModelPickerLevel::Closed;
+        }
     }
 
     /// R57 P3: routes one slider selection onto the existing
@@ -1026,9 +1031,8 @@ impl ConversationStream {
 
     /// Enter/Space on the focused model selector trigger (A2-14).
     ///
-    /// R59 R1: the trigger opens **level one** — the tier slider card — and
-    /// never the model list. From there the key is a plain toggle, because
-    /// level one has no rows to accept. Only level two keeps the pre-existing
+    /// R59 R1 / I68: the trigger opens the slider when tiers exist, otherwise
+    /// it opens the model list directly. Only the list keeps the pre-existing
     /// "Enter accepts the highlighted model" behaviour.
     pub(crate) fn on_activate_model(
         &mut self,
@@ -1045,7 +1049,11 @@ impl ConversationStream {
         }
         if !self.model_picker_level.is_open() {
             self.close_composer_popovers(cx);
-            self.open_model_picker_slider(cx);
+            if self.thinking_slider.read(cx).has_tiers() {
+                self.open_model_picker_slider(cx);
+            } else {
+                self.open_model_picker_list(cx);
+            }
             return;
         }
         if self.model_picker_level == ModelPickerLevel::Slider {
@@ -1095,6 +1103,10 @@ impl ConversationStream {
         {
             return;
         }
+        self.open_model_picker_list(cx);
+    }
+
+    fn open_model_picker_list(&mut self, cx: &mut Context<Self>) {
         self.model_picker_level = ModelPickerLevel::List;
         self.model_selector_highlight = self
             .model_options

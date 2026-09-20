@@ -902,12 +902,12 @@ impl ConversationStream {
         px(Layout::COMPOSER_PICKER_MAX_HEIGHT)
     }
 
-    /// R59 R1 / R61 R1: **level one** — the tier slider card, and nothing else.
+    /// R59 R1 / R61 R1: the tier slider card, and nothing else.
     ///
     /// R57 mounted this card as the model menu's last child (D1); here it is a
     /// standalone floating layer with its own chrome (R4). A model that
-    /// declares no tiers renders nothing at all (R57 R12), so the layer is not
-    /// mounted in that case rather than leaving an empty padded card behind.
+    /// declares no tiers opens the list directly (I68), so the slider layer
+    /// is not mounted rather than leaving an empty padded card behind (R57 R12).
     ///
     /// R61 R1: `bottom: 100%` + [`Layout::COMPOSER_PICKER_TRIGGER_GAP`] places
     /// the card's bottom edge that far above the **trigger's** top edge, and
@@ -940,8 +940,8 @@ impl ConversationStream {
         .into_any_element()
     }
 
-    /// R59 R2/R3: **level two** — the model list, reached only from the
-    /// slider's title row.
+    /// R59 R2/R3 / I68: the model list, reached from the slider title when
+    /// tiers exist or directly from the trigger when they do not.
     ///
     /// The list is bounded by [`Self::picker_max_height`] and scrolls inside
     /// that bound, so a long catalog cannot grow the layer without limit (R61
