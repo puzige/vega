@@ -1,65 +1,32 @@
 use super::*;
 
-struct DiffRefreshProbe {
-    generation: Option<u64>,
-    refreshing: bool,
-    refresh_error: Option<GitWorkspaceErrorCode>,
-    row_count: usize,
-    snapshot_stats: Option<WorkspaceStats>,
-}
-
-impl DiffRefreshProbe {
-    fn summary(&self) -> String {
-        format!(
-            "generation={:?} refreshing={} refresh_error={:?} row_count={} snapshot_stats={:?}",
-            self.generation,
-            self.refreshing,
-            self.refresh_error,
-            self.row_count,
-            self.snapshot_stats,
-        )
-    }
-}
-
-fn pump_diff_refresh_stage(
+/// Completes the refresh currently in flight on the active route with an
+/// injected worker result.
+///
+/// The refresh is still started through the production entry points
+/// (`schedule_diff_refresh*` / `retry_workspace_diff`), so their routing,
+/// progress intent and one-refresh bookkeeping stay covered. Only the worker's
+/// terminal `Ready`/`Failed` value is supplied here instead of waiting for a
+/// real `/usr/bin/git` child. The request-sequence fence makes this
+/// deterministic: a later real-worker result for the same sequence is dropped
+/// by `ActiveDiffRoute::complete_refresh`, so no assertion depends on a Git
+/// child winning a wall-clock race — which is what made the previous
+/// real-worker pump flaky under parallel load.
+fn finish_injected_refresh(
+    root: &Entity<VegaWindow>,
+    identity: &DiffRouteIdentity,
+    result: DiffRefreshWorkerResult,
     cx: &mut gpui_kit::TestAppContext,
-    view: &Entity<DiffView>,
-    stage: &str,
-    mut ready: impl FnMut(&DiffView) -> bool,
 ) {
-    for _ in 0..400 {
-        cx.executor().advance_clock(DIFF_RESULT_POLL);
-        cx.run_until_parked();
-        let (is_ready, probe) = view.read_with(cx, |view, _| {
-            let probe = DiffRefreshProbe {
-                generation: view.generation(),
-                refreshing: view.is_refreshing(),
-                refresh_error: view.refresh_error(),
-                row_count: view.row_count(),
-                snapshot_stats: view.snapshot_stats(),
-            };
-            (ready(view), probe)
-        });
-        if is_ready {
-            return;
-        }
-        if !probe.refreshing {
-            panic!(
-                "diff refresh stage {stage} reached terminal state without success: {}",
-                probe.summary()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-
-    let probe = view.read_with(cx, |view, _| DiffRefreshProbe {
-        generation: view.generation(),
-        refreshing: view.is_refreshing(),
-        refresh_error: view.refresh_error(),
-        row_count: view.row_count(),
-        snapshot_stats: view.snapshot_stats(),
+    root.update(cx, |root, cx| {
+        let request_seq = root
+            .diff_controller
+            .active
+            .as_ref()
+            .and_then(|active| active.refresh_in_flight)
+            .expect("in-flight refresh sequence");
+        root.finish_diff_refresh(identity, request_seq, result, cx);
     });
-    panic!("diff refresh stage {stage} timed out: {}", probe.summary());
 }
 
 pub(crate) fn scrub_fixture_git_environment(command: &mut Command) {
@@ -447,20 +414,36 @@ async fn diff_refresh_intents_keep_content_during_background_and_retry(
             .expect("diff refresh intent route")
     });
 
+    // Initial: an explicit (progress) intent started through the production
+    // entry point. One real, synchronous refresh supplies the non-empty
+    // snapshot; the terminal result is injected through `finish_diff_refresh`.
+    let (service, initial_snapshot) = receive_refresh(None, Some(repo.path().to_path_buf()));
+    let initial_generation = initial_snapshot.generation;
+    let initial_head = initial_snapshot.head.clone();
     root.update(cx, |root, cx| {
         root.schedule_diff_refresh_with_progress(&identity, true, cx);
     });
     assert!(view.read_with(cx, |view, _| {
         view.is_refreshing() && view.is_refresh_progress_visible()
     }));
-    pump_diff_refresh_stage(cx, &view, "initial", |view| {
+    finish_injected_refresh(
+        &root,
+        &identity,
+        DiffRefreshWorkerResult::Ready {
+            service: service.clone(),
+            snapshot: initial_snapshot.clone(),
+        },
+        cx,
+    );
+    assert!(view.read_with(cx, |view, _| {
         !view.is_refreshing() && view.generation().is_some() && view.row_count() > 0
-    });
+    }));
     let initial_stats = view
         .read_with(cx, |view, _| view.snapshot_stats())
         .expect("initial diff stats");
     assert_eq!(initial_stats.file_count, 1);
 
+    // Background: no progress marker, old content and stats stay visible.
     root.update(cx, |root, cx| root.schedule_diff_refresh(&identity, cx));
     let background_state = view.read_with(cx, |view, _| {
         (
@@ -478,20 +461,13 @@ async fn diff_refresh_intents_keep_content_during_background_and_retry(
     assert_eq!(background_state.2, 1, "the old file row remains visible");
     assert_eq!(background_state.3, Some(initial_stats.clone()));
 
-    root.update(cx, |root, cx| {
-        let request_seq = root
-            .diff_controller
-            .active
-            .as_ref()
-            .and_then(|active| active.refresh_in_flight)
-            .expect("background request sequence");
-        root.finish_diff_refresh(
-            &identity,
-            request_seq,
-            DiffRefreshWorkerResult::Failed(GitWorkspaceErrorCode::GitFailed),
-            cx,
-        );
-    });
+    // Typed failure keeps the last snapshot and its stats.
+    finish_injected_refresh(
+        &root,
+        &identity,
+        DiffRefreshWorkerResult::Failed(GitWorkspaceErrorCode::GitFailed),
+        cx,
+    );
     assert_eq!(
         view.read_with(cx, |view, _| {
             (
@@ -509,6 +485,7 @@ async fn diff_refresh_intents_keep_content_during_background_and_retry(
         )
     );
 
+    // Retry: explicit progress again, then success clears the error.
     root.update(cx, |root, cx| {
         root.retry_workspace_diff(
             view.clone(),
@@ -522,16 +499,45 @@ async fn diff_refresh_intents_keep_content_during_background_and_retry(
     assert!(view.read_with(cx, |view, _| {
         view.is_refreshing() && view.is_refresh_progress_visible()
     }));
-    pump_diff_refresh_stage(cx, &view, "retry", |view| {
+    finish_injected_refresh(
+        &root,
+        &identity,
+        DiffRefreshWorkerResult::Ready {
+            service: service.clone(),
+            snapshot: initial_snapshot.clone(),
+        },
+        cx,
+    );
+    assert!(view.read_with(cx, |view, _| {
         !view.is_refreshing() && view.refresh_error().is_none()
-    });
+    }));
 
-    run_fixture_git(repo.path(), &["checkout", "--", "tracked.rs"]);
+    // Clean-empty snapshot: a background refresh keeps the old row until the
+    // terminal result swaps in a zero-file snapshot with 0/0/0 stats.
+    let clean_snapshot = WorkspaceSnapshot {
+        generation: initial_generation + 1,
+        head: initial_head,
+        files: Vec::new(),
+        stats: WorkspaceStats {
+            file_count: 0,
+            additions: WorkspaceLineCount::Known(0),
+            deletions: WorkspaceLineCount::Known(0),
+        },
+    };
     root.update(cx, |root, cx| root.schedule_diff_refresh(&identity, cx));
     assert!(view.read_with(cx, |view, _| {
         view.is_refreshing() && !view.is_refresh_progress_visible() && view.row_count() == 1
     }));
-    pump_diff_refresh_stage(cx, &view, "clean-empty", |view| {
+    finish_injected_refresh(
+        &root,
+        &identity,
+        DiffRefreshWorkerResult::Ready {
+            service,
+            snapshot: clean_snapshot,
+        },
+        cx,
+    );
+    assert!(view.read_with(cx, |view, _| {
         !view.is_refreshing()
             && view.refresh_error().is_none()
             && view.row_count() == 0
@@ -540,7 +546,7 @@ async fn diff_refresh_intents_keep_content_during_background_and_retry(
                     && stats.additions == WorkspaceLineCount::Known(0)
                     && stats.deletions == WorkspaceLineCount::Known(0)
             })
-    });
+    }));
 }
 
 #[gpui_kit::test]
