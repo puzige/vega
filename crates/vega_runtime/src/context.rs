@@ -197,12 +197,28 @@ pub enum ContextRuntimeError {
     /// otherwise unusable.
     #[error("context summary response was invalid")]
     InvalidSummary,
+    /// The summary provider exhausted its output allowance. Only byte/token
+    /// counts are retained; neither visible nor reasoning content is exposed.
+    #[error(
+        "context summary output truncated (visible {visible_bytes} bytes, thinking {thinking_bytes} bytes)"
+    )]
+    SummaryOutputTruncated {
+        /// Visible text bytes received before the terminal Length event.
+        visible_bytes: usize,
+        /// Thinking bytes received before the terminal Length event.
+        thinking_bytes: usize,
+        /// Provider-reported output tokens, when supplied.
+        output_tokens: Option<u64>,
+    },
     /// The source fence changed before the asynchronous result could commit.
     #[error("context source changed while compaction was running")]
     SourceChanged,
     /// The bounded source could not be safely represented to the summarizer.
     #[error("context summary source exceeds the bounded compaction plan")]
     SourceTooLarge,
+    /// Ordered segment summaries plus any predecessor exceed the aggregate byte ceiling.
+    #[error("context summary aggregate exceeds the bounded plan")]
+    AggregateTooLarge,
     /// The compactable prefix contains images whose provider-safe multimodal
     /// summary representation is unavailable.
     #[error("context summary cannot safely represent historical images")]
@@ -392,6 +408,7 @@ impl ContextCompactionStatusFailure {
                 Self::NoCompactablePrefix
             }
             VegaError::Context(ContextRuntimeError::SourceTooLarge) => Self::TooLarge,
+            VegaError::Context(ContextRuntimeError::AggregateTooLarge) => Self::TooLarge,
             VegaError::Context(ContextRuntimeError::SummaryInputOverLimit { .. }) => {
                 Self::OverLimit
             }
@@ -400,7 +417,9 @@ impl ContextCompactionStatusFailure {
             VegaError::Context(ContextRuntimeError::OverLimit { .. })
             | VegaError::Context(ContextRuntimeError::Estimate(_)) => Self::OverLimit,
             VegaError::Context(
-                ContextRuntimeError::InvalidSummary | ContextRuntimeError::SummaryTimedOut,
+                ContextRuntimeError::InvalidSummary
+                | ContextRuntimeError::SummaryTimedOut
+                | ContextRuntimeError::SummaryOutputTruncated { .. },
             ) => Self::InvalidSummary,
             _ => Self::Unavailable,
         }

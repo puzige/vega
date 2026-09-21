@@ -52,3 +52,47 @@ This validates avoidance of premature compaction through the real production pro
 - Final `scripts/cargo-lock.sh clippy --workspace --all-targets -- -D warnings`: exit 0 (`final-clippy.log`).
 - First full workspace test attempt stopped in the app crate: 181 passed / 1 failed, exit 101. Existing `tests::r69::issue74_repeated_first_send_pins_once` timed out waiting for its terminal state at `r69.rs:665`; original log `final-workspace-tests.log` retained.
 - Exact isolated rerun passed 1/1 in 0.40 seconds, exit 0 (`issue74-gate-isolation.log`), without source changes. Complete workspace rerun passed: 1,652 passed / 0 failed / 9 ignored across 35 result summaries, exit 0 (`final-workspace-tests-retry.log`), without source changes. The original timeout remains disclosed as an intermittent gate failure.
+
+## Packaged candidate and native continuation
+
+Candidate code commit `7fa10a0`. `scripts/cargo-lock.sh xtask package` passed, exit 0 (`final-package.log`). Installed executable SHA-256 matches the package: `2092a2d8d55004bd5581ddaeaf82cc2cc54528b4eb706346af28487a1883c8bb`; `codesign --verify --deep --strict` passed. Before installation, a read-only check found no active messages; the previous App and a fresh read-only database snapshot were saved outside the worktree. The installed process exited normally before replacement.
+
+The candidate opened the latest reported failed thread successfully. Its existing failure history remains visible with the revised local-budget wording. `native-before-continuation.png` is saved, inspected and hashed in the manifest; it is not a successful continuation screenshot. The original thread's four messages and 108 tool records are captured for post-run field comparison. Owner has been asked for one harmless manual submission because GPUI synthetic Composer input is unreliable. U91-8, restart verification, integration and closure remain pending.
+
+## 2026-09-21 failed owner acceptance and corrective amendment
+
+Owner reports another failure in the original thread after further work. Read-only snapshot `sept21-failure.db`, original owner screenshot `sept21-reported-failure.png`, and content-free `sept21-failure-metadata.json` are preserved privately. The current installed executable is `76ea301e53df0cd2e577da146e48623e25e60cf88b2aae2bee843312e35dd642`, matching the master checkout's package and lacking #91's local-budget copy. It replaced the prior #91 candidate. Therefore this attempt cannot be counted as acceptance of `7fa10a0`. No attribution of who replaced it is inferred.
+
+The latest durable attempt is `invalid_summary`, source revision 350, estimated input 244,158, input budget 300,000, target 180,000, no checkpoint. Six summary outputs: 3,689 / 3,733 / 5,813 / 5,699 / 7,294 / 8,192 tokens. The final stop reason was not persisted, so truncation is a hypothesis, not a recorded fact. Code review identifies an uncovered structural risk: each stage resubmits and rewrites the entire prior summary under the same cap. Run-local usage anchoring cannot protect the first request after reopen from this path. U91-8 remains unaccepted.
+
+The main agent froze U5 before delegating the correction and expanded real acceptance to first-request, multi-stage compaction and reopened continuation. No private database/config edits and no cap increase are authorized. The branch was rebased onto `bf43965` to retain the independently delivered model-picker and bash diagnostics changes; an export-list conflict was resolved by retaining both sets of exports. Rebased #91 commit is `c626294`. Delivery changes were backed up before rebase and restored. New gates, build identity and evidence are required.
+
+### U5 red/green progress
+
+The owned long-source regression failed on the old rolling implementation with `InvalidSummary`, six recorded stage usages, exit 101 (`sept21-independent-red.log`). Its fault-injection provider was strengthened to detect the actual prior returned summary body, independent of the wrapper wording. The strengthened test was run against the old `compaction.rs` again and failed at the sixth stage (`sept21-independent-red-strengthened.log`); the saved new implementation was restored exactly. This scripted provider models accumulation-dependent output exhaustion and is not evidence of the historical remote stop reason.
+
+The initial new independent-stage implementation passed the production compaction regression (`sept21-independent-green1.log`), including reconstruction of the complete large original output from stage requests, ordered segment facts, per-stage bounds/usage and one final checkpoint. Additional boundary regression, real provider, full gates and renewed native acceptance remain pending.
+
+Diagnostic limitation: the app currently has no tracing subscriber initialization. New content-free tracing stage fields are observable when a subscriber is installed; this card does not claim persistent native diagnostic logs. A typed `SummaryOutputTruncated` error carries visible/thinking byte counts and optional output usage to callers, while preserving the durable `invalid_summary` mapping. Real-provider acceptance observes the unchanged stream directly for stop reason and byte counts.
+
+### U5 targeted gate handoff
+
+Final affected conversation-library run: 432 passed / 0 failed / 3 ignored, exit 0 (`sept21-conversation-lib-green2.log`). Issue91 cases: 4 passed (`sept21-issue91-green2.log`); runtime/conversation strict all-target Clippy passed (`sept21-affected-clippy.log`); format/diff checks passed. An earlier library attempt failed one existing prompt-contract assertion for the literal phrase `exact paths`; the prompt was corrected to retain that explicit requirement, and the original failed log (`sept21-conversation-lib-green.log`) is preserved.
+
+Coverage includes old checkpoint inclusion exactly once, unchanged raw records and predecessor on aggregate target rejection, the aggregate byte bound, complete ordered source-stage coverage, and genuine later Length/cancellation retaining prior usage with no commit. New source diagnostics and `SummaryOutputTruncated` retain content-free counts, not text. Main review found no remaining production-code issue at handoff. Temporary owned multi-stage acceptance is next; no final green/native claim yet.
+
+### U91-11 first real attempt — retained as FAILED
+
+Compilation and offline preflight passed. The first real run made four independent summary calls (all End, outputs 1,786 / 2,429 / 1,409 / 1,596 tokens) and two primary calls (both End). Both primary answers preserved the four required historical facts; one checkpoint, all original message/tool fields, owned files, and exact-once source coverage checks passed.
+
+The test nevertheless exited 101 after 46.87 seconds: an overbroad observer assertion rejected historical tool IDs even when mentioned as ordinary summary text. U5 explicitly preserves relevant exact identifiers; only structured tool replay is forbidden. At the point of failure, the first primary's exact checkpoint wrapper/no-Tool-role checks had passed, but the second primary's wire assertions had not run. This attempt is not accepted/green. Evidence `sept21-owned-multistage-result-first.json` preserves the failed log and executed harness hashes.
+
+Main review authorized correcting only the test boundary: distinguish normal text mentions from Tool roles, `tool_call_id` and `tool_calls`; verify both primary requests. No production code, fixture, budget or provider data changes are allowed to make the retry pass. A second independently logged real run is required.
+
+### U91-11 second real attempt — PASSED
+
+The corrected observer ran the same fixture/budget against unchanged production/provider code: 1 passed, exit 0, 44.26 seconds (`sept21-owned-real-second.log`). Four independent summary calls all returned End, input usage 11,525 / 11,484 / 11,405 / 11,368 and output usage 1,139 / 2,200 / 1,474 / 1,461. Both primary calls returned End and correctly recalled the early project/read-only constraints, parser failure and later TSV correction.
+
+Actual primary input usage was 4,192 then 4,323. Both wire requests contained the exact production checkpoint message once, zero Tool-role messages, zero structured `tool_call_id` values and zero structured tool calls. Each contained 29 textual historical ID mentions, all within the checkpoint body and none elsewhere; this confirms why the previous prose-ID assertion was invalid. All 48 source markers appeared in exactly one summary request; all fields of the four original messages and 48 tool records, 48 owned files and the single checkpoint remained unchanged, including after fresh-Store reopen.
+
+Evidence/hashes: `sept21-owned-multistage-result-second.json`, final harness `sept21-owned-multistage-harness-second.rs`, and explicit assertion-correction patch. Both failed first attempt and passed second attempt remain archived. Temporary source/module were removed. Full workspace gates, packaging and native original-session acceptance must still pass on this final revision.

@@ -58,3 +58,29 @@ Tests must assert decision/event behavior through production entry points, not j
 ## Gates and constraints
 
 All Cargo operations via `scripts/cargo-lock.sh`; shared target must be serialized with other task worktrees. Final fmt, workspace/all-target strict Clippy, workspace tests, package and native acceptance. Another task may be using the installed app: inspect active tasks before installation/restart and do not interrupt them. Private evidence lives outside disposable worktrees. Revert this card's squash commit for rollback; no user database/config rewrite is part of delivery.
+
+## 2026-09-21 amendment — U5: first-request multi-stage compaction
+
+The owner reports another native `invalid_summary` on the same thread after continued real work. Read-only evidence shows six summary calls with the final output usage exactly 8192 and no checkpoint. The installed App had been replaced by a newer master build that did not contain #91; nevertheless U3 deliberately falls back to estimation on a new run, so usage anchoring alone does not cover this first-request failure path. Preserve the original evidence and do not treat the previous two-primary-call fixture as acceptance of this path. Actual stop reason was not persisted; truncation for that historical call remains an inference.
+
+This amendment authorizes a bounded correction to the summary strategy within #91, superseding only the rolling accumulation in #76's #88 C1 amendment. It preserves the nine-section coverage goals and all source, authority, persistence and usage invariants.
+
+### U5 contract
+
+- Summarize each planned, labelled historical source segment independently. A later stage must not inherit the complete output of earlier stages and repeatedly rewrite it under the same output cap. Every original source byte reaches exactly its planned segment; do not discard source, truncate a result into apparent success, or execute historical tools.
+- Prompt each stage to cover facts present in that segment only, preserve requirements/corrections and exact identifiers where relevant, and avoid inventing missing facts. Keep the nine-section structure and untrusted-data boundary. State that segment summaries are chronological partial history, so later explicit corrections supersede earlier state.
+- Aggregate the previous committed checkpoint (if any, exactly once and unmodified) and completed segment summaries in chronological order with explicit boundaries. Commit exactly one final checkpoint only after validating the full projection with the unchanged target and source CAS. Preserve newest-user suffix/tool pairing exactly. Aggregate size must remain explicitly bounded (at most the existing 64 MiB plan ceiling); over-limit aggregation or final target failure leaves the previous checkpoint and raw audit unchanged.
+- Keep the 8192/request-reserve output ceiling, 32 KiB collected per-stage text ceiling, 60-second stage timeout, 32 KiB new-source packing target, 128 KiB single-request byte limit, 512-stage bound, 64 MiB source-plan bound and the configured trigger/target. No dependency or schema change.
+- Preserve each stage's usage even on later failure. Genuine Length, malformed/empty/unterminated summaries, cancellation and provider errors still fail safely; do not automatically accept a cap-sized partial response. Add content-free stage diagnostics sufficient to distinguish normal End versus Length and visible/thinking byte counts, without logging any transcript, arguments, reasoning, credentials or raw provider error body.
+- Existing committed summaries are not silently re-summarized or deleted to force a fit. Very large aggregate/current suffix may still fail the explicit target check; no promise of compressing arbitrary incompressible history.
+
+### Additional acceptance (must precede delivery)
+
+| ID | Operation / risk | Required observation |
+| --- | --- | --- |
+| U91-9 | Owned multi-segment history with a provider that exhausts the output cap when required to carry and rewrite accumulated prior summaries | Valid old-code red with no checkpoint; new independent stages receive all labelled source exactly once, preserve ordered facts, install a single checkpoint and continue the primary run |
+| U91-10 | Prior checkpoint, aggregate beyond target/byte bound, genuine later-stage Length/cancel | Predecessor included exactly once, failure leaves audit/checkpoint intact, all known stage usage retained, diagnostics distinguish cause |
+| U91-11 | Owned real provider, at least three independent summary stages, early requirement and later correction, normal primary continuation and reopen | Actual stage End/usage metadata, correct continuation answer, one checkpoint, original fixture rows unchanged on all fields, restored projection valid after opening a fresh store |
+| U91-8 renewed | Candidate rebased on latest master and installed exclusively, owner native continuation of original failed thread | Verify executable hash before/after run; if another task replaces App, mark build invalid rather than claim this candidate passed/failed; save real screenshot and audit/restart evidence |
+
+The main agent freezes this amendment before delegating implementation. Existing rolling-specific tests may be updated only for the expressly changed request strategy; complete-source coverage, error, usage and checkpoint assertions must remain. Run affected regressions and full gates after integration with master.
