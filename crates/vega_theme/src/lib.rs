@@ -337,7 +337,16 @@ impl Layout {
     /// Codex native measurement puts the gap at ≈32px.
     pub const SHELL_SLOT_GUTTER: f32 = 32.0;
     /// Maximum readable width for conversation, settings, and diff content.
-    pub const CONTENT_MAX_WIDTH: f32 = 820.0;
+    ///
+    /// Issue #100: this is the **same** width the Composer uses
+    /// ([`Layout::COMPOSER_MAX_WIDTH`]). The reference implementation drives
+    /// both the thread content column and the Composer container from a single
+    /// token (`--thread-content-max-width: 48rem` = 768px), so the two surfaces
+    /// share one edge. Vega previously froze two independently measured values
+    /// (820 / 736) and the Composer sat 42px narrower on each side. The two
+    /// constants stay separate literals so each remains independently pinned,
+    /// and the frozen test in this file asserts they are equal.
+    pub const CONTENT_MAX_WIDTH: f32 = 768.0;
     /// Minimum horizontal page padding around a readable content column.
     pub const CONTENT_PADDING: f32 = 16.0;
     /// Radius for ordinary panels and cards.
@@ -463,8 +472,13 @@ impl Layout {
     /// structural invariant test in
     /// `sidebar/threads_block/organization/tests.rs`.
     pub const SIDEBAR_SECTION_GAP: f32 = 12.0;
-    /// Composer width cap; the thread column remains wider for readable output.
-    pub const COMPOSER_MAX_WIDTH: f32 = 736.0;
+    /// Composer width cap.
+    ///
+    /// Issue #100: equal to [`Layout::CONTENT_MAX_WIDTH`] by contract — the
+    /// Composer and the body column share one edge, because the reference
+    /// implementation drives both from a single `--thread-content-max-width`
+    /// (48rem = 768px). The frozen test in this file fails if the two diverge.
+    pub const COMPOSER_MAX_WIDTH: f32 = 768.0;
     /// Fixed wide-screen Environment rail width (304px card + 16px inset).
     pub const ENVIRONMENT_RAIL_WIDTH: f32 = 320.0;
     /// Width of the Environment card inside its rail.
@@ -608,8 +622,24 @@ mod tests {
         assert_eq!(Layout::SIDEBAR_RESIZE_HIT_AREA, 5.0);
         assert_eq!(Layout::MAIN_CONTENT_GAP, 0.0);
         assert_eq!(Layout::MAIN_HEADER_HEIGHT, 46.0);
-        assert_eq!(Layout::CONTENT_MAX_WIDTH, 820.0);
-        assert_eq!(Layout::COMPOSER_MAX_WIDTH, 736.0);
+        // Issue #100: the body column and the Composer share one width. The
+        // reference implementation drives both from a single
+        // `--thread-content-max-width` (48rem = 768px); Vega previously froze
+        // two independently measured values (820 / 736) and the Composer sat
+        // 42px narrower on each side.
+        assert_eq!(Layout::CONTENT_MAX_WIDTH, 768.0);
+        assert_eq!(Layout::COMPOSER_MAX_WIDTH, 768.0);
+        // R2: the two must never drift apart. Checked at compile time (like the
+        // R61 relation) so a one-sided edit fails the build rather than merely
+        // changing one token and leaving a token-to-token assertion to catch it.
+        const {
+            assert!(Layout::CONTENT_MAX_WIDTH == Layout::COMPOSER_MAX_WIDTH);
+        }
+        assert_eq!(
+            Layout::CONTENT_MAX_WIDTH,
+            Layout::COMPOSER_MAX_WIDTH,
+            "the body column and the Composer must share one width (issue #100)"
+        );
         assert_eq!(Layout::COMPOSER_RADIUS, 20.0);
         assert_eq!(Layout::COMPOSER_MIN_HEIGHT, 100.0);
         assert_eq!(Layout::ENVIRONMENT_RAIL_WIDTH, 320.0);

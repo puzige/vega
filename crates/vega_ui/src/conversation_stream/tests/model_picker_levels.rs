@@ -15,7 +15,7 @@
 //! - R59 D3 the card's rows collided;
 //! - R61 D1 the R59 column anchoring left the card a whole utility-bar height
 //!   away from the model button;
-//! - R61 D2 the same anchoring right-aligned the card to the 736px container
+//! - R61 D2 the same anchoring right-aligned the card to the 768px container
 //!   edge instead of to the trigger.
 //!
 //! R61 accepts that a trigger-anchored card overlaps the R49 utility bar: the
@@ -512,7 +512,7 @@ async fn r59_the_slider_card_is_never_nested_in_the_list(cx: &mut TestAppContext
 /// because the layers hung off the composer **column**; R61 hangs them off the
 /// trigger's own wrapper, so `right_0()` is structural and the assertion can be
 /// exact rather than derived. It also pins R61 D2: a layer aligned to the
-/// 736px container edge would sit 254.5px to the right of the trigger's edge
+/// 768px container edge would sit 254.5px to the right of the trigger's edge
 /// for the card and ~350px for the list.
 #[gpui_kit::test]
 async fn r61_both_layers_align_with_the_model_trigger(cx: &mut TestAppContext) {

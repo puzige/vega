@@ -44,8 +44,8 @@ range below is implemented at its named target.
 | Environment card radius | 18–20 | **18** | ±1; subtle border and small shadow |
 | Persistent Review pane | about 674 at 1404-wide foreground window | adaptive 43% with existing 270 minimum | divider 5; user resize persists |
 | Bottom terminal | about 273 high | **272** default | existing 150 minimum and resize persist |
-| Readable conversation column | about 820 maximum | **820** | centered |
-| Composer | about 736 × 99 | **736 max**, 100 minimum shell | ±1 width; content may grow for multiline/error states |
+| Readable conversation column | about 820 maximum | **768** | centered; issue #100 changed 820 → 768 |
+| Composer | about 736 × 99 | **768 max** (equal to the body column), 100 minimum shell | issue #100 changed 736 → 768; content may grow for multiline/error states |
 | Composer bottom inset | about 15 | **16** | ±1 |
 | Composer radius | about 20 | **20** | ±1 |
 | Sidebar row | 32–34 | **32** | ±1 |

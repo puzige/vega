@@ -17,7 +17,7 @@
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ Sidebar (304px*) │  Thread View (flex, max 820px 居中) │
+│ Sidebar (304px*) │  Thread View (flex, max 768px 居中) │
 │  - 新建任务       │   ┌──────────────────────────┐     │
 │  - 搜索           │   │ 消息流（滚动区）           │     │
 │  - 自动化(P3)     │   │  - 用户消息                │     │
@@ -33,8 +33,8 @@
 |---|---|
 | 侧边栏宽度 | 默认 304px，可拖拽于 240–365px，可折叠至 0（Cmd+B）；宽度与折叠状态分别记忆 |
 | 主 Header | 46px；底部 1px 分隔线 |
-| 会话内容列 | max-width 820px，水平居中，左右留白 ≥16px |
-| Composer | 底部固定，max-width 736px、min-height 100px、bottom inset 16px；圆角 20px，边框 1px + 单层克制阴影；发送/停止 28×28px |
+| 会话内容列 | max-width 768px，水平居中，左右留白 ≥16px；与 Composer **同宽**（issue #100） |
+| Composer | 底部固定，max-width 768px（与正文列同宽，issue #100）、min-height 100px、bottom inset 16px；圆角 20px，边框 1px + 单层克制阴影；发送/停止 28×28px |
 | Environment | 宽屏 rail 320px，内含 304px 卡片与 16px 右 inset，圆角 18px；默认 Sidebar 下 1229/1230px 切换 overlay/rail，断点随有效 Sidebar 宽度一对一移动 |
 | 窗口最小尺寸 | 960×600；Sidebar 用户折叠、宽度驱动自动折叠与 Environment 选择彼此独立 |
 | 触控栏/标题栏 | 原生 macOS 标题栏透明融合（traffic lights 内嵌），不自绘 |
@@ -159,6 +159,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.9 (2026-09-10) R23 Sidebar footer 修正：常驻设置入口使用完整 32px 行高并铺满 Sidebar 的 12px 内边距内容列；不得叠加额外水平缩进或固定宽度。精确验收见 [R23 Sidebar footer fill](vega-r23-sidebar-footer-fill.md)。
 - v0.10 (2026-09-10) R24 Sidebar footer 复验修正：用户确认 R23 视觉未解决；设置入口保持 32px，但 hover/点击面改为与 Sidebar 左右及底部 edge-to-edge，普通内容继续保留 12px inset。精确验收见 [R24 Sidebar footer edge-to-edge](vega-r24-sidebar-footer-edge-to-edge.md)。
 - v0.11 (2026-09-10) R25 Sidebar 导航复验修正：普通 hover/selected token 改为中性灰；项目行去除独立 Chevron 并以 Folder open/closed 表达展开状态；导航行圆角统一为 8px；Settings 撤销 edge-to-edge 条带并回归 12px inset。精确验收见 [R25 Sidebar navigation](vega-r25-sidebar-navigation.md)。
+- v0.13 (2026-09-21) Issue #100 宽度一致：正文列与 Composer 统一为 768px（参考实现共用 `--thread-content-max-width: 48rem`），`CONTENT_MAX_WIDTH`/`COMPOSER_MAX_WIDTH` 恒等；窄窗下两者同时钳制且仍等宽。详见 [Issue #100 composer width](vega-issue-100-composer-width.md)。
 - v0.12 (2026-09-21) Issue #70 工具活动层级：连续调用默认收敛为无常驻 surface 的单行分组，展开后显示有序子调用并允许按调用展开安全 detail；严格投影、权限和失败可见性不变。精确验收见 [Issue #70 compact tool activity groups](vega-issue-70-tool-activity.md)。
 - v0.12 (2026-09-10) R26 Sidebar 分组与渐进显现：生产投影固定为 `PINNED / PROJECTS / RECENTS`，任务只出现一次；section、project 与 task 的辅助操作仅在所属区域 hover、键盘 focus 或菜单打开时可见，且保持既有 hitbox 与无布局跳动。精确验收见 [R26 Sidebar sections](vega-r26-sidebar-sections-hover.md)。
 - v0.13 (2026-09-11) R27 Sidebar 行栅格修正：Pinned 行移除重复 Pin 图标与空槽；项目 Folder 到名称使用 8px gap；项目名称与所有任务标题统一 32px 内容 inset；Pinned 项目元数据固定 85px 列宽。精确验收见 [R27 Sidebar row alignment](vega-r27-sidebar-row-alignment.md)。

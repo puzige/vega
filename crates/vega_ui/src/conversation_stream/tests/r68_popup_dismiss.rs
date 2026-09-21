@@ -61,7 +61,7 @@ fn mounted(
 /// A window point that is outside every popup under test.
 ///
 /// The popups are anchored to the chips, which sit in the utility bar at the
-/// bottom of a centred 736px column; the window's top-left corner is far from
+/// bottom of a centred 768px column; the window's top-left corner is far from
 /// all of them. `guard` asserts that the caller really is testing an *outside*
 /// click, so this helper cannot silently start clicking inside a popup.
 fn outside_point(

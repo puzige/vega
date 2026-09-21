@@ -21,6 +21,17 @@
 //! Issue #58 explicitly adds a fourth permission row: that picker keeps its
 //! recorded left edge, width and bottom anchor, growing upward by one row.
 //!
+//! ## Issue #100 re-baseline (2026-09-21)
+//!
+//! Issue #100 widened the Composer column from 736 to 768 to match the body
+//! column. Every layer here is anchored to that column, so all four shifted by
+//! exactly **16px** — half of the 32px the column grew — in the direction each
+//! layer hangs: left-anchored layers move −16, right-anchored layers +16. The
+//! heights, widths and the vertical geometry are unchanged. These are the
+//! intentional consequence of #100, not a `deferred` regression (same rationale
+//! as the R68 R13 note below): the contract is "`deferred` does not move
+//! geometry", not "geometry is frozen forever".
+//!
 //! ## What these tests cannot pin
 //!
 //! The paint **order** itself (A2). The GPUI test platform has no headless
@@ -167,8 +178,11 @@ async fn r64_permission_picker_bounds_match_the_baseline(cx: &mut TestAppContext
             f32::from(picker.size.width),
             f32::from(picker.bottom())
         ),
-        (445.0, 350.0, 1014.5),
-        "I58 must retain the R64 left edge, width and bottom anchor"
+        // Issue #100: the left edge moved 445.0 -> 429.0 because the Composer
+        // column widened 736 -> 768 (left-anchored layers move by -16, half of
+        // 32). The width and bottom anchor are unchanged.
+        (429.0, 350.0, 1014.5),
+        "I58 must retain the R64 width and bottom anchor (left edge re-baselined by issue #100)"
     );
     let added_row = bounds(window, "composer-permission-option-full_access", cx);
     assert_eq!(f32::from(added_row.size.height), 48.5);
@@ -187,7 +201,9 @@ async fn r64_picker_slider_layer_bounds_match_the_baseline(cx: &mut TestAppConte
     click(window, "composer-model", cx);
     assert_baseline(
         bounds(window, "composer-thinking-slider", cx),
-        (832.5, 905.0, 254.5, 109.0),
+        // Issue #100: right-anchored to the model trigger, which moved +16 with
+        // the 736 -> 768 column widening.
+        (848.5, 905.0, 254.5, 109.0),
         "the tier slider layer",
         "composer-thinking-slider",
     );
@@ -202,7 +218,8 @@ async fn r64_picker_list_layer_bounds_match_the_baseline(cx: &mut TestAppContext
     click(window, "thinking-slider-title", cx);
     assert_baseline(
         bounds(window, "composer-model-menu", cx),
-        (737.0, 694.0, 350.0, 320.0),
+        // Issue #100: right-anchored to the model trigger (+16).
+        (753.0, 694.0, 350.0, 320.0),
         "the model list layer",
         "composer-model-menu",
     );
@@ -233,7 +250,9 @@ async fn r64_project_menu_bounds_match_the_baseline(cx: &mut TestAppContext) {
     click(window, "composer-utility-project-chip", cx);
     assert_baseline(
         bounds(window, "composer-utility-project-menu", cx),
-        (433.5, 711.5, Layout::MENU_MAX_WIDTH, 215.0),
+        // Issue #100: the utility chip is left-anchored in the Composer column,
+        // so it moved -16 with the 736 -> 768 widening.
+        (417.5, 711.5, Layout::MENU_MAX_WIDTH, 215.0),
         "the utility-bar project menu (width updated by R68 R13)",
         "composer-utility-project-menu",
     );

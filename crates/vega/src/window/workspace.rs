@@ -1888,10 +1888,14 @@ mod tests {
             Layout::ENVIRONMENT_CARD_WIDTH,
             "Environment card width",
         );
+        // Issue #100: the Composer and the body column share one width. This
+        // window is 1403px with the Environment rail open, so the padded column
+        // is 747px and *both* surfaces clamp to it together — the contract is
+        // that they are equal, not that either reaches the 768px cap.
         assert_close(
             composer.size.width,
-            Layout::COMPOSER_MAX_WIDTH,
-            "composer width",
+            f32::from(conversation.size.width),
+            "composer width matches the body column (issue #100)",
         );
         assert!(
             f32::from(composer.size.height) >= Layout::COMPOSER_MIN_HEIGHT,
@@ -3111,10 +3115,13 @@ mod tests {
             (f32::from(panel.left()) + f32::from(rail.left())) / 2.0,
             "composer centers on the conversation column with the rail open",
         );
+        // Issue #100: with the rail open the padded column is 747px, below the
+        // 768px cap, so the Composer must equal the body column rather than
+        // reach the cap.
         assert_close(
             composer.size.width,
-            Layout::COMPOSER_MAX_WIDTH,
-            "composer width cap",
+            f32::from(shell_bounds(window, "conversation-column", cx).size.width),
+            "composer width matches the body column with the rail open",
         );
         assert!(
             f32::from(composer.size.height) >= Layout::COMPOSER_MIN_HEIGHT,
@@ -3129,10 +3136,17 @@ mod tests {
             (f32::from(panel.left()) + f32::from(panel.right())) / 2.0,
             "composer re-centers after the rail closes",
         );
+        // Without the rail the padded column is 1067px, so both surfaces reach
+        // the 768px cap and stay equal (issue #100).
         assert_close(
             composer.size.width,
             Layout::COMPOSER_MAX_WIDTH,
             "composer width cap without the rail",
+        );
+        assert_close(
+            composer.size.width,
+            f32::from(shell_bounds(window, "conversation-column", cx).size.width),
+            "composer width matches the body column without the rail",
         );
 
         // Opening the right dock re-centers and never overlaps the pane.
@@ -3276,10 +3290,12 @@ mod tests {
             );
         });
         assert!(shell_absent(window, "composer-utility-bar", cx));
+        // Issue #100: the session Composer keeps the body column's width (both
+        // clamp to the 747px padded column at this window size).
         assert_close(
             shell_bounds(window, "composer-shell", cx).size.width,
-            Layout::COMPOSER_MAX_WIDTH,
-            "session composer keeps its 736px cap",
+            f32::from(shell_bounds(window, "conversation-column", cx).size.width),
+            "session composer matches the body column width (issue #100)",
         );
     }
 
