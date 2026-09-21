@@ -7,6 +7,15 @@ const MCP_RESULT_LIMIT: usize = 256 * 1024;
 
 pub(crate) enum PreparedRuntimeCall {
     Readonly(RuntimeToolCall),
+    InvalidRead(RuntimeToolCall),
+    PinnedRead {
+        call: RuntimeToolCall,
+        execution: RuntimeToolCall,
+    },
+    ExternalRead {
+        call: RuntimeToolCall,
+        target: RuntimePermissionTarget,
+    },
     MixedRejected(RuntimeToolCall),
     Skill {
         call: RuntimeToolCall,
@@ -63,6 +72,8 @@ impl PreparedRuntimeCall {
     pub(crate) fn call(&self) -> &RuntimeToolCall {
         match self {
             Self::Readonly(call)
+            | Self::InvalidRead(call)
+            | Self::PinnedRead { call, .. }
             | Self::MixedRejected(call)
             | Self::InvalidSkill(call)
             | Self::Unknown(call)
@@ -70,6 +81,7 @@ impl PreparedRuntimeCall {
             | Self::InvalidWriteEdit { call, .. }
             | Self::InvalidBash { call, .. }
             | Self::InvalidMcp { call }
+            | Self::ExternalRead { call, .. }
             | Self::Mcp { call, .. }
             | Self::Write { call, .. }
             | Self::Edit { call, .. }
@@ -112,8 +124,8 @@ pub(crate) fn prepare_mixed_rejection_call(
     capabilities: &RunCapabilitySnapshot,
     raw_call: RuntimeToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {
-    if matches!(raw_call.name.as_str(), "write" | "edit") {
-        let audited = if raw_call.name == "write" {
+    if matches!(raw_call.name.as_str(), "Write" | "Edit" | "write" | "edit") {
+        let audited = if matches!(raw_call.name.as_str(), "Write" | "write") {
             base_tools.audit_write_json(&raw_call.input_json)
         } else {
             base_tools.audit_edit_json(&raw_call.input_json)
@@ -134,6 +146,37 @@ pub(crate) fn prepare_mixed_rejection_call(
         };
     }
     prepare_runtime_call(base_tools, config, capabilities, raw_call)
+}
+
+/// Replays use only the frozen safe identity and cannot yield an executable mutation.
+pub(crate) fn prepare_completed_mutation(
+    tools: &vega_tools::Tools,
+    config: &RuntimeToolConfig,
+    capabilities: &RunCapabilitySnapshot,
+    call: RuntimeToolCall,
+    prior: &CompletedToolCall,
+) -> Result<PreparedRuntimeCall, VegaError> {
+    if prior.tool == call.name
+        && let Ok(audit) = vega_tools::WriteEditAudit::from_json(&prior.input_json)
+    {
+        match tools.audit_replay_json(audit.tool(), &call.input_json, &audit) {
+            Ok(replayed) => {
+                return Ok(PreparedRuntimeCall::MixedRejected(RuntimeToolCall {
+                    input_json: replayed
+                        .to_json()
+                        .map_err(|_| safe_prepare_error(&call.name))?,
+                    ..call
+                }));
+            }
+            Err(vega_tools::PrepareMutationError::Invalid(invalid)) => {
+                return invalid_runtime_call(call, invalid);
+            }
+            Err(vega_tools::PrepareMutationError::Internal(_)) => {
+                return Err(safe_prepare_error(&call.name));
+            }
+        }
+    }
+    prepare_mixed_rejection_call(tools, config, capabilities, call)
 }
 
 #[derive(Clone)]
@@ -172,9 +215,46 @@ pub(crate) fn prepare_runtime_call(
         }));
     }
     match raw_call.name.as_str() {
-        "read" | "glob" | "grep" => Ok(PreparedRuntimeCall::Readonly(raw_call)),
-        "write" | "edit" => {
-            let tool = if raw_call.name == "write" {
+        "Read" | "read" => {
+            // Resolve before approval and replace aliases with the exact target.
+            // A failed resolution remains a normal failed Read, never a bypass.
+            if let Ok(mut input) = parse_input(&raw_call.name, &raw_call.input_json)
+                && validate_read_input(&input).is_ok()
+                && let Ok(path) = file_input_path(&input)
+                && let Ok(resolved) = base_tools.file_path(path)
+            {
+                let external = !resolved.starts_with(base_tools.root());
+                let target_path = resolved.to_string_lossy().into_owned();
+                if let Some(object) = input.as_object_mut() {
+                    object.remove("path");
+                    object.insert("file_path".into(), Value::String(target_path.clone()));
+                }
+                let call = RuntimeToolCall {
+                    input_json: input.to_string(),
+                    ..raw_call.clone()
+                };
+                if external {
+                    let target = RuntimePermissionTarget {
+                        call_id: call.id.clone(),
+                        tool: RuntimeMutatingTool::Read,
+                        exact_pattern: target_path.clone(),
+                        display_target: target_path,
+                    };
+                    return Ok(PreparedRuntimeCall::ExternalRead { call, target });
+                }
+                return Ok(PreparedRuntimeCall::PinnedRead {
+                    call: raw_call,
+                    execution: call,
+                });
+            }
+            Ok(PreparedRuntimeCall::InvalidRead(RuntimeToolCall {
+                input_json: "{}".into(),
+                ..raw_call
+            }))
+        }
+        "glob" | "grep" => Ok(PreparedRuntimeCall::Readonly(raw_call)),
+        "Write" | "Edit" | "write" | "edit" => {
+            let tool = if matches!(raw_call.name.as_str(), "Write" | "write") {
                 vega_tools::MutationTool::Write
             } else {
                 vega_tools::MutationTool::Edit
@@ -628,7 +708,79 @@ pub(crate) async fn authorize_call(
             RuntimeToolStatus::Rejected,
             Some(run_mode_denial()),
         ))),
-        PreparedRuntimeCall::Readonly(_) => {
+        PreparedRuntimeCall::ExternalRead { call, target } => {
+            if cancel.is_cancelled() {
+                return Ok(cancelled_permission(call));
+            }
+            let known = exact_rules.contains(&RuntimeExactRule {
+                tool: RuntimeMutatingTool::Read,
+                pattern: target.exact_pattern.clone(),
+            });
+            let (decision, source) = if config.permission_mode == RuntimePermissionMode::FullAccess
+            {
+                (RuntimeUserDecision::Once, RuntimeApprovalSource::FullAccess)
+            } else if known {
+                (RuntimeUserDecision::Always, RuntimeApprovalSource::Rule)
+            } else {
+                (
+                    wait_for_permission(
+                        hook,
+                        RuntimePermissionPrompt {
+                            target: target.clone(),
+                            danger: None,
+                        },
+                        config.permission_timeout,
+                        cancel,
+                    )
+                    .await
+                    .0,
+                    RuntimeApprovalSource::User,
+                )
+            };
+            let (decision, note, source, remember) = match decision {
+                RuntimeUserDecision::Once => (RuntimeApprovalDecision::Once, None, source, false),
+                RuntimeUserDecision::Always => (
+                    RuntimeApprovalDecision::Always,
+                    None,
+                    source,
+                    source == RuntimeApprovalSource::User,
+                ),
+                RuntimeUserDecision::Deny { note } => {
+                    (RuntimeApprovalDecision::Deny, note, source, false)
+                }
+                RuntimeUserDecision::Timeout => (
+                    RuntimeApprovalDecision::Deny,
+                    None,
+                    RuntimeApprovalSource::Timeout,
+                    false,
+                ),
+            };
+            let audit = RuntimeApprovalAudit {
+                decision,
+                note,
+                source,
+                danger: None,
+            };
+            if cancel.is_cancelled() {
+                return Ok(cancelled_permission(call));
+            }
+            if decision == RuntimeApprovalDecision::Deny {
+                Ok(Authorization::Terminal(terminal_result(
+                    call,
+                    "Tool error: permission denied".into(),
+                    RuntimeToolStatus::Rejected,
+                    Some(audit),
+                )))
+            } else {
+                Ok(Authorization::Approved {
+                    audit,
+                    remember_rule: remember.then(|| target.clone()),
+                })
+            }
+        }
+        PreparedRuntimeCall::Readonly(_)
+        | PreparedRuntimeCall::InvalidRead(_)
+        | PreparedRuntimeCall::PinnedRead { .. } => {
             if cancel.is_cancelled() {
                 return Ok(cancelled_permission(prepared.call()));
             }
@@ -688,8 +840,15 @@ pub(crate) async fn authorize_call(
             });
             decide_mutating_permission(
                 eligibility,
-                target,
-                config.permission_mode,
+                target.clone(),
+                if config.permission_mode == RuntimePermissionMode::Auto
+                    && target.tool != RuntimeMutatingTool::Bash
+                    && std::path::Path::new(&target.exact_pattern).is_absolute()
+                {
+                    RuntimePermissionMode::Confirm
+                } else {
+                    config.permission_mode
+                },
                 danger,
                 exact_rule_matches,
                 config.permission_timeout,
@@ -891,20 +1050,24 @@ pub(crate) fn runtime_inputs_semantically_equal(tool: &str, left: &str, right: &
     {
         return left == right;
     }
-    if !matches!(tool, "write" | "edit") {
+    if !matches!(tool, "Write" | "Edit" | "write" | "edit") {
         return left == right;
     }
     if let (Ok(left), Ok(right)) = (
         vega_tools::WriteEditAudit::from_json(left),
         vega_tools::WriteEditAudit::from_json(right),
     ) {
-        return left.tool().as_str() == tool && right.tool().as_str() == tool && left == right;
+        return left.tool().as_str().eq_ignore_ascii_case(tool)
+            && right.tool().as_str().eq_ignore_ascii_case(tool)
+            && left == right;
     }
     if let (Ok(left), Ok(right)) = (
         vega_tools::InvalidWriteEditAudit::from_json(left),
         vega_tools::InvalidWriteEditAudit::from_json(right),
     ) {
-        return left.tool().as_str() == tool && right.tool().as_str() == tool && left == right;
+        return left.tool().as_str().eq_ignore_ascii_case(tool)
+            && right.tool().as_str().eq_ignore_ascii_case(tool)
+            && left == right;
     }
     false
 }
@@ -1034,7 +1197,17 @@ pub(crate) async fn execute_prepared_waiting(
                 ),
             }
         }
-        PreparedRuntimeCall::Readonly(call) => {
+        PreparedRuntimeCall::PinnedRead { execution, .. } => {
+            execute_readonly_waiting(base_tools, &execution, cancel).await
+        }
+        PreparedRuntimeCall::InvalidRead(call) => (
+            failed_tool_result(
+                &call,
+                "Read requires a valid file_path string identifying a regular text file".into(),
+            ),
+            false,
+        ),
+        PreparedRuntimeCall::Readonly(call) | PreparedRuntimeCall::ExternalRead { call, .. } => {
             execute_readonly_waiting(base_tools, &call, cancel).await
         }
         PreparedRuntimeCall::Write {
@@ -1218,9 +1391,12 @@ pub(crate) fn mutation_result(
                 )
             }
         }
-        Err(_) => terminal_result(
+        Err(error) => terminal_result(
             call,
-            format!("Tool error: {} failed", call.name),
+            match error {
+                vega_tools::ToolError::Mutation(error) => format!("Tool error: {error}"),
+                _ => format!("Tool error: {} failed", call.name),
+            },
             RuntimeToolStatus::Failed,
             None,
         ),
@@ -1292,8 +1468,17 @@ pub(crate) fn execute_readonly(
 ) -> RuntimeToolResult {
     let result =
         parse_input(&call.name, &call.input_json).and_then(|input| match call.name.as_str() {
-            "read" => {
-                let path = required_str(&input, "path")?;
+            "Read" | "read" => {
+                validate_read_input(&input)?;
+                let path = file_input_path(&input)?;
+                if std::path::Path::new(path).is_absolute()
+                    && tools
+                        .file_path(path)
+                        .map_err(|_| "Read target is unavailable")?
+                        != std::path::Path::new(path)
+                {
+                    return Err("Read target changed after approval; retry Read".to_string());
+                }
                 let offset = optional_usize(&input, "offset")?;
                 let limit = optional_usize(&input, "limit")?;
                 tools
@@ -1361,6 +1546,38 @@ pub(crate) fn parse_input(tool: &str, input_json: &str) -> Result<Value, String>
     }
 }
 
+fn validate_read_input(input: &Value) -> Result<(), String> {
+    let Some(object) = input.as_object() else {
+        return Err("Read input must be an object".into());
+    };
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "file_path" | "path" | "offset" | "limit"))
+    {
+        return Err("Read accepts only file_path, offset and limit".into());
+    }
+    file_input_path(input)?;
+    if optional_usize(input, "offset")? == Some(0) {
+        return Err("Read offset must be one-based".into());
+    }
+    optional_usize(input, "limit")?;
+    Ok(())
+}
+
+fn file_input_path(input: &Value) -> Result<&str, String> {
+    if input.get("file_path").is_some() && input.get("path").is_some() {
+        return Err("Use file_path only; do not supply both file_path and legacy path".to_string());
+    }
+    required_str(
+        input,
+        if input.get("path").is_some() {
+            "path"
+        } else {
+            "file_path"
+        },
+    )
+}
+
 pub(crate) fn required_str<'a>(input: &'a Value, key: &str) -> Result<&'a str, String> {
     input
         .get(key)
@@ -1410,16 +1627,16 @@ pub(crate) fn truncate_output_lines(text: &str) -> String {
 pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     let mut definitions = vec![
         ToolDefinition {
-            name: "read".to_string(),
-            description: "Read a project-relative text file with line numbers.".to_string(),
+            name: "Read".to_string(),
+            description: "Read a text file using an absolute file_path, including files outside the current project (subject to permission). Output has line numbers; omit those prefixes when editing. Read a file before Edit or overwriting with Write. Offset is one-based; null offset/limit uses the default range.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string" },
+                    "file_path": { "type": "string", "description": "Absolute path to the file to read." },
                     "offset": { "type": ["integer", "null"], "minimum": 1 },
                     "limit": { "type": ["integer", "null"], "minimum": 0 }
                 },
-                "required": ["path", "offset", "limit"],
+                "required": ["file_path", "offset", "limit"],
                 "additionalProperties": false
             }),
             strict: true,
@@ -1453,31 +1670,32 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
     if run_mode == RuntimeRunMode::Execute {
         definitions.extend([
             ToolDefinition {
-                name: "write".to_string(),
-                description: "Write a project-relative file after permission approval.".to_string(),
+                name: "Write".to_string(),
+                description: "Write content to an absolute file_path after permission approval. For an existing file, Read it first; changed files must be read again. Parent directories are created for new files. Prefer Edit for targeted changes.".to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string" },
+                        "file_path": { "type": "string", "description": "Absolute path to the file to write." },
                         "content": { "type": "string" }
                     },
-                    "required": ["path", "content"],
+                    "required": ["file_path", "content"],
                     "additionalProperties": false
                 }),
                 strict: true,
             },
             ToolDefinition {
-                name: "edit".to_string(),
-                description: "Replace one unique string in a project-relative file after approval."
+                name: "Edit".to_string(),
+                description: "Replace old_string with new_string in an absolute file_path after permission approval. Read the file first. Preserve exact indentation and omit Read line-number prefixes. old_string must uniquely identify the source; include more surrounding context if ambiguous, or set replace_all=true to replace every occurrence. new_string must differ from old_string. replace_all omitted or null defaults to false."
                     .to_string(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string" },
+                        "file_path": { "type": "string", "description": "Absolute path to the file to edit." },
                         "old_string": { "type": "string" },
-                        "new_string": { "type": "string" }
+                        "new_string": { "type": "string" },
+                        "replace_all": { "type": ["boolean", "null"], "description": "Replace every occurrence; null means false." }
                     },
-                    "required": ["path", "old_string", "new_string"],
+                    "required": ["file_path", "old_string", "new_string", "replace_all"],
                     "additionalProperties": false
                 }),
                 strict: true,

@@ -443,12 +443,15 @@ pub(crate) fn valid_permission_request(request: &PermissionRequest) -> bool {
     }
     match request.tool.as_str() {
         "bash" => true,
-        "write" | "edit" if request.danger_rule_id.is_none() => {
+        "read" | "write" | "edit" if request.danger_rule_id.is_none() => {
             let path = std::path::Path::new(&request.display_target);
-            !path.is_absolute()
-                && path
-                    .components()
-                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+            (request.tool != "read" || path.is_absolute())
+                && path.components().all(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::RootDir | std::path::Component::Normal(_)
+                    )
+                })
         }
         _ => false,
     }

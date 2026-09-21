@@ -586,13 +586,15 @@ pub(crate) fn safe_runtime_tool_call(call: &vega_runtime::RuntimeToolCall) -> Op
         // valid MCP proposal before the approval card can appear.
         return McpCallIdentity::from_tool_call(&projected).map(|_| projected);
     }
-    if matches!(call.name.as_str(), "write" | "edit") {
+    if matches!(call.name.as_str(), "Write" | "Edit" | "write" | "edit") {
         let audit = vega_tools::WriteEditAudit::from_json(&call.input_json).ok()?;
-        if audit.tool().as_str() != call.name {
+        if !audit.tool().as_str().eq_ignore_ascii_case(&call.name) {
             return None;
         }
-    } else if !matches!(call.name.as_str(), "read" | "glob" | "grep" | "bash")
-        && call.input_json != "{}"
+    } else if !matches!(
+        call.name.as_str(),
+        "Read" | "read" | "glob" | "grep" | "bash"
+    ) && call.input_json != "{}"
     {
         return None;
     }
@@ -629,10 +631,14 @@ pub(crate) fn validate_runtime_validation_rejection(
         call.name,
         audit.validation_error_code().as_str()
     );
-    if audit.tool().as_str() == call.name
+    if audit.tool().as_str().eq_ignore_ascii_case(&call.name)
         && call.id == result.call_id
         && result.status == vega_runtime::RuntimeToolStatus::Rejected
-        && result.output == expected
+        && (result.output == expected
+            || result.output
+                == audit
+                    .validation_error_code()
+                    .validation_result(audit.tool().as_str()))
         && result.exit_code.is_none()
         && result.duration_ms.is_none()
         && result.remember_rule.is_none()
@@ -679,11 +685,16 @@ pub(crate) fn invalid_tool_code(code: vega_tools::MutationErrorCode) -> Option<I
         Code::CheckpointSymlink => InvalidToolCode::CheckpointSymlink,
         Code::EditEmptyOldString => InvalidToolCode::EditEmptyOldString,
         Code::FilesystemError => InvalidToolCode::FilesystemError,
+        Code::FileNotRead => InvalidToolCode::FileNotRead,
+        Code::FileTooLarge => InvalidToolCode::FileTooLarge,
+        Code::EditNoChange => InvalidToolCode::EditNoChange,
+        Code::WrongReplaceAllType => InvalidToolCode::WrongReplaceAllType,
+        Code::UnsupportedEncoding => InvalidToolCode::UnsupportedEncoding,
+        Code::EditNoMatch => InvalidToolCode::EditNoMatch,
+        Code::EditMultipleMatches => InvalidToolCode::EditMultipleMatches,
+        Code::TargetChanged => InvalidToolCode::TargetChanged,
         Code::CheckpointExists
         | Code::CheckpointMetadataInvalid
-        | Code::EditNoMatch
-        | Code::EditMultipleMatches
-        | Code::TargetChanged
         | Code::AtomicWriteFailed
         | Code::CodecInvalid
         | Code::PreparedScopeMismatch => return None,

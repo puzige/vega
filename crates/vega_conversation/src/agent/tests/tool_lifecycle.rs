@@ -343,12 +343,7 @@ async fn crash_child_runtime_fixture() {
         },
     )
     .unwrap();
-    let fifo = root.join("never-read");
-    let status = std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
-        .unwrap();
-    assert!(status.success());
+    fs::write(root.join("never-read"), "owned crash fixture").unwrap();
     let tools = vega_tools::Tools::new(&root).unwrap();
     let provider = MockProvider::new(vec![ScriptStep::events(vec![
         ProviderEvent::TextDelta("durable partial".into()),
@@ -371,6 +366,13 @@ async fn crash_child_runtime_fixture() {
         "System",
         CancellationToken::new(),
         |event| {
+            // Fault-injection barrier after the production durable running
+            // transition. File Read deliberately rejects FIFOs now.
+            if matches!(event, ConversationEvent::ToolCallRunning { .. }) {
+                loop {
+                    std::thread::park();
+                }
+            }
             if let ConversationEvent::TextDelta { message_id, .. } = event {
                 let durable = messages::find(store.conn(), message_id)?
                     .ok_or_else(|| persistence_actor_error("streaming message missing"))?;
@@ -922,6 +924,13 @@ async fn cancellation_is_persisted_as_interrupted_under_one_second() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_during_tool_persists_output_as_cancelled_and_starts_nothing_else() {
     let (store, dir, _project_id) = setup();
+    store
+        .conn()
+        .execute(
+            "UPDATE threads SET permission_mode = 'full_access' WHERE id = 'thread-1'",
+            [],
+        )
+        .unwrap();
     let slow_path = dir.path().join("slow.txt");
     let status = std::process::Command::new("mkfifo")
         .arg(&slow_path)
@@ -943,8 +952,8 @@ async fn cancel_during_tool_persists_output_as_cancelled_and_starts_nothing_else
     let provider = MockProvider::new(vec![ScriptStep::events(vec![
         ProviderEvent::ToolUse {
             id: "slow-call".into(),
-            name: "read".into(),
-            input_json: r#"{"path":"slow.txt"}"#.into(),
+            name: "bash".into(),
+            input_json: r#"{"cmd":"cat slow.txt"}"#.into(),
         },
         ProviderEvent::ToolUse {
             id: "must-not-start".into(),

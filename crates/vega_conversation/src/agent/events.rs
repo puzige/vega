@@ -650,14 +650,16 @@ pub(crate) fn validate_runtime_proposal(
             .map(|_| ())
             .ok_or_else(|| safe_audit_error(&call.name));
     }
-    if matches!(call.name.as_str(), "write" | "edit") {
+    if matches!(call.name.as_str(), "Write" | "Edit" | "write" | "edit") {
         let audit = vega_tools::WriteEditAudit::from_json(&call.input_json)
             .map_err(|_| safe_audit_error(&call.name))?;
-        if audit.tool().as_str() != call.name {
+        if !audit.tool().as_str().eq_ignore_ascii_case(&call.name) {
             return Err(safe_audit_error(&call.name));
         }
-    } else if !matches!(call.name.as_str(), "read" | "glob" | "grep" | "bash")
-        && call.input_json != "{}"
+    } else if !matches!(
+        call.name.as_str(),
+        "Read" | "read" | "glob" | "grep" | "bash"
+    ) && call.input_json != "{}"
     {
         return Err(safe_audit_error(&call.name));
     }
@@ -673,20 +675,24 @@ pub(crate) fn tool_inputs_semantically_equal(tool: &str, left: &str, right: &str
     {
         return left == right;
     }
-    if !matches!(tool, "write" | "edit") {
+    if !matches!(tool, "Write" | "Edit" | "write" | "edit") {
         return left == right;
     }
     if let (Ok(left), Ok(right)) = (
         vega_tools::WriteEditAudit::from_json(left),
         vega_tools::WriteEditAudit::from_json(right),
     ) {
-        return left.tool().as_str() == tool && right.tool().as_str() == tool && left == right;
+        return left.tool().as_str().eq_ignore_ascii_case(tool)
+            && right.tool().as_str().eq_ignore_ascii_case(tool)
+            && left == right;
     }
     if let (Ok(left), Ok(right)) = (
         vega_tools::InvalidWriteEditAudit::from_json(left),
         vega_tools::InvalidWriteEditAudit::from_json(right),
     ) {
-        return left.tool().as_str() == tool && right.tool().as_str() == tool && left == right;
+        return left.tool().as_str().eq_ignore_ascii_case(tool)
+            && right.tool().as_str().eq_ignore_ascii_case(tool)
+            && left == right;
     }
     false
 }
@@ -711,10 +717,14 @@ pub(crate) fn validate_runtime_validation_event(
         call.name,
         invalid.validation_error_code().as_str()
     );
-    if invalid.tool().as_str() != call.name
+    if !invalid.tool().as_str().eq_ignore_ascii_case(&call.name)
         || result.call_id != call.id
         || result.status != RuntimeToolStatus::Rejected
-        || result.output != expected
+        || (result.output != expected
+            && result.output
+                != invalid
+                    .validation_error_code()
+                    .validation_result(invalid.tool().as_str()))
         || result.exit_code.is_some()
         || result.duration_ms.is_some()
         || result.truncated.is_some()
@@ -731,13 +741,13 @@ pub(crate) fn validate_runtime_conflict_event(
     call: &vega_runtime::RuntimeToolCall,
     result: &vega_runtime::RuntimeToolResult,
 ) -> Result<(), VegaError> {
-    if matches!(call.name.as_str(), "write" | "edit") {
+    if matches!(call.name.as_str(), "Write" | "Edit" | "write" | "edit") {
         let valid = vega_tools::WriteEditAudit::from_json(&call.input_json)
             .ok()
-            .is_some_and(|audit| audit.tool().as_str() == call.name);
+            .is_some_and(|audit| audit.tool().as_str().eq_ignore_ascii_case(&call.name));
         let invalid = vega_tools::InvalidWriteEditAudit::from_json(&call.input_json)
             .ok()
-            .is_some_and(|audit| audit.tool().as_str() == call.name);
+            .is_some_and(|audit| audit.tool().as_str().eq_ignore_ascii_case(&call.name));
         if !valid && !invalid {
             return Err(safe_audit_error(&call.name));
         }
@@ -836,18 +846,28 @@ pub(crate) fn target_matches_state(
     target: &vega_runtime::RuntimePermissionTarget,
 ) -> bool {
     let exact_matches_input = match state.tool.as_str() {
-        "write" | "edit" => vega_tools::WriteEditAudit::from_json(&state.input_json)
+        "Read" | "read" => serde_json::from_str::<serde_json::Value>(&state.input_json)
             .ok()
-            .is_some_and(|audit| {
-                audit.tool().as_str() == state.tool && audit.path() == target.exact_pattern
+            .is_some_and(|input| {
+                input.get("file_path").and_then(serde_json::Value::as_str)
+                    == Some(target.exact_pattern.as_str())
+                    && std::path::Path::new(&target.exact_pattern).is_absolute()
             }),
+        "Write" | "Edit" | "write" | "edit" => {
+            vega_tools::WriteEditAudit::from_json(&state.input_json)
+                .ok()
+                .is_some_and(|audit| {
+                    audit.tool().as_str().eq_ignore_ascii_case(&state.tool)
+                        && audit.path() == target.exact_pattern
+                })
+        }
         "bash" => vega_tools::bash_permission_signature(&state.input_json)
             .ok()
             .is_some_and(|command| command == target.exact_pattern),
         _ => false,
     };
     target.call_id == call_id
-        && target.tool.as_str() == state.tool
+        && target.tool.as_str().eq_ignore_ascii_case(&state.tool)
         && !target.exact_pattern.is_empty()
         && target.exact_pattern == target.display_target
         && exact_matches_input

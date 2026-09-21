@@ -1876,7 +1876,8 @@ async fn issue76_auto_source_fence_rejects_unrelated_history_before_summary_requ
 #[tokio::test]
 async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecution() {
     let (store, dir, _project_id) = setup();
-    let input_limit = 10_200;
+    // Keep the initial request below the trigger with the expanded file-tool schemas.
+    let input_limit = 11_200;
     let output_reserve = 1_000;
     fs::write(dir.path().join("large.txt"), "L".repeat(6_000)).unwrap();
     for seq in 1..=8_i64 {
@@ -3087,6 +3088,7 @@ async fn write_edit_and_bash_execute_serially_with_strict_db_results() {
     let (store, project_dir, data_dir, _project_id) = setup_external("auto");
     fs::write(project_dir.path().join("serial.txt"), "initial").unwrap();
     let tools = vega_tools::Tools::new(project_dir.path()).unwrap();
+    tools.read("serial.txt", None, None).unwrap();
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
             ProviderEvent::ToolUse {

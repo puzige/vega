@@ -31,6 +31,8 @@ pub enum RuntimePermissionMode {
 /// Mutating tool vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeMutatingTool {
+    /// External read requiring access approval, without mutation capability.
+    Read,
     /// Shell command subject to the selected execution policy.
     Bash,
     /// Fenced file write.
@@ -43,6 +45,7 @@ impl RuntimeMutatingTool {
     /// Stable tool name used by permission persistence.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Read => "read",
             Self::Bash => "bash",
             Self::Write => "write",
             Self::Edit => "edit",
@@ -494,7 +497,9 @@ mod tests {
     fn target(tool: RuntimeMutatingTool) -> RuntimePermissionTarget {
         let exact_pattern = match tool {
             RuntimeMutatingTool::Bash => "cargo  test".to_string(),
-            RuntimeMutatingTool::Write | RuntimeMutatingTool::Edit => "src/lib.rs".to_string(),
+            RuntimeMutatingTool::Read | RuntimeMutatingTool::Write | RuntimeMutatingTool::Edit => {
+                "src/lib.rs".to_string()
+            }
         };
         RuntimePermissionTarget {
             call_id: "call-1".into(),

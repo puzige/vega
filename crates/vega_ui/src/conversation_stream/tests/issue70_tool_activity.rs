@@ -1154,6 +1154,7 @@ fn parity_history() -> Vec<HistoryEntry> {
             "read",
             ToolCardInputProjection::ReadOnly {
                 tool: ReadOnlyToolKind::Read,
+                permission_path: None,
             },
             ToolCardResultProjection::ReadOnly {
                 status: ToolCallStatus::Success,
@@ -1166,6 +1167,7 @@ fn parity_history() -> Vec<HistoryEntry> {
             "glob",
             ToolCardInputProjection::ReadOnly {
                 tool: ReadOnlyToolKind::Glob,
+                permission_path: None,
             },
             ToolCardResultProjection::ReadOnly {
                 status: ToolCallStatus::Success,
@@ -1194,6 +1196,7 @@ fn parity_history() -> Vec<HistoryEntry> {
             "grep",
             ToolCardInputProjection::ReadOnly {
                 tool: ReadOnlyToolKind::Grep,
+                permission_path: None,
             },
             ToolCardResultProjection::ReadOnly {
                 status: ToolCallStatus::Success,

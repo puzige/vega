@@ -364,7 +364,7 @@ async fn one_turn_executes_read_glob_and_grep_serially() {
 }
 
 #[tokio::test]
-async fn bad_json_and_path_escape_become_failed_results_then_model_continues() {
+async fn bad_json_and_external_read_denial_return_errors_then_model_continues() {
     let dir = tempdir().unwrap();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![
@@ -404,7 +404,10 @@ async fn bad_json_and_path_escape_become_failed_results_then_model_continues() {
         .iter()
         .filter_map(|event| match event {
             RuntimeEvent::ToolCallFinished(result)
-                if result.status == RuntimeToolStatus::Failed =>
+                if matches!(
+                    result.status,
+                    RuntimeToolStatus::Failed | RuntimeToolStatus::Rejected
+                ) =>
             {
                 Some(result)
             }
@@ -412,8 +415,10 @@ async fn bad_json_and_path_escape_become_failed_results_then_model_continues() {
         })
         .collect();
     assert_eq!(failures.len(), 2);
-    assert!(failures[0].output.contains("invalid read input JSON"));
-    assert!(failures[1].output.contains("path escapes the project root"));
+    assert_eq!(failures[0].status, RuntimeToolStatus::Failed);
+    assert!(failures[0].output.contains("valid file_path"));
+    assert_eq!(failures[1].status, RuntimeToolStatus::Rejected);
+    assert!(failures[1].output.contains("permission denied"));
 }
 
 #[tokio::test]

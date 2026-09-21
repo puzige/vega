@@ -119,7 +119,7 @@ fn validate(project_id: &str, tool: &str, pattern: &str) -> Result<(), Permissio
     if project_id.is_empty() {
         return Err(PermissionsError::EmptyProject);
     }
-    if !matches!(tool, "bash" | "write" | "edit") {
+    if !matches!(tool, "read" | "bash" | "write" | "edit") {
         return Err(PermissionsError::UnsupportedTool);
     }
     if pattern.is_empty() {
@@ -203,7 +203,7 @@ mod tests {
         let store = store();
         for (project, tool, pattern, expected) in [
             ("", "bash", "echo ok", "empty-project"),
-            ("p", "read", "README.md", "tool"),
+            ("p", "unknown", "README.md", "tool"),
             ("p", "bash", "", "empty-pattern"),
         ] {
             let error = insert_exact(

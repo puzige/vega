@@ -374,7 +374,7 @@ impl VegaWindow {
         };
         match event {
             ConversationEvent::ToolCallProposed { call }
-                if matches!(call.tool.as_str(), "write" | "edit") =>
+                if matches!(call.tool.as_str(), "Write" | "Edit" | "write" | "edit") =>
             {
                 if let Err(failure) = ArtifactService::validate_proposal(call) {
                     self.fail_artifact_capture_route(&identity, failure.code(), cx);

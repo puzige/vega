@@ -173,7 +173,7 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            ["read", "glob", "grep", "write", "edit", "bash"]
+            ["Read", "glob", "grep", "Write", "Edit", "bash"]
         );
     }
     assert_eq!(

@@ -1618,7 +1618,13 @@ where
         );
         let mut prepared_calls = Vec::with_capacity(calls.len());
         for call in calls {
-            let prepared = if batch_policy == BatchPolicy::RejectOtherTools
+            // Compare completed mutations without re-reading today's target.
+            let prior_mutation = completed
+                .get(&call.id)
+                .filter(|_| matches!(call.name.as_str(), "Write" | "Edit" | "write" | "edit"));
+            let prepared = if let Some(prior) = prior_mutation {
+                prepare_completed_mutation(tools, &tool_config, &capabilities, call, prior)
+            } else if batch_policy == BatchPolicy::RejectOtherTools
                 && call.name != crate::skills::LOAD_SKILL_TOOL_NAME
             {
                 prepare_mixed_rejection_call(tools, &tool_config, &capabilities, call)

@@ -555,7 +555,7 @@ mod tests {
                 "strict",
                 Some(RememberExactRule {
                     project_id: "p",
-                    tool: "read",
+                    tool: "unknown",
                     pattern: "x",
                 }),
                 2,
@@ -577,7 +577,7 @@ mod tests {
                 2,
                 Some(RememberExactRule {
                     project_id: "p",
-                    tool: "read",
+                    tool: "unknown",
                     pattern: "x",
                 }),
             )

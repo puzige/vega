@@ -1,11 +1,14 @@
 //! Prepared, checkpointed, same-directory-atomic write and edit tools.
 
+use crate::text_file::TextFile;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, OpenOptions, Permissions};
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(test)]
@@ -19,6 +22,8 @@ use crate::codec::{
 use crate::error::{MutationError, MutationErrorCode, ToolError};
 use crate::fence::{MutationTarget, discover_git_dir, resolve_mutation_target};
 use crate::{ToolOutput, Tools};
+
+static MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
 const MAX_EDIT_CONTEXT_CHARS: usize = 512;
 const CONTEXT_SIDE_BYTES: usize = 96;
@@ -47,11 +52,7 @@ impl InvalidMutation {
     ) -> Result<Self, MutationError> {
         Ok(Self {
             audit: InvalidWriteEditAudit::new(tool, raw_input, code)?,
-            tool_result: format!(
-                "Tool error: invalid {} input ({})",
-                tool.as_str(),
-                code.as_str()
-            ),
+            tool_result: code.validation_result(tool.as_str()),
         })
     }
 
@@ -124,6 +125,7 @@ impl std::error::Error for PrepareMutationError {}
 pub struct PreparedWrite {
     instance_id: u64,
     project_root: PathBuf,
+    absolute: PathBuf,
     checkpoint_scope: String,
     path: String,
     content: String,
@@ -155,10 +157,12 @@ impl fmt::Debug for PreparedWrite {
 pub struct PreparedEdit {
     instance_id: u64,
     project_root: PathBuf,
+    absolute: PathBuf,
     checkpoint_scope: String,
     path: String,
     old_string: String,
     new_string: String,
+    replace_all: bool,
     audit: WriteEditAudit,
 }
 
@@ -193,6 +197,7 @@ struct AuditedEditInput {
     path: String,
     old_string: String,
     new_string: String,
+    replace_all: bool,
     audit: WriteEditAudit,
 }
 
@@ -212,6 +217,43 @@ impl Tools {
         Ok(self.parse_edit_input(raw_input)?.audit)
     }
 
+    /// Rebuild a completed call's identity without reading its current contents or
+    /// requiring its target to still exist. This never creates mutation authority.
+    pub fn audit_replay_json(
+        &self,
+        tool: MutationTool,
+        raw: &str,
+        prior: &WriteEditAudit,
+    ) -> Result<WriteEditAudit, PrepareMutationError> {
+        if prior.tool() != tool {
+            return Err(PrepareMutationError::Internal(mutation_error(
+                MutationErrorCode::CodecInvalid,
+            )));
+        }
+        match tool {
+            MutationTool::Write => Ok(self.parse_write_input_mode(raw, Some(prior))?.audit),
+            MutationTool::Edit => Ok(self.parse_edit_input_mode(raw, true)?.audit),
+        }
+    }
+
+    fn replay_target(&self, path: &str) -> Result<MutationTarget, MutationErrorCode> {
+        let absolute = crate::fence::resolve_file_path(&self.root, path)?;
+        let relative = absolute
+            .strip_prefix(&self.root)
+            .unwrap_or(&absolute)
+            .to_path_buf();
+        let display = relative
+            .to_str()
+            .ok_or(MutationErrorCode::CodecInvalid)?
+            .to_owned();
+        Ok(MutationTarget {
+            absolute,
+            relative,
+            display,
+            metadata: None,
+        })
+    }
+
     /// Parse strict raw provider JSON, normalize/fence its path, and create a
     /// content-free write audit projection. No filesystem mutation occurs.
     pub fn prepare_write_json(
@@ -224,9 +266,22 @@ impl Tools {
             ))
         })?;
         let input = self.parse_write_input(raw_input)?;
+        context
+            .validate_target(&self.file_path(&input.path).map_err(|_| {
+                invalid_error(
+                    MutationTool::Write,
+                    raw_input,
+                    MutationErrorCode::FilesystemError,
+                )
+            })?)
+            .map_err(PrepareMutationError::Internal)?;
+        self.validate_read_before_prepare(&input.path, raw_input, MutationTool::Write)?;
         Ok(PreparedWrite {
             instance_id: self.instance_id,
             project_root: self.root.clone(),
+            absolute: self.file_path(&input.path).map_err(|_| {
+                PrepareMutationError::Internal(mutation_error(MutationErrorCode::FilesystemError))
+            })?,
             checkpoint_scope: context.scope_key().to_string(),
             path: input.path,
             content: input.content,
@@ -234,14 +289,51 @@ impl Tools {
         })
     }
 
+    fn validate_read_before_prepare(
+        &self,
+        path: &str,
+        raw: &str,
+        tool: MutationTool,
+    ) -> Result<(), PrepareMutationError> {
+        let target = self
+            .file_path(path)
+            .map_err(|_| invalid_error(tool, raw, MutationErrorCode::FilesystemError))?;
+        let bytes = match crate::text_file::read_regular(&target) {
+            Ok(bytes) => bytes,
+            Err(ToolError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(());
+            }
+            Err(_) => return Err(invalid_error(tool, raw, MutationErrorCode::FilesystemError)),
+        };
+        self.reads
+            .validate(&target, &bytes)
+            .and_then(|_| TextFile::decode(&bytes).map(|_| ()))
+            .map_err(|error| match error {
+                ToolError::Mutation(error) => invalid_error(tool, raw, error.code()),
+                _ => invalid_error(tool, raw, MutationErrorCode::FilesystemError),
+            })
+    }
+
     fn parse_write_input(
         &self,
         raw_input: &str,
     ) -> Result<AuditedWriteInput, PrepareMutationError> {
+        self.parse_write_input_mode(raw_input, None)
+    }
+
+    fn parse_write_input_mode(
+        &self,
+        raw_input: &str,
+        prior: Option<&WriteEditAudit>,
+    ) -> Result<AuditedWriteInput, PrepareMutationError> {
         let values = parse_object(raw_input, MutationTool::Write)?;
         let path = required_string(
             &values,
-            "path",
+            if values.contains_key("file_path") {
+                "file_path"
+            } else {
+                "path"
+            },
             MutationErrorCode::MissingPath,
             MutationErrorCode::WrongPathType,
             raw_input,
@@ -257,15 +349,51 @@ impl Tools {
         )?;
         reject_extra_fields(
             &values,
-            &["path", "content"],
+            &[
+                if values.contains_key("file_path") {
+                    "file_path"
+                } else {
+                    "path"
+                },
+                "content",
+            ],
             raw_input,
             MutationTool::Write,
         )?;
         let git_dir = discover_git_dir(&self.root)
             .map_err(|code| invalid_error(MutationTool::Write, raw_input, code))?;
-        let target = resolve_mutation_target(&self.root, git_dir.as_deref(), &path, false)
-            .map_err(|code| invalid_error(MutationTool::Write, raw_input, code))?;
-        let audit = WriteEditAudit::write(&target.display, &content)
+        let target = if prior.is_some() {
+            self.replay_target(&path)
+        } else {
+            resolve_mutation_target(&self.root, git_dir.as_deref(), &path, false)
+        }
+        .map_err(|code| invalid_error(MutationTool::Write, raw_input, code))?;
+        let encoded_len = if let Some(WriteEditAudit::Write {
+            expected_written_bytes,
+            ..
+        }) = prior
+        {
+            expected_written_bytes
+                .map(|n| {
+                    usize::try_from(n).map_err(|_| {
+                        PrepareMutationError::Internal(mutation_error(
+                            MutationErrorCode::CodecInvalid,
+                        ))
+                    })
+                })
+                .transpose()?
+                .unwrap_or(content.len())
+        } else if target.metadata.is_some() {
+            let bytes = crate::text_file::read_regular(&target.absolute)
+                .map_err(|error| tool_to_invalid(error, MutationTool::Write, raw_input))?;
+            TextFile::decode(&bytes)
+                .map_err(|error| tool_to_invalid(error, MutationTool::Write, raw_input))?
+                .encode(&content, false)
+                .len()
+        } else {
+            content.len()
+        };
+        let audit = WriteEditAudit::write_encoded(&target.display, &content, encoded_len)
             .map_err(PrepareMutationError::Internal)?;
         Ok(AuditedWriteInput {
             path: target.display,
@@ -284,22 +412,48 @@ impl Tools {
             ))
         })?;
         let input = self.parse_edit_input(raw_input)?;
+        context
+            .validate_target(&self.file_path(&input.path).map_err(|_| {
+                invalid_error(
+                    MutationTool::Edit,
+                    raw_input,
+                    MutationErrorCode::FilesystemError,
+                )
+            })?)
+            .map_err(PrepareMutationError::Internal)?;
+        self.validate_read_before_prepare(&input.path, raw_input, MutationTool::Edit)?;
         Ok(PreparedEdit {
             instance_id: self.instance_id,
             project_root: self.root.clone(),
+            absolute: self.file_path(&input.path).map_err(|_| {
+                PrepareMutationError::Internal(mutation_error(MutationErrorCode::FilesystemError))
+            })?,
             checkpoint_scope: context.scope_key().to_string(),
             path: input.path,
             old_string: input.old_string,
             new_string: input.new_string,
+            replace_all: input.replace_all,
             audit: input.audit,
         })
     }
 
     fn parse_edit_input(&self, raw_input: &str) -> Result<AuditedEditInput, PrepareMutationError> {
+        self.parse_edit_input_mode(raw_input, false)
+    }
+
+    fn parse_edit_input_mode(
+        &self,
+        raw_input: &str,
+        replay: bool,
+    ) -> Result<AuditedEditInput, PrepareMutationError> {
         let values = parse_object(raw_input, MutationTool::Edit)?;
         let path = required_string(
             &values,
-            "path",
+            if values.contains_key("file_path") {
+                "file_path"
+            } else {
+                "path"
+            },
             MutationErrorCode::MissingPath,
             MutationErrorCode::WrongPathType,
             raw_input,
@@ -323,27 +477,62 @@ impl Tools {
         )?;
         reject_extra_fields(
             &values,
-            &["path", "old_string", "new_string"],
+            &[
+                if values.contains_key("file_path") {
+                    "file_path"
+                } else {
+                    "path"
+                },
+                "old_string",
+                "new_string",
+                "replace_all",
+            ],
             raw_input,
             MutationTool::Edit,
         )?;
-        if old_string.is_empty() {
+        let replace_all = match values.get("replace_all") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(value)) => *value,
+            _ => {
+                return Err(invalid_error(
+                    MutationTool::Edit,
+                    raw_input,
+                    MutationErrorCode::WrongReplaceAllType,
+                ));
+            }
+        };
+        if old_string == new_string {
             return Err(invalid_error(
                 MutationTool::Edit,
                 raw_input,
-                MutationErrorCode::EditEmptyOldString,
+                MutationErrorCode::EditNoChange,
             ));
         }
         let git_dir = discover_git_dir(&self.root)
             .map_err(|code| invalid_error(MutationTool::Edit, raw_input, code))?;
-        let target = resolve_mutation_target(&self.root, git_dir.as_deref(), &path, true)
-            .map_err(|code| invalid_error(MutationTool::Edit, raw_input, code))?;
-        let audit = WriteEditAudit::edit(&target.display, &old_string, &new_string)
-            .map_err(PrepareMutationError::Internal)?;
+        let target = if replay {
+            self.replay_target(&path)
+        } else {
+            resolve_mutation_target(
+                &self.root,
+                git_dir.as_deref(),
+                &path,
+                !old_string.is_empty(),
+            )
+        }
+        .map_err(|code| invalid_error(MutationTool::Edit, raw_input, code))?;
+        let audit = WriteEditAudit::edit_with_replace_all(
+            &target.display,
+            &old_string,
+            &new_string,
+            replace_all,
+        )
+        .map_err(PrepareMutationError::Internal)?;
         Ok(AuditedEditInput {
             path: target.display,
             old_string,
             new_string,
+            replace_all,
             audit,
         })
     }
@@ -362,6 +551,9 @@ impl Tools {
 
     #[cfg(test)]
     fn write(&self, path: &str, content: &str) -> Result<ToolOutput, ToolError> {
+        if self.file_path(path)?.exists() {
+            self.read(path, None, None)?;
+        }
         let raw = serde_json::to_string(&WriteInput { path, content })
             .map_err(|_| MutationError::new(MutationErrorCode::CodecInvalid))?;
         let prepared = self
@@ -377,6 +569,9 @@ impl Tools {
         old_string: &str,
         new_string: &str,
     ) -> Result<ToolOutput, ToolError> {
+        if self.file_path(path)?.exists() {
+            self.read(path, None, None)?;
+        }
         let raw = serde_json::to_string(&EditInput {
             path,
             old_string,
@@ -394,6 +589,9 @@ impl Tools {
         prepared: PreparedWrite,
         after_checkpoint: Option<&dyn Fn()>,
     ) -> Result<ToolOutput, ToolError> {
+        let _guard = MUTATION_LOCK
+            .lock()
+            .map_err(|_| mutation_error(MutationErrorCode::FilesystemError))?;
         let context = self.validate_prepared_scope(
             prepared.instance_id,
             &prepared.project_root,
@@ -403,12 +601,23 @@ impl Tools {
         context.validate_git_boundary(git_dir.as_deref())?;
         let target = resolve_mutation_target(&self.root, git_dir.as_deref(), &prepared.path, false)
             .map_err(mutation_error)?;
+        if target.absolute != prepared.absolute {
+            return Err(mutation_error(MutationErrorCode::TargetChanged).into());
+        }
+        context.validate_target(&target.absolute)?;
         let preimage = target
             .metadata
             .as_ref()
-            .map(|_| fs::read(&target.absolute))
+            .map(|_| crate::text_file::read_regular(&target.absolute))
             .transpose()
             .map_err(|_| mutation_error(MutationErrorCode::FilesystemError))?;
+        if let Some(bytes) = preimage.as_deref() {
+            self.reads.validate(&target.absolute, bytes)?;
+        }
+        let encoded = match preimage.as_deref() {
+            Some(bytes) => TextFile::decode(bytes)?.encode(&prepared.content, false),
+            None => prepared.content.as_bytes().to_vec(),
+        };
         let permissions = target
             .metadata
             .as_ref()
@@ -421,8 +630,11 @@ impl Tools {
         let current_git_dir = current_git_dir(self)?;
         context.validate_git_boundary(current_git_dir.as_deref())?;
         revalidate_target(self, &target, preimage.as_deref())?;
-        atomic_replace(&target.absolute, prepared.content.as_bytes(), permissions)?;
-        let bytes_written = u64::try_from(prepared.content.len())
+        ensure_parent(&target.absolute)?;
+        revalidate_target(self, &target, preimage.as_deref())?;
+        atomic_replace(&target.absolute, &encoded, permissions)?;
+        self.reads.record(&target.absolute, &encoded)?;
+        let bytes_written = u64::try_from(encoded.len())
             .map_err(|_| mutation_error(MutationErrorCode::CodecInvalid))?;
         let success = WriteSuccessOutput {
             path: target.display,
@@ -437,6 +649,9 @@ impl Tools {
         prepared: PreparedEdit,
         after_checkpoint: Option<&dyn Fn()>,
     ) -> Result<ToolOutput, ToolError> {
+        let _guard = MUTATION_LOCK
+            .lock()
+            .map_err(|_| mutation_error(MutationErrorCode::FilesystemError))?;
         let context = self.validate_prepared_scope(
             prepared.instance_id,
             &prepared.project_root,
@@ -444,56 +659,56 @@ impl Tools {
         )?;
         let git_dir = current_git_dir(self)?;
         context.validate_git_boundary(git_dir.as_deref())?;
-        let target = resolve_mutation_target(&self.root, git_dir.as_deref(), &prepared.path, true)
-            .map_err(mutation_error)?;
-        let original = fs::read(&target.absolute)
+        let target = resolve_mutation_target(
+            &self.root,
+            git_dir.as_deref(),
+            &prepared.path,
+            !prepared.old_string.is_empty(),
+        )
+        .map_err(mutation_error)?;
+        if target.absolute != prepared.absolute {
+            return Err(mutation_error(MutationErrorCode::TargetChanged).into());
+        }
+        context.validate_target(&target.absolute)?;
+        let original = target
+            .metadata
+            .as_ref()
+            .map(|_| crate::text_file::read_regular(&target.absolute))
+            .transpose()
             .map_err(|_| mutation_error(MutationErrorCode::FilesystemError))?;
-        let matches = match_positions(&original, prepared.old_string.as_bytes());
-        if matches.is_empty() {
-            return Err(MutationError::with_context(
-                MutationErrorCode::EditNoMatch,
-                bounded_context(&original, &matches),
-            )
-            .into());
+        if let Some(bytes) = original.as_deref() {
+            self.reads.validate(&target.absolute, bytes)?;
         }
-        if matches.len() != 1 {
-            return Err(MutationError::with_context(
-                MutationErrorCode::EditMultipleMatches,
-                bounded_context(&original, &matches),
-            )
-            .into());
-        }
-        let position = matches[0];
-        let old_len = prepared.old_string.len();
-        let mut replacement = Vec::with_capacity(
-            original
-                .len()
-                .saturating_sub(old_len)
-                .saturating_add(prepared.new_string.len()),
-        );
-        replacement.extend_from_slice(&original[..position]);
-        replacement.extend_from_slice(prepared.new_string.as_bytes());
-        replacement.extend_from_slice(&original[position + old_len..]);
-
+        let text = TextFile::decode(original.as_deref().unwrap_or_default())?;
+        let (updated, replacements) = apply_edit(
+            &text.content,
+            &prepared.old_string,
+            &prepared.new_string,
+            prepared.replace_all,
+        )?;
+        let replacement = text.encode(&updated, true);
         let permissions = target
             .metadata
             .as_ref()
             .map(|metadata| metadata.permissions());
         let checkpoint_ref =
-            context.checkpoint(&target.relative, &target.display, Some(&original))?;
+            context.checkpoint(&target.relative, &target.display, original.as_deref())?;
         if let Some(hook) = after_checkpoint {
             hook();
         }
         let current_git_dir = current_git_dir(self)?;
         context.validate_git_boundary(current_git_dir.as_deref())?;
-        revalidate_target(self, &target, Some(&original))?;
+        revalidate_target(self, &target, original.as_deref())?;
+        ensure_parent(&target.absolute)?;
+        revalidate_target(self, &target, original.as_deref())?;
         atomic_replace(&target.absolute, &replacement, permissions)?;
+        self.reads.record(&target.absolute, &replacement)?;
         let bytes_written = u64::try_from(replacement.len())
             .map_err(|_| mutation_error(MutationErrorCode::CodecInvalid))?;
         let success = EditSuccessOutput {
             path: target.display,
             bytes_written,
-            replacements: 1,
+            replacements,
             checkpoint_ref,
         };
         Ok(ToolOutput::clean(success.to_json()?))
@@ -582,6 +797,14 @@ fn reject_extra_fields(
     }
 }
 
+fn tool_to_invalid(error: ToolError, tool: MutationTool, raw: &str) -> PrepareMutationError {
+    let code = match error {
+        ToolError::Mutation(error) => error.code(),
+        _ => MutationErrorCode::FilesystemError,
+    };
+    invalid_error(tool, raw, code)
+}
+
 fn invalid_error(
     tool: MutationTool,
     raw_input: &str,
@@ -622,12 +845,15 @@ fn revalidate_target(
         initial.metadata.is_some(),
     )
     .map_err(|_| mutation_error(MutationErrorCode::TargetChanged))?;
+    if initial.absolute != current.absolute {
+        return Err(mutation_error(MutationErrorCode::TargetChanged).into());
+    }
     match (&initial.metadata, &current.metadata, original) {
         (None, None, None) => Ok(()),
         (Some(before), Some(after), Some(bytes))
             if before.dev() == after.dev() && before.ino() == after.ino() && after.nlink() == 1 =>
         {
-            let current_bytes = fs::read(&current.absolute)
+            let current_bytes = crate::text_file::read_regular(&current.absolute)
                 .map_err(|_| mutation_error(MutationErrorCode::TargetChanged))?;
             if current_bytes == bytes {
                 Ok(())
@@ -639,16 +865,120 @@ fn revalidate_target(
     }
 }
 
-fn match_positions(haystack: &[u8], needle: &[u8]) -> Vec<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return Vec::new();
+fn ensure_parent(path: &Path) -> Result<(), ToolError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| mutation_error(MutationErrorCode::ParentNotFound))?;
+    fs::create_dir_all(parent).map_err(|_| mutation_error(MutationErrorCode::ParentNotFound))?;
+    Ok(())
+}
+
+fn quote_key(c: char) -> char {
+    match c {
+        '“' | '”' => '"',
+        '‘' | '’' => '\'',
+        other => other,
     }
-    haystack
-        .windows(needle.len())
-        .enumerate()
-        .filter_map(|(index, window)| (window == needle).then_some(index))
-        .take(2)
-        .collect()
+}
+
+fn apply_edit(content: &str, old: &str, new: &str, all: bool) -> Result<(String, u64), ToolError> {
+    if old == new {
+        return Err(mutation_error(MutationErrorCode::EditNoChange).into());
+    }
+    if old.is_empty() {
+        if !content
+            .trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+            .is_empty()
+        {
+            return Err(mutation_error(MutationErrorCode::EditEmptyOldString).into());
+        }
+        return Ok((new.to_owned(), 1));
+    }
+    let actual = if content.contains(old) {
+        old.to_owned()
+    } else {
+        let hay: Vec<_> = content.char_indices().collect();
+        let needle: Vec<_> = old.chars().map(quote_key).collect();
+        let start = hay.windows(needle.len()).position(|w| {
+            w.iter()
+                .map(|(_, c)| quote_key(*c))
+                .eq(needle.iter().copied())
+        });
+        let Some(start) = start else {
+            return Err(MutationError::with_context(
+                MutationErrorCode::EditNoMatch,
+                bounded_context(content.as_bytes(), &[]),
+            )
+            .into());
+        };
+        let end = hay
+            .get(start + needle.len())
+            .map_or(content.len(), |(i, _)| *i);
+        content[hay[start].0..end].to_owned()
+    };
+    let count = content.matches(&actual).count();
+    if count > 1 && !all {
+        return Err(MutationError::with_context(
+            MutationErrorCode::EditMultipleMatches,
+            bounded_context(content.as_bytes(), &[0, 1]),
+        )
+        .into());
+    }
+    let replacement = if actual != old {
+        let doubles = actual.contains(['“', '”']);
+        let singles = actual.contains(['‘', '’']);
+        let chars: Vec<_> = new.chars().collect();
+        chars
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let opening = i == 0
+                    || matches!(
+                        chars[i - 1],
+                        ' ' | '\t' | '\n' | '\r' | '(' | '[' | '{' | '—' | '–'
+                    );
+                match c {
+                    '"' if doubles => {
+                        if opening {
+                            '“'
+                        } else {
+                            '”'
+                        }
+                    }
+                    '\'' if singles => {
+                        if opening {
+                            '‘'
+                        } else {
+                            '’'
+                        }
+                    }
+                    _ => *c,
+                }
+            })
+            .collect::<String>()
+    } else {
+        new.to_owned()
+    };
+    let needle =
+        if new.is_empty() && !actual.ends_with('\n') && content.contains(&format!("{actual}\n")) {
+            format!("{actual}\n")
+        } else {
+            actual
+        };
+    let replacements = if all {
+        content.matches(&needle).count() as u64
+    } else {
+        1
+    };
+    let updated = if all {
+        content.replace(&needle, &replacement)
+    } else {
+        content.replacen(&needle, &replacement, 1)
+    };
+    if updated == content {
+        return Err(mutation_error(MutationErrorCode::EditNoChange).into());
+    }
+    Ok((updated, replacements))
 }
 
 fn bounded_context(bytes: &[u8], matches: &[usize]) -> String {

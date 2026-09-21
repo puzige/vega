@@ -67,6 +67,13 @@ impl MutationContext {
         }
     }
 
+    pub(crate) fn validate_target(&self, target: &Path) -> Result<(), MutationError> {
+        if target.starts_with(&self.checkpoint_root) {
+            return Err(mutation_error(MutationErrorCode::CheckpointUnavailable));
+        }
+        Ok(())
+    }
+
     pub(crate) fn checkpoint(
         &self,
         relative: &Path,
@@ -83,8 +90,23 @@ impl MutationContext {
             }
         };
 
+        let external_artifact = if relative.is_absolute() {
+            let mut hash = crate::sha256::Sha256::new();
+            hash.update(display.as_bytes());
+            Some(PathBuf::from(format!(
+                "external-{}",
+                crate::sha256::hex(&hash.finalize())
+            )))
+        } else {
+            None
+        };
         let artifact_result = if let Some(bytes) = preimage {
-            self.write_preimage(&call_root, relative, bytes, &mut created_dirs)
+            self.write_preimage(
+                &call_root,
+                external_artifact.as_deref().unwrap_or(relative),
+                bytes,
+                &mut created_dirs,
+            )
         } else {
             self.write_created_metadata(&call_root, display)
         };
@@ -93,6 +115,13 @@ impl MutationContext {
             return Err(error);
         }
 
+        if let Some(artifact) = external_artifact.as_ref().filter(|_| preimage.is_some()) {
+            let mapping = serde_json::json!({"metadata_version":"external_preimage_v1", "path":display, "artifact":format!("files/{}", artifact.display())});
+            atomic_write_new(
+                &call_root.join("target.json"),
+                mapping.to_string().as_bytes(),
+            )?;
+        }
         self.validate_root()?;
         validate_safe_directory(&call_root)?;
         Ok(self.checkpoint_ref.clone())

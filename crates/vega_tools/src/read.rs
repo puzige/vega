@@ -1,21 +1,19 @@
 //! read tool: numbered lines with per-line truncation (tech-spec §4.4,
 //! A3-06 部分 / S4-T21).
 
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
 use crate::Tools;
 use crate::error::ToolError;
-use crate::fence::resolve_in_root;
 use crate::output::{LINE_TRUNCATION_MARKER, MAX_LINE_CHARS, ToolOutput};
+use crate::text_file::TextFile;
 
 /// Bytes probed from the file head for the NUL-byte binary check
 /// (tech-spec §4.4: 读头部探 NUL 字节).
 const BINARY_PROBE_LEN: u64 = 8192;
 
 impl Tools {
-    /// Read the file at `path` (project-root-relative) and render its lines
+    /// Read the file at `path` (absolute or project-root-relative) and render its lines
     /// with a right-aligned line-number gutter, `"<no> | <line>"`, padded to
     /// the width of the window's last line number (e.g. `" 12 | fn"` for a
     /// window ending at line 12).
@@ -38,31 +36,34 @@ impl Tools {
                 "offset is 1-based and must be >= 1".to_string(),
             ));
         }
-        let canonical = resolve_in_root(&self.root, path)?;
+        let canonical = self.file_path(path)?;
         if canonical.is_dir() {
             return Err(ToolError::InvalidInput(format!("{path} is a directory")));
         }
-        let content = read_text_head_probed(&canonical, path)?;
-        Ok(render_numbered(&content, offset.unwrap_or(1), limit))
+        let bytes = read_text_head_probed(&canonical, path)?;
+        let text = TextFile::decode(&bytes)?;
+        self.reads.record(&canonical, &bytes)?;
+        Ok(render_numbered(&text.content, offset.unwrap_or(1), limit))
     }
 }
 
-/// Read the whole file as lossy UTF-8, probing its head for NUL bytes so a
-/// binary file is rejected before the rest of it is loaded (非 UTF-8 文本不
-/// 因此拒绝——spec 只以 NUL 探测定义二进制，编码问题降级 lossy).
-fn read_text_head_probed(canonical: &Path, display: &str) -> Result<String, ToolError> {
-    let mut file = File::open(canonical)?;
-    let mut head = Vec::new();
-    file.by_ref()
-        .take(BINARY_PROBE_LEN)
-        .read_to_end(&mut head)?;
-    if head.contains(&0) {
-        return Err(ToolError::BinaryFile(display.to_string()));
+/// Read a bounded regular text file. Unsupported encodings are never decoded lossily.
+fn read_text_head_probed(canonical: &Path, display: &str) -> Result<Vec<u8>, ToolError> {
+    let bytes = crate::text_file::read_regular(canonical).map_err(|error| match error {
+        ToolError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ToolError::NotFound(display.into())
+        }
+        other => other,
+    })?;
+    if bytes
+        .iter()
+        .take(BINARY_PROBE_LEN as usize)
+        .any(|b| *b == 0)
+        && !bytes.starts_with(&[0xff, 0xfe])
+    {
+        return Err(ToolError::BinaryFile(display.into()));
     }
-    let mut rest = Vec::new();
-    file.read_to_end(&mut rest)?;
-    head.extend_from_slice(&rest);
-    Ok(String::from_utf8_lossy(&head).into_owned())
+    Ok(bytes)
 }
 
 /// Render `content` as the 1-based window starting at `offset` with at most
