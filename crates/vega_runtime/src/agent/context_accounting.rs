@@ -171,6 +171,7 @@ fn fingerprint(messages: &[ChatMessage], tools: &[ToolDefinition]) -> Option<[u8
             20,
             &serde_json::to_vec(&tool.input_schema).ok()?,
         );
+        tagged(&mut hasher, 21, &[u8::from(tool.strict)]);
     }
     Some(hasher.finalize().into())
 }
@@ -190,7 +191,13 @@ mod tests {
             tools: vec![ToolDefinition {
                 name: "read".into(),
                 description: "read file".into(),
-                input_schema: serde_json::json!({"type": "object"}),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": false
+                }),
+                strict: false,
             }],
             max_tokens: Some(100),
             reasoning: Some(FrozenReasoning::unknown("mock", "mock")),
@@ -306,6 +313,39 @@ mod tests {
         .unwrap();
         assert_eq!(
             changed_reasoning.source,
+            super::super::ContextAccountingSource::Estimated
+        );
+    }
+
+    #[test]
+    fn issue85_strict_changes_tool_fingerprint_and_invalidates_anchor() {
+        let sent = request();
+        let anchor = PendingInputAnchor::from_request(&sent)
+            .unwrap()
+            .unwrap()
+            .complete(85)
+            .unwrap();
+        let strict_tools = [ToolDefinition {
+            strict: true,
+            ..sent.tools[0].clone()
+        }];
+
+        assert_ne!(
+            fingerprint(&sent.messages, &sent.tools),
+            fingerprint(&sent.messages, &strict_tools)
+        );
+        let decision = InputAnchor::decide(
+            Some(&anchor),
+            &sent.messages,
+            &strict_tools,
+            &sent.model,
+            sent.reasoning.as_ref(),
+            sent.max_tokens,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            decision.source,
             super::super::ContextAccountingSource::Estimated
         );
     }

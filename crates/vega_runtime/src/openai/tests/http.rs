@@ -22,7 +22,13 @@ async fn happy_path_sends_openai_wire_format_and_streams_events() {
         tools: vec![ToolDefinition {
             name: "read".into(),
             description: "read a file".into(),
-            input_schema: serde_json::json!({"type":"object"}),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+            }),
+            strict: true,
         }],
         max_tokens: Some(64),
         reasoning: None,
@@ -80,6 +86,10 @@ async fn happy_path_sends_openai_wire_format_and_streams_events() {
     assert!(
         wire["tools"][0]["function"]["parameters"]["type"] == "object",
         "wire schema mismatch"
+    );
+    assert!(
+        wire["tools"][0]["function"]["strict"] == true,
+        "wire strict intent mismatch"
     );
 }
 
@@ -571,6 +581,50 @@ async fn non_retryable_4xx_fails_without_retry() {
         other => panic!("expected 401 provider error, got {other:?}"),
     }
     assert_eq!(server.connection_count(), 1, "4xx must not be retried");
+}
+
+#[tokio::test]
+async fn issue85_strict_schema_rejection_fails_without_non_strict_fallback() {
+    let success = sse_response(
+        &[r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#],
+        true,
+    );
+    let server = spawn_server(scripted_server(vec![
+        status_response(
+            "400 Bad Request",
+            &[],
+            r#"{"error":{"message":"strict schema rejected"}}"#,
+        ),
+        success,
+    ]))
+    .await;
+    let provider = provider_for(&server, fast_policy(1));
+    let request = ChatRequest {
+        model: MODEL.into(),
+        messages: vec![ChatMessage::new(ChatRole::User, "hello")],
+        tools: crate::tool_definitions(crate::RuntimeRunMode::Execute),
+        ..Default::default()
+    };
+
+    let result = provider
+        .chat_stream(request, CancellationToken::new())
+        .await;
+    assert!(matches!(
+        result,
+        Err(VegaError::Provider {
+            status: Some(400),
+            retryable: false,
+            ..
+        })
+    ));
+    assert_eq!(server.connection_count(), 1);
+    let captured = server.captured();
+    assert_eq!(captured.len(), 1);
+    assert!(
+        captured[0].body["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().all(|tool| tool["function"]["strict"] == true))
+    );
 }
 
 #[tokio::test]

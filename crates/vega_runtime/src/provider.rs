@@ -398,6 +398,8 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema object describing the tool input.
     pub input_schema: serde_json::Value,
+    /// Frozen strict-mode intent; provider wire declares strict only when true.
+    pub strict: bool,
 }
 
 impl std::fmt::Debug for ToolDefinition {
@@ -407,6 +409,7 @@ impl std::fmt::Debug for ToolDefinition {
             .field("name_bytes", &self.name.len())
             .field("description_bytes", &self.description.len())
             .field("schema", &"[redacted]")
+            .field("strict", &self.strict)
             .finish()
     }
 }
@@ -605,6 +608,7 @@ mod tests {
                 name: sentinels[3].into(),
                 description: sentinels[1].into(),
                 input_schema: serde_json::json!({"value": sentinels[5]}),
+                strict: false,
             }],
             max_tokens: Some(256),
             reasoning: None,

@@ -1,10 +1,10 @@
 # Issue #90 — bash 参数校验反馈与工具卡
 
-关联 [#90](https://github.com/puzige/vega/issues/90) 与 [#85](https://github.com/puzige/vega/issues/85)。本规格仅处理 `bash` 参数误用与校验失败的展示。#90 评论已明确否决 `command` 别名；`bash` 仍只接受必填 `cmd` 与可选 `timeout_ms`，不得执行含 `command` 的输入。
+关联 [#90](https://github.com/puzige/vega/issues/90) 与 [#85](https://github.com/puzige/vega/issues/85)。本规格仅处理 `bash` 参数误用与校验失败的展示。#90 评论已明确否决 `command` 别名；`bash` 仍只接受必填 `cmd` 与逻辑可选的 `timeout_ms`，不得执行含 `command` 的输入。2026-09-21 的 [Issue #85 严格参数规格](vega-issue85-tool-schema-adherence.md) 仅覆写 provider schema 表达与 `timeout_ms: null` 的默认语义，不放宽本规格的别名、额外字段、权限前拒绝或安全卡契约。
 
 ## 行为契约
 
-1. 工具定义须明确展示可直接复制的参数示例 `{"cmd":"rg ..."}`，并说明字段名只能是 `cmd`，`command` 不受支持。现有 schema 的 `required: ["cmd"]` 与 `additionalProperties: false` 保持不变。
+1. 工具定义须明确展示可直接复制的参数示例 `{"cmd":"rg ..."}`，并说明字段名只能是 `cmd`，`command` 不受支持。#90 交付时的 schema 为 `required: ["cmd"]`；后续 #85 将 provider schema 冻结为 `required: ["cmd", "timeout_ms"]` 且 `timeout_ms` nullable，`additionalProperties: false` 保持不变。
 2. 无效 `bash` 输入在权限请求和 spawn 前拒绝。返回模型的错误须使用固定、内容安全的词汇，说明 `cmd` 必填且必须是非空字符串、`command` 不受支持；不得回显原始 JSON、命令、路径或 provider 正文。既有已持久化的旧错误文本仍须能够安全恢复。
 3. 参数校验拒绝是无 proposal、无权限请求的终态。Live UI 与重启后的历史卡应显示 `bash`、拒绝状态和“参数无效 / 请使用 cmd”之类的可纠正摘要；不得显示“工具结果损坏”或原始输入。只有验证失败的未知/篡改状态才显示“工具结果损坏”。
 4. 只有与真实 `bash` 校验拒绝严格匹配的 call id、状态、validation approval、固定错误词汇和空执行元数据可进入这张安全卡。其他无 proposal 的终态仍 fail closed。成功 `bash`、write/edit 无效输入、reused terminal、历史恢复的现有安全行为不得回退。
@@ -35,6 +35,6 @@
 ## 实现边界与顺序
 
 - 先加失败测试，确认当前错误卡与反馈不满足 B/D；然后修改工具描述、固定反馈、严格事件投影及历史恢复投影。
-- 不增加依赖、不改权限门禁、不修改 bash 解析接受集、不改数据库 schema。
+- 不增加依赖、不改权限门禁、不改数据库 schema。#90 本身不修改 bash 解析接受集；后续 #85 仅让 `timeout_ms: null` 与缺省采用同一默认值，其他拒绝集合保持不变。
 - 校验失败路径的安全投影必须不保留原始命令；不得以宽松解析换取 UI 可见性。
 - 验收运行仓库门禁、真实生产 controller/UI 路径，并把证据保存在任务 worktree 之外。通过审查后按项目流程集成与回写。

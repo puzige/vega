@@ -160,6 +160,7 @@ fn candidate(server_id: &str, tool_name: &str) -> McpCandidate {
                 "required": ["query"],
                 "additionalProperties": false
             }),
+            strict: false,
         },
         Arc::new(NoopDispatcher),
         CancellationToken::new(),
@@ -709,6 +710,75 @@ fn issue73_run_snapshot_does_not_gain_a_refreshed_schema_or_tool() {
     )
     .unwrap();
     assert_eq!(next.mcp_count(), 2);
+}
+
+#[test]
+fn issue85_mcp_schema_stays_owned_and_skill_tools_are_strict() {
+    let id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "optional_hint": {"type": "string"}
+        },
+        "required": ["query"]
+    });
+    let mut external = candidate(id, "search");
+    external.definition.input_schema = schema.clone();
+    external.definition.strict = true;
+
+    let snapshot = RunCapabilitySnapshot::freeze(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        vec![external],
+    )
+    .unwrap()
+    .with_skills(true, true)
+    .unwrap();
+    let mcp = snapshot
+        .definitions()
+        .iter()
+        .find(|tool| tool.name.starts_with("mcp_"))
+        .unwrap();
+    assert_eq!(mcp.input_schema, schema);
+    assert!(!mcp.strict);
+    let wire = crate::openai::build_request_body(&ChatRequest {
+        model: "mock".into(),
+        tools: snapshot.definitions().to_vec(),
+        ..Default::default()
+    });
+    let mcp_wire = wire["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["function"]["name"] == mcp.name)
+        .unwrap();
+    assert_eq!(mcp_wire["function"]["parameters"], schema);
+    assert!(mcp_wire["function"].get("strict").is_none());
+    for name in ["load_skill", "read_skill_resource"] {
+        let skill = snapshot
+            .definitions()
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap();
+        assert!(skill.strict);
+        assert_eq!(skill.input_schema["additionalProperties"], false);
+        let properties = skill.input_schema["properties"].as_object().unwrap();
+        let required = skill.input_schema["required"].as_array().unwrap();
+        assert!(properties.keys().all(|key| {
+            required
+                .iter()
+                .any(|item| item.as_str() == Some(key.as_str()))
+        }));
+        let skill_wire = wire["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["function"]["name"] == name)
+            .unwrap();
+        assert_eq!(skill_wire["function"]["strict"], true);
+        assert_eq!(skill_wire["function"]["parameters"], skill.input_schema);
+    }
 }
 
 #[test]

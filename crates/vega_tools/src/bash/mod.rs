@@ -69,7 +69,7 @@ impl<'de> Deserialize<'de> for OptionalTimeout {
     where
         Deserializer: serde::Deserializer<'de>,
     {
-        u64::deserialize(deserializer).map(|value| Self(Some(value)))
+        Option::<u64>::deserialize(deserializer).map(Self)
     }
 }
 

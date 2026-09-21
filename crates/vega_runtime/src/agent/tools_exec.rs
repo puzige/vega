@@ -1416,12 +1416,13 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "offset": { "type": "integer", "minimum": 1 },
-                    "limit": { "type": "integer", "minimum": 0 }
+                    "offset": { "type": ["integer", "null"], "minimum": 1 },
+                    "limit": { "type": ["integer", "null"], "minimum": 0 }
                 },
-                "required": ["path"],
+                "required": ["path", "offset", "limit"],
                 "additionalProperties": false
             }),
+            strict: true,
         },
         ToolDefinition {
             name: "glob".to_string(),
@@ -1432,6 +1433,7 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
                 "required": ["pattern"],
                 "additionalProperties": false
             }),
+            strict: true,
         },
         ToolDefinition {
             name: "grep".to_string(),
@@ -1440,11 +1442,12 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string" },
-                    "path": { "type": "string" }
+                    "path": { "type": ["string", "null"] }
                 },
-                "required": ["pattern"],
+                "required": ["pattern", "path"],
                 "additionalProperties": false
             }),
+            strict: true,
         },
     ];
     if run_mode == RuntimeRunMode::Execute {
@@ -1461,6 +1464,7 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
                     "required": ["path", "content"],
                     "additionalProperties": false
                 }),
+                strict: true,
             },
             ToolDefinition {
                 name: "edit".to_string(),
@@ -1476,6 +1480,7 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
                     "required": ["path", "old_string", "new_string"],
                     "additionalProperties": false
                 }),
+                strict: true,
             },
             ToolDefinition {
                 name: "bash".to_string(),
@@ -1485,11 +1490,12 @@ pub fn tool_definitions(run_mode: RuntimeRunMode) -> Vec<ToolDefinition> {
                     "type": "object",
                     "properties": {
                         "cmd": { "type": "string" },
-                        "timeout_ms": { "type": "integer", "minimum": 1 }
+                        "timeout_ms": { "type": ["integer", "null"], "minimum": 1 }
                     },
-                    "required": ["cmd"],
+                    "required": ["cmd", "timeout_ms"],
                     "additionalProperties": false
                 }),
+                strict: true,
             },
         ]);
     }

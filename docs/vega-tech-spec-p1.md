@@ -1,6 +1,6 @@
 # ✦ Vega — Phase 1 技术实现规格（SDD · Spec-Driven Development）
 
-**版本** v0.6 · 2026-08-30 · 关联：[vega-phase1-plan.md](vega-phase1-plan.md) · [vega-features.md](vega-features.md) · [vega-ui-spec.md](vega-ui-spec.md)
+**版本** v0.7 · 2026-09-21 · 关联：[vega-phase1-plan.md](vega-phase1-plan.md) · [vega-features.md](vega-features.md) · [vega-ui-spec.md](vega-ui-spec.md)
 
 > **SDD 工作约定**：每个 Sprint 开工前，对应模块的 spec（本文件对应章节）必须先定稿；实现以 spec 为准；实现完成后对照 spec 验收。spec 变更走文档修改 + 变更记录，不允许代码先行 spec 后补。
 > 本文件覆盖 Phase 1（S1-S8）。所有 Rust 签名为**设计目标**，实现时可微调参数名，但 trait 边界、状态机、DDL 不得偏离。
@@ -274,6 +274,7 @@ pub enum ProviderEvent {
 ```
 
 - **OpenAI 兼容实现**（A3-02）：`POST {base_url}/chat/completions`，`stream: true`，SSE 解析；`stream_options.include_usage = true` 拿最终 usage；tool_calls 增量按 index 聚合。
+- **严格工具参数**（[Issue #85 规格](vega-issue85-tool-schema-adherence.md)）：Chat Completions 对 Vega-owned built-in/Skill tools 显式发送 `function.strict: true`；其每层 object schema 关闭额外字段并把全部 property 列为 required，逻辑可选字段用 nullable 类型表达。执行器仍把逻辑可选字段缺省与显式 `null` 按同一既有默认处理并独立严格校验；外部 MCP schema 保持原样且不宣称 strict。
 - 重试策略：网络错误/5xx 指数退避（1s/2s/4s，最多 3 次）；429 读 `Retry-After`；**工具结果已落库的消息不重复执行**（重试只重建请求上下文）。
 
 ### 4.2 Agentic 循环（A3-03，时序定稿）
@@ -356,7 +357,7 @@ validation step -2 是 permission 前置安全边界：invalid write/edit 不产
 
 > 2026-09-18 · Issue #58 用户裁决：新增独立 FullAccess（`full_access`），Auto 仍保留沙箱。Execute + FullAccess 直接启动 shell，绕过下面仅适用于沙箱模式的 Seatbelt、profile 自测与 hardlink preflight；不会在沙箱失败时自动降级。其余模式继续按下文执行，危险确认与进程/输出生命周期保持不变。具体范围和验收见 [Issue 58 规格](vega-issue-58-full-access.md)。
 
-- bash 仅接收 `cmd` 与可选 `timeout_ms`；调用方不存在 cwd 参数。timeout 缺省 120_000ms，0 与不可表示值拒绝。执行固定为 `/bin/zsh -lc`，cwd 固定 canonical project root，无 PTY。参数误用的固定反馈、安全工具卡与旧记录恢复按 [Issue #90 规格](vega-issue90-bash-validation.md)；`command` 别名不得执行。
+- bash 仅接收 `cmd` 与逻辑可选的 `timeout_ms`；strict provider schema 将后者列为 required + nullable，执行器对字段缺省与显式 `null` 都使用 120_000ms 默认值，0 与不可表示值拒绝。调用方不存在 cwd 参数；执行固定为 `/bin/zsh -lc`，cwd 固定 canonical project root，无 PTY。参数误用的固定反馈、安全工具卡与旧记录恢复按 [Issue #90 规格](vega-issue90-bash-validation.md)；`command` 别名不得执行。
 - 所有生产 bash 都由 `/usr/bin/sandbox-exec` 启动。workspace-write profile 基线 deny `file-write*`，只放行 project root 与当次 Vega-owned temp exact subpath，再 deny `.git` 与实际 gitdir；禁止 broad-allow 共享 `/private/tmp`，网络按 tech-risks §4 workspace-write 档开放。sandbox-exec 缺失/profile 自测失败必须 fail closed，禁止裸 shell。
 - 每个 bash call 在 spawn 前以独占创建方式于 canonical `/private/tmp` 下建立不可预测的专用目录，权限必须收紧为 0700；记录其初始 dev/inode，并在 profile 参数化前验证 `symlink_metadata` 为目录、不是 symlink、canonical path 仍位于 `/private/tmp`、dev/inode 未变。`TMPDIR`、`TMP`、`TEMP`、`TEMPDIR` 全设为此 exact path；不得把真实路径写入 tool wire、output、event、SQLite 或普通错误文本。
 - Seatbelt 是 path-based，不能阻止任一可写根内预存 hardlink 修改其他路径的同一 inode。每次 spawn 前必须对 canonical project root 与专用 temp dir 执行 no-follow 扫描：project 覆盖 hidden/ignored entry，只跳过 profile 已强制只读的 `.git` entry 与已发现实际 gitdir；temp dir 不跳过任何 entry。任一普通文件 Unix `nlink > 1`，或目录遍历、`symlink_metadata`/metadata 读取失败，均以 hardlink preflight failure 终止且不得创建子进程。不得用 canonicalize 跟随 entry symlink 做此扫描。
@@ -492,3 +493,4 @@ S5 的“checkpoint”测试只验证修改前 preimage；Checkpoint 列表、�
 - v0.4 (2026-08-30) 人类批准 S5 strict wire schema：§2/§3 固定 valid `write_edit_v1`、created-new-file metadata、opaque `checkpoint_ref`、write/edit success output 与 strict codec 类型；§4.4/§6 固定 metadata 落盘时序、existing-target absence 与只传 ref 的边界；§8 分配 T23/T26/T27/T29 roundtrip/negative/e2e 验收。
 - v0.5 (2026-08-30) 人类批准 T24 hardlink 补充契约：§4.4.2 固定 bash spawn 前 no-follow 扫描可写树，普通文件 `nlink > 1` 或扫描失败均 fail closed/零 spawn；§8 增预存/hidden/ignored hardlink 与扫描失败测试，并明确 scan 后并发替换为 Phase 1 TOCTOU 残余。
 - v0.6 (2026-08-30) 人类批准 T24 temp-root 补充契约：§4.4.2 移除 broad `/private/tmp` allow，固定每 call 0700 exact temp subpath、四 temp env、project/temp dual-root scan 与 reap 后身份校验/no-follow cleanup；§8 增 shared tmp 拒绝、temp hardlink 零 spawn、全终态 cleanup 与根替换保护。
+- v0.7 (2026-09-21) Issue #85 严格工具参数契约：§4.1 固定 Vega-owned Chat Completions tools 的 `function.strict: true` 与 required + nullable optional schema，外部 MCP 保持 non-strict；§4.4.2 明确 bash `timeout_ms` 缺省/null 的同一默认语义且不接受 `command` 别名。

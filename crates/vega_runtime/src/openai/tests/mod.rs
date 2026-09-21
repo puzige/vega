@@ -58,6 +58,41 @@ fn follow_up_messages_serialize_exact_tool_call_wire_shape() {
 }
 
 #[test]
+fn issue85_vega_tools_emit_strict_chat_completions_wire() {
+    let request = ChatRequest {
+        model: MODEL.into(),
+        tools: crate::tool_definitions(crate::RuntimeRunMode::Execute),
+        ..Default::default()
+    };
+
+    let wire = build_request_body(&request);
+    let functions = wire["tools"].as_array().unwrap();
+    assert_eq!(functions.len(), 6);
+    assert!(
+        functions
+            .iter()
+            .all(|tool| tool["function"]["strict"] == true)
+    );
+}
+
+#[test]
+fn issue85_non_strict_tools_do_not_claim_strict_wire() {
+    let request = ChatRequest {
+        model: MODEL.into(),
+        tools: vec![ToolDefinition {
+            name: "external".into(),
+            description: "external tool".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+            strict: false,
+        }],
+        ..Default::default()
+    };
+
+    let wire = build_request_body(&request);
+    assert!(wire["tools"][0]["function"].get("strict").is_none());
+}
+
+#[test]
 fn zhipu_enabled_effort_omits_cross_round_clear_switch() {
     let request = ChatRequest {
         model: "glm-5.3".into(),

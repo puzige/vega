@@ -1885,6 +1885,8 @@ async fn issue76_auto_source_fence_rejects_unrelated_history_before_summary_requ
 #[tokio::test]
 async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecution() {
     let (store, dir, _project_id) = setup();
+    let input_limit = 10_200;
+    let output_reserve = 1_000;
     fs::write(dir.path().join("large.txt"), "L".repeat(6_000)).unwrap();
     for seq in 1..=8_i64 {
         messages::insert(
@@ -1905,7 +1907,7 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
         )
         .unwrap();
     }
-    save_issue76_model_policy(&store, 10_000, 1_000);
+    save_issue76_model_policy(&store, input_limit, output_reserve);
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
@@ -1948,10 +1950,24 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
     .await
     .unwrap();
     assert_eq!(run.content, "continued after compaction");
-    assert_eq!(provider.requests().len(), 3);
-    assert!(provider.requests()[1].tools.is_empty());
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    let budget =
+        vega_runtime::ContextBudget::new(input_limit + output_reserve, output_reserve, true)
+            .unwrap();
+    let trigger_tokens = budget.trigger_tokens().unwrap();
+    let initial_estimate =
+        vega_runtime::estimate_wire_context(&requests[0].messages, &requests[0].tools).unwrap();
+    assert!(!requests[0].tools.is_empty());
+    assert!(initial_estimate.input_tokens < trigger_tokens);
+    let compaction =
+        vega_store::context_compaction::latest_status(store.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .unwrap();
+    assert!(compaction.estimated_tokens >= trigger_tokens);
+    assert!(requests[1].tools.is_empty());
     assert!(
-        provider.requests()[2]
+        requests[2]
             .messages
             .iter()
             .any(|message| message.tool_call_id.as_deref() == Some("live-read"))
