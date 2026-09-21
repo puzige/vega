@@ -1,8 +1,8 @@
 //! #76: IO-free, exact-owner compaction lifecycle projection.
 use super::*;
 use vega_conversation::types::{
-    ContextCompactionFailureCode as Failure, ContextCompactionStatus as Status,
-    ContextCompactionStatusRecord, ContextSettings,
+    ContextAccountingRecord, ContextCompactionFailureCode as Failure,
+    ContextCompactionStatus as Status, ContextCompactionStatusRecord, ContextSettings,
 };
 
 const LOAD_ERROR: &str = "上下文信息读取失败，请稍后重试";
@@ -14,6 +14,7 @@ pub(crate) struct ContextControl {
     automatic: bool,
     settings: Option<ContextSettings>,
     estimate: Option<u64>,
+    live_accounting: Option<(String, ContextAccountingRecord)>,
     compactable: bool,
     next_request: u64,
     retired_through: u64,
@@ -34,6 +35,7 @@ impl ContextControl {
             automatic: false,
             settings: None,
             estimate: None,
+            live_accounting: None,
             compactable: false,
             next_request: 0,
             retired_through: 0,
@@ -133,7 +135,9 @@ impl ConversationStream {
             && self.context_control.limit.read(cx).text().is_empty()
             && self.context_control.reserve.read(cx).text().is_empty();
         self.context_control.settings = settings;
-        self.context_control.estimate = estimated_tokens;
+        if self.context_control.live_accounting.is_none() {
+            self.context_control.estimate = estimated_tokens;
+        }
         self.context_control.compactable = compactable;
         if self.context_control.error == Some(LOAD_ERROR) {
             self.context_control.error = None;
@@ -227,7 +231,10 @@ impl ConversationStream {
         {
             cx.notify();
         }
-        self.context_control.estimate = record.estimated_tokens.or(self.context_control.estimate);
+        if self.context_control.live_accounting.is_none() {
+            self.context_control.estimate =
+                record.estimated_tokens.or(self.context_control.estimate);
+        }
         if record.status != Status::Compacting {
             self.context_control.compact_pending = None;
             self.context_control.cancel_pending = false;
@@ -241,6 +248,42 @@ impl ConversationStream {
         }
         cx.notify();
         true
+    }
+
+    /// Accept only the active run's content-free budget decision.
+    pub fn apply_context_accounting(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        message_id: &str,
+        record: ContextAccountingRecord,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if thread_id != self.thread.id
+            || model != self.thread.model
+            || !self.actions.running
+            || !self
+                .active_agent_message
+                .as_ref()
+                .is_some_and(|(active, _)| active == message_id)
+            || self
+                .context_control
+                .live_accounting
+                .as_ref()
+                .is_some_and(|(old_id, old)| old_id != message_id || record.revision < old.revision)
+        {
+            return false;
+        }
+        self.context_control.estimate = Some(record.predicted_input);
+        self.context_control.live_accounting = Some((message_id.to_string(), record));
+        cx.notify();
+        true
+    }
+
+    pub(crate) fn clear_live_context_accounting(&mut self) {
+        if self.context_control.live_accounting.take().is_some() {
+            self.context_control.estimate = None;
+        }
     }
 
     fn sync_context_inputs(&mut self, cx: &mut Context<Self>) {
@@ -300,7 +343,9 @@ fn status_label(record: &ContextCompactionStatusRecord) -> &'static str {
             Some(Failure::SourceChanged) => "历史已变化，请重试压缩",
             Some(Failure::NoCompactablePrefix) => "暂无可压缩的完整历史",
             Some(Failure::TooLarge) => "历史内容已达到安全分段上限，原始对话已保留；请在新会话继续",
-            Some(Failure::OverLimit) => "模型上下文预算不足，请调整模型容量或缩短当前输入后重试",
+            Some(Failure::OverLimit) => {
+                "本地上下文预算检查未通过，原始对话已保留；请调整容量或缩短当前输入"
+            }
             Some(Failure::ImagesUnsupported) => "历史图片无法安全压缩，请使用新的会话",
             Some(Failure::InvalidSummary) => "压缩结果无效，请重试",
             _ => "上下文压缩失败，请重试",

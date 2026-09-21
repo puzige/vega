@@ -189,6 +189,11 @@ pub enum ConversationEvent {
         /// Safe status metadata; no transcript or provider payloads.
         record: ContextCompactionStatusRecord,
     },
+    /// Primary context accounting for the active assistant run only.
+    ContextAccounting {
+        message_id: MessageId,
+        record: ContextAccountingRecord,
+    },
     /// Assistant message converged.
     MessageFinished {
         /// Assistant message id.
@@ -279,6 +284,11 @@ impl std::fmt::Debug for ConversationEvent {
                 .field("generation", &record.generation)
                 .field("status", &record.status)
                 .field("usage", &record.usage)
+                .finish(),
+            Self::ContextAccounting { message_id, record } => formatter
+                .debug_struct("ContextAccounting")
+                .field("message_id_bytes", &message_id.len())
+                .field("record", record)
                 .finish(),
             Self::MessageFinished {
                 message_id,
@@ -429,6 +439,40 @@ pub(crate) fn from_runtime_event(
                     profile: pricing.profile.clone(),
                     call_started_at: pricing.call_started_at,
                 }),
+            })
+        }
+        RuntimeEvent::ContextAccountingUpdated(decision) => {
+            Some(ConversationEvent::ContextAccounting {
+                message_id: message_id.to_string(),
+                record: ContextAccountingRecord {
+                    source: match decision.source {
+                        vega_runtime::ContextAccountingSource::Estimated => {
+                            ContextAccountingSource::Estimated
+                        }
+                        vega_runtime::ContextAccountingSource::UsageAnchored => {
+                            ContextAccountingSource::UsageAnchored
+                        }
+                    },
+                    stage: match decision.stage {
+                        vega_runtime::ContextAccountingStage::PrimaryPreflight => {
+                            ContextAccountingStage::PrimaryPreflight
+                        }
+                        vega_runtime::ContextAccountingStage::SkillProspect => {
+                            ContextAccountingStage::SkillProspect
+                        }
+                        vega_runtime::ContextAccountingStage::PostSummaryTarget => {
+                            ContextAccountingStage::PostSummaryTarget
+                        }
+                    },
+                    provider_input_baseline: decision.provider_input_baseline,
+                    incremental_estimate: decision.incremental_estimate,
+                    predicted_input: decision.predicted_input,
+                    input_budget: decision.input_budget,
+                    trigger_tokens: decision.trigger_tokens,
+                    target_tokens: decision.target_tokens,
+                    revision: decision.revision,
+                    covered_messages: decision.covered_messages,
+                },
             })
         }
         RuntimeEvent::ContextCompactionStatusUpdated { status } => {

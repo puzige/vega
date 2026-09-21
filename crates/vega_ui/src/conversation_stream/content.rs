@@ -582,7 +582,8 @@ impl ConversationStream {
             }
             ConversationEvent::UsageUpdated { .. }
             | ConversationEvent::ContextCompactionUsageUpdated { .. }
-            | ConversationEvent::ContextCompactionStatus { .. } => {}
+            | ConversationEvent::ContextCompactionStatus { .. }
+            | ConversationEvent::ContextAccounting { .. } => {}
             ConversationEvent::ToolCallProposed { call } => {
                 if let Some(existing) = self.tool_cards.get(&call.id) {
                     existing.update(cx, |card, cx| {

@@ -199,6 +199,15 @@ impl VegaWindow {
                 self.project_automatic_context(generation, stream, record, cx);
                 continue;
             }
+            if let ConversationEvent::ContextAccounting { message_id, record } = event {
+                if self.owns_primary_context_event(generation, stream, cx) {
+                    stream.update(cx, |stream, cx| {
+                        let model = stream.displayed_model().to_string();
+                        stream.apply_context_accounting(thread_id, &model, &message_id, record, cx);
+                    });
+                }
+                continue;
+            }
             self.observe_artifact_event(generation, stream, &event, cx);
             if matches!(event, ConversationEvent::MessageStarted { .. })
                 && let Some(content) = self
