@@ -326,19 +326,30 @@ pub struct ReleaseBuild {
 /// Unconditional release rebuild of both measurement binaries; file
 /// existence alone is never accepted as provenance.
 pub fn rebuild_release(workspace: &Path) -> Result<ReleaseBuild> {
-    let command = "cargo build --release -p xtask -p vega";
+    let command = "cargo build --release -p xtask -p vega --message-format=json-render-diagnostics";
     println!("unconditionally rebuilding the release binaries ({command}) ...");
     let started = Instant::now();
-    let status = Command::new(cargo_bin())
+    let output = Command::new(cargo_bin())
         .current_dir(workspace)
-        .args(["build", "--release", "-p", "xtask", "-p", "vega"])
-        .status()
+        .args([
+            "build",
+            "--release",
+            "-p",
+            "xtask",
+            "-p",
+            "vega",
+            "--message-format=json-render-diagnostics",
+        ])
+        .stderr(std::process::Stdio::inherit())
+        .output()
         .with_context(|| format!("failed to run {command}"))?;
-    let xtask_bin = workspace.join("target/release/xtask");
-    let vega_bin = workspace.join("target/release/vega");
-    if !status.success() {
-        bail!("{command} failed with {status}");
+    if !output.status.success() {
+        bail!("{command} failed with {}", output.status);
     }
+    // Use only paths attested by this successful Cargo invocation. This also
+    // handles managed targets and configured target triples without accepting
+    // an unrelated stale executable in workspace/target/release.
+    let (xtask_bin, vega_bin) = release_artifacts(&output.stdout)?;
     for binary in [&xtask_bin, &vega_bin] {
         if !binary.exists() {
             bail!("binary not found at {} after build", binary.display());
@@ -353,6 +364,57 @@ pub fn rebuild_release(workspace: &Path) -> Result<ReleaseBuild> {
         vega_bin,
         command: command.to_string(),
     })
+}
+
+fn release_artifacts(output: &[u8]) -> Result<(PathBuf, PathBuf)> {
+    let mut xtask = None;
+    let mut vega = None;
+    for line in output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let message: serde_json::Value =
+            serde_json::from_slice(line).context("invalid Cargo build artifact message")?;
+        if message["reason"] != "compiler-artifact" {
+            continue;
+        }
+        let Some(executable) = message["executable"].as_str() else {
+            continue;
+        };
+        let kinds = message["target"]["kind"].as_array();
+        if !kinds.is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin")) {
+            continue;
+        }
+        match message["target"]["name"].as_str() {
+            Some("xtask") => xtask = Some(PathBuf::from(executable)),
+            Some("vega") => vega = Some(PathBuf::from(executable)),
+            _ => {}
+        }
+    }
+    Ok((
+        xtask.context("Cargo build did not report the xtask executable")?,
+        vega.context("Cargo build did not report the vega executable")?,
+    ))
+}
+
+#[cfg(test)]
+mod artifact_tests {
+    use super::release_artifacts;
+    use std::path::Path;
+
+    #[test]
+    fn uses_current_cargo_artifact_paths_and_requires_both_binaries() {
+        let output = br#"{"reason":"compiler-artifact","target":{"name":"xtask","kind":["bin"]},"executable":"/managed/triple/release/xtask"}
+{"reason":"compiler-artifact","target":{"name":"vega","kind":["bin"]},"executable":"/managed/triple/release/vega"}
+{"reason":"build-finished","success":true}
+"#;
+        let (xtask, vega) = release_artifacts(output).expect("current artifacts");
+        assert_eq!(xtask, Path::new("/managed/triple/release/xtask"));
+        assert_eq!(vega, Path::new("/managed/triple/release/vega"));
+        assert!(release_artifacts(br#"{"reason":"build-finished","success":true}"#).is_err());
+        assert!(release_artifacts(b"invalid json").is_err());
+        assert!(release_artifacts(br#"{"reason":"compiler-artifact","target":{"name":"vega","kind":["lib"]},"executable":"/stale/vega"}"#).is_err());
+    }
 }
 
 /// Prefers the rustup proxy so rust-toolchain.toml is honored even when

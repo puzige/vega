@@ -32,65 +32,29 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - PR 必须附：验收命令原始输出 + 与 spec 的偏离说明（必须为无）
 - 合并方式：squash merge，合并后删除功能分支（2026-08-29 决策）
 
-## 验收底线（本地 hooks 强制；云端 CI 延后）
+## 验证门禁与并发构建（2026-09-21 用户裁决）
 
-```
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --workspace
-```
+按 [Issue #107 规格](docs/vega-issue-107-test-workflow.md)执行。**单卡不默认运行 `cargo test --workspace`**，不得因 push hook 或主/子 agent 交接重复执行同一份有效验收。
 
-门禁由本地 git hooks 执行（`.githooks/`，见 [vega-s1-tasks.md](docs/vega-s1-tasks.md) T03；一次性安装 `git config core.hooksPath .githooks`）。
-外加 exec-guide §3 红线检查（`cargo tree` 依赖方向、色值硬编码 grep 等）。
+- 统一入口：`python3 scripts/verify.py --plan` 先查看范围；`python3 scripts/verify.py` 执行。默认相对 `origin/master` 的 merge-base，包含本地改动；`--base <ref>` 可冻结验收基线。
+- Rust 变更选择受影响 workspace 包和全部传递依赖方，运行格式、对应 clippy 与测试。任务规格仍须写清 production-root 回归；不能只按改动文件挑几个测试冒充完整影响分析。
+- 纯文档运行适用检查；开发脚本/hook 运行工具链回归。根依赖/工具链或无法识别的构建输入变更要求明确选择 `--full`，不能静默漏检。`--full` 用于需要全量覆盖的集成，不是每卡默认。
+- 成功证据仅在源码内容、基线、命令、工具链和相关环境一致且日志完整时复用。失败、源码在验证中变化、日志缺失均不得复用；主 agent 负责检查证据，不例行重跑子 agent 刚通过的同树测试。
+- pre-push 调用同一入口，校验实际推送的当前干净 HEAD；不再无条件全量 clippy/test/build。测试已编译目标，不每次 push 追加重复 build。打包和安装在需要应用交付的节点执行。
+- 保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
 
-## 共享构建缓存（新 worktree 必做）
+### 构建目录和资源调度
 
-**本仓库所有 worktree 共用一个 `target/` 目录。** 主检出保留真实目录作为构建缓存，其余 worktree 的 `target` 是指向它的符号链接。这样新 worktree 的首次构建是增量的，而不是从零编译 900+ 依赖。
+**新 worktree 不再链接共享 target。** `scripts/cargo-lock.sh <cargo-args>` 使用按 worktree 隔离的持久构建目录，限制全仓构建并发（默认 2），同一个实际 target 全程互斥。首次冷编译仍有成本，后续沿用该任务自己的缓存。显式 target 也必须经调度器，并绑定单一 worktree；已有且无法确认归属的缓存不能自动接管。
 
-实测（2026-09-13，`cargo check --workspace`）：
-
-| 场景 | 耗时 |
-|---|---|
-| 全新 worktree，独立 `target/` | 52 s |
-| 全新 worktree，接上共享 `target/` | **6 s** |
-| 改一行后重新 check | 0.8 s |
-
-**新建 worktree 后必须接上，否则第一次构建要等十几分钟：**
-
-```sh
-# 在主检出里跑（脚本会把所有 worktree 都接上，不只是新建的那个）
-git worktree add -b feat/<task-id>-<slug> ../vega-<slug> master
-scripts/cargo-share-target.sh
-```
-
-`scripts/cargo-share-target.sh` 幂等，随时可重跑。无参数时作用于当前仓库；也可显式传仓库路径。`--status` 看当前接线，`--unshare` 恢复独立目录。
-
-**代价与约束见下一节**——共享 target 意味着同一时间只能有一个 worktree 在构建或测试。
-
-## 并发构建与测试：同一仓库同时只跑一个
-
-**本仓库所有 worktree 共用一个 `target/` 目录**（见上一节）。代价是**同一时间只能有一个 worktree 在构建或测试**。
-
-cargo 的独占锁**只覆盖编译阶段**，测试二进制一旦构建完成就在锁外执行。所以两个 worktree 的测试套件可以真的同时跑，已实测到两种故障：
-
-1. **产物串味**：一个 worktree 源码构建出的 crate 被另一个源码不同的 worktree 复用，报出源码里明明存在的符号找不到（实测 `E0599`）。普通重建即可恢复，但极易误判为真 bug。
-2. **共享状态竞争**：触碰全局状态的测试偶发失败、重跑就过（实测 3 个 `trusted_git` 测试争抢 git 全局配置）。
-
-**因此：构建/测试前先取锁。**
-
-```sh
-scripts/cargo-lock.sh test --workspace        # 被占用时快速失败并打印持有者
-scripts/cargo-lock.sh build --workspace --all-targets
-scripts/cargo-lock.sh --status                # 当前谁在跑
-scripts/cargo-lock.sh --wait test --workspace # 明确选择排队等待
-scripts/cargo-lock.sh --release               # 清理残留锁（进程已死时）
-```
-
-锁标记放在 `git rev-parse --git-common-dir` 下，该路径在**所有 worktree 中解析为同一处**，因此天然是仓库级共享的。进程崩溃留下的锁会在下次取锁时被自动识别并清理。
-
-**默认快速失败，不静默排队**——静默排队会让 agent 看起来卡死；明确报错才能让它去干别的活，或显式改用 `--wait`。
-
-> 如果某个 worktree 的 `target/` 不是指向共享目录的符号链接（独立构建），它不受此约束。用 `scripts/cargo-lock.sh --status` 之外的判断依据是：该 worktree 下 `target` 是否为符号链接。
+- `scripts/cargo-lock.sh --wait test -p <package>` 明确排队；不带 `--wait` 快速报告冲突。
+- `scripts/cargo-lock.sh --status` 查看资源；格式检查无需构建锁。
+- 旧测试中尚有共享状态，当前所有 `cargo test` 调用继续跨任务互斥；编译可独立并发。不要宣称已实现所有测试并行，也不要用绕过入口的 Cargo 命令规避限流。
+- `scripts/cargo-share-target.sh` 仅用于状态/迁移说明，不再创建共享链接或删除缓存。旧主检出 target 和未知目录不自动删除。
+- 旧 worktree 中的旧版 wrapper 不认识新调度锁；迁移后必须更新脚本再运行，不能混跑两种协调协议。
+- 用 `scripts/cargo-lock.sh --target-path` 查询实际产物目录；不要硬编码 `target/release`。
+- 证据在 worktree 外保存，清理任务时先确认无运行进程、代码已交付或已归档；只清理本任务的构建缓存。不要每次验证后 `cargo clean`，它会丢掉下一次增量编译收益。
+- 全局安装/原生 UI 操作仍独占，与 Cargo 编译槽位无关。
 
 ## 原生 UI 验收：合成输入事件无效（工具限制）
 
