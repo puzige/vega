@@ -69,12 +69,11 @@ struct Issue88DenseSecondStageProvider {
 }
 
 fn issue88_stage_source_bytes(request: &vega_runtime::ChatRequest) -> usize {
-    request.messages[1]
-        .content
-        .rsplit_once("Historical transcript segment ")
-        .and_then(|(_, stage)| stage.split_once(':'))
-        .map(|(_, source)| source.trim_start_matches('\n').len())
-        .unwrap()
+    request
+        .messages
+        .iter()
+        .map(|message| message.content.len())
+        .sum()
 }
 
 struct Issue88LargeRollingSummaryProvider {
@@ -103,31 +102,15 @@ impl vega_runtime::Provider for Issue91AttemptCeilingProvider {
         request: vega_runtime::ChatRequest,
         _cancel: CancellationToken,
     ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
-        let exhausted = request.messages[1].content.matches(" excerpt ").count() > 1;
-        self.exhausted.lock().unwrap().push(exhausted);
-        let events = vec![
-            Ok(ProviderEvent::TextDelta(if exhausted {
-                "partial".into()
-            } else {
-                "leaf".into()
-            })),
-            Ok(ProviderEvent::Usage {
-                input: 9_000,
-                output: if exhausted { 8_192 } else { 100 },
-                cache_read: 0,
-                cache_write: 0,
-            }),
-            Ok(ProviderEvent::Done {
-                stop_reason: if exhausted {
-                    StopReason::Length
-                } else {
-                    StopReason::End
-                },
-            }),
-        ];
-        Box::pin(
-            async move { Ok(Box::pin(futures::stream::iter(events)) as vega_runtime::EventStream) },
-        )
+        let _ = request;
+        self.exhausted.lock().unwrap().push(true);
+        Box::pin(async {
+            Err(VegaError::Provider {
+                status: Some(400),
+                message: r#"{"error":{"code":"context_length_exceeded"}}"#.into(),
+                retryable: false,
+            })
+        })
     }
 }
 
@@ -332,7 +315,7 @@ impl vega_runtime::Provider for MutatingSecondStageProvider {
         request: vega_runtime::ChatRequest,
         cancel: CancellationToken,
     ) -> futures::future::BoxFuture<'static, Result<vega_runtime::EventStream, VegaError>> {
-        if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             let store = Store::open(&self.database_path).unwrap();
             messages::insert(
                 store.conn(),
@@ -697,14 +680,17 @@ async fn issue76_manual_tool_history_uses_rich_summary_and_labelled_primary_afte
     let summary_request = &summary_provider.requests()[0];
     assert!(summary_request.tools.is_empty());
     assert!(
-        summary_request.messages[1]
-            .content
-            .contains("tool read input")
+        summary_request
+            .messages
+            .iter()
+            .flat_map(|m| &m.tool_calls)
+            .any(|call| call.name == "read")
     );
     assert!(
-        summary_request.messages[1]
-            .content
-            .contains("old read result")
+        summary_request
+            .messages
+            .iter()
+            .any(|m| m.role == vega_runtime::ChatRole::Tool && m.content == "old read result")
     );
     assert!(
         vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
@@ -1099,11 +1085,16 @@ async fn issue76_repeated_manual_compaction_uses_checkpoint_and_only_uncovered_t
 
     let requests = provider.requests();
     assert_eq!(requests.len(), 2);
-    assert!(!requests[1].messages[1].content.contains(&first_summary));
     assert!(
         requests[1].messages[1]
             .content
-            .contains("new uncovered durable result")
+            .contains("first durable summary")
+    );
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("new uncovered durable result"))
     );
     assert!(
         !requests[1].messages[1]
@@ -1124,9 +1115,9 @@ async fn issue76_repeated_manual_compaction_uses_checkpoint_and_only_uncovered_t
             .unwrap()
             .unwrap()
             .summary;
-    assert_eq!(second_summary.matches(&first_summary).count(), 1);
+    assert!(!second_summary.contains(&first_summary));
     assert!(second_summary.contains("second durable summary"));
-    assert!(second_summary.find(&first_summary) < second_summary.find("second durable summary"));
+    assert!(second_summary.len() < first_summary.len() + 100);
 
     drop(store);
     let reopened = Store::open(_dir.path().join("vega.db")).unwrap();
@@ -1178,7 +1169,7 @@ async fn issue76_repeated_manual_compaction_uses_checkpoint_and_only_uncovered_t
 }
 
 #[tokio::test]
-async fn issue91_aggregate_over_target_preserves_prior_checkpoint_and_raw_history() {
+async fn codex_parity_large_prior_checkpoint_is_reduced_and_raw_history_preserved() {
     let (store, _dir, _project_id) = setup();
     seed_manual_compaction_history(&store);
     let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
@@ -1200,6 +1191,9 @@ async fn issue91_aggregate_over_target_preserves_prior_checkpoint_and_raw_histor
         vega_store::context_compaction::ContextCheckpointInstall::Applied(checkpoint) => checkpoint,
         other => panic!("expected initial checkpoint, got {other:?}"),
     };
+    // A new source revision permits replacing the predecessor checkpoint.
+    store.conn().execute("INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at) VALUES ('later-user', 'thread-1', 4, 'user', 'text', 'continue corrected task', 'done', 4)", []).unwrap();
+    let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     let provider = MockProvider::new(vec![ScriptStep::events(vec![
         ProviderEvent::TextDelta("new uncovered fact".into()),
         ProviderEvent::Usage {
@@ -1212,37 +1206,34 @@ async fn issue91_aggregate_over_target_preserves_prior_checkpoint_and_raw_histor
             stop_reason: StopReason::End,
         },
     ])]);
-    let failure = compact_thread_manually(
+    let result = compact_thread_manually(
         &store,
         &provider,
         "thread-1",
         "mock-model",
         "system",
         Vec::new(),
-        vega_runtime::ContextBudget::new(5_000, 1_000, false).unwrap(),
+        vega_runtime::ContextBudget::new(12_000, 1_000, false).unwrap(),
         CancellationToken::new(),
         None,
         None,
     )
     .await
-    .unwrap_err();
-    assert!(matches!(
-        failure.error.as_ref(),
-        VegaError::Context(vega_runtime::ContextRuntimeError::ResultOverLimit { .. })
-    ));
-    assert_eq!(failure.usages.len(), 1);
-    assert_eq!(failure.usages[0].usage.output, 50);
-    assert!(
-        !provider.requests()[0].messages[1]
-            .content
-            .contains(&previous_summary)
-    );
+    .unwrap();
+    assert!(!result.usages.is_empty());
+    assert!(result.usages.iter().all(|usage| usage.usage.output == 50));
+    assert!(provider.requests().iter().any(|request| {
+        request
+            .messages
+            .iter()
+            .any(|message| message.content.contains("prior state"))
+    }));
     let latest =
         vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
             .unwrap()
             .unwrap();
-    assert_eq!(latest.id, previous.id);
-    assert_eq!(latest.summary, previous_summary);
+    assert_ne!(latest.id, previous.id);
+    assert!(latest.summary.len() < previous_summary.len());
     let after = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     assert_eq!(after.messages.len(), source.messages.len());
     assert_eq!(after.tool_calls.len(), source.tool_calls.len());
@@ -2060,36 +2051,26 @@ async fn issue88_long_completed_tool_history_compacts_and_continues_same_run() {
     .unwrap();
     assert_eq!(run.content, "continued after long history");
     let requests = provider.requests();
-    assert!(
-        requests.len() >= 3,
-        "at least two stages and a primary request"
+    assert_eq!(
+        requests.len(),
+        2,
+        "one direct summary and one primary request"
     );
-    assert!(
-        requests[..requests.len() - 1]
-            .iter()
-            .all(|request| request.tools.is_empty())
-    );
-    let summary_sources = requests[..requests.len() - 1]
-        .iter()
-        .map(|request| {
-            assert!(
-                request
-                    .messages
-                    .iter()
-                    .map(|message| message.content.len())
-                    .sum::<usize>()
-                    <= 128 * 1024
-            );
-            request.messages[1].content.as_str()
-        })
-        .collect::<Vec<_>>();
+    assert!(requests[0].tools.is_empty());
     for seq in 1..=120_i64 {
         let call_id = format!("old-call-{seq:03}");
         assert!(
-            summary_sources
+            requests[0]
+                .messages
                 .iter()
-                .any(|source| source.contains(&call_id)),
-            "completed call {call_id} must reach a summarization stage"
+                .flat_map(|message| &message.tool_calls)
+                .any(|call| call.id == call_id)
+        );
+        assert!(
+            requests[0]
+                .messages
+                .iter()
+                .any(|message| message.tool_call_id.as_deref() == Some(call_id.as_str()))
         );
     }
     assert!(!requests.last().unwrap().tools.is_empty());
@@ -2259,37 +2240,28 @@ async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_withou
     .unwrap();
     assert!(result.messages[0].content.contains("bounded summary"));
     let requests = provider.requests();
-    assert!(requests.len() >= 2);
-    let mut reconstructed_input = String::new();
-    let mut reconstructed_output = String::new();
-    let mut output_parts = Vec::new();
-    for request in &requests {
-        assert!(request.tools.is_empty());
-        let wire_bytes: usize = request
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].tools.is_empty());
+    let estimate = vega_runtime::estimate_wire_context(&requests[0].messages, &[]).unwrap();
+    assert!(estimate.input_tokens <= budget.input_budget());
+    assert_eq!(
+        requests[0]
             .messages
             .iter()
-            .map(|message| message.content.len())
-            .sum();
-        assert!(wire_bytes <= 128 * 1024, "bounded summary request");
-        let estimate = vega_runtime::estimate_wire_context(&request.messages, &[]).unwrap();
-        assert!(estimate.input_tokens <= budget.input_budget());
-        for line in request.messages[1].content.lines() {
-            if line.starts_with("tool read input id=long-result seq=1 status=success excerpt ") {
-                reconstructed_input.push_str(line.rsplit_once(": ").unwrap().1);
-            }
-            if line.starts_with("tool read id=long-result seq=1 status=success output excerpt ") {
-                reconstructed_output.push_str(line.rsplit_once(": ").unwrap().1);
-                output_parts.push(line.split_whitespace().nth(7).unwrap().to_string());
-            }
-        }
-    }
-    assert_eq!(reconstructed_input, input);
-    assert_eq!(reconstructed_output, output);
-    assert!(output_parts.len() > 1);
-    assert!(
-        output_parts
-            .first()
-            .is_some_and(|part| part.starts_with("1/"))
+            .flat_map(|m| &m.tool_calls)
+            .find(|call| call.id == "long-result")
+            .unwrap()
+            .input_json,
+        input
+    );
+    assert_eq!(
+        requests[0]
+            .messages
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("long-result"))
+            .unwrap()
+            .content,
+        output
     );
     let after = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     assert_eq!(before, after, "raw messages and tool audit are unchanged");
@@ -2367,7 +2339,7 @@ async fn issue88_one_oversized_tool_result_and_input_reach_bounded_stages_withou
 }
 
 #[tokio::test]
-async fn issue88_reasoning_output_above_4096_finishes_one_bounded_attempt_per_stage() {
+async fn claude_summary_preserves_reasoning_headroom_in_one_request() {
     let (store, _dir, _project_id) = setup();
     seed_issue88_large_tool_result(
         &store,
@@ -2392,14 +2364,11 @@ async fn issue88_reasoning_output_above_4096_finishes_one_bounded_attempt_per_st
     .await
     .unwrap();
     let requests = provider.requests.lock().unwrap();
-    assert!(
-        requests.len() >= 2,
-        "history requires multiple bounded stages"
-    );
+    assert_eq!(requests.len(), 1, "complete source fits one direct request");
     assert!(
         requests
             .iter()
-            .all(|request| request.max_tokens == Some(8192))
+            .all(|request| request.max_tokens == Some(20_000))
     );
     assert_eq!(result.usages.len(), requests.len());
     assert!(result.usage_complete);
@@ -2411,7 +2380,7 @@ async fn issue88_reasoning_output_above_4096_finishes_one_bounded_attempt_per_st
 }
 
 #[tokio::test]
-async fn issue88_dense_second_stage_uses_smaller_requests_and_completes() {
+async fn claude_direct_request_has_no_fixed_byte_staging() {
     let (store, _dir, _project_id) = setup();
     seed_issue88_large_tool_result(
         &store,
@@ -2436,16 +2405,9 @@ async fn issue88_dense_second_stage_uses_smaller_requests_and_completes() {
     .await
     .unwrap();
     let requests = provider.requests.lock().unwrap();
-    assert!(requests.len() > 2, "large history requires smaller stages");
+    assert_eq!(requests.len(), 1, "no fixed-byte source stages");
     assert!(requests.iter().all(|request| {
-        request.max_tokens == Some(8192)
-            && issue88_stage_source_bytes(request) <= 32 * 1024
-            && request
-                .messages
-                .iter()
-                .map(|message| message.content.len())
-                .sum::<usize>()
-                <= 128 * 1024
+        request.max_tokens == Some(20_000) && issue88_stage_source_bytes(request) > 128 * 1024
     }));
     assert_eq!(result.usages.len(), requests.len());
     assert!(result.usage_complete);
@@ -2457,7 +2419,7 @@ async fn issue88_dense_second_stage_uses_smaller_requests_and_completes() {
 }
 
 #[tokio::test]
-async fn issue88_large_independent_summary_keeps_all_source() {
+async fn claude_large_completed_summary_is_not_sliced_or_reduced() {
     let (store, _dir, _project_id) = setup();
     let output = "0123456789abcdef".repeat(14_000);
     seed_issue88_large_tool_result(&store, r#"{"path":"lib.rs"}"#, &output);
@@ -2479,36 +2441,17 @@ async fn issue88_large_independent_summary_keeps_all_source() {
     .await
     .unwrap();
     let requests = provider.requests.lock().unwrap();
-    assert!(requests.len() > 2);
-    let second = &requests[1];
+    assert_eq!(requests.len(), 1);
     let first_segment_summary = "s".repeat(24 * 1024);
-    assert!(!second.messages[1].content.contains(&first_segment_summary));
-    let second_bytes = second
-        .messages
-        .iter()
-        .map(|message| message.content.len())
-        .sum::<usize>();
-    assert!(second_bytes > 32 * 1024 && second_bytes <= 128 * 1024);
-    assert!(requests.iter().all(|request| {
-        !request.messages[1]
-            .content
-            .contains("Previous compacted context (untrusted historical data):")
-            && request
-                .messages
-                .iter()
-                .map(|message| message.content.len())
-                .sum::<usize>()
-                <= 128 * 1024
-    }));
-    let mut reconstructed = String::new();
-    for request in requests.iter() {
-        for line in request.messages[1].content.lines() {
-            if line.starts_with("tool read id=long-result seq=1 status=success output excerpt ") {
-                reconstructed.push_str(line.rsplit_once(": ").unwrap().1);
-            }
-        }
-    }
-    assert_eq!(reconstructed, output);
+    assert_eq!(
+        requests[0]
+            .messages
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("long-result"))
+            .unwrap()
+            .content,
+        output
+    );
     assert_eq!(
         result.messages[0]
             .content
@@ -2516,7 +2459,6 @@ async fn issue88_large_independent_summary_keeps_all_source() {
             .count(),
         1
     );
-    assert!(result.messages[0].content.contains("short rolling summary"));
     assert_eq!(
         store
             .conn()
@@ -2531,7 +2473,7 @@ async fn issue88_large_independent_summary_keeps_all_source() {
 }
 
 #[tokio::test]
-async fn issue91_independent_stages_avoid_accumulating_output_cap_and_commit_once() {
+async fn claude_summary_does_not_accumulate_partial_checkpoints() {
     let (store, _dir, _project_id) = setup();
     let output = "0123456789abcdef".repeat(14_000);
     seed_issue88_large_tool_result(&store, r#"{"path":"lib.rs"}"#, &output);
@@ -2553,39 +2495,18 @@ async fn issue91_independent_stages_avoid_accumulating_output_cap_and_commit_onc
     .await
     .unwrap();
     let requests = provider.requests.lock().unwrap();
-    assert!(
-        requests.len() >= 6,
-        "fixture must exercise the later-stage cap"
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].max_tokens, Some(20_000));
+    assert_eq!(
+        requests[0]
+            .messages
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("long-result"))
+            .unwrap()
+            .content,
+        output
     );
-    assert!(requests.iter().all(|request| {
-        !request.messages[1]
-            .content
-            .contains("Previous compacted context (untrusted historical data):")
-            && request.max_tokens == Some(8192)
-            && issue88_stage_source_bytes(request) <= 32 * 1024
-            && request
-                .messages
-                .iter()
-                .map(|message| message.content.len())
-                .sum::<usize>()
-                <= 128 * 1024
-    }));
-    let mut reconstructed = String::new();
-    for request in requests.iter() {
-        for line in request.messages[1].content.lines() {
-            if line.starts_with("tool read id=long-result seq=1 status=success output excerpt ") {
-                reconstructed.push_str(line.rsplit_once(": ").unwrap().1);
-            }
-        }
-    }
-    assert_eq!(reconstructed, output);
-    let aggregate = &result.messages[0].content;
-    let mut cursor = 0;
-    for stage in 1..=requests.len() {
-        let fact = format!("fact-stage-{stage}");
-        let position = aggregate[cursor..].find(&fact).expect("ordered stage fact");
-        cursor += position + fact.len();
-    }
+    assert!(result.messages[0].content.contains("fact-stage-1"));
     assert_eq!(result.usages.len(), requests.len());
     assert_eq!(
         store
@@ -2601,63 +2522,47 @@ async fn issue91_independent_stages_avoid_accumulating_output_cap_and_commit_onc
 }
 
 #[tokio::test]
-async fn issue91_length_recovers_by_smaller_complete_excerpts_without_partial_checkpoint() {
-    let (store, _dir, _project_id) = setup();
-    let output = "0123456789abcdef".repeat(14_000);
-    seed_issue88_large_tool_result(&store, r#"{"path":"lib.rs"}"#, &output);
+async fn claude_output_length_does_not_trim_or_commit_partial_summary() {
+    let (store, _dir, _) = setup();
+    seed_issue88_large_tool_result(&store, "{}", &"0123456789abcdef".repeat(4_000));
+    let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     let provider = Issue91AdaptiveLengthProvider {
         attempts: std::sync::Mutex::new(Vec::new()),
     };
-    let result = compact_thread_manually(
+    let failure = compact_thread_manually(
         &store,
         &provider,
         "thread-1",
         "mock-model",
         "system",
-        Vec::new(),
+        vec![],
         vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
         CancellationToken::new(),
         None,
         None,
     )
     .await
-    .unwrap();
-    let attempts = provider.attempts.lock().unwrap();
-    assert!(attempts.iter().any(|(_, failed)| *failed));
-    assert!(attempts.iter().any(|(_, failed)| !*failed));
-    assert!(attempts.len() <= 512);
-    let mut reconstructed = String::new();
-    for (request, failed) in attempts.iter() {
-        assert_eq!(request.max_tokens, Some(8192));
-        if *failed {
-            continue;
-        }
-        assert!(issue88_stage_source_bytes(request) <= 16 * 1024);
-        for line in request.messages[1].content.lines() {
-            if line.starts_with("tool read id=long-result seq=1 status=success output excerpt ") {
-                reconstructed.push_str(line.rsplit_once(": ").unwrap().1);
-            }
-        }
-    }
-    assert_eq!(reconstructed, output);
-    assert!(!result.messages[0].content.contains("FAILED_PARTIAL_MARKER"));
-    assert_eq!(result.usages.len(), attempts.len());
-    assert!(result.usage_complete);
+    .unwrap_err();
+    assert!(matches!(
+        failure.error.as_ref(),
+        VegaError::Context(vega_runtime::ContextRuntimeError::SummaryOutputTruncated { .. })
+    ));
+    assert_eq!(provider.attempts.lock().unwrap().len(), 1);
+    assert_eq!(failure.usages.len(), 1);
+    assert_eq!(failure.usages[0].usage.output, 8192);
+    assert!(
+        vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
-        store
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM context_checkpoints WHERE thread_id='thread-1'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
-        1,
+        vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
+        before
     );
 }
 
 #[tokio::test]
-async fn issue91_later_singleton_length_rolls_back_completed_left_leaf_and_prior_checkpoint() {
+async fn claude_length_without_usage_preserves_predecessor() {
     let (store, _dir, _project_id) = setup();
     seed_issue88_large_tool_result(
         &store,
@@ -2704,17 +2609,12 @@ async fn issue91_later_singleton_length_rolls_back_completed_left_leaf_and_prior
         VegaError::Context(vega_runtime::ContextRuntimeError::SummaryOutputTruncated { .. })
     ));
     let attempts = provider.attempts.lock().unwrap();
-    assert!(attempts.len() >= 3);
-    assert_eq!(
-        failure.usages.len(),
-        attempts.len() - 1,
+    assert_eq!(attempts.len(), 1);
+    assert!(
+        failure.usages.is_empty(),
         "first failed attempt had no usage"
     );
     assert!(!failure.usage_complete);
-    assert_eq!(
-        failure.usages[0].usage.output, 800,
-        "left leaf usage kept once"
-    );
     let current =
         vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
             .unwrap()
@@ -2748,13 +2648,14 @@ async fn issue91_later_singleton_length_rolls_back_completed_left_leaf_and_prior
 }
 
 #[tokio::test]
-async fn issue91_adaptive_length_never_starts_provider_attempt_513() {
-    let (store, _dir, _project_id) = setup();
-    seed_issue88_large_tool_result(
-        &store,
-        r#"{"path":"lib.rs"}"#,
-        &"0123456789abcdef".repeat(220_000),
-    );
+async fn claude_repeated_input_overflow_never_starts_fifth_request() {
+    let (store, _dir, _) = setup();
+    seed_issue88_large_tool_result(&store, "{}", "result");
+    for seq in 4..=11 {
+        let role = if seq == 11 { "user" } else { "assistant" };
+        store.conn().execute("INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES (?1,'thread-1',?2,?3,'text','complete round','done',?2)",(format!("round-{seq}"),seq,role)).unwrap();
+    }
+    let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
     let provider = Issue91AttemptCeilingProvider {
         exhausted: std::sync::Mutex::new(Vec::new()),
     };
@@ -2764,7 +2665,7 @@ async fn issue91_adaptive_length_never_starts_provider_attempt_513() {
         "thread-1",
         "mock-model",
         "system",
-        Vec::new(),
+        vec![],
         vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
         CancellationToken::new(),
         None,
@@ -2772,25 +2673,17 @@ async fn issue91_adaptive_length_never_starts_provider_attempt_513() {
     )
     .await
     .unwrap_err();
-    let attempts = provider.exhausted.lock().unwrap();
-    assert_eq!(attempts.len(), 512);
-    assert_eq!(failure.usages.len(), attempts.len());
-    assert!(failure.usage_complete);
-    if *attempts.last().unwrap() {
-        assert!(matches!(
-            failure.error.as_ref(),
-            VegaError::Context(vega_runtime::ContextRuntimeError::SummaryOutputTruncated { .. })
-        ));
-    } else {
-        assert!(matches!(
-            failure.error.as_ref(),
-            VegaError::Context(vega_runtime::ContextRuntimeError::SourceTooLarge)
-        ));
-    }
+    assert_eq!(provider.exhausted.lock().unwrap().len(), 4);
+    assert!(failure.usages.is_empty());
+    assert!(!failure.usage_complete);
     assert!(
         vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
             .unwrap()
             .is_none()
+    );
+    assert_eq!(
+        vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
+        before
     );
 }
 
@@ -2868,17 +2761,22 @@ async fn issue88_empty_completed_tool_result_keeps_an_explicit_paired_marker() {
     .unwrap();
     let request = &provider.requests()[0];
     assert!(
-        request.messages[1]
-            .content
-            .contains("tool read input id=long-result seq=1 status=success")
+        request
+            .messages
+            .iter()
+            .flat_map(|m| &m.tool_calls)
+            .any(|call| call.id == "long-result")
     );
-    assert!(request.messages[1].content.contains(
-        "tool read id=long-result seq=1 status=success output excerpt 1/1 bytes 0..0: (empty)"
-    ));
+    assert!(
+        request
+            .messages
+            .iter()
+            .any(|m| m.tool_call_id.as_deref() == Some("long-result") && m.content.is_empty())
+    );
 }
 
 #[tokio::test]
-async fn issue88_later_stage_failure_and_cancel_preserve_prior_usage_without_checkpoint() {
+async fn claude_ptl_retry_failure_and_cancel_preserve_known_usage() {
     for (second_stage, expected_status, expected_failure) in [
         (
             ScriptStep::Error {
@@ -2904,18 +2802,22 @@ async fn issue88_later_stage_failure_and_cancel_preserve_prior_usage_without_che
         save_issue88_manual_settings(&store);
         let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
         let provider = MockProvider::new_rounds(vec![
-            vec![ScriptStep::events(vec![
-                ProviderEvent::TextDelta("first rolling summary".into()),
-                ProviderEvent::Usage {
-                    input: 101,
-                    output: 11,
-                    cache_read: 0,
-                    cache_write: 0,
+            vec![
+                ScriptStep::events(vec![
+                    ProviderEvent::TextDelta("first rolling summary".into()),
+                    ProviderEvent::Usage {
+                        input: 101,
+                        output: 11,
+                        cache_read: 0,
+                        cache_write: 0,
+                    },
+                ]),
+                ScriptStep::Error {
+                    status: Some(400),
+                    message: r#"{"error":{"code":"context_length_exceeded"}}"#.into(),
+                    retryable: false,
                 },
-                ProviderEvent::Done {
-                    stop_reason: StopReason::End,
-                },
-            ])],
+            ],
             vec![second_stage],
         ]);
         let events = compact_thread_manually_accounted(
@@ -2967,7 +2869,7 @@ async fn issue88_later_stage_failure_and_cancel_preserve_prior_usage_without_che
 }
 
 #[tokio::test]
-async fn issue88_staged_source_mutation_rejects_checkpoint_and_accounts_completed_stages() {
+async fn claude_source_mutation_rejects_checkpoint_and_retains_usage() {
     let (store, dir, _project_id) = setup();
     seed_issue88_large_tool_result(
         &store,
@@ -3005,7 +2907,7 @@ async fn issue88_staged_source_mutation_rejects_checkpoint_and_accounts_complete
     .await
     .unwrap();
     let stages = provider.calls.load(Ordering::SeqCst);
-    assert!(stages >= 2);
+    assert_eq!(stages, 1);
     assert!(events.iter().any(|event| matches!(
         event,
         ConversationEvent::ContextCompactionStatus { record }
@@ -3664,4 +3566,562 @@ async fn file_backed_recovery_reuses_write_edit_and_unknown_without_execution() 
     assert!(!wire.contains("recovery-secret"));
     assert!(!wire.contains("recovery-new"));
     assert!(!wire.contains("must-not-survive"));
+}
+
+#[tokio::test]
+async fn codex_parity_packs_large_history_into_few_requests() {
+    let (store, _dir, _) = setup();
+    seed_issue88_large_tool_result(&store, "{}", &"0123456789abcdef".repeat(14_000));
+    let provider = Issue91AccumulatingSummaryProvider {
+        requests: std::sync::Mutex::new(Vec::new()),
+    };
+    let result = compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(
+        provider.requests.lock().unwrap().len() <= 4,
+        "bounded packing plus reduction"
+    );
+    assert_eq!(result.messages.last().unwrap().content, "message-3");
+}
+
+#[tokio::test]
+async fn codex_parity_irreducible_suffix_makes_no_summary_call() {
+    let (store, _dir, _) = setup();
+    seed_manual_compaction_history(&store);
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET content=?1 WHERE id='manual-current-user'",
+            [&"x".repeat(50_000)],
+        )
+        .unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("summary".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    let failure = compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        vega_runtime::ContextBudget::new(20_000, 1_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        failure.error.as_ref(),
+        VegaError::Context(vega_runtime::ContextRuntimeError::ResultOverLimit { .. })
+    ));
+    assert!(
+        provider.requests().is_empty(),
+        "fixed suffix cannot fit, avoid billed work"
+    );
+}
+
+#[tokio::test]
+async fn codex_parity_historical_images_survive_compaction_and_reload() {
+    let (store, dir, _) = setup();
+    seed_manual_compaction_history(&store);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(4, 3, image::Rgb([20, 40, 60]))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    for id in ["manual-old-user", "manual-current-user"] {
+        vega_store::image_attachments::insert(store.conn(), id, 0, png.get_ref()).unwrap();
+    }
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("visual task continuation".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    let result = compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        vega_runtime::ContextBudget::new(20_000, 1_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result
+            .messages
+            .iter()
+            .map(|m| m.images.len())
+            .sum::<usize>(),
+        2
+    );
+    assert!(
+        provider.requests()[0]
+            .messages
+            .iter()
+            .all(|m| m.images.is_empty())
+    );
+    assert!(
+        provider.requests()[0].messages[1]
+            .content
+            .contains("attachment")
+    );
+    drop(store);
+    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+    let source = vega_store::context_compaction::load_source(reopened.conn(), "thread-1").unwrap();
+    let checkpoint = vega_store::context_compaction::latest_checkpoint(
+        reopened.conn(),
+        "thread-1",
+        "mock-model",
+    )
+    .unwrap();
+    let history = super::super::pipeline::primary_history_from_context_source_with_checkpoint(
+        &source,
+        checkpoint.as_ref(),
+        "none",
+    )
+    .unwrap();
+    assert_eq!(history, result.messages);
+    assert_eq!(source.images.len(), 2);
+}
+
+#[tokio::test]
+async fn codex_parity_realistic_images_repeat_budget_omission_and_corruption() {
+    let (store, dir, _) = setup();
+    seed_manual_compaction_history(&store);
+    let mut state = 17u32;
+    let image = image::RgbImage::from_fn(270, 260, |_, _| {
+        let mut pixel = [0; 3];
+        for value in &mut pixel {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *value = state as u8;
+        }
+        image::Rgb(pixel)
+    });
+    let mut png = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    assert!((210_000..220_000).contains(&png.get_ref().len()));
+    for id in ["manual-old-user", "manual-current-user"] {
+        vega_store::image_attachments::insert(store.conn(), id, 0, png.get_ref()).unwrap();
+    }
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("visual task checkpoint".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    let budget = vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap();
+    let first = compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        budget,
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        first.messages.iter().map(|m| m.images.len()).sum::<usize>(),
+        2
+    );
+    assert_eq!(
+        first.messages.last().unwrap().images[0].bytes(),
+        png.get_ref()
+    );
+    store.conn().execute("INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at) VALUES ('image-latest', 'thread-1', 4, 'user', 'text', 'latest visual task', 'done', 4)", []).unwrap();
+    vega_store::image_attachments::insert(store.conn(), "image-latest", 0, png.get_ref()).unwrap();
+    let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    let second = compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        budget,
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        second
+            .messages
+            .iter()
+            .map(|m| m.images.len())
+            .sum::<usize>(),
+        2
+    );
+    let retained = second
+        .messages
+        .iter()
+        .find(|m| !m.images.is_empty())
+        .unwrap();
+    assert!(retained.content.contains("manual-current-user"));
+    assert!(retained.content.contains("untrusted data"));
+    assert_eq!(retained.images[0].bytes(), png.get_ref());
+    assert!(second.messages.iter().any(|m| {
+        m.content.contains("1 earlier attachments")
+            && m.content
+                .contains("visual data is not in the current projection")
+    }));
+    assert_eq!(
+        second.messages.last().unwrap().content,
+        "latest visual task"
+    );
+    assert_eq!(
+        vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
+        before
+    );
+    drop(store);
+    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+    let source = vega_store::context_compaction::load_source(reopened.conn(), "thread-1").unwrap();
+    let checkpoint = vega_store::context_compaction::latest_checkpoint(
+        reopened.conn(),
+        "thread-1",
+        "mock-model",
+    )
+    .unwrap();
+    let history = super::super::pipeline::primary_history_from_context_source_with_checkpoint(
+        &source,
+        checkpoint.as_ref(),
+        "none",
+    )
+    .unwrap();
+    assert_eq!(history, second.messages);
+    let projected = read_context_projection(&reopened, "thread-1", "mock-model", "system").unwrap();
+    let tools = vega_runtime::tool_definitions(vega_runtime::RuntimeRunMode::Execute);
+    assert_eq!(
+        projected.estimated_tokens,
+        Some(
+            vega_runtime::estimate_chat_context("system", &history, &tools)
+                .unwrap()
+                .input_tokens
+        )
+    );
+    let mut corrupt = source.clone();
+    corrupt.images[0].encoded = vec![1, 2, 3];
+    assert!(
+        super::super::pipeline::primary_history_from_context_source_with_checkpoint(
+            &corrupt,
+            checkpoint.as_ref(),
+            "none"
+        )
+        .is_err(),
+        "even omitted image corruption must fail closed"
+    );
+}
+
+#[tokio::test]
+async fn claude_direct_summary_preserves_roles_and_uses_20k_cap() {
+    let (store, _dir, _) = setup();
+    let output = "0123456789abcdef".repeat(14_000);
+    seed_issue88_large_tool_result(&store, "{}", &output);
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("direct continuation".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let calls = provider.requests();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].max_tokens, Some(20_000));
+    assert!(
+        calls[0]
+            .messages
+            .iter()
+            .any(|m| m.role == vega_runtime::ChatRole::Tool && m.content == output)
+    );
+    assert_eq!(
+        calls[0]
+            .messages
+            .iter()
+            .flat_map(|m| m.tool_calls.iter())
+            .count(),
+        1
+    );
+    assert!(calls[0].tools.is_empty());
+}
+
+#[tokio::test]
+async fn claude_prompt_too_long_trims_complete_round_then_retries() {
+    let (store, _dir, _) = setup();
+    seed_issue88_large_tool_result(&store, "{}", "full tool result");
+    let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::Error {
+            status: Some(400),
+            message: r#"{"error":{"code":"context_length_exceeded"}}"#.into(),
+            retryable: false,
+        }],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("direct continuation".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+    ]);
+    compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let calls = provider.requests();
+    assert_eq!(calls.len(), 2);
+    assert!(
+        calls[1]
+            .messages
+            .iter()
+            .any(|m| m.content.contains("Earlier historical API rounds omitted"))
+    );
+    assert!(
+        calls[1]
+            .messages
+            .iter()
+            .any(|m| m.role == vega_runtime::ChatRole::Tool && m.content == "full tool result")
+    );
+    assert_eq!(
+        vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn claude_failed_summary_rechecks_source_before_soft_fallback() {
+    for overlarge in [false, true] {
+        let (store, dir, _) = setup();
+        seed_manual_compaction_history(&store);
+        let mut steps = vec![ScriptStep::events(vec![ProviderEvent::Usage {
+            input: 43,
+            output: 7,
+            cache_read: 0,
+            cache_write: 0,
+        }])];
+        if overlarge {
+            steps.push(ScriptStep::events(vec![
+                ProviderEvent::TextDelta("x".repeat(64_000)),
+                ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                },
+            ]));
+        } else {
+            steps.push(ScriptStep::Error {
+                status: Some(503),
+                message: "temporary failure".into(),
+                retryable: false,
+            });
+        }
+        let provider = MutatingSecondStageProvider {
+            inner: MockProvider::new(steps),
+            database_path: dir.path().join("vega.db"),
+            calls: AtomicUsize::new(0),
+        };
+        let failure = compact_thread_manually(
+            &store,
+            &provider,
+            "thread-1",
+            "mock-model",
+            "system",
+            vec![],
+            vega_runtime::ContextBudget::new(20_000, 1_000, false).unwrap(),
+            CancellationToken::new(),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                failure.error.as_ref(),
+                VegaError::Context(vega_runtime::ContextRuntimeError::SourceChanged)
+            ),
+            "a failed request is not authority to continue stale context"
+        );
+        assert_eq!(failure.usages.len(), 1);
+        assert_eq!(failure.usages[0].usage.output, 7);
+        assert!(
+            vega_store::context_compaction::latest_checkpoint(
+                store.conn(),
+                "thread-1",
+                "mock-model"
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_local_preflight_and_provider_overflow_share_three_trims() {
+    let (store, _dir, _) = setup();
+    seed_manual_compaction_history(&store);
+    store
+        .conn()
+        .execute(
+            "UPDATE messages SET content=?1 WHERE id='manual-old-user'",
+            [&"x".repeat(80_000)],
+        )
+        .unwrap();
+    for seq in 4..=10 {
+        let role = if seq == 10 { "user" } else { "assistant" };
+        store.conn().execute("INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES (?1,'thread-1',?2,?3,'text','complete round','done',?2)",(format!("local-round-{seq}"),seq,role)).unwrap();
+    }
+    let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::Error {
+        status: Some(400),
+        message: r#"{"error":{"code":"context_length_exceeded"}}"#.into(),
+        retryable: false,
+    }]);
+    compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        vega_runtime::ContextBudget::new(20_000, 1_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap_err();
+    let requests = provider.requests();
+    assert_eq!(
+        requests.len(),
+        3,
+        "one trim already used before any HTTP request"
+    );
+    let mut previous = usize::MAX;
+    for request in &requests {
+        assert!(
+            vega_runtime::estimate_wire_context(&request.messages, &[])
+                .unwrap()
+                .input_tokens
+                <= 19_000
+        );
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .filter(|m| m.content.contains("Earlier historical API rounds omitted"))
+                .count(),
+            1
+        );
+        let retained = request
+            .messages
+            .iter()
+            .filter(|m| !m.content.contains("Earlier historical API rounds omitted"))
+            .count();
+        assert!(
+            retained < previous,
+            "each retry removes real history, not its own marker"
+        );
+        previous = retained;
+    }
+    assert_eq!(
+        vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
+        before
+    );
+    assert!(
+        vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn claude_unrelated_provider_failures_never_trim_history() {
+    for (status, diagnostic) in [
+        (400, "bad request"),
+        (401, "prompt too long"),
+        (429, "prompt too long"),
+        (503, "prompt too long"),
+    ] {
+        let (store, _dir, _) = setup();
+        seed_manual_compaction_history(&store);
+        let before = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+        let provider = MockProvider::new(vec![ScriptStep::Error {
+            status: Some(status),
+            message: diagnostic.into(),
+            retryable: false,
+        }]);
+        compact_thread_manually(
+            &store,
+            &provider,
+            "thread-1",
+            "mock-model",
+            "system",
+            vec![],
+            vega_runtime::ContextBudget::new(20_000, 1_000, false).unwrap(),
+            CancellationToken::new(),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(provider.requests().len(), 1);
+        assert!(
+            provider.requests()[0]
+                .messages
+                .iter()
+                .any(|m| m.content == "the original goal")
+        );
+        assert_eq!(
+            vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
+            before
+        );
+    }
 }

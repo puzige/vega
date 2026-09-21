@@ -901,3 +901,5 @@ fn reasoning_budget_boundaries_are_byte_exact() {
         Some((ReasoningBudgetScope::Run, observed)) if observed == REASONING_RUN_MAX_BYTES + 1
     ));
 }
+
+mod claude_compaction;
