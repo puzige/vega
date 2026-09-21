@@ -144,6 +144,11 @@ pub enum ConversationEvent {
         /// Permission decision.
         approval: Approval,
     },
+    /// Tool execution began after durable approval.
+    ToolCallRunning {
+        /// Provider call id; no arguments or output cross this boundary.
+        call_id: CallId,
+    },
     /// Tool output chunk.
     ToolCallOutput {
         /// Provider call id.
@@ -247,6 +252,10 @@ impl std::fmt::Debug for ConversationEvent {
                 .field("call_id_bytes", &call_id.len())
                 .field("approval", approval)
                 .finish(),
+            Self::ToolCallRunning { call_id } => formatter
+                .debug_struct("ToolCallRunning")
+                .field("call_id_bytes", &call_id.len())
+                .finish(),
             Self::ToolCallOutput { call_id, chunk } => formatter
                 .debug_struct("ToolCallOutput")
                 .field("call_id_bytes", &call_id.len())
@@ -314,7 +323,6 @@ impl std::fmt::Debug for ConversationEvent {
 }
 
 /// Converts one headless runtime event into the shared conversation event.
-/// Runtime-only `ToolCallRunning` is persisted but has no UI event in §3.
 pub(crate) fn from_runtime_event(
     message_id: &str,
     event: &vega_runtime::RuntimeEvent,
@@ -368,7 +376,9 @@ pub(crate) fn from_runtime_event(
                 approval: approval_from_runtime(audit.decision),
             })
         }
-        RuntimeEvent::ToolCallRunning { .. } => None,
+        RuntimeEvent::ToolCallRunning { call_id } => Some(ConversationEvent::ToolCallRunning {
+            call_id: call_id.clone(),
+        }),
         RuntimeEvent::ToolCallOutput { call_id, chunk } => {
             Some(ConversationEvent::ToolCallOutput {
                 call_id: call_id.clone(),

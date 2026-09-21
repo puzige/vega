@@ -1291,6 +1291,7 @@ impl ConversationStream {
             // them on its own run state. Thinking is excluded from answer estimates.
             ConversationEvent::ToolCallProposed { .. }
             | ConversationEvent::ToolCallApproved { .. }
+            | ConversationEvent::ToolCallRunning { .. }
             | ConversationEvent::ToolCallOutput { .. }
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::ThinkingDelta { .. }

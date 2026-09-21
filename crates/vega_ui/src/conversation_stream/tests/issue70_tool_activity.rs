@@ -2,7 +2,9 @@ use super::*;
 use crate::icons::Icon;
 use crate::tool_card::ToolActivityState;
 use gpui_kit::{Bounds, Pixels, Quad};
-use vega_conversation::types::{InvalidToolCode, InvalidToolKind, InvalidToolProjection};
+use vega_conversation::types::{
+    InvalidToolCode, InvalidToolKind, InvalidToolProjection, McpCallIdentity,
+};
 
 fn read_call(id: &str, tool: &str, raw_input: &str) -> ToolCall {
     ToolCall {
@@ -126,6 +128,359 @@ fn click(window: WindowHandle<StreamHarness>, selector: &'static str, cx: &mut T
         .unwrap_or_else(|| panic!("missing clickable selector {selector}"));
     visual.simulate_click(target.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
+}
+
+fn approve_and_run(
+    stream: &mut ConversationStream,
+    call_id: &str,
+    cx: &mut Context<ConversationStream>,
+) {
+    stream.apply_event(
+        ConversationEvent::ToolCallApproved {
+            call_id: call_id.into(),
+            approval: Approval::Once,
+        },
+        cx,
+    );
+    stream.apply_event(
+        ConversationEvent::ToolCallRunning {
+            call_id: call_id.into(),
+        },
+        cx,
+    );
+}
+
+#[gpui_kit::test]
+async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue70-live-elapsed");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("elapsed", "printf 'tick'"),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallApproved {
+                call_id: "elapsed".into(),
+                approval: Approval::Once,
+            },
+            cx,
+        );
+    });
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
+            .read(cx)
+            .visible_text()),
+        "正在运行 printf 'tick'",
+        "approval alone must not estimate a start time"
+    );
+    cx.run_until_parked();
+    let frames_before_running = stream.read_with(cx, |stream, _| {
+        stream.counters.frames.load(Ordering::Relaxed)
+    });
+
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallRunning {
+                call_id: "elapsed".into(),
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let frames_after_running = stream.read_with(cx, |stream, _| {
+        stream.counters.frames.load(Ordering::Relaxed)
+    });
+    assert!(
+        frames_after_running > frames_before_running,
+        "Running must notify the mounted stream so the 0-second summary paints immediately"
+    );
+    let _mounted_zero_second_row = bounds(window, "tool-activity-single-row", cx);
+    stream.read_with(cx, |stream, cx| {
+        let card = stream.tool_cards["elapsed"].read(cx);
+        assert_eq!(card.visible_text(), "正在运行 printf 'tick' · 0 秒");
+        assert!(card.live_elapsed_active());
+        let colors = theme(cx).colors;
+        assert!(matches!(card.leading_icon(), Icon::Terminal));
+        assert_eq!(card.leading_icon_color(&colors), colors.text_secondary);
+    });
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
+            .read(cx)
+            .visible_text()),
+        "正在运行 printf 'tick' · 1 秒"
+    );
+
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
+            .read(cx)
+            .visible_text()),
+        "正在运行 printf 'tick' · 2 秒",
+        "the compact row refreshes at the next whole-second boundary"
+    );
+
+    cx.executor().advance_clock(Duration::from_secs(63));
+    cx.run_until_parked();
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
+            .read(cx)
+            .visible_text()),
+        "正在运行 printf 'tick' · 1 分 5 秒"
+    );
+
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallFinished {
+                call_id: "elapsed".into(),
+                result: ToolResult {
+                    status: ToolCallStatus::Success,
+                    output: "tick".into(),
+                    reused: false,
+                    exit_code: Some(0),
+                    duration_ms: Some(1_234),
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            },
+            cx,
+        );
+    });
+    let terminal = stream.read_with(cx, |stream, cx| {
+        let card = stream.tool_cards["elapsed"].read(cx);
+        assert!(
+            !card.live_elapsed_active(),
+            "terminal state cancels its timer"
+        );
+        card.visible_text()
+    });
+    assert_eq!(terminal, "已运行 printf 'tick' · 1.2 秒");
+    cx.executor().advance_clock(Duration::from_secs(30));
+    cx.run_until_parked();
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
+            .read(cx)
+            .visible_text()),
+        terminal,
+        "advancing the UI clock after terminal cannot replace runtime duration"
+    );
+}
+
+#[gpui_kit::test]
+async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
+    cx: &mut TestAppContext,
+) {
+    let (_window, stream, _) = open_controller_stream(cx, "issue70-group-elapsed");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("first", "sleep first"),
+            },
+            cx,
+        );
+        approve_and_run(stream, "first", cx);
+    });
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+
+    stream.update(cx, |stream, cx| {
+        for call in [
+            bash_call("second", "sleep second"),
+            read_call("read", "read", "{}"),
+        ] {
+            let id = call.id.clone();
+            stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
+            approve_and_run(stream, &id, cx);
+        }
+    });
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+
+    stream.read_with(cx, |stream, cx| {
+        let group = group(stream);
+        let aggregate = group.read(cx).aggregate_summary(cx);
+        assert_eq!(aggregate, "正在处理：运行命令、读取文件");
+        assert!(
+            !aggregate.contains('秒') && !aggregate.contains("分钟") && !aggregate.contains("毫秒"),
+            "aggregate must not expose child or total elapsed time: {aggregate}"
+        );
+        assert_eq!(group.read(cx).row_count(cx), 1);
+    });
+
+    let expanded_group = stream.read_with(cx, |stream, _| group(stream));
+    expanded_group.update(cx, ToolActivityGroup::toggle_expanded);
+    let expanded = stream.read_with(cx, |stream, cx| group(stream).read(cx).visible_text(cx));
+    assert!(
+        expanded.contains("正在运行 sleep first · 5 秒"),
+        "{expanded}"
+    );
+    assert!(
+        expanded.contains("正在运行 sleep second · 3 秒"),
+        "{expanded}"
+    );
+    assert!(expanded.contains("正在读取文件"), "{expanded}");
+    assert_eq!(
+        expanded.matches(" · ").count(),
+        2,
+        "only Bash children show time"
+    );
+    stream.read_with(cx, |stream, cx| {
+        let colors = theme(cx).colors;
+        let group = group(stream);
+        assert!(matches!(group.read(cx).leading_icon(cx), Icon::Terminal));
+        assert_eq!(
+            group.read(cx).leading_icon_color(cx, &colors),
+            colors.text_secondary
+        );
+        assert!(!stream.tool_cards["read"].read(cx).live_elapsed_active());
+    });
+
+    stream.update(cx, |stream, cx| {
+        for (call_id, duration_ms) in [("first", Some(5_100)), ("second", Some(3_000))] {
+            stream.apply_event(
+                ConversationEvent::ToolCallFinished {
+                    call_id: call_id.into(),
+                    result: ToolResult {
+                        status: ToolCallStatus::Success,
+                        output: String::new(),
+                        reused: false,
+                        exit_code: Some(0),
+                        duration_ms,
+                        truncated: Some(false),
+                        invalid: None,
+                    },
+                },
+                cx,
+            );
+        }
+        stream.apply_event(
+            ConversationEvent::ToolCallFinished {
+                call_id: "read".into(),
+                result: ToolResult {
+                    status: ToolCallStatus::Success,
+                    output: String::new(),
+                    reused: false,
+                    exit_code: None,
+                    duration_ms: None,
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            },
+            cx,
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn issue70_e70_non_bash_running_and_hydrated_bash_do_not_invent_elapsed(
+    cx: &mut TestAppContext,
+) {
+    let (_window, stream, _) = open_controller_stream(cx, "issue70-non-bash-elapsed");
+    let fingerprint = "a".repeat(64);
+    let mcp_identity = McpCallIdentity {
+        server_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        config_revision: 3,
+        exact_tool_name: "echo".into(),
+        arguments_bytes: 19,
+        arguments_sha256: "b".repeat(64),
+        argument_preview: "echo: string".into(),
+    };
+    let non_bash_calls = vec![
+        read_call("read", "read", "{}"),
+        read_call("find", "glob", "{}"),
+        read_call("search", "grep", "{}"),
+        ToolCall {
+            id: "write".into(),
+            tool: "write".into(),
+            input_json: format!(
+                r#"{{"audit_version":"write_edit_v1","tool":"write","path":"src/lib.rs","content_bytes":3,"fingerprint_v1":"{fingerprint}"}}"#
+            ),
+        },
+        ToolCall {
+            id: "edit".into(),
+            tool: "edit".into(),
+            input_json: format!(
+                r#"{{"audit_version":"write_edit_v1","tool":"edit","path":"src/lib.rs","old_string_bytes":3,"new_string_bytes":4,"fingerprint_v1":"{fingerprint}"}}"#
+            ),
+        },
+        ToolCall {
+            id: "skill".into(),
+            tool: "load_skill".into(),
+            input_json: r#"{"name":"example-skill"}"#.into(),
+        },
+        ToolCall {
+            id: "mcp".into(),
+            tool: mcp_identity.alias(),
+            input_json: serde_json::json!({
+                "server_id": mcp_identity.server_id,
+                "config_revision": mcp_identity.config_revision,
+                "tool": mcp_identity.exact_tool_name,
+                "arguments_bytes": mcp_identity.arguments_bytes,
+                "arguments_sha256": mcp_identity.arguments_sha256,
+                "argument_preview": mcp_identity.argument_preview,
+            })
+            .to_string(),
+        },
+    ];
+    stream.update(cx, |stream, cx| {
+        for call in non_bash_calls {
+            let id = call.id.clone();
+            stream.apply_event(ConversationEvent::ToolCallProposed { call }, cx);
+            approve_and_run(stream, &id, cx);
+        }
+    });
+    cx.run_until_parked();
+    cx.executor().advance_clock(Duration::from_secs(65));
+    cx.run_until_parked();
+    stream.read_with(cx, |stream, cx| {
+        for id in ["read", "find", "search", "write", "edit", "skill", "mcp"] {
+            let card = stream.tool_cards[id].read(cx);
+            let text = card.visible_text();
+            assert!(
+                !card.live_elapsed_active(),
+                "{id} must not own an elapsed timer"
+            );
+            assert!(
+                !text.contains('秒') && !text.contains("分钟") && !text.contains("毫秒"),
+                "{id} leaked elapsed copy: {text}"
+            );
+        }
+    });
+
+    let (_window, hydrated, _) = open_controller_stream(cx, "issue70-hydrated-running");
+    hydrated.update(cx, |stream, cx| {
+        stream.apply_history_page(
+            hydration_page(
+                vec![HistoryEntry::Tool {
+                    seq: 1,
+                    message_id: "hydrated-message".into(),
+                    call_id: "hydrated-running".into(),
+                    status: ToolCallStatus::Running,
+                    approval: Some(Approval::Once),
+                    input: Some(ToolCardInputProjection::Bash {
+                        command: "sleep hydrated".into(),
+                    }),
+                    result: None,
+                }],
+                None,
+            ),
+            cx,
+        );
+    });
+    hydrated.read_with(cx, |stream, cx| {
+        let card = stream.tool_cards["hydrated-running"].read(cx);
+        assert_eq!(card.visible_text(), "正在运行 sleep hydrated");
+        assert!(!card.live_elapsed_active());
+    });
 }
 
 #[gpui_kit::test]

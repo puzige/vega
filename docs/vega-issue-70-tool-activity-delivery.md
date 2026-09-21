@@ -28,6 +28,20 @@ directory; the original delivery logs and screenshots remain unchanged.
 | F70-2 | Mounted successful Shell, successful mixed group, failed Shell group and failed child keep category icons and neutral leading color while failure copy, exit code and semantic footer remain truthful | `red-issue70-leading-visual.log`, `green-issue70-category-icons.log` | PASS |
 | F70-3 | Strict focused Clippy, format and diff gates remain clean | `clippy-first-failure.log`, `green-clippy.log`, `green-static-gates.log` | PASS |
 
+The Bash live-elapsed follow-up uses a separate fresh matrix. Its logs live in
+the persistent `issue-70-command-elapsed-2026-09-21` evidence directory; the
+original and category-icon evidence remain unchanged.
+
+| ID | Follow-up requirement | Precondition / action | Expected observable result | Level | Evidence | Status |
+|---|---|---|---|---|---|---|
+| E70-1 | Running begins at the runtime boundary, never approval | Project an actual `RuntimeEvent::ToolCallRunning`, then apply approval and running to one Bash card | The safe `ToolCallRunning { call_id }` reaches the UI; approval has no elapsed copy; running begins at `0 秒` and immediately repaints the mounted row | conversion unit + mounted production stream | `red-running-projection.log`, `final-rebased-running-projection.log`, `final-rebased-running-persistence.log`, `final-rebased-issue70.log` | PASS |
+| E70-2 | Live formatting and cadence are deterministic | Advance the GPUI test executor clock across 0, 1 and 65 seconds | The same Bash entity reads `0 秒`, `1 秒`, then `1 分 5 秒`, updating from the executor clock without real sleep | mounted GPUI controlled-clock test | `red-ui-elapsed.log`, `final-rebased-issue70.log` | PASS |
+| E70-3 | Runtime terminal duration stays authoritative and polling stops | Finish the running Bash with exact `duration_ms`, then advance the executor clock again | Live copy is replaced immediately by the precise terminal duration; the elapsed refresh task is absent and later clock advances do not change it | production stream controlled-clock test | `final-rebased-issue70.log` | PASS |
+| E70-4 | Aggregate and per-child ownership remain exact | Run two Bash children at different start instants, keep the group collapsed, then expand it | Aggregate summary contains no child or total time; expanded children show independent elapsed values and retain neutral Terminal icons | mounted GPUI group test | `red-ui-elapsed.log`, `final-rebased-issue70.log` | PASS |
+| E70-5 | Non-Bash tools never gain time | Send approval/running for read/search/write/edit/MCP/Skill projections | Their truthful running copy has no `毫秒`/`秒`/`分钟`, and no elapsed refresh task starts | production card/stream test | `final-rebased-issue70.log` | PASS |
+| E70-6 | Restart does not fabricate a start instant | Hydrate a persisted running Bash without a fresh runtime Running event | The row remains truthful but shows no invented elapsed value and owns no refresh task | hydration test | `final-rebased-issue70.log`, `final-rebased-hydration.log` | PASS |
+| E70-7 | Category-only leading visuals do not regress | Exercise running and terminal Bash rows and a Bash group | Terminal category icon and neutral `text_secondary` remain unchanged across lifecycle states | mounted GPUI + unit regression | `final-rebased-issue70.log`, `final-rebased-tool-card.log` | PASS |
+
 ## Implementation plan
 
 1. Add a UI-owned tool activity group that keeps ordered `Entity<ToolCard>`
@@ -79,6 +93,12 @@ Implementation:
   single activity or group contains the target card. This preserves the
   existing exact-tool contract for a non-first child and does not change
   artifact behavior or data.
+- The live-elapsed follow-up projects the content-free runtime Running boundary
+  into the in-memory conversation event stream after durable state is visible.
+  A concrete Bash card records `BackgroundExecutor::now()`, owns its refresh
+  task and computes whole seconds from that clock. Running immediately notifies
+  the mounted row; terminal results cancel the task and restore the exact
+  persisted `duration_ms`. Aggregate summaries and non-Bash cards own no time.
 
 Test-first evidence:
 
@@ -101,6 +121,13 @@ Test-first evidence:
   on the previous success Check exactly as intended. Follow-up
   `clippy-first-failure.log` then recorded one test-only `matches!` lint before
   the final strict Clippy run passed.
+- Live-elapsed `red-running-projection.log`: the new exact conversion test
+  failed 0/1 because `RuntimeEvent::ToolCallRunning` was still discarded at the
+  conversation boundary.
+- Live-elapsed `red-ui-elapsed.log`: the first production UI run passed 1/3 and
+  failed 2/3 because Bash rows had no `0 秒` value and expanded Bash children
+  had no independent elapsed values. The already-passing non-Bash/hydration
+  case proved the negative behavior before production code changed.
 
 Fresh green gates:
 
@@ -116,6 +143,23 @@ Fresh green gates:
 | `scripts/cargo-lock.sh clippy -p vega_ui --all-targets -- -D warnings` | 0 | clean | `green-clippy-vega-ui.log` |
 | `cargo fmt --all -- --check` | 0 | clean | `green-static-gates.log` |
 | `git diff --check` | 0 | clean | `green-static-gates.log` |
+
+Bash live-elapsed follow-up, rerun after rebasing onto exact
+`origin/master` `32de6a3` (direct Cargo with isolated
+`CARGO_TARGET_DIR=/Users/puzige/Workspace/vega-targets/issue70-command-elapsed`
+because another worktree owned the repository-wide cargo lock):
+
+| Command | Exit | Result | Evidence |
+|---|---:|---|---|
+| `cargo test -p vega_ui issue70_ -- --nocapture` | 0 | 11 passed | `final-rebased-issue70.log` |
+| `cargo test -p vega_ui tool_card -- --nocapture` | 0 | 19 passed | `final-rebased-tool-card.log` |
+| `cargo test -p vega_ui timeline -- --nocapture` | 0 | 6 passed | `final-rebased-timeline.log` |
+| `cargo test -p vega_ui hydration -- --nocapture` | 0 | 8 passed | `final-rebased-hydration.log` |
+| `cargo test -p vega_conversation issue70_runtime_tool_running_reaches_the_safe_ui_event_boundary -- --nocapture` | 0 | 1 passed | `final-rebased-running-projection.log` |
+| `cargo test -p vega_conversation agent::tests::stream_persistence::persists_messages_tool_lifecycle_and_zero_cost_usage -- --exact --nocapture` | 0 | 1 passed | `final-rebased-running-persistence.log` |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 | clean | `final-rebased-clippy-workspace.log` |
+| `cargo fmt --all -- --check` | 0 | clean | `final-rebased-static-gates.log` |
+| `git diff --check` | 0 | clean | `final-rebased-static-gates.log` |
 
 Category-only leading-icon follow-up:
 
@@ -158,8 +202,10 @@ group, Dark collapsed group, and Dark shell detail with exact hashes in
 2026-09-21 and asked to merge it as-is, so no additional narrow-window capture
 was required for this delivery.
 
-There is no code deviation from the frozen specification. No schema,
-dependency, runtime, provider, tool-execution or persistence code changed.
+There is no code deviation from the frozen specification. The follow-up adds
+only the safe in-memory conversation Running projection and UI clock state; no
+schema, dependency, `vega_runtime`, provider, tool-execution or persistence
+behavior changed.
 
 ## Residuals
 

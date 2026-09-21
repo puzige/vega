@@ -20,6 +20,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     assert_eq!(run.content, "Checking. Found the TODO.");
     assert!(run.events.iter().any(|event| matches!(event, ConversationEvent::ThinkingDelta { delta, .. } if delta == "Need grep")));
     assert!(run.events.iter().any(|event| matches!(event, ConversationEvent::ToolCallApproved { call_id, .. } if call_id == "call-1")));
+    assert!(run.events.iter().any(|event| matches!(event, ConversationEvent::ToolCallRunning { call_id } if call_id == "call-1")));
     assert!(run.events.iter().any(|event| matches!(
             event,
             ConversationEvent::ToolCallFinished { result, .. }
@@ -185,6 +186,15 @@ async fn forwards_events_live_only_after_critical_state_is_persisted() {
                     assert_eq!(status, "approved");
                     observed.push("approved");
                 }
+                ConversationEvent::ToolCallRunning { call_id } => {
+                    let status: String = store.conn().query_row(
+                        "SELECT status FROM tool_calls WHERE id = ?1",
+                        [call_id],
+                        |row| row.get(0),
+                    )?;
+                    assert_eq!(status, "running");
+                    observed.push("running");
+                }
                 ConversationEvent::ToolCallFinished {
                     call_id, result, ..
                 } => {
@@ -243,12 +253,13 @@ async fn forwards_events_live_only_after_critical_state_is_persisted() {
         .iter()
         .position(|item| *item == "tool-finished")
         .unwrap();
+    let running = observed.iter().position(|item| *item == "running").unwrap();
     let output = observed.iter().position(|item| *item == "output").unwrap();
     let finished = observed
         .iter()
         .position(|item| *item == "finished")
         .unwrap();
-    assert!(approved < output && output < terminal && terminal < finished);
+    assert!(approved < running && running < output && output < terminal && terminal < finished);
 }
 
 #[tokio::test]
