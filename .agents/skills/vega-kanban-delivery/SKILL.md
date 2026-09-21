@@ -54,12 +54,12 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 ### 固定安装位置
 
-需要应用交付时遵守仓库 `AGENTS.md` 的固定入口约定：只更新
-`/Applications/Vega.app`（`ai.vega`），从该绝对路径启动。`dist` 是构建
-产物，备份用 zip 加构建身份保存。安装后强制刷新该 bundle 的 Launch
-Services 注册并核对 bundle ID 解析路径；发现重复注册时只注销已确认
-的 Vega 旧副本，保留证据文件及用户 Launchpad 布局。报告分别列出代码
-合并身份和实际安装身份；纯文档任务不打包/安装。
+需要应用交付时遵守仓库 `AGENTS.md` 的 Documents 入口约定：只更新
+`~/Documents/Vega/Vega.app`（`ai.vega`），从该明确路径启动，不再安装到
+Applications。`dist` 是构建产物，备份用 zip 加构建身份保存。不主动
+注册 Launchpad、刷新 Dock 或重建系统应用数据库；不承诺系统不会自动
+索引 Documents 中的应用。报告分别列出代码合并身份和实际安装身份；
+纯文档任务不打包/安装，明确要求迁移现有应用时验证前后哈希一致。
 
 ## 5. 审查、合并与清理
 

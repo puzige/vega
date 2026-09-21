@@ -56,14 +56,15 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - 证据在 worktree 外保存，清理任务时先确认无运行进程、代码已交付或已归档；只清理本任务的构建缓存。不要每次验证后 `cargo clean`，它会丢掉下一次增量编译收益。
 - 全局安装/原生 UI 操作仍独占，与 Cargo 编译槽位无关。
 
-## 固定应用安装入口（2026-09-21 用户约定）
+## 固定应用安装入口（2026-09-21 用户更新约定）
 
-- 用户日常使用的应用固定为 `/Applications/Vega.app`，bundle ID 固定为 `ai.vega`。新版本替换这一位置；不要创建带版本号的安装名、指向 worktree 的符号链接或从 `dist` 启动日常应用。
+- 用户日常应用固定为 `~/Documents/Vega/Vega.app`，当前机器绝对路径为 `/Users/puzige/Documents/Vega/Vega.app`，bundle ID 保持 `ai.vega`。此约定取代此前 `/Applications/Vega.app` 约定；不再向系统或用户 Applications 目录安装。
+- 新版本只替换固定位置；不要创建带版本号的安装名、指向 worktree 的符号链接或从 `dist` 启动日常应用。用户直接从 Documents 中打开，后续启动使用明确的应用路径，不按名称或 bundle ID 选择副本。
 - `dist/Vega.app` 仅是打包产物。备份优先保存为 zip，附原二进制哈希和构建 commit；不要长期散落可被系统索引的 `.app` 备份。既有验收证据不得擅自删除。
 - 安装须独占，先检查正在运行的任务；未经确认空闲不得强退。候选构建签名/哈希验证完成后再替换固定位置，并核对安装后二进制身份。
-- 替换后运行 `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f /Applications/Vega.app`，通过 bundle ID 查询确认解析到此路径，后续启动使用 `open /Applications/Vega.app`。
-- 若发现重复入口，只对确认 bundle ID 为 `ai.vega` 的旧构建/备份路径逐个 `lsregister -u <exact-path>`；先留存清单，不删除备份文件，不重置整个 Launch Services 数据库或 Launchpad 布局。注册验证不等于已经目视确认 Launchpad。
-- “代码已合并”和“应用已安装”分别报告，不能把旧安装当作最新 master。纯文档约定不触发重编译或应用安装。
+- 不主动执行 `lsregister -f`、刷新 Dock/Launchpad 或重建系统应用数据库。macOS 仍可能自动发现 Documents 中的应用；目录约定不是禁止系统索引的机制，不承诺 Launchpad 永不显示。
+- 如用户明确要求清理旧入口，只对确认 bundle ID 为 `ai.vega` 的旧构建/备份路径逐个注销注册；先留存清单，不删除备份文件，不重置整个 Launch Services 数据库或 Launchpad 布局。
+- “代码已合并”和“应用已安装”分别报告，不能把旧安装当作最新 master。纯文档约定不触发重编译或应用安装；用户明确要求迁移既有 app 时核对迁移前后哈希。
 
 ## 原生 UI 验收：合成输入事件无效（工具限制）
 
