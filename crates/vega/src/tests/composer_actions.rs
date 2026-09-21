@@ -137,7 +137,7 @@ fn assert_composer_control_size(
 fn assert_terminal(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
     pump_test_app(cx, |cx| {
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
     assert!(
         !f.stream
@@ -190,7 +190,7 @@ async fn i61_provider_reasoning_reaches_live_ui_without_persisting_as_answer(
     pump_test_app(cx, |cx| {
         provider.requests().len() == 2
             && f.root
-                .read_with(cx, |root, _| root.agent_controller.active.is_none())
+                .read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
     let answer: String = f.store.conn().query_row(
         "SELECT content FROM messages WHERE thread_id = ?1 AND role = 'assistant' ORDER BY seq DESC LIMIT 1",
@@ -230,7 +230,7 @@ async fn r11_composer_preparation_stop_preserves_draft_and_prevents_late_start(
     cx.simulate_keystrokes(f.window.into(), "cmd-enter");
     pump_test_app(cx, |cx| {
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_some())
+            .read_with(cx, |root, _| !root.agent_controller.active.is_empty())
     });
     entered_rx
         .recv_timeout(Duration::from_secs(5))
@@ -239,7 +239,8 @@ async fn r11_composer_preparation_stop_preserves_draft_and_prevents_late_start(
     let cancel = f.root.read_with(cx, |root, _| {
         root.agent_controller
             .active
-            .as_ref()
+            .values()
+            .next()
             .expect("ownership retained during drain")
             .cancel
             .clone()

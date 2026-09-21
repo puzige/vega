@@ -30,9 +30,10 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
             .expect("artifact generation route");
     });
     let generation_a = root.update(cx, |root, _| {
-        let (generation, _) =
-            root.agent_controller
-                .begin(thread.id.clone(), stream.clone(), None, None);
+        let (generation, _) = root
+            .agent_controller
+            .begin(thread.id.clone(), stream.clone(), None, None)
+            .expect("thread admission");
         root.begin_artifact_agent_generation(generation, &stream);
         generation
     });
@@ -56,9 +57,10 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
     )));
 
     let generation_b = root.update(cx, |root, _| {
-        let (generation, _) =
-            root.agent_controller
-                .begin(thread.id.clone(), stream.clone(), None, None);
+        let (generation, _) = root
+            .agent_controller
+            .begin(thread.id.clone(), stream.clone(), None, None)
+            .expect("thread admission");
         root.begin_artifact_agent_generation(generation, &stream);
         root.artifact_controller
             .active
@@ -142,9 +144,10 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
         AgentBatchIngress::Finished { success: false, .. }
     )));
     let generation_c = root.update(cx, |root, _| {
-        let (generation, _) =
-            root.agent_controller
-                .begin(thread.id.clone(), stream.clone(), None, None);
+        let (generation, _) = root
+            .agent_controller
+            .begin(thread.id.clone(), stream.clone(), None, None)
+            .expect("thread admission");
         root.begin_artifact_agent_generation(generation, &stream);
         generation
     });
@@ -192,9 +195,10 @@ async fn artifact_controller_agent_batch_generation_orphans_are_content_free_ref
         ));
     });
     let generation_d = root.update(cx, |root, _| {
-        let (generation, _) =
-            root.agent_controller
-                .begin(thread.id.clone(), stream.clone(), None, None);
+        let (generation, _) = root
+            .agent_controller
+            .begin(thread.id.clone(), stream.clone(), None, None)
+            .expect("thread admission");
         root.begin_artifact_agent_generation(generation, &stream);
         generation
     });

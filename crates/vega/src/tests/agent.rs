@@ -124,6 +124,690 @@ impl Drop for AgentWorkerGuard {
 }
 
 #[gpui_kit::test]
+async fn issue67_concurrent_production_new_thread_enters_before_origin_finishes(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    issue67_concurrent_scenario(cx, 0).await;
+}
+#[gpui_kit::test]
+async fn issue67_concurrent_stop_b_only(cx: &mut gpui_kit::TestAppContext) {
+    issue67_concurrent_scenario(cx, 1).await;
+}
+#[gpui_kit::test]
+async fn issue67_concurrent_stop_a_only(cx: &mut gpui_kit::TestAppContext) {
+    issue67_concurrent_scenario(cx, 2).await;
+}
+#[gpui_kit::test]
+async fn issue67_concurrent_window_close_interrupts_both(cx: &mut gpui_kit::TestAppContext) {
+    issue67_concurrent_scenario(cx, 3).await;
+}
+
+#[gpui_kit::test]
+async fn issue67_concurrent_b_preprovider_failure_can_retry(cx: &mut gpui_kit::TestAppContext) {
+    issue67_concurrent_scenario(cx, 4).await;
+}
+
+#[gpui_kit::test]
+async fn issue67_concurrent_finishes_under_settings_without_route_change(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    issue67_concurrent_scenario(cx, 5).await;
+}
+
+#[gpui_kit::test]
+async fn issue67_concurrent_settings_fails_closed_for_both_permissions(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    issue67_concurrent_scenario(cx, 6).await;
+}
+
+async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8) {
+    cx.executor().allow_parking();
+    let data = tempfile::tempdir().expect("issue67 data root");
+    let repo = diff_controller_repo();
+    let config_path = data.path().join("config.toml");
+    super::model_selection::model_selection_config(&config_path);
+    vega_store::keystore::set_key(data.path(), "owned", "issue67-owned-test-key")
+        .expect("issue67 credential");
+    let database_path = data.path().join("vega.db");
+    let store = Store::open(&database_path).expect("issue67 store");
+    store.migrate().expect("issue67 migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        repo.path().to_str().expect("UTF-8 issue67 repo"),
+        "issue67-e2e",
+        None,
+    )
+    .expect("issue67 project");
+    let origin = vega_conversation::threads::create_thread(
+        &store,
+        &project.id,
+        "gpt-5.6-terra",
+        if mode == 6 {
+            PermissionMode::Confirm.as_str()
+        } else {
+            PermissionMode::Auto.as_str()
+        },
+    )
+    .and_then(|thread| {
+        vega_conversation::threads::rename_thread(&store, &thread.id, "Issue67 Origin")
+    })
+    .expect("issue67 origin");
+    cx.update(|cx| {
+        install_diff_window_globals(
+            Store::open(&database_path).expect("issue67 root store"),
+            origin.clone(),
+            cx,
+        )
+    });
+
+    std::fs::write(
+        repo.path().join("concurrent.txt"),
+        "owned concurrent fixture",
+    )
+    .expect("read fixture");
+    let make_provider = |label: &str, delay: u64, usage: u64| {
+        Arc::new(vega_runtime::MockProvider::new_rounds(vec![
+            vec![
+                vega_runtime::ScriptStep::text(format!("{label} first ")),
+                vega_runtime::ScriptStep::delay(Duration::from_millis(delay)),
+                vega_runtime::ScriptStep::events(vec![
+                    vega_runtime::ProviderEvent::ToolUse {
+                        id: format!("{label}-read"),
+                        name: if label == "origin" || mode == 6 { "write" } else { "read" }.into(),
+                        input_json: if label == "origin" {
+                            r#"{"path":"origin-artifact.txt","content":"origin artifact"}"#
+                        } else if mode == 6 {
+                            r#"{"path":"destination-artifact.txt","content":"destination artifact"}"#
+                        } else {
+                            r#"{"path":"concurrent.txt"}"#
+                        }
+                        .into(),
+                    },
+                    vega_runtime::ProviderEvent::Done {
+                        stop_reason: vega_runtime::StopReason::ToolUse,
+                    },
+                ]),
+            ],
+            vec![vega_runtime::ScriptStep::events(vec![
+                vega_runtime::ProviderEvent::TextDelta(format!("{label} complete")),
+                vega_runtime::ProviderEvent::Usage {
+                    input: usage,
+                    output: 7,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                vega_runtime::ProviderEvent::Done {
+                    stop_reason: vega_runtime::StopReason::End,
+                },
+            ])],
+        ]))
+    };
+    let provider = make_provider("origin", 600, 31);
+    let provider_b = make_provider("destination", 1200, 59);
+    let root = cx.new(VegaWindow::new);
+    root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(config_path.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
+    });
+    let window_root = root.clone();
+    let window = cx
+        .update(|cx| cx.open_window(Default::default(), move |_, _| window_root))
+        .expect("issue67 production window");
+    cx.update(|cx| crate::app_palette::bind_shortcuts(window.into(), root.downgrade(), cx));
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| {
+            root.stream_view.is_some()
+                && root.configured_models.is_some()
+                && !root.model_catalog_loading
+                && matches!(
+                    root.pricing_controller.state,
+                    PricingControllerState::Ready { .. }
+                )
+        })
+    });
+    let origin_stream = root
+        .read_with(cx, |root, _| {
+            root.stream_view.as_ref().map(|(_, stream)| stream.clone())
+        })
+        .expect("issue67 origin stream");
+    let origin_input = origin_stream.read_with(cx, |stream, _| stream.composer_input());
+    origin_input.update(cx, |input, cx| input.set_text("keep running", cx));
+    window
+        .update(cx, |_, window, cx| {
+            origin_stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
+        })
+        .expect("issue67 origin focus");
+
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let probe = root.read_with(cx, |root, _| root.agent_worker_start_probe.clone());
+    *probe
+        .provider_construction_gate
+        .lock()
+        .expect("issue67 provider gate") = Some((entered_tx, release_rx));
+    cx.simulate_keystrokes(window.into(), "cmd-enter");
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| !root.agent_controller.active.is_empty())
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("issue67 worker reached provider boundary");
+    let (generation, cancel) = root.read_with(cx, |root, _| {
+        let active = root
+            .agent_controller
+            .active
+            .values()
+            .next()
+            .expect("issue67 active run");
+        assert_eq!(active.thread_id, origin.id);
+        assert_eq!(active.stream, origin_stream);
+        (active.generation, active.cancel.clone())
+    });
+    let artifact_a_service = root.read_with(cx, |root, _| {
+        let identity = root
+            .artifact_controller
+            .agent_route(generation, &origin_stream)
+            .expect("A capture authority");
+        root.artifact_controller
+            .route(&identity)
+            .expect("A artifact owner")
+            .service
+            .clone()
+    });
+    assert!(!cancel.is_cancelled());
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let new_task = visual
+        .debug_bounds("sidebar-new-task")
+        .expect("issue67 new-task control");
+    visual.simulate_click(new_task.center(), Modifiers::default());
+    visual.run_until_parked();
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, cx| {
+            root.draft.as_ref().is_some_and(|draft| {
+                cx.global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .is_some_and(|opened| opened.id == draft.id)
+                    && root
+                        .stream_view
+                        .as_ref()
+                        .is_some_and(|(id, stream)| id == &draft.id && stream != &origin_stream)
+            })
+        })
+    });
+    assert!(
+        !cancel.is_cancelled(),
+        "opening the real new-task route must not cancel the origin run"
+    );
+
+    let draft_stream = root
+        .read_with(cx, |root, _| {
+            root.stream_view.as_ref().map(|(_, stream)| stream.clone())
+        })
+        .expect("issue67 draft stream");
+    // B's model can change while A's frozen provider/model stays live.
+    draft_stream.update(cx, |stream, cx| {
+        stream.request_model_selection("gpt-5.6-luna", cx)
+    });
+    pump_test_app(cx, |cx| {
+        draft_stream.read_with(cx, |stream, _| !stream.has_pending_model_selection())
+    });
+    assert_eq!(
+        draft_stream.read_with(cx, |stream, _| stream.displayed_model().to_owned()),
+        "gpt-5.6-luna"
+    );
+    root.update(cx, |root, _| {
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider_b.clone()))
+    });
+    let draft_input = draft_stream.read_with(cx, |stream, _| stream.composer_input());
+    draft_input.update(cx, |input, cx| {
+        input.set_text("destination draft stays", cx)
+    });
+    window
+        .update(cx, |_, window, cx| {
+            draft_stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
+        })
+        .expect("issue67 draft focus");
+    let expected_starts = if mode == 4 {
+        draft_input.update(cx, |input, cx| {
+            input.set_text("@missing-concurrent.txt", cx)
+        });
+        cx.simulate_keystrokes(window.into(), "cmd-enter");
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                probe.load() == 2
+                    && root.agent_controller.active.len() == 1
+                    && !root.trusted_actions.is_busy()
+            })
+        });
+        assert!(!cancel.is_cancelled());
+        assert!(root.read_with(cx, |root, _| root.agent_controller.matches(
+            generation,
+            &origin.id,
+            &origin_stream
+        )));
+        assert_eq!(
+            draft_input.read_with(cx, |input, _| input.text().to_owned()),
+            "@missing-concurrent.txt"
+        );
+        assert!(provider_b.requests().is_empty());
+        draft_input.update(cx, |input, cx| {
+            input.set_text("destination draft stays", cx)
+        });
+        3
+    } else {
+        2
+    };
+    let (entered_b_tx, entered_b_rx) = mpsc::sync_channel(1);
+    let (release_b_tx, release_b_rx) = mpsc::sync_channel(1);
+    *probe.provider_construction_gate.lock().expect("B gate") = Some((entered_b_tx, release_b_rx));
+    cx.simulate_keystrokes(window.into(), "cmd-enter");
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| !root.trusted_actions.is_busy())
+    });
+    for _ in 0..200 {
+        cx.executor().advance_clock(DIFF_RESULT_POLL);
+        cx.run_until_parked();
+        if probe.load() == expected_starts {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        probe.load(),
+        expected_starts,
+        "B must enter its worker while A is still active"
+    );
+    entered_b_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("B provider boundary");
+    assert!(!cancel.is_cancelled());
+    assert!(root.read_with(cx, |root, _| root.agent_controller.matches(
+        generation,
+        &origin.id,
+        &origin_stream
+    )));
+    let destination = cx.update(|cx| {
+        cx.global::<OpenedThread>()
+            .0
+            .clone()
+            .expect("materialized B")
+    });
+    let (generation_b, cancel_b) = root.read_with(cx, |root, _| {
+        assert_eq!(root.agent_controller.active.len(), 2);
+        let run = root
+            .agent_controller
+            .active
+            .get(&destination.id)
+            .expect("B run");
+        assert_eq!(run.stream, draft_stream);
+        assert_ne!(run.stream, origin_stream);
+        assert_ne!(run.generation, generation);
+        (run.generation, run.cancel.clone())
+    });
+    if mode == 0 {
+        let record = |status| ContextCompactionStatusRecord {
+            generation: 1,
+            status,
+            updated_at: 1,
+            estimated_tokens: None,
+            input_budget: None,
+            target_tokens: None,
+            source_version: None,
+            failure: None,
+            usage: ContextCompactionUsageState::Pending,
+        };
+        let batch = |record| AgentBatch {
+            events: vec![ConversationEvent::ContextCompactionStatus { record }],
+            mcp_unavailable: vec![],
+            reference_failure: None,
+            credential_failure: false,
+            finished: None,
+        };
+        root.update(cx, |root, cx| {
+            assert!(matches!(
+                root.apply_agent_batch_ingress(
+                    generation,
+                    &origin.id,
+                    &origin_stream,
+                    batch(record(ContextCompactionStatus::Compacting)),
+                    cx
+                ),
+                AgentBatchIngress::Running
+            ));
+            assert!(matches!(
+                root.apply_agent_batch_ingress(
+                    generation_b,
+                    &destination.id,
+                    &draft_stream,
+                    batch(record(ContextCompactionStatus::Compacting)),
+                    cx
+                ),
+                AgentBatchIngress::Running
+            ));
+            assert!(origin_stream.read(cx).context_operation_busy());
+            assert!(draft_stream.read(cx).context_operation_busy());
+            root.apply_agent_batch_ingress(
+                generation,
+                &origin.id,
+                &origin_stream,
+                batch(record(ContextCompactionStatus::Succeeded)),
+                cx,
+            );
+            assert!(!origin_stream.read(cx).context_operation_busy());
+            assert!(draft_stream.read(cx).context_operation_busy());
+            assert!(matches!(
+                root.apply_agent_batch_ingress(
+                    generation,
+                    &destination.id,
+                    &draft_stream,
+                    batch(record(ContextCompactionStatus::Succeeded)),
+                    cx
+                ),
+                AgentBatchIngress::Stale
+            ));
+            assert!(draft_stream.read(cx).context_operation_busy());
+            root.apply_agent_batch_ingress(
+                generation_b,
+                &destination.id,
+                &draft_stream,
+                batch(record(ContextCompactionStatus::Succeeded)),
+                cx,
+            );
+        });
+    }
+    let artifact_b_identity = root.read_with(cx, |root, _| {
+        root.artifact_controller
+            .agent_route(generation_b, &draft_stream)
+            .expect("B capture authority")
+    });
+    // Same-thread ingress cannot replace the pending payload, stream or token.
+    root.update(cx, |root, cx| {
+        root.start_agent_run(
+            draft_stream.clone(),
+            &destination.id,
+            PendingAgentRun::UserMessage("duplicate".into()),
+            cx,
+        )
+    });
+    assert_eq!(probe.load(), expected_starts);
+    assert!(root.read_with(cx, |root, _| root.agent_controller.matches(
+        generation_b,
+        &destination.id,
+        &draft_stream
+    )));
+    assert_eq!(
+        draft_input.read_with(cx, |input, _| input.text().to_owned()),
+        "destination draft stays"
+    );
+    for thread in [&origin, &destination] {
+        cx.update(|cx| {
+            cx.set_global(OpenedThread(Some(thread.clone())));
+            cx.refresh_windows();
+        });
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                root.stream_view
+                    .as_ref()
+                    .is_some_and(|(id, _)| id == &thread.id)
+            })
+        });
+        let expected = if thread.id == origin.id {
+            &origin_stream
+        } else {
+            &draft_stream
+        };
+        assert!(root.read_with(cx, |root, _| {
+            root.stream_view
+                .as_ref()
+                .is_some_and(|(_, stream)| stream == expected)
+        }));
+    }
+    cx.update(|cx| {
+        cx.set_global(SettingsOpen(true));
+        cx.refresh_windows();
+    });
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.settings_view.is_some())
+    });
+    assert!(!cancel.is_cancelled() && !cancel_b.is_cancelled());
+    cx.update(|cx| {
+        cx.set_global(SettingsOpen(false));
+        cx.refresh_windows();
+    });
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.settings_view.is_none())
+    });
+    release_b_tx.send(()).expect("release B");
+    release_tx.send(()).expect("release A");
+    pump_test_app(cx, |_| {
+        !provider.requests().is_empty() && !provider_b.requests().is_empty()
+    });
+    assert_eq!(provider.requests()[0].model, "gpt-5.6-terra");
+    assert_eq!(provider_b.requests()[0].model, "gpt-5.6-luna");
+    assert!(root.read_with(cx, |root, _| root.agent_controller.active.len() == 2));
+    pump_test_app(cx, |cx| {
+        origin_stream.read_with(cx, |stream, _| stream.has_active_agent())
+            && draft_stream.read_with(cx, |stream, _| stream.has_active_agent())
+            && [&origin.id, &destination.id].iter().all(|id| {
+                store.conn().query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id = ?1 AND role = 'assistant' AND content LIKE '%first%')", [id], |row| row.get::<_, bool>(0)).expect("live partial output")
+            })
+    });
+    assert!(root.read_with(cx, |root, _| root.agent_controller.active.len() == 2));
+    for (thread, label, other) in [
+        (&origin, "origin first", "destination"),
+        (&destination, "destination first", "origin"),
+    ] {
+        let content: String = store.conn().query_row("SELECT content FROM messages WHERE thread_id = ?1 AND role = 'assistant' ORDER BY seq DESC LIMIT 1", [&thread.id], |row| row.get(0)).expect("interleaved partial");
+        assert!(content.contains(label) && !content.contains(other));
+    }
+    pump_test_app(cx, |cx| {
+        !draft_stream.read_with(cx, |stream, _| stream.composer_submission_pending())
+    });
+    draft_input.update(cx, |input, cx| input.set_text("next B draft", cx));
+    window
+        .update(cx, |_, window, cx| {
+            draft_stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
+        })
+        .expect("B focus");
+    if mode == 5 {
+        cx.update(|cx| {
+            cx.set_global(SettingsOpen(true));
+            cx.refresh_windows();
+        });
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| root.settings_view.is_some())
+        });
+    }
+    if mode == 3 {
+        window
+            .update(cx, |_, window, _| window.remove_window())
+            .expect("close window");
+        cx.update(|_| drop(root));
+        cx.run_until_parked();
+        assert!(cancel.is_cancelled() && cancel_b.is_cancelled());
+        pump_test_app(cx, |_| {
+            let count: i64 = store.conn().query_row("SELECT COUNT(*) FROM messages WHERE role = 'assistant' AND status = 'interrupted'", [], |row| row.get(0)).expect("interrupted count");
+            count == 2
+        });
+        return;
+    }
+    if mode == 6 {
+        pump_test_app(cx, |cx| {
+            origin_stream.read_with(cx, |stream, _| stream.has_pending_permission())
+                && draft_stream.read_with(cx, |stream, _| stream.has_pending_permission())
+        });
+        assert_eq!(
+            root.read_with(cx, |root, _| root.agent_controller.active.len()),
+            2
+        );
+        cx.update(|cx| {
+            cx.set_global(SettingsOpen(true));
+            cx.refresh_windows();
+        });
+        pump_test_app(cx, |cx| {
+            !origin_stream.read_with(cx, |stream, _| stream.has_pending_permission())
+                && !draft_stream.read_with(cx, |stream, _| stream.has_pending_permission())
+        });
+        assert!(!cancel.is_cancelled() && !cancel_b.is_cancelled());
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
+        });
+        assert!(!repo.path().join("origin-artifact.txt").exists());
+        assert!(!repo.path().join("destination-artifact.txt").exists());
+        for label in ["origin", "destination"] {
+            let state = vega_store::tool_calls::find_state(store.conn(), &format!("{label}-read"))
+                .expect("denied tool query")
+                .expect("denied tool row");
+            assert_eq!(state.status, "rejected");
+        }
+        assert!(cx.update(|cx| cx.global::<SettingsOpen>().0));
+        return;
+    }
+    // Model the real navigation interval with C's preflight still holding its lease.
+    let foreign_preflight = if mode == 2 {
+        let mut c = destination.clone();
+        c.id = "foreign-preparation".into();
+        let c_stream = cx.new(|cx| ConversationStream::new(c, cx));
+        Some(root.update(cx, |root, _| {
+            let lease = root
+                .trusted_actions
+                .acquire(TrustedActionKind::AgentPreflight, 0, 0)
+                .expect("C preparation lease");
+            root.agent_controller.preparation_stream = Some(c_stream);
+            lease
+        }))
+    } else {
+        None
+    };
+    if mode == 1 || mode == 2 {
+        let (target, target_stream) = if mode == 1 {
+            (&destination, &draft_stream)
+        } else {
+            (&origin, &origin_stream)
+        };
+        cx.update(|cx| {
+            cx.set_global(OpenedThread(Some(target.clone())));
+            cx.refresh_windows();
+        });
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                root.stream_view
+                    .as_ref()
+                    .is_some_and(|(id, _)| id == &target.id)
+            })
+        });
+        target_stream.update(cx, |stream, cx| stream.request_composer_stop(cx));
+        cx.run_until_parked();
+        assert_eq!(cancel.is_cancelled(), mode == 2);
+        assert_eq!(cancel_b.is_cancelled(), mode == 1);
+        if let Some(lease) = foreign_preflight {
+            root.update(cx, |root, _| {
+                assert_eq!(
+                    root.trusted_actions.active_token(),
+                    Some(lease),
+                    "Stop A cannot cancel C preparation"
+                );
+                assert!(root.trusted_actions.release(lease));
+                root.agent_controller.preparation_stream = None;
+            });
+        }
+    } else {
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                !root.agent_controller.active.contains_key(&origin.id)
+            })
+        });
+        assert!(root.read_with(cx, |root, cx| {
+            root.agent_controller.active.contains_key(&destination.id)
+                && cx
+                    .global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .is_some_and(|thread| thread.id == destination.id)
+                && root
+                    .stream_view
+                    .as_ref()
+                    .is_some_and(|(_, stream)| stream == &draft_stream)
+        }));
+        assert_eq!(
+            draft_input.read_with(cx, |input, _| input.text().to_owned()),
+            "next B draft"
+        );
+        if mode != 5 {
+            assert!(
+                window
+                    .update(cx, |_, window, cx| draft_input
+                        .read(cx)
+                        .focus_handle(cx)
+                        .contains_focused(window, cx))
+                    .expect("B focus preserved")
+            );
+        }
+    }
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
+    });
+    if mode == 5 {
+        assert!(root.read_with(cx, |root, cx| {
+            root.settings_view.is_some()
+                && cx.global::<SettingsOpen>().0
+                && cx
+                    .global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .is_some_and(|thread| thread.id == destination.id)
+        }));
+    }
+    if mode != 2 {
+        pump_test_app(cx, |_| !artifact_a_service.cards().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("origin-artifact.txt"))
+                .expect("A real artifact"),
+            "origin artifact"
+        );
+        if mode != 1 && mode != 5 {
+            assert!(root.read_with(cx, |root, _| {
+                root.artifact_controller
+                    .active
+                    .as_ref()
+                    .is_some_and(|route| route.identity == artifact_b_identity)
+            }));
+        }
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| root.artifact_controller.retained.is_empty())
+        });
+    }
+    for (thread, label, interrupted) in [
+        (&origin, "origin", mode == 2),
+        (&destination, "destination", mode == 1),
+    ] {
+        let (status, content): (String, String) = store.conn().query_row("SELECT status, content FROM messages WHERE thread_id = ?1 AND role = 'assistant' ORDER BY seq DESC LIMIT 1", [&thread.id], |row| Ok((row.get(0)?, row.get(1)?))).expect("durable thread terminal");
+        assert_eq!(status, if interrupted { "interrupted" } else { "done" });
+        assert!(content.contains(label));
+        assert!(!content.contains(if label == "origin" {
+            "destination"
+        } else {
+            "origin"
+        }));
+        if !interrupted {
+            let state = vega_store::tool_calls::find_state(store.conn(), &format!("{label}-read"))
+                .expect("tool row")
+                .expect("owned tool");
+            assert_eq!(state.status, "success");
+            let (tool_thread, message_thread): (String, String) = store.conn().query_row("SELECT t.thread_id, m.thread_id FROM tool_calls t JOIN messages m ON m.id = t.message_id WHERE t.id = ?1", [format!("{label}-read")], |row| Ok((row.get(0)?, row.get(1)?))).expect("tool ownership");
+            assert_eq!(tool_thread, thread.id);
+            assert_eq!(message_thread, thread.id);
+            let (model, input): (String, i64) = store.conn().query_row("SELECT model, input_tokens FROM token_usage WHERE thread_id = ?1 ORDER BY id DESC LIMIT 1", [&thread.id], |row| Ok((row.get(0)?, row.get(1)?))).expect("usage ownership");
+            assert_eq!(model, thread.model);
+            assert_eq!(input, if label == "origin" { 31 } else { 59 });
+        }
+    }
+}
+
+#[gpui_kit::test]
 async fn issue67_production_routes_keep_one_background_run_and_origin_stream(
     cx: &mut gpui_kit::TestAppContext,
 ) {
@@ -223,7 +907,7 @@ async fn issue67_production_routes_keep_one_background_run_and_origin_stream(
         .expect("issue67 provider gate") = Some((entered_tx, release_rx));
     cx.simulate_keystrokes(window.into(), "cmd-enter");
     pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| root.agent_controller.active.is_some())
+        root.read_with(cx, |root, _| !root.agent_controller.active.is_empty())
     });
     entered_rx
         .recv_timeout(Duration::from_secs(5))
@@ -232,7 +916,8 @@ async fn issue67_production_routes_keep_one_background_run_and_origin_stream(
         let active = root
             .agent_controller
             .active
-            .as_ref()
+            .values()
+            .next()
             .expect("issue67 active run");
         assert_eq!(active.thread_id, origin.id);
         assert_eq!(active.stream, origin_stream);
@@ -279,27 +964,12 @@ async fn issue67_production_routes_keep_one_background_run_and_origin_stream(
             draft_stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
         })
         .expect("issue67 draft focus");
-    cx.simulate_keystrokes(window.into(), "cmd-enter");
-    pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| !root.trusted_actions.is_busy())
-    });
-    assert_eq!(
-        draft_input.read_with(cx, |input, _| input.text().to_owned()),
-        "destination draft stays"
-    );
-    root.read_with(cx, |root, _| {
-        let active = root
-            .agent_controller
-            .active
-            .as_ref()
-            .expect("origin remains the single active run");
-        assert_eq!(active.generation, generation);
-        assert_eq!(active.thread_id, origin.id);
-        assert_eq!(active.stream, origin_stream);
-        assert!(!active.cancel.is_cancelled());
-    });
-    assert_eq!(probe.load(), 1, "a refused second submit starts no worker");
-    assert!(provider.requests().is_empty());
+    assert!(root.read_with(cx, |root, _| root.agent_controller.matches(
+        generation,
+        &origin.id,
+        &origin_stream
+    )));
+    assert_eq!(probe.load(), 1);
 
     let open_palette_task = |keys: &str, expected: &Thread, cx: &mut gpui_kit::TestAppContext| {
         cx.simulate_keystrokes(window.into(), keys);
@@ -391,7 +1061,7 @@ async fn issue67_production_routes_keep_one_background_run_and_origin_stream(
     destination_input.update(cx, |input, cx| input.set_text("route stays here", cx));
     release_tx.send(()).expect("issue67 release provider");
     pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+        root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
     assert!(!cancel.is_cancelled());
     assert_eq!(provider.requests().len(), 1);
@@ -439,6 +1109,7 @@ async fn issue67_production_routes_keep_one_background_run_and_origin_stream(
                             Some("teardown owner".into()),
                             None,
                         )
+                        .expect("thread admission")
                         .1;
                     teardown_tx.send(cancel).expect("issue67 teardown token");
                     root
@@ -518,12 +1189,14 @@ async fn production_agent_request_first_keeps_permission_until_proposal_ingress(
         ])],
     ]));
     let (generation, cancel) = root.update(cx, |root, _| {
-        root.agent_controller.begin(
-            thread.id.clone(),
-            stream.clone(),
-            Some("request-first".into()),
-            None,
-        )
+        root.agent_controller
+            .begin(
+                thread.id.clone(),
+                stream.clone(),
+                Some("request-first".into()),
+                None,
+            )
+            .expect("thread admission")
     });
     let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
     let worker_cancel = cancel.clone();
@@ -685,12 +1358,14 @@ async fn issue90_production_controller_routes_invalid_bash_without_permission_an
         ])],
     ]));
     let (generation, cancel) = root.update(cx, |root, _| {
-        root.agent_controller.begin(
-            thread.id.clone(),
-            stream.clone(),
-            Some("run invalid bash".into()),
-            None,
-        )
+        root.agent_controller
+            .begin(
+                thread.id.clone(),
+                stream.clone(),
+                Some("run invalid bash".into()),
+                None,
+            )
+            .expect("thread admission")
     });
     let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
     let worker_cancel = cancel.clone();
@@ -910,7 +1585,7 @@ theme = "light"
     cx.simulate_keystrokes(window.into(), "cmd-enter");
     pump_test_app(cx, |cx| {
         provider.requests().len() == 1
-            && root.read_with(cx, |root, _| root.agent_controller.active.is_some())
+            && root.read_with(cx, |root, _| !root.agent_controller.active.is_empty())
             && stream.read_with(cx, |stream, _| {
                 stream.has_pending_permission() && stream.has_active_permission_card()
             })
@@ -926,7 +1601,7 @@ theme = "light"
     pump_test_app(cx, |cx| {
         provider.requests().len() == 2
             && repo.path().join(WRITE_PATH).is_file()
-            && root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+            && root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
 
     assert_eq!(
@@ -1016,15 +1691,17 @@ async fn cancellation_keeps_active_until_durable_handshake_finishes(
         vega_conversation::threads::open_thread(&store, &thread_id).expect("thread projection");
     let stream = cx.new(|cx| ConversationStream::new(thread, cx));
     let mut controller = AppAgentController::default();
-    let (generation, cancel) = controller.begin(
-        thread_id.clone(),
-        stream.clone(),
-        Some("draft".into()),
-        None,
-    );
-    controller.request_active_cancel();
+    let (generation, cancel) = controller
+        .begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("draft".into()),
+            None,
+        )
+        .expect("thread admission");
+    controller.request_active_cancel(&thread_id);
     assert!(cancel.is_cancelled());
-    assert!(controller.active.is_some());
+    assert!(!controller.active.is_empty());
     assert_eq!(
         controller.accept_durable_start(generation + 1, &thread_id, &stream),
         None
@@ -1042,24 +1719,26 @@ async fn cancellation_keeps_active_until_durable_handshake_finishes(
             .finish(generation + 1, &thread_id, &stream)
             .is_none()
     );
-    assert!(controller.active.is_some());
+    assert!(!controller.active.is_empty());
     let finished = controller
         .finish(generation, &thread_id, &stream)
         .expect("exact terminal owns active run");
     assert!(finished.pending_user_content.is_none());
-    assert!(controller.active.is_none());
+    assert!(controller.active.is_empty());
 
-    let (next_generation, next_cancel) = controller.begin(
-        thread_id.clone(),
-        stream.clone(),
-        Some("second".into()),
-        None,
-    );
+    let (next_generation, next_cancel) = controller
+        .begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("second".into()),
+            None,
+        )
+        .expect("thread admission");
     assert_eq!(
         controller.accept_durable_start(next_generation, &thread_id, &stream),
         Some("second".into())
     );
-    controller.request_active_cancel();
+    controller.request_active_cancel(&thread_id);
     assert!(next_cancel.is_cancelled());
     assert!(
         controller
@@ -1067,25 +1746,29 @@ async fn cancellation_keeps_active_until_durable_handshake_finishes(
             .is_some()
     );
 
-    let (prestart_generation, prestart_cancel) = controller.begin(
-        thread_id.clone(),
-        stream.clone(),
-        Some("retryable".into()),
-        None,
-    );
-    controller.request_active_cancel();
+    let (prestart_generation, prestart_cancel) = controller
+        .begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("retryable".into()),
+            None,
+        )
+        .expect("thread admission");
+    controller.request_active_cancel(&thread_id);
     assert!(prestart_cancel.is_cancelled());
     let prestart = controller
         .finish(prestart_generation, &thread_id, &stream)
         .expect("cancelled pre-start worker still reaches terminal");
     assert_eq!(prestart.pending_user_content, Some("retryable".into()));
 
-    let (approved_generation, _) = controller.begin(
-        thread_id.clone(),
-        stream.clone(),
-        None,
-        Some("approved-instruction".into()),
-    );
+    let (approved_generation, _) = controller
+        .begin(
+            thread_id.clone(),
+            stream.clone(),
+            None,
+            Some("approved-instruction".into()),
+        )
+        .expect("thread admission");
     let approved = controller
         .finish(approved_generation, &thread_id, &stream)
         .expect("approved pre-start failure reaches terminal");
@@ -1117,16 +1800,18 @@ async fn stop_resume_fences_drop_every_late_callback_per_c5_fence_class(
     let stream = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
     let other_stream = cx.new(|cx| ConversationStream::new(other_thread.clone(), cx));
     let mut controller = AppAgentController::default();
-    let (generation, cancel) = controller.begin(
-        thread_id.clone(),
-        stream.clone(),
-        Some("draft".into()),
-        None,
-    );
+    let (generation, cancel) = controller
+        .begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("draft".into()),
+            None,
+        )
+        .expect("thread admission");
 
     // Stop is visible first-wins: the token is cancelled, the run stays
     // owned until the durable handshake, and every fenced lookup fails.
-    controller.request_active_cancel();
+    controller.request_active_cancel(&thread_id);
     assert!(cancel.is_cancelled());
 
     // 1) generation fence: a stale/foreign generation is refused.
@@ -1145,7 +1830,8 @@ async fn stop_resume_fences_drop_every_late_callback_per_c5_fence_class(
     assert!(
         controller
             .active
-            .as_ref()
+            .values()
+            .next()
             .expect("stale observe must not consume the run")
             .terminal_message_id
             .is_none(),
@@ -1200,7 +1886,8 @@ async fn stop_resume_fences_drop_every_late_callback_per_c5_fence_class(
     assert_eq!(
         controller
             .active
-            .as_ref()
+            .values()
+            .next()
             .expect("owned run")
             .terminal_message_id
             .as_deref(),
@@ -1213,7 +1900,7 @@ async fn stop_resume_fences_drop_every_late_callback_per_c5_fence_class(
         .finish(generation, &thread_id, &stream)
         .expect("exact terminal owns the run");
     assert!(finished.pending_user_content.is_none());
-    assert!(controller.active.is_none());
+    assert!(controller.active.is_empty());
     assert_eq!(
         controller.accept_durable_start(generation, &thread_id, &stream),
         None
@@ -1222,12 +1909,14 @@ async fn stop_resume_fences_drop_every_late_callback_per_c5_fence_class(
 
     // Resume: a new generation with a fresh token; the previous run's
     // cancelled token stays cancelled and cannot bleed into the new run.
-    let (next_generation, next_cancel) = controller.begin(
-        thread_id.clone(),
-        stream.clone(),
-        Some("resumed".into()),
-        None,
-    );
+    let (next_generation, next_cancel) = controller
+        .begin(
+            thread_id.clone(),
+            stream.clone(),
+            Some("resumed".into()),
+            None,
+        )
+        .expect("thread admission");
     assert_ne!(next_generation, generation);
     assert!(cancel.is_cancelled());
     assert!(!next_cancel.is_cancelled());

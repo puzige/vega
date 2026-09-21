@@ -230,7 +230,7 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
     gate.wait();
     pump_test_app(cx, |cx| {
         reopened_route_stream.read_with(cx, |stream, _| stream.displayed_model() == "gpt-5.6-luna")
-            && root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+            && root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
             && cx.update(|cx| {
                 cx.global::<OpenedThread>()
                     .0
@@ -258,7 +258,7 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
         );
     });
     pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+        root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
             && provider.requests().len() == 1
     });
     assert_eq!(provider.requests().len(), 1);
@@ -318,7 +318,7 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
         );
     });
     pump_test_app(cx, |cx| {
-        restarted_root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+        restarted_root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
             && provider.requests().len() == 2
     });
     assert_eq!(provider.requests().len(), 2);
@@ -376,18 +376,21 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
     // emitted during an existing run is rejected without touching SQLite or
     // the provider recorder.
     root.update(cx, |root, _| {
-        root.agent_controller.active = Some(ActiveAgentRun {
-            generation: 7,
-            thread_id: failure_thread.id.clone(),
-            stream: failure_stream.clone(),
-            cancel: tokio_util::sync::CancellationToken::new(),
-            pending_user_content: None,
-            pending_approved_instruction: None,
-            started: std::time::Instant::now(),
-            terminal_message_id: None,
-            terminal_failure: None,
-            mcp_unavailable: Vec::new(),
-        });
+        root.agent_controller.active.insert(
+            failure_thread.id.clone(),
+            ActiveAgentRun {
+                generation: 7,
+                thread_id: failure_thread.id.clone(),
+                stream: failure_stream.clone(),
+                cancel: tokio_util::sync::CancellationToken::new(),
+                pending_user_content: None,
+                pending_approved_instruction: None,
+                started: std::time::Instant::now(),
+                terminal_message_id: None,
+                terminal_failure: None,
+                mcp_unavailable: Vec::new(),
+            },
+        );
     });
     failure_stream.update(cx, |stream, cx| {
         stream.request_model_selection("gpt-5.6-luna", cx);
@@ -401,7 +404,7 @@ async fn model_selection_app_handler_persists_and_runs_exact_model(
     assert_eq!(active_guarded_thread.model, "gpt-5.6-terra");
     assert_eq!(provider.requests().len(), 2);
     root.update(cx, |root, _| {
-        root.agent_controller.active = None;
+        root.agent_controller.active.clear();
     });
 }
 

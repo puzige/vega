@@ -172,6 +172,7 @@ impl VegaWindow {
             });
             return;
         };
+        self.agent_controller.preparation_stream = Some(stream.clone());
         stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
         let (sender, receiver) = mpsc::sync_channel(1);
         let worker_thread = thread_id.clone();
@@ -184,6 +185,7 @@ impl VegaWindow {
             .is_err()
         {
             let _ = self.trusted_actions.release(lease);
+            self.agent_controller.preparation_stream = None;
             stream.update(cx, |stream, cx| {
                 stream.set_trusted_action_busy(false, cx);
                 stream.finish_submitted_skill_pin(false, cx);
@@ -202,6 +204,7 @@ impl VegaWindow {
                     if !this.trusted_actions.release(lease) {
                         return;
                     }
+                    this.agent_controller.preparation_stream = None;
                     stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
                     if !this.skill_route_is_current(&stream, &thread_id, &project_id, cx) {
                         stream.update(cx, ConversationStream::reject_composer_submission);

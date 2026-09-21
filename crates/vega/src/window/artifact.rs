@@ -23,6 +23,33 @@ impl VegaWindow {
         code: GitWorkspaceErrorCode,
         cx: &mut Context<Self>,
     ) {
+        let retain = code == GitWorkspaceErrorCode::StaleGeneration
+            && self
+                .artifact_controller
+                .active
+                .as_ref()
+                .is_some_and(|route| {
+                    route.agent_generation.is_some_and(|generation| {
+                        self.agent_controller.matches(
+                            generation,
+                            &route.identity.thread_id,
+                            &route.identity.stream,
+                        )
+                    }) || route.terminal_in_flight.is_some()
+                        || !route.terminal_queue.is_empty()
+                });
+        if retain {
+            if let Some(mut route) = self.artifact_controller.active.take() {
+                Self::cancel_artifact_interactions(&mut route, cx);
+                for key in route.cards.keys() {
+                    self.workspace.close(&workspace::TabKey::Artifact(*key));
+                }
+                self.artifact_controller
+                    .retained
+                    .insert(route.identity.epoch, route);
+            }
+            return;
+        }
         if let Some(active) = self.artifact_controller.close() {
             for key in active.cards.keys() {
                 self.workspace.close(&workspace::TabKey::Artifact(*key));
@@ -129,6 +156,18 @@ impl VegaWindow {
             return;
         }
         self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
+        let retained_epoch = self
+            .artifact_controller
+            .retained
+            .iter()
+            .find(|(_, route)| {
+                route.identity.thread_id == thread.id && route.identity.stream == stream
+            })
+            .map(|(epoch, _)| *epoch);
+        if let Some(epoch) = retained_epoch {
+            self.artifact_controller.active = self.artifact_controller.retained.remove(&epoch);
+            return;
+        }
         let result = Self::artifact_project_root(thread, cx).and_then(|root| {
             self.artifact_controller
                 .begin(thread, stream, root)
@@ -139,13 +178,53 @@ impl VegaWindow {
         }
     }
 
+    /// Background approved continuations need capture authority without changing the visible route.
+    pub(crate) fn ensure_agent_artifact_route(
+        &mut self,
+        thread: &Thread,
+        stream: &Entity<ConversationStream>,
+        cx: &App,
+    ) {
+        if thread.is_standalone()
+            || self
+                .artifact_controller
+                .active
+                .iter()
+                .chain(self.artifact_controller.retained.values())
+                .any(|route| {
+                    route.identity.thread_id == thread.id && route.identity.stream == *stream
+                })
+        {
+            return;
+        }
+        let Ok(root) = Self::artifact_project_root(thread, cx) else {
+            return;
+        };
+        let mut owner = ArtifactController {
+            next_route_epoch: self.artifact_controller.next_route_epoch,
+            ..Default::default()
+        };
+        if owner.begin(thread, stream.clone(), root).is_ok()
+            && let Some(route) = owner.active.take()
+        {
+            self.artifact_controller.next_route_epoch = owner.next_route_epoch;
+            self.artifact_controller
+                .retained
+                .insert(route.identity.epoch, route);
+        }
+    }
+
     pub(crate) fn begin_artifact_agent_generation(
         &mut self,
         generation: u64,
         stream: &Entity<ConversationStream>,
     ) {
-        if let Some(active) = self.artifact_controller.active.as_mut()
-            && active.identity.stream == *stream
+        if let Some(active) = self
+            .artifact_controller
+            .active
+            .iter_mut()
+            .chain(self.artifact_controller.retained.values_mut())
+            .find(|route| route.identity.stream == *stream)
         {
             active.proposals.clear();
             active.agent_generation = Some(generation);
@@ -157,13 +236,13 @@ impl VegaWindow {
         generation: u64,
         stream: &Entity<ConversationStream>,
     ) {
-        if let Some(active) = self.artifact_controller.active.as_mut()
-            && active.identity.stream == *stream
-            && active.agent_generation == Some(generation)
+        if let Some(identity) = self.artifact_controller.agent_route(generation, stream)
+            && let Some(active) = self.artifact_controller.route_mut(&identity)
         {
             active.proposals.clear();
             active.agent_generation = None;
         }
+        self.artifact_controller.retire_drained();
     }
 
     /// Applies one drained batch through the production ownership boundary.
@@ -180,7 +259,7 @@ impl VegaWindow {
             return AgentBatchIngress::Stale;
         }
         if !batch.mcp_unavailable.is_empty()
-            && let Some(active) = self.agent_controller.active.as_mut()
+            && let Some(active) = self.agent_controller.active.get_mut(thread_id)
         {
             active.mcp_unavailable.extend(batch.mcp_unavailable);
             stream.update(cx, |stream, cx| {
@@ -230,6 +309,7 @@ impl VegaWindow {
         let Some(run) = self.agent_controller.finish(generation, thread_id, stream) else {
             return AgentBatchIngress::Stale;
         };
+        self.finish_context_primary_owner(generation);
         // S7-T40/C4: the run's durable terminal message becomes a read-only
         // per-task cost summary card. The projection reads only the persisted
         // audits (a non-terminal/corrupt row fails closed → no card); the
@@ -286,19 +366,10 @@ impl VegaWindow {
         event: &ConversationEvent,
         cx: &mut Context<Self>,
     ) {
-        let current = self
-            .artifact_controller
-            .active
-            .as_ref()
-            .is_some_and(|active| {
-                active.identity.stream == *stream
-                    && active.agent_generation == Some(generation)
-                    && Self::artifact_route_is_current(&active.identity, cx)
-            });
-        if !current {
+        let Some(identity) = self.artifact_controller.agent_route(generation, stream) else {
             return;
-        }
-        let Some(active) = self.artifact_controller.active.as_mut() else {
+        };
+        let Some(active) = self.artifact_controller.route_mut(&identity) else {
             return;
         };
         match event {
@@ -306,7 +377,7 @@ impl VegaWindow {
                 if matches!(call.tool.as_str(), "write" | "edit") =>
             {
                 if let Err(failure) = ArtifactService::validate_proposal(call) {
-                    self.close_artifact_route(failure.code(), cx);
+                    self.fail_artifact_capture_route(&identity, failure.code(), cx);
                     return;
                 }
                 if let Some(existing) = active.proposals.get_mut(&call.id) {
@@ -322,7 +393,11 @@ impl VegaWindow {
                         },
                     );
                 } else {
-                    self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+                    self.fail_artifact_capture_route(
+                        &identity,
+                        GitWorkspaceErrorCode::ArtifactLimit,
+                        cx,
+                    );
                 }
             }
             ConversationEvent::ToolCallFinished { call_id, result } => {
@@ -341,7 +416,7 @@ impl VegaWindow {
                         Ok(None) => ArtifactTerminalWork::Refresh,
                         Err(failure) => {
                             let code = failure.code();
-                            self.close_artifact_route(code, cx);
+                            self.fail_artifact_capture_route(&identity, code, cx);
                             return;
                         }
                     }
@@ -349,25 +424,70 @@ impl VegaWindow {
                     ArtifactTerminalWork::Refresh
                 };
                 let Some(sequence) = active.terminal_sequence.checked_add(1) else {
-                    self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+                    self.fail_artifact_capture_route(
+                        &identity,
+                        GitWorkspaceErrorCode::ArtifactLimit,
+                        cx,
+                    );
                     return;
                 };
                 if active.terminal_queue.len() >= ARTIFACT_ROUTE_CAP {
-                    self.close_artifact_route(GitWorkspaceErrorCode::ArtifactLimit, cx);
+                    self.fail_artifact_capture_route(
+                        &identity,
+                        GitWorkspaceErrorCode::ArtifactLimit,
+                        cx,
+                    );
                     return;
                 }
                 active.terminal_sequence = sequence;
                 active
                     .terminal_queue
                     .push_back(ArtifactTerminalJob { sequence, work });
-                self.launch_next_artifact_terminal(cx);
+                self.launch_artifact_terminal_for(&identity, cx);
             }
             _ => {}
         }
     }
 
+    fn fail_artifact_capture_route(
+        &mut self,
+        identity: &ArtifactRouteIdentity,
+        code: GitWorkspaceErrorCode,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .artifact_controller
+            .active
+            .as_ref()
+            .is_some_and(|route| route.identity == *identity)
+        {
+            self.close_artifact_route(code, cx);
+        } else if let Some(route) = self.artifact_controller.retained.remove(&identity.epoch) {
+            route.cancel.cancel();
+            for card in route.cards.into_values() {
+                card.update(cx, |card, cx| card.invalidate(code, cx));
+            }
+        }
+    }
+
     pub(crate) fn launch_next_artifact_terminal(&mut self, cx: &mut Context<Self>) {
-        let Some(dispatch) = self.take_next_artifact_terminal() else {
+        let Some(identity) = self
+            .artifact_controller
+            .active
+            .as_ref()
+            .map(|route| route.identity.clone())
+        else {
+            return;
+        };
+        self.launch_artifact_terminal_for(&identity, cx);
+    }
+
+    fn launch_artifact_terminal_for(
+        &mut self,
+        identity: &ArtifactRouteIdentity,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dispatch) = self.take_artifact_terminal_for(identity) else {
             return;
         };
         let ArtifactTerminalDispatch {
@@ -407,8 +527,17 @@ impl VegaWindow {
         .detach();
     }
 
+    #[cfg(test)]
     pub(crate) fn take_next_artifact_terminal(&mut self) -> Option<ArtifactTerminalDispatch> {
-        let active = self.artifact_controller.active.as_mut()?;
+        let identity = self.artifact_controller.active.as_ref()?.identity.clone();
+        self.take_artifact_terminal_for(&identity)
+    }
+
+    fn take_artifact_terminal_for(
+        &mut self,
+        identity: &ArtifactRouteIdentity,
+    ) -> Option<ArtifactTerminalDispatch> {
+        let active = self.artifact_controller.route_mut(identity)?;
         if active.terminal_in_flight.is_some() {
             return None;
         }
@@ -429,17 +558,12 @@ impl VegaWindow {
         result: Result<(u64, ArtifactTerminalResult), GitWorkspaceErrorCode>,
         cx: &mut Context<Self>,
     ) {
-        if !Self::artifact_route_is_current(identity, cx) {
-            if self.artifact_controller.matches(identity) {
-                self.close_artifact_route(GitWorkspaceErrorCode::StaleGeneration, cx);
-            }
+        if self.artifact_controller.route(identity).is_none() {
             return;
         }
         let expected = self
             .artifact_controller
-            .active
-            .as_ref()
-            .filter(|active| active.identity == *identity)
+            .route(identity)
             .and_then(|active| active.terminal_in_flight);
         let sequence = result.as_ref().ok().map(|(sequence, _)| *sequence);
         if sequence.is_some() && sequence != expected {
@@ -449,11 +573,11 @@ impl VegaWindow {
             code @ (GitWorkspaceErrorCode::ArtifactConflict | GitWorkspaceErrorCode::ArtifactLimit),
         ) = &result
         {
-            self.close_artifact_route(*code, cx);
+            self.fail_artifact_capture_route(identity, *code, cx);
             return;
         }
         let stream = {
-            let Some(active) = self.artifact_controller.active.as_mut() else {
+            let Some(active) = self.artifact_controller.route_mut(identity) else {
                 return;
             };
             if active.identity != *identity {
@@ -466,8 +590,7 @@ impl VegaWindow {
             for projection in result.cards {
                 let card = self
                     .artifact_controller
-                    .active
-                    .as_ref()
+                    .route(identity)
                     .and_then(|active| active.cards.get(&projection.id).cloned());
                 if let Some(card) = card {
                     card.update(cx, |card, cx| {
@@ -478,8 +601,7 @@ impl VegaWindow {
             if let Some((call_id, projection)) = result.captured {
                 let existing = self
                     .artifact_controller
-                    .active
-                    .as_ref()
+                    .route(identity)
                     .and_then(|active| active.cards.get(&projection.id).cloned());
                 if let Some(card) = existing {
                     card.update(cx, |card, cx| {
@@ -508,14 +630,15 @@ impl VegaWindow {
                     .detach();
                     if stream.update(cx, |stream, cx| {
                         stream.apply_artifact_card(&call_id, card.clone(), cx)
-                    }) && let Some(active) = self.artifact_controller.active.as_mut()
+                    }) && let Some(active) = self.artifact_controller.route_mut(identity)
                     {
                         active.cards.insert(projection.id, card);
                     }
                 }
             }
         }
-        self.launch_next_artifact_terminal(cx);
+        self.launch_artifact_terminal_for(identity, cx);
+        self.artifact_controller.retire_drained();
     }
 
     pub(crate) fn request_artifact_preview(

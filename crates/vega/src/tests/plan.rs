@@ -111,15 +111,18 @@ async fn active_plan_review_is_deferred_and_cancels_exactly_once(
     let stream = cx.new(|cx| ConversationStream::new(thread, cx));
     let rebuilt_stream = cx.new(|cx| ConversationStream::new(rebuilt_thread, cx));
     let mut controller = AppAgentController::default();
-    let (_, cancel) = controller.begin(thread_id.clone(), stream.clone(), None, None);
+    let (_, cancel) = controller
+        .begin(thread_id.clone(), stream.clone(), None, None)
+        .expect("thread admission");
     let request = PlanReviewRequested {
         thread_id: thread_id.clone(),
         plan_id: "plan".into(),
         action: PlanReviewAction::Approve,
     };
-    assert!(controller.queue_review(&rebuilt_stream, &request));
+    assert!(!controller.queue_review(&rebuilt_stream, &request));
+    assert!(controller.queue_review(&stream, &request));
     assert!(cancel.is_cancelled());
-    assert!(controller.active.is_some());
+    assert!(!controller.active.is_empty());
     assert_eq!(
         vega_conversation::plans::list_plans(&store, &thread_id).expect("plans before terminal")[0]
             .status,
@@ -128,15 +131,18 @@ async fn active_plan_review_is_deferred_and_cancels_exactly_once(
     assert_eq!(
         controller
             .pending_review
-            .as_ref()
+            .get(&thread_id)
             .map(|pending| (pending.stream.clone(), pending.request.clone())),
-        Some((rebuilt_stream, request.clone()))
+        Some((stream.clone(), request.clone()))
     );
     assert!(!controller.queue_review(&stream, &request));
-    controller.active = None;
-    let pending = controller.pending_review.take().expect("deferred review");
+    controller.active.clear();
+    let pending = controller
+        .pending_review
+        .remove(&thread_id)
+        .expect("deferred review");
     assert_eq!(pending.request, request);
-    assert!(controller.pending_review.is_none());
+    assert!(controller.pending_review.is_empty());
     let refresh = persist_review(&store, &pending.request).expect("deferred review commit");
     assert!(refresh.approved_instruction_id.is_some());
     let replay = persist_review(&store, &pending.request).expect("stale replay");

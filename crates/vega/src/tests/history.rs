@@ -465,7 +465,7 @@ async fn at_reference_real_subscription_indexes_and_injects_request(
         .expect("focus subscription composer");
     cx.simulate_keystrokes(_window.into(), "cmd-enter");
     pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+        root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
             && !provider.requests().is_empty()
     });
     let request = provider

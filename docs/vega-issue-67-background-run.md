@@ -1,5 +1,10 @@
 # Issue 67 · Navigation must not interrupt the active conversation
 
+> Second-stage update (2026-09-21): R5 and I67-06 are superseded by
+> [Concurrent conversations](vega-issue-67-concurrent-conversations.md).
+> Different threads must now run concurrently; this document preserves the
+> first-stage navigation history and its remaining guarantees.
+
 Freeze: 2026-09-21, Asia/Shanghai. Source: GitHub Issue #67 plus the user's
 clarification in the implementation session. The reported failure is broader
 than creating a new task: opening another task or Settings also interrupts the

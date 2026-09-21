@@ -218,6 +218,15 @@ impl VegaWindow {
         cx: &mut Context<Self>,
     ) {
         cx.set_global(OpenedThread(Some(thread.clone())));
+        Self::apply_thread_and_plans(stream, thread, plans, cx);
+    }
+
+    pub(crate) fn apply_thread_and_plans(
+        stream: &Entity<ConversationStream>,
+        thread: Thread,
+        plans: Vec<Plan>,
+        cx: &mut Context<Self>,
+    ) {
         stream.update(cx, |stream, cx| {
             stream.apply_thread(thread, cx);
             for plan in plans {
@@ -264,13 +273,25 @@ impl VegaWindow {
     }
 
     pub(crate) fn cancel_active_agent(&mut self, cx: &mut Context<Self>) {
-        let pending_review = self.agent_controller.pending_review.take();
+        let Some(thread_id) = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .map(|thread| thread.id.clone())
+        else {
+            return;
+        };
+        self.cancel_agent_for_thread(&thread_id, cx);
+    }
+
+    fn cancel_agent_for_thread(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        let pending_review = self.agent_controller.pending_review.remove(thread_id);
         let artifact_run = self
             .agent_controller
             .active
-            .as_ref()
+            .get(thread_id)
             .map(|active| (active.generation, active.stream.clone()));
-        if let Some(active) = &self.agent_controller.active {
+        if let Some(active) = self.agent_controller.active.get(thread_id) {
             active.cancel.cancel();
             active
                 .stream
@@ -305,7 +326,19 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
-        if self.trusted_actions.cancel_agent_preparation() {
+        if self
+            .agent_controller
+            .active
+            .get(&request.thread_id)
+            .is_some_and(|run| run.stream == stream)
+        {
+            self.cancel_agent_for_thread(&request.thread_id, cx);
+            return;
+        }
+        if self.agent_controller.preparation_stream.as_ref() == Some(&stream)
+            && self.trusted_actions.cancel_agent_preparation()
+        {
+            self.agent_controller.preparation_stream = None;
             stream.update(cx, |stream, cx| {
                 stream.set_trusted_action_busy(false, cx);
                 stream.reject_composer_submission(cx);
@@ -314,14 +347,6 @@ impl VegaWindow {
             return;
         }
         self.cancel_manual_context_for_stream(&stream);
-        if self
-            .agent_controller
-            .active
-            .as_ref()
-            .is_some_and(|active| active.thread_id == request.thread_id && active.stream == stream)
-        {
-            self.cancel_active_agent(cx);
-        }
     }
 
     pub(crate) fn start_agent_run(
@@ -361,7 +386,17 @@ impl VegaWindow {
         reasoning: Option<FrozenReasoning>,
         cx: &mut Context<Self>,
     ) {
-        if !self.owns_stream_request(&stream, thread_id, cx) {
+        if !self.owns_stream_request(&stream, thread_id, cx)
+            && !self
+                .agent_controller
+                .pending_review
+                .get(thread_id)
+                .is_some_and(|pending| pending.stream == stream)
+        {
+            return;
+        }
+        if self.agent_controller.active.contains_key(thread_id) {
+            stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         }
         let reasoning_invalid = reasoning.as_ref().is_some_and(|reasoning| {
@@ -388,7 +423,6 @@ impl VegaWindow {
             PendingAgentRun::ApprovedPlan(instruction_id) => Some(instruction_id.clone()),
         };
         if stream.read(cx).has_pending_model_selection()
-            || self.agent_controller.active.is_some()
             || self.trusted_actions.is_busy()
             || self.reasoning_save_pending.is_some()
             || self.model_catalog_loading
@@ -442,15 +476,19 @@ impl VegaWindow {
         let pricing_catalog = self.pricing_controller.catalog_for_run(&thread.model);
 
         let permission_queue = stream.read(cx).permission_queue();
-        self.invalidate_context_load();
-        let (generation, cancel) = self.agent_controller.begin(
+        let Some((generation, cancel)) = self.agent_controller.begin(
             thread_id.to_string(),
             stream.clone(),
             pending_user_content,
             pending_approved_instruction,
-        );
-        self.begin_context_primary_owner(generation);
+        ) else {
+            stream.update(cx, ConversationStream::apply_agent_busy);
+            return;
+        };
+        self.agent_controller.preparation_stream = None;
+        self.begin_context_primary_owner(generation, cx);
         stream.update(cx, ConversationStream::begin_composer_run);
+        self.ensure_agent_artifact_route(&thread, &stream, cx);
         self.begin_artifact_agent_generation(generation, &stream);
         // S7-T39/C3: the provisional estimator freezes the run-start
         // selection; it never re-reads pricing files or the live authority.
@@ -505,7 +543,8 @@ impl VegaWindow {
         if worker.is_err() {
             stream.update(cx, |stream, cx| stream.finish_composer_run(false, cx));
             self.poison_artifact_agent_generation(generation, &stream);
-            let failed_run = self.agent_controller.active.take();
+            let failed_run = self.agent_controller.finish(generation, thread_id, &stream);
+            self.finish_context_primary_owner(generation);
             if failed_run
                 .as_ref()
                 .is_some_and(|active| active.pending_user_content.is_some())
@@ -543,7 +582,9 @@ impl VegaWindow {
                                 } => (success, run, reference_failure, credential_failure),
                             };
                         let cancelled = finished_run.cancel.is_cancelled();
-                        this.refresh_context_projection(false, cx);
+                        if this.owns_stream_request(&stream, &thread_id, cx) {
+                            this.refresh_context_projection(false, cx);
+                        }
                         let cancelled = stream
                             .update(cx, |stream, cx| stream.finish_composer_run(cancelled, cx));
                         let ActiveAgentRun {
@@ -557,7 +598,11 @@ impl VegaWindow {
                         if pending_user.is_some() {
                             stream.update(cx, ConversationStream::reject_composer_submission);
                         }
-                        let pending_review = this.agent_controller.pending_review.take();
+                        let pending_review = this
+                            .agent_controller
+                            .pending_review
+                            .get(&thread_id)
+                            .cloned();
                         let refresh = match &cx.global::<VegaStore>().0 {
                             Ok(store) => reload_thread_state(store, &thread_id),
                             Err(error) => Err(error.clone()),
@@ -630,7 +675,7 @@ impl VegaWindow {
                             });
                         }
                         if let Some(pending) = pending_review {
-                            this.review_plan(pending.stream, &pending.request, cx);
+                            this.finish_owned_plan_review(pending.stream, &pending.request, cx);
                         }
                         false
                     })
@@ -652,6 +697,16 @@ impl VegaWindow {
         if (request.content.is_empty() && request.images.is_empty())
             || !self.owns_stream_request(&stream, &request.thread_id, cx)
         {
+            return;
+        }
+        if self
+            .agent_controller
+            .active
+            .contains_key(&request.thread_id)
+            || (self.agent_controller.preparation_stream.as_ref() == Some(&stream)
+                && self.trusted_actions.is_busy())
+        {
+            stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         }
         let reasoning = match request.reasoning.clone() {
@@ -681,6 +736,7 @@ impl VegaWindow {
             });
             return;
         };
+        self.agent_controller.preparation_stream = Some(stream.clone());
         stream.update(cx, |stream, cx| stream.set_trusted_action_busy(true, cx));
         let config_path = self.composer_config_path();
         let model = stream.read(cx).displayed_model().to_owned();
@@ -698,6 +754,7 @@ impl VegaWindow {
             });
         if worker.is_err() {
             let _ = self.trusted_actions.release(lease);
+            self.agent_controller.preparation_stream = None;
             stream.update(cx, |stream, cx| {
                 stream.set_trusted_action_busy(false, cx);
                 stream.reject_composer_submission(cx);
@@ -756,6 +813,7 @@ impl VegaWindow {
         if !self.trusted_actions.release(lease) {
             return;
         }
+        self.agent_controller.preparation_stream = None;
         stream.update(cx, |stream, cx| stream.set_trusted_action_busy(false, cx));
         if cx.global::<SettingsOpen>().0 || !self.owns_stream_request(&stream, &thread_id, cx) {
             stream.update(cx, ConversationStream::reject_composer_submission);

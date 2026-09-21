@@ -68,9 +68,10 @@ async fn branch_controller_route_and_active_guards_fail_closed(cx: &mut gpui_kit
         assert!(!root.branch_guards_clear(&stream, cx));
         assert!(root.trusted_actions.release(lease));
 
-        let (generation, _) =
-            root.agent_controller
-                .begin(thread.id.clone(), stream.clone(), None, None);
+        let (generation, _) = root
+            .agent_controller
+            .begin(thread.id.clone(), stream.clone(), None, None)
+            .expect("thread admission");
         assert!(!root.branch_guards_clear(&stream, cx));
         let _ = root
             .agent_controller

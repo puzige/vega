@@ -344,7 +344,10 @@ impl VegaWindow {
         // (pending plan/review/permission per R1 constraint 5).
         if cx.global::<SettingsOpen>().0
             || stream.read(cx).model_selection_blocked(cx)
-            || self.agent_controller.active.is_some()
+            || self
+                .agent_controller
+                .active
+                .contains_key(&request.thread_id)
             || self.trusted_actions.is_busy()
         {
             stream.update(cx, |stream, cx| {
@@ -821,7 +824,10 @@ impl VegaWindow {
         // so a late model ack cannot overwrite a newer settings projection.
         if stream.read(cx).has_pending_model_selection()
             || stream.read(cx).model_selection_blocked(cx)
-            || self.agent_controller.active.is_some()
+            || self
+                .agent_controller
+                .active
+                .contains_key(&request.thread_id)
             || self.trusted_actions.is_busy()
         {
             stream.update(cx, ConversationStream::apply_controller_error);
@@ -888,15 +894,50 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::apply_controller_error);
             return;
         }
-        if self.agent_controller.active.is_some() {
+        if self
+            .agent_controller
+            .active
+            .contains_key(&request.thread_id)
+        {
             if self.agent_controller.queue_review(&stream, request) {
-                if let Some(active) = self.agent_controller.active.as_ref() {
+                if let Some(active) = self.agent_controller.active.get(&request.thread_id) {
                     self.poison_artifact_agent_generation(active.generation, &stream);
                 }
                 stream.update(cx, |stream, cx| stream.timeout_permission(cx));
             } else {
                 stream.update(cx, ConversationStream::apply_controller_error);
             }
+            return;
+        }
+        self.agent_controller.pending_review.insert(
+            request.thread_id.clone(),
+            PendingPlanReview {
+                stream: stream.clone(),
+                request: request.clone(),
+            },
+        );
+        self.finish_owned_plan_review(stream, request, cx);
+    }
+
+    pub(crate) fn finish_owned_plan_review(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &PlanReviewRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .agent_controller
+            .pending_review
+            .get(&request.thread_id)
+            .is_some_and(|pending| pending.stream == stream && pending.request == *request)
+        {
+            return;
+        }
+        if stream.read(cx).has_pending_model_selection() || self.trusted_actions.is_busy() {
+            self.agent_controller
+                .pending_review
+                .remove(&request.thread_id);
+            stream.update(cx, ConversationStream::apply_controller_error);
             return;
         }
         let result = match &cx.global::<VegaStore>().0 {
@@ -906,7 +947,10 @@ impl VegaWindow {
         match result {
             Ok(refresh) => {
                 let approved_instruction_id = refresh.approved_instruction_id.clone();
-                Self::apply_refresh(&stream, refresh.thread, refresh.plans, cx);
+                if self.owns_stream_request(&stream, &request.thread_id, cx) {
+                    cx.set_global(OpenedThread(Some(refresh.thread.clone())));
+                }
+                Self::apply_thread_and_plans(&stream, refresh.thread, refresh.plans, cx);
                 if let Some(instruction_message_id) = approved_instruction_id {
                     self.start_agent_run(
                         stream,
@@ -924,10 +968,16 @@ impl VegaWindow {
                     Err(error) => Err(error.clone()),
                 };
                 if let Ok((thread, plans)) = reload {
-                    Self::apply_refresh(&stream, thread, plans, cx);
+                    if self.owns_stream_request(&stream, &request.thread_id, cx) {
+                        cx.set_global(OpenedThread(Some(thread.clone())));
+                    }
+                    Self::apply_thread_and_plans(&stream, thread, plans, cx);
                 }
                 stream.update(cx, ConversationStream::apply_controller_error);
             }
         }
+        self.agent_controller
+            .pending_review
+            .remove(&request.thread_id);
     }
 }

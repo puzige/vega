@@ -227,7 +227,7 @@ async fn navigation_real_root_palette_mouse_shortcuts_and_settings_preserve_draf
     );
     assert!(
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
     );
     assert!(f.data.path().join("vega.db").is_file());
 }
