@@ -15,8 +15,8 @@ log names below are relative to the persistent Issue #70 evidence directory.
 | T70-5 | Lifecycle updates cannot move or falsely complete the group | Pending/approved/running/success and failed calls in one group | Apply each durable event | Same call entities/order remain; aggregate and child wording/colors reflect active/failure; exit code visible | production stream + card unit | `green-issue70.log`, T70-5 identity/copy/footer-token assertions | PASS |
 | T70-6 | Reopen must match live layout | Typed history containing text → three tools → text, plus a separate one-tool segment | Hydrate, expand, switch/reopen | Same boundaries/order/summaries as live; initially collapsed again; no execution/replay | hydration/mounted GPUI | `green-issue70.log`, T70-6 live/hydrated parity and reopen assertions | PASS |
 | T70-7 | Redaction and fail-closed behavior must survive redesign | Read-only raw args, strict write/edit results, invalid and corrupt projections | Render collapsed and expanded states | No raw read args, body, fingerprint, call ID, absolute data root or checkpoint ref; invalid/corrupt state remains visible | unit + mounted GPUI | `green-issue70.log`, T70-7 safe/secret allow-deny assertions | PASS |
-| T70-8 | Narrow/light/dark native appearance | Packaged candidate with an existing real audited timeline | Open at ordinary and narrow widths; inspect collapsed mixed group and expanded shell detail in Light and Dark | No clipping/wrap-induced width growth; hierarchy matches spec; text/status contrast remains readable | installed native UI | PNGs + SHA-256 manifest | NOT RUN |
-| T70-9 | Related behavior and architecture do not regress | Final candidate | Run focused and workspace gates | Tool/permission/timeline/hydration suites pass; no UI SQLite, hard-coded color, dependency or migration change | repository gates | focused/package/static logs below; workspace gate remains with integration owner | PARTIAL |
+| T70-8 | Narrow/light/dark native appearance | Packaged candidate with an existing real audited timeline | Open the real timeline; inspect collapsed mixed group and expanded shell detail in Light and Dark | Hierarchy matches spec; text/status contrast remains readable | installed native UI | `tool-activity-light-expanded.png`, `tool-activity-dark-collapsed.png`, `tool-activity-dark-shell-detail.png`, `manifest.md` | PASS (owner accepted current width) |
+| T70-9 | Related behavior and architecture do not regress | Final candidate | Run focused and workspace gates | Tool/permission/timeline/hydration suites pass; no UI SQLite, hard-coded color, dependency or migration change | repository gates | final isolated focused/Clippy/workspace/package logs below | PASS |
 
 ## Implementation plan
 
@@ -98,14 +98,40 @@ Fresh green gates:
 | `cargo fmt --all -- --check` | 0 | clean | `green-static-gates.log` |
 | `git diff --check` | 0 | clean | `green-static-gates.log` |
 
-There is no implementation deviation from the frozen specification. No schema,
+Final integration gates were run again after rebasing onto `origin/master`, with
+an independent target directory so another worktree could not supply stale test
+artifacts:
+
+| Command | Exit | Result | Evidence |
+|---|---:|---|---|
+| `scripts/cargo-lock.sh clippy --workspace --all-targets -- -D warnings` | 0 | clean | `final-clippy-workspace.log` |
+| `scripts/cargo-lock.sh test -p vega_ui issue70_ -- --nocapture` | 0 | 8 passed; 402 filtered | `final-focused-issue70.log` |
+| `RUST_TEST_THREADS=1 scripts/cargo-lock.sh test --workspace` | 0 | all workspace and doc tests passed; `vega_ui` 410 passed | `final-test-workspace-serial.log` |
+| `scripts/cargo-lock.sh xtask package --version 0.1.1` | 0 | signed `.app` and arm64 zip created | `final-package-0.1.1.log` |
+
+The default parallel workspace run first exposed two existing process-control
+timing flakes. Exact serialized reruns passed in
+`final-exact-mutation-cancel.log` and `final-exact-lease-cleanup.log`; the final
+serialized workspace run then passed in full. An earlier shared-target run that
+reported only 401 `vega_ui` tests was rejected as contaminated evidence before
+the independent target directory was used.
+
+The installed `/Applications/Vega.app` binary exactly matches the packaged
+candidate (SHA-256
+`07c538fc962213cfbecdb54b1f39e3c647d8ae344f73dcd102e8ef391c8222a7`),
+passes strict deep signature verification, and preserves version `0.1.1`. The
+arm64 zip SHA-256 is
+`c73af87f9342378793a2bda158e7576d291cc6db2b414b496eab9a61b28743c9`.
+Persistent native evidence records the pre-candidate baseline, Light expanded
+group, Dark collapsed group, and Dark shell detail with exact hashes in
+`manifest.md`. The owner accepted the current ordinary-width rendering on
+2026-09-21 and asked to merge it as-is, so no additional narrow-window capture
+was required for this delivery.
+
+There is no code deviation from the frozen specification. No schema,
 dependency, runtime, provider, tool-execution or persistence code changed.
 
 ## Residuals
 
-- T70-8 packaged native Light/Dark and narrow-width acceptance remains with the
-  integration owner.
-- The final full-workspace/package gates, candidate installation and evidence
-  manifest remain with the integration owner. The implementation agent ran the
-  full `vega_ui` package suite and the focused `vega` artifact integration
-  case.
+None for Issue #70. The owner explicitly accepted the current native rendering
+without a separate narrow-window screenshot.

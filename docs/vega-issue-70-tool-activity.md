@@ -122,4 +122,3 @@ visibility and variable-height invalidation. Final acceptance also requires the
 workspace gates, a packaged native build, and persistent light/dark screenshots
 of a real timeline containing both a collapsed mixed group and an expanded
 command detail.
-
