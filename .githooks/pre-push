@@ -1,68 +1,12 @@
 #!/bin/sh
-# Vega pre-push hook — full quality gate (exec-guide §7).
-# Install (once per clone): git config core.hooksPath .githooks
-# Git passes the pushed ref list on stdin; it is deliberately not read.
-
-# Homebrew's cargo shadows the rustup proxy in the default PATH; prepend the
-# rustup bin dir so the toolchain pinned by rust-toolchain.toml is used.
-PATH="$HOME/.cargo/bin:$PATH"
-export PATH
-
-# Git exports repository-local variables while invoking hooks. They must not
-# leak into Cargo test fixtures because those fixtures own separate temporary
-# repositories. Ask this Git version for the complete local-variable set, then
-# fail closed unless every returned name is a Git variable we can safely unset.
-git_local_env_vars=$(git rev-parse --local-env-vars) || {
-    echo "[pre-push] FAILED: could not enumerate Git local environment variables."
-    exit 1
-}
-for git_local_env_var in $git_local_env_vars; do
-    case "$git_local_env_var" in
-        GIT_*) unset "$git_local_env_var" ;;
-        *)
-            echo "[pre-push] FAILED: unexpected local environment variable name."
-            exit 1
-            ;;
+# One scoped gate, bound to the exact clean commit being pushed.
+repo=$(git rev-parse --show-toplevel) || exit 1
+local_vars=$(git rev-parse --local-env-vars) || exit 1
+for name in $local_vars; do
+    case "$name" in
+        GIT_*) unset "$name" ;;
+        *) echo 'pre-push: unexpected Git environment name' >&2; exit 1 ;;
     esac
 done
-unset git_local_env_var git_local_env_vars
-
-# Worktrees share one target directory. The wrapper accepts Cargo subcommands
-# directly and owns the whole build/test span; fall back to Cargo when absent.
-run_cargo() {
-    if [ -x scripts/cargo-lock.sh ]; then
-        scripts/cargo-lock.sh --wait "$@"
-    else
-        cargo "$@"
-    fi
-}
-
-echo "[pre-push] cargo clippy --all-targets -- -D warnings"
-if ! run_cargo clippy --all-targets -- -D warnings; then
-    echo ""
-    echo "[pre-push] FAILED: clippy reported warnings."
-    echo "Fix the warnings above, commit, then push again."
-    echo "Emergency bypass (use sparingly): git push --no-verify"
-    exit 1
-fi
-
-echo "[pre-push] cargo test --workspace"
-if ! run_cargo test --workspace; then
-    echo ""
-    echo "[pre-push] FAILED: tests failed."
-    echo "Fix the failing tests above, commit, then push again."
-    echo "Emergency bypass (use sparingly): git push --no-verify"
-    exit 1
-fi
-
-echo "[pre-push] cargo build --workspace"
-if ! run_cargo build --workspace; then
-    echo ""
-    echo "[pre-push] FAILED: build failed."
-    echo "Fix the build errors above, commit, then push again."
-    echo "Emergency bypass (use sparingly): git push --no-verify"
-    exit 1
-fi
-
-echo "[pre-push] OK: all gates passed"
-exit 0
+cd "$repo" || exit 1
+exec python3 scripts/verify.py --pre-push

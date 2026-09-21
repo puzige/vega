@@ -24,7 +24,7 @@ Notion PRD 可以链接 GitHub Project，但两边不要各维护一份状态或
 
 ## 分流与交付
 
-执行卡片必须使用 [vega-kanban-delivery skill](../.agents/skills/vega-kanban-delivery/SKILL.md)：需求分析 → 测试用例 → 实现计划 → 实现 → 真实 E2E/本地截图验收 → 合并 master 并验证 → 清理本卡本地分支/worktree → 回写上下文 → 关闭 Issue/Done。互不影响的卡可并行实现，共享构建和原生 UI 验收须串行。连续取下一张仅限用户已授权连续执行时。
+执行卡片必须使用 [vega-kanban-delivery skill](../.agents/skills/vega-kanban-delivery/SKILL.md)：需求分析 → 测试用例 → 实现计划 → 实现 → 真实 E2E/本地截图验收 → 合并 master 并验证 → 清理本卡本地分支/worktree → 回写上下文 → 关闭 Issue/Done。互不影响的卡可并行实现，构建按 worktree 隔离并通过调度器限制并发，旧测试资源和原生 UI 验收仍须互斥。连续取下一张仅限用户已授权连续执行时。
 
 - `Backlog`：已记录，尚待分流或补规格；即使暂时没人修，也留在这里。受阻项在 Issue 中写清阻碍和下一责任方。
 - `Ready`：优先级、影响模块、复现/验收条件已明确，并在 `docs/` 找到或补齐相应规格与任务卡。产品取舍冲突回到 Notion PRD/用户裁决；遵守 `AGENTS.md` 的 spec-first 和卡外先问规则。

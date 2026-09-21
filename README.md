@@ -117,14 +117,16 @@ commit / push 时自动执行验收底线（见 [exec-guide §7](docs/vega-exec-
 | Hook | 检查 |
 |---|---|
 | `pre-commit` | `cargo fmt --all -- --check`（秒级快检查） |
-| `pre-push` | `cargo clippy --all-targets -- -D warnings` → `cargo test --workspace` → `cargo build --workspace` |
+| `pre-push` | `python3 scripts/verify.py`：受影响包及依赖方的门禁；同一源码和环境的有效证据直接复用 |
 
 **必须手动安装**：git 无法自动强制仓库内的 hooks。未执行上面这条命令时，commit / push 不会做任何检查，也没有任何提示——目前靠本地纪律 + 架构师验收兜底（云端 CI 延后引入，见 [phase1-plan §3.5](docs/vega-phase1-plan.md)）。
+
+开发工具需要 Python 3.9+（仅标准库）。先用 `python3 scripts/verify.py --plan` 查看验证范围；根依赖或工具链等全局改动要求显式 `--full`。详见 [验证与并发构建规格](docs/vega-issue-107-test-workflow.md)。
 
 ### 构建与运行
 
 ```sh
-cargo run -p vega
+scripts/cargo-lock.sh --wait run -p vega
 ```
 
 首次构建会通过 git 依赖拉取 Zed monorepo（约 1–3 GB 进入 `~/.cargo/git` 缓存）并编译 GPUI 依赖链，耗时 10 分钟量级，属正常现象；之后为增量构建。

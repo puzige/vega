@@ -60,7 +60,7 @@
 |---|---|
 | Rust edition | 2024，stable 工具链（rust-toolchain.toml 锁定） |
 | 格式化 | `cargo fmt --all`（CI 强制） |
-| Lint | `cargo clippy --all-targets -- -D warnings`（CI 强制，零警告） |
+| Lint | 统一验证入口选择受影响包的 `clippy --all-targets -- -D warnings`，零警告 |
 | 异步 | tokio；取消一律 `CancellationToken`（禁 abort） |
 | 错误 | 统一 `VegaError`（tech-spec §7）；`thiserror` 定义，跨线程 `Send + Sync` |
 | 日志 | `tracing`；禁 `println!`；敏感信息（key/文件内容）禁入日志 |
@@ -94,8 +94,8 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ## 7. 验收协议（每个任务卡通用）
 
-- **底线**：`cargo fmt --check` + `cargo clippy -D warnings` + `cargo test --workspace` 全绿
-- **门禁执行**（2026-08-29 决策）：底线四条由本地 git hooks 强制（pre-commit=fmt；pre-push=clippy/test/build，见 s1-tasks T03）；云端 CI 待产品稳定后再引入。hooks 是纪律辅助，架构师验收永远是最终门禁
+- **底线（2026-09-21 用户裁决）**：统一运行 `python3 scripts/verify.py`；受影响 Rust 包及传递依赖方的 fmt/clippy/test 必须通过，纯文档或开发脚本执行适用门禁。单卡不默认跑 workspace 全量；根依赖/工具链或未知构建输入要求显式 `--full`。详见 [Issue #107](vega-issue-107-test-workflow.md)。
+- **门禁执行**：pre-commit 检查格式；pre-push 调用相同验证入口，复用与当前源码、基线、工具链/环境和完整日志绑定的成功证据。无有效证据则运行受影响门禁，不额外重复 build。源码/依赖变化使相关证据失效；失败不自动重试。主 agent 检查子 agent 的有效证据，只有变更或未解决风险才补跑。hooks 是纪律辅助，架构师验收永远是最终门禁。
 - **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
 - **报告**：贴验收命令原始输出，不许概述"通过了"
