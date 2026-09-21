@@ -46,3 +46,20 @@ env PATH=/Users/puzige/.cargo/bin:$PATH CARGO_TARGET_DIR=/Users/puzige/Workspace
 ## 交接边界
 
 本卡没有进行新的原生 CUA 走查；root 负责联合树的原生复验。联合 workspace 全量测试与最终 integration gate 待 root 在联合树执行。未读取真实用户文件、未访问 Keychain、未发送真实 provider 请求，也未进行 T48 性能或 soak 测试。
+
+## 后续修订：偶发失败稳定化（issue #99，2026-09-21）
+
+本卡交付的 `diff_refresh_intents_keep_content_during_background_and_retry` 自 2026-09-05
+起被 18 份交付文档记录为偶发失败（retry 阶段 `refresh_error=Some(GitFailed)`），处置一律是
+孤立复跑通过 + `--no-verify` 推送，门禁判定力因此下降。
+
+已确认该测试用虚拟时钟 pump 等待一个跑真 `/usr/bin/git` 的真线程 worker；虚拟时间
+对真实子进程调度无效，但 Git 非零退出的底层原因尚未证明。已改为通过生产入口发起请求、由 `finish_diff_refresh` 注入终态，
+断言一条未删、未弱化、未加 `#[ignore]`、未放宽超时，生产代码 0 改动。详见
+[vega-r6-diff-refresh-sdd.md](vega-r6-diff-refresh-sdd.md) §7 与 issue #99。
+
+上表 `10-controller-r6-final.log` 记录的是修订前的真实 worker 版本，作为历史证据保留。
+
+集成审查：生产入口仍启动真实 worker，本修订只让 UI 状态机断言不依赖其完成时序。
+最终门禁按 Issue #107 运行受影响 vega 包与 Diff 回归；最终内容指纹、命令、退出码和计数
+保存在本地 `remaining-merges-2026-09-21` 证据目录，并回写 Issue #99。旧全量要求由新门禁政策取代。

@@ -110,8 +110,46 @@ clean empty snapshot，断言 rows、header stats 和空态分别为零/`No work
 process failure 改写为成功，也不以放宽 timeout 掩盖失败。若定向运行证明是 worker 或
 fixture 在并行 workspace 下的实际故障，再按该错误的生产根因修复；否则不改生产调度。
 
+## 7. 稳定化修订（v0.3，2026-09-21）
+
+`diff_refresh_intents_keep_content_during_background_and_retry` 从 2026-09-05 起被
+18 份交付文档记录为偶发失败，形态固定为 retry 阶段
+`refresh_error=Some(GitFailed)`。已确认测试混用了两种时钟/调度机制；这不足以证明 Git 非零退出的底层根因：
+
+- 该测试用 `pump_diff_refresh_stage` 快进 **GPUI 虚拟时钟**
+  (`advance_clock(DIFF_RESULT_POLL)`) 等待结果；
+- 但 worker 由 `run_diff_refresh_worker` 起**真线程**并跑真 `/usr/bin/git` 子进程。
+  虚拟时间对真实子进程调度无效。`GitFailed` 表示真实 git 非零退出；
+  本次未捕获足以确定该退出根因的 stderr/exit 证据，不将调度差异等同于根因证明。
+
+因此 §6 的三阶段诊断 pump 不再作为该测试的驱动方式。修订后：
+
+- `initial` / `background` / `retry` / `clean-empty` 四段仍通过**生产入口**
+  (`schedule_diff_refresh_with_progress` / `schedule_diff_refresh` /
+  `retry_workspace_diff`) 发起请求，覆盖路由、进度意图与单飞/coalescing 记账；
+- 终态由 `finish_diff_refresh` 注入 `DiffRefreshWorkerResult::Ready` / `Failed`，
+  与生产 `launch_diff_refresh` 交付终态的路径相同；
+- 请求序列围栏使注入确定性成立：真实 worker 的晚到结果被
+  `ActiveDiffRoute::complete_refresh` 按 sequence 丢弃。
+
+**断言一条未删、未弱化**：Initial/Retry 显示进度、Background 不显示进度标记、失败后
+保留旧 rows + 旧 stats + typed `GitFailed`、Retry 往返、clean-empty `0/0/0` stats、
+`row_count` 不变。未加 `#[ignore]`、未放宽超时、未改期望值。生产代码 0 改动；
+`DiffRefreshProbe` / `pump_diff_refresh_stage` 因成为死代码而删除。
+
+失去的覆盖：`schedule_diff_refresh → launch_diff_refresh → 真 git worker` 这条 UI 层
+链路不再由该测试端到端覆盖。worker 自身仍由同步阻塞的 `receive_refresh` 覆盖（无虚拟
+时钟竞态），controller 状态机由同文件
+`diff_controller_route_latest_poll_tool_and_cross_project_fences` 覆盖。
+
 ## 变更记录
 
 - v0.1：冻结首次 / Retry / 后台刷新呈现分离、typed failure 保留、空快照 stats 证据
   与真实 controller 验收边界。
 - v0.2：补充第二轮 Diff 回归的三阶段终态诊断边界；保留原有 pump 预算和成功断言。
+- v0.3：§7 将该测试改为注入式确定性驱动，解除 UI 断言对 worker 完成时间的依赖；断言强度不变，
+  生产代码 0 改动。
+
+## 集成验收补充（2026-09-21）
+
+按已合并 Issue #107 的门禁政策，本测试卡使用 `python3 scripts/verify.py`（受影响包 vega）及 Diff 定向回归，不再重复三轮 workspace 全量。注入发生在 executor 轮询之前；晚到结果由请求序列围栏拒绝。生产入口仍启动真实 worker，因此这次改动不声称已消除 Git 子进程争用或隔离所有资源。同步真实 worker 回归继续保留。
