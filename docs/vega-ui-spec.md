@@ -1,6 +1,6 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.12 · 2026-09-21 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.19 · 2026-09-21 · 关联：[vega-features.md](vega-features.md)
 
 > **规范分层**：跨任务的视觉语言、语义 token 与新 UI 默认规则以
 > [Vega 设计守则](vega-design-guidelines.md)为入口；本文件继续承载组件行为和
@@ -89,7 +89,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 
 ### 4.2 工具调用卡片（信息密度核心）
 - 当前冻结规格见 [Issue #70 compact tool activity groups](vega-issue-70-tool-activity.md)。默认态是无常驻边框/底色的一行活动摘要；连续工具调用折叠为一个分组，展开后按时间顺序显示子调用，子调用再按需展开安全的命令/输出面板。
-- 状态色：执行中=`text-secondary`，成功=`success` 图标，失败=`danger` 图标+退出码；完整摘要文字保持中性层级，不整行染成状态色。
+- 前导图标只表达工具分类并统一使用 `text-secondary`：Shell=`Terminal`、Search=`Search`、Read/Find/Write/Edit/Skill=`Document`、MCP/Other=`Summary`；成功不替换为 Check，失败/拒绝/取消不替换为 Warning，也不使用 success/danger 图标色。状态继续由真实摘要文字、非零退出码与展开详情的语义 footer 表达；完整摘要文字保持中性层级。
 - 写操作摘要显示安全的规范相对路径、bytes/replacements；完整 Diff 仍由既有 Artifact/Diff 路径承载。
 - write/edit 卡只消费 tech-spec §2 的 strict 安全成功/失败投影：成功显示规范项目相对路径、bytes_written 与 edit replacements 摘要，不显示 checkpoint ref；失败只显示稳定、脱敏 code/message。missing/extra/wrong-type、非法 u64/replacements/ref 必须 fail closed 为损坏结果，禁止从 raw provider input、绝对 checkpoint path 或 preimage 补数据
 - invalid write/edit 显示 rejected 工具卡与 stable validation code，不生成权限卡，不显示/保留 raw path、body 或 JSON
@@ -166,3 +166,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.16 (2026-09-11) R30 Sidebar 字号：导航主条目提升为 15px，分组标题、项目归属、相对时间与快捷键提升为 13px；32px 行高和非 Sidebar typography 保持不变。精确验收见 [R30 Sidebar typography](vega-r30-sidebar-typography.md)。
 - v0.17 (2026-09-11) R31 Sidebar 字号回退与 Pinned 左缘：按用户原生复验恢复主条目 13px、分组与辅助信息 12px；无图标的 Pinned 标题不再保留 32px 空槽，直接与 Pinned 分组标题左对齐，其余导航栅格不变。精确验收见 [R31 Sidebar rollback and Pinned leading edge](vega-r31-sidebar-typography-revert-pinned-leading.md)。
 - v0.18 (2026-09-20) Issue #66 键位冻结：§4.4 明确 `Enter` 发送、`Shift+Enter` 换行、`Cmd+Enter` 发送，IME 组合态与浮层优先级不得被发送抢走；依据 A2-11（Shift+Enter 换行）与用户 2026-09-20 裁决，见 [Issue 66 键位契约](vega-issue-66-enter-to-send.md)。
+- v0.19 (2026-09-21) Issue #70 前导图标语义修正：工具活动行与分组始终使用中性的工具分类图标，不再以 Check/Warning 或 success/danger 图标色重复编码生命周期；失败真实性继续由摘要、退出码与详情 footer 表达。

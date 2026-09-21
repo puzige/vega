@@ -1,6 +1,6 @@
 # Issue #70 — compact tool activity groups
 
-Status: frozen implementation contract, 2026-09-21. This specification
+Status: frozen implementation contract, amended 2026-09-21. This specification
 supersedes the visual shape in `vega-ui-spec.md` §4.2 where the two conflict.
 The strict tool projections, permission decisions, audit records and timeline
 ordering remain unchanged.
@@ -48,10 +48,16 @@ its own icon set, semantic theme tokens and safe typed projections.
 
 1. A one-call group renders the call's compact activity row directly. A group
    with two or more calls renders one aggregate row and is collapsed by default.
-2. Compact rows use a 16px Vega icon, 13px text and semantic token colors on the
-   conversation background. They have no permanent card fill, outline, top
-   border or shadow. A disclosure chevron appears only when the row can reveal
-   child calls or safe detail.
+2. Compact rows use a 16px Vega category icon, 13px text and semantic token
+   colors on the conversation background. The leading icon and its color never
+   encode lifecycle state: Shell uses `Terminal`, Search uses `Search`,
+   Read/Find/Write/Edit/Skill use `Document`, and MCP/Other use `Summary`, all
+   with the neutral `text_secondary` token. Success must not replace the
+   category with `Check`; rejected, cancelled or failed state must not replace
+   it with `Warning` or apply success/danger color. A mixed aggregate uses its
+   first child category, preserving chronological identity. Rows have no
+   permanent card fill, outline, top border or shadow. A disclosure chevron
+   appears only when the row can reveal child calls or safe detail.
 3. Long commands and summaries stay on one line and truncate at the available
    width; they never widen the conversation or wrap the resting row. The
    expanded detail retains the complete bounded command/output.
@@ -64,14 +70,16 @@ its own icon set, semantic theme tokens and safe typed projections.
 5. An aggregate row summarizes the represented categories instead of exposing
    one arbitrary child. Examples are `已运行命令`, `已读取文件` and
    `已读取文件、运行命令`. If any child is active, rejected, failed or cancelled,
-   the aggregate wording/status color must remain truthful and cannot claim the
-   whole group succeeded.
+   the aggregate wording must remain truthful and cannot claim the whole group
+   succeeded. Lifecycle state does not change the aggregate's category icon or
+   neutral leading-icon color.
 
 ### 3. Progressive disclosure
 
 1. Activating a multi-call aggregate row toggles its child list. The expanded
-   list shows one compact row per call in exact order and reuses the same status
-   language/icons as a standalone call.
+   list shows one compact row per call in exact order and reuses the same
+   truthful status language and category-only leading icons as a standalone
+   call.
 2. Activating an expandable child toggles only that child's detail. A shell
    detail surface is labelled `Shell`, shows the complete `$ <command>`, then
    the bounded output, and ends with a status footer. Read-only and MCP detail
@@ -79,9 +87,8 @@ its own icon set, semantic theme tokens and safe typed projections.
    not create a blank output row, but a shell call may still disclose its full
    command and terminal metadata.
 3. The detail surface uses existing `code_bg`, `border_subtle`, radius and
-   typography tokens. Success/danger colors are reserved for icons and the
-   terminal status; the full summary is not painted as a saturated status
-   heading.
+   typography tokens. Success/danger colors are reserved for the terminal
+   status footer; leading activity icons and the full summary remain neutral.
 4. Expansion is UI-only and defaults closed on route open/restart. It does not
    persist, change audit data or trigger a tool/provider call. Height changes
    invalidate only the owning variable-height list item and preserve scroll
