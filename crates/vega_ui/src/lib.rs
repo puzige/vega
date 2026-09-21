@@ -207,10 +207,13 @@ pub fn init(cx: &mut App) {
             sidebar::CloseThreadActions,
             Some("ThreadActionsMenu"),
         ),
-        // T18 Composer：Enter=换行、Cmd+Enter=发送（架构师裁定，ui-spec
-        // §4.4 未定项）。作用域 Composer——仅在 Composer 输入聚焦时生效，
-        // 不影响设置表单与行内重命名。
-        KeyBinding::new("enter", text_input::InsertNewline, Some("Composer")),
+        // Issue #66（ui-spec §4.4 v0.18 冻结，A2-11）：Enter=发送、
+        // Shift+Enter=换行、Cmd+Enter=发送（兼容既有绑定）。作用域 Composer
+        // ——仅在 Composer 输入聚焦时生效，不影响设置表单与行内重命名。
+        // 更深 context 的浮层（FileSelect / ComposerActions / ModelSelector /
+        // PermissionCard）仍优先拿到 Enter；IME 组合态由 on_send_action 守卫。
+        KeyBinding::new("enter", conversation_stream::SendMessage, Some("Composer")),
+        KeyBinding::new("shift-enter", text_input::InsertNewline, Some("Composer")),
         KeyBinding::new(
             "cmd-enter",
             conversation_stream::SendMessage,

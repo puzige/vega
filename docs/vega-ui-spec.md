@@ -109,6 +109,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 
 ### 4.4 Composer
 - 多行自适应（1~8 行，超出内滚）；placeholder `描述任务，或用 @ 引用文件`
+- 键位（v0.18 冻结，Issue #66 / A2-11）：`Enter` 发送、`Shift+Enter` 换行、`Cmd+Enter` 发送；IME 组合态一律交输入法确认、绝不发送；浮层（`@file` 候选/失败重试、`+` 菜单与 `/` 命令、模型选择器、停止按钮、权限卡）打开时 `Enter` 归浮层，绝不发送。详见 [Issue 66 键位契约](vega-issue-66-enter-to-send.md)。
 - 主输入区在上；下方只有一行真实操作：添加上下文、Ask/Plan/Execute、权限（只读 / 确认 / 自动）、模型、thinking 与 send/stop；空间不足时允许自适应收紧或换行
 - 模式与权限当前值持续可见；菜单、键盘路径、loading/error 和提交 guard 继续使用真实 controller 状态
 - branch 只在 project-backed task 的 Environment 中显示，并使用 live branch projection；普通 Composer 不重复放分支选择器
@@ -168,3 +169,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.15 (2026-09-11) R29 Sidebar 渐进列表：区块按自然高度排列，Projects/Recents 初始分别展示 5/10 条，超出时提供独立的 `Show More / Show Less`；外层 Sidebar 统一滚动，既有排序与投影语义不变。精确验收见 [R29 Sidebar progressive lists](vega-r29-sidebar-progressive-lists.md)。
 - v0.16 (2026-09-11) R30 Sidebar 字号：导航主条目提升为 15px，分组标题、项目归属、相对时间与快捷键提升为 13px；32px 行高和非 Sidebar typography 保持不变。精确验收见 [R30 Sidebar typography](vega-r30-sidebar-typography.md)。
 - v0.17 (2026-09-11) R31 Sidebar 字号回退与 Pinned 左缘：按用户原生复验恢复主条目 13px、分组与辅助信息 12px；无图标的 Pinned 标题不再保留 32px 空槽，直接与 Pinned 分组标题左对齐，其余导航栅格不变。精确验收见 [R31 Sidebar rollback and Pinned leading edge](vega-r31-sidebar-typography-revert-pinned-leading.md)。
+- v0.18 (2026-09-20) Issue #66 键位冻结：§4.4 明确 `Enter` 发送、`Shift+Enter` 换行、`Cmd+Enter` 发送，IME 组合态与浮层优先级不得被发送抢走；依据 A2-11（Shift+Enter 换行）与用户 2026-09-20 裁决，见 [Issue 66 键位契约](vega-issue-66-enter-to-send.md)。

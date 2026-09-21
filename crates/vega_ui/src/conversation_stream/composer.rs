@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::Focusable;
 
 impl ConversationStream {
     /// Inserts one artifact immediately after the exact tool entry. Identical
@@ -228,13 +229,31 @@ impl ConversationStream {
         }
     }
 
-    /// Cmd+Enter in the Composer context ([`SendMessage`] binding).
+    /// Enter / Cmd+Enter in the Composer context ([`SendMessage`] binding;
+    /// ui-spec §4.4 v0.18, Issue #66).
     pub(crate) fn on_send_action(
         &mut self,
         _: &SendMessage,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // R5: while a platform IME composition is active, Enter belongs to the
+        // input method (candidate confirmation) and must never submit. This is
+        // defence in depth behind the platform-layer interception and matches
+        // the existing scoped guards in `composer_actions.rs`.
+        if self.input.read(cx).is_composing() {
+            cx.propagate();
+            return;
+        }
+        // R4: `SendMessage` is a ConversationStream action, so it is reachable
+        // from every control inside the `Composer` key context. Enter must only
+        // submit while the composer text input owns focus; on any other control
+        // (notably the `+` button, which activates on Enter via `on_key_down`)
+        // the key must propagate instead of being swallowed as a submit.
+        if !self.input.read(cx).focus_handle(cx).is_focused(window) {
+            cx.propagate();
+            return;
+        }
         self.submit_message(cx);
     }
 
