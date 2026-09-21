@@ -78,7 +78,7 @@ impl ModelSelectionRefresh {
 }
 
 /// Root view of the main window: the A1 layout shell — a persisted resizable
-/// sidebar next to a content column (max 820px, centered) that hosts
+/// sidebar next to a content column (max 768px, centered) that hosts
 /// either the settings view (Cmd+, / Esc), the opened session
 /// ([`ConversationStream`], S3-T17), or the ui-spec §4.6 empty state.
 pub(crate) struct VegaWindow {

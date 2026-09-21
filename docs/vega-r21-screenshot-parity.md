@@ -22,8 +22,8 @@ pixels at Retina 2×. Ordinary geometry below has a ±1 logical-pixel tolerance.
 | Main header | 92 high | 46 high |
 | Left Sidebar, current narrow captures | 608 and 617 wide | 304 default |
 | Left Sidebar, earlier capture | about 730 wide | user-resizable, up to 365 |
-| Conversation readable column | about 1640 wide | 820 maximum |
-| Composer outer width | about 1476 wide | 736 maximum plus rasterized border |
+| Conversation readable column | about 1640 wide | 768 maximum (issue #100) |
+| Composer outer width | about 1476 wide | 768 maximum, equal to the body column (issue #100) |
 | Composer radius | about 40 | 20 |
 | Composer bottom inset | about 32 | 16 |
 | Send control | 56 × 56 | 28 × 28 |
@@ -88,8 +88,8 @@ component may branch on appearance or introduce a hexadecimal literal.
 | Sidebar resize hit area | 5 | one-pixel visible separator centered in it |
 | Main header | 46 | unchanged |
 | Main content outer gap | 0 | current flat split shell; no rounded page frame |
-| Conversation max | 820 | unchanged |
-| Composer max / radius / bottom inset | 736 / 20 / 16 | unchanged |
+| Conversation max | 768 | issue #100: 820 → 768, shared with the Composer |
+| Composer max / radius / bottom inset | 768 / 20 / 16 | issue #100: 736 → 768, now equal to the body column |
 | Composer send | 28 × 28 | circular; icon remains shared SVG |
 | Environment outer rail | 320 | includes a 304px card and 16px right inset |
 | Environment card radius | 18 | unchanged |
