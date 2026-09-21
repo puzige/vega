@@ -84,3 +84,29 @@ This amendment authorizes a bounded correction to the summary strategy within #9
 | U91-8 renewed | Candidate rebased on latest master and installed exclusively, owner native continuation of original failed thread | Verify executable hash before/after run; if another task replaces App, mark build invalid rather than claim this candidate passed/failed; save real screenshot and audit/restart evidence |
 
 The main agent freezes this amendment before delegating implementation. Existing rolling-specific tests may be updated only for the expressly changed request strategy; complete-source coverage, error, usage and checkpoint assertions must remain. Run affected regressions and full gates after integration with master.
+
+
+## 2026-09-21 amendment — U6: bounded recovery from truncated segments
+
+Native U5 acceptance failed on the verified candidate: two stages, output usages 5,045 then 8,192, no checkpoint. Exact-source replay proved matching first-two request identities and input usages (9,420 / 9,406), but returned End this time (4,723 / 6,693 output tokens). Both returned thinking content despite the declared disabled wire. Thus neither an output-cap hit alone proves the historical stop reason nor a single successful replay proves stability. Preserve these distinctions. A bounded additional observation of the exact second request is required before implementing the truncation recovery below.
+
+### Contract and explicit supersession
+
+- One logical compaction may recover **only** a typed `SummaryOutputTruncated` (actual provider Done Length) by splitting that failed source batch. This supersedes the earlier one-provider-attempt interpretation and U5's exactly-once transmission requirement; source may be retransmitted for a failed parent, but each original labelled excerpt must appear **exactly once, in original order, among successful leaf batches**. Failed partial summaries never enter the aggregate or checkpoint.
+- Keep each serialized source excerpt intact. For a failed batch with two or more excerpts, choose the interior excerpt boundary closest to half its byte length; both children must be nonempty and strictly smaller. Process the left child before the right, ahead of later batches. Do not discard, reorder, duplicate in the committed summary, or split inside UTF-8/identity/range labels. A singleton that still returns Length fails safely.
+- Count every provider attempt, including failed parents, against the existing 512-attempt ceiling; never invoke attempt 513. Successful leaf batches also remain bounded by 512. Check cancellation before every attempt. The 8192/reserve output ceiling, 32 KiB collected-text ceiling, 60-second stage timeout, 32 KiB initial packing target, 128 KiB request bound and 64 MiB plan/aggregate bounds remain unchanged. No unbounded retry of an unchanged request.
+- Retain known usage from every failed and successful attempt exactly once; any attempt without complete usage keeps the whole operation's usage incomplete. The existing collector/stage runner already appends usage on failure, so the recovery path must not append it again. Diagnostics distinguish attempt ordinal and completed segment ordinal and contain no transcript or reasoning text.
+- All other failures (including generic InvalidSummary, malformed stream, empty output, provider error, timeout, cancellation, target/aggregate overflow and source/CAS mismatch) keep their existing fail-closed behavior. Recovery does not accept a truncated response, weaken validation or assume the provider obeys disabled thinking.
+- Prompt requests only the final nine-section partial-history summary, removing the invitation to emit a separate analysis/checklist draft. Preserve all coverage goals, relevant exact identifiers/paths, user corrections and the untrusted-data boundary; parser continues to accept valid legacy analysis/summary wrappers safely. No arbitrary new tiny summary cap.
+- Preserve the previous checkpoint exactly once, newest-user suffix, complete tool audit and all authority boundaries. Install one checkpoint only after every leaf succeeds and the full target/source/CAS checks pass. A later failed child leaves the previous checkpoint and all original rows unchanged.
+
+### Additional acceptance
+
+| ID | Operation / risk | Required observation |
+| --- | --- | --- |
+| U91-12 | Dense multi-tool source batch returns actual Length, while smaller batches succeed | Old-code red; bounded recovery uses strict smaller complete excerpts; successful leaves reconstruct every source excerpt once in order; failed partial marker absent; primary continues and one checkpoint installs |
+| U91-13 | Left succeeds then right fails; singleton Length; attempt ceiling; missing usage; cancellation; generic InvalidSummary | Exact attempt/usage accounting, no retry of unrelated errors, termination bounds and no checkpoint/raw-row mutation on failure |
+| U91-14 | Immutable copy of the owner's full failed history through production compaction with the configured real provider | Complete source processed, actual End/Length/usage recorded without private text, one checkpoint, original messages/tools unchanged; restored production projection includes checkpoint once and preserves current suffix; not merely first-two-stage success |
+| U91-8 renewed again | Verified package, original native conversation continuation and restart | Original-session success and durable checkpoint/raw audit verification; no closure based solely on owned or snapshot diagnostics |
+
+The extra cost of failed parent requests and longer latency must be reported. The native failure remains unaccepted until the final native case passes. No dependency, schema, user configuration or database editing is authorized.
