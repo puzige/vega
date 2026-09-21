@@ -1220,6 +1220,32 @@ async fn r69_a3_first_submit_materializes_the_draft_under_its_own_id(
     f.submit("materialize me", cx);
 
     let store = f.store();
+    // Materialization precedes the transaction accepting the user message
+    // and its fallback title. Observe that transaction, not the title value.
+    pump_test_app(cx, |_| {
+        store
+            .conn()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id = ?1 AND role = 'user')",
+                [&draft.id],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("r69 durable user transaction")
+    });
+    let users = store
+        .conn()
+        .prepare("SELECT content FROM messages WHERE thread_id = ?1 AND role = 'user'")
+        .expect("r69 durable user query")
+        .query_map([&draft.id], |row| row.get::<_, String>(0))
+        .expect("r69 durable users")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("r69 durable user content");
+    assert_eq!(
+        users.len(),
+        1,
+        "first submit writes exactly one user message"
+    );
+    assert_eq!(users[0], "materialize me");
     let rows = vega_store::threads::list_by_project(store.conn(), &f.project_id, None)
         .expect("r69 durable rows");
     assert_eq!(rows.len(), 1, "first submit writes exactly one row");
