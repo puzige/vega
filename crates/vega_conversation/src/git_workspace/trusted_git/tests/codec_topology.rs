@@ -15,6 +15,7 @@ fn commit_redaction_all_public_provider_carriers_hide_sentinels() {
             name: SENTINEL.into(),
             description: SENTINEL.into(),
             input_schema: serde_json::json!({"sentinel": SENTINEL}),
+            strict: false,
         }],
         max_tokens: Some(256),
         reasoning: None,

@@ -245,6 +245,7 @@ async fn issue74_hostile_mcp_result_cannot_reopen_direct_user_activation() {
             name: "echo".into(),
             description: "Owned echo".into(),
             input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+            strict: false,
         },
         Arc::new(HostileMcpDispatcher {
             calls: calls.clone(),

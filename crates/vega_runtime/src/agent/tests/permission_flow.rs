@@ -2,6 +2,20 @@ use super::*;
 
 #[test]
 fn run_modes_advertise_exact_three_or_six_strict_tools() {
+    let assert_strict_schemas = |tools: &[ToolDefinition]| {
+        for tool in tools {
+            assert!(tool.strict, "{} must declare strict intent", tool.name);
+            assert_eq!(tool.input_schema["additionalProperties"], false);
+            let properties = tool.input_schema["properties"].as_object().unwrap();
+            let required = tool.input_schema["required"].as_array().unwrap();
+            assert_eq!(required.len(), properties.len(), "{}", tool.name);
+            assert!(properties.keys().all(|key| {
+                required
+                    .iter()
+                    .any(|item| item.as_str() == Some(key.as_str()))
+            }));
+        }
+    };
     for mode in [RuntimeRunMode::Ask, RuntimeRunMode::Plan] {
         let tools = tool_definitions(mode);
         assert_eq!(
@@ -11,11 +25,7 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
                 .collect::<Vec<_>>(),
             vec!["read", "glob", "grep"]
         );
-        assert!(
-            tools
-                .iter()
-                .all(|tool| tool.input_schema["additionalProperties"] == false)
-        );
+        assert_strict_schemas(&tools);
     }
     let tools = tool_definitions(RuntimeRunMode::Execute);
     assert_eq!(
@@ -25,15 +35,142 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
             .collect::<Vec<_>>(),
         vec!["read", "glob", "grep", "write", "edit", "bash"]
     );
-    assert!(
-        tools
-            .iter()
-            .all(|tool| tool.input_schema["additionalProperties"] == false)
-    );
+    assert_strict_schemas(&tools);
     let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
     assert!(bash.description.contains(r#"{"cmd":"rg ..."}"#));
     assert!(bash.description.contains("command is unsupported"));
-    assert_eq!(bash.input_schema["required"], serde_json::json!(["cmd"]));
+    assert_eq!(
+        bash.input_schema["required"],
+        serde_json::json!(["cmd", "timeout_ms"])
+    );
+    assert_eq!(
+        bash.input_schema["properties"]["timeout_ms"]["type"],
+        serde_json::json!(["integer", "null"])
+    );
+
+    let read = tools.iter().find(|tool| tool.name == "read").unwrap();
+    assert_eq!(
+        read.input_schema["required"],
+        serde_json::json!(["path", "offset", "limit"])
+    );
+    assert_eq!(
+        read.input_schema["properties"]["offset"]["type"],
+        serde_json::json!(["integer", "null"])
+    );
+    assert_eq!(
+        read.input_schema["properties"]["limit"]["type"],
+        serde_json::json!(["integer", "null"])
+    );
+
+    let grep = tools.iter().find(|tool| tool.name == "grep").unwrap();
+    assert_eq!(
+        grep.input_schema["required"],
+        serde_json::json!(["pattern", "path"])
+    );
+    assert_eq!(
+        grep.input_schema["properties"]["path"]["type"],
+        serde_json::json!(["string", "null"])
+    );
+}
+
+#[test]
+fn issue85_read_and_grep_null_optionals_match_omission() {
+    let project = tempdir().unwrap();
+    fs::write(project.path().join("a.txt"), "alpha\nbeta\n").unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+
+    for (name, omitted, explicit_null) in [
+        (
+            "read",
+            r#"{"path":"a.txt"}"#,
+            r#"{"path":"a.txt","offset":null,"limit":null}"#,
+        ),
+        (
+            "grep",
+            r#"{"pattern":"alpha"}"#,
+            r#"{"pattern":"alpha","path":null}"#,
+        ),
+    ] {
+        let omitted = execute_readonly(
+            &tools,
+            &RuntimeToolCall {
+                id: format!("{name}-omitted"),
+                name: name.into(),
+                input_json: omitted.into(),
+            },
+        );
+        let explicit_null = execute_readonly(
+            &tools,
+            &RuntimeToolCall {
+                id: format!("{name}-null"),
+                name: name.into(),
+                input_json: explicit_null.into(),
+            },
+        );
+        assert_eq!(omitted.status, RuntimeToolStatus::Success);
+        assert_eq!(explicit_null.status, RuntimeToolStatus::Success);
+        assert_eq!(omitted.output, explicit_null.output);
+        assert_eq!(omitted.truncated, explicit_null.truncated);
+    }
+}
+
+#[tokio::test]
+async fn issue85_bash_null_timeout_reaches_approval_and_real_execution() {
+    let project = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    let checkpoint = data.path().join("checkpoints");
+    fs::create_dir(&checkpoint).unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "bash-null-timeout".into(),
+                name: "bash".into(),
+                input_json: r#"{"cmd":"printf issue85-null-timeout","timeout_ms":null}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(Vec::new());
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        checkpoint,
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        &FixedHook {
+            calls: calls.clone(),
+            decision: Some(RuntimeUserDecision::Once),
+        },
+        |_| async { Ok(()) },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(outcome.executed_tool_call_count, 1);
+    assert!(outcome.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::ToolCallFinished(RuntimeToolResult {
+            output,
+            status: RuntimeToolStatus::Success,
+            approval: Some(RuntimeApprovalAudit {
+                source: RuntimeApprovalSource::User,
+                ..
+            }),
+            ..
+        }) if output == "issue85-null-timeout"
+    )));
 }
 
 #[test]
@@ -312,7 +449,11 @@ async fn issue90_invalid_bash_is_atomic_and_guides_the_model_without_exposing_in
     );
     assert_eq!(
         bash_definition.input_schema["required"],
-        serde_json::json!(["cmd"])
+        serde_json::json!(["cmd", "timeout_ms"])
+    );
+    assert_eq!(
+        bash_definition.input_schema["properties"]["timeout_ms"]["type"],
+        serde_json::json!(["integer", "null"])
     );
     assert_eq!(bash_definition.input_schema["additionalProperties"], false);
     assert_eq!(calls.load(Ordering::SeqCst), 0);

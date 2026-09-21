@@ -652,7 +652,7 @@ async fn issue76_auto_compaction_triggers_after_tool_result_without_reexecution(
         ChatMessage::new(ChatRole::Assistant, "old answer"),
         ChatMessage::new(ChatRole::User, "current goal"),
     ]);
-    req.context_budget = Some(ContextBudget::new(16_000, 1_000, true).unwrap());
+    req.context_budget = Some(ContextBudget::new(16_100, 1_000, true).unwrap());
     req.context_source_version = Some(7);
     req.context_compaction_hook = Some(Arc::new(hook));
     let outcome = run_agent(&provider, &tools, req, CancellationToken::new())

@@ -481,6 +481,7 @@ impl McpReadyServer {
                         name: tool.name.clone(),
                         description: tool.description.clone().unwrap_or_default(),
                         input_schema: tool.input_schema.clone(),
+                        strict: false,
                     },
                     self.dispatcher.clone(),
                     self.revoked.clone(),
@@ -759,6 +760,7 @@ impl RunCapabilitySnapshot {
                     name: name.to_string(),
                     description: description.to_string(),
                     input_schema: schema,
+                    strict: true,
                 });
             }
         }
@@ -907,6 +909,7 @@ impl RunCapabilitySnapshot {
                 name: alias.clone(),
                 description,
                 input_schema: candidate.definition.input_schema.clone(),
+                strict: false,
             });
             mcp_by_alias.insert(
                 alias,

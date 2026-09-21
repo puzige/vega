@@ -305,13 +305,17 @@ pub(crate) fn build_request_body(req: &ChatRequest) -> serde_json::Value {
             req.tools
                 .iter()
                 .map(|t| {
+                    let mut function = serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.input_schema,
+                    });
+                    if t.strict {
+                        function["strict"] = serde_json::Value::Bool(true);
+                    }
                     serde_json::json!({
                         "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.input_schema,
-                        },
+                        "function": function,
                     })
                 })
                 .collect(),

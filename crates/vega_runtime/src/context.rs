@@ -573,6 +573,9 @@ pub fn estimate_chat_context(
             input_tokens = checked_add(input_tokens, estimate_text(value)?)?;
         }
         input_tokens = checked_add(input_tokens, estimate_json(&schema)?)?;
+        if tool.strict {
+            input_tokens = checked_add(input_tokens, estimate_json(r#""strict":true"#)?)?;
+        }
         input_tokens = checked_add(input_tokens, CONTEXT_PROTOCOL_OVERHEAD_TOKENS)?;
     }
     input_tokens = checked_add(ceil_ratio(input_tokens, 4, 3)?, image_tokens)?;
@@ -637,6 +640,9 @@ pub fn estimate_wire_context(
             input_tokens = checked_add(input_tokens, estimate_text(value)?)?;
         }
         input_tokens = checked_add(input_tokens, estimate_json(&schema)?)?;
+        if tool.strict {
+            input_tokens = checked_add(input_tokens, estimate_json(r#""strict":true"#)?)?;
+        }
         input_tokens = checked_add(input_tokens, CONTEXT_PROTOCOL_OVERHEAD_TOKENS)?;
     }
     input_tokens = checked_add(ceil_ratio(input_tokens, 4, 3)?, image_tokens)?;
@@ -762,6 +768,7 @@ mod tests {
                 name: "tool".into(),
                 description: "description".into(),
                 input_schema: serde_json::json!({"kind":"object"}),
+                strict: false,
             }],
         )
         .unwrap();
@@ -771,6 +778,7 @@ mod tests {
                 name: "tool".into(),
                 description: "description".into(),
                 input_schema: serde_json::json!({"kind":"object"}),
+                strict: false,
             }],
         )
         .unwrap();
@@ -873,12 +881,40 @@ mod tests {
                 name: "read".into(),
                 description: "read a file".into(),
                 input_schema: serde_json::json!({"type":"object"}),
+                strict: false,
             }],
         )
         .unwrap();
         assert!(full.input_tokens > text_only.input_tokens);
         assert_eq!(full.image_count, 1);
         assert_eq!(full.tool_count, 1);
+    }
+
+    #[test]
+    fn issue85_estimator_accounts_for_strict_tool_wire() {
+        let messages = [ChatMessage::new(ChatRole::System, "system")];
+        let non_strict = ToolDefinition {
+            name: "external".into(),
+            description: "external tool".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": false
+            }),
+            strict: false,
+        };
+        let non_strict_estimate =
+            estimate_wire_context(&messages, std::slice::from_ref(&non_strict)).unwrap();
+        let strict_estimate = estimate_wire_context(
+            &messages,
+            &[ToolDefinition {
+                strict: true,
+                ..non_strict
+            }],
+        )
+        .unwrap();
+        assert!(strict_estimate.input_tokens > non_strict_estimate.input_tokens);
     }
 
     #[test]

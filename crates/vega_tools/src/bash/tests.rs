@@ -101,6 +101,11 @@ fn bash_input_is_strict_and_defaults_timeout() {
         .unwrap();
     assert_eq!(custom.timeout_ms(), 321);
 
+    let explicit_null = tools
+        .prepare_bash_json(r#"{"cmd":"pwd","timeout_ms":null}"#)
+        .unwrap();
+    assert_eq!(explicit_null.timeout_ms(), 120_000);
+
     for raw in [
         "{}",
         r#"{"command":"pwd"}"#,
@@ -110,7 +115,6 @@ fn bash_input_is_strict_and_defaults_timeout() {
         r#"{"cmd":"pwd","cwd":"/"}"#,
         r#"{"cmd":"pwd","full_access":true}"#,
         r#"{"cmd":"pwd","timeout_ms":0}"#,
-        r#"{"cmd":"pwd","timeout_ms":null}"#,
         r#"{"cmd":"pwd","timeout_ms":-1}"#,
         r#"{"cmd":"pwd","timeout_ms":1.5}"#,
         r#"{"cmd":"pwd","timeout_ms":18446744073709551616}"#,
