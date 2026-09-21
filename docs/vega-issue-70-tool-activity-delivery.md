@@ -211,3 +211,32 @@ behavior changed.
 
 None for Issue #70. The owner explicitly accepted the current native rendering
 without a separate narrow-window screenshot.
+
+## PR #106 integration (2026-09-21)
+
+The command elapsed follow-up is reviewed against the current multi-conversation master. Each ToolCard owns its clock/task; duplicate Running events retain the original start, terminal/corrupt transitions stop refreshing, and hydrated history never invents a start time. Running projection uses the exact call ID inside the owning ConversationStream.
+
+The integration gate follows Issue #107: `python3 scripts/verify.py` selects changed packages and transitive workspace consumers, with the existing tool activity, hydration, stream persistence and multi-conversation regressions included. Final commands/counts and frozen content identity are retained under evidence label `remaining-merges-2026-09-21` and written to PR #106. Prior package/install/native observations above remain historical; this integration request does not reinstall the app or claim a new real-provider UI session.
+
+### Integration regression synchronization amendment
+
+The first scoped integration run failed R69 A3: the durable thread existed,
+but its title was still empty. The fixture stops at draft materialization;
+the accepted user message and fallback title are committed by the following
+agent transaction. Materialization alone is therefore not a completion signal
+for this assertion. These production stages are unchanged by PR #106.
+
+Before changing the regression, freeze this correction: A3 waits, with the
+existing bounded test pump, for its own durable user message, independently
+of the expected title. It then asserts exactly one user message with the
+submitted content and retains every existing thread/title/identity assertion.
+Do not alter the shared submit helper, production code, timeouts, or retries.
+
+| Case | Operation | Expected result | Evidence |
+|---|---|---|---|
+| R69 A3 | Submit through the mounted production composer; observe the durable user transaction | Exactly one submitted user message; same draft ID; fallback title and all existing metadata assertions hold | Focused regression plus scoped integration gate |
+
+Preserve the first failed gate under `issue106-first-failure`. Run the focused
+regression after correction, then the unified scoped gate against the final
+source tree. This fixes the completion condition rather than accepting a
+retry of the unchanged failing test.
