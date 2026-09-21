@@ -340,6 +340,16 @@ pub(crate) struct AppAgentController {
 }
 
 impl AppAgentController {
+    pub(crate) fn active_stream_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Option<Entity<ConversationStream>> {
+        self.active
+            .as_ref()
+            .filter(|active| active.thread_id == thread_id)
+            .map(|active| active.stream.clone())
+    }
+
     pub(crate) fn request_active_cancel(&self) {
         if let Some(active) = &self.active {
             active.cancel.cancel();

@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::{Modifiers, VisualTestContext};
 
 #[test]
 fn commit_provider_policy_disables_retries() {
@@ -120,6 +121,342 @@ impl Drop for AgentWorkerGuard {
             let _ = handle.join();
         }
     }
+}
+
+#[gpui_kit::test]
+async fn issue67_production_routes_keep_one_background_run_and_origin_stream(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let data = tempfile::tempdir().expect("issue67 data root");
+    let repo = diff_controller_repo();
+    let config_path = data.path().join("config.toml");
+    super::model_selection::model_selection_config(&config_path);
+    vega_store::keystore::set_key(data.path(), "owned", "issue67-owned-test-key")
+        .expect("issue67 credential");
+    let database_path = data.path().join("vega.db");
+    let store = Store::open(&database_path).expect("issue67 store");
+    store.migrate().expect("issue67 migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        repo.path().to_str().expect("UTF-8 issue67 repo"),
+        "issue67-e2e",
+        None,
+    )
+    .expect("issue67 project");
+    let origin = vega_conversation::threads::create_thread(
+        &store,
+        &project.id,
+        "gpt-5.6-terra",
+        PermissionMode::Confirm.as_str(),
+    )
+    .and_then(|thread| {
+        vega_conversation::threads::rename_thread(&store, &thread.id, "Issue67 Origin")
+    })
+    .expect("issue67 origin");
+    let destination = vega_conversation::threads::create_thread(
+        &store,
+        &project.id,
+        "gpt-5.6-terra",
+        PermissionMode::Confirm.as_str(),
+    )
+    .and_then(|thread| {
+        vega_conversation::threads::rename_thread(&store, &thread.id, "Issue67 Destination")
+    })
+    .expect("issue67 destination");
+    cx.update(|cx| {
+        install_diff_window_globals(
+            Store::open(&database_path).expect("issue67 root store"),
+            origin.clone(),
+            cx,
+        )
+    });
+
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("background success".into()),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ]),
+    ]));
+    let root = cx.new(VegaWindow::new);
+    root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(config_path.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
+    });
+    let window_root = root.clone();
+    let window = cx
+        .update(|cx| cx.open_window(Default::default(), move |_, _| window_root))
+        .expect("issue67 production window");
+    cx.update(|cx| crate::app_palette::bind_shortcuts(window.into(), root.downgrade(), cx));
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| {
+            root.stream_view.is_some()
+                && root.configured_models.is_some()
+                && !root.model_catalog_loading
+                && matches!(
+                    root.pricing_controller.state,
+                    PricingControllerState::Ready { .. }
+                )
+        })
+    });
+    let origin_stream = root
+        .read_with(cx, |root, _| {
+            root.stream_view.as_ref().map(|(_, stream)| stream.clone())
+        })
+        .expect("issue67 origin stream");
+    let origin_input = origin_stream.read_with(cx, |stream, _| stream.composer_input());
+    origin_input.update(cx, |input, cx| input.set_text("keep running", cx));
+    window
+        .update(cx, |_, window, cx| {
+            origin_stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
+        })
+        .expect("issue67 origin focus");
+
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let probe = root.read_with(cx, |root, _| root.agent_worker_start_probe.clone());
+    *probe
+        .provider_construction_gate
+        .lock()
+        .expect("issue67 provider gate") = Some((entered_tx, release_rx));
+    cx.simulate_keystrokes(window.into(), "cmd-enter");
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.agent_controller.active.is_some())
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("issue67 worker reached provider boundary");
+    let (generation, cancel) = root.read_with(cx, |root, _| {
+        let active = root
+            .agent_controller
+            .active
+            .as_ref()
+            .expect("issue67 active run");
+        assert_eq!(active.thread_id, origin.id);
+        assert_eq!(active.stream, origin_stream);
+        (active.generation, active.cancel.clone())
+    });
+    assert!(!cancel.is_cancelled());
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let new_task = visual
+        .debug_bounds("sidebar-new-task")
+        .expect("issue67 new-task control");
+    visual.simulate_click(new_task.center(), Modifiers::default());
+    visual.run_until_parked();
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, cx| {
+            root.draft.as_ref().is_some_and(|draft| {
+                cx.global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .is_some_and(|opened| opened.id == draft.id)
+                    && root
+                        .stream_view
+                        .as_ref()
+                        .is_some_and(|(id, stream)| id == &draft.id && stream != &origin_stream)
+            })
+        })
+    });
+    assert!(
+        !cancel.is_cancelled(),
+        "opening the real new-task route must not cancel the origin run"
+    );
+
+    let draft_stream = root
+        .read_with(cx, |root, _| {
+            root.stream_view.as_ref().map(|(_, stream)| stream.clone())
+        })
+        .expect("issue67 draft stream");
+    let draft_input = draft_stream.read_with(cx, |stream, _| stream.composer_input());
+    draft_input.update(cx, |input, cx| {
+        input.set_text("destination draft stays", cx)
+    });
+    window
+        .update(cx, |_, window, cx| {
+            draft_stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
+        })
+        .expect("issue67 draft focus");
+    cx.simulate_keystrokes(window.into(), "cmd-enter");
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| !root.trusted_actions.is_busy())
+    });
+    assert_eq!(
+        draft_input.read_with(cx, |input, _| input.text().to_owned()),
+        "destination draft stays"
+    );
+    root.read_with(cx, |root, _| {
+        let active = root
+            .agent_controller
+            .active
+            .as_ref()
+            .expect("origin remains the single active run");
+        assert_eq!(active.generation, generation);
+        assert_eq!(active.thread_id, origin.id);
+        assert_eq!(active.stream, origin_stream);
+        assert!(!active.cancel.is_cancelled());
+    });
+    assert_eq!(probe.load(), 1, "a refused second submit starts no worker");
+    assert!(provider.requests().is_empty());
+
+    let open_palette_task = |keys: &str, expected: &Thread, cx: &mut gpui_kit::TestAppContext| {
+        cx.simulate_keystrokes(window.into(), keys);
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                root.palette.view.is_some() && !root.palette.search_busy
+            })
+        });
+        cx.simulate_keystrokes(window.into(), "enter");
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, cx| {
+                cx.global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .is_some_and(|thread| thread.id == expected.id)
+                    && root
+                        .stream_view
+                        .as_ref()
+                        .is_some_and(|(id, _)| id == &expected.id)
+            })
+        });
+    };
+    open_palette_task(
+        "cmd-k i s s u e 6 7 space d e s t i n a t i o n",
+        &destination,
+        cx,
+    );
+    assert!(!cancel.is_cancelled());
+    let destination_stream = root
+        .read_with(cx, |root, _| {
+            root.stream_view.as_ref().map(|(_, stream)| stream.clone())
+        })
+        .expect("issue67 destination stream");
+    assert_ne!(destination_stream, origin_stream);
+
+    open_palette_task("cmd-k i s s u e 6 7 space o r i g i n", &origin, cx);
+    assert_eq!(
+        root.read_with(cx, |root, _| root
+            .stream_view
+            .as_ref()
+            .map(|(_, stream)| stream.clone())),
+        Some(origin_stream.clone()),
+        "returning before terminal must remount the exact origin stream"
+    );
+    assert!(
+        origin_stream.read_with(cx, |stream, cx| stream.model_selection_blocked(cx)),
+        "the remounted origin stream keeps its live composer state"
+    );
+
+    cx.update(|cx| {
+        cx.set_global(SettingsOpen(true));
+        cx.refresh_windows();
+    });
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.settings_view.is_some())
+    });
+    assert!(!cancel.is_cancelled());
+    assert!(cx.update(|cx| cx.global::<SettingsOpen>().0));
+    window
+        .update(cx, |_, window, cx| {
+            window.dispatch_action(Box::new(vega_ui::settings::CloseSettings), cx)
+        })
+        .expect("issue67 close settings");
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, cx| {
+            root.settings_view.is_none()
+                && !cx.global::<SettingsOpen>().0
+                && root
+                    .stream_view
+                    .as_ref()
+                    .is_some_and(|(id, stream)| id == &origin.id && stream == &origin_stream)
+        })
+    });
+    assert!(!cancel.is_cancelled());
+
+    open_palette_task(
+        "cmd-k i s s u e 6 7 space d e s t i n a t i o n",
+        &destination,
+        cx,
+    );
+    let destination_input = root.read_with(cx, |root, cx| {
+        root.stream_view
+            .as_ref()
+            .expect("issue67 destination remounted")
+            .1
+            .read(cx)
+            .composer_input()
+    });
+    destination_input.update(cx, |input, cx| input.set_text("route stays here", cx));
+    release_tx.send(()).expect("issue67 release provider");
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+    });
+    assert!(!cancel.is_cancelled());
+    assert_eq!(provider.requests().len(), 1);
+    root.read_with(cx, |root, cx| {
+        assert!(
+            cx.global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|thread| thread.id == destination.id)
+        );
+        assert!(
+            root.stream_view
+                .as_ref()
+                .is_some_and(|(id, stream)| id == &destination.id && stream != &origin_stream)
+        );
+    });
+    assert_eq!(
+        destination_input.read_with(cx, |input, _| input.text().to_owned()),
+        "route stays here"
+    );
+    let (status, content): (String, String) = store
+        .conn()
+        .query_row(
+            "SELECT status, content FROM messages WHERE thread_id = ?1 AND role = 'assistant' ORDER BY seq DESC LIMIT 1",
+            [&origin.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("issue67 durable background answer");
+    assert_eq!(status, "done");
+    assert!(content.contains("background success"));
+
+    let (teardown_tx, teardown_rx) = mpsc::sync_channel(1);
+    let teardown_thread = destination.clone();
+    let teardown_window = cx
+        .update(|cx| {
+            cx.open_window(Default::default(), move |_, cx| {
+                let stream = cx.new(|cx| ConversationStream::new(teardown_thread.clone(), cx));
+                cx.new(move |cx| {
+                    let mut root = VegaWindow::new(cx);
+                    let cancel = root
+                        .agent_controller
+                        .begin(
+                            teardown_thread.id.clone(),
+                            stream,
+                            Some("teardown owner".into()),
+                            None,
+                        )
+                        .1;
+                    teardown_tx.send(cancel).expect("issue67 teardown token");
+                    root
+                })
+            })
+        })
+        .expect("issue67 teardown window");
+    let teardown_cancel = teardown_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("issue67 receive teardown token");
+    teardown_window
+        .update(cx, |_, window, _| window.remove_window())
+        .expect("issue67 remove teardown window");
+    cx.run_until_parked();
+    assert!(
+        teardown_cancel.is_cancelled(),
+        "dropping the production window must still cancel its exact active run"
+    );
 }
 
 #[gpui_kit::test]
