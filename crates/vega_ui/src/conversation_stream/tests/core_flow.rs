@@ -550,7 +550,7 @@ async fn failed_file_index_keys_restore_composer_scope(cx: &mut TestAppContext) 
         }),
         (false, None, false)
     );
-    cx.simulate_keystrokes(window.into(), "enter");
+    cx.simulate_keystrokes(window.into(), "shift-enter");
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.input.read(cx).text().to_string()),
         "@missing\n"
@@ -1168,4 +1168,200 @@ async fn batch_finished_flush_materializes_the_final_committed_tail(cx: &mut Tes
     assert!(committed >= 1, "the final tail block was materialized");
     assert_eq!(tail_kind, Some(LineKind::Code), "the tail block froze");
     assert_eq!(last_text, "fn tail() {}", "the closing fence line survives");
+}
+
+// ---------- Issue #66 · Composer Enter 键位契约（ui-spec §4.4 v0.18） ----------
+
+/// Captures every `ComposerSubmitted` emitted by the production submit path.
+fn capture_submitted(
+    cx: &mut TestAppContext,
+    stream: &Entity<ConversationStream>,
+) -> Arc<Mutex<Vec<ComposerSubmitted>>> {
+    let events = Arc::new(Mutex::new(Vec::<ComposerSubmitted>::new()));
+    let captured = events.clone();
+    cx.update(|cx| {
+        cx.subscribe(stream, move |_, event: &ComposerSubmitted, _| {
+            captured
+                .lock()
+                .expect("submitted capture")
+                .push(event.clone());
+        })
+        .detach();
+    });
+    events
+}
+
+fn set_composer_text(
+    window: WindowHandle<StreamHarness>,
+    stream: &Entity<ConversationStream>,
+    text: &str,
+    cx: &mut TestAppContext,
+) {
+    window
+        .update(cx, |_, _, cx| {
+            stream.update(cx, |stream, cx| {
+                stream
+                    .input
+                    .update(cx, |input, cx| input.set_text(text, cx));
+            });
+        })
+        .expect("composer text");
+    cx.run_until_parked();
+}
+
+/// E1/R1: `Enter` sends through the real key-dispatch path.
+#[gpui_kit::test]
+async fn issue66_enter_sends_through_key_dispatch(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "enter-sends");
+    let submitted = capture_submitted(cx, &stream);
+    focus_composer(window, &stream, cx);
+    set_composer_text(window, &stream, "ship it", cx);
+
+    cx.simulate_keystrokes(window.into(), "enter");
+    cx.run_until_parked();
+
+    let events = submitted.lock().expect("submitted");
+    assert_eq!(events.len(), 1, "Enter must submit exactly once");
+    assert_eq!(events[0].content, "ship it");
+    assert!(
+        stream.read_with(cx, |stream, _| stream.composer_submit_pending),
+        "Enter must arm the single-flight submit guard"
+    );
+}
+
+/// E2/R2: `Shift+Enter` inserts a newline and never sends.
+#[gpui_kit::test]
+async fn issue66_shift_enter_inserts_newline_without_sending(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "shift-enter-newline");
+    let submitted = capture_submitted(cx, &stream);
+    focus_composer(window, &stream, cx);
+    set_composer_text(window, &stream, "line one", cx);
+
+    cx.simulate_keystrokes(window.into(), "shift-enter");
+    cx.run_until_parked();
+
+    assert!(
+        submitted.lock().expect("submitted").is_empty(),
+        "Shift+Enter must never send"
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.input.read(cx).text().to_string()),
+        "line one\n"
+    );
+}
+
+/// E3/R3: `Cmd+Enter` keeps sending (no regression on the legacy binding).
+#[gpui_kit::test]
+async fn issue66_cmd_enter_still_sends(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "cmd-enter-sends");
+    let submitted = capture_submitted(cx, &stream);
+    focus_composer(window, &stream, cx);
+    set_composer_text(window, &stream, "legacy path", cx);
+
+    cx.simulate_keystrokes(window.into(), "cmd-enter");
+    cx.run_until_parked();
+
+    let events = submitted.lock().expect("submitted");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].content, "legacy path");
+}
+
+/// E6/R5: while an IME composition owns the text, `Enter` must not submit —
+/// even if the platform layer lets the key reach the keymap (defence in depth).
+#[gpui_kit::test]
+async fn issue66_enter_never_sends_during_ime_composition(cx: &mut TestAppContext) {
+    use gpui_kit::EntityInputHandler;
+    let (window, stream, _) = open_controller_stream(cx, "enter-ime");
+    let submitted = capture_submitted(cx, &stream);
+    focus_composer(window, &stream, cx);
+    window
+        .update(cx, |_, window, cx| {
+            let input = stream.read(cx).composer_input();
+            input.update(cx, |input, cx| {
+                input.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx)
+            });
+        })
+        .expect("platform marked text");
+    cx.run_until_parked();
+    assert!(stream.read_with(cx, |stream, cx| stream.input.read(cx).is_composing()));
+
+    // The headless platform cannot emulate the native IME interception, so
+    // drive the production handler directly while composition owns the text
+    // (same convention as `r11_composer_marked_text_is_not_a_command`).
+    window
+        .update(cx, |_, window, cx| {
+            stream.update(cx, |stream, cx| {
+                stream.on_send_action(&SendMessage, window, cx);
+            });
+        })
+        .expect("scoped send handler");
+    cx.run_until_parked();
+
+    assert!(
+        submitted.lock().expect("submitted").is_empty(),
+        "a composing Enter belongs to the IME, not to send"
+    );
+    assert!(!stream.read_with(cx, |stream, _| stream.composer_submit_pending));
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.input.read(cx).text().to_string()),
+        "ni"
+    );
+}
+
+/// E7/R1: the existing submit guard still makes `Enter` single-flight.
+#[gpui_kit::test]
+async fn issue66_enter_respects_the_submit_guard(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "enter-guard");
+    let submitted = capture_submitted(cx, &stream);
+    focus_composer(window, &stream, cx);
+    set_composer_text(window, &stream, "once", cx);
+
+    cx.simulate_keystrokes(window.into(), "enter");
+    cx.run_until_parked();
+    cx.simulate_keystrokes(window.into(), "enter");
+    cx.run_until_parked();
+
+    assert_eq!(
+        submitted.lock().expect("submitted").len(),
+        1,
+        "a pending submit must not be re-armed by a second Enter"
+    );
+}
+
+/// E4/R4: an open `@file` overlay keeps `Enter` — it accepts the highlighted
+/// candidate instead of sending the draft.
+#[gpui_kit::test]
+async fn issue66_enter_accepts_file_candidate_instead_of_sending(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "enter-file-select");
+    let submitted = capture_submitted(cx, &stream);
+    let input = stream.read_with(cx, |stream, _| stream.composer_input());
+    stream.update(cx, |stream, cx| {
+        input.update(cx, |input, cx| input.set_text("@", cx));
+        stream.sync_at_query(&input, cx);
+    });
+    let generation = stream.read_with(cx, |stream, _| stream.file_index_generation);
+    stream.update(cx, |stream, cx| {
+        assert!(stream.apply_file_index_result(
+            generation,
+            Ok(vega_conversation::types::FileIndexSnapshot {
+                entries: vec!["src/lib.rs".into()],
+            }),
+            cx,
+        ));
+    });
+    cx.run_until_parked();
+    focus_composer(window, &stream, cx);
+
+    cx.simulate_keystrokes(window.into(), "enter");
+    cx.run_until_parked();
+
+    assert!(
+        submitted.lock().expect("submitted").is_empty(),
+        "an open FileSelect overlay owns Enter"
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.input.read(cx).text().to_string()),
+        "@src/lib.rs ",
+        "Enter must accept the highlighted candidate"
+    );
 }
