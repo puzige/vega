@@ -1,6 +1,6 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.20 · 2026-09-21 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.21 · 2026-09-21 · 关联：[vega-features.md](vega-features.md)
 
 > **规范分层**：跨任务的视觉语言、语义 token 与新 UI 默认规则以
 > [Vega 设计守则](vega-design-guidelines.md)为入口；本文件继续承载组件行为和
@@ -90,7 +90,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 ### 4.2 工具调用卡片（信息密度核心）
 - 当前冻结规格见 [Issue #70 compact tool activity groups](vega-issue-70-tool-activity.md)。默认态是无常驻边框/底色的一行活动摘要；连续工具调用折叠为一个分组，展开后按时间顺序显示子调用，子调用再按需展开安全的命令/输出面板。
 - 前导图标只表达工具分类并统一使用 `text-secondary`：Shell=`Terminal`、Search=`Search`、Read/Find/Write/Edit/Skill=`Document`、MCP/Other=`Summary`；成功不替换为 Check，失败/拒绝/取消不替换为 Warning，也不使用 success/danger 图标色。状态继续由真实摘要文字、非零退出码与展开详情的语义 footer 表达；完整摘要文字保持中性层级。
-- Bash 在真实 `ToolCallRunning` 到达后于具体命令行显示按整秒刷新的实时耗时；终态立即改用 runtime 持久化的精确 `duration_ms`。多调用聚合摘要始终不显示子项或合计耗时，非 Bash 工具不显示耗时，重启不伪造运行起点。
+- Bash 在真实 `ToolCallRunning` 到达后于具体命令行显示按整秒刷新的实时耗时；终态立即改用 runtime 持久化的精确 `duration_ms`。具体 Bash 行把命令标题作为可收缩、单行省略区域，右侧耗时与 disclosure Chevron 不参与收缩并保持可见。多调用聚合摘要始终不显示子项或合计耗时，非 Bash 工具不显示耗时，重启不伪造运行起点。
 - 写操作摘要显示安全的规范相对路径、bytes/replacements；完整 Diff 仍由既有 Artifact/Diff 路径承载。
 - write/edit 卡只消费 tech-spec §2 的 strict 安全成功/失败投影：成功显示规范项目相对路径、bytes_written 与 edit replacements 摘要，不显示 checkpoint ref；失败只显示稳定、脱敏 code/message。missing/extra/wrong-type、非法 u64/replacements/ref 必须 fail closed 为损坏结果，禁止从 raw provider input、绝对 checkpoint path 或 preimage 补数据
 - invalid write/edit 显示 rejected 工具卡与 stable validation code，不生成权限卡，不显示/保留 raw path、body 或 JSON
@@ -169,3 +169,4 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.18 (2026-09-20) Issue #66 键位冻结：§4.4 明确 `Enter` 发送、`Shift+Enter` 换行、`Cmd+Enter` 发送，IME 组合态与浮层优先级不得被发送抢走；依据 A2-11（Shift+Enter 换行）与用户 2026-09-20 裁决，见 [Issue 66 键位契约](vega-issue-66-enter-to-send.md)。
 - v0.19 (2026-09-21) Issue #70 前导图标语义修正：工具活动行与分组始终使用中性的工具分类图标，不再以 Check/Warning 或 success/danger 图标色重复编码生命周期；失败真实性继续由摘要、退出码与详情 footer 表达。
 - v0.20 (2026-09-21) Issue #70 Bash 实时耗时：具体 Bash 行从真实 runtime Running 事件开始按整秒显示 UI 内存态 elapsed；聚合摘要与非 Bash 行不显示时间，终态继续使用 runtime 的精确持久化 `duration_ms`。
+- v0.21 (2026-09-21) Issue #70 Bash 耗时布局：超长命令标题单行省略，运行中与终态耗时固定保留在右侧，disclosure Chevron 继续可见；聚合与分类图标语义不变。
