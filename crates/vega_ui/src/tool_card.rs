@@ -1,7 +1,9 @@
 //! Audited tool-call activities over strict `vega_conversation` projections.
 
+use std::time::{Duration, Instant};
+
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, div, px};
+use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, Task, div, px};
 use vega_conversation::types::{
     Approval, InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, ToolCall, ToolCallStatus,
     ToolCardInputProjection, ToolCardResultProjection, ToolResult, tool_card_input_projection,
@@ -121,6 +123,9 @@ pub struct ToolCard {
     summary: String,
     output_rows: Vec<String>,
     expanded: bool,
+    running_started_at: Option<Instant>,
+    running_elapsed_seconds: Option<u64>,
+    elapsed_refresh_task: Option<Task<()>>,
 }
 
 impl ToolCard {
@@ -140,6 +145,9 @@ impl ToolCard {
             summary: String::new(),
             output_rows: Vec::new(),
             expanded: false,
+            running_started_at: None,
+            running_elapsed_seconds: None,
+            elapsed_refresh_task: None,
         };
         card.refresh_summary();
         card
@@ -160,6 +168,9 @@ impl ToolCard {
             summary: String::new(),
             output_rows: Vec::new(),
             expanded: false,
+            running_started_at: None,
+            running_elapsed_seconds: None,
+            elapsed_refresh_task: None,
         };
         card.refresh_summary();
         card
@@ -175,6 +186,9 @@ impl ToolCard {
             summary: String::new(),
             output_rows: Vec::new(),
             expanded: false,
+            running_started_at: None,
+            running_elapsed_seconds: None,
+            elapsed_refresh_task: None,
         };
         card.refresh_summary();
         card
@@ -198,6 +212,9 @@ impl ToolCard {
             result,
             summary: String::new(),
             expanded: false,
+            running_started_at: None,
+            running_elapsed_seconds: None,
+            elapsed_refresh_task: None,
         };
         card.refresh_summary();
         card
@@ -220,6 +237,7 @@ impl ToolCard {
     }
 
     fn set_corrupt(&mut self) {
+        self.stop_live_elapsed();
         self.input = None;
         self.status = ToolCallStatus::Failed;
         self.approval = None;
@@ -229,8 +247,7 @@ impl ToolCard {
         self.refresh_summary();
     }
 
-    /// Marks the post-commit approval visible. With the frozen shared event
-    /// shape this is the UI's executing state; Running stays runtime/internal.
+    /// Marks the post-commit approval visible without starting elapsed time.
     pub fn apply_approved(&mut self, approval: Approval) -> bool {
         if let Some(existing) = self.approval {
             if existing == approval
@@ -255,6 +272,69 @@ impl ToolCard {
         true
     }
 
+    /// Applies the content-free runtime execution boundary. Only Bash owns a
+    /// live elapsed clock; other tools still advance to the truthful Running
+    /// lifecycle state without adding time copy.
+    pub fn apply_running(&mut self, cx: &mut gpui_kit::Context<Self>) -> bool {
+        if self.result.is_some()
+            || self.approval.is_none()
+            || !matches!(
+                self.status,
+                ToolCallStatus::Approved | ToolCallStatus::Running
+            )
+        {
+            self.set_corrupt();
+            cx.notify();
+            return false;
+        }
+        self.status = ToolCallStatus::Running;
+        if self.is_bash() && self.running_started_at.is_none() {
+            let started_at = cx.background_executor().now();
+            self.running_started_at = Some(started_at);
+            self.running_elapsed_seconds = Some(0);
+            let task = cx.spawn(async move |this, cx| {
+                loop {
+                    let elapsed = cx
+                        .background_executor()
+                        .now()
+                        .saturating_duration_since(started_at);
+                    let next_boundary = Duration::from_secs(elapsed.as_secs().saturating_add(1));
+                    cx.background_executor()
+                        .timer(next_boundary.saturating_sub(elapsed))
+                        .await;
+                    let keep_refreshing = this
+                        .update(cx, |card, cx| {
+                            let Some(started_at) = card.running_started_at else {
+                                return false;
+                            };
+                            if card.status != ToolCallStatus::Running || !card.is_bash() {
+                                return false;
+                            }
+                            let elapsed = cx
+                                .background_executor()
+                                .now()
+                                .saturating_duration_since(started_at)
+                                .as_secs();
+                            if card.running_elapsed_seconds != Some(elapsed) {
+                                card.running_elapsed_seconds = Some(elapsed);
+                                card.refresh_summary();
+                                cx.notify();
+                            }
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !keep_refreshing {
+                        break;
+                    }
+                }
+            });
+            self.elapsed_refresh_task = Some(task);
+        }
+        self.refresh_summary();
+        cx.notify();
+        true
+    }
+
     /// Applies one terminal result with strict projection validation.
     pub fn apply_finished(&mut self, result: &ToolResult) -> bool {
         let projection = tool_card_result_projection(self.input.as_ref(), result);
@@ -269,6 +349,7 @@ impl ToolCard {
             ToolCallStatus::Rejected => self.status == ToolCallStatus::PendingApproval,
             ToolCallStatus::Success | ToolCallStatus::Failed | ToolCallStatus::Cancelled => {
                 self.status == ToolCallStatus::Approved
+                    || self.status == ToolCallStatus::Running
                     || (result.reused && self.status == ToolCallStatus::PendingApproval)
             }
             ToolCallStatus::PendingApproval
@@ -279,6 +360,7 @@ impl ToolCard {
             self.set_corrupt();
             return false;
         }
+        self.stop_live_elapsed();
         self.status = result.status;
         self.output_rows = projection_output_rows(&projection);
         self.result = Some(projection);
@@ -370,6 +452,11 @@ impl ToolCard {
             detail.append_visible_text(&mut text);
         }
         text
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_elapsed_active(&self) -> bool {
+        self.running_started_at.is_some() && self.elapsed_refresh_task.is_some()
     }
 
     pub(crate) fn render(
@@ -484,6 +571,12 @@ impl ToolCard {
                     ToolActivityState::Failed => "运行失败",
                 };
                 let mut summary = format!("{verb} {command}");
+                if self.status == ToolCallStatus::Running
+                    && let Some(elapsed_seconds) = self.running_elapsed_seconds
+                {
+                    summary.push_str(" · ");
+                    summary.push_str(&human_elapsed(elapsed_seconds));
+                }
                 self.push_bash_metadata(&mut summary, true);
                 summary
             }
@@ -575,6 +668,16 @@ impl ToolCard {
                 ..
             }) if code != 0
         )
+    }
+
+    fn is_bash(&self) -> bool {
+        matches!(self.input, Some(ToolCardInputProjection::Bash { .. }))
+    }
+
+    fn stop_live_elapsed(&mut self) {
+        self.running_started_at = None;
+        self.running_elapsed_seconds = None;
+        self.elapsed_refresh_task = None;
     }
 
     fn push_bash_metadata(&self, label: &mut String, compact: bool) {
@@ -764,6 +867,19 @@ fn human_duration(duration_ms: u64) -> String {
     }
     let minutes = duration_ms / 60_000;
     let seconds = duration_ms % 60_000 / 1_000;
+    if seconds == 0 {
+        format!("{minutes} 分钟")
+    } else {
+        format!("{minutes} 分 {seconds} 秒")
+    }
+}
+
+fn human_elapsed(seconds: u64) -> String {
+    if seconds < 60 {
+        return format!("{seconds} 秒");
+    }
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
     if seconds == 0 {
         format!("{minutes} 分钟")
     } else {

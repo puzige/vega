@@ -72,7 +72,20 @@ its own icon set, semantic theme tokens and safe typed projections.
    `已读取文件、运行命令`. If any child is active, rejected, failed or cancelled,
    the aggregate wording must remain truthful and cannot claim the whole group
    succeeded. Lifecycle state does not change the aggregate's category icon or
-   neutral leading-icon color.
+   neutral leading-icon color. The aggregate never appends a child duration or
+   a computed total duration, whether collapsed or expanded.
+6. A Bash compact row begins showing live elapsed time only after the matching
+   runtime `ToolCallRunning` event reaches the UI event stream. Its first value
+   is `0 秒`, then it refreshes from the executor clock at whole-second
+   boundaries; examples are `1 秒` and `1 分 5 秒`. Approval alone is not an
+   execution-time estimate and must not start the clock.
+7. Live elapsed time belongs only to concrete Bash rows: a standalone Bash row
+   and each visible Bash child of an expanded aggregate show their own value.
+   Read/find/search/write/edit/MCP/Skill rows never gain elapsed copy.
+8. A terminal Bash result immediately replaces live elapsed time with the
+   runtime-provided, persisted `duration_ms` rendered by the existing precise
+   duration formatter. Success, failure and cancellation never derive their
+   terminal duration from the UI clock.
 
 ### 3. Progressive disclosure
 
@@ -93,6 +106,10 @@ its own icon set, semantic theme tokens and safe typed projections.
    persist, change audit data or trigger a tool/provider call. Height changes
    invalidate only the owning variable-height list item and preserve scroll
    anchoring.
+5. The live elapsed clock is also UI-only. Its refresh task stops when the tool
+   becomes terminal or the ToolCard entity is released. Reopening or hydrating
+   a persisted `Running` row does not invent a start instant or resume a timer;
+   only a fresh runtime `ToolCallRunning` event can establish that instant.
 
 ### 4. Safety and compatibility
 
@@ -104,8 +121,10 @@ its own icon set, semantic theme tokens and safe typed projections.
    fail-closed behavior, permission identity and approval controls remain
    unchanged. A compact row must never hide a rejected/failed/corrupt state.
 3. UI code continues to consume events/history only and never reads SQLite.
-   No migration, dependency, tool execution change or provider schema change is
-   in scope.
+   `ToolCallRunning { call_id }` may cross the shared in-memory conversation
+   event boundary as a content-free lifecycle signal after the runtime event is
+   durably applied. No migration, persisted field, dependency, tool execution
+   change or provider schema change is in scope.
 4. The virtual list still owns one natural-height item per visible activity
    group. A long group is bounded by the existing page/tool limits and must not
    introduce per-frame markdown or JSON parsing.

@@ -610,6 +610,15 @@ impl ConversationStream {
                     self.push_corrupt_tool(call_id, cx);
                 }
             }
+            ConversationEvent::ToolCallRunning { call_id } => {
+                if let Some(card) = self.tool_cards.get(&call_id) {
+                    let card = card.clone();
+                    card.update(cx, ToolCard::apply_running);
+                    self.invalidate_tool_card(&card, cx);
+                } else {
+                    self.push_corrupt_tool(call_id, cx);
+                }
+            }
             ConversationEvent::ToolCallOutput { .. } => {
                 // T26 emits a post-commit bounded output immediately before
                 // Finished. Ignore it here: write/edit chunks can contain the

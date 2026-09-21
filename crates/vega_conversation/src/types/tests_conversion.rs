@@ -217,6 +217,21 @@ fn converts_text_thinking_and_usage_runtime_events() {
 }
 
 #[test]
+fn issue70_runtime_tool_running_reaches_the_safe_ui_event_boundary() {
+    let projected = from_runtime_event(
+        "assistant-running",
+        &vega_runtime::RuntimeEvent::ToolCallRunning {
+            call_id: "bash-running".into(),
+        },
+    );
+
+    assert!(matches!(
+        projected,
+        Some(ConversationEvent::ToolCallRunning { call_id }) if call_id == "bash-running"
+    ));
+}
+
+#[test]
 fn issue73_mcp_safe_proposal_crosses_live_event_boundary_without_raw_arguments() {
     use super::{McpCallIdentity, ToolCardInputProjection, tool_card_input_projection};
 
