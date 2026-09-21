@@ -67,7 +67,6 @@ impl Render for VegaWindow {
         self.sync_navigation(cx);
         let settings_open = cx.global::<SettingsOpen>().0;
         let content: AnyElement = if settings_open {
-            self.cancel_active_agent(cx);
             if self.settings_view.is_none()
                 && let Some((_, stream)) = &self.stream_view
             {
@@ -177,12 +176,31 @@ impl Render for VegaWindow {
                 {
                     // S3-T17：会话流视图（每线程一个实体，切换会话时重建；
                     // MarkdownStream 内存态构造，不落库）。
-                    let cached = match &self.stream_view {
-                        Some((thread_id, view)) if *thread_id == thread.id => Some(view.clone()),
-                        _ => None,
-                    };
+                    let cached = self
+                        .agent_controller
+                        .active_stream_for_thread(&thread.id)
+                        .or_else(|| match &self.stream_view {
+                            Some((thread_id, view)) if *thread_id == thread.id => {
+                                Some(view.clone())
+                            }
+                            _ => None,
+                        });
                     let stream = match cached {
                         Some(view) => {
+                            if self.stream_view.as_ref().is_none_or(|(thread_id, cached)| {
+                                thread_id != &thread.id || cached != &view
+                            }) {
+                                if let Some((previous_id, previous)) = self.stream_view.take()
+                                    && self
+                                        .agent_controller
+                                        .active_stream_for_thread(&previous_id)
+                                        .as_ref()
+                                        != Some(&previous)
+                                {
+                                    previous.update(cx, |stream, cx| stream.timeout_permission(cx));
+                                }
+                                self.stream_view = Some((thread.id.clone(), view.clone()));
+                            }
                             // A8-01: the same draft id intentionally keeps
                             // the same stream (and Composer input/focus), but
                             // project selection may have changed around it.
@@ -207,8 +225,13 @@ impl Render for VegaWindow {
                             view
                         }
                         None => {
-                            if let Some((_, previous)) = self.stream_view.take() {
-                                self.cancel_active_agent(cx);
+                            if let Some((previous_id, previous)) = self.stream_view.take()
+                                && self
+                                    .agent_controller
+                                    .active_stream_for_thread(&previous_id)
+                                    .as_ref()
+                                    != Some(&previous)
+                            {
                                 previous.update(cx, |stream, cx| stream.timeout_permission(cx));
                             }
                             let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
