@@ -509,6 +509,12 @@ impl VegaWindow {
         let worker_sender = sender.clone();
         let config_path = self.composer_config_path();
         let mcp_settings = self.mcp_settings.clone();
+        let file_read_state = self
+            .agent_controller
+            .file_read_states
+            .entry(thread_id.to_string())
+            .or_default()
+            .clone();
         // A8-02: register synchronously before spawn. The worker closure owns
         // the token through its last tool/provider call, even if this window
         // cancels or closes before the worker can acknowledge termination.
@@ -533,6 +539,7 @@ impl VegaWindow {
                     reasoning,
                     Some(title_sender),
                     mcp_settings,
+                    file_read_state,
                     #[cfg(test)]
                     provider_override,
                     #[cfg(test)]

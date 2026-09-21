@@ -11,6 +11,7 @@ use crate::types::{ConversationEvent, ToolCallStatus};
 
 mod automatic_titles;
 mod failure_paths;
+mod file_edit_parity;
 mod history_permissions;
 mod images;
 mod mcp;

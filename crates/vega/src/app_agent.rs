@@ -336,6 +336,7 @@ pub(crate) enum PricingWorkerKind {
 
 #[derive(Default)]
 pub(crate) struct AppAgentController {
+    pub(crate) file_read_states: HashMap<String, vega_tools::ReadState>,
     pub(crate) next_generation: u64,
     pub(crate) active: HashMap<String, ActiveAgentRun>,
     pub(crate) pending_review: HashMap<String, PendingPlanReview>,
@@ -659,6 +660,7 @@ pub(crate) fn run_agent_worker(
         reasoning,
         title_notifications,
         None,
+        vega_tools::ReadState::default(),
         provider_override,
         worker_start_probe,
     );
@@ -685,6 +687,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     reasoning: Option<vega_runtime::FrozenReasoning>,
     title_notifications: Option<mpsc::Sender<()>>,
     mcp_service: Option<vega_conversation::McpServerSettingsService>,
+    file_read_state: vega_tools::ReadState,
     #[cfg(test)] provider_override: Option<Arc<dyn vega_runtime::Provider>>,
     #[cfg(test)] worker_start_probe: Arc<AgentWorkerStartProbe>,
 ) {
@@ -695,7 +698,9 @@ pub(crate) fn run_agent_worker_with_mcp(
     let success = (|| -> Result<bool, ()> {
         // Config and local credential storage are touched only after an explicit user submit
         // or committed Plan approval reaches this worker.
-        let tools = vega_tools::Tools::new(&project_path).map_err(|_| ())?;
+        let tools = vega_tools::Tools::new(&project_path)
+            .map_err(|_| ())?
+            .with_read_state(file_read_state);
         let store = Store::open(database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
         // Resolve provider identity once, before constructing the provider and

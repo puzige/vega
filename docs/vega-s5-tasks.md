@@ -1,5 +1,7 @@
 # ✦ Vega — S5 任务卡（Sprint 5 · 写工具 + 权限门禁 + 三模式 · W9-10）
 
+> **2026-09-22 Issue #112 supersession:** Read/Edit/Write paths, read-before-mutation, replacement matching and audit/checkpoint path support follow [the file edit parity contract](vega-issue-112-file-edit-parity.md). Its user-authorized absolute/external paths and resolved symlinks replace the earlier project-only/relative-only prohibition for those tools; glob/grep/bash boundaries are unchanged. Existing permission, Git/checkpoint protection and race checks remain.
+
 **版本** v0.4 · 2026-08-30 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
 
 **S5 目标**（phase1-plan §2）：write/edit/bash 工具；权限状态机（只读/变更前确认/全自动）；权限确认 UI；危险命令拦截；Ask/Plan/Execute 三模式 + Plan 产物审批流。

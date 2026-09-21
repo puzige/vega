@@ -34,6 +34,12 @@ pub enum MutationErrorCode {
     CheckpointSymlink,
     CheckpointMetadataInvalid,
     EditEmptyOldString,
+    FileNotRead,
+    FileTooLarge,
+    EditNoChange,
+    WrongReplaceAllType,
+    UnsupportedEncoding,
+
     EditNoMatch,
     EditMultipleMatches,
     TargetChanged,
@@ -72,6 +78,11 @@ impl MutationErrorCode {
             Self::CheckpointExists => "checkpoint_exists",
             Self::CheckpointSymlink => "checkpoint_symlink",
             Self::CheckpointMetadataInvalid => "checkpoint_metadata_invalid",
+            Self::FileNotRead => "file_not_read",
+            Self::FileTooLarge => "file_too_large",
+            Self::EditNoChange => "edit_no_change",
+            Self::WrongReplaceAllType => "wrong_replace_all_type",
+            Self::UnsupportedEncoding => "unsupported_encoding",
             Self::EditEmptyOldString => "edit_empty_old_string",
             Self::EditNoMatch => "edit_no_match",
             Self::EditMultipleMatches => "edit_multiple_matches",
@@ -83,7 +94,42 @@ impl MutationErrorCode {
         }
     }
 
-    pub(crate) fn from_str(value: &str) -> Option<Self> {
+    /// Safe corrective guidance without paths or file contents.
+    pub const fn guidance(self) -> &'static str {
+        match self {
+            Self::FileTooLarge => " File exceeds the 1 GiB text tool size limit.",
+            Self::FileNotRead => " Read the file first before writing or editing it.",
+            Self::TargetChanged => {
+                " File changed since it was read. Read it again before retrying."
+            }
+            Self::EditNoMatch => {
+                " String not found. Read the file and preserve exact indentation; exclude displayed line numbers."
+            }
+            Self::EditMultipleMatches => {
+                " Multiple matches. Add context to old_string or set replace_all to true."
+            }
+            Self::EditNoChange => " old_string and new_string must differ.",
+            Self::EditEmptyOldString => {
+                " Empty old_string is only valid for a missing or whitespace-only file."
+            }
+            Self::UnsupportedEncoding => {
+                " Unsupported or malformed text encoding; use UTF-8 or BOM-marked UTF-16LE."
+            }
+            _ => "",
+        }
+    }
+
+    /// Canonical invalid-input result for model feedback and history validation.
+    pub fn validation_result(self, tool: &str) -> String {
+        format!(
+            "Tool error: invalid {tool} input ({}).{} Expected Write: {{\"file_path\":\"/absolute/file\",\"content\":\"...\"}}; Edit: {{\"file_path\":\"/absolute/file\",\"old_string\":\"exact original\",\"new_string\":\"replacement\",\"replace_all\":false}}. Supply all required fields; do not include line-number prefixes.",
+            self.as_str(),
+            self.guidance()
+        )
+    }
+
+    /// Parse a known content-free failure code.
+    pub fn parse_code(value: &str) -> Option<Self> {
         Some(match value {
             "malformed_json" => Self::MalformedJson,
             "input_not_object" => Self::InputNotObject,
@@ -110,6 +156,11 @@ impl MutationErrorCode {
             "checkpoint_exists" => Self::CheckpointExists,
             "checkpoint_symlink" => Self::CheckpointSymlink,
             "checkpoint_metadata_invalid" => Self::CheckpointMetadataInvalid,
+            "file_not_read" => Self::FileNotRead,
+            "file_too_large" => Self::FileTooLarge,
+            "edit_no_change" => Self::EditNoChange,
+            "wrong_replace_all_type" => Self::WrongReplaceAllType,
+            "unsupported_encoding" => Self::UnsupportedEncoding,
             "edit_empty_old_string" => Self::EditEmptyOldString,
             "edit_no_match" => Self::EditNoMatch,
             "edit_multiple_matches" => Self::EditMultipleMatches,
@@ -148,6 +199,14 @@ impl MutationErrorCode {
                 | Self::CheckpointIdInvalid
                 | Self::CheckpointUnavailable
                 | Self::CheckpointSymlink
+                | Self::FileTooLarge
+                | Self::FileNotRead
+                | Self::EditNoChange
+                | Self::WrongReplaceAllType
+                | Self::UnsupportedEncoding
+                | Self::TargetChanged
+                | Self::EditNoMatch
+                | Self::EditMultipleMatches
                 | Self::EditEmptyOldString
                 | Self::FilesystemError
         )
@@ -221,7 +280,12 @@ impl fmt::Debug for MutationError {
 
 impl fmt::Display for MutationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "write/edit failed ({})", self.code.as_str())
+        write!(
+            formatter,
+            "write/edit failed ({}){}",
+            self.code.as_str(),
+            self.code.guidance()
+        )
     }
 }
 

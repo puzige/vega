@@ -2,11 +2,9 @@
 //! (tech-spec §4.4, A3-05~07 / S4-T21 / S5-T23).
 //!
 //! [`Tools`] is the single entry point: bind one instance to the canonical
-//! project root and every path argument is fenced against it — interpreted
-//! relative to the root, canonicalized, and rejected with
-//! [`ToolError::PathEscape`] when it would escape the root (`..` traversal,
-//! absolute-path injection, or a symlink jumping out; tech-spec §3 red
-//! line, risks #4).
+//! project root. Read/Edit/Write accept canonical absolute paths or paths relative
+//! to that root; runtime permissions authorize external targets. Search and shell
+//! retain their own project boundaries. Mutation requires a prior read version.
 //!
 //! Mutations remain disabled until the caller explicitly supplies a
 //! checkpoint root plus project/thread/call ids. All tools return the same
@@ -30,8 +28,8 @@
 //! assert!(!out.truncated);
 //!
 //! assert!(matches!(
-//!     tools.read("../escape.txt", None, None),
-//!     Err(vega_tools::ToolError::PathEscape(_))
+//!     tools.read("missing.txt", None, None),
+//!     Err(vega_tools::ToolError::NotFound(_))
 //! ));
 //! # Ok(())
 //! # }
@@ -67,4 +65,6 @@ pub use output::{
     BASH_OUTPUT_MIDDLE_MARKER, BASH_READ_CHUNK_BYTES, BashOutput, LINE_TRUNCATION_MARKER,
     MAX_LINE_CHARS, MAX_RESULTS, RESULT_TRUNCATION_MARKER, ToolOutput,
 };
-pub use tools::Tools;
+pub use tools::{ReadState, Tools};
+
+mod text_file;

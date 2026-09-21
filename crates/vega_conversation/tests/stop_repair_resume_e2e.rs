@@ -120,17 +120,17 @@ async fn stop_first_wins_reaches_exactly_one_terminal_and_cleans_up_under_one_se
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_mid_tool_future_captures_output_and_never_starts_the_followup_call()
+async fn stop_mid_shell_fifo_records_cancellation_and_never_starts_the_followup_call()
 -> Result<(), Box<dyn Error>> {
     let fixture = fixture()?;
     let project_id = seed_project(&fixture.store, &fixture.repo)?;
-    seed_thread(&fixture.store, &project_id, "auto")?;
+    seed_thread(&fixture.store, &project_id, "full_access")?;
     let slow_path = fixture.repo.join("slow.txt");
     let status = Command::new("mkfifo").arg(&slow_path).status()?;
     assert!(status.success());
-    // F1 lesson: the FIFO writer's open() blocks until the tool opens the
-    // read end. The rendezvous below cancels only after the writer connected,
-    // so the writer can never block forever; its total write is bounded.
+    // Read rejects FIFOs. Exercise shell cancellation instead: rendezvous only
+    // after cat opens the pipe AND the writer delivers the fixture bytes.
+    // Bash intentionally reports a fixed error on cancellation, not partial stdout.
     let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
     let writer_path = slow_path.clone();
     let writer = std::thread::spawn(move || {
@@ -138,17 +138,19 @@ async fn stop_mid_tool_future_captures_output_and_never_starts_the_followup_call
             .write(true)
             .open(writer_path)
             .expect("fifo writer open");
-        let _ = connected_tx.send(());
         pipe.write_all(b"partial tool output\n")
             .expect("fifo writer write");
+        connected_tx.send(()).expect("writer completion receiver");
         // Bounded hold so cancellation can win while the tool is mid-read.
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(200));
     });
     let provider = MockProvider::new(vec![ScriptStep::events(vec![
         ProviderEvent::ToolUse {
             id: "slow-read".into(),
-            name: "read".into(),
-            input_json: r#"{"path":"slow.txt"}"#.into(),
+            // Read accepts regular files only. The shell supplies a real
+            // streaming FIFO operation for this cancellation lifecycle test.
+            name: "bash".into(),
+            input_json: r#"{"cmd":"cat slow.txt"}"#.into(),
         },
         ProviderEvent::ToolUse {
             id: "must-not-start".into(),
@@ -179,10 +181,10 @@ async fn stop_mid_tool_future_captures_output_and_never_starts_the_followup_call
             {
                 let trigger = trigger.clone();
                 tokio::spawn(async move {
-                    // Hard bound: a tool that never starts fails the test
-                    // visibly instead of hanging the suite.
-                    let _ = tokio::time::timeout(Duration::from_secs(10), connected).await;
-                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    tokio::time::timeout(Duration::from_secs(10), connected)
+                        .await
+                        .expect("shell must connect to FIFO")
+                        .expect("writer must complete its write");
                     trigger.cancel();
                 });
             }
@@ -204,7 +206,7 @@ async fn stop_mid_tool_future_captures_output_and_never_starts_the_followup_call
         ConversationEvent::ToolCallFinished { call_id, result }
             if call_id == "slow-read"
                 && result.status == vega_conversation::types::ToolCallStatus::Cancelled
-                && result.output.contains("partial tool output")
+                && result.output == "Tool error: bash failed (cancelled)"
     )));
     assert!(!run.events.iter().any(|event| matches!(
         event,
@@ -213,6 +215,10 @@ async fn stop_mid_tool_future_captures_output_and_never_starts_the_followup_call
     let slow_row = tool_row(&fixture.store, "slow-read")?.expect("slow-read row");
     assert_eq!(slow_row.0, "cancelled");
     assert!(slow_row.3.is_some());
+    assert_eq!(
+        slow_row.1.as_deref(),
+        Some("Tool error: bash failed (cancelled)")
+    );
     assert_eq!(
         tool_row_count(&fixture.store)?,
         1,

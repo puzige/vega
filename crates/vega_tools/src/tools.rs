@@ -1,26 +1,60 @@
 //! Tool surface: one [`Tools`] instance bound to a canonical project root.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::checkpoint::MutationContext;
 use crate::codec::CheckpointIds;
 use crate::error::{MutationError, ToolError};
 use crate::fence::discover_git_dir;
 
+/// Conversation-owned read versions. Clones share state; defaults isolate conversations.
+#[derive(Clone, Default)]
+pub struct ReadState(Arc<Mutex<BTreeMap<PathBuf, [u8; 32]>>>);
+
+impl ReadState {
+    pub(crate) fn record(&self, path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+        self.0
+            .lock()
+            .map_err(|_| MutationError::new(crate::MutationErrorCode::FilesystemError))?
+            .insert(path.to_path_buf(), read_hash(bytes));
+        Ok(())
+    }
+    pub(crate) fn validate(&self, path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+        let state = self
+            .0
+            .lock()
+            .map_err(|_| MutationError::new(crate::MutationErrorCode::FilesystemError))?;
+        match state.get(path) {
+            Some(previous) if *previous == read_hash(bytes) => Ok(()),
+            Some(_) => Err(MutationError::new(crate::MutationErrorCode::TargetChanged).into()),
+            None => Err(MutationError::new(crate::MutationErrorCode::FileNotRead).into()),
+        }
+    }
+}
+
+fn read_hash(bytes: &[u8]) -> [u8; 32] {
+    let mut hash = crate::sha256::Sha256::new();
+    hash.update(bytes);
+    hash.finalize()
+}
+
 static TOOL_INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 /// Read and explicitly configured mutation tools bound to one project root.
 ///
-/// Every path argument is interpreted relative to the root and enforced by
-/// the path fence ([`crate::fence`], tech-spec §3 red line). Cheap to clone
-/// and share; the root is canonicalized once at construction.
+/// File paths accept absolute targets or resolve relative to the root. Runtime
+/// permissions authorize external files; search/shell retain their own fences.
+/// Clones share read versions; separate conversations need separate ReadState.
 #[derive(Clone)]
 pub struct Tools {
     pub(crate) root: PathBuf,
     pub(crate) mutation: Option<MutationContext>,
     pub(crate) instance_id: u64,
+    pub(crate) reads: ReadState,
 }
 
 impl Tools {
@@ -41,6 +75,7 @@ impl Tools {
         Ok(Self {
             root: canonical,
             mutation: None,
+            reads: ReadState::default(),
             instance_id: TOOL_INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         })
     }
@@ -64,6 +99,23 @@ impl Tools {
             git_dir.as_deref(),
         )?);
         Ok(self)
+    }
+
+    /// Share read versions across tool calls in exactly one conversation.
+    pub fn with_read_state(mut self, state: ReadState) -> Self {
+        self.reads = state;
+        self
+    }
+
+    /// Clone the current conversation read state.
+    pub fn read_state(&self) -> ReadState {
+        self.reads.clone()
+    }
+
+    /// Resolve an absolute or project-relative file path without creating it.
+    pub fn file_path(&self, path: &str) -> Result<PathBuf, ToolError> {
+        crate::fence::resolve_file_path(&self.root, path)
+            .map_err(|code| MutationError::new(code).into())
     }
 
     /// The canonical project root all tool paths resolve against.

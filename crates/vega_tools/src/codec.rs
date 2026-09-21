@@ -174,6 +174,7 @@ pub enum WriteEditAudit {
     Write {
         path: String,
         content_bytes: u64,
+        expected_written_bytes: Option<u64>,
         fingerprint_v1: String,
     },
     Edit {
@@ -190,18 +191,59 @@ impl WriteEditAudit {
         Ok(Self::Write {
             path: path.to_string(),
             content_bytes: checked_len(content.as_bytes())?,
+            expected_written_bytes: None,
             fingerprint_v1: fingerprint(&[b"write", path.as_bytes(), content.as_bytes()])?,
         })
     }
 
+    pub(crate) fn write_encoded(
+        path: &str,
+        content: &str,
+        encoded_bytes: usize,
+    ) -> Result<Self, MutationError> {
+        let mut audit = Self::write(path, content)?;
+        if encoded_bytes != content.len() {
+            let expected = u64::try_from(encoded_bytes).map_err(|_| codec_error())?;
+            if let Self::Write {
+                expected_written_bytes,
+                fingerprint_v1,
+                ..
+            } = &mut audit
+            {
+                *expected_written_bytes = Some(expected);
+                *fingerprint_v1 = fingerprint(&[
+                    b"write:encoded",
+                    path.as_bytes(),
+                    content.as_bytes(),
+                    &expected.to_be_bytes(),
+                ])?;
+            }
+        }
+        Ok(audit)
+    }
+
+    #[cfg(test)]
     pub(crate) fn edit(path: &str, old: &str, new: &str) -> Result<Self, MutationError> {
+        Self::edit_with_replace_all(path, old, new, false)
+    }
+
+    pub(crate) fn edit_with_replace_all(
+        path: &str,
+        old: &str,
+        new: &str,
+        replace_all: bool,
+    ) -> Result<Self, MutationError> {
         validate_wire_path(path).map_err(MutationError::new)?;
         Ok(Self::Edit {
             path: path.to_string(),
             old_string_bytes: checked_len(old.as_bytes())?,
             new_string_bytes: checked_len(new.as_bytes())?,
             fingerprint_v1: fingerprint(&[
-                b"edit",
+                if replace_all {
+                    b"edit:replace_all"
+                } else {
+                    b"edit"
+                },
                 path.as_bytes(),
                 old.as_bytes(),
                 new.as_bytes(),
@@ -230,12 +272,14 @@ impl WriteEditAudit {
             Self::Write {
                 path,
                 content_bytes,
+                expected_written_bytes,
                 fingerprint_v1,
             } => encode_json(&WriteAuditWire {
                 audit_version: AUDIT_VERSION,
                 tool: "write",
                 path,
                 content_bytes: *content_bytes,
+                expected_written_bytes: *expected_written_bytes,
                 fingerprint_v1,
             }),
             Self::Edit {
@@ -271,6 +315,7 @@ impl WriteEditAudit {
                 Ok(Self::Write {
                     path: wire.path,
                     content_bytes: wire.content_bytes,
+                    expected_written_bytes: wire.expected_written_bytes,
                     fingerprint_v1: wire.fingerprint_v1,
                 })
             }
@@ -358,7 +403,7 @@ impl InvalidWriteEditAudit {
         }
         let tool = MutationTool::parse(&wire.tool)?;
         validate_hash(&wire.raw_input_sha256)?;
-        let Some(code) = MutationErrorCode::from_str(&wire.validation_error_code) else {
+        let Some(code) = MutationErrorCode::parse_code(&wire.validation_error_code) else {
             return Err(codec_error());
         };
         if !code.is_invalid_input_code() {
@@ -464,7 +509,7 @@ impl EditSuccessOutput {
     pub fn to_json(&self) -> Result<String, MutationError> {
         validate_wire_path(&self.path).map_err(MutationError::new)?;
         CheckpointRef::parse(self.checkpoint_ref.as_str())?;
-        if self.replacements != 1 {
+        if self.replacements == 0 {
             return Err(codec_error());
         }
         encode_json(&EditSuccessWire {
@@ -478,7 +523,7 @@ impl EditSuccessOutput {
     pub fn from_json(json: &str) -> Result<Self, MutationError> {
         let wire: EditSuccessOwned = decode_json(json)?;
         validate_wire_path(&wire.path).map_err(MutationError::new)?;
-        if wire.replacements != 1 {
+        if wire.replacements == 0 {
             return Err(codec_error());
         }
         Ok(Self {
@@ -550,6 +595,8 @@ struct WriteAuditWire<'a> {
     tool: &'static str,
     path: &'a str,
     content_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected_written_bytes: Option<u64>,
     fingerprint_v1: &'a str,
 }
 
@@ -560,7 +607,15 @@ struct WriteAuditOwned {
     tool: String,
     path: String,
     content_bytes: u64,
+    #[serde(default, deserialize_with = "optional_u64")]
+    expected_written_bytes: Option<u64>,
     fingerprint_v1: String,
+}
+
+fn optional_u64<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    u64::deserialize(deserializer).map(Some)
 }
 
 #[derive(Serialize)]
@@ -857,7 +912,8 @@ mod tests {
         for value in success_negatives {
             assert!(WriteSuccessOutput::from_json(&value).is_err(), "{value}");
         }
-        for replacements in [0, 2] {
+        {
+            let replacements = 0;
             let value = format!(
                 r#"{{"path":"a","bytes_written":1,"replacements":{replacements},"checkpoint_ref":"{ref_value}"}}"#
             );

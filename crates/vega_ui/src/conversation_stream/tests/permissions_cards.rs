@@ -496,3 +496,86 @@ async fn thread_switch_timeout_contract_removes_prompt_before_view_replacement(
     assert_eq!(future.await, PermissionDecision::Timeout);
     assert!(!has_active_permission(window, cx));
 }
+
+#[gpui_kit::test]
+async fn issue112_external_read_permission_matches_canonical_card(cx: &mut TestAppContext) {
+    init_permission_test(cx);
+    let (window, queue) = open_permission_stream(cx);
+    propose(
+        window,
+        cx,
+        ToolCall {
+            id: "read-external".into(),
+            tool: "Read".into(),
+            input_json:
+                serde_json::json!({"file_path":"/external/note.txt","offset":null,"limit":null})
+                    .to_string(),
+        },
+    );
+    let decision = queue.request(
+        PermissionRequest {
+            call_id: "read-external".into(),
+            tool: "read".into(),
+            display_target: "/external/note.txt".into(),
+            danger_rule_id: None,
+            danger_reason: None,
+            external: None,
+        },
+        CancellationToken::new(),
+    );
+    cx.run_until_parked();
+    assert!(has_active_permission(window, cx));
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert_eq!(decision.await.unwrap(), PermissionDecision::Once);
+    cx.run_until_parked();
+    assert!(!has_active_permission(window, cx));
+}
+
+#[gpui_kit::test]
+async fn issue112_external_mutations_mount_real_permission_queue(cx: &mut TestAppContext) {
+    init_permission_test(cx);
+    for (tool, audit_tool, fields) in [
+        ("Write", "write", serde_json::json!({"content_bytes": 3})),
+        (
+            "Edit",
+            "edit",
+            serde_json::json!({"old_string_bytes": 2, "new_string_bytes": 3}),
+        ),
+    ] {
+        let (window, queue) = open_permission_stream(cx);
+        let mut input = serde_json::json!({
+            "audit_version": "write_edit_v1", "tool": audit_tool,
+            "path": "/external/note.txt", "fingerprint_v1": "a".repeat(64)
+        });
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        propose(
+            window,
+            cx,
+            ToolCall {
+                id: "external-mutation".into(),
+                tool: tool.into(),
+                input_json: input.to_string(),
+            },
+        );
+        let decision = queue.request(
+            PermissionRequest {
+                call_id: "external-mutation".into(),
+                tool: audit_tool.into(),
+                display_target: "/external/note.txt".into(),
+                danger_rule_id: None,
+                danger_reason: None,
+                external: None,
+            },
+            CancellationToken::new(),
+        );
+        cx.run_until_parked();
+        assert!(has_active_permission(window, cx));
+        cx.simulate_keystrokes(window.into(), "enter");
+        assert_eq!(decision.await.unwrap(), PermissionDecision::Once);
+        cx.run_until_parked();
+        assert!(!has_active_permission(window, cx));
+    }
+}

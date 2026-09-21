@@ -652,7 +652,19 @@ async fn issue76_auto_compaction_triggers_after_tool_result_without_reexecution(
         ChatMessage::new(ChatRole::Assistant, "old answer"),
         ChatMessage::new(ChatRole::User, "current goal"),
     ]);
-    req.context_budget = Some(ContextBudget::new(16_100, 1_000, true).unwrap());
+    let initial_wire = std::iter::once(ChatMessage::new(
+        ChatRole::System,
+        req.system_prompt.clone(),
+    ))
+    .chain(req.history.iter().cloned())
+    .collect::<Vec<_>>();
+    let initial_tokens =
+        crate::estimate_wire_context(&initial_wire, &tool_definitions(RuntimeRunMode::Ask))
+            .unwrap()
+            .input_tokens;
+    // Trigger after the file result, never merely because the tool schema grew.
+    let input_budget = (initial_tokens + 100) * 5 / 4 + 1;
+    req.context_budget = Some(ContextBudget::new(input_budget + 1_000, 1_000, true).unwrap());
     req.context_source_version = Some(7);
     req.context_compaction_hook = Some(Arc::new(hook));
     let outcome = run_agent(&provider, &tools, req, CancellationToken::new())

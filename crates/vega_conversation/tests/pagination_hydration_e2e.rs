@@ -449,7 +449,7 @@ async fn real_run_hydrates_tools_costs_summary_and_redacts_inputs() -> Result<()
     // content-free: path/badge only, never the raw body or audit JSON.
     assert_eq!(tool_inputs.len(), 2, "one card per durable tool call");
     assert!(
-        matches!(&tool_inputs[0].0, Some(vega_conversation::types::ToolCardInputProjection::ReadOnly { tool }) if *tool == vega_conversation::types::ReadOnlyToolKind::Read)
+        matches!(&tool_inputs[0].0, Some(vega_conversation::types::ToolCardInputProjection::ReadOnly { tool, .. }) if *tool == vega_conversation::types::ReadOnlyToolKind::Read)
     );
     let rendered = format!("{:?}{:?}", tool_inputs[0], tool_inputs[1]);
     assert!(

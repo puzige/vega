@@ -23,7 +23,7 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["read", "glob", "grep"]
+            vec!["Read", "glob", "grep"]
         );
         assert_strict_schemas(&tools);
     }
@@ -33,7 +33,7 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["read", "glob", "grep", "write", "edit", "bash"]
+        vec!["Read", "glob", "grep", "Write", "Edit", "bash"]
     );
     assert_strict_schemas(&tools);
     let bash = tools.iter().find(|tool| tool.name == "bash").unwrap();
@@ -48,10 +48,10 @@ fn run_modes_advertise_exact_three_or_six_strict_tools() {
         serde_json::json!(["integer", "null"])
     );
 
-    let read = tools.iter().find(|tool| tool.name == "read").unwrap();
+    let read = tools.iter().find(|tool| tool.name == "Read").unwrap();
     assert_eq!(
         read.input_schema["required"],
-        serde_json::json!(["path", "offset", "limit"])
+        serde_json::json!(["file_path", "offset", "limit"])
     );
     assert_eq!(
         read.input_schema["properties"]["offset"]["type"],

@@ -80,7 +80,7 @@ pub(crate) fn normalize_mutation_path(input: &str) -> Result<(PathBuf, String), 
     for component in path.components() {
         match component {
             Component::Normal(value) => {
-                if value == ".git" {
+                if value.as_encoded_bytes().eq_ignore_ascii_case(b".git") {
                     return Err(MutationErrorCode::PathGit);
                 }
                 normalized.push(value);
@@ -104,9 +104,25 @@ pub(crate) fn normalize_mutation_path(input: &str) -> Result<(PathBuf, String), 
 /// Strict wire paths must already be in normalized form and may not address
 /// any git control component.
 pub(crate) fn validate_wire_path(input: &str) -> Result<(), MutationErrorCode> {
-    let (_, normalized) = normalize_mutation_path(input)?;
-    if normalized != input {
-        return Err(MutationErrorCode::CodecInvalid);
+    if Path::new(input).is_absolute() {
+        let path = Path::new(input);
+        if input.contains('\0')
+            || path.parent().is_none()
+            || path.components().any(|c| {
+                matches!(c, Component::ParentDir)
+                    || c.as_os_str()
+                        .as_encoded_bytes()
+                        .eq_ignore_ascii_case(b".git")
+            })
+            || path.components().collect::<PathBuf>().to_string_lossy() != input
+        {
+            return Err(MutationErrorCode::CodecInvalid);
+        }
+    } else {
+        let (_, normalized) = normalize_mutation_path(input)?;
+        if normalized != input {
+            return Err(MutationErrorCode::CodecInvalid);
+        }
     }
     Ok(())
 }
@@ -120,50 +136,25 @@ pub(crate) fn resolve_mutation_target(
     input: &str,
     require_existing: bool,
 ) -> Result<MutationTarget, MutationErrorCode> {
-    let (relative, display) = normalize_mutation_path(input)?;
-    let components: Vec<_> = relative.components().collect();
-    let mut current = root.to_path_buf();
-
-    for (index, component) in components.iter().enumerate() {
-        current.push(component.as_os_str());
-        let final_component = index + 1 == components.len();
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() {
-                    return Err(MutationErrorCode::PathSymlink);
-                }
-                if !final_component && !metadata.is_dir() {
-                    return Err(MutationErrorCode::ParentNotFound);
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && final_component => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(MutationErrorCode::ParentNotFound);
-            }
-            Err(_) => return Err(MutationErrorCode::FilesystemError),
+    let absolute = resolve_file_path(root, input)?;
+    if git_dir.is_some_and(|directory| absolute.starts_with(directory)) {
+        return Err(MutationErrorCode::PathGit);
+    }
+    // Protect worktree control directories even for an external repository.
+    for ancestor in absolute.ancestors().skip(1) {
+        if let Some(directory) = discover_git_dir(ancestor)?
+            && absolute.starts_with(directory)
+        {
+            return Err(MutationErrorCode::PathGit);
         }
     }
-
-    let absolute = root.join(&relative);
     let metadata = match fs::symlink_metadata(&absolute) {
         Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                return Err(MutationErrorCode::PathSymlink);
-            }
             if !metadata.is_file() {
                 return Err(MutationErrorCode::PathNotFile);
             }
-            if metadata.nlink() > 1 {
+            if metadata.nlink() != 1 {
                 return Err(MutationErrorCode::PathHardlink);
-            }
-            let canonical = absolute
-                .canonicalize()
-                .map_err(|_| MutationErrorCode::FilesystemError)?;
-            if !canonical.starts_with(root) {
-                return Err(MutationErrorCode::PathSymlink);
-            }
-            if git_dir.is_some_and(|directory| canonical.starts_with(directory)) {
-                return Err(MutationErrorCode::PathGit);
             }
             Some(metadata)
         }
@@ -171,29 +162,69 @@ pub(crate) fn resolve_mutation_target(
             if require_existing {
                 return Err(MutationErrorCode::TargetNotFound);
             }
-            let Some(parent) = absolute.parent() else {
-                return Err(MutationErrorCode::ParentNotFound);
-            };
-            let canonical_parent = parent
-                .canonicalize()
-                .map_err(|_| MutationErrorCode::ParentNotFound)?;
-            if !canonical_parent.starts_with(root) {
-                return Err(MutationErrorCode::PathSymlink);
-            }
-            if git_dir.is_some_and(|directory| canonical_parent.starts_with(directory)) {
-                return Err(MutationErrorCode::PathGit);
-            }
             None
         }
         Err(_) => return Err(MutationErrorCode::FilesystemError),
     };
-
+    let relative = absolute
+        .strip_prefix(root)
+        .unwrap_or(&absolute)
+        .to_path_buf();
+    let display = relative
+        .to_str()
+        .ok_or(MutationErrorCode::CodecInvalid)?
+        .to_string();
     Ok(MutationTarget {
         relative,
         display,
         absolute,
         metadata,
     })
+}
+
+/// Canonicalize existing prefixes, retaining absent suffixes without creating them.
+/// This is the common identity used for reading, permission and mutation.
+pub(crate) fn resolve_file_path(root: &Path, input: &str) -> Result<PathBuf, MutationErrorCode> {
+    if input.is_empty() || input.contains('\0') {
+        return Err(MutationErrorCode::PathRoot);
+    }
+    let candidate = root.join(input);
+    let mut current = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                current.pop();
+            }
+            Component::Normal(value) => {
+                if value.as_encoded_bytes().eq_ignore_ascii_case(b".git") {
+                    return Err(MutationErrorCode::PathGit);
+                }
+                current.push(value);
+            }
+            other => current.push(other.as_os_str()),
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(_) => {
+                current = current
+                    .canonicalize()
+                    .map_err(|_| MutationErrorCode::PathSymlink)?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(MutationErrorCode::FilesystemError),
+        }
+        if current.components().any(|part| {
+            part.as_os_str()
+                .as_encoded_bytes()
+                .eq_ignore_ascii_case(b".git")
+        }) {
+            return Err(MutationErrorCode::PathGit);
+        }
+    }
+    if current.parent().is_none() {
+        return Err(MutationErrorCode::PathRoot);
+    }
+    Ok(current)
 }
 
 /// Discover the project's real git directory, including a worktree `.git`
@@ -261,46 +292,25 @@ mod tests {
     }
 
     #[test]
-    fn dot_dot_traversal_is_rejected_lexically() {
-        let dir = tempdir().unwrap();
-        let tools = tools_at(dir.path());
-        // 目标不存在也必须拒——词法检查先于文件系统访问
-        for candidate in ["../outside.txt", "a/../../escape.txt", ".."] {
-            assert!(matches!(
-                tools.read(candidate, None, None).unwrap_err(),
-                ToolError::PathEscape(_)
-            ));
+    fn file_reads_resolve_absolute_parent_and_external_symlinks() {
+        let owned = tempdir().unwrap();
+        let root = owned.path().join("project");
+        fs::create_dir(&root).unwrap();
+        let outside = owned.path().join("note.txt");
+        fs::write(&outside, "outside").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("alias")).unwrap();
+        let tools = tools_at(&root);
+        for input in [outside.to_str().unwrap(), "../note.txt", "alias"] {
+            assert_eq!(tools.read(input, None, None).unwrap().text, "1 | outside");
         }
-    }
-
-    #[test]
-    fn absolute_path_injection_is_rejected() {
-        let dir = tempdir().unwrap();
-        let tools = tools_at(dir.path());
-        for candidate in ["/etc/passwd", "/"] {
-            assert!(matches!(
-                tools.read(candidate, None, None).unwrap_err(),
-                ToolError::PathEscape(_)
-            ));
-        }
-    }
-
-    #[test]
-    fn symlink_pointing_outside_root_is_rejected() {
-        let dir = tempdir().unwrap();
-        let outside = tempdir().unwrap();
-        fs::write(outside.path().join("secret.txt"), "secret").unwrap();
-        fs::create_dir_all(dir.path().join("sub")).unwrap();
-        std::os::unix::fs::symlink(
-            outside.path().join("secret.txt"),
-            dir.path().join("sub/evil"),
-        )
-        .unwrap();
-
-        let tools = tools_at(dir.path());
+        // Search/walk tools retain their project-only fence.
         assert!(matches!(
-            tools.read("sub/evil", None, None).unwrap_err(),
-            ToolError::PathEscape(_)
+            super::resolve_in_root(tools.root(), "../note.txt"),
+            Err(ToolError::PathEscape(_))
+        ));
+        assert!(matches!(
+            super::resolve_in_root(tools.root(), "alias"),
+            Err(ToolError::PathEscape(_))
         ));
     }
 

@@ -6,7 +6,7 @@ pub(crate) fn verified_terminal(
     call: &ToolCall,
     result: &ToolResult,
 ) -> Result<Option<TerminalFingerprint>, GitWorkspaceError> {
-    if !matches!(call.tool.as_str(), "write" | "edit") {
+    if !matches!(call.tool.as_str(), "Write" | "Edit" | "write" | "edit") {
         return Ok(None);
     }
     if result.status != ToolCallStatus::Success || result.reused {
@@ -24,19 +24,20 @@ pub(crate) fn verified_terminal(
     let expected_checkpoint = ids.checkpoint_ref();
     let audit = vega_tools::WriteEditAudit::from_json(&call.input_json)
         .map_err(|_| workspace_error(GitWorkspaceErrorCode::ArtifactConflict))?;
-    if audit.tool().as_str() != call.tool {
+    if !audit.tool().as_str().eq_ignore_ascii_case(&call.tool) {
         return Err(workspace_error(GitWorkspaceErrorCode::ArtifactConflict));
     }
     match audit {
         vega_tools::WriteEditAudit::Write {
             path,
             content_bytes,
+            expected_written_bytes,
             fingerprint_v1,
         } => {
             let success = vega_tools::WriteSuccessOutput::from_json(&result.output)
                 .map_err(|_| workspace_error(GitWorkspaceErrorCode::ArtifactConflict))?;
             if success.path != path
-                || success.bytes_written != content_bytes
+                || success.bytes_written != expected_written_bytes.unwrap_or(content_bytes)
                 || success.checkpoint_ref != expected_checkpoint
             {
                 return Err(workspace_error(GitWorkspaceErrorCode::ArtifactConflict));
@@ -55,7 +56,7 @@ pub(crate) fn verified_terminal(
             let success = vega_tools::EditSuccessOutput::from_json(&result.output)
                 .map_err(|_| workspace_error(GitWorkspaceErrorCode::ArtifactConflict))?;
             if success.path != path
-                || success.replacements != 1
+                || success.replacements == 0
                 || success.checkpoint_ref != expected_checkpoint
             {
                 return Err(workspace_error(GitWorkspaceErrorCode::ArtifactConflict));

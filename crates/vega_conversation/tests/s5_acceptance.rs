@@ -19,6 +19,7 @@ use vega_tools::{
 };
 
 const THREAD_ID: &str = "s5-acceptance-thread";
+const READ_CALL: &str = "s5-read-call";
 const WRITE_CALL: &str = "s5-write-call";
 const EDIT_ALWAYS_CALL: &str = "s5-edit-always-call";
 const EDIT_RULE_CALL: &str = "s5-edit-rule-call";
@@ -329,6 +330,17 @@ async fn confirm_mutations_are_checkpointed_audited_and_content_free_end_to_end(
 
     let tools = Tools::new(project_dir.path())?;
     let provider = MockProvider::new_rounds(vec![
+        // Existing files must be read in a prior round before mutation preparation.
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: READ_CALL.into(),
+                name: "Read".into(),
+                input_json: r#"{"file_path":"existing.txt"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
         vec![ScriptStep::events(vec![
             ProviderEvent::ToolUse {
                 id: WRITE_CALL.into(),
@@ -632,20 +644,50 @@ async fn confirm_mutations_are_checkpointed_audited_and_content_free_end_to_end(
             &protected,
         );
     }
-    let event_text = format!("{:?}", run.events);
+    // Read legitimately returns source content. Only its two content-bearing
+    // events are excluded; every mutation event keeps the full sentinel check.
+    let mutation_audit_event = |event: &&ConversationEvent| {
+        !matches!(
+            event,
+            ConversationEvent::ToolCallOutput { call_id, .. }
+                | ConversationEvent::ToolCallFinished { call_id, .. }
+                if call_id == READ_CALL
+        )
+    };
+    let event_text = format!(
+        "{:?}",
+        run.events
+            .iter()
+            .filter(mutation_audit_event)
+            .collect::<Vec<_>>()
+    );
     let sink_text = format!(
         "{:?}",
         streamed
             .lock()
             .map_err(|_| "event sink poisoned")?
-            .as_slice()
+            .iter()
+            .filter(mutation_audit_event)
+            .collect::<Vec<_>>()
     );
     assert_absent(&event_text, &protected);
     assert_absent(&sink_text, &protected);
 
     let provider_requests = provider.requests();
-    assert_eq!(provider_requests.len(), 2);
-    let observe = &provider_requests[1];
+    assert_eq!(provider_requests.len(), 3);
+    let read = tool_calls::find_state(store.conn(), READ_CALL)?.ok_or("missing read row")?;
+    assert_eq!(read.status, "success");
+    assert!(
+        read.output_text
+            .as_deref()
+            .is_some_and(|text| text.contains(EDIT_OLD))
+    );
+    let mut observe = provider_requests[2].clone();
+    // Retain the original whole-request audit assertion except for the explicitly
+    // requested Read result, whose source content is part of its public contract.
+    observe.messages.retain(|message| {
+        message.role != ChatRole::Tool || message.tool_call_id.as_deref() != Some(READ_CALL)
+    });
     let observed_results = observe
         .messages
         .iter()

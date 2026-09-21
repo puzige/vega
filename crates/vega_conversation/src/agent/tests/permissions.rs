@@ -168,3 +168,31 @@ async fn permission_queue_rejects_malformed_or_cross_tool_danger_requests() {
     assert!(queue.take_pending().is_none());
     drop(listener);
 }
+
+#[test]
+fn issue112_file_permission_queue_accepts_canonical_targets_and_rejects_traversal() {
+    for (tool, path, expected) in [
+        ("read", "/external/note.txt", true),
+        ("write", "/external/note.txt", true),
+        ("edit", "/external/note.txt", true),
+        ("write", "src/note.txt", true),
+        ("edit", "src/note.txt", true),
+        ("read", "src/note.txt", false),
+        ("write", "../note.txt", false),
+        ("edit", "/external/../note.txt", false),
+        ("unknown", "/external/note.txt", false),
+    ] {
+        let request = PermissionRequest {
+            call_id: "file-permission".into(),
+            tool: tool.into(),
+            display_target: path.into(),
+            danger_rule_id: None,
+            danger_reason: None,
+            external: None,
+        };
+        assert_eq!(
+            crate::agent::permission_queue::valid_permission_request(&request),
+            expected
+        );
+    }
+}

@@ -41,8 +41,8 @@ pub(crate) fn valid_skill_call_projection(tool: &str, input_json: &str) -> bool 
 
 fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
     match tool {
-        "write" | "edit" => vega_tools::WriteEditAudit::from_json(input_json)
-            .is_ok_and(|audit| audit.tool().as_str() == tool),
+        "Write" | "Edit" | "write" | "edit" => vega_tools::WriteEditAudit::from_json(input_json)
+            .is_ok_and(|audit| audit.tool().as_str().eq_ignore_ascii_case(tool)),
         "bash" => vega_tools::bash_permission_signature(input_json).is_ok(),
         "load_skill" | "read_skill_resource" => valid_skill_call_projection(tool, input_json),
         _ if tool.starts_with("mcp_") => {
@@ -53,7 +53,7 @@ fn valid_mixed_skill_rejection_input(tool: &str, input_json: &str) -> bool {
             };
             crate::types::McpCallIdentity::from_tool_call(&call).is_some()
         }
-        "read" | "glob" | "grep" => serde_json::from_str::<serde_json::Value>(input_json)
+        "Read" | "read" | "glob" | "grep" => serde_json::from_str::<serde_json::Value>(input_json)
             .is_ok_and(|value| value.is_object()),
         _ => input_json == "{}",
     }
@@ -627,6 +627,7 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 }
                 let tool = match rule.tool.as_str() {
                     "bash" => RuntimeMutatingTool::Bash,
+                    "read" => RuntimeMutatingTool::Read,
                     "write" => RuntimeMutatingTool::Write,
                     "edit" => RuntimeMutatingTool::Edit,
                     _ => {
@@ -992,12 +993,12 @@ pub(crate) fn validate_recovered_projection(
             };
             allowed.then(|| input_json.to_string()).ok_or_else(corrupt)
         }
-        "write" | "edit" => {
+        "Write" | "Edit" | "write" | "edit" => {
             if exit_code.is_some() || duration_ms.is_some() {
                 return Err(corrupt());
             }
             if let Ok(valid) = vega_tools::WriteEditAudit::from_json(input_json) {
-                if valid.tool().as_str() != tool
+                if !valid.tool().as_str().eq_ignore_ascii_case(tool)
                     || approval.source == ApprovalSource::Validation
                     || !approval_source_matches(tool, status, approval.source, false)
                 {
@@ -1017,13 +1018,15 @@ pub(crate) fn validate_recovered_projection(
                     return Err(corrupt());
                 }
                 let output_valid = match status {
-                    RuntimeToolStatus::Success if tool == "write" => mutation_success_matches(
-                        &valid,
-                        &checkpoint_project_id,
-                        thread_id,
-                        call_id,
-                        output,
-                    ),
+                    RuntimeToolStatus::Success if matches!(tool, "Write" | "write") => {
+                        mutation_success_matches(
+                            &valid,
+                            &checkpoint_project_id,
+                            thread_id,
+                            call_id,
+                            output,
+                        )
+                    }
                     RuntimeToolStatus::Success => mutation_success_matches(
                         &valid,
                         &checkpoint_project_id,
@@ -1033,6 +1036,7 @@ pub(crate) fn validate_recovered_projection(
                     ),
                     RuntimeToolStatus::Failed => {
                         output == format!("Tool error: {tool} failed")
+                            || safe_mutation_failure(output)
                             || output == "Tool error: tool worker failed"
                             || output == "Tool error: invalid mutation result"
                     }
@@ -1057,7 +1061,7 @@ pub(crate) fn validate_recovered_projection(
                     {
                         true
                     }
-                    RuntimeToolStatus::Cancelled if tool == "write" => {
+                    RuntimeToolStatus::Cancelled if matches!(tool, "Write" | "write") => {
                         mutation_success_matches(
                             &valid,
                             &checkpoint_project_id,
@@ -1065,6 +1069,7 @@ pub(crate) fn validate_recovered_projection(
                             call_id,
                             output,
                         ) || output == "Tool error: write failed"
+                            || safe_mutation_failure(output)
                             || output == "Tool error: tool worker failed"
                     }
                     RuntimeToolStatus::Cancelled => {
@@ -1075,6 +1080,7 @@ pub(crate) fn validate_recovered_projection(
                             call_id,
                             output,
                         ) || output == "Tool error: edit failed"
+                            || safe_mutation_failure(output)
                             || output == "Tool error: tool worker failed"
                     }
                 };
@@ -1088,11 +1094,15 @@ pub(crate) fn validate_recovered_projection(
                     "Tool error: invalid {tool} input ({})",
                     invalid.validation_error_code().as_str()
                 );
-                if invalid.tool().as_str() != tool
+                if !invalid.tool().as_str().eq_ignore_ascii_case(tool)
                     || status != RuntimeToolStatus::Rejected
                     || approval.decision != Approval::Deny
                     || approval.source != ApprovalSource::Validation
-                    || output != expected
+                    || (output != expected
+                        && output
+                            != invalid
+                                .validation_error_code()
+                                .validation_result(invalid.tool().as_str()))
                 {
                     return Err(corrupt());
                 }
@@ -1115,7 +1125,7 @@ pub(crate) fn validate_recovered_projection(
         {
             Ok(input_json.to_string())
         }
-        "read" | "glob" | "grep" | "bash" => {
+        "Read" | "read" | "glob" | "grep" | "bash" => {
             if tool == "bash" && approval.source == ApprovalSource::Validation {
                 return Err(corrupt());
             }
@@ -1142,7 +1152,10 @@ pub(crate) fn validate_recovered_projection(
                     (
                         ApprovalSource::Recovery,
                         vega_store::recovery::RECOVERY_REJECTED_OUTPUT
-                    ) | (ApprovalSource::Timeout, "Tool error: permission denied")
+                    ) | (
+                        ApprovalSource::Timeout | ApprovalSource::User,
+                        "Tool error: permission denied"
+                    )
                 )
             {
                 return Err(corrupt());
@@ -1198,6 +1211,23 @@ pub(crate) fn validate_recovered_projection(
     }
 }
 
+pub(crate) fn safe_mutation_failure(output: &str) -> bool {
+    let Some(rest) = output.strip_prefix("Tool error: write/edit failed (") else {
+        return false;
+    };
+    let Some((code, _)) = rest.split_once(')') else {
+        return false;
+    };
+    vega_tools::MutationErrorCode::parse_code(code).is_some_and(|code| {
+        output
+            == format!(
+                "Tool error: write/edit failed ({}){}",
+                code.as_str(),
+                code.guidance()
+            )
+    })
+}
+
 pub(crate) fn mutation_success_matches(
     audit: &vega_tools::WriteEditAudit,
     project_id: &str,
@@ -1213,12 +1243,13 @@ pub(crate) fn mutation_success_matches(
         vega_tools::WriteEditAudit::Write {
             path,
             content_bytes,
+            expected_written_bytes,
             ..
         } => vega_tools::WriteSuccessOutput::from_json(output)
             .ok()
             .is_some_and(|success| {
                 success.path == *path
-                    && success.bytes_written == *content_bytes
+                    && success.bytes_written == expected_written_bytes.unwrap_or(*content_bytes)
                     && success.checkpoint_ref == expected_ref
             }),
         vega_tools::WriteEditAudit::Edit { path, .. } => {
@@ -1357,7 +1388,21 @@ pub(crate) fn approval_source_matches(
                 source == ApprovalSource::ReadonlyTool
             }
         }
-        "read" | "glob" | "grep" => {
+        "Read" | "read" => match status {
+            RuntimeToolStatus::Rejected => matches!(
+                source,
+                ApprovalSource::User | ApprovalSource::Timeout | ApprovalSource::Recovery
+            ),
+            _ => matches!(
+                source,
+                ApprovalSource::ReadonlyTool
+                    | ApprovalSource::Legacy
+                    | ApprovalSource::User
+                    | ApprovalSource::Rule
+                    | ApprovalSource::FullAccess
+            ),
+        },
+        "glob" | "grep" => {
             (status == RuntimeToolStatus::Rejected
                 && matches!(source, ApprovalSource::Recovery | ApprovalSource::Timeout))
                 || (status != RuntimeToolStatus::Rejected
@@ -1366,7 +1411,7 @@ pub(crate) fn approval_source_matches(
                         ApprovalSource::ReadonlyTool | ApprovalSource::Legacy
                     ))
         }
-        "write" | "edit" => match status {
+        "Write" | "Edit" | "write" | "edit" => match status {
             RuntimeToolStatus::Rejected => matches!(
                 source,
                 ApprovalSource::RunMode

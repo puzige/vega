@@ -400,7 +400,7 @@ impl ToolCard {
     pub(crate) fn activity_category(&self) -> ToolActivityCategory {
         match (&self.input, &self.result) {
             (_, Some(ToolCardResultProjection::Corrupt)) => ToolActivityCategory::Other,
-            (Some(ToolCardInputProjection::ReadOnly { tool }), _) => match tool {
+            (Some(ToolCardInputProjection::ReadOnly { tool, .. }), _) => match tool {
                 ReadOnlyToolKind::Read => ToolActivityCategory::Read,
                 ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
                 ReadOnlyToolKind::Grep => ToolActivityCategory::Search,
@@ -583,7 +583,7 @@ impl ToolCard {
             (Some(ToolCardInputProjection::Bash { command }), _) => {
                 self.build_bash_summary(command, true)
             }
-            (Some(ToolCardInputProjection::ReadOnly { tool }), _) => {
+            (Some(ToolCardInputProjection::ReadOnly { tool, .. }), _) => {
                 readonly_summary(*tool, self.activity_state(), self.status)
             }
             (
@@ -1180,6 +1180,32 @@ mod tests {
     }
 
     #[test]
+    fn issue112_canonical_external_edit_card_preserves_target_and_count() {
+        let call = ToolCall {
+            id: "external-edit".into(),
+            tool: "Edit".into(),
+            input_json: r#"{"audit_version":"write_edit_v1","tool":"edit","path":"/external/note.txt","old_string_bytes":3,"new_string_bytes":4,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.into(),
+        };
+        let mut card = ToolCard::proposed(&call);
+        assert!(card.apply_approved(Approval::Once));
+        let mut terminal = result(
+            ToolCallStatus::Success,
+            r#"{"path":"/external/note.txt","bytes_written":8,"replacements":2,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+        );
+        terminal.truncated = Some(false);
+        assert!(card.apply_finished(&terminal));
+        assert!(card.visible_text().contains("/external/note.txt"));
+        assert!(!card.visible_text().contains(CORRUPT_LABEL));
+        assert!(matches!(
+            tool_card_result_projection(Some(&tool_card_input_projection(&call)), &terminal),
+            ToolCardResultProjection::EditSuccess {
+                replacements: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn corrupt_success_is_content_free() {
         let call = ToolCall {
             id: "call".into(),
@@ -1339,7 +1365,7 @@ mod tests {
             r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":-1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
             r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1.5,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
             r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":18446744073709551616,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
-            r#"{"audit_version":"write_edit_v1","tool":"write","path":"/SECRET_DATA_ROOT/a.txt","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+            r#"{"audit_version":"write_edit_v1","tool":"write","path":"/SECRET_DATA_ROOT/../a.txt","content_bytes":1,"fingerprint_v1":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
             r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"SECRET_HASH"}"#,
             r#"{"audit_version":"write_edit_v1","tool":"write","path":"a.txt","content_bytes":1,"fingerprint_v1":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
             r#"{"path":"a.txt","content":"SECRET_RAW_BODY"}"#,
@@ -1395,7 +1421,7 @@ mod tests {
             r#"{"path":"a.txt","bytes_written":1,"checkpoint_ref":1}"#,
             r#"{"path":"a.txt","bytes_written":1,"checkpoint_ref":"SECRET_CHECKPOINT_REF"}"#,
             r#"{"path":"other.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
-            r#"{"path":"/SECRET_DATA_ROOT/a.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"/SECRET_DATA_ROOT/../a.txt","bytes_written":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
             r#"{"path":"a.txt","bytes_written":2,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
         ];
         for output in bad_write_outputs {
@@ -1426,7 +1452,7 @@ mod tests {
             r#"{"path":"a.txt","bytes_written":1.5,"replacements":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
             r#"{"path":"a.txt","bytes_written":18446744073709551616,"replacements":1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
             r#"{"path":"a.txt","bytes_written":2,"replacements":0,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
-            r#"{"path":"a.txt","bytes_written":2,"replacements":2,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
+            r#"{"path":"a.txt","bytes_written":2,"replacements":-1,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
             r#"{"path":"a.txt","bytes_written":2,"replacements":1.5,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
             r#"{"path":"a.txt","bytes_written":2,"replacements":18446744073709551616,"checkpoint_ref":"preimage-v1/id-70/id-74/id-63"}"#,
             r#"{"path":"a.txt","bytes_written":2,"replacements":1,"checkpoint_ref":"SECRET_CHECKPOINT_REF"}"#,

@@ -236,6 +236,11 @@ impl ArtifactService {
             }
             return Ok(None);
         };
+        // External file checkpoints are valid, but cannot be represented by
+        // a repository Git artifact or restored through repository Git APIs.
+        if std::path::Path::new(fingerprint.path()).is_absolute() {
+            return Ok(None);
+        }
         if fingerprint.path().len() > LOGICAL_PATH_BYTES {
             return Err(workspace_error(GitWorkspaceErrorCode::ArtifactLimit));
         }

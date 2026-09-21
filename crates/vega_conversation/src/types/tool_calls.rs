@@ -156,6 +156,14 @@ pub enum InvalidToolCode {
     CheckpointSymlink,
     EditEmptyOldString,
     FilesystemError,
+    FileNotRead,
+    FileTooLarge,
+    EditNoChange,
+    WrongReplaceAllType,
+    UnsupportedEncoding,
+    EditNoMatch,
+    EditMultipleMatches,
+    TargetChanged,
 }
 
 impl InvalidToolCode {
@@ -188,6 +196,14 @@ impl InvalidToolCode {
             Self::CheckpointSymlink => "checkpoint_symlink",
             Self::EditEmptyOldString => "edit_empty_old_string",
             Self::FilesystemError => "filesystem_error",
+            Self::FileNotRead => "file_not_read",
+            Self::FileTooLarge => "file_too_large",
+            Self::EditNoChange => "edit_no_change",
+            Self::WrongReplaceAllType => "wrong_replace_all_type",
+            Self::UnsupportedEncoding => "unsupported_encoding",
+            Self::EditNoMatch => "edit_no_match",
+            Self::EditMultipleMatches => "edit_multiple_matches",
+            Self::TargetChanged => "target_changed",
         }
     }
 }
@@ -302,7 +318,10 @@ impl ReadOnlyToolKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCardInputProjection {
     /// A read-only tool. Its raw JSON is intentionally not retained by UI.
-    ReadOnly { tool: ReadOnlyToolKind },
+    ReadOnly {
+        tool: ReadOnlyToolKind,
+        permission_path: Option<String>,
+    },
     /// Full bash command, already strictly decoded by the tools boundary.
     Bash { command: String },
     /// Safe write audit summary; the body and fingerprint are discarded.
@@ -335,7 +354,7 @@ impl ToolCardInputProjection {
     /// Stable known tool name, absent for corrupt input.
     pub fn tool(&self) -> Option<&str> {
         match self {
-            Self::ReadOnly { tool } => Some(tool.as_str()),
+            Self::ReadOnly { tool, .. } => Some(tool.as_str()),
             Self::Bash { .. } => Some("bash"),
             Self::Write { .. } => Some("write"),
             Self::Edit { .. } => Some("edit"),
@@ -353,7 +372,10 @@ impl ToolCardInputProjection {
             Self::Mcp {
                 permission_target, ..
             } => Some(permission_target),
-            Self::ReadOnly { .. } | Self::Skill { .. } | Self::Corrupt => None,
+            Self::ReadOnly {
+                permission_path, ..
+            } => permission_path.as_deref(),
+            Self::Skill { .. } | Self::Corrupt => None,
         }
     }
 }
@@ -433,19 +455,35 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
         );
     }
     match call.tool.as_str() {
-        "read" | "glob" | "grep" => {
+        "Read" | "read" | "glob" | "grep" => {
             if serde_json::from_str::<serde_json::Value>(&call.input_json)
                 .ok()
                 .and_then(|value| value.as_object().map(|_| ()))
                 .is_some()
             {
                 let tool = match call.tool.as_str() {
-                    "read" => ReadOnlyToolKind::Read,
+                    "Read" | "read" => ReadOnlyToolKind::Read,
                     "glob" => ReadOnlyToolKind::Glob,
                     "grep" => ReadOnlyToolKind::Grep,
                     _ => return ToolCardInputProjection::Corrupt,
                 };
-                ToolCardInputProjection::ReadOnly { tool }
+                let permission_path = if tool == ReadOnlyToolKind::Read {
+                    serde_json::from_str::<serde_json::Value>(&call.input_json)
+                        .ok()
+                        .and_then(|input| {
+                            input
+                                .get("file_path")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .filter(|path| std::path::Path::new(path).is_absolute())
+                } else {
+                    None
+                };
+                ToolCardInputProjection::ReadOnly {
+                    tool,
+                    permission_path,
+                }
             } else {
                 ToolCardInputProjection::Corrupt
             }
@@ -454,27 +492,34 @@ pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
             .map_or(ToolCardInputProjection::Corrupt, |command| {
                 ToolCardInputProjection::Bash { command }
             }),
-        "write" | "edit" => match vega_tools::WriteEditAudit::from_json(&call.input_json) {
-            Ok(vega_tools::WriteEditAudit::Write {
-                path,
-                content_bytes,
-                ..
-            }) if call.tool == "write" => ToolCardInputProjection::Write {
-                path,
-                content_bytes,
-            },
-            Ok(vega_tools::WriteEditAudit::Edit {
-                path,
-                old_string_bytes,
-                new_string_bytes,
-                ..
-            }) if call.tool == "edit" => ToolCardInputProjection::Edit {
-                path,
-                old_string_bytes,
-                new_string_bytes,
-            },
-            _ => ToolCardInputProjection::Corrupt,
-        },
+        "Write" | "Edit" | "write" | "edit" => {
+            match vega_tools::WriteEditAudit::from_json(&call.input_json) {
+                Ok(vega_tools::WriteEditAudit::Write {
+                    path,
+                    content_bytes,
+                    expected_written_bytes,
+                    ..
+                }) if matches!(call.tool.as_str(), "Write" | "write") => {
+                    ToolCardInputProjection::Write {
+                        path,
+                        content_bytes: expected_written_bytes.unwrap_or(content_bytes),
+                    }
+                }
+                Ok(vega_tools::WriteEditAudit::Edit {
+                    path,
+                    old_string_bytes,
+                    new_string_bytes,
+                    ..
+                }) if matches!(call.tool.as_str(), "Edit" | "edit") => {
+                    ToolCardInputProjection::Edit {
+                        path,
+                        old_string_bytes,
+                        new_string_bytes,
+                    }
+                }
+                _ => ToolCardInputProjection::Corrupt,
+            }
+        }
         _ => ToolCardInputProjection::Corrupt,
     }
 }
@@ -571,7 +616,10 @@ pub fn tool_card_result_projection(
             && result.exit_code.is_none()
             && result.duration_ms.is_none()
             && result.truncated.is_none()
-            && result.output == expected
+            && (result.output == expected
+                || vega_tools::MutationErrorCode::parse_code(invalid.code().as_str()).is_some_and(
+                    |code| result.output == code.validation_result(invalid.tool().as_str()),
+                ))
         {
             return ToolCardResultProjection::InvalidRejected {
                 tool: invalid.tool(),
@@ -698,7 +746,7 @@ pub fn tool_card_result_projection(
                 let Ok(success) = vega_tools::EditSuccessOutput::from_json(&result.output) else {
                     return ToolCardResultProjection::Corrupt;
                 };
-                if success.path != *path || success.replacements != 1 {
+                if success.path != *path || success.replacements == 0 {
                     return ToolCardResultProjection::Corrupt;
                 }
                 ToolCardResultProjection::EditSuccess {
@@ -908,7 +956,7 @@ pub(crate) fn mutation_cancelled_success_matches(
                 success.path == path && Some(success.bytes_written) == expected_write_bytes
             }),
         InvalidToolKind::Edit => vega_tools::EditSuccessOutput::from_json(&result.output)
-            .is_ok_and(|success| success.path == path && success.replacements == 1),
+            .is_ok_and(|success| success.path == path && success.replacements > 0),
     }
 }
 
@@ -932,12 +980,14 @@ pub(crate) fn mutation_failure_output_allowed(
         }
         ToolCallStatus::Failed => {
             result.output == format!("Tool error: {tool_name} failed")
+                || crate::agent::safe_mutation_failure(&result.output)
                 || result.output == "Tool error: tool worker failed"
                 || result.output == "Tool error: invalid mutation result"
         }
         ToolCallStatus::Cancelled => {
             mutation_cancelled_success_matches(tool, path, expected_write_bytes, result)
                 || result.output == format!("Tool error: {tool_name} failed")
+                || crate::agent::safe_mutation_failure(&result.output)
                 || result.output == "Tool error: tool worker failed"
                 || result.output == vega_runtime::CANCELLED_BEFORE_EXECUTION_OUTPUT
                 || result.output == vega_store::recovery::RECOVERY_CANCELLED_OUTPUT

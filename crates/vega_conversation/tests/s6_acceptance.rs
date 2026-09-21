@@ -111,7 +111,28 @@ async fn agent_tool_turn(
     tool: &str,
     input_json: String,
 ) -> Result<(ToolCall, ToolResult), Box<dyn Error>> {
-    let provider = MockProvider::new_rounds(vec![
+    let read_call_id = format!("{call_id}-preread");
+    let mut rounds = Vec::new();
+    if matches!(tool, "edit" | "write") {
+        let input: serde_json::Value = serde_json::from_str(&input_json)?;
+        let path = input["path"].as_str().ok_or("missing fixture path")?;
+        if tools.file_path(path)?.exists() {
+            // Establish the existing-file prerequisite through the actual agent,
+            // in a separate round before mutation preparation runs.
+            rounds.push(vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: read_call_id.clone(),
+                    name: "Read".into(),
+                    input_json: serde_json::json!({"file_path": path}).to_string(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])]);
+        }
+    }
+    let expects_read = !rounds.is_empty();
+    rounds.extend([
         vec![ScriptStep::events(vec![
             ProviderEvent::ToolUse {
                 id: call_id.to_owned(),
@@ -129,6 +150,7 @@ async fn agent_tool_turn(
             },
         ])],
     ]);
+    let provider = MockProvider::new_rounds(rounds);
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&events);
     let run = run_thread_task_with_permission_sink(
@@ -152,6 +174,13 @@ async fn agent_tool_turn(
     let events = events
         .lock()
         .map_err(|_| std::io::Error::other("event sink poisoned"))?;
+    if expects_read {
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ConversationEvent::ToolCallFinished { call_id, result }
+                if call_id == &read_call_id && result.status == ToolCallStatus::Success
+        )));
+    }
     let proposed = events
         .iter()
         .position(|event| matches!(event, ConversationEvent::ToolCallProposed { call } if call.id == call_id))
