@@ -71,6 +71,25 @@ fn compaction_usage_state(
     }
 }
 
+// Deliberately closed: status-less transport/projection guards and authorization
+// failures must never be converted into permission to issue a primary request.
+fn recoverable_compaction_failure(error: &VegaError) -> bool {
+    matches!(
+        error,
+        VegaError::Provider {
+            status: Some(400 | 408 | 413 | 429 | 500..=599),
+            ..
+        } | VegaError::Context(
+            ContextRuntimeError::NoCompactablePrefix
+                | ContextRuntimeError::SummaryInputOverLimit { .. }
+                | ContextRuntimeError::ResultOverLimit { .. }
+                | ContextRuntimeError::InvalidSummary
+                | ContextRuntimeError::SummaryTimedOut
+                | ContextRuntimeError::SummaryOutputTruncated { .. }
+        )
+    )
+}
+
 fn skill_authority_current(config: Option<&RuntimeSkillConfig>) -> bool {
     config
         .and_then(|skills| skills.authority_probe.as_ref())
@@ -160,6 +179,7 @@ async fn compact_before_skill_rejection<F, Fut>(
     source_fingerprint: &mut Option<String>,
     projection_revision: &mut u64,
     attempted_source: &mut Option<(u64, Option<String>, u64)>,
+    automatic_failures: &mut u8,
     cancel: &CancellationToken,
     events: &mut Vec<RuntimeEvent>,
     sink: &mut F,
@@ -171,6 +191,9 @@ where
     let Some(budget) = budget.filter(|budget| budget.automatic_compaction()) else {
         return Ok(false);
     };
+    if *automatic_failures >= 3 {
+        return Ok(false);
+    }
     let Some(hook) = hook else {
         return Ok(false);
     };
@@ -295,15 +318,16 @@ where
             };
             sink(event.clone()).await?;
             events.push(event);
-            return match failure.error.as_ref() {
-                VegaError::Context(
-                    ContextRuntimeError::NoCompactablePrefix
-                    | ContextRuntimeError::SummaryInputOverLimit { .. }
-                    | ContextRuntimeError::ResultOverLimit { .. },
-                ) => Ok(false),
-                _ if cancel.is_cancelled() => Ok(false),
-                _ => Err(*failure.error),
-            };
+            if cancel.is_cancelled() {
+                return Ok(false);
+            }
+            if recoverable_compaction_failure(failure.error.as_ref()) {
+                *automatic_failures = automatic_failures.saturating_add(1);
+                // The prospective envelope remains rejected. The ordinary loop
+                // independently gates the unchanged, actually active request.
+                return Ok(false);
+            }
+            return Err(*failure.error);
         }
     };
     if compacted
@@ -347,8 +371,12 @@ where
     sink(event.clone()).await?;
     events.push(event);
     if !fits || cancel.is_cancelled() {
+        if !fits {
+            *automatic_failures = automatic_failures.saturating_add(1);
+        }
         return Ok(false);
     }
+    *automatic_failures = 0;
     // The candidate is not active yet; preserve the old system authority
     // until the same hash is rechecked and activation succeeds below.
     let previous_system = messages.remove(0);
@@ -687,6 +715,7 @@ where
     // tool rounds can append content before SQLite's fingerprint catches up.
     let mut live_projection_revision = 0_u64;
     let mut attempted_context_source = None::<(u64, Option<String>, u64)>;
+    let mut automatic_compaction_failures = 0_u8;
     let mut completed = request.completed_tool_results;
     let tool_config = request.tool_config;
     let skill_config = tool_config.skills.clone();
@@ -812,6 +841,7 @@ where
                         &mut context_source_fingerprint,
                         &mut live_projection_revision,
                         &mut attempted_context_source,
+                        &mut automatic_compaction_failures,
                         &cancel,
                         &mut events,
                         &mut sink,
@@ -890,7 +920,10 @@ where
         }
 
         let tool_definitions = capabilities.definitions().to_vec();
-        if let Some(budget) = context_budget {
+        'compaction: {
+            let Some(budget) = context_budget else {
+                break 'compaction;
+            };
             let decision = input_decision(
                 input_anchor.as_ref(),
                 &messages,
@@ -914,14 +947,21 @@ where
             if should_compact {
                 let source_version = context_source_version.unwrap_or_default();
                 let source_fingerprint = context_source_fingerprint.clone();
-                if attempted_context_source
-                    == Some((
-                        source_version,
-                        source_fingerprint.clone(),
-                        live_projection_revision,
-                    ))
+                if automatic_compaction_failures >= 3
+                    || attempted_context_source
+                        == Some((
+                            source_version,
+                            source_fingerprint.clone(),
+                            live_projection_revision,
+                        ))
                 {
-                    return Err(VegaError::Context(ContextRuntimeError::AlreadyAttempted));
+                    if matches!(check, ContextCheck::OverLimit) {
+                        return Err(VegaError::Context(ContextRuntimeError::OverLimit {
+                            estimated_tokens: estimate.input_tokens,
+                            input_budget: budget.input_budget(),
+                        }));
+                    }
+                    break 'compaction;
                 }
                 let hook = external_context_hook.or(request_context_hook.as_deref());
                 let Some(hook) = hook else {
@@ -1056,6 +1096,13 @@ where
                                 },
                             }
                         );
+                        if recoverable_compaction_failure(failure.error.as_ref()) {
+                            automatic_compaction_failures =
+                                automatic_compaction_failures.saturating_add(1);
+                            if !matches!(check, ContextCheck::OverLimit) {
+                                break 'compaction;
+                            }
+                        }
                         return Err(*failure.error);
                     }
                 };
@@ -1184,6 +1231,7 @@ where
                         false,
                     ));
                 }
+                automatic_compaction_failures = 0;
                 messages = next_messages;
                 drop(input_anchor.take());
                 live_projection_revision = generation;
@@ -1894,6 +1942,7 @@ where
                                         &mut context_source_fingerprint,
                                         &mut live_projection_revision,
                                         &mut attempted_context_source,
+                                        &mut automatic_compaction_failures,
                                         &cancel,
                                         &mut events,
                                         &mut sink,

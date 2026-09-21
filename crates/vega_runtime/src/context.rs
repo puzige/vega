@@ -197,6 +197,9 @@ pub enum ContextRuntimeError {
     /// otherwise unusable.
     #[error("context summary response was invalid")]
     InvalidSummary,
+    /// Historical source or reconstructed projection failed structural validation.
+    #[error("context source or projection was invalid")]
+    InvalidProjection,
     /// The summary provider exhausted its output allowance. Only byte/token
     /// counts are retained; neither visible nor reasoning content is exposed.
     #[error(
@@ -418,6 +421,7 @@ impl ContextCompactionStatusFailure {
             | VegaError::Context(ContextRuntimeError::Estimate(_)) => Self::OverLimit,
             VegaError::Context(
                 ContextRuntimeError::InvalidSummary
+                | ContextRuntimeError::InvalidProjection
                 | ContextRuntimeError::SummaryTimedOut
                 | ContextRuntimeError::SummaryOutputTruncated { .. },
             ) => Self::InvalidSummary,
