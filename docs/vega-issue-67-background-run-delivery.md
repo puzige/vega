@@ -2,12 +2,12 @@
 
 ## Freeze
 
-- Verified at: `2026-09-21T07:53:38Z` / `2026-09-21T15:53:38+08:00`
-- Branch/base: `feat/67-background-conversation-run`, frozen contract commit
-  `005ac00`
+- Verified at: `2026-09-21T08:07:35Z` / `2026-09-21T16:07:35+08:00`
+- Branch/base: `feat/67-background-conversation-run` on `origin/master`
+  `19a1416`; frozen contract commit `7c8b56b`
 - Task contract: [`vega-issue-67-background-run.md`](vega-issue-67-background-run.md)
 - Code/test patch SHA-256 before this delivery record:
-  `411313432ec9b11ee1f10cf3fc943d29d87b12447bbbf64407d13c8f7f063d88`
+  `645a9be0b459f2d444f9e12289ded2fb851d955578732d40299a1750cd677dc5`
 - Toolchain: macOS arm64; `rustc 1.98.0`; `cargo 1.98.0`; Git `2.55.0`
 
 ## Changed files
@@ -51,29 +51,33 @@ used without the module-qualified test name; it is not counted as evidence.
 
 ## Results
 
-All Cargo commands use the repository-wide shared-target lock.
+All Cargo commands use the repository-wide shared-target lock. Per the human
+decision on 2026-09-21, this task uses affected-feature verification rather
+than a full-workspace test run.
 
 | Requirement | Evidence class | Exact command | Result |
 | --- | --- | --- | --- |
 | I67-01–I67-06 production-root regression | `E2E-REAL` | `./scripts/cargo-lock.sh --wait test -p vega issue67_production_routes_keep_one_background_run_and_origin_stream -- --nocapture` | PASS (exit 0): 1 passed, 0 failed, 183 filtered; final test includes independent window teardown |
-| Existing agent/permission/cancellation regressions | production controller | `./scripts/cargo-lock.sh --wait test -p vega tests::agent:: -- --nocapture` | NOT COMPLETED: shared-lock wait was stopped before Cargo acquired the lock (exit 130); coordinator-owned |
-| Existing explicit Stop regression | production root | `./scripts/cargo-lock.sh --wait test -p vega r11_composer_preparation_stop_preserves_draft_and_prevents_late_start -- --nocapture` | NOT RUN: shared Cargo lock unavailable; coordinator-owned |
-| Existing route/Settings regression | production root | `./scripts/cargo-lock.sh --wait test -p vega navigation_real_root_palette_mouse_shortcuts_and_settings_preserve_drafts -- --nocapture` | NOT RUN: shared Cargo lock unavailable; coordinator-owned |
+| Existing agent/permission/cancellation regressions | production controller | `./scripts/cargo-lock.sh --wait test -p vega tests::agent:: -- --nocapture` | PASS (exit 0): 14 passed, 0 failed, 170 filtered |
+| Existing explicit Stop regression | production root | `./scripts/cargo-lock.sh --wait test -p vega r11_composer_preparation_stop_preserves_draft_and_prevents_late_start -- --nocapture` | PASS (exit 0): 1 passed, 0 failed, 183 filtered |
+| Existing route/Settings regression | production root | `./scripts/cargo-lock.sh --wait test -p vega navigation_real_root_palette_mouse_shortcuts_and_settings_preserve_drafts -- --nocapture` | PASS (exit 0): 1 passed, 0 failed, 183 filtered |
+| Settings hidden-permission fail-close | `vega_ui` production entity | `./scripts/cargo-lock.sh --wait test -p vega_ui settings_hidden_and_terminal_paths_fail_closed_without_rendering -- --nocapture` | PASS (exit 0): 1 passed, 0 failed, 409 filtered |
+| Non-active stream permission cleanup | `vega_ui` production entity | `./scripts/cargo-lock.sh --wait test -p vega_ui thread_switch_timeout_contract_removes_prompt_before_view_replacement -- --nocapture` | PASS (exit 0): 1 passed, 0 failed, 409 filtered |
 | Formatting | static | `cargo fmt --all -- --check` | PASS (exit 0) |
 | Patch whitespace | static | `git diff --check` | PASS (exit 0) |
-| Strict Vega lint | static/build | `./scripts/cargo-lock.sh --wait clippy -p vega --bin vega --all-targets -- -D warnings` | NOT RUN: shared Cargo lock unavailable; coordinator-owned |
+| Strict Vega lint | static/build | `./scripts/cargo-lock.sh --wait clippy -p vega --all-targets -- -D warnings` | PASS (exit 0); the initial run found one `collapsible_if`, which was fixed before this final pass |
+| Signed release candidate | packaging | `./scripts/cargo-lock.sh --wait xtask package` | PASS (exit 0); `dist/Vega.app` structure and signature verified by the packager |
 
 ## Residuals
 
-- Native single-instance UI acceptance is coordinator-owned and was not run by
-  this implementation executor. The mounted production-root test is behavior
-  evidence, not a native pixel or real-network claim.
+- Native interactive acceptance is intentionally handed to the user after the
+  merged candidate replaces the local installation. The mounted production-root
+  test is behavior evidence, not a real-network claim; the Issue remains open
+  pending that manual result.
 - A `MockProvider` replaces only provider/network transport. The real file
   store, route handlers, controller, worker, permission queue, and stream
   entities remain in the exercised path.
-- Full workspace tests/build are coordinator-owned. They are not inferred from
-  focused package evidence.
-- The agent suite, focused Stop/navigation regressions, and strict clippy gate
-  remain coordinator-owned because another worktree retained the shared Cargo
-  lock through the implementation executor's verification window.
+- Full-workspace tests were intentionally not run under the human-directed
+  affected-feature policy; unrelated `vega_mcp` full-suite resource contention
+  observed in another worktree is not represented as Issue #67 evidence.
 - No known implementation deviation from the frozen Issue #67 contract.
