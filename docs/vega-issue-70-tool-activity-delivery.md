@@ -41,6 +41,7 @@ original and category-icon evidence remain unchanged.
 | E70-5 | Non-Bash tools never gain time | Send approval/running for read/search/write/edit/MCP/Skill projections | Their truthful running copy has no `毫秒`/`秒`/`分钟`, and no elapsed refresh task starts | production card/stream test | `final-rebased-issue70.log` | PASS |
 | E70-6 | Restart does not fabricate a start instant | Hydrate a persisted running Bash without a fresh runtime Running event | The row remains truthful but shows no invented elapsed value and owns no refresh task | hydration test | `final-rebased-issue70.log`, `final-rebased-hydration.log` | PASS |
 | E70-7 | Category-only leading visuals do not regress | Exercise running and terminal Bash rows and a Bash group | Terminal category icon and neutral `text_secondary` remain unchanged across lifecycle states | mounted GPUI + unit regression | `final-rebased-issue70.log`, `final-rebased-tool-card.log` | PASS |
+| E70-8 | A long Bash command must not displace its own duration or disclosure | Mount an expanded multi-call group containing a long running Bash command, then finish it with exact `duration_ms` | The command title is one-line and narrower than its full text; running and terminal duration retain intrinsic width and stable trailing bounds inside the row; the chevron remains visible to their right; the aggregate contains no time and icons remain category-only | mounted production GPUI layout | `red-long-command-duration-layout.log`, `green-long-command-duration-layout.log`, `green-issue70.log`, `verify-final.log` in `issue-70-duration-layout-2026-09-21` | PASS |
 
 ## Implementation plan
 
@@ -99,6 +100,11 @@ Implementation:
   task and computes whole seconds from that clock. Running immediately notifies
   the mounted row; terminal results cancel the task and restore the exact
   persisted `duration_ms`. Aggregate summaries and non-Bash cards own no time.
+- The long-command layout follow-up gives a concrete Bash row three independent
+  lanes: the title may shrink and truncate, while the duration and disclosure
+  remain non-shrinking trailing content. The safe full summary state remains
+  unchanged for semantic and test projections, and aggregate rows still own
+  no duration.
 
 Test-first evidence:
 
@@ -128,6 +134,11 @@ Test-first evidence:
   failed 2/3 because Bash rows had no `0 秒` value and expanded Bash children
   had no independent elapsed values. The already-passing non-Bash/hydration
   case proved the negative behavior before production code changed.
+- Long-command layout `red-long-command-duration-layout.log`: the mounted
+  production regression failed 0/1 because the old row exposed only one
+  combined summary element and had no independently addressable trailing
+  duration lane. `test-authoring-compile-failure.log` separately retains the
+  initial test-authoring namespace error and is not treated as behavior proof.
 
 Fresh green gates:
 
@@ -160,6 +171,15 @@ because another worktree owned the repository-wide cargo lock):
 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | clean | `final-rebased-clippy-workspace.log` |
 | `cargo fmt --all -- --check` | 0 | clean | `final-rebased-static-gates.log` |
 | `git diff --check` | 0 | clean | `final-rebased-static-gates.log` |
+
+Long-command duration-layout follow-up, based on `origin/master` `57b99f9`:
+
+| Command | Exit | Result | Evidence |
+|---|---:|---|---|
+| `scripts/cargo-lock.sh --wait test -p vega_ui conversation_stream::tests::issue70_tool_activity::issue70_e70_long_bash_keeps_running_and_terminal_duration_visible -- --exact --nocapture` | 0 | 1 passed | `green-long-command-duration-layout.log` |
+| `scripts/cargo-lock.sh --wait test -p vega_ui issue70_ -- --nocapture` | 0 | 12 passed | `green-issue70.log` |
+| `scripts/cargo-lock.sh --wait test -p vega_ui tool_card -- --nocapture` | 0 | 19 passed | `green-tool-card.log` |
+| `python3 scripts/verify.py` | 0 | strict Clippy clean; `vega` 193, `vega_ui` 415 and `xtask` 37 tests passed | `verify-final.log`; verifier evidence `20260921T221659-e8a74228` |
 
 Category-only leading-icon follow-up:
 

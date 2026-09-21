@@ -59,7 +59,10 @@ its own icon set, semantic theme tokens and safe typed projections.
    permanent card fill, outline, top border or shadow. A disclosure chevron
    appears only when the row can reveal child calls or safe detail.
 3. Long commands and summaries stay on one line and truncate at the available
-   width; they never widen the conversation or wrap the resting row. The
+   width; they never widen the conversation or wrap the resting row. On a
+   concrete Bash row, the command title is the flexible, truncating region;
+   live or terminal duration is a separate trailing region that does not
+   shrink, and an available disclosure chevron remains visible after it. The
    expanded detail retains the complete bounded command/output.
 4. A completed shell call reads as `已运行 <command>` and appends a human
    duration when present. Active and failed variants use `正在运行` and
@@ -86,6 +89,10 @@ its own icon set, semantic theme tokens and safe typed projections.
    runtime-provided, persisted `duration_ms` rendered by the existing precise
    duration formatter. Success, failure and cancellation never derive their
    terminal duration from the UI clock.
+9. Separating the trailing duration is presentation-only. The full safe Bash
+   summary state remains unchanged for semantic and test projections, the
+   aggregate still contains no duration, and lifecycle state continues to use
+   the neutral Terminal category icon.
 
 ### 3. Progressive disclosure
 

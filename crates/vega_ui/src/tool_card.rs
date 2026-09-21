@@ -466,11 +466,21 @@ impl ToolCard {
         cx: &App,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let (summary, leading_icon, leading_icon_color, expanded, expandable, detail) = {
+        let (
+            title,
+            trailing_duration,
+            leading_icon,
+            leading_icon_color,
+            expanded,
+            expandable,
+            detail,
+        ) = {
             let card_ref = card.read(cx);
             let expanded = card_ref.expanded;
+            let (title, trailing_duration) = card_ref.compact_row_content();
             (
-                card_ref.summary.clone(),
+                title,
+                trailing_duration,
                 card_ref.leading_icon(),
                 card_ref.leading_icon_color(&colors),
                 expanded,
@@ -480,6 +490,8 @@ impl ToolCard {
         };
         let toggle_card = card.clone();
         let debug_selector = selector.clone();
+        let title_selector = format!("{selector}-title");
+        let duration_selector = format!("{selector}-duration");
         let chevron_selector = format!("{selector}-chevron");
         let row = div()
             .debug_selector(move || debug_selector.clone())
@@ -503,17 +515,30 @@ impl ToolCard {
             .child(crate::icons::icon(leading_icon, leading_icon_color))
             .child(
                 div()
+                    .debug_selector(move || title_selector.clone())
                     .min_w_0()
                     .flex_1()
                     .truncate()
                     .text_size(px(Typography::BODY))
                     .text_color(colors.text_secondary)
-                    .child(summary),
+                    .child(title),
             )
+            .when_some(trailing_duration, |row, duration| {
+                row.child(
+                    div()
+                        .debug_selector(move || duration_selector.clone())
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .text_size(px(Typography::BODY))
+                        .text_color(colors.text_secondary)
+                        .child(format!("· {duration}")),
+                )
+            })
             .when(expandable, |row| {
                 row.child(
                     div()
                         .debug_selector(move || chevron_selector.clone())
+                        .flex_shrink_0()
                         .child(crate::icons::icon(
                             if expanded {
                                 Icon::ChevronDown
@@ -556,29 +581,7 @@ impl ToolCard {
                 format!("已拒绝{}：{}", invalid_action(*tool), code.as_str())
             }
             (Some(ToolCardInputProjection::Bash { command }), _) => {
-                let command = one_line(command);
-                let verb = match self.activity_state() {
-                    ToolActivityState::Success => "已运行",
-                    ToolActivityState::Active => {
-                        if self.status == ToolCallStatus::PendingApproval {
-                            "等待批准运行"
-                        } else {
-                            "正在运行"
-                        }
-                    }
-                    ToolActivityState::Rejected => "已拒绝运行",
-                    ToolActivityState::Cancelled => "已取消运行",
-                    ToolActivityState::Failed => "运行失败",
-                };
-                let mut summary = format!("{verb} {command}");
-                if self.status == ToolCallStatus::Running
-                    && let Some(elapsed_seconds) = self.running_elapsed_seconds
-                {
-                    summary.push_str(" · ");
-                    summary.push_str(&human_elapsed(elapsed_seconds));
-                }
-                self.push_bash_metadata(&mut summary, true);
-                summary
+                self.build_bash_summary(command, true)
             }
             (Some(ToolCardInputProjection::ReadOnly { tool }), _) => {
                 readonly_summary(*tool, self.activity_state(), self.status)
@@ -674,13 +677,64 @@ impl ToolCard {
         matches!(self.input, Some(ToolCardInputProjection::Bash { .. }))
     }
 
+    fn compact_row_content(&self) -> (String, Option<String>) {
+        let Some(duration) = self.compact_bash_duration() else {
+            return (self.summary.clone(), None);
+        };
+        let Some(ToolCardInputProjection::Bash { command }) = &self.input else {
+            return (self.summary.clone(), None);
+        };
+        (self.build_bash_summary(command, false), Some(duration))
+    }
+
+    fn compact_bash_duration(&self) -> Option<String> {
+        if self.status == ToolCallStatus::Running {
+            return self.running_elapsed_seconds.map(human_elapsed);
+        }
+        let Some(ToolCardResultProjection::Bash {
+            duration_ms: Some(duration_ms),
+            ..
+        }) = &self.result
+        else {
+            return None;
+        };
+        Some(human_duration(*duration_ms))
+    }
+
+    fn build_bash_summary(&self, command: &str, include_duration: bool) -> String {
+        let command = one_line(command);
+        let verb = match self.activity_state() {
+            ToolActivityState::Success => "已运行",
+            ToolActivityState::Active => {
+                if self.status == ToolCallStatus::PendingApproval {
+                    "等待批准运行"
+                } else {
+                    "正在运行"
+                }
+            }
+            ToolActivityState::Rejected => "已拒绝运行",
+            ToolActivityState::Cancelled => "已取消运行",
+            ToolActivityState::Failed => "运行失败",
+        };
+        let mut summary = format!("{verb} {command}");
+        if include_duration
+            && self.status == ToolCallStatus::Running
+            && let Some(elapsed_seconds) = self.running_elapsed_seconds
+        {
+            summary.push_str(" · ");
+            summary.push_str(&human_elapsed(elapsed_seconds));
+        }
+        self.push_bash_metadata(&mut summary, true, include_duration);
+        summary
+    }
+
     fn stop_live_elapsed(&mut self) {
         self.running_started_at = None;
         self.running_elapsed_seconds = None;
         self.elapsed_refresh_task = None;
     }
 
-    fn push_bash_metadata(&self, label: &mut String, compact: bool) {
+    fn push_bash_metadata(&self, label: &mut String, compact: bool, include_duration: bool) {
         let Some(ToolCardResultProjection::Bash {
             exit_code,
             duration_ms,
@@ -696,7 +750,7 @@ impl ToolCard {
         {
             label.push_str(&format!(" · exit {code}"));
         }
-        if let Some(duration_ms) = duration_ms {
+        if include_duration && let Some(duration_ms) = duration_ms {
             label.push_str(" · ");
             label.push_str(&human_duration(*duration_ms));
         }
@@ -722,7 +776,7 @@ impl ToolCard {
             ToolActivityState::Cancelled => "已取消".to_string(),
             ToolActivityState::Failed => "运行失败".to_string(),
         };
-        self.push_bash_metadata(&mut footer, false);
+        self.push_bash_metadata(&mut footer, false, true);
         footer
     }
 

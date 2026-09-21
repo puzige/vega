@@ -103,6 +103,35 @@ fn bounds(
         .unwrap_or_else(|| panic!("missing selector {selector}"))
 }
 
+fn body_text_width(
+    window: WindowHandle<StreamHarness>,
+    text: String,
+    cx: &mut TestAppContext,
+) -> Pixels {
+    window
+        .update(cx, |_, window, cx| {
+            let colors = theme(cx).colors;
+            let font = window.text_style().font();
+            window
+                .text_system()
+                .shape_line(
+                    text.clone().into(),
+                    px(Typography::BODY),
+                    &[TextRun {
+                        len: text.len(),
+                        font,
+                        color: colors.text_secondary.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    None,
+                )
+                .width()
+        })
+        .expect("measure body text")
+}
+
 fn logical_quad_matches(quad: &Quad, target: Bounds<Pixels>, scale: f32) -> bool {
     let tolerance = 0.2;
     [
@@ -376,6 +405,121 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
                 },
             },
             cx,
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue70-duration-layout");
+    window
+        .update(cx, |_, window, _| {
+            window.resize(gpui_kit::size(px(480.), px(600.)));
+        })
+        .expect("resize duration layout window");
+    let command = format!("printf '{}'", "0123456789abcdef".repeat(32));
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("long-running", &command),
+            },
+            cx,
+        );
+        approve_and_run(stream, "long-running", cx);
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: read_call("following-read", "read", "{}"),
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    stream.read_with(cx, |stream, cx| {
+        let aggregate = group(stream).read(cx).aggregate_summary(cx);
+        assert_eq!(aggregate, "正在处理：运行命令、读取文件");
+        assert!(
+            !aggregate.contains('秒') && !aggregate.contains("分钟") && !aggregate.contains("毫秒"),
+            "aggregate must remain duration-free: {aggregate}"
+        );
+    });
+    click(window, "tool-activity-group-toggle", cx);
+
+    let row = bounds(window, "tool-activity-child-0", cx);
+    let title = bounds(window, "tool-activity-child-0-title", cx);
+    let running_duration = bounds(window, "tool-activity-child-0-duration", cx);
+    let running_chevron = bounds(window, "tool-activity-child-0-chevron", cx);
+    assert!(title.right() <= running_duration.left());
+    assert!(running_duration.right() <= running_chevron.left());
+    assert!(running_chevron.right() <= row.right());
+    assert!(
+        title.size.height <= row.size.height,
+        "title must stay one line"
+    );
+    assert!(
+        running_duration.size.width >= body_text_width(window, "· 0 秒".into(), cx),
+        "running duration must retain its intrinsic width"
+    );
+
+    let full_title = format!("正在运行 {command}");
+    let intrinsic_title_width = body_text_width(window, full_title, cx);
+    assert!(
+        intrinsic_title_width > title.size.width,
+        "the mounted title lane must be narrower than the full long command"
+    );
+    stream.read_with(cx, |stream, cx| {
+        let card = stream.tool_cards["long-running"].read(cx);
+        assert_eq!(card.visible_text(), format!("正在运行 {command} · 0 秒"));
+        let colors = theme(cx).colors;
+        assert!(matches!(card.leading_icon(), Icon::Terminal));
+        assert_eq!(card.leading_icon_color(&colors), colors.text_secondary);
+    });
+
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallFinished {
+                call_id: "long-running".into(),
+                result: ToolResult {
+                    status: ToolCallStatus::Success,
+                    output: String::new(),
+                    reused: false,
+                    exit_code: Some(0),
+                    duration_ms: Some(1_234),
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let terminal_title = bounds(window, "tool-activity-child-0-title", cx);
+    let terminal_duration = bounds(window, "tool-activity-child-0-duration", cx);
+    let terminal_chevron = bounds(window, "tool-activity-child-0-chevron", cx);
+    assert!(terminal_title.right() <= terminal_duration.left());
+    assert!(terminal_duration.right() <= terminal_chevron.left());
+    assert!(
+        terminal_duration.size.width >= body_text_width(window, "· 1.2 秒".into(), cx),
+        "terminal duration must retain its intrinsic width"
+    );
+    assert_eq!(
+        terminal_duration.right(),
+        running_duration.right(),
+        "the trailing duration edge stays fixed across running and terminal copy"
+    );
+    assert_eq!(terminal_chevron, running_chevron);
+    stream.read_with(cx, |stream, cx| {
+        assert_eq!(
+            stream.tool_cards["long-running"].read(cx).visible_text(),
+            format!("已运行 {command} · 1.2 秒")
+        );
+        let aggregate = group(stream).read(cx).aggregate_summary(cx);
+        assert!(
+            !aggregate.contains('秒') && !aggregate.contains("分钟") && !aggregate.contains("毫秒"),
+            "terminal child duration must not enter aggregate copy: {aggregate}"
         );
     });
 }
