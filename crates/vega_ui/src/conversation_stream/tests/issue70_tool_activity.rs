@@ -1,4 +1,5 @@
 use super::*;
+use crate::icons::Icon;
 use crate::tool_card::ToolActivityState;
 use gpui_kit::{Bounds, Pixels, Quad};
 use vega_conversation::types::{InvalidToolCode, InvalidToolKind, InvalidToolProjection};
@@ -149,14 +150,26 @@ async fn issue70_t70_1_single_shell_is_one_surface_free_compact_row(cx: &mut Tes
     });
     cx.run_until_parked();
 
-    let (rows, visible) = stream.read_with(cx, |stream, cx| {
+    let colors = cx.update(|cx| theme(cx).colors);
+    let (rows, visible, leading_icon, leading_icon_color) = stream.read_with(cx, |stream, cx| {
+        let card = stream.tool_cards["shell"].read(cx);
         (
             stream.entries[0].row_count(cx),
-            stream.tool_cards["shell"].read(cx).visible_text(),
+            card.visible_text(),
+            card.leading_icon(),
+            card.leading_icon_color(&colors),
         )
     });
     assert_eq!(rows, 1, "collapsed one-call activity is one compact row");
     assert_eq!(visible, "已运行 printf ok · 12 毫秒");
+    assert!(
+        matches!(leading_icon, Icon::Terminal),
+        "successful Shell keeps its category icon instead of Check"
+    );
+    assert_eq!(
+        leading_icon_color, colors.text_secondary,
+        "successful Shell leading icon stays neutral"
+    );
     let row = bounds(window, "tool-activity-single-row", cx);
     assert!(
         gpui_kit::VisualTestContext::from_window(window.into(), cx)
@@ -209,6 +222,16 @@ async fn issue70_t70_2_adjacent_mixed_tools_share_one_collapsed_item(cx: &mut Te
         let group = group.read(cx);
         assert_eq!(group.len(), 3);
         assert_eq!(group.row_count(cx), 1);
+        let colors = theme(cx).colors;
+        assert!(
+            matches!(group.leading_icon(cx), Icon::Document),
+            "mixed group follows its first Read child category instead of success state"
+        );
+        assert_eq!(
+            group.leading_icon_color(cx, &colors),
+            colors.text_secondary,
+            "aggregate leading icon stays neutral"
+        );
         assert_eq!(
             group.aggregate_summary(cx),
             "已读取文件、运行命令、搜索内容"
@@ -448,7 +471,7 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
     );
     let colors = cx.update(|cx| theme(cx).colors);
     assert_eq!(
-        footer_state.map(|state| state.color(&colors)),
+        footer_state.map(|state| state.terminal_color(&colors)),
         Some(colors.success),
         "the footer state resolves to the theme success token"
     );
@@ -572,11 +595,34 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
             "the rendered terminal footer uses the danger semantic color"
         );
         let colors = theme(cx).colors;
+        assert!(
+            matches!(group.read(cx).leading_icon(cx), Icon::Terminal),
+            "failed Shell group keeps its category icon instead of Warning"
+        );
+        assert_eq!(
+            group.read(cx).leading_icon_color(cx, &colors),
+            colors.text_secondary,
+            "failed group leading icon stays neutral"
+        );
+        assert!(
+            matches!(
+                stream.tool_cards["second"].read(cx).leading_icon(),
+                Icon::Terminal
+            ),
+            "failed Shell child keeps its category icon instead of Warning"
+        );
+        assert_eq!(
+            stream.tool_cards["second"]
+                .read(cx)
+                .leading_icon_color(&colors),
+            colors.text_secondary,
+            "failed child leading icon stays neutral"
+        );
         assert_eq!(
             stream.tool_cards["second"]
                 .read(cx)
                 .detail_footer_state()
-                .map(|state| state.color(&colors)),
+                .map(|state| state.terminal_color(&colors)),
             Some(colors.danger),
             "the failed footer state resolves to the theme danger token"
         );

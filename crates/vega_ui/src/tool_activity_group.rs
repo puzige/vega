@@ -2,9 +2,10 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Context, Entity, MouseButton, MouseUpEvent, div, px};
-use vega_theme::{Typography, theme};
+use vega_theme::{ThemeColors, Typography, theme};
 
 use crate::conversation_stream::ROW_HEIGHT;
+use crate::icons::Icon;
 use crate::tool_card::{ToolActivityCategory, ToolActivityState, ToolCard};
 
 /// Ordered, memory-only presentation state for one adjacent tool run.
@@ -124,25 +125,33 @@ impl ToolActivityGroup {
         }
     }
 
+    pub(crate) fn leading_icon(&self, cx: &App) -> Icon {
+        self.children
+            .first()
+            .map(|card| card.read(cx).leading_icon())
+            .unwrap_or_else(|| ToolActivityCategory::Other.icon())
+    }
+
+    pub(crate) fn leading_icon_color(&self, cx: &App, colors: &ThemeColors) -> gpui_kit::Rgba {
+        self.children
+            .first()
+            .map(|card| card.read(cx).leading_icon_color(colors))
+            .unwrap_or(colors.text_secondary)
+    }
+
     pub(crate) fn render(group: Entity<Self>, cx: &App) -> AnyElement {
         let colors = theme(cx).colors;
-        let (expanded, children, child_count, summary, state) = {
+        let (expanded, children, child_count, summary, icon, icon_color) = {
             let group_ref = group.read(cx);
             (
                 group_ref.expanded,
                 group_ref.children.clone(),
                 group_ref.len(),
                 group_ref.aggregate_summary(cx),
-                group_ref.aggregate_state(cx),
+                group_ref.leading_icon(cx),
+                group_ref.leading_icon_color(cx, &colors),
             )
         };
-        let icon = state.icon(
-            children
-                .first()
-                .map(|card| card.read(cx).activity_category())
-                .unwrap_or(ToolActivityCategory::Other),
-        );
-        let icon_color = state.color(&colors);
         let toggle_group = group.clone();
         let mut rows = Vec::with_capacity(1 + child_count);
         rows.push(

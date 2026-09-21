@@ -8,15 +8,25 @@ log names below are relative to the persistent Issue #70 evidence directory.
 
 | ID | Requirement / risk | Precondition | Action | Expected observable result | Level | Evidence | Status |
 |---|---|---|---|---|---|---|---|
-| T70-1 | One completed command is too visually heavy | One successful bash projection with duration and bounded output | Mount the production timeline | One quiet single-line row shows the command/duration; no permanent card surface; chevron is present | mounted GPUI + painted quads | `green-issue70.log`, T70-1 quad and selector assertions | PASS |
-| T70-2 | Adjacent calls need one resting summary | Assistant segment followed by bash/read/grep calls with no visible entry between | Apply proposals/results | One collapsed mixed-category group occupies one list item and one visible row in exact call order | production stream test | `green-issue70.log`, T70-2 exact copy/order/entity assertions | PASS |
+| T70-1 | One completed command is too visually heavy | One successful bash projection with duration and bounded output | Mount the production timeline | One quiet single-line row shows the command/duration with a neutral Terminal icon; no success Check, permanent card surface or missing chevron | mounted GPUI + painted quads | `green-issue70-category-icons.log`, T70-1 quad, selector and category-visual assertions | PASS |
+| T70-2 | Adjacent calls need one resting summary | Assistant segment followed by bash/read/grep calls with no visible entry between | Apply proposals/results | One collapsed mixed-category group occupies one list item and one visible row in exact call order; its neutral leading icon follows the first child category | production stream test | `green-issue70-category-icons.log`, T70-2 exact copy/order/entity/category assertions | PASS |
 | T70-3 | A real boundary must not be crossed | Tool calls separated by nonempty assistant text; include permission insertion/removal around an adjacent call | Apply the event sequence | Text splits groups; the transient permission card does not permanently split otherwise adjacent calls | production stream test | `green-issue70.log`, two T70-3 boundary/merge tests | PASS |
 | T70-4 | Progressive disclosure must be scoped | Collapsed three-call group; final command has output | Activate group, then activate final child, then close it | Group reveals three compact children; only selected detail opens; full command/output and truthful status are visible; heights return on close | mounted GPUI interaction | `green-issue70.log`, T70-4 mounted clicks/heights/status tokens | PASS |
-| T70-5 | Lifecycle updates cannot move or falsely complete the group | Pending/approved/running/success and failed calls in one group | Apply each durable event | Same call entities/order remain; aggregate and child wording/colors reflect active/failure; exit code visible | production stream + card unit | `green-issue70.log`, T70-5 identity/copy/footer-token assertions | PASS |
+| T70-5 | Lifecycle updates cannot move or falsely complete the group | Pending/approved/running/success and failed calls in one group | Apply each durable event | Same call entities/order remain; aggregate/child wording, exit code and detail footer reflect failure while leading icons remain category-shaped and neutral | production stream + card unit | `green-issue70-category-icons.log`, T70-5 identity/copy/category/footer-token assertions | PASS |
 | T70-6 | Reopen must match live layout | Typed history containing text → three tools → text, plus a separate one-tool segment | Hydrate, expand, switch/reopen | Same boundaries/order/summaries as live; initially collapsed again; no execution/replay | hydration/mounted GPUI | `green-issue70.log`, T70-6 live/hydrated parity and reopen assertions | PASS |
 | T70-7 | Redaction and fail-closed behavior must survive redesign | Read-only raw args, strict write/edit results, invalid and corrupt projections | Render collapsed and expanded states | No raw read args, body, fingerprint, call ID, absolute data root or checkpoint ref; invalid/corrupt state remains visible | unit + mounted GPUI | `green-issue70.log`, T70-7 safe/secret allow-deny assertions | PASS |
 | T70-8 | Narrow/light/dark native appearance | Packaged candidate with an existing real audited timeline | Open the real timeline; inspect collapsed mixed group and expanded shell detail in Light and Dark | Hierarchy matches spec; text/status contrast remains readable | installed native UI | `tool-activity-light-expanded.png`, `tool-activity-dark-collapsed.png`, `tool-activity-dark-shell-detail.png`, `manifest.md` | PASS (owner accepted current width) |
 | T70-9 | Related behavior and architecture do not regress | Final candidate | Run focused and workspace gates | Tool/permission/timeline/hydration suites pass; no UI SQLite, hard-coded color, dependency or migration change | repository gates | final isolated focused/Clippy/workspace/package logs below | PASS |
+
+The category-only leading-icon follow-up used a fresh focused matrix. Its logs
+live in the persistent `issue-70-remove-success-check-2026-09-21` evidence
+directory; the original delivery logs and screenshots remain unchanged.
+
+| ID | Follow-up requirement | Evidence | Status |
+|---|---|---|---|
+| F70-1 | Every ToolCard lifecycle state keeps the category icon and neutral `text_secondary`; all nine category mappings are exact | `red-tool-card-leading-visual.log`, `green-tool-card-leading-visual.log`, `green-tool-card.log` | PASS |
+| F70-2 | Mounted successful Shell, successful mixed group, failed Shell group and failed child keep category icons and neutral leading color while failure copy, exit code and semantic footer remain truthful | `red-issue70-leading-visual.log`, `green-issue70-category-icons.log` | PASS |
+| F70-3 | Strict focused Clippy, format and diff gates remain clean | `clippy-first-failure.log`, `green-clippy.log`, `green-static-gates.log` | PASS |
 
 ## Implementation plan
 
@@ -50,6 +60,10 @@ Implementation:
 - `ToolCard` now renders a compact, one-line activity row and constructs safe
   detail only while expanded. Shell details retain the complete command,
   bounded output and semantic terminal footer; empty output adds no blank row.
+- The 2026-09-21 category-icon follow-up makes every activity leading icon and
+  its color category-owned: lifecycle state no longer substitutes Check or
+  Warning and no longer applies success/danger to the leading glyph. The
+  status summary, exit code and terminal footer remain unchanged and truthful.
 - A UI-owned `ToolActivityGroup` retains the exact ordered card entities,
   defaults collapsed, derives truthful aggregate copy/state and scopes group
   and child disclosure independently.
@@ -82,6 +96,11 @@ Test-first evidence:
 - `clippy-first-failure.log`: strict Clippy found 13 redundant closures in test
   readers. They were replaced with direct function references before the final
   clean run.
+- Follow-up `red-tool-card-leading-visual.log` and
+  `red-issue70-leading-visual.log`: both new category-visual regressions failed
+  on the previous success Check exactly as intended. Follow-up
+  `clippy-first-failure.log` then recorded one test-only `matches!` lint before
+  the final strict Clippy run passed.
 
 Fresh green gates:
 
@@ -95,6 +114,17 @@ Fresh green gates:
 | `scripts/cargo-lock.sh test -p vega artifact_controller_preview_open_latest_stale_and_max_fences -- --nocapture` | 0 | 1 passed | `green-artifact-adjacency.log` |
 | `scripts/cargo-lock.sh test -p vega_ui` | 0 | 404 passed; doc tests 0 | `green-vega-ui-full.log` |
 | `scripts/cargo-lock.sh clippy -p vega_ui --all-targets -- -D warnings` | 0 | clean | `green-clippy-vega-ui.log` |
+| `cargo fmt --all -- --check` | 0 | clean | `green-static-gates.log` |
+| `git diff --check` | 0 | clean | `green-static-gates.log` |
+
+Category-only leading-icon follow-up:
+
+| Command | Exit | Result | Evidence |
+|---|---:|---|---|
+| `scripts/cargo-lock.sh test -p vega_ui tool_activity_leading_visual_is_category_owned_and_neutral_for_every_state -- --nocapture` | 0 | 1 passed | `green-tool-card-leading-visual.log` |
+| `scripts/cargo-lock.sh test -p vega_ui issue70_ -- --nocapture` | 0 | 8 passed | `green-issue70-category-icons.log` |
+| `scripts/cargo-lock.sh test -p vega_ui tool_card -- --nocapture` | 0 | 19 passed | `green-tool-card.log` |
+| `scripts/cargo-lock.sh clippy -p vega_ui --all-targets -- -D warnings` | 0 | clean | `green-clippy.log` |
 | `cargo fmt --all -- --check` | 0 | clean | `green-static-gates.log` |
 | `git diff --check` | 0 | clean | `green-static-gates.log` |
 

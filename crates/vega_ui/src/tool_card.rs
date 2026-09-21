@@ -42,7 +42,7 @@ impl ToolActivityCategory {
         }
     }
 
-    const fn icon(self) -> Icon {
+    pub(crate) const fn icon(self) -> Icon {
         match self {
             Self::Shell => Icon::Terminal,
             Self::Search => Icon::Search,
@@ -72,15 +72,7 @@ impl ToolActivityState {
         }
     }
 
-    pub(crate) const fn icon(self, category: ToolActivityCategory) -> Icon {
-        match self {
-            Self::Success => Icon::Check,
-            Self::Cancelled | Self::Rejected | Self::Failed => Icon::Warning,
-            Self::Active => category.icon(),
-        }
-    }
-
-    pub(crate) fn color(self, colors: &ThemeColors) -> gpui_kit::Rgba {
+    pub(crate) fn terminal_color(self, colors: &ThemeColors) -> gpui_kit::Rgba {
         match self {
             Self::Success => colors.success,
             Self::Cancelled | Self::Rejected | Self::Failed => colors.danger,
@@ -361,6 +353,14 @@ impl ToolCard {
         }
     }
 
+    pub(crate) fn leading_icon(&self) -> Icon {
+        self.activity_category().icon()
+    }
+
+    pub(crate) fn leading_icon_color(&self, colors: &ThemeColors) -> gpui_kit::Rgba {
+        colors.text_secondary
+    }
+
     /// Content rendered by the card, used by leak-focused tests.
     pub fn visible_text(&self) -> String {
         let mut text = self.summary.clone();
@@ -379,13 +379,13 @@ impl ToolCard {
         cx: &App,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let (summary, state, category, expanded, expandable, detail) = {
+        let (summary, leading_icon, leading_icon_color, expanded, expandable, detail) = {
             let card_ref = card.read(cx);
             let expanded = card_ref.expanded;
             (
                 card_ref.summary.clone(),
-                card_ref.activity_state(),
-                card_ref.activity_category(),
+                card_ref.leading_icon(),
+                card_ref.leading_icon_color(&colors),
                 expanded,
                 card_ref.has_detail(),
                 if expanded { card_ref.detail() } else { None },
@@ -413,10 +413,7 @@ impl ToolCard {
                     },
                 )
             })
-            .child(crate::icons::icon(
-                state.icon(category),
-                state.color(&colors),
-            ))
+            .child(crate::icons::icon(leading_icon, leading_icon_color))
             .child(
                 div()
                     .min_w_0()
@@ -800,7 +797,7 @@ fn render_detail(detail: ToolDetail, selector: String, colors: &ThemeColors) -> 
             .map(|line| detail_row(line, colors.text_secondary, true)),
     );
     if let Some((footer, state)) = detail.footer {
-        rows.push(detail_row(footer, state.color(colors), false));
+        rows.push(detail_row(footer, state.terminal_color(colors), false));
     }
     div()
         .debug_selector(move || debug_selector.clone())
@@ -841,6 +838,7 @@ fn detail_row(text: String, color: gpui_kit::Rgba, code: bool) -> AnyElement {
 mod tests {
     use super::*;
     use vega_conversation::types::{InvalidToolCode, InvalidToolKind, InvalidToolProjection};
+    use vega_theme::LIGHT;
 
     fn result(status: ToolCallStatus, output: &str) -> ToolResult {
         ToolResult {
@@ -851,6 +849,60 @@ mod tests {
             duration_ms: None,
             truncated: None,
             invalid: None,
+        }
+    }
+
+    #[test]
+    fn tool_activity_leading_visual_is_category_owned_and_neutral_for_every_state() {
+        for status in [
+            ToolCallStatus::PendingApproval,
+            ToolCallStatus::Approved,
+            ToolCallStatus::Running,
+            ToolCallStatus::Success,
+            ToolCallStatus::Rejected,
+            ToolCallStatus::Cancelled,
+            ToolCallStatus::Failed,
+        ] {
+            let card = ToolCard::hydrated(
+                Some(ToolCardInputProjection::Bash {
+                    command: "true".into(),
+                }),
+                status,
+                None,
+                None,
+            );
+            assert!(
+                matches!(card.leading_icon(), Icon::Terminal),
+                "Shell must keep Terminal for {status:?}"
+            );
+            assert_eq!(
+                card.leading_icon_color(&LIGHT),
+                LIGHT.text_secondary,
+                "leading icon must stay neutral for {status:?}"
+            );
+        }
+
+        for (category, expected) in [
+            (ToolActivityCategory::Shell, Icon::Terminal),
+            (ToolActivityCategory::Read, Icon::Document),
+            (ToolActivityCategory::Find, Icon::Document),
+            (ToolActivityCategory::Search, Icon::Search),
+            (ToolActivityCategory::Write, Icon::Document),
+            (ToolActivityCategory::Edit, Icon::Document),
+            (ToolActivityCategory::Mcp, Icon::Summary),
+            (ToolActivityCategory::Skill, Icon::Document),
+            (ToolActivityCategory::Other, Icon::Summary),
+        ] {
+            assert!(
+                matches!(
+                    (category.icon(), expected),
+                    (Icon::Terminal, Icon::Terminal)
+                        | (Icon::Document, Icon::Document)
+                        | (Icon::Search, Icon::Search)
+                        | (Icon::Summary, Icon::Summary)
+                ),
+                "category icon mapping changed"
+            );
         }
     }
 
