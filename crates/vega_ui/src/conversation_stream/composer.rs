@@ -28,7 +28,7 @@ impl ConversationStream {
         let Some(index) = self
             .entries
             .iter()
-            .position(|entry| matches!(entry, StreamEntry::Tool { card } if card == tool))
+            .position(|entry| Self::tool_entry_contains(entry, tool, cx))
         else {
             return false;
         };
@@ -55,9 +55,9 @@ impl ConversationStream {
     }
 
     /// Content-free structural check used by the application integration
-    /// harness to prove exact Tool -> Artifact adjacency.
+    /// harness to prove exact tool-owning activity -> Artifact adjacency.
     #[doc(hidden)]
-    pub fn artifact_card_is_adjacent(&self, call_id: &str) -> bool {
+    pub fn artifact_card_is_adjacent(&self, call_id: &str, cx: &App) -> bool {
         let Some(tool) = self.tool_cards.get(call_id) else {
             return false;
         };
@@ -65,7 +65,7 @@ impl ConversationStream {
             return false;
         };
         self.entries.windows(2).any(|entries| {
-            matches!(&entries[0], StreamEntry::Tool { card } if card == tool)
+            Self::tool_entry_contains(&entries[0], tool, cx)
                 && matches!(&entries[1], StreamEntry::Artifact { card } if card == artifact)
         })
     }

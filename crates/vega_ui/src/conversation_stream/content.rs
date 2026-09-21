@@ -170,16 +170,9 @@ impl ConversationStream {
                         continue;
                     }
                     let card = cx.new(|_| ToolCard::hydrated(input, status, approval, result));
-                    cx.observe(&card, |this, card, cx| {
-                        let index = this.entry_index_where(
-                            |entry| matches!(entry, StreamEntry::Tool { card: owned } if owned == &card),
-                        );
-                        this.invalidate_item(index);
-                        cx.notify();
-                    })
-                    .detach();
+                    self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id, card.clone());
-                    hydrated.push(StreamEntry::Tool { card });
+                    self.append_hydrated_tool(&mut hydrated, card, cx);
                 }
                 HistoryEntry::SkillActivation { activation, .. } => {
                     hydrated.push(StreamEntry::SkillActivation { activation });
@@ -329,6 +322,7 @@ impl ConversationStream {
                     StreamEntry::User { .. }
                         | StreamEntry::Assistant { .. }
                         | StreamEntry::Tool { .. }
+                        | StreamEntry::ToolGroup { .. }
                         | StreamEntry::Plan { .. }
                         | StreamEntry::Summary { .. }
                 )
@@ -456,7 +450,7 @@ impl ConversationStream {
         if !identity_matches {
             drop(pending);
             card.update(cx, ToolCard::fail_corrupt);
-            self.invalidate_tool_card(&card);
+            self.invalidate_tool_card(&card, cx);
             return;
         }
         self.remove_active_permission(cx);
@@ -497,6 +491,7 @@ impl ConversationStream {
         {
             self.entries.remove(index);
             self.list_remove(index);
+            self.merge_tool_entries_around(index, cx);
         }
         cx.notify();
     }
@@ -597,16 +592,8 @@ impl ConversationStream {
                 self.close_active_segment_before_tool();
                 let call_id = call.id.clone();
                 let card = cx.new(|_| ToolCard::proposed(&call));
-                cx.observe(&card, |this, card, cx| {
-                    let index = this
-                        .entry_index_where(|entry| matches!(entry, StreamEntry::Tool { card: owned } if owned == &card));
-                    this.invalidate_item(index);
-                    cx.notify();
-                })
-                .detach();
-                let index = self.entries.len();
-                self.entries.push(StreamEntry::Tool { card: card.clone() });
-                self.list_append(index);
+                self.observe_tool_card(&card, cx);
+                self.append_live_tool(card.clone(), cx);
                 self.tool_cards.insert(call_id, card);
                 self.install_pending_permission(cx);
                 cx.notify();
@@ -618,7 +605,7 @@ impl ConversationStream {
                         card.apply_approved(approval);
                         cx.notify();
                     });
-                    self.invalidate_tool_card(&card);
+                    self.invalidate_tool_card(&card, cx);
                 } else {
                     self.push_corrupt_tool(call_id, cx);
                 }
@@ -637,7 +624,7 @@ impl ConversationStream {
                         card.apply_finished(&result);
                         cx.notify();
                     });
-                    self.invalidate_tool_card(&card);
+                    self.invalidate_tool_card(&card, cx);
                 } else {
                     // Validation rejection/conflict can be terminal without
                     // a prior proposal event. Its first visible card is
@@ -796,11 +783,173 @@ impl ConversationStream {
     /// Marks an existing tool card item for re-measurement (status/approval/
     /// result/expansion changes may change its height; the C4 explicit
     /// invalidation whitelist).
-    pub(crate) fn invalidate_tool_card(&mut self, card: &Entity<ToolCard>) {
-        let index = self.entry_index_where(
-            |entry| matches!(entry, StreamEntry::Tool { card: owned } if owned == card),
-        );
+    pub(crate) fn invalidate_tool_card(&mut self, card: &Entity<ToolCard>, cx: &App) {
+        let index = self.tool_entry_index(card, cx);
         self.invalidate_item(index);
+    }
+
+    pub(crate) fn tool_entry_contains(
+        entry: &StreamEntry,
+        card: &Entity<ToolCard>,
+        cx: &App,
+    ) -> bool {
+        match entry {
+            StreamEntry::Tool { card: owned } => owned == card,
+            StreamEntry::ToolGroup { group } => group.read(cx).contains(card),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn tool_entry_index(&self, card: &Entity<ToolCard>, cx: &App) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| Self::tool_entry_contains(entry, card, cx))
+    }
+
+    fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
+        cx.observe(card, |this, card, cx| {
+            let index = this.tool_entry_index(&card, cx);
+            this.invalidate_item(index);
+            cx.notify();
+        })
+        .detach();
+    }
+
+    fn observe_tool_group(&mut self, group: &Entity<ToolActivityGroup>, cx: &mut Context<Self>) {
+        cx.observe(group, |this, group, cx| {
+            let index = this.entry_index_where(
+                |entry| matches!(entry, StreamEntry::ToolGroup { group: owned } if owned == &group),
+            );
+            this.invalidate_item(index);
+            cx.notify();
+        })
+        .detach();
+    }
+
+    fn new_tool_group(
+        &mut self,
+        first: Entity<ToolCard>,
+        second: Entity<ToolCard>,
+        cx: &mut Context<Self>,
+    ) -> Entity<ToolActivityGroup> {
+        let group = cx.new(|_| ToolActivityGroup::new(first, second));
+        self.observe_tool_group(&group, cx);
+        group
+    }
+
+    fn append_hydrated_tool(
+        &mut self,
+        entries: &mut Vec<StreamEntry>,
+        card: Entity<ToolCard>,
+        cx: &mut Context<Self>,
+    ) {
+        enum Tail {
+            Single(Entity<ToolCard>),
+            Group(Entity<ToolActivityGroup>),
+            Boundary,
+        }
+        let tail = match entries.last() {
+            Some(StreamEntry::Tool { card }) => Tail::Single(card.clone()),
+            Some(StreamEntry::ToolGroup { group }) => Tail::Group(group.clone()),
+            _ => Tail::Boundary,
+        };
+        match tail {
+            Tail::Single(first) => {
+                let group = self.new_tool_group(first, card, cx);
+                if let Some(entry) = entries.last_mut() {
+                    *entry = StreamEntry::ToolGroup { group };
+                }
+            }
+            Tail::Group(group) => group.update(cx, |group, cx| group.append(card, cx)),
+            Tail::Boundary => entries.push(StreamEntry::Tool { card }),
+        }
+    }
+
+    fn append_live_tool(&mut self, card: Entity<ToolCard>, cx: &mut Context<Self>) {
+        enum Tail {
+            Single(Entity<ToolCard>),
+            Group(Entity<ToolActivityGroup>),
+            Boundary,
+        }
+        let index = self.entries.len().saturating_sub(1);
+        let tail = match self.entries.last() {
+            Some(StreamEntry::Tool { card }) => Tail::Single(card.clone()),
+            Some(StreamEntry::ToolGroup { group }) => Tail::Group(group.clone()),
+            _ => Tail::Boundary,
+        };
+        match tail {
+            Tail::Single(first) => {
+                let group = self.new_tool_group(first, card, cx);
+                if let Some(entry) = self.entries.last_mut() {
+                    *entry = StreamEntry::ToolGroup { group };
+                }
+                self.invalidate_item(Some(index));
+            }
+            Tail::Group(group) => {
+                group.update(cx, |group, cx| group.append(card, cx));
+                self.invalidate_item(Some(index));
+            }
+            Tail::Boundary => {
+                let previous_len = self.entries.len();
+                self.entries.push(StreamEntry::Tool { card });
+                self.list_append(previous_len);
+            }
+        }
+    }
+
+    fn tool_entry_cards(entry: &StreamEntry, cx: &App) -> Option<(Vec<Entity<ToolCard>>, bool)> {
+        match entry {
+            StreamEntry::Tool { card } => Some((vec![card.clone()], false)),
+            StreamEntry::ToolGroup { group } => {
+                let group = group.read(cx);
+                Some((group.children(), group.expanded()))
+            }
+            _ => None,
+        }
+    }
+
+    /// A permission card is transient. If calls landed on both sides while it
+    /// was visible, removing it restores the same adjacency as if it had
+    /// never been a durable timeline boundary.
+    fn merge_tool_entries_around(&mut self, right_index: usize, cx: &mut Context<Self>) {
+        let Some(left_index) = right_index.checked_sub(1) else {
+            return;
+        };
+        let Some((left_cards, left_expanded)) = self
+            .entries
+            .get(left_index)
+            .and_then(|entry| Self::tool_entry_cards(entry, cx))
+        else {
+            return;
+        };
+        let Some((right_cards, right_expanded)) = self
+            .entries
+            .get(right_index)
+            .and_then(|entry| Self::tool_entry_cards(entry, cx))
+        else {
+            return;
+        };
+
+        let existing_left_group = match self.entries.get(left_index) {
+            Some(StreamEntry::ToolGroup { group }) => Some(group.clone()),
+            _ => None,
+        };
+        if let Some(group) = existing_left_group {
+            group.update(cx, |group, cx| {
+                group.extend(right_cards, right_expanded, cx)
+            });
+        } else {
+            let mut children = left_cards;
+            children.extend(right_cards);
+            let group = cx.new(|_| {
+                ToolActivityGroup::from_children(children, left_expanded || right_expanded)
+            });
+            self.observe_tool_group(&group, cx);
+            self.entries[left_index] = StreamEntry::ToolGroup { group };
+        }
+        self.entries.remove(right_index);
+        self.list_remove(right_index);
+        self.invalidate_item(Some(left_index));
     }
 
     pub(crate) fn push_tool_card(
@@ -813,17 +962,8 @@ impl ConversationStream {
             return;
         }
         let card = cx.new(|_| card);
-        cx.observe(&card, |this, card, cx| {
-            let index = this.entry_index_where(
-                |entry| matches!(entry, StreamEntry::Tool { card: owned } if owned == &card),
-            );
-            this.invalidate_item(index);
-            cx.notify();
-        })
-        .detach();
-        let index = self.entries.len();
-        self.entries.push(StreamEntry::Tool { card: card.clone() });
-        self.list_append(index);
+        self.observe_tool_card(&card, cx);
+        self.append_live_tool(card.clone(), cx);
         self.tool_cards.insert(call_id, card);
         cx.notify();
     }

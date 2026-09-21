@@ -25,6 +25,7 @@ mod composer_counter;
 mod core_flow;
 mod e2e_variable_height;
 mod hydration;
+mod issue70_tool_activity;
 mod menu_lists;
 mod model_markdown;
 mod model_picker_levels;
@@ -255,6 +256,7 @@ fn hydrated_entry_kinds(stream: &ConversationStream) -> Vec<&'static str> {
             StreamEntry::User { .. } => "user",
             StreamEntry::Assistant { .. } => "assistant",
             StreamEntry::Tool { .. } => "tool",
+            StreamEntry::ToolGroup { .. } => "tool-group",
             StreamEntry::Artifact { .. } => "artifact",
             StreamEntry::Permission { .. } => "permission",
             StreamEntry::Plan { .. } => "plan",

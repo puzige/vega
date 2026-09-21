@@ -655,8 +655,10 @@ pub(crate) enum StreamEntry {
         /// Bounded terminal reason; never contains a provider response body.
         failure: Option<RunFailureKind>,
     },
-    /// One audited tool card. Expansion adds fixed-height virtual rows.
+    /// One audited tool call rendered directly as a compact activity row.
     Tool { card: Entity<ToolCard> },
+    /// Two or more adjacent audited calls rendered as one activity item.
+    ToolGroup { group: Entity<ToolActivityGroup> },
     /// One route-owned artifact, placed immediately after its exact tool.
     Artifact { card: Entity<ArtifactCard> },
     /// Sole active permission request/response handoff card.
@@ -682,6 +684,7 @@ impl StreamEntry {
                 model.row_count() + usize::from(failure.is_some())
             }
             StreamEntry::Tool { card } => card.read(cx).row_count(),
+            StreamEntry::ToolGroup { group } => group.read(cx).row_count(cx),
             StreamEntry::Artifact { card } => card.read(cx).row_count(),
             StreamEntry::Permission { card } => card.read(cx).row_count(),
             StreamEntry::Plan { card } => card.read(cx).row_count(),

@@ -1,6 +1,13 @@
 use super::*;
 
-fn timeline(stream: &ConversationStream) -> Vec<String> {
+fn timeline(stream: &ConversationStream, cx: &App) -> Vec<String> {
+    let tool_id = |card: &Entity<ToolCard>| {
+        stream
+            .tool_cards
+            .iter()
+            .find_map(|(id, owned)| (owned == card).then_some(id.clone()))
+            .unwrap_or_else(|| "unknown-tool".into())
+    };
     stream
         .entries
         .iter()
@@ -21,11 +28,14 @@ fn timeline(stream: &ConversationStream) -> Vec<String> {
                     text
                 }
             }
-            StreamEntry::Tool { card } => stream
-                .tool_cards
+            StreamEntry::Tool { card } => tool_id(card),
+            StreamEntry::ToolGroup { group } => group
+                .read(cx)
+                .children()
                 .iter()
-                .find_map(|(id, owned)| (owned == card).then_some(id.clone()))
-                .unwrap_or_else(|| "unknown-tool".into()),
+                .map(&tool_id)
+                .collect::<Vec<_>>()
+                .join("+"),
             StreamEntry::User { .. } => "user".into(),
             StreamEntry::Summary { .. } => "summary".into(),
             StreamEntry::Plan { .. } => "plan".into(),
@@ -111,8 +121,8 @@ async fn r70_live_mounted_text_and_tools_keep_proposal_order(cx: &mut TestAppCon
     });
     cx.run_until_parked();
     assert_eq!(
-        stream.read_with(cx, |stream, _| timeline(stream)),
-        ["甲", "a", "乙", "b", "c", "丙"]
+        stream.read_with(cx, timeline),
+        ["甲", "a", "乙", "b+c", "丙"]
     );
     assert_eq!(stream.read_with(cx, |stream, _| stream.tool_cards.len()), 3);
     stream.update(cx, |stream, cx| {
@@ -126,8 +136,8 @@ async fn r70_live_mounted_text_and_tools_keep_proposal_order(cx: &mut TestAppCon
     });
     cx.run_until_parked();
     assert_eq!(
-        stream.read_with(cx, |stream, _| timeline(stream)),
-        ["甲", "a", "乙", "b", "c", "丙"]
+        stream.read_with(cx, timeline),
+        ["甲", "a", "乙", "b+c", "丙"]
     );
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("conversation-column").is_some());
@@ -175,10 +185,7 @@ async fn r70_terminal_only_tool_stays_after_text(cx: &mut TestAppContext) {
         );
     });
     cx.run_until_parked();
-    assert_eq!(
-        stream.read_with(cx, |stream, _| timeline(stream)),
-        ["甲", "invalid"]
-    );
+    assert_eq!(stream.read_with(cx, timeline), ["甲", "invalid"]);
     assert_eq!(stream.read_with(cx, |stream, _| stream.tool_cards.len()), 1);
 }
 
@@ -214,10 +221,7 @@ async fn r70_tool_before_first_text_has_no_empty_assistant_segment(cx: &mut Test
             cx,
         );
     });
-    assert_eq!(
-        stream.read_with(cx, |stream, _| timeline(stream)),
-        ["first", "后来"]
-    );
+    assert_eq!(stream.read_with(cx, timeline), ["first", "后来"]);
 }
 
 #[gpui_kit::test]
@@ -267,8 +271,8 @@ async fn r70_hydrated_page_preserves_segments_and_summary(cx: &mut TestAppContex
     });
     cx.run_until_parked();
     assert_eq!(
-        stream.read_with(cx, |stream, _| timeline(stream)),
-        ["user", "甲", "a", "乙", "b", "c", "丙", "summary"]
+        stream.read_with(cx, timeline),
+        ["user", "甲", "a", "乙", "b+c", "丙", "summary"]
     );
 }
 
@@ -306,10 +310,7 @@ async fn r70_hydrated_failure_after_last_tool_is_at_tail(cx: &mut TestAppContext
             cx,
         )
     });
-    assert_eq!(
-        stream.read_with(cx, |stream, _| timeline(stream)),
-        ["甲", "a", "failed:"]
-    );
+    assert_eq!(stream.read_with(cx, timeline), ["甲", "a", "failed:"]);
 }
 
 #[gpui_kit::test]
@@ -362,7 +363,7 @@ async fn r70_page_prepend_during_tool_gap_keeps_followup_text(cx: &mut TestAppCo
         );
     });
     assert_eq!(
-        stream.read_with(cx, |stream, _| timeline(stream)),
+        stream.read_with(cx, timeline),
         ["user", "旧回答", "甲", "tool", "乙"]
     );
 }

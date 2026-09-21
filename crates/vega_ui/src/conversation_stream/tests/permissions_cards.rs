@@ -33,7 +33,7 @@ async fn issue90_bash_validation_terminal_is_actionable_and_never_prompts(cx: &m
         })
         .expect("stream window");
     assert!(text.contains(
-        "bash · 已拒绝 参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
+        "已拒绝运行：参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
     ));
     assert!(!text.contains("工具结果损坏"));
     assert!(!queue.has_pending());
@@ -108,7 +108,7 @@ async fn issue73_mcp_proposal_mounts_once_approval_and_keeps_terminal_card(
             stream.tool_cards[call_id].read(cx).visible_text()
         })
         .expect("stream window");
-    assert!(pending.contains("MCP · 待批准"));
+    assert!(pending.contains("等待批准调用 echo"));
     assert!(pending.contains("echo"));
     assert!(!pending.contains("工具结果损坏"));
 
@@ -147,7 +147,7 @@ async fn issue73_mcp_proposal_mounts_once_approval_and_keeps_terminal_card(
             stream.tool_cards[call_id].read(cx).visible_text()
         })
         .expect("stream window");
-    assert!(terminal.contains("MCP · 已完成"));
+    assert!(terminal.contains("已调用 echo"));
     assert!(!terminal.contains("工具结果损坏"));
 }
 

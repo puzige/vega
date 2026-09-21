@@ -1,6 +1,6 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.11 · 2026-09-10 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.12 · 2026-09-21 · 关联：[vega-features.md](vega-features.md)
 
 > **规范分层**：跨任务的视觉语言、语义 token 与新 UI 默认规则以
 > [Vega 设计守则](vega-design-guidelines.md)为入口；本文件继续承载组件行为和
@@ -88,17 +88,12 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - 项目、会话和 Settings 导航行使用 8px 圆角；Settings 保持 32px 高并位于 Sidebar 的 12px 左右/底部 inset 中
 
 ### 4.2 工具调用卡片（信息密度核心）
-```
-┌─ ⚙ bash · 已完成 · 1.2s ─────────────── [展开▾] ┐
-│ $ cargo test --workspace                        │
-│ （折叠时仅显示命令一行，输出默认收起）              │
-└──────────────────────────────────────────────────┘
-```
-- 状态色：执行中=旋转指示器+`text-secondary`，成功=`success` 图标，失败=`danger` 图标+退出码
-- 写操作卡片头部显示 `路径 +12/-3`，点击展开内嵌 diff
+- 当前冻结规格见 [Issue #70 compact tool activity groups](vega-issue-70-tool-activity.md)。默认态是无常驻边框/底色的一行活动摘要；连续工具调用折叠为一个分组，展开后按时间顺序显示子调用，子调用再按需展开安全的命令/输出面板。
+- 状态色：执行中=`text-secondary`，成功=`success` 图标，失败=`danger` 图标+退出码；完整摘要文字保持中性层级，不整行染成状态色。
+- 写操作摘要显示安全的规范相对路径、bytes/replacements；完整 Diff 仍由既有 Artifact/Diff 路径承载。
 - write/edit 卡只消费 tech-spec §2 的 strict 安全成功/失败投影：成功显示规范项目相对路径、bytes_written 与 edit replacements 摘要，不显示 checkpoint ref；失败只显示稳定、脱敏 code/message。missing/extra/wrong-type、非法 u64/replacements/ref 必须 fail closed 为损坏结果，禁止从 raw provider input、绝对 checkpoint path 或 preimage 补数据
 - invalid write/edit 显示 rejected 工具卡与 stable validation code，不生成权限卡，不显示/保留 raw path、body 或 JSON
-- 卡片间距 8px，圆角 8px，边框 1px `border-subtle`，无阴影
+- 仅展开后的 detail surface 使用圆角、1px `border-subtle` 与 `code_bg`，无阴影；折叠摘要行不画常驻卡片 surface。
 
 ### 4.3 权限确认卡片
 - `warning` 左侧 3px 竖条；操作描述 + 命令全文（等宽）
@@ -163,6 +158,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.9 (2026-09-10) R23 Sidebar footer 修正：常驻设置入口使用完整 32px 行高并铺满 Sidebar 的 12px 内边距内容列；不得叠加额外水平缩进或固定宽度。精确验收见 [R23 Sidebar footer fill](vega-r23-sidebar-footer-fill.md)。
 - v0.10 (2026-09-10) R24 Sidebar footer 复验修正：用户确认 R23 视觉未解决；设置入口保持 32px，但 hover/点击面改为与 Sidebar 左右及底部 edge-to-edge，普通内容继续保留 12px inset。精确验收见 [R24 Sidebar footer edge-to-edge](vega-r24-sidebar-footer-edge-to-edge.md)。
 - v0.11 (2026-09-10) R25 Sidebar 导航复验修正：普通 hover/selected token 改为中性灰；项目行去除独立 Chevron 并以 Folder open/closed 表达展开状态；导航行圆角统一为 8px；Settings 撤销 edge-to-edge 条带并回归 12px inset。精确验收见 [R25 Sidebar navigation](vega-r25-sidebar-navigation.md)。
+- v0.12 (2026-09-21) Issue #70 工具活动层级：连续调用默认收敛为无常驻 surface 的单行分组，展开后显示有序子调用并允许按调用展开安全 detail；严格投影、权限和失败可见性不变。精确验收见 [Issue #70 compact tool activity groups](vega-issue-70-tool-activity.md)。
 - v0.12 (2026-09-10) R26 Sidebar 分组与渐进显现：生产投影固定为 `PINNED / PROJECTS / RECENTS`，任务只出现一次；section、project 与 task 的辅助操作仅在所属区域 hover、键盘 focus 或菜单打开时可见，且保持既有 hitbox 与无布局跳动。精确验收见 [R26 Sidebar sections](vega-r26-sidebar-sections-hover.md)。
 - v0.13 (2026-09-11) R27 Sidebar 行栅格修正：Pinned 行移除重复 Pin 图标与空槽；项目 Folder 到名称使用 8px gap；项目名称与所有任务标题统一 32px 内容 inset；Pinned 项目元数据固定 85px 列宽。精确验收见 [R27 Sidebar row alignment](vega-r27-sidebar-row-alignment.md)。
 - v0.14 (2026-09-11) R28 Sidebar 标题大小写：生产区块标题由全大写收敛为 `Pinned / Projects / Recents`，其余字体 token、层级、顺序、几何与渐进显现规则不变。精确验收见 [R28 Sidebar heading case](vega-r28-sidebar-heading-case.md)。
