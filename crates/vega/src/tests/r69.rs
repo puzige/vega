@@ -531,10 +531,53 @@ fn skill_draft_fixture(cx: &mut gpui_kit::TestAppContext) -> DraftFixture {
     fixture
 }
 
+/// Issue #96 removed the Composer Skills entry, so the retained reviewed
+/// selection controller (`request_skill_projection` -> `choose_skill_candidate`
+/// -> `SkillComposerMutationRequested`/`ensure_composer_pin`) is now driven
+/// through the stream instead of the unmounted picker chrome. The production
+/// submission route under test is unchanged.
+fn choose_stream_skill(fixture: &DraftFixture, cx: &mut gpui_kit::TestAppContext) {
+    let stream = fixture.stream(cx);
+    stream.update(cx, |stream, cx| stream.request_skill_projection(cx));
+    pump_test_app(cx, |cx| {
+        !stream.read_with(cx, |stream, _| {
+            stream.composer_skill_candidates().is_empty()
+        })
+    });
+    stream.update(cx, |stream, cx| {
+        let candidate = stream
+            .composer_skill_candidates()
+            .into_iter()
+            .next()
+            .expect("reviewed candidate");
+        stream.choose_skill_candidate(&candidate, cx);
+    });
+}
+
 fn choose_draft_skill(fixture: &DraftFixture, cx: &mut gpui_kit::TestAppContext) {
-    fixture.click("composer-skills", cx);
-    pump_test_app(cx, |cx| !fixture.absent("composer-skill-row-reviewer", cx));
-    fixture.click("composer-skill-row-reviewer", cx);
+    choose_stream_skill(fixture, cx);
+}
+
+/// Issue #96: the Composer footer must not expose any Skills entry. The
+/// only bottom-row controls are `+`, permission mode, the model selector and
+/// send; Settings -> Skills and the model-driven catalog remain the entry
+/// points. This asserts the real mounted production composer.
+#[gpui_kit::test]
+async fn issue96_composer_footer_has_no_skills_entry(cx: &mut gpui_kit::TestAppContext) {
+    let fixture = skill_draft_fixture(cx);
+    assert!(
+        fixture.absent("composer-skills", cx),
+        "composer footer must not render the Skills entry"
+    );
+    assert!(
+        fixture.absent("composer-skills-menu", cx),
+        "composer footer must not render the Skills picker menu"
+    );
+    // The retained footer controls are still mounted.
+    assert!(!fixture.absent("composer-add", cx));
+    assert!(!fixture.absent("composer-permission-status", cx));
+    assert!(!fixture.absent("composer-model", cx));
+    assert!(!fixture.absent("composer-send", cx));
 }
 
 #[gpui_kit::test]
@@ -715,13 +758,12 @@ async fn issue74_persisted_composer_pin_and_unpin_use_worker_cas(
             .expect("initial pins")
             .is_empty()
     );
-    fixture.click("composer-skills", cx);
-    pump_test_app(cx, |cx| !fixture.absent("composer-skill-row-reviewer", cx));
-    fixture.click("composer-skill-row-reviewer", cx);
+    let stream = fixture.stream(cx);
+    choose_stream_skill(&fixture, cx);
     pump_test_app(cx, |cx| {
         vega_store::skills::list_thread_pins(fixture.store().conn(), &thread_id)
             .is_ok_and(|pins| pins.len() == 1)
-            && fixture.stream(cx).read_with(cx, |stream, _| {
+            && stream.read_with(cx, |stream, _| {
                 stream.composer_skill_pin_count() == Some(1)
                     && !stream.composer_skill_mutation_pending()
             })
@@ -742,13 +784,28 @@ async fn issue74_persisted_composer_pin_and_unpin_use_worker_cas(
             .pins[0]
             .available
     );
-    fixture.click("composer-skills", cx);
-    pump_test_app(cx, |cx| !fixture.absent("composer-skill-row-reviewer", cx));
-    fixture.click("composer-skill-row-reviewer", cx);
+    // The refreshed projection marks the durable pin selected; choosing the
+    // same reviewed candidate again is the unpin gesture.
+    pump_test_app(cx, |cx| {
+        stream.read_with(cx, |stream, _| {
+            stream
+                .composer_skill_candidates()
+                .iter()
+                .any(|candidate| candidate.selected)
+        })
+    });
+    stream.update(cx, |stream, cx| {
+        let candidate = stream
+            .composer_skill_candidates()
+            .into_iter()
+            .find(|candidate| candidate.selected)
+            .expect("pinned candidate");
+        stream.choose_skill_candidate(&candidate, cx);
+    });
     pump_test_app(cx, |cx| {
         vega_store::skills::list_thread_pins(fixture.store().conn(), &thread_id)
             .is_ok_and(|pins| pins.is_empty())
-            && fixture.stream(cx).read_with(cx, |stream, _| {
+            && stream.read_with(cx, |stream, _| {
                 stream.composer_skill_pin_count() == Some(0)
                     && !stream.composer_skill_mutation_pending()
             })

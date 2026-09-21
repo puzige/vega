@@ -230,7 +230,6 @@ impl ConversationStream {
                                 .debug_selector(|| "composer-add".into()),
                             )
                             .child(self.render_permission_status(cx))
-                            .child(self.render_skill_picker(cx))
                             .child(div().flex_1())
                             .child(self.render_model_selector(cx))
                             .when(

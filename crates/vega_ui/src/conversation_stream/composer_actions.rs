@@ -251,7 +251,6 @@ impl ConversationStream {
         self.actions.slash = None;
         self.model_picker_level = ModelPickerLevel::Closed;
         self.permission_picker_open = false;
-        self.skill_picker_open = false;
         self.utility_projects_open = false;
         self.close_file_selector_and_cancel(cx);
     }
