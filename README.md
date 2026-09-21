@@ -36,6 +36,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-70-tool-activity-delivery.md](docs/vega-issue-70-tool-activity-delivery.md) | #70 测试先行矩阵、门禁与原生验收记录 |
 | [vega-issue-74-skills.md](docs/vega-issue-74-skills.md) | #74 Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
 | [vega-issue-74-skills-delivery.md](docs/vega-issue-74-skills-delivery.md) | #74 测试先行验收矩阵（均未运行） |
+| [vega-issue-114-tool-call-limit-research.md](docs/vega-issue-114-tool-call-limit-research.md) | #114 本地 Codex tool call 次数限制与可配参数调研（结论：无此上限） |
 | [vega-issues-58-59-61-delivery.md](docs/vega-issues-58-59-61-delivery.md) | #58/#59/#61 测试、原生模型回复与安装验收记录 |
 | [vega-feature-teardown.md](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
 | [vega-features.md](docs/vega-features.md) | 功能点全表（Phase 1 P0 ×38） |
