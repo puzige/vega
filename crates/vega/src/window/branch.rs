@@ -187,7 +187,7 @@ impl VegaWindow {
     ) -> bool {
         !self.trusted_actions.is_busy()
             && !self.commit_controller.is_open()
-            && self.agent_controller.active.is_none()
+            && self.agent_controller.active.is_empty()
             && !stream.read(cx).has_active_agent()
             && !stream.read(cx).has_pending_model_selection()
             && !stream.read(cx).has_pending_permission()

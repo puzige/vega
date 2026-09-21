@@ -22,7 +22,7 @@ fn send_body(f: &Fixture, body: &str, cx: &mut gpui_kit::TestAppContext) {
             .len()
             >= before + 2
             && f.root.read_with(cx, |root, _| {
-                root.agent_controller.active.is_none() && !root.trusted_actions.is_busy()
+                root.agent_controller.active.is_empty() && !root.trusted_actions.is_busy()
             })
     });
 }
@@ -316,10 +316,11 @@ async fn i76_context_automatic_runtime_generation_restarts_are_remapped(
     let f = fixture(cx, Arc::new(vega_runtime::MockProvider::new(vec![])));
     for _ in 0..2 {
         f.root.update(cx, |root, cx| {
-            let (run, _) =
-                root.agent_controller
-                    .begin(f.thread.id.clone(), f.stream.clone(), None, None);
-            root.begin_context_primary_owner(run);
+            let (run, _) = root
+                .agent_controller
+                .begin(f.thread.id.clone(), f.stream.clone(), None, None)
+                .expect("thread admission");
+            root.begin_context_primary_owner(run, cx);
             root.project_automatic_context(
                 run,
                 &f.stream,
@@ -345,20 +346,20 @@ async fn i76_context_automatic_runtime_generation_restarts_are_remapped(
 }
 
 #[gpui_kit::test]
-async fn i76_context_same_entity_route_aba_rejects_old_primary_status(
+async fn issue67_context_same_entity_route_aba_retains_live_primary_status(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.executor().allow_parking();
     let f = fixture(cx, Arc::new(vega_runtime::MockProvider::new(vec![])));
-    let run = f.root.update(cx, |root, _| {
-        let (run, _) =
-            root.agent_controller
-                .begin(f.thread.id.clone(), f.stream.clone(), None, None);
-        root.begin_context_primary_owner(run);
+    let run = f.root.update(cx, |root, cx| {
+        let (run, _) = root
+            .agent_controller
+            .begin(f.thread.id.clone(), f.stream.clone(), None, None)
+            .expect("thread admission");
+        root.begin_context_primary_owner(run, cx);
         run
     });
-    // Settings route keeps the exact stream entity cached. Returning to A
-    // must still retire its prior route incarnation, not only compare ids.
+    // C67: Settings invalidates route loads, but preserves exact live run ownership.
     cx.update(|cx| cx.set_global(SettingsOpen(true)));
     cx.run_until_parked();
     cx.update(|cx| cx.set_global(SettingsOpen(false)));
@@ -371,7 +372,7 @@ async fn i76_context_same_entity_route_aba_rejects_old_primary_status(
             runtime_status(ContextCompactionStatus::Compacting),
             cx,
         );
-        assert!(!f.stream.read(cx).context_operation_busy());
+        assert!(f.stream.read(cx).context_operation_busy());
         root.agent_controller.finish(run, &f.thread.id, &f.stream);
     });
 }
@@ -393,7 +394,7 @@ async fn i76_context_primary_pre_message_started_blocks_manual_worker(
     cx.simulate_keystrokes(f.window.into(), "cmd-enter");
     pump_test_app(cx, |cx| {
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_some())
+            .read_with(cx, |root, _| !root.agent_controller.active.is_empty())
     });
     entered_rx
         .recv_timeout(Duration::from_secs(5))
@@ -420,7 +421,7 @@ async fn i76_context_primary_pre_message_started_blocks_manual_worker(
     release_tx.send(()).expect("release");
     pump_test_app(cx, |cx| {
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
     assert_eq!(draft(&f, cx), "pending primary");
     assert!(provider.requests().is_empty());
@@ -520,11 +521,12 @@ async fn i76_context_reopened_controller_recovers_abandoned_status_without_busy(
 async fn i76_context_model_aba_same_stream_rejects_old_run(cx: &mut gpui_kit::TestAppContext) {
     cx.executor().allow_parking();
     let f = fixture(cx, Arc::new(vega_runtime::MockProvider::new(vec![])));
-    let run = f.root.update(cx, |root, _| {
-        let (run, _) =
-            root.agent_controller
-                .begin(f.thread.id.clone(), f.stream.clone(), None, None);
-        root.begin_context_primary_owner(run);
+    let run = f.root.update(cx, |root, cx| {
+        let (run, _) = root
+            .agent_controller
+            .begin(f.thread.id.clone(), f.stream.clone(), None, None)
+            .expect("thread admission");
+        root.begin_context_primary_owner(run, cx);
         run
     });
     for model in ["gpt-5.6-luna", "gpt-5.6-terra"] {
@@ -555,10 +557,11 @@ async fn i91_accounting_event_owner_retires_after_model_aba(cx: &mut gpui_kit::T
     cx.executor().allow_parking();
     let f = fixture(cx, Arc::new(vega_runtime::MockProvider::new(vec![])));
     let run = f.root.update(cx, |root, cx| {
-        let (run, _) =
-            root.agent_controller
-                .begin(f.thread.id.clone(), f.stream.clone(), None, None);
-        root.begin_context_primary_owner(run);
+        let (run, _) = root
+            .agent_controller
+            .begin(f.thread.id.clone(), f.stream.clone(), None, None)
+            .expect("thread admission");
+        root.begin_context_primary_owner(run, cx);
         assert!(root.owns_primary_context_event(run, &f.stream, cx));
         run
     });
@@ -758,5 +761,208 @@ async fn i76_context_metadata_failure_retries_after_real_settings_route_roundtri
     assert!(
         !f.stream
             .read_with(cx, |stream, _| stream.context_operation_busy())
+    );
+}
+
+#[gpui_kit::test]
+async fn issue67_queued_background_plan_continuation_preserves_peer_and_artifact_owner(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::text("owned continuation"),
+        vega_runtime::ScriptStep::delay(Duration::from_millis(800)),
+        vega_runtime::ScriptStep::events(vec![vega_runtime::ProviderEvent::Done {
+            stop_reason: vega_runtime::StopReason::End,
+        }]),
+    ]));
+    let f = fixture(cx, provider.clone());
+    let plan_thread =
+        vega_conversation::threads::set_thread_mode(&f.store, &f.thread.id, ThreadMode::Plan)
+            .expect("plan mode");
+    insert(
+        f.store.conn(),
+        &MessageRow {
+            id: "concurrent-plan".into(),
+            thread_id: f.thread.id.clone(),
+            seq: 1,
+            role: "assistant".into(),
+            kind: "text".into(),
+            content: String::new(),
+            status: "streaming".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .expect("plan message");
+    complete_plan(
+        f.store.conn(),
+        &f.thread.id,
+        "concurrent-plan",
+        "Inspect the owned repository",
+        2,
+    )
+    .expect("ready plan");
+    f.stream.update(cx, |stream, cx| {
+        stream.apply_thread(plan_thread.clone(), cx)
+    });
+    cx.update(|cx| cx.set_global(OpenedThread(Some(plan_thread))));
+    // A controlled terminal handshake is the only injected boundary; review persistence and resumed worker are production.
+    let (generation_a, cancel_a) = f.root.update(cx, |root, _| {
+        root.agent_controller
+            .begin(f.thread.id.clone(), f.stream.clone(), None, None)
+            .expect("A draining owner")
+    });
+    let request = PlanReviewRequested {
+        thread_id: f.thread.id.clone(),
+        plan_id: "concurrent-plan".into(),
+        action: PlanReviewAction::Approve,
+    };
+    f.root.update(cx, |root, cx| {
+        root.review_plan(f.stream.clone(), &request, cx)
+    });
+    assert!(cancel_a.is_cancelled());
+    let b = vega_conversation::threads::create_thread(
+        &f.store,
+        &f.thread.project_id,
+        &f.thread.model,
+        "confirm",
+    )
+    .expect("B");
+    cx.update(|cx| {
+        cx.set_global(OpenedThread(Some(b.clone())));
+        cx.refresh_windows();
+    });
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.stream_view.as_ref().is_some_and(|(id, _)| id == &b.id)
+        })
+    });
+    let b_stream = f.root.read_with(cx, |root, _| {
+        root.stream_view.as_ref().expect("B stream").1.clone()
+    });
+    f.root.update(cx, |root, cx| {
+        root.start_agent_run(
+            b_stream.clone(),
+            &b.id,
+            PendingAgentRun::UserMessage("B independent".into()),
+            cx,
+        )
+    });
+    pump_test_app(cx, |_| !provider.requests().is_empty());
+    let cancel_b = f.root.read_with(cx, |root, _| {
+        root.agent_controller
+            .active
+            .get(&b.id)
+            .expect("B active")
+            .cancel
+            .clone()
+    });
+    let b_artifact = f.root.read_with(cx, |root, _| {
+        root.artifact_controller
+            .active
+            .as_ref()
+            .expect("B artifact route")
+            .identity
+            .clone()
+    });
+    f.root.update(cx, |root, cx| {
+        root.agent_controller
+            .finish(generation_a, &f.thread.id, &f.stream)
+            .expect("A terminal");
+        root.finish_owned_plan_review(f.stream.clone(), &request, cx);
+        let resumed = root
+            .agent_controller
+            .active
+            .get(&f.thread.id)
+            .expect("A resumed in background");
+        assert_ne!(resumed.generation, generation_a);
+        assert!(
+            root.artifact_controller
+                .agent_route(resumed.generation, &f.stream)
+                .is_some()
+        );
+        assert_eq!(root.agent_controller.active.len(), 2);
+        assert!(root.agent_controller.pending_review.is_empty());
+        assert!(!cancel_b.is_cancelled());
+        assert!(
+            root.artifact_controller
+                .active
+                .as_ref()
+                .is_some_and(|route| route.identity == b_artifact)
+        );
+        assert!(
+            cx.global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|thread| thread.id == b.id)
+        );
+    });
+    pump_test_app(cx, |_| provider.requests().len() == 2);
+    pump_test_app(cx, |cx| {
+        f.root
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
+    });
+    assert!(!cancel_b.is_cancelled());
+    let plans =
+        vega_conversation::plans::list_plans(&f.store, &f.thread.id).expect("durable plans");
+    assert_eq!(plans[0].status, PlanStatus::Approved);
+    for thread in [&f.thread, &b] {
+        let status: String = f.store.conn().query_row("SELECT status FROM messages WHERE thread_id = ?1 AND role = 'assistant' ORDER BY seq DESC LIMIT 1", [&thread.id], |row| row.get(0)).expect("durable continuation");
+        assert_eq!(status, "done");
+    }
+}
+
+#[gpui_kit::test]
+async fn issue67_manual_context_is_not_blocked_by_another_thread_owner(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let provider = Arc::new(vega_runtime::MockProvider::new_rounds(vec![
+        reply("First answer"),
+        reply("Second answer"),
+        reply("Summarized the earlier task; retain latest task"),
+    ]));
+    let f = fixture(cx, provider.clone());
+    send_body(&f, "first task", cx);
+    send_body(&f, "second task", cx);
+    save_legacy_manual_budget(&f, cx);
+    let other = vega_conversation::threads::create_thread(
+        &f.store,
+        &f.thread.project_id,
+        &f.thread.model,
+        "confirm",
+    )
+    .expect("peer");
+    let other_stream = cx.new(|cx| ConversationStream::new(other.clone(), cx));
+    let (generation, cancel) = f.root.update(cx, |root, _| {
+        root.agent_controller
+            .begin(other.id.clone(), other_stream.clone(), None, None)
+            .expect("peer owner")
+    });
+    request_internal_manual_compaction(&f, cx);
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 3
+            && f.root
+                .read_with(cx, |root, _| root.context_controller.manual.is_none())
+    });
+    assert!(!cancel.is_cancelled());
+    f.root.update(cx, |root, _| {
+        root.agent_controller
+            .finish(generation, &other.id, &other_stream)
+            .expect("peer unchanged");
+    });
+    let projection = vega_conversation::agent::read_context_projection(
+        &f.store,
+        &f.thread.id,
+        &f.thread.model,
+        SYSTEM_PROMPT,
+    )
+    .expect("manual result");
+    assert_eq!(
+        projection.last_status.expect("manual terminal").status,
+        ContextCompactionStatus::Succeeded
     );
 }

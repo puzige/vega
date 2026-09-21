@@ -580,7 +580,7 @@ async fn r58_off_position_persists_disabled_without_touching_efforts(
     pump_test_app(cx, |cx| {
         fixture
             .root
-            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
             && provider.requests().len() == 1
     });
     let request = provider
@@ -760,7 +760,7 @@ async fn reasoning_authority_reconcile_error_blocks_controller_before_provider(
         );
     });
     assert!(provider.requests().is_empty());
-    assert!(root.read_with(cx, |root, _| root.agent_controller.active.is_none()));
+    assert!(root.read_with(cx, |root, _| root.agent_controller.active.is_empty()));
 
     // An authority may be readable while its typed projection is invalid
     // after a future grammar/conversion drift. The error must not turn the
@@ -978,7 +978,7 @@ async fn settings_unknown_reasoning_template_saves_reads_back_and_reaches_mock_r
         );
     });
     pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+        root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
             && provider.requests().len() == 1
     });
     let request = provider
@@ -1082,7 +1082,7 @@ async fn frozen_reasoning_owner_change_same_model_fails_before_provider(
         );
     });
     pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+        root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
     assert!(
         provider.requests().is_empty(),

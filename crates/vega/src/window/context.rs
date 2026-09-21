@@ -1,6 +1,7 @@
-//! Context operations use the same single-flight gate as sends/model changes.
-//! Every asynchronous result also belongs to one exact route incarnation.
+//! Manual context actions retain their exclusive, route-bound lease.
+//! Automatic compaction belongs to the exact primary run across navigation.
 use super::*;
+use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 use vega_store::Store;
 
@@ -28,8 +29,8 @@ pub(crate) struct ContextController {
     saving: Option<(ContextOwner, u64)>,
     // Runtime compaction numbering restarts each run. Only this tuple may
     // reuse a UI operation id; it is never an app-level ownership fence.
-    automatic: Option<(u64, u64, u64)>,
-    primary_owner: Option<(u64, ContextOwner)>,
+    automatic: HashMap<u64, (u64, u64)>,
+    primary_owner: HashMap<u64, ContextOwner>,
     // Observes the real async service completion in app integration tests;
     // it does not alter scheduling, projection or error handling.
     #[cfg(test)]
@@ -47,8 +48,6 @@ impl ContextController {
         self.cancel();
         self.epoch = self.epoch.saturating_add(1);
         self.owner = None;
-        self.automatic = None;
-        self.primary_owner = None;
     }
 }
 
@@ -74,13 +73,37 @@ fn context_record(id: u64, status: ContextCompactionStatus) -> ContextCompaction
 }
 
 impl VegaWindow {
-    pub(crate) fn begin_context_primary_owner(&mut self, generation: u64) {
-        self.invalidate_context_load();
-        self.context_controller.primary_owner = self
-            .context_controller
-            .owner
-            .clone()
-            .map(|owner| (generation, owner));
+    pub(crate) fn begin_context_primary_owner(&mut self, generation: u64, cx: &App) {
+        if let Some(run) = self
+            .agent_controller
+            .active
+            .values()
+            .find(|run| run.generation == generation)
+        {
+            if self
+                .context_controller
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.thread_id == run.thread_id && owner.stream == run.stream)
+            {
+                self.context_controller.load_sequence =
+                    self.context_controller.load_sequence.saturating_add(1);
+            }
+            self.context_controller.primary_owner.insert(
+                generation,
+                ContextOwner {
+                    epoch: generation,
+                    thread_id: run.thread_id.clone(),
+                    model: run.stream.read(cx).displayed_model().to_owned(),
+                    stream: run.stream.clone(),
+                },
+            );
+        }
+    }
+
+    pub(crate) fn finish_context_primary_owner(&mut self, generation: u64) {
+        self.context_controller.primary_owner.remove(&generation);
+        self.context_controller.automatic.remove(&generation);
     }
 
     pub(crate) fn start_context_compaction(
@@ -106,7 +129,7 @@ impl VegaWindow {
             return;
         }
         let reasoning = stream.read(cx).frozen_reasoning_for_submit();
-        let allowed = self.agent_controller.active.is_none()
+        let allowed = !self.agent_controller.active.contains_key(&owner.thread_id)
             && self.context_controller.manual.is_none()
             && !stream.read(cx).has_pending_model_selection()
             && self.reasoning_save_pending.is_none()
@@ -278,6 +301,9 @@ impl VegaWindow {
         }
     }
     pub(crate) fn cancel_context_if_route_stale(&mut self, cx: &App) {
+        self.context_controller
+            .primary_owner
+            .retain(|_, owner| owner.stream.read(cx).displayed_model() == owner.model);
         let stale = self.context_controller.owner.as_ref().is_some_and(|owner| {
             cx.global::<SettingsOpen>().0
                 || !self.owns_stream_request(&owner.stream, &owner.thread_id, cx)
@@ -324,11 +350,13 @@ impl VegaWindow {
         self.context_controller.invalidate();
         self.context_controller.owner = Some(ContextOwner {
             epoch: self.context_controller.epoch,
-            thread_id: thread.id,
+            thread_id: thread.id.clone(),
             model: thread.model,
             stream: stream.clone(),
         });
-        self.refresh_context_projection(true, cx);
+        if !self.agent_controller.active.contains_key(&thread.id) {
+            self.refresh_context_projection(true, cx);
+        }
     }
 
     pub(super) fn context_database(&self, cx: &App) -> Option<PathBuf> {
@@ -447,7 +475,7 @@ impl VegaWindow {
         }
         let lease = owner
             .as_ref()
-            .filter(|_| self.agent_controller.active.is_none())
+            .filter(|owner| !self.agent_controller.active.contains_key(&owner.thread_id))
             .and_then(|owner| {
                 self.trusted_actions.acquire(
                     TrustedActionKind::ContextSettings,
@@ -543,36 +571,24 @@ impl VegaWindow {
         }
         let Some(owner) = self
             .context_controller
-            .owner
-            .clone()
-            .filter(|owner| owner.stream == *stream && self.context_owner_matches(owner, cx))
+            .primary_owner
+            .get(&run_generation)
+            .cloned()
         else {
             return;
         };
-        if !self
-            .agent_controller
-            .matches(run_generation, &owner.thread_id, stream)
-        {
-            return;
-        }
-        if self.context_controller.primary_owner.as_ref() != Some(&(run_generation, owner.clone()))
-        {
-            return;
-        }
         let runtime_generation = record.generation;
-        let id = match self.context_controller.automatic {
-            Some((run, operation, id))
-                if run == run_generation && operation == runtime_generation =>
-            {
-                id
-            }
+        let id = match self.context_controller.automatic.get(&run_generation) {
+            Some((operation, id)) if *operation == runtime_generation => *id,
             _ => {
                 let Some(id) =
                     stream.update(cx, |stream, cx| stream.reserve_context_operation_id(cx))
                 else {
                     return;
                 };
-                self.context_controller.automatic = Some((run_generation, runtime_generation, id));
+                self.context_controller
+                    .automatic
+                    .insert(run_generation, (runtime_generation, id));
                 id
             }
         };
@@ -590,11 +606,10 @@ impl VegaWindow {
     ) -> bool {
         self.context_controller
             .primary_owner
-            .as_ref()
-            .is_some_and(|(run, owner)| {
-                *run == generation
-                    && owner.stream == *stream
-                    && self.context_owner_matches(owner, cx)
+            .get(&generation)
+            .is_some_and(|owner| {
+                owner.stream == *stream
+                    && stream.read(cx).displayed_model() == owner.model
                     && self
                         .agent_controller
                         .matches(generation, &owner.thread_id, stream)
@@ -620,11 +635,16 @@ impl VegaWindow {
             && active.request_id == request.request_id
         {
             active.cancel.cancel();
-        } else if let Some((run, _, id)) = self.context_controller.automatic
-            && id == request.request_id
-            && self
-                .agent_controller
-                .matches(run, &request.thread_id, &stream)
+        } else if self
+            .context_controller
+            .automatic
+            .iter()
+            .any(|(run, (_, id))| {
+                *id == request.request_id
+                    && self
+                        .agent_controller
+                        .matches(*run, &request.thread_id, &stream)
+            })
         {
             self.cancel_active_agent(cx);
         }

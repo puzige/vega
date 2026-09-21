@@ -732,6 +732,12 @@ impl ConversationStream {
         cx.notify();
     }
 
+    /// Keeps the exact in-flight submission intact when a duplicate send arrives.
+    pub fn apply_agent_busy(&mut self, cx: &mut Context<Self>) {
+        self.controller_error = Some("此对话正在执行，请等待完成或停止当前任务".into());
+        cx.notify();
+    }
+
     /// Rejects request preparation while preserving the draft for credential repair.
     pub fn apply_credential_error(&mut self, cx: &mut Context<Self>) {
         self.reject_composer_submission(cx);

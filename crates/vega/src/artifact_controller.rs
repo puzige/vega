@@ -99,9 +99,61 @@ pub(crate) struct ActiveArtifactRoute {
 pub(crate) struct ArtifactController {
     pub(crate) next_route_epoch: u64,
     pub(crate) active: Option<ActiveArtifactRoute>,
+    /// Only live run capture/terminal owners survive route navigation.
+    pub(crate) retained: HashMap<u64, ActiveArtifactRoute>,
 }
 
 impl ArtifactController {
+    pub(crate) fn route(&self, identity: &ArtifactRouteIdentity) -> Option<&ActiveArtifactRoute> {
+        self.active
+            .as_ref()
+            .filter(|route| route.identity == *identity)
+            .or_else(|| {
+                self.retained
+                    .get(&identity.epoch)
+                    .filter(|route| route.identity == *identity)
+            })
+    }
+
+    pub(crate) fn route_mut(
+        &mut self,
+        identity: &ArtifactRouteIdentity,
+    ) -> Option<&mut ActiveArtifactRoute> {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|route| route.identity == *identity)
+        {
+            self.active.as_mut()
+        } else {
+            self.retained
+                .get_mut(&identity.epoch)
+                .filter(|route| route.identity == *identity)
+        }
+    }
+
+    pub(crate) fn agent_route(
+        &self,
+        generation: u64,
+        stream: &Entity<ConversationStream>,
+    ) -> Option<ArtifactRouteIdentity> {
+        self.active
+            .iter()
+            .chain(self.retained.values())
+            .find(|route| {
+                route.agent_generation == Some(generation) && route.identity.stream == *stream
+            })
+            .map(|route| route.identity.clone())
+    }
+
+    pub(crate) fn retire_drained(&mut self) {
+        self.retained.retain(|_, route| {
+            route.agent_generation.is_some()
+                || route.terminal_in_flight.is_some()
+                || !route.terminal_queue.is_empty()
+        });
+    }
+
     pub(crate) fn begin(
         &mut self,
         thread: &Thread,
@@ -165,12 +217,6 @@ impl ArtifactController {
             }
         }
         active
-    }
-
-    pub(crate) fn matches(&self, identity: &ArtifactRouteIdentity) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|active| active.identity == *identity)
     }
 }
 

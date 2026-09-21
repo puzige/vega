@@ -230,7 +230,7 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui_kit::
         );
     });
     pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+        root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
             && provider.requests().len() == 1
     });
     assert_eq!(worker_starts.load(), starts + 1);
@@ -349,7 +349,7 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui_kit::
         );
     });
     pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| root.agent_controller.active.is_none())
+        root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
             && provider.requests().len() == 2
     });
     assert_eq!(worker_starts.load(), starts + 2);

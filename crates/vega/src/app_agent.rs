@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::atomic::*;
 use std::sync::*;
@@ -163,6 +164,7 @@ pub(crate) enum AgentBatchIngress {
     },
 }
 
+#[derive(Clone)]
 pub(crate) struct PendingPlanReview {
     pub(crate) stream: Entity<ConversationStream>,
     pub(crate) request: PlanReviewRequested,
@@ -335,8 +337,9 @@ pub(crate) enum PricingWorkerKind {
 #[derive(Default)]
 pub(crate) struct AppAgentController {
     pub(crate) next_generation: u64,
-    pub(crate) active: Option<ActiveAgentRun>,
-    pub(crate) pending_review: Option<PendingPlanReview>,
+    pub(crate) active: HashMap<String, ActiveAgentRun>,
+    pub(crate) pending_review: HashMap<String, PendingPlanReview>,
+    pub(crate) preparation_stream: Option<Entity<ConversationStream>>,
 }
 
 impl AppAgentController {
@@ -345,13 +348,12 @@ impl AppAgentController {
         thread_id: &str,
     ) -> Option<Entity<ConversationStream>> {
         self.active
-            .as_ref()
-            .filter(|active| active.thread_id == thread_id)
+            .get(thread_id)
             .map(|active| active.stream.clone())
     }
 
-    pub(crate) fn request_active_cancel(&self) {
-        if let Some(active) = &self.active {
+    pub(crate) fn request_active_cancel(&self, thread_id: &str) {
+        if let Some(active) = self.active.get(thread_id) {
             active.cancel.cancel();
         }
     }
@@ -361,17 +363,22 @@ impl AppAgentController {
         stream: &Entity<ConversationStream>,
         request: &PlanReviewRequested,
     ) -> bool {
-        // The caller already proved `stream` and `request.thread_id` own the
-        // current cache. Any older active run may be cancelled first; the
-        // review is persisted only after that worker reaches Finished.
-        if self.active.is_none() || self.pending_review.is_some() {
+        if !self
+            .active
+            .get(&request.thread_id)
+            .is_some_and(|run| run.stream == *stream)
+            || self.pending_review.contains_key(&request.thread_id)
+        {
             return false;
         }
-        self.pending_review = Some(PendingPlanReview {
-            stream: stream.clone(),
-            request: request.clone(),
-        });
-        self.request_active_cancel();
+        self.pending_review.insert(
+            request.thread_id.clone(),
+            PendingPlanReview {
+                stream: stream.clone(),
+                request: request.clone(),
+            },
+        );
+        self.request_active_cancel(&request.thread_id);
         true
     }
 
@@ -381,23 +388,29 @@ impl AppAgentController {
         stream: Entity<ConversationStream>,
         pending_user_content: Option<String>,
         pending_approved_instruction: Option<String>,
-    ) -> (u64, tokio_util::sync::CancellationToken) {
-        self.next_generation = self.next_generation.wrapping_add(1).max(1);
+    ) -> Option<(u64, tokio_util::sync::CancellationToken)> {
+        if self.active.contains_key(&thread_id) {
+            return None;
+        }
+        self.next_generation = self.next_generation.checked_add(1)?;
         let generation = self.next_generation;
         let cancel = tokio_util::sync::CancellationToken::new();
-        self.active = Some(ActiveAgentRun {
-            generation,
-            thread_id,
-            stream,
-            cancel: cancel.clone(),
-            pending_user_content,
-            pending_approved_instruction,
-            started: Instant::now(),
-            terminal_message_id: None,
-            terminal_failure: None,
-            mcp_unavailable: Vec::new(),
-        });
-        (generation, cancel)
+        self.active.insert(
+            thread_id.clone(),
+            ActiveAgentRun {
+                generation,
+                thread_id,
+                stream,
+                cancel: cancel.clone(),
+                pending_user_content,
+                pending_approved_instruction,
+                started: Instant::now(),
+                terminal_message_id: None,
+                terminal_failure: None,
+                mcp_unavailable: Vec::new(),
+            },
+        );
+        Some((generation, cancel))
     }
 
     pub(crate) fn matches(
@@ -406,7 +419,7 @@ impl AppAgentController {
         thread_id: &str,
         stream: &Entity<ConversationStream>,
     ) -> bool {
-        self.active.as_ref().is_some_and(|active| {
+        self.active.get(thread_id).is_some_and(|active| {
             active.generation == generation
                 && active.thread_id == thread_id
                 && active.stream == *stream
@@ -422,7 +435,7 @@ impl AppAgentController {
         if !self.matches(generation, thread_id, stream) {
             return None;
         }
-        let active = self.active.as_mut()?;
+        let active = self.active.get_mut(thread_id)?;
         active.pending_approved_instruction = None;
         active.pending_user_content.take()
     }
@@ -449,7 +462,7 @@ impl AppAgentController {
         if !self.matches(generation, thread_id, stream) {
             return;
         }
-        if let Some(active) = self.active.as_mut() {
+        if let Some(active) = self.active.get_mut(thread_id) {
             if let Some(message_id) = message_id {
                 active.terminal_message_id = Some(message_id.clone());
             }
@@ -468,7 +481,7 @@ impl AppAgentController {
         if !self.matches(generation, thread_id, stream) {
             return None;
         }
-        self.active.take()
+        self.active.remove(thread_id)
     }
 }
 

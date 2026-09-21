@@ -118,7 +118,7 @@ async fn issue60_unpriced_first_submit_reaches_provider(cx: &mut gpui_kit::TestA
     );
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
-            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
         })
     });
     assert_eq!(f.thread_rows(), 1);
@@ -247,7 +247,7 @@ async fn issue60_unavailable_pricing_states_allow_chat_and_title(
         pump_test_app(cx, |cx| {
             f.root.read_with(cx, |root, _| {
                 root.agent_worker_start_probe.load() == index + 1
-                    && root.agent_controller.active.is_none()
+                    && root.agent_controller.active.is_empty()
             })
         });
         assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
@@ -348,7 +348,7 @@ async fn issue60_unpriced_approved_plan_executes(cx: &mut gpui_kit::TestAppConte
     });
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
-            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
         })
     });
     assert_eq!(f.provider.requests().len(), 1);
@@ -401,7 +401,7 @@ async fn issue63_standalone_first_image_submit_crosses_app_worker_and_persists(
     pump_test_app(cx, |cx| {
         !f.provider.requests().is_empty()
             && f.root
-                .read_with(cx, |root, _| root.agent_controller.active.is_none())
+                .read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
     assert_eq!(f.standalone_rows(), 1);
     let requests = f.provider.requests();
@@ -556,7 +556,7 @@ async fn issue74_first_draft_skill_choice_pins_after_readiness_before_provider(
     fixture.submit("review this change", cx);
     pump_test_app(cx, |cx| {
         fixture.root.read_with(cx, |root, _| {
-            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
         })
     });
     let store = fixture.store();
@@ -664,7 +664,7 @@ async fn issue74_repeated_first_send_pins_once(cx: &mut gpui_kit::TestAppContext
     cx.simulate_keystrokes(fixture.window.into(), "cmd-enter cmd-enter");
     pump_test_app(cx, |cx| {
         fixture.root.read_with(cx, |root, _| {
-            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
         })
     });
     assert_eq!(fixture.provider.requests().len(), 1);
@@ -685,7 +685,7 @@ async fn issue74_no_skill_first_send_keeps_r69_path(cx: &mut gpui_kit::TestAppCo
     plain.submit("plain R69 request", cx);
     pump_test_app(cx, |cx| {
         plain.root.read_with(cx, |root, _| {
-            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
         })
     });
     assert_eq!(plain.provider.requests().len(), 1);
@@ -706,7 +706,7 @@ async fn issue74_persisted_composer_pin_and_unpin_use_worker_cas(
     fixture.submit("ordinary first message", cx);
     pump_test_app(cx, |cx| {
         fixture.root.read_with(cx, |root, _| {
-            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
         })
     });
     assert_eq!(fixture.provider.requests().len(), 1);
@@ -2251,7 +2251,7 @@ async fn a7_repaired_readiness_submits_retained_draft_once(cx: &mut gpui_kit::Te
         f.root.read_with(cx, |root, _| {
             root.agent_worker_start_probe.load() == 1
                 && f.thread_rows() == 1
-                && root.agent_controller.active.is_none()
+                && root.agent_controller.active.is_empty()
         })
     });
 
@@ -2295,7 +2295,7 @@ async fn a7_first_submit_provider_quota_failure_is_visible_and_durable(
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
             root.agent_worker_start_probe.load() == 1
-                && root.agent_controller.active.is_none()
+                && root.agent_controller.active.is_empty()
                 && failed_provider.requests().len() == 1
         })
     });
@@ -2353,7 +2353,7 @@ async fn a7_provider_http_failure_uses_safe_fallback(cx: &mut gpui_kit::TestAppC
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
             root.agent_worker_start_probe.load() == 1
-                && root.agent_controller.active.is_none()
+                && root.agent_controller.active.is_empty()
                 && failed_provider.requests().len() == 1
         })
     });
@@ -2465,7 +2465,7 @@ async fn a7_unpriced_first_submit_then_optional_pricing_preserves_task_identity(
     f.submit(content, cx);
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
-            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_none()
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
         })
     });
     assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
@@ -2552,7 +2552,7 @@ async fn a7_unpriced_first_submit_then_optional_pricing_preserves_task_identity(
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
             root.agent_worker_start_probe.load() == 2
-                && root.agent_controller.active.is_none()
+                && root.agent_controller.active.is_empty()
                 && f.thread_rows() == 1
         })
     });
@@ -2599,7 +2599,7 @@ async fn r69_a3b_second_submit_writes_no_second_row(cx: &mut gpui_kit::TestAppCo
     f.submit("first", cx);
     pump_test_app(cx, |cx| {
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
     assert_eq!(f.thread_rows(), 1);
 
@@ -2608,7 +2608,7 @@ async fn r69_a3b_second_submit_writes_no_second_row(cx: &mut gpui_kit::TestAppCo
     f.submit("second", cx);
     pump_test_app(cx, |cx| {
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
     assert_eq!(
         f.thread_rows(),
@@ -2743,7 +2743,7 @@ async fn a8_remove_project_keeps_open_task_and_clears_project_authority(
     f.submit("retained task", cx);
     pump_test_app(cx, |cx| {
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
             && f.thread_rows() == 1
     });
     let opened = cx.update(|cx| {
@@ -2837,7 +2837,7 @@ async fn a8_other_window_cannot_remove_project_while_worker_is_alive(
     pump_test_app(cx, |cx| {
         f.thread_rows() == 1
             && f.root
-                .read_with(cx, |root, _| root.agent_controller.active.is_none())
+                .read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
 
     // A second real Vega window shares App globals and the same mounted
@@ -2875,7 +2875,7 @@ async fn a8_other_window_cannot_remove_project_while_worker_is_alive(
     f.submit("run blocked at provider construction", cx);
     pump_test_app(cx, |cx| {
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_some())
+            .read_with(cx, |root, _| !root.agent_controller.active.is_empty())
     });
     entered_rx
         .recv_timeout(std::time::Duration::from_secs(5))
@@ -2912,7 +2912,7 @@ async fn a8_other_window_cannot_remove_project_while_worker_is_alive(
     });
     assert!(
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_some())
+            .read_with(cx, |root, _| !root.agent_controller.active.is_empty())
     );
 
     // Stop is asynchronous: cancellation alone must not release the folder
@@ -2921,7 +2921,8 @@ async fn a8_other_window_cannot_remove_project_while_worker_is_alive(
     assert!(f.root.read_with(cx, |root, _| {
         root.agent_controller
             .active
-            .as_ref()
+            .values()
+            .next()
             .is_some_and(|active| active.cancel.is_cancelled())
     }));
     click_second(project_menu, cx);
@@ -2937,7 +2938,7 @@ async fn a8_other_window_cannot_remove_project_while_worker_is_alive(
     release_tx.send(()).expect("release exact worker");
     pump_test_app(cx, |cx| {
         f.root
-            .read_with(cx, |root, _| root.agent_controller.active.is_none())
+            .read_with(cx, |root, _| root.agent_controller.active.is_empty())
     });
     assert!(!cx.update(|cx| { vega_ui::sidebar::project_worker_is_active(&f.project_id, cx) }));
     click_second(project_menu, cx);

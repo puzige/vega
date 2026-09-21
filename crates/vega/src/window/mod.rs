@@ -334,12 +334,15 @@ impl VegaWindow {
     pub(crate) fn window_terminal_cleanup(&mut self) {
         self.context_controller.cancel();
         self.window_alive.store(false, Ordering::SeqCst);
-        if let Some(active) = self.agent_controller.active.take() {
+        for (_, active) in self.agent_controller.active.drain() {
             active.cancel.cancel();
         }
         self.file_index_controller.cancel();
         self.diff_controller.close();
         let _ = self.artifact_controller.close();
+        for (_, route) in self.artifact_controller.retained.drain() {
+            route.cancel.cancel();
+        }
         let _ = self.branch_controller.close();
         for route in [
             self.commit_controller.active.as_ref(),
