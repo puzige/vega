@@ -99,6 +99,7 @@ use crate::plan_card::{PlanCard, PlanReviewRequested};
 use crate::settings::SettingsOpen;
 use crate::summary_card::SummaryCard;
 use crate::text_input::TextInput;
+use crate::tool_activity_group::ToolActivityGroup;
 use crate::tool_card::ToolCard;
 
 // The payload is a shared conversation boundary; keep this re-export so

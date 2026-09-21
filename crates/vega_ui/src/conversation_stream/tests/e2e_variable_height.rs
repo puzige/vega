@@ -17,6 +17,7 @@ fn entry_kinds_at(stream: &ConversationStream, indices: &[usize]) -> Vec<&'stati
                 StreamEntry::User { .. } => "user",
                 StreamEntry::Assistant { .. } => "assistant",
                 StreamEntry::Tool { .. } => "tool",
+                StreamEntry::ToolGroup { .. } => "tool-group",
                 StreamEntry::Artifact { .. } => "artifact",
                 StreamEntry::Permission { .. } => "permission",
                 StreamEntry::Plan { .. } => "plan",

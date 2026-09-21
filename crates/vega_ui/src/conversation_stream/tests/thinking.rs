@@ -69,6 +69,7 @@ async fn i61_thinking_blocks_follow_real_event_order_and_expand(cx: &mut TestApp
                 StreamEntry::Thinking { .. } => "thinking",
                 StreamEntry::Assistant { .. } => "text",
                 StreamEntry::Tool { .. } => "tool",
+                StreamEntry::ToolGroup { .. } => "tool-group",
                 _ => "unexpected",
             })
             .collect();

@@ -46,10 +46,28 @@ pub(crate) fn render_entry(
         StreamEntry::Assistant { model, failure, .. } => markdown_item(model, *failure, &colors),
         StreamEntry::Tool { card } => {
             let card = card.clone();
-            let row_count = card.read(cx).row_count();
-            card_rows_item(row_count, move |row| {
-                ToolCard::render_row(card.clone(), row, cx)
-            })
+            div()
+                .w_full()
+                .flex_shrink_0()
+                .pt_1()
+                .pb_2()
+                .child(ToolCard::render(
+                    card,
+                    "tool-activity-single-row".to_string(),
+                    false,
+                    cx,
+                ))
+                .into_any_element()
+        }
+        StreamEntry::ToolGroup { group } => {
+            let group = group.clone();
+            div()
+                .w_full()
+                .flex_shrink_0()
+                .pt_1()
+                .pb_2()
+                .child(ToolActivityGroup::render(group, cx))
+                .into_any_element()
         }
         StreamEntry::Artifact { card } => {
             let card = card.clone();

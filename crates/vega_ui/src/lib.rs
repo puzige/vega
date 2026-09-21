@@ -21,6 +21,7 @@ pub mod settings;
 pub mod sidebar;
 pub mod summary_card;
 pub mod text_input;
+mod tool_activity_group;
 pub mod tool_card;
 
 use gpui_kit::{App, KeyBinding};

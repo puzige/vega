@@ -1,25 +1,132 @@
-//! Audited tool-call cards over strict `vega_conversation` projections.
+//! Audited tool-call activities over strict `vega_conversation` projections.
 
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, div, px};
 use vega_conversation::types::{
-    Approval, ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
-    ToolResult, tool_card_input_projection, tool_card_result_projection,
+    Approval, InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, ToolCall, ToolCallStatus,
+    ToolCardInputProjection, ToolCardResultProjection, ToolResult, tool_card_input_projection,
+    tool_card_result_projection,
 };
 use vega_theme::{ThemeColors, Typography, theme};
 
-use crate::conversation_stream::{MONOFONT, ROW_HEIGHT, display_width};
+use crate::conversation_stream::{MONOFONT, ROW_HEIGHT};
+use crate::icons::Icon;
 
 const CORRUPT_LABEL: &str = "工具结果损坏";
 
-/// UI-only audited tool card. It never retains a provider call id, raw
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolActivityCategory {
+    Shell,
+    Read,
+    Find,
+    Search,
+    Write,
+    Edit,
+    Mcp,
+    Skill,
+    Other,
+}
+
+impl ToolActivityCategory {
+    pub(crate) const fn action_phrase(self) -> &'static str {
+        match self {
+            Self::Shell => "运行命令",
+            Self::Read => "读取文件",
+            Self::Find => "查找文件",
+            Self::Search => "搜索内容",
+            Self::Write => "写入文件",
+            Self::Edit => "编辑文件",
+            Self::Mcp => "调用 MCP",
+            Self::Skill => "使用 Skill",
+            Self::Other => "处理工具",
+        }
+    }
+
+    const fn icon(self) -> Icon {
+        match self {
+            Self::Shell => Icon::Terminal,
+            Self::Search => Icon::Search,
+            Self::Read | Self::Find | Self::Write | Self::Edit | Self::Skill => Icon::Document,
+            Self::Mcp | Self::Other => Icon::Summary,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ToolActivityState {
+    Success,
+    Active,
+    Cancelled,
+    Rejected,
+    Failed,
+}
+
+impl ToolActivityState {
+    pub(crate) const fn priority(self) -> u8 {
+        match self {
+            Self::Success => 0,
+            Self::Active => 1,
+            Self::Cancelled => 2,
+            Self::Rejected => 3,
+            Self::Failed => 4,
+        }
+    }
+
+    pub(crate) const fn icon(self, category: ToolActivityCategory) -> Icon {
+        match self {
+            Self::Success => Icon::Check,
+            Self::Cancelled | Self::Rejected | Self::Failed => Icon::Warning,
+            Self::Active => category.icon(),
+        }
+    }
+
+    pub(crate) fn color(self, colors: &ThemeColors) -> gpui_kit::Rgba {
+        match self {
+            Self::Success => colors.success,
+            Self::Cancelled | Self::Rejected | Self::Failed => colors.danger,
+            Self::Active => colors.text_secondary,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ToolDetail {
+    title: Option<String>,
+    command: Option<String>,
+    output: Vec<String>,
+    footer: Option<(String, ToolActivityState)>,
+}
+
+impl ToolDetail {
+    fn logical_rows(&self) -> usize {
+        usize::from(self.title.is_some())
+            + usize::from(self.command.is_some())
+            + self.output.len()
+            + usize::from(self.footer.is_some())
+    }
+
+    fn append_visible_text(&self, text: &mut String) {
+        for row in self
+            .title
+            .iter()
+            .chain(self.command.iter())
+            .chain(self.output.iter())
+            .chain(self.footer.iter().map(|(text, _)| text))
+        {
+            text.push('\n');
+            text.push_str(row);
+        }
+    }
+}
+
+/// UI-only audited tool call. It never retains a provider call id, raw
 /// write/edit input, fingerprint, checkpoint reference, or checkpoint path.
 pub struct ToolCard {
     input: Option<ToolCardInputProjection>,
     status: ToolCallStatus,
     approval: Option<Approval>,
     result: Option<ToolCardResultProjection>,
-    summary_rows: Vec<String>,
+    summary: String,
     output_rows: Vec<String>,
     expanded: bool,
 }
@@ -38,11 +145,11 @@ impl ToolCard {
             },
             approval: None,
             result: corrupt.then_some(ToolCardResultProjection::Corrupt),
-            summary_rows: Vec::new(),
+            summary: String::new(),
             output_rows: Vec::new(),
             expanded: false,
         };
-        card.refresh_summary_rows();
+        card.refresh_summary();
         card
     }
 
@@ -58,11 +165,11 @@ impl ToolCard {
             status,
             approval: None,
             result: Some(projection),
-            summary_rows: Vec::new(),
+            summary: String::new(),
             output_rows: Vec::new(),
             expanded: false,
         };
-        card.refresh_summary_rows();
+        card.refresh_summary();
         card
     }
 
@@ -73,21 +180,15 @@ impl ToolCard {
             status: ToolCallStatus::Failed,
             approval: None,
             result: Some(ToolCardResultProjection::Corrupt),
-            summary_rows: Vec::new(),
+            summary: String::new(),
             output_rows: Vec::new(),
             expanded: false,
         };
-        card.refresh_summary_rows();
+        card.refresh_summary();
         card
     }
 
-    /// Builds the durable hydrated card (S8-T45/C7). The typed projection
-    /// already passed the conversation redaction boundary: terminal rows keep
-    /// their safe input, result and bounded output rows; the conversation
-    /// layer reduces corrupt and non-terminal durable rows to the fixed
-    /// content-free shape before the UI ever sees them. Hydrated cards are
-    /// never permission-actionable (`permission_identity` stays `None` for
-    /// every hydrated status).
+    /// Builds the durable hydrated card. Expansion is deliberately reset.
     pub fn hydrated(
         input: Option<ToolCardInputProjection>,
         status: ToolCallStatus,
@@ -103,10 +204,10 @@ impl ToolCard {
             status,
             approval,
             result,
-            summary_rows: Vec::new(),
+            summary: String::new(),
             expanded: false,
         };
-        card.refresh_summary_rows();
+        card.refresh_summary();
         card
     }
 
@@ -131,9 +232,9 @@ impl ToolCard {
         self.status = ToolCallStatus::Failed;
         self.approval = None;
         self.result = Some(ToolCardResultProjection::Corrupt);
-        self.refresh_summary_rows();
         self.output_rows.clear();
         self.expanded = false;
+        self.refresh_summary();
     }
 
     /// Marks the post-commit approval visible. With the frozen shared event
@@ -158,6 +259,7 @@ impl ToolCard {
         }
         self.approval = Some(approval);
         self.status = ToolCallStatus::Approved;
+        self.refresh_summary();
         true
     }
 
@@ -181,18 +283,14 @@ impl ToolCard {
             | ToolCallStatus::Approved
             | ToolCallStatus::Running => false,
         };
-        if !transition_valid {
-            self.set_corrupt();
-            return false;
-        }
-        if matches!(projection, ToolCardResultProjection::Corrupt) {
+        if !transition_valid || matches!(projection, ToolCardResultProjection::Corrupt) {
             self.set_corrupt();
             return false;
         }
         self.status = result.status;
         self.output_rows = projection_output_rows(&projection);
         self.result = Some(projection);
-        self.refresh_summary_rows();
+        self.refresh_summary();
         true
     }
 
@@ -208,14 +306,13 @@ impl ToolCard {
         Some((input.tool()?, input.permission_target()?))
     }
 
-    /// Number of fixed-height virtual rows for this card.
+    /// Number of logical compact/detail rows carried by this call.
     pub fn row_count(&self) -> usize {
-        1 + self.summary_rows.len()
-            + if self.expanded {
-                self.output_rows.len()
-            } else {
-                0
-            }
+        1 + if self.expanded {
+            self.detail_row_count()
+        } else {
+            0
+        }
     }
 
     /// Whether this card is the atomic invalid terminal and must never prompt.
@@ -226,136 +323,250 @@ impl ToolCard {
         )
     }
 
+    pub(crate) fn activity_category(&self) -> ToolActivityCategory {
+        match (&self.input, &self.result) {
+            (_, Some(ToolCardResultProjection::Corrupt)) => ToolActivityCategory::Other,
+            (Some(ToolCardInputProjection::ReadOnly { tool }), _) => match tool {
+                ReadOnlyToolKind::Read => ToolActivityCategory::Read,
+                ReadOnlyToolKind::Glob => ToolActivityCategory::Find,
+                ReadOnlyToolKind::Grep => ToolActivityCategory::Search,
+            },
+            (Some(ToolCardInputProjection::Bash { .. }), _) => ToolActivityCategory::Shell,
+            (Some(ToolCardInputProjection::Write { .. }), _) => ToolActivityCategory::Write,
+            (Some(ToolCardInputProjection::Edit { .. }), _) => ToolActivityCategory::Edit,
+            (Some(ToolCardInputProjection::Mcp { .. }), _) => ToolActivityCategory::Mcp,
+            (Some(ToolCardInputProjection::Skill { .. }), _) => ToolActivityCategory::Skill,
+            (None, Some(ToolCardResultProjection::InvalidRejected { tool, .. })) => match tool {
+                InvalidToolKind::Bash => ToolActivityCategory::Shell,
+                InvalidToolKind::Write => ToolActivityCategory::Write,
+                InvalidToolKind::Edit => ToolActivityCategory::Edit,
+            },
+            _ => ToolActivityCategory::Other,
+        }
+    }
+
+    pub(crate) fn activity_state(&self) -> ToolActivityState {
+        if self.bash_exit_failed() || matches!(self.result, Some(ToolCardResultProjection::Corrupt))
+        {
+            return ToolActivityState::Failed;
+        }
+        match self.status {
+            ToolCallStatus::PendingApproval
+            | ToolCallStatus::Approved
+            | ToolCallStatus::Running => ToolActivityState::Active,
+            ToolCallStatus::Success => ToolActivityState::Success,
+            ToolCallStatus::Rejected => ToolActivityState::Rejected,
+            ToolCallStatus::Failed => ToolActivityState::Failed,
+            ToolCallStatus::Cancelled => ToolActivityState::Cancelled,
+        }
+    }
+
     /// Content rendered by the card, used by leak-focused tests.
     pub fn visible_text(&self) -> String {
-        let mut text = self.header_label();
-        if let Some(summary) = self.summary() {
-            text.push(' ');
-            text.push_str(&summary);
-        }
-        if self.expanded {
-            for line in &self.output_rows {
-                text.push('\n');
-                text.push_str(line);
-            }
+        let mut text = self.summary.clone();
+        if self.expanded
+            && let Some(detail) = self.detail()
+        {
+            detail.append_visible_text(&mut text);
         }
         text
     }
 
-    pub(crate) fn render_row(card: Entity<Self>, row: usize, cx: &App) -> AnyElement {
+    pub(crate) fn render(
+        card: Entity<Self>,
+        selector: String,
+        indented: bool,
+        cx: &App,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
-        let card_ref = card.read(cx);
-        if row == 0 {
-            let expandable = !card_ref.output_rows.is_empty();
-            let status_color = card_ref.status_color(&colors);
-            let label = card_ref.header_label();
-            return div()
-                .h(px(ROW_HEIGHT))
-                .w_full()
-                .flex()
-                .items_center()
-                .px_2()
-                .border_t_1()
-                .rounded_tl_lg()
-                .rounded_tr_lg()
-                .border_color(colors.border_subtle)
-                .bg(colors.bg_elevated)
-                .text_size(px(Typography::HEADING_CARD))
-                .font_weight(Typography::HEADING_CARD_WEIGHT)
-                .text_color(status_color)
-                .when(expandable, |row| {
-                    row.cursor_pointer().on_mouse_up(
-                        MouseButton::Left,
-                        move |_: &MouseUpEvent, _, cx| {
-                            card.update(cx, |card, cx| {
-                                card.expanded = !card.expanded;
-                                cx.notify();
-                            });
-                        },
-                    )
-                })
-                .child(label)
-                .into_any_element();
-        }
-        let output_start = 1 + card_ref.summary_rows.len();
-        if (1..output_start).contains(&row) {
-            let mut summary = div()
-                .h(px(ROW_HEIGHT))
-                .w_full()
-                .flex()
-                .items_center()
-                .overflow_hidden()
-                .px_2()
-                .border_color(colors.border_subtle)
-                .bg(colors.code_bg)
-                .font_family(MONOFONT)
-                .text_size(px(Typography::CODE))
-                .text_color(colors.text_primary)
-                .child(card_ref.summary_rows[row - 1].clone());
-            if (card_ref.output_rows.is_empty() || !card_ref.expanded) && row + 1 == output_start {
-                summary = summary.border_b_1().rounded_bl_lg().rounded_br_lg();
-            }
-            return summary.into_any_element();
-        }
-        let line = card_ref
-            .output_rows
-            .get(row - output_start)
-            .cloned()
-            .unwrap_or_default();
-        let mut output = div()
+        let (summary, state, category, expanded, expandable, detail) = {
+            let card_ref = card.read(cx);
+            let expanded = card_ref.expanded;
+            (
+                card_ref.summary.clone(),
+                card_ref.activity_state(),
+                card_ref.activity_category(),
+                expanded,
+                card_ref.has_detail(),
+                if expanded { card_ref.detail() } else { None },
+            )
+        };
+        let toggle_card = card.clone();
+        let debug_selector = selector.clone();
+        let chevron_selector = format!("{selector}-chevron");
+        let row = div()
+            .debug_selector(move || debug_selector.clone())
             .h(px(ROW_HEIGHT))
             .w_full()
+            .min_w_0()
             .flex()
             .items_center()
-            .overflow_hidden()
-            .px_2()
-            .border_color(colors.border_subtle)
-            .bg(colors.code_bg)
-            .font_family(MONOFONT)
-            .text_size(px(Typography::CODE))
-            .text_color(colors.text_secondary)
-            .child(line);
-        if row == card_ref.row_count() - 1 {
-            output = output.border_b_1().rounded_bl_lg().rounded_br_lg();
-        }
-        output.into_any_element()
+            .gap_2()
+            .when(expandable, |row| {
+                row.cursor_pointer().on_mouse_up(
+                    MouseButton::Left,
+                    move |_: &MouseUpEvent, _, cx| {
+                        toggle_card.update(cx, |card, cx| {
+                            card.expanded = !card.expanded;
+                            cx.notify();
+                        });
+                    },
+                )
+            })
+            .child(crate::icons::icon(
+                state.icon(category),
+                state.color(&colors),
+            ))
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .text_size(px(Typography::BODY))
+                    .text_color(colors.text_secondary)
+                    .child(summary),
+            )
+            .when(expandable, |row| {
+                row.child(
+                    div()
+                        .debug_selector(move || chevron_selector.clone())
+                        .child(crate::icons::icon(
+                            if expanded {
+                                Icon::ChevronDown
+                            } else {
+                                Icon::ChevronRight
+                            },
+                            colors.text_tertiary,
+                        )),
+                )
+            });
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .when(indented, |card| card.pl_4())
+            .child(row)
+            .when_some(expanded.then_some(detail).flatten(), move |card, detail| {
+                card.child(render_detail(detail, format!("{selector}-detail"), &colors))
+            })
+            .into_any_element()
     }
 
-    fn refresh_summary_rows(&mut self) {
-        let summary = self.summary().unwrap_or_else(|| CORRUPT_LABEL.to_string());
-        self.summary_rows = wrap_display_rows(&summary);
+    fn refresh_summary(&mut self) {
+        self.summary = self.build_summary();
     }
 
-    fn tool_label(&self) -> &'static str {
+    fn build_summary(&self) -> String {
         match (&self.input, &self.result) {
-            (Some(ToolCardInputProjection::ReadOnly { tool }), _) => match tool.as_str() {
-                "read" => "read",
-                "glob" => "glob",
-                "grep" => "grep",
-                _ => "tool",
-            },
-            (Some(ToolCardInputProjection::Bash { .. }), _) => "bash",
-            (Some(ToolCardInputProjection::Write { .. }), _) => "write",
-            (Some(ToolCardInputProjection::Edit { .. }), _) => "edit",
-            (Some(ToolCardInputProjection::Mcp { .. }), _) => "MCP",
-            (Some(ToolCardInputProjection::Skill { kind, .. }), _) => kind.as_str(),
-            (None, Some(ToolCardResultProjection::InvalidRejected { tool, .. })) => tool.as_str(),
-            _ => "tool",
-        }
-    }
-
-    fn status_label(&self) -> &'static str {
-        if self.bash_exit_failed() {
-            return "失败";
-        }
-        match self.status {
-            ToolCallStatus::PendingApproval => "待批准",
-            ToolCallStatus::Approved => "执行中",
-            ToolCallStatus::Running => "执行中",
-            ToolCallStatus::Rejected => "已拒绝",
-            ToolCallStatus::Success => "已完成",
-            ToolCallStatus::Failed => "失败",
-            ToolCallStatus::Cancelled => "已取消",
+            (_, Some(ToolCardResultProjection::Corrupt)) => CORRUPT_LABEL.to_string(),
+            (
+                _,
+                Some(ToolCardResultProjection::InvalidRejected {
+                    tool: InvalidToolKind::Bash,
+                    ..
+                }),
+            ) => "已拒绝运行：参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
+                .to_string(),
+            (_, Some(ToolCardResultProjection::InvalidRejected { tool, code, .. })) => {
+                format!("已拒绝{}：{}", invalid_action(*tool), code.as_str())
+            }
+            (Some(ToolCardInputProjection::Bash { command }), _) => {
+                let command = one_line(command);
+                let verb = match self.activity_state() {
+                    ToolActivityState::Success => "已运行",
+                    ToolActivityState::Active => {
+                        if self.status == ToolCallStatus::PendingApproval {
+                            "等待批准运行"
+                        } else {
+                            "正在运行"
+                        }
+                    }
+                    ToolActivityState::Rejected => "已拒绝运行",
+                    ToolActivityState::Cancelled => "已取消运行",
+                    ToolActivityState::Failed => "运行失败",
+                };
+                let mut summary = format!("{verb} {command}");
+                self.push_bash_metadata(&mut summary, true);
+                summary
+            }
+            (Some(ToolCardInputProjection::ReadOnly { tool }), _) => {
+                readonly_summary(*tool, self.activity_state(), self.status)
+            }
+            (
+                Some(ToolCardInputProjection::Write {
+                    path,
+                    content_bytes,
+                }),
+                None,
+            ) => format!(
+                "{} {path} · {content_bytes} bytes",
+                mutation_verb("写入", self.activity_state(), self.status)
+            ),
+            (
+                Some(ToolCardInputProjection::Edit {
+                    path,
+                    old_string_bytes,
+                    new_string_bytes,
+                }),
+                None,
+            ) => format!(
+                "{} {path} · {old_string_bytes}→{new_string_bytes} bytes",
+                mutation_verb("编辑", self.activity_state(), self.status)
+            ),
+            (
+                _,
+                Some(ToolCardResultProjection::WriteSuccess {
+                    path,
+                    bytes_written,
+                    ..
+                }),
+            ) => format!("已写入 {path} · {bytes_written} bytes"),
+            (
+                _,
+                Some(ToolCardResultProjection::EditSuccess {
+                    path,
+                    bytes_written,
+                    replacements,
+                    ..
+                }),
+            ) => format!(
+                "已编辑 {path} · {bytes_written} bytes · {replacements} replacements"
+            ),
+            (
+                Some(ToolCardInputProjection::Write { path, .. }),
+                Some(ToolCardResultProjection::MutationTerminal { .. }),
+            ) => format!(
+                "{} {path}",
+                mutation_verb("写入", self.activity_state(), self.status)
+            ),
+            (
+                Some(ToolCardInputProjection::Edit { path, .. }),
+                Some(ToolCardResultProjection::MutationTerminal { .. }),
+            ) => format!(
+                "{} {path}",
+                mutation_verb("编辑", self.activity_state(), self.status)
+            ),
+            (
+                Some(ToolCardInputProjection::Skill { name, .. }),
+                Some(ToolCardResultProjection::Skill { outcome, .. }),
+            ) => skill_summary(name.as_deref(), outcome),
+            (Some(ToolCardInputProjection::Skill { name, .. }), None) => format!(
+                "{} Skill {}",
+                if self.status == ToolCallStatus::PendingApproval {
+                    "等待使用"
+                } else {
+                    "正在使用"
+                },
+                name.as_deref().unwrap_or("未知")
+            ),
+            (Some(ToolCardInputProjection::Mcp { identity, .. }), _) => format!(
+                "{} {} · server {}",
+                generic_verb("调用", self.activity_state(), self.status),
+                identity.exact_tool_name,
+                identity.server_id
+            ),
+            _ => CORRUPT_LABEL.to_string(),
         }
     }
 
@@ -369,166 +580,198 @@ impl ToolCard {
         )
     }
 
-    fn status_color(&self, colors: &ThemeColors) -> gpui_kit::Rgba {
-        if self.bash_exit_failed() {
-            return colors.danger;
-        }
-        status_color(self.status, colors)
-    }
-
-    fn header_label(&self) -> String {
-        let mut label = format!("{} · {}", self.tool_label(), self.status_label());
-        if let Some(ToolCardResultProjection::Bash {
+    fn push_bash_metadata(&self, label: &mut String, compact: bool) {
+        let Some(ToolCardResultProjection::Bash {
             exit_code,
             duration_ms,
             truncated,
             reused,
             ..
         }) = &self.result
+        else {
+            return;
+        };
+        if let Some(code) = exit_code
+            && (!compact || *code != 0)
         {
-            if let Some(exit_code) = exit_code {
-                label.push_str(&format!(" · exit {exit_code}"));
-            }
-            if let Some(duration_ms) = duration_ms {
-                label.push_str(&format!(" · {duration_ms}ms"));
-            }
-            if *truncated == Some(true) {
-                label.push_str(" · 已截断");
-            }
-            if *reused {
-                label.push_str(" · 已复用");
-            }
+            label.push_str(&format!(" · exit {code}"));
         }
-        label
+        if let Some(duration_ms) = duration_ms {
+            label.push_str(" · ");
+            label.push_str(&human_duration(*duration_ms));
+        }
+        if *truncated == Some(true) {
+            label.push_str(" · 已截断");
+        }
+        if *reused {
+            label.push_str(" · 已复用");
+        }
     }
 
-    fn summary(&self) -> Option<String> {
-        match (&self.input, &self.result) {
-            (_, Some(ToolCardResultProjection::Corrupt)) => Some(CORRUPT_LABEL.to_string()),
-            (Some(ToolCardInputProjection::Bash { command }), _) => Some(format!("$ {command}")),
-            (
-                Some(ToolCardInputProjection::Write {
-                    path,
-                    content_bytes,
-                }),
-                None,
-            ) => Some(format!("{path} · {content_bytes} bytes")),
-            (
-                Some(ToolCardInputProjection::Edit {
-                    path,
-                    old_string_bytes,
-                    new_string_bytes,
-                }),
-                None,
-            ) => Some(format!(
-                "{path} · {old_string_bytes}→{new_string_bytes} bytes"
-            )),
-            (
-                _,
-                Some(ToolCardResultProjection::WriteSuccess {
-                    path,
-                    bytes_written,
-                    ..
-                }),
-            ) => Some(format!("{path} · {bytes_written} bytes")),
-            (
-                _,
-                Some(ToolCardResultProjection::EditSuccess {
-                    path,
-                    bytes_written,
-                    replacements,
-                    ..
-                }),
-            ) => Some(format!(
-                "{path} · {bytes_written} bytes · {replacements} replacement"
-            )),
-            (_, Some(ToolCardResultProjection::MutationTerminal { .. })) => {
-                Some(self.status_label().to_string())
+    fn terminal_footer(&self) -> String {
+        let mut footer = match self.activity_state() {
+            ToolActivityState::Success => "已完成".to_string(),
+            ToolActivityState::Active => {
+                if self.status == ToolCallStatus::PendingApproval {
+                    "等待批准".to_string()
+                } else {
+                    "正在运行".to_string()
+                }
             }
-            (
-                _,
-                Some(ToolCardResultProjection::InvalidRejected {
-                    tool: vega_conversation::types::InvalidToolKind::Bash,
-                    ..
-                }),
-            ) => Some(
-                "参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
-                    .to_string(),
-            ),
-            (_, Some(ToolCardResultProjection::InvalidRejected { code, .. })) => {
-                Some(code.as_str().to_string())
-            }
-            (Some(ToolCardInputProjection::ReadOnly { .. }), _) => {
-                Some(self.status_label().to_string())
-            }
-            (
-                Some(ToolCardInputProjection::Skill { name, .. }),
-                Some(ToolCardResultProjection::Skill { outcome, .. }),
-            ) => {
-                let name = name.as_deref().unwrap_or("Skill");
-                let detail = match outcome {
-                    vega_conversation::types::SkillCardOutcome::Loaded => "已加载".to_string(),
-                    vega_conversation::types::SkillCardOutcome::AlreadyLoaded => {
-                        "已加载（复用）".to_string()
-                    }
-                    vega_conversation::types::SkillCardOutcome::ResourceRead {
-                        text_bytes,
-                        sha256,
-                    } => format!(
-                        "引用已读取 · {text_bytes} bytes · SHA-256 {}…",
-                        sha256.get(..12).unwrap_or("invalid")
-                    ),
-                    vega_conversation::types::SkillCardOutcome::Failed { code } => {
-                        format!("失败 · {code}")
-                    }
-                    vega_conversation::types::SkillCardOutcome::Rejected => "已拒绝".to_string(),
-                    vega_conversation::types::SkillCardOutcome::Cancelled => "已取消".to_string(),
-                };
-                Some(format!("{name} · {detail}"))
-            }
-            (Some(ToolCardInputProjection::Skill { name, .. }), None) => {
-                Some(name.as_deref().unwrap_or("Skill").to_string())
-            }
-            (Some(ToolCardInputProjection::Mcp { identity, .. }), _) => Some(format!(
-                "{} · server {} · external result is untrusted",
-                identity.exact_tool_name, identity.server_id
-            )),
-            _ => Some(CORRUPT_LABEL.to_string()),
+            ToolActivityState::Rejected => "已拒绝".to_string(),
+            ToolActivityState::Cancelled => "已取消".to_string(),
+            ToolActivityState::Failed => "运行失败".to_string(),
+        };
+        self.push_bash_metadata(&mut footer, false);
+        footer
+    }
+
+    fn has_detail(&self) -> bool {
+        match &self.input {
+            Some(ToolCardInputProjection::Bash { .. }) => true,
+            Some(ToolCardInputProjection::ReadOnly { .. })
+            | Some(ToolCardInputProjection::Mcp { .. }) => !self.output_rows.is_empty(),
+            _ => false,
         }
+    }
+
+    fn detail_row_count(&self) -> usize {
+        match &self.input {
+            Some(ToolCardInputProjection::Bash { .. }) => 3 + self.output_rows.len(),
+            Some(ToolCardInputProjection::ReadOnly { .. })
+            | Some(ToolCardInputProjection::Mcp { .. }) => self.output_rows.len(),
+            _ => 0,
+        }
+    }
+
+    fn detail(&self) -> Option<ToolDetail> {
+        match &self.input {
+            Some(ToolCardInputProjection::Bash { command }) => Some(ToolDetail {
+                title: Some("Shell".to_string()),
+                command: Some(format!("$ {command}")),
+                output: self.output_rows.clone(),
+                footer: Some((self.terminal_footer(), self.activity_state())),
+            }),
+            Some(ToolCardInputProjection::ReadOnly { .. }) if !self.output_rows.is_empty() => {
+                Some(ToolDetail {
+                    title: None,
+                    command: None,
+                    output: self.output_rows.clone(),
+                    footer: None,
+                })
+            }
+            Some(ToolCardInputProjection::Mcp { .. }) if !self.output_rows.is_empty() => {
+                Some(ToolDetail {
+                    title: None,
+                    command: None,
+                    output: self.output_rows.clone(),
+                    footer: None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn detail_footer_state(&self) -> Option<ToolActivityState> {
+        self.detail()
+            .and_then(|detail| detail.footer.map(|(_, state)| state))
     }
 }
 
-fn wrap_display_rows(text: &str) -> Vec<String> {
-    const MAX_COLUMNS: usize = 80;
-    let mut rows = Vec::new();
-    for physical in text.split('\n') {
-        if physical.is_empty() {
-            rows.push(String::new());
-            continue;
-        }
-        let mut row = String::new();
-        let mut width = 0usize;
-        for character in physical.chars() {
-            let character_width = display_width(&character.to_string());
-            if !row.is_empty() && width + character_width > MAX_COLUMNS {
-                rows.push(std::mem::take(&mut row));
-                width = 0;
+fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character != ' ' && character.is_whitespace() {
+                ' '
+            } else {
+                character
             }
-            row.push(character);
-            width += character_width;
-            if width == MAX_COLUMNS {
-                rows.push(std::mem::take(&mut row));
-                width = 0;
-            }
-        }
-        if !row.is_empty() {
-            rows.push(row);
-        }
+        })
+        .collect()
+}
+
+fn invalid_action(tool: InvalidToolKind) -> &'static str {
+    match tool {
+        InvalidToolKind::Bash => "运行",
+        InvalidToolKind::Write => "写入",
+        InvalidToolKind::Edit => "编辑",
     }
-    if rows.is_empty() {
-        rows.push(String::new());
+}
+
+fn generic_verb(action: &'static str, state: ToolActivityState, status: ToolCallStatus) -> String {
+    match state {
+        ToolActivityState::Success => format!("已{action}"),
+        ToolActivityState::Active if status == ToolCallStatus::PendingApproval => {
+            format!("等待批准{action}")
+        }
+        ToolActivityState::Active => format!("正在{action}"),
+        ToolActivityState::Rejected => format!("已拒绝{action}"),
+        ToolActivityState::Cancelled => format!("已取消{action}"),
+        ToolActivityState::Failed => format!("{action}失败"),
     }
-    rows
+}
+
+fn mutation_verb(action: &'static str, state: ToolActivityState, status: ToolCallStatus) -> String {
+    generic_verb(action, state, status)
+}
+
+fn readonly_summary(
+    tool: ReadOnlyToolKind,
+    state: ToolActivityState,
+    status: ToolCallStatus,
+) -> String {
+    let action = match tool {
+        ReadOnlyToolKind::Read => "读取文件",
+        ReadOnlyToolKind::Glob => "查找文件",
+        ReadOnlyToolKind::Grep => "搜索内容",
+    };
+    match state {
+        ToolActivityState::Success => format!("已{action}"),
+        ToolActivityState::Active if status == ToolCallStatus::PendingApproval => {
+            format!("等待{action}")
+        }
+        ToolActivityState::Active => format!("正在{action}"),
+        ToolActivityState::Rejected => format!("已拒绝{action}"),
+        ToolActivityState::Cancelled => format!("已取消{action}"),
+        ToolActivityState::Failed => format!("{action}失败"),
+    }
+}
+
+fn skill_summary(name: Option<&str>, outcome: &SkillCardOutcome) -> String {
+    let name = name.unwrap_or("未知");
+    match outcome {
+        SkillCardOutcome::Loaded => format!("已加载 Skill {name}"),
+        SkillCardOutcome::AlreadyLoaded => format!("已加载 Skill {name} · 已复用"),
+        SkillCardOutcome::ResourceRead { text_bytes, sha256 } => format!(
+            "已读取 Skill {name} 引用 · {text_bytes} bytes · SHA-256 {}…",
+            sha256.get(..12).unwrap_or("invalid")
+        ),
+        SkillCardOutcome::Failed { code } => format!("Skill {name} 失败 · {code}"),
+        SkillCardOutcome::Rejected => format!("已拒绝 Skill {name}"),
+        SkillCardOutcome::Cancelled => format!("已取消 Skill {name}"),
+    }
+}
+
+fn human_duration(duration_ms: u64) -> String {
+    if duration_ms < 1_000 {
+        return format!("{duration_ms} 毫秒");
+    }
+    if duration_ms < 60_000 {
+        let seconds = duration_ms as f64 / 1_000.0;
+        return if duration_ms.is_multiple_of(1_000) {
+            format!("{} 秒", duration_ms / 1_000)
+        } else {
+            format!("{seconds:.1} 秒")
+        };
+    }
+    let minutes = duration_ms / 60_000;
+    let seconds = duration_ms % 60_000 / 1_000;
+    if seconds == 0 {
+        format!("{minutes} 分钟")
+    } else {
+        format!("{minutes} 分 {seconds} 秒")
+    }
 }
 
 fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> {
@@ -541,16 +784,57 @@ fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> 
     output.lines().map(str::to_string).collect()
 }
 
-fn status_color(status: ToolCallStatus, colors: &ThemeColors) -> gpui_kit::Rgba {
-    match status {
-        ToolCallStatus::Success => colors.success,
-        ToolCallStatus::Rejected | ToolCallStatus::Failed | ToolCallStatus::Cancelled => {
-            colors.danger
-        }
-        ToolCallStatus::PendingApproval | ToolCallStatus::Approved | ToolCallStatus::Running => {
-            colors.text_secondary
-        }
+fn render_detail(detail: ToolDetail, selector: String, colors: &ThemeColors) -> AnyElement {
+    let debug_selector = selector.clone();
+    let mut rows = Vec::with_capacity(detail.logical_rows());
+    if let Some(title) = detail.title {
+        rows.push(detail_row(title, colors.text_primary, false));
     }
+    if let Some(command) = detail.command {
+        rows.push(detail_row(command, colors.text_primary, true));
+    }
+    rows.extend(
+        detail
+            .output
+            .into_iter()
+            .map(|line| detail_row(line, colors.text_secondary, true)),
+    );
+    if let Some((footer, state)) = detail.footer {
+        rows.push(detail_row(footer, state.color(colors), false));
+    }
+    div()
+        .debug_selector(move || debug_selector.clone())
+        .w_full()
+        .min_w_0()
+        .mt_1()
+        .mb_1()
+        .rounded_lg()
+        .border_1()
+        .border_color(colors.border_subtle)
+        .bg(colors.code_bg)
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .children(rows)
+        .into_any_element()
+}
+
+fn detail_row(text: String, color: gpui_kit::Rgba, code: bool) -> AnyElement {
+    div()
+        .w_full()
+        .min_w_0()
+        .min_h(px(ROW_HEIGHT))
+        .px_2()
+        .py_1()
+        .when(code, |row| row.font_family(MONOFONT))
+        .text_size(px(if code {
+            Typography::CODE
+        } else {
+            Typography::METADATA
+        }))
+        .text_color(color)
+        .child(text)
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -585,7 +869,7 @@ mod tests {
         );
         loaded.truncated = Some(false);
         assert!(load_card.apply_finished(&loaded));
-        assert!(load_card.visible_text().contains("load_skill · 已完成"));
+        assert!(load_card.visible_text().contains("已加载 Skill reviewer"));
         assert!(!load_card.visible_text().contains(CORRUPT_LABEL));
 
         let read = ToolCall {
@@ -602,7 +886,7 @@ mod tests {
         returned.truncated = Some(false);
         assert!(read_card.apply_finished(&returned));
         let visible = read_card.visible_text();
-        assert!(visible.contains("read_skill_resource · 已完成"));
+        assert!(visible.contains("已读取 Skill reviewer 引用"));
         assert!(!visible.contains(CORRUPT_LABEL));
         assert!(!visible.contains("PRIVATE REFERENCE"));
         assert!(!visible.contains("references/notes.md"));
@@ -708,7 +992,7 @@ mod tests {
         };
         let card = ToolCard::invalid_terminal(&result);
         assert!(card.is_invalid_terminal());
-        assert_eq!(card.visible_text(), "write · 已拒绝 malformed_json");
+        assert_eq!(card.visible_text(), "已拒绝写入：malformed_json");
     }
 
     #[test]
@@ -726,7 +1010,7 @@ mod tests {
         assert!(card.is_invalid_terminal());
         assert_eq!(
             card.visible_text(),
-            "bash · 已拒绝 参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
+            "已拒绝运行：参数无效 · cmd 需为非空字符串；timeout_ms 若提供须为正整数；不支持其他字段"
         );
         assert!(card.permission_identity().is_none());
     }
@@ -745,12 +1029,15 @@ mod tests {
         terminal.duration_ms = Some(12);
         terminal.truncated = Some(false);
         assert!(card.apply_finished(&terminal));
-        assert_eq!(card.row_count(), 2);
-        assert!(card.visible_text().contains("$ printf 'ok'"));
+        assert_eq!(card.row_count(), 1);
+        assert!(card.visible_text().contains("已运行 printf 'ok'"));
         assert!(!card.visible_text().contains("\nok"));
         card.expanded = true;
-        assert_eq!(card.row_count(), 3);
-        assert!(card.visible_text().ends_with("\nok"));
+        assert_eq!(card.row_count(), 5);
+        assert!(
+            card.visible_text()
+                .contains("\nShell\n$ printf 'ok'\nok\n已完成")
+        );
     }
 
     #[test]
@@ -768,7 +1055,10 @@ mod tests {
         terminal.truncated = Some(false);
         assert!(card.apply_finished(&terminal));
         assert_eq!(card.status, ToolCallStatus::Success);
-        assert!(card.visible_text().contains("bash · 失败 · exit 1 · 4ms"));
+        assert!(
+            card.visible_text()
+                .contains("运行失败 false · exit 1 · 4 毫秒")
+        );
     }
 
     #[test]
@@ -1010,7 +1300,7 @@ mod tests {
     }
 
     #[test]
-    fn long_bash_command_is_cached_in_width_bounded_virtual_rows() {
+    fn long_bash_command_stays_one_compact_row_and_detail_keeps_the_full_command() {
         let command = format!("printf '{}{}'", "中".repeat(70), "a".repeat(90));
         let call = ToolCall {
             id: "SECRET_CALL_ID".into(),
@@ -1018,12 +1308,33 @@ mod tests {
             input_json: serde_json::json!({ "cmd": command }).to_string(),
         };
         let card = ToolCard::proposed(&call);
-        assert!(card.summary_rows.len() > 2);
-        assert!(card.summary_rows.iter().all(|row| display_width(row) <= 80));
-        assert_eq!(card.summary_rows.concat(), format!("$ {command}"));
-        assert_eq!(card.row_count(), 1 + card.summary_rows.len());
+        assert!(!card.summary.contains('\n'));
+        assert_eq!(card.row_count(), 1);
         assert!(card.visible_text().contains(&command));
         assert!(!card.visible_text().contains("SECRET_CALL_ID"));
+        let mut card = card;
+        card.expanded = true;
+        assert!(card.visible_text().contains(&format!("$ {command}")));
+    }
+
+    #[test]
+    fn compact_bash_command_preserves_quoted_spaces_and_flattens_layout_whitespace() {
+        let command = "printf 'a  b'\nprintf\t'done'";
+        let call = ToolCall {
+            id: "bash-spacing".into(),
+            tool: "bash".into(),
+            input_json: serde_json::json!({ "cmd": command }).to_string(),
+        };
+        let mut card = ToolCard::proposed(&call);
+        assert_eq!(
+            card.summary, "等待批准运行 printf 'a  b' printf 'done'",
+            "compact copy preserves meaningful ordinary spaces while staying on one line"
+        );
+        assert!(!card.summary.contains('\n'));
+        assert!(!card.summary.contains('\r'));
+        assert!(!card.summary.contains('\t'));
+        card.expanded = true;
+        assert!(card.visible_text().contains(&format!("$ {command}")));
     }
 
     #[test]
@@ -1044,11 +1355,11 @@ mod tests {
         assert!(card.visible_text().contains("SECRET_BASH_OUTPUT"));
 
         assert!(!card.apply_approved(Approval::Once));
-        assert_eq!(card.visible_text(), "tool · 失败 工具结果损坏");
-        assert_eq!(card.row_count(), 2);
+        assert_eq!(card.visible_text(), "工具结果损坏");
+        assert_eq!(card.row_count(), 1);
         assert!(!card.visible_text().contains("SECRET_BASH_OUTPUT"));
         assert!(!card.visible_text().contains("SECRET_COMMAND"));
-        assert!(!card.summary_rows.concat().contains("SECRET_COMMAND"));
+        assert!(!card.summary.contains("SECRET_COMMAND"));
         assert!(card.input.is_none());
         assert!(card.output_rows.is_empty());
         assert!(!card.expanded);

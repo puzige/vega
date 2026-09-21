@@ -393,6 +393,12 @@ async fn artifact_controller_preview_open_latest_stale_and_max_fences(
         );
         stream.apply_event(
             ConversationEvent::ToolCallProposed {
+                call: artifact_write_call("earlier-tool", "earlier.txt", 1),
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
                 call: artifact_write_call("write-1", "artifact.txt", 6),
             },
             cx,
@@ -408,7 +414,10 @@ async fn artifact_controller_preview_open_latest_stale_and_max_fences(
             },
             cx,
         );
-        assert!(stream.artifact_card_is_adjacent("write-1"));
+        assert!(
+            stream.artifact_card_is_adjacent("write-1", cx),
+            "artifact remains adjacent to the group containing its exact non-first child"
+        );
     });
     let route = root.update(cx, |root, _| {
         let route = root
