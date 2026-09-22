@@ -96,8 +96,8 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ## 7. 验收协议（每个任务卡通用）
 
-- **底线（2026-09-21 用户裁决）**：统一运行 `python3 scripts/verify.py`；受影响 Rust 包及传递依赖方的 fmt/clippy/test 必须通过，纯文档或开发脚本执行适用门禁。单卡不默认跑 workspace 全量；根依赖/工具链或未知构建输入要求显式 `--full`。详见 [Issue #107](vega-issue-107-test-workflow.md)。
-- **门禁执行**：pre-commit 检查格式；pre-push 调用相同验证入口，复用与当前源码、基线、工具链/环境和完整日志绑定的成功证据。无有效证据则运行受影响门禁，不额外重复 build。源码/依赖变化使相关证据失效；失败不自动重试。主 agent 检查子 agent 的有效证据，只有变更或未解决风险才补跑。hooks 是纪律辅助，架构师验收永远是最终门禁。
+- **底线（2026-09-22 用户裁决，Issue #123）**：门禁全部在云端。PR 由 `.github/workflows/ci.yml` 跑 `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`，通过后才能合并；push 到 master（PR merge 后）跑 `cargo xtask package`。本地 commit/push 不做任何强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。详见 [Issue #123](vega-issue-123-pr-check-pipeline.md)。
+- **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败可在 PR 页面查看原始日志；Master 只允许 PR merge，不允许直接 push。本地可自行运行 `cargo fmt/clippy/test` 自查，但不构成门禁，也不重复跑相同门禁制造独立验收的表象。架构师验收永远是最终门禁。
 - **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
 - **报告**：贴验收命令原始输出，不许概述"通过了"
@@ -134,4 +134,4 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ---
 
-*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）；v0.4 (2026-08-29) 基础白名单新增 toml（config.toml 解析，人类批准）；v0.5 (2026-08-29) mdstream 白名单条件激活（`待 spike 确认` → T14 spike 确认引入，锁定 =0.3.0）；v0.6 (2026-08-31) 人类冻结 E2E-first 验收与仓库证据留存规则，限制 test-only 笛卡尔扩张。*
+*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）；v0.4 (2026-08-29) 基础白名单新增 toml（config.toml 解析，人类批准）；v0.5 (2026-08-29) mdstream 白名单条件激活（`待 spike 确认` → T14 spike 确认引入，锁定 =0.3.0）；v0.6 (2026-08-31) 人类冻结 E2E-first 验收与仓库证据留存规则，限制 test-only 笛卡尔扩张；v0.7 (2026-09-22) 门禁全部上云（Issue #123）：删除本地 hooks/verify.py/cargo-lock 调度器，PR 走云端 fmt/clippy/test，push master 打包，发布仍由 tag 触发。*

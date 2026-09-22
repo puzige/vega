@@ -32,29 +32,15 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - PR 必须附：验收命令原始输出 + 与 spec 的偏离说明（必须为无）
 - 合并方式：squash merge，合并后删除功能分支（2026-08-29 决策）
 
-## 验证门禁与并发构建（2026-09-21 用户裁决）
+## 验证门禁与云端 CI（2026-09-22 用户裁决，Issue #123）
 
-按 [Issue #107 规格](docs/vega-issue-107-test-workflow.md)执行。**单卡不默认运行 `cargo test --workspace`**，不得因 push hook 或主/子 agent 交接重复执行同一份有效验收。
+**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 详见 [Issue #123 规格](docs/vega-issue-123-pr-check-pipeline.md)。
 
-- 统一入口：`python3 scripts/verify.py --plan` 先查看范围；`python3 scripts/verify.py` 执行。默认相对 `origin/master` 的 merge-base，包含本地改动；`--base <ref>` 可冻结验收基线。
-- Rust 变更选择受影响 workspace 包和全部传递依赖方，运行格式、对应 clippy 与测试。任务规格仍须写清 production-root 回归；不能只按改动文件挑几个测试冒充完整影响分析。
-- 纯文档运行适用检查；开发脚本/hook 运行工具链回归。根依赖/工具链或无法识别的构建输入变更要求明确选择 `--full`，不能静默漏检。`--full` 用于需要全量覆盖的集成，不是每卡默认。
-- 成功证据仅在源码内容、基线、命令、工具链和相关环境一致且日志完整时复用。失败、源码在验证中变化、日志缺失均不得复用；主 agent 负责检查证据，不例行重跑子 agent 刚通过的同树测试。
-- pre-push 调用同一入口，校验实际推送的当前干净 HEAD；不再无条件全量 clippy/test/build。测试已编译目标，不每次 push 追加重复 build。打包和安装在需要应用交付的节点执行。
-- 保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
-
-### 构建目录和资源调度
-
-**新 worktree 不再链接共享 target。** `scripts/cargo-lock.sh <cargo-args>` 使用按 worktree 隔离的持久构建目录，限制全仓构建并发（默认 2），同一个实际 target 全程互斥。首次冷编译仍有成本，后续沿用该任务自己的缓存。显式 target 也必须经调度器，并绑定单一 worktree；已有且无法确认归属的缓存不能自动接管。
-
-- `scripts/cargo-lock.sh --wait test -p <package>` 明确排队；不带 `--wait` 快速报告冲突。
-- `scripts/cargo-lock.sh --status` 查看资源；格式检查无需构建锁。
-- 旧测试中尚有共享状态，当前所有 `cargo test` 调用继续跨任务互斥；编译可独立并发。不要宣称已实现所有测试并行，也不要用绕过入口的 Cargo 命令规避限流。
-- `scripts/cargo-share-target.sh` 仅用于状态/迁移说明，不再创建共享链接或删除缓存。旧主检出 target 和未知目录不自动删除。
-- 旧 worktree 中的旧版 wrapper 不认识新调度锁；迁移后必须更新脚本再运行，不能混跑两种协调协议。
-- 用 `scripts/cargo-lock.sh --target-path` 查询实际产物目录；不要硬编码 `target/release`。
-- 证据在 worktree 外保存，清理任务时先确认无运行进程、代码已交付或已归档；只清理本任务的构建缓存。不要每次验证后 `cargo clean`，它会丢掉下一次增量编译收益。
-- 全局安装/原生 UI 操作仍独占，与 Cargo 编译槽位无关。
+- **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
+- 云端流水线 `.github/workflows/ci.yml`：`pull_request`（base `master`）跑 `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace`；push 到 master（PR merge 后）跑 `cargo xtask package` 并上传 artifact。用标准 Cargo 步骤，不复用自定义 Python 脚本。
+- 发布仍由 `v*` tag 触发（`release.yml`），master build 不发 Release，避免每个 commit 都发版。
+- 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。本地直接 `cargo` 命令即可，不受调度器约束。
+- 本地开发仍建议自行运行相关 `cargo fmt/clippy/test` 快速自查；任务级 production-root 回归与真实 E2E 证据要求不变（见 exec-guide §7）。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
 
 ## 固定应用安装入口（2026-09-21 用户更新约定）
 

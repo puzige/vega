@@ -104,8 +104,8 @@ loop {
 `projects / threads / messages / tool_calls / token_usage / permissions` 六张表。token_usage 每 API 调用一行（thread_id, model, input, output, cache_read, cache_write, cost_microcents, ts）。
 
 ### 3.5 CI
-`macos-14` runner；fmt → clippy(-D warnings) → test（含 headless runtime 测试）→ release build → bench 回归（告警不 block）。`Swatinem/rust-cache`。
-> 2026-08-29 修订：S1 起先落地**本地 git hooks 门禁**（pre-commit/pre-push，见 vega-s1-tasks T03 v0.2），云端 CI 延后至产品稳定——防 macOS runner 费用。届时按本节原案上云。
+`macos-latest` runner；PR check：fmt → clippy(-D warnings) → test（含 headless runtime 测试）；push 到 master：release build 打包上传 artifact。`Swatinem/rust-cache`。
+> 2026-09-22 修订（Issue #123）：仓库为 public，macOS runner 免费。门禁**全部上云**到 `.github/workflows/ci.yml`；本地 git hooks、`scripts/verify.py` 与 cargo-lock 调度器已删除，本地 commit/push 不再封锁。发布仍由 `v*` tag 触发。
 
 ---
 
