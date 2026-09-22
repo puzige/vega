@@ -311,6 +311,10 @@ impl Typography {
 pub struct Layout;
 
 impl Layout {
+    /// Maximum body height for expanded tool details and live reasoning.
+    pub const DISCLOSURE_CONTENT_MAX_HEIGHT: f32 = 240.0;
+    /// Maximum child-list height for an expanded adjacent tool group.
+    pub const TOOL_GROUP_MAX_HEIGHT: f32 = 320.0;
     /// Minimum readable Markdown table column: eight message ems.
     pub const MARKDOWN_TABLE_COLUMN_MIN_WIDTH: f32 = 8.0 * Typography::MESSAGE;
     /// Leading space reserved for native macOS titlebar controls.
@@ -750,6 +754,12 @@ mod tests {
         let dark = composite(DARK.bg_utility_chip_overlay, 0x191919);
         assert_eq!(light, [231, 231, 231]);
         assert_eq!(dark, [48, 48, 48]);
+    }
+
+    #[test]
+    fn issue103_disclosure_viewport_tokens_are_frozen() {
+        assert_eq!(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT, 240.0);
+        assert_eq!(Layout::TOOL_GROUP_MAX_HEIGHT, 320.0);
     }
 
     /// R61 R1: the trigger-anchoring tokens are frozen.

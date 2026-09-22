@@ -1,8 +1,10 @@
 //! UI-only grouping for adjacent audited tool calls.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Context, Entity, MouseButton, MouseUpEvent, div, px};
-use vega_theme::{ThemeColors, Typography, theme};
+use gpui_kit::{
+    AnyElement, App, Context, Entity, MouseButton, MouseUpEvent, ScrollHandle, div, px,
+};
+use vega_theme::{Layout, ThemeColors, Typography, theme};
 
 use crate::conversation_stream::ROW_HEIGHT;
 use crate::icons::Icon;
@@ -15,19 +17,30 @@ use crate::tool_card::{ToolActivityCategory, ToolActivityState, ToolCard};
 pub(crate) struct ToolActivityGroup {
     children: Vec<Entity<ToolCard>>,
     expanded: bool,
+    scroll: ScrollHandle,
 }
 
 impl ToolActivityGroup {
+    #[cfg(test)]
+    pub(crate) fn scroll_handle(&self) -> ScrollHandle {
+        self.scroll.clone()
+    }
+
     pub(crate) fn new(first: Entity<ToolCard>, second: Entity<ToolCard>) -> Self {
         Self {
             children: vec![first, second],
             expanded: false,
+            scroll: ScrollHandle::new(),
         }
     }
 
     pub(crate) fn from_children(children: Vec<Entity<ToolCard>>, expanded: bool) -> Self {
         debug_assert!(children.len() >= 2);
-        Self { children, expanded }
+        Self {
+            children,
+            expanded,
+            scroll: ScrollHandle::new(),
+        }
     }
 
     pub(crate) fn append(&mut self, card: Entity<ToolCard>, cx: &mut Context<Self>) {
@@ -160,6 +173,8 @@ impl ToolActivityGroup {
                 group_ref.leading_icon_color(cx, &colors),
             )
         };
+        let scroll = group.read(cx).scroll.clone();
+        let scroll_id = format!("tool-group-{}", group.entity_id());
         let toggle_group = group.clone();
         let mut rows = Vec::with_capacity(1 + child_count);
         rows.push(
@@ -200,9 +215,24 @@ impl ToolActivityGroup {
                 .into_any_element(),
         );
         if expanded {
-            rows.extend(children.into_iter().enumerate().map(|(index, card)| {
-                ToolCard::render(card, format!("tool-activity-child-{index}"), true, cx)
-            }));
+            rows.push(
+                div()
+                    .id(gpui_kit::SharedString::from(scroll_id))
+                    .debug_selector(|| "tool-activity-group-content".into())
+                    .w_full()
+                    .min_w_0()
+                    .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
+                    .overflow_x_hidden()
+                    .overflow_y_scroll()
+                    .track_scroll(&scroll)
+                    .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
+                    .flex()
+                    .flex_col()
+                    .children(children.into_iter().enumerate().map(|(index, card)| {
+                        ToolCard::render(card, format!("tool-activity-child-{index}"), true, cx)
+                    }))
+                    .into_any_element(),
+            );
         }
         div()
             .debug_selector(|| "tool-activity-group".to_string())

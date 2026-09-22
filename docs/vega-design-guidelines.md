@@ -126,6 +126,12 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 ### 6.1 当前共享几何
 
+Issue #103：展开的工具详情与 thinking 正文使用 240px 最大高度
+（`Layout::DISCLOSURE_CONTENT_MAX_HEIGHT`），工具组子列表使用 320px 最大高度
+（`Layout::TOOL_GROUP_MAX_HEIGHT`）。短内容自然收缩，标题保留在滚动区域外；
+长内容在内部滚动且不得压缩子行。完整交互与验收见
+[Issue #103](vega-issue-103-scroll-window.md)。两个 token 已实现并通过 GPUI 几何回归验证；原生验收待完成。
+
 | 区域 | Token / 目标值 | 说明 |
 |---|---:|---|
 | 原生标题栏前导留白 | 96px | 为 macOS traffic lights 保留 |
