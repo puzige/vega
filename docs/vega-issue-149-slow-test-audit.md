@@ -92,7 +92,7 @@ real_gitlink（15.025s）真实submodule clone/clean/dirty/union语义、SHA256�
 | `filter_gitlink.rs:361` `prepare_maps_every_explicit_filter_value_to_unsafe_filter_before_add` | 10.144 | B | 四种check-attr bytes拒绝规则；需区分workspace正常读取和trusted故障读取，不能全局污染terminal refresh |
 | `runner_mutation.rs:601` `service_commit_process_failure_wait` | 9.929 | B | 服务层error→权威终态/zero-one attempt/消费规则；脚本故障可变为有限backend结果，OS错误产生留runner集成 |
 | `selection_topology.rs:524` `staged_rename_destination_delete_claims_only_canonical_old_deletion` | 9.354 | R | 真实Git add/rename/type/mode/commit行为或全链代表；不把Git算法写入fake |
-| `summary_draft.rs:610` `commit_draft_request_matches_frozen_literals_for_both_truncation_flags` | 9.087 | M | 请求构造纯业务；当前直接改prepared summary/truncated，应从原始summary输入或窄builder输入验证，保留service代表 |
+| `summary_draft.rs:610` `commit_draft_request_matches_frozen_literals_for_both_truncation_flags` | 9.087 | M | **已迁移(batch7)** 以in-process captured staged状态经PolicyFixture::prepared派生真实prepared能力；summary/truncated仅作请求输入；保留全部冻结字面量与单次provider请求断言；同范围3.372s→0.024s。 |
 | `selection_topology.rs:4` `trusted_git_empty_selection_commits_existing_staged_delta` | 8.717 | R | 真实Git add/rename/type/mode/commit行为或全链代表；不把Git算法写入fake |
 | `runner_mutation.rs:676` `service_commit_stderr_overflow` | 8.665 | B | 服务层error→权威终态/zero-one attempt/消费规则；脚本故障可变为有限backend结果，OS错误产生留runner集成 |
 | `filter_gitlink.rs:29` `capture_head_service_rejects_bad_born_oids_before_any_mutation` | 8.621 | A | workspace初始refresh后仅改坏status raw；真实head parser拒绝/终态不变/零mutation |

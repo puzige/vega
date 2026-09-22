@@ -96,6 +96,19 @@ assertion. Same-machine: **1.152s → 0.011s**. Negative control (relax the
 `left: Ok(ImageAttachment { width: 4001, height: 4000 })`; source restored
 byte-identically. Full `vega_runtime` suite 203/203 in 0.569s.
 
+## Batch 7 — commit-draft request literals
+
+`summary_draft::commit_draft_request_matches_frozen_literals_for_both_truncation_flags`
+now derives the prepared capability from the in-process captured staged state
+(`PolicyFixture::prepared`) instead of a real repository plus a mutation-recorder
+script. `summary`/`summary_truncated` remain request inputs set directly, never
+asserted results; every frozen literal assertion (model, empty tools, 256
+max_tokens, both messages, full system/user text, exactly one provider request)
+is unchanged. Same-machine: **3.372s → 0.024s**. Negative control (change the
+production `USER_PREFIX` literal) fails the owning test; source restored
+byte-identically. No-exec: the migrated test passes under `deny process-exec`;
+the retained real summary-authority adapter is denied and passes normally.
+
 ### Outstanding rows
 
 The remaining 127-item optimization is **not** complete. Still outstanding:

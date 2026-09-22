@@ -611,8 +611,12 @@ async fn commit_draft_request_matches_frozen_literals_for_both_truncation_flags(
     const FIXTURE_SUMMARY: &str = "fixture staged summary";
     const EXPECTED_SYSTEM: &str = "Generate one concise Git commit message for the exact staged diff. Return only the commit message text. Do not call tools.";
     for truncated in [false, true] {
-        let (_repo, _recorder, trusted, prepared, _argv, _input) =
-            staged_service_with_recorder().await;
+        // The real service derives the prepared capability from captured staged
+        // bytes; no repository or Git process is needed to verify request
+        // construction. `summary`/`summary_truncated` are request inputs, set
+        // here directly, not asserted results.
+        let fixture = command_stub::PolicyFixture::new("staged");
+        let (trusted, prepared) = fixture.prepared().await;
         {
             let mut state = trusted
                 .state
@@ -657,6 +661,7 @@ async fn commit_draft_request_matches_frozen_literals_for_both_truncation_flags(
             request.messages[1] == ChatMessage::new(ChatRole::User, expected_user),
             "user prompt mismatch"
         );
+        fixture.assert_no_mutation();
     }
 }
 
