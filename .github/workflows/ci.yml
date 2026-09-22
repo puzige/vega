@@ -57,6 +57,18 @@ jobs:
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          # Share one key across both jobs and all branches. By default the
+          # job name is part of the key, so this `check` job only looked for a
+          # `-check-` cache that master (which runs `build`, not `check`) never
+          # produced — every PR paid a cold GPUI/Zed build. A shared key lets a
+          # PR restore the default branch's cache (GitHub only inherits caches
+          # from the base/default branch).
+          shared-key: vega
+          # Only the default branch writes the cache. A PR run saves under
+          # refs/pull/<n>/merge, which no other PR can read and which would
+          # otherwise accumulate against the 10 GB repo cache quota.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -81,6 +93,12 @@ jobs:
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          # Same shared key as `check` so the default-branch cache saved here is
+          # what PR runs restore (see the check job's comment).
+          shared-key: vega
+          # This job only runs on master, so it is the one that writes the cache.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build the bundle (cargo xtask package)
         # Assembles dist/Vega.app, ad-hoc signs it and zips
