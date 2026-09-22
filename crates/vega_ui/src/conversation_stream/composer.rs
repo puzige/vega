@@ -92,6 +92,7 @@ impl ConversationStream {
         }
         let entry_index = self.entries.len();
         self.entries.push(StreamEntry::Assistant {
+            copy: MessageCopy::default(),
             stream: Box::new(MarkdownStream::new()),
             model: StreamModel::default(),
             failure: None,
@@ -113,9 +114,10 @@ impl ConversationStream {
                         // 只负责轮询，主线程抖动不累积漂移）。
                         let batch = injection.replay.take_due();
                         let entry = this.entries.get_mut(injection.entry_index);
-                        if let Some(StreamEntry::Assistant { stream, .. }) = entry {
+                        if let Some(StreamEntry::Assistant { stream, copy, .. }) = entry {
                             for delta in &batch {
                                 stream.append(delta);
+                                copy.append(delta);
                             }
                         }
                         if injection.replay.is_finished() {
@@ -204,6 +206,7 @@ impl ConversationStream {
         self.user_block_seq += 1;
         let index = self.entries.len();
         self.entries.push(StreamEntry::User {
+            copy: MessageCopy::new(content),
             lines: user_message_lines(block_id, content),
         });
         self.list_append(index);

@@ -58,7 +58,7 @@ fn assistant_line_text(entry: &StreamEntry) -> String {
 
 fn user_entry_text(entry: &StreamEntry) -> String {
     match entry {
-        StreamEntry::User { lines } => lines
+        StreamEntry::User { lines, .. } => lines
             .iter()
             .filter(|line| matches!(line.kind, LineKind::UserLine { .. }))
             .map(|line| {

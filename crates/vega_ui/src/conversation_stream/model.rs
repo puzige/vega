@@ -635,6 +635,45 @@ impl StreamModel {
 
 // ─── message entries (T18 消息块结构) ────────────────────────────────────────
 
+/// UI-only original text and stable action identity. Handlers share the buffer
+/// so a click reads the newest delta without cloning the full body per frame.
+#[derive(Clone)]
+pub(crate) struct MessageCopy {
+    pub(super) id: u64,
+    text: std::rc::Rc<std::cell::RefCell<String>>,
+}
+
+impl MessageCopy {
+    pub(crate) fn new(text: &str) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            text: std::rc::Rc::new(std::cell::RefCell::new(text.to_owned())),
+        }
+    }
+
+    pub(crate) fn append(&self, delta: &str) {
+        self.text.borrow_mut().push_str(delta);
+    }
+
+    pub(super) fn has_text(&self) -> bool {
+        !self.text.borrow().is_empty()
+    }
+
+    pub(super) fn copy(&self, cx: &mut App) {
+        let text = self.text.borrow();
+        if !text.is_empty() {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.clone()));
+        }
+    }
+}
+
+impl Default for MessageCopy {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
 /// One conversation entry: a local user echo or one assistant markdown turn.
 ///
 /// 架构师裁决（T18 裁决①）：user 消息块用「独立渲染路径挂 StreamSnapshot
@@ -644,12 +683,16 @@ pub(crate) enum StreamEntry {
     /// Live reasoning is deliberately separate from persisted answer text.
     Thinking { card: Entity<ThinkingBlock> },
     /// Local user echo (Composer send): static rows, materialized once.
-    User { lines: Vec<StreamLine> },
+    User {
+        lines: Vec<StreamLine>,
+        copy: MessageCopy,
+    },
     UserImages {
         images: Vec<attachments::ImagePreview>,
     },
     /// One assistant turn: a whole [`MarkdownStream`] plus its diff model.
     Assistant {
+        copy: MessageCopy,
         stream: Box<MarkdownStream>,
         model: StreamModel,
         /// Bounded terminal reason; never contains a provider response body.
@@ -678,7 +721,7 @@ impl StreamEntry {
     pub(crate) fn row_count(&self, cx: &App) -> usize {
         match self {
             StreamEntry::Thinking { card } => 1 + usize::from(card.read(cx).expanded),
-            StreamEntry::User { lines } => lines.len(),
+            StreamEntry::User { lines, .. } => lines.len(),
             StreamEntry::UserImages { .. } => 1,
             StreamEntry::Assistant { model, failure, .. } => {
                 model.row_count() + usize::from(failure.is_some())

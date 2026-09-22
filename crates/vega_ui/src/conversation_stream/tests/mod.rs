@@ -24,6 +24,7 @@ mod composer_actions;
 mod composer_counter;
 mod core_flow;
 mod e2e_variable_height;
+mod hover_copy;
 mod hydration;
 mod issue70_tool_activity;
 mod issue78_message_bubbles;
@@ -356,6 +357,7 @@ fn mixed_entry(
         let mut model = StreamModel::default();
         model.sync(&stream.snapshot(), &counters);
         StreamEntry::Assistant {
+            copy: MessageCopy::new(doc),
             stream: Box::new(stream),
             model,
             failure: None,
@@ -370,6 +372,7 @@ fn mixed_entry(
             let block_id = USER_BLOCK_BASE + *user_seq;
             *user_seq += 1;
             StreamEntry::User {
+                copy: MessageCopy::new(&mixed_user_echo(index)),
                 lines: user_message_lines(block_id, &mixed_user_echo(index)),
             }
         }
