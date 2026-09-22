@@ -379,13 +379,6 @@ pub(crate) fn scrub_git_environment(command: &mut Command) {
         .env("GIT_LITERAL_PATHSPECS", "1")
         .env("GIT_NO_LAZY_FETCH", "1")
         .env("LC_ALL", "C");
-    // Tests spawn git far more often than production and never need durability, so skip
-    // fsync and opportunistic index locks exactly like Git's own suite does (`t/test-lib.sh`
-    // forces `GIT_TEST_FSYNC=0`). Test-only: production keeps git's default durability.
-    #[cfg(test)]
-    command
-        .env("GIT_TEST_FSYNC", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0");
 }
 
 fn is_blocked_git_environment_key(key: &OsStr) -> bool {

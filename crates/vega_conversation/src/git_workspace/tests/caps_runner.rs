@@ -126,19 +126,6 @@ fn git_workspace_environment_scrub_is_exact() {
             .and_then(|value| value.as_deref()),
         Some(OsStr::new("1"))
     );
-    // Test-only perf knobs: skip durability fsync and opportunistic index locks the way
-    // Git's own suite does (`t/test-lib.sh` forces `GIT_TEST_FSYNC=0`). Pinned here so a
-    // future edit cannot silently drop them and quietly reintroduce the spawn-cost tax.
-    assert_eq!(
-        env.get(OsStr::new("GIT_TEST_FSYNC"))
-            .and_then(|value| value.as_deref()),
-        Some(OsStr::new("0"))
-    );
-    assert_eq!(
-        env.get(OsStr::new("GIT_OPTIONAL_LOCKS"))
-            .and_then(|value| value.as_deref()),
-        Some(OsStr::new("0"))
-    );
     assert_eq!(
         env.get(OsStr::new("VEGA_KEEP"))
             .and_then(|value| value.as_deref()),
