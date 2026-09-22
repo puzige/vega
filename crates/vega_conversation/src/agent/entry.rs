@@ -211,6 +211,7 @@ pub async fn run_approved_plan_task_with_pricing_reasoning_and_mcp<F>(
     pricing_catalog: Option<vega_token::PricingCatalog>,
     reasoning: Option<FrozenReasoning>,
     mcp_servers: Vec<vega_runtime::McpReadyServer>,
+    turn_limit: u32,
 ) -> Result<ConversationRun, ConversationError>
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
@@ -225,7 +226,7 @@ where
         cancel,
         permission_hook,
         event_sink,
-        PersistenceActorConfig::default(),
+        PersistenceActorConfig::default().with_turn_limit(turn_limit),
         Some(instruction_message_id.to_string()),
         pricing_catalog,
         reasoning,

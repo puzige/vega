@@ -37,8 +37,6 @@ mod mcp_registry;
 use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
 pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 
-/// Maximum number of tool calls executed by one task.
-pub const TOOL_CALL_LIMIT: usize = 100;
 /// Maximum bytes accepted from one streamed reasoning delta.
 pub const REASONING_DELTA_MAX_BYTES: usize = 64 * 1024;
 /// Maximum bytes retained for one logical provider call/assistant turn.
@@ -138,6 +136,9 @@ pub struct RuntimeToolConfig {
     pub checkpoint_root: PathBuf,
     /// Exact project rules loaded at task start.
     pub exact_rules: Vec<RuntimeExactRule>,
+    /// Maximum number of agentic turns (provider round-trips) in this run.
+    /// `0` means unlimited. Set from `[agent] turn_limit` in config.toml.
+    pub turn_limit: usize,
     mcp_candidates: Vec<McpCandidate>,
     skills: Option<RuntimeSkillConfig>,
     foreign_call_ids: HashSet<String>,
@@ -161,11 +162,20 @@ impl RuntimeToolConfig {
             thread_id,
             checkpoint_root,
             exact_rules,
+            turn_limit: 0,
             mcp_candidates: Vec::new(),
             skills: None,
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
         }
+    }
+
+    /// Sets the maximum number of agentic turns (provider round-trips) for
+    /// this run. `0` (the default) means unlimited, mirroring Claude Code's
+    /// `--max-turns` default.
+    pub fn with_turn_limit(mut self, limit: usize) -> Self {
+        self.turn_limit = limit;
+        self
     }
 
     /// Registers globally occupied call ids owned by other threads without
@@ -425,8 +435,8 @@ pub enum RuntimeFinishReason {
     End,
     /// The provider reached its generation cap.
     Length,
-    /// The task reached [`TOOL_CALL_LIMIT`].
-    ToolLimit,
+    /// The run reached its configured agent turn limit.
+    TurnLimit,
 }
 
 /// Exact pricing provenance stamped by the runtime for one provider call

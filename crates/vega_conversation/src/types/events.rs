@@ -7,8 +7,8 @@ pub enum ConversationStopReason {
     End,
     /// Provider generation limit.
     Length,
-    /// Runtime tool-call safety limit.
-    ToolLimit,
+    /// Runtime agent turn safety limit (Issue #114).
+    TurnLimit,
 }
 
 /// Content-free explanation of a failed run. The provider's raw diagnostic
@@ -556,7 +556,7 @@ pub(crate) fn from_runtime_event(
             stop_reason: match reason {
                 RuntimeFinishReason::End => ConversationStopReason::End,
                 RuntimeFinishReason::Length => ConversationStopReason::Length,
-                RuntimeFinishReason::ToolLimit => ConversationStopReason::ToolLimit,
+                RuntimeFinishReason::TurnLimit => ConversationStopReason::TurnLimit,
             },
         }),
         RuntimeEvent::Interrupted => Some(ConversationEvent::Interrupted {

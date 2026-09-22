@@ -741,6 +741,11 @@ where
     let mut final_text = String::new();
     let mut tool_call_count = 0usize;
     let mut executed_tool_call_count = 0usize;
+    // Agentic turn counter: the outer `loop` below issues exactly one provider
+    // request per iteration. `turn_limit == 0` means unlimited (Claude Code's
+    // `--max-turns` default); a positive value soft-stops before issuing the
+    // (limit + 1)th request.
+    let mut turn_index = 0usize;
     let mut reasoning_run_bytes = 0usize;
     let mut direct_user_skill_round = true;
     let mut input_anchor: Option<InputAnchor> = None;
@@ -896,6 +901,30 @@ where
     }
 
     loop {
+        turn_index += 1;
+        if tool_config.turn_limit > 0 && turn_index > tool_config.turn_limit {
+            let notice = format!(
+                "Agent turn limit ({}) reached; stopping without issuing another request.",
+                tool_config.turn_limit
+            );
+            final_text.push_str(&notice);
+            emit!(events, sink, RuntimeEvent::TextDelta(notice.clone()));
+            messages.push(ChatMessage::new(ChatRole::Assistant, notice));
+            emit!(
+                events,
+                sink,
+                RuntimeEvent::Finished(RuntimeFinishReason::TurnLimit)
+            );
+            return Ok(outcome(
+                events,
+                messages,
+                final_text,
+                tool_call_count,
+                executed_tool_call_count,
+                false,
+                false,
+            ));
+        }
         if !skill_authority_current(skill_config.as_ref()) {
             cancel.cancel();
         }
@@ -1675,28 +1704,9 @@ where
 
         for prepared in prepared_calls {
             let call = prepared.call().clone();
-            if tool_call_count >= TOOL_CALL_LIMIT {
-                let notice = format!(
-                    "Tool call limit ({TOOL_CALL_LIMIT}) reached; stopping without executing additional tools."
-                );
-                final_text.push_str(&notice);
-                emit!(events, sink, RuntimeEvent::TextDelta(notice.clone()));
-                messages.push(ChatMessage::new(ChatRole::Assistant, notice));
-                emit!(
-                    events,
-                    sink,
-                    RuntimeEvent::Finished(RuntimeFinishReason::ToolLimit)
-                );
-                return Ok(outcome(
-                    events,
-                    messages,
-                    final_text,
-                    tool_call_count,
-                    executed_tool_call_count,
-                    false,
-                    false,
-                ));
-            }
+            // `tool_call_count` is a telemetry/result field only. The run is
+            // bounded by `tool_config.turn_limit` (provider round-trips), not
+            // by a per-tool-call count, matching Claude Code / Codex.
             tool_call_count += 1;
             if tool_config.foreign_call_ids.contains(&call.id) {
                 let conflict = conflict_result(&call);

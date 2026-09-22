@@ -713,6 +713,9 @@ pub(crate) fn run_agent_worker_with_mcp(
         let configured_provider = config
             .as_ref()
             .and_then(|config| unique_provider_for_model(config, &thread.model));
+        // Issue #114: agentic turn guardrail from `[agent] turn_limit`
+        // (0 = unlimited). Absent config (legacy callers/tests) stays unlimited.
+        let turn_limit = config.as_ref().map_or(0, |config| config.agent.turn_limit);
         // Production must never turn an explicit config path with no unique
         // enabled owner into a synthetic `unknown` policy. Legacy tests may
         // inject a provider without a matching config, but an actual two-owner
@@ -941,7 +944,8 @@ pub(crate) fn run_agent_worker_with_mcp(
                             &permission_queue,
                             event_sink,
                             vega_conversation::agent::PersistenceActorConfig::default()
-                                .with_automatic_title(automatic_title),
+                                .with_automatic_title(automatic_title)
+                                .with_turn_limit(turn_limit),
                             None,
                             pricing_catalog,
                             Some(reasoning),
@@ -1006,6 +1010,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                         pricing_catalog,
                         Some(reasoning),
                         mcp_servers,
+                        turn_limit,
                     ),
                 )
                 }

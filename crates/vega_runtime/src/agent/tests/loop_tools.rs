@@ -640,11 +640,15 @@ async fn cancellation_before_start_makes_no_provider_request() {
 }
 
 #[tokio::test]
-async fn stops_after_one_hundred_tool_calls_with_visible_notice() {
+async fn default_unlimited_turn_limit_runs_all_tool_calls_in_one_turn() {
+    // With the default `turn_limit` (0 = unlimited) a single turn that
+    // proposes more than 100 tool calls executes every one of them: there is
+    // no per-tool-call hard stop anymore (Issue #114).
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.txt"), "ok\n").unwrap();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
-    let calls: Vec<ProviderEvent> = (0..=TOOL_CALL_LIMIT)
+    let proposals = 101usize;
+    let calls: Vec<ProviderEvent> = (0..proposals)
         .map(|index| ProviderEvent::ToolUse {
             id: format!("call-{index}"),
             name: "read".into(),
@@ -654,7 +658,12 @@ async fn stops_after_one_hundred_tool_calls_with_visible_notice() {
             stop_reason: StopReason::ToolUse,
         }))
         .collect();
-    let provider = MockProvider::new(vec![ScriptStep::events(calls)]);
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(calls)],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
     let outcome = run_agent(
         &provider,
         &tools,
@@ -663,22 +672,53 @@ async fn stops_after_one_hundred_tool_calls_with_visible_notice() {
     )
     .await
     .unwrap();
-    assert_eq!(outcome.tool_call_count, TOOL_CALL_LIMIT);
-    assert_eq!(outcome.executed_tool_call_count, TOOL_CALL_LIMIT);
+    assert_eq!(outcome.tool_call_count, proposals);
+    assert_eq!(outcome.executed_tool_call_count, proposals);
     let finished_calls = outcome
         .events
         .iter()
         .filter(|event| matches!(event, RuntimeEvent::ToolCallFinished(_)))
         .count();
-    assert_eq!(finished_calls, TOOL_CALL_LIMIT);
-    assert!(!outcome.events.iter().any(|event| matches!(
+    assert_eq!(finished_calls, proposals);
+    assert!(outcome.events.iter().any(|event| matches!(
         event,
         RuntimeEvent::ToolCallOutput { call_id, .. } if call_id == "call-100"
     )));
-    assert!(outcome.final_text.contains("Tool call limit (100) reached"));
+    assert!(!outcome.final_text.contains("limit"));
     assert!(matches!(
         outcome.events.last(),
-        Some(RuntimeEvent::Finished(RuntimeFinishReason::ToolLimit))
+        Some(RuntimeEvent::Finished(RuntimeFinishReason::End))
+    ));
+}
+
+#[tokio::test]
+async fn configured_turn_limit_soft_stops_before_the_next_request() {
+    // A positive `turn_limit` caps provider round-trips: the (limit + 1)th
+    // request is never issued and the run ends with a visible notice.
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("a.txt"), "ok\n").unwrap();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    // Every turn proposes one read and asks for another round, forever.
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::ToolUse {
+            id: "same-call".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"a.txt"}"#.into(),
+        },
+        ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        },
+    ])]);
+    let mut req = request(Vec::new());
+    req.tool_config = RuntimeToolConfig::default().with_turn_limit(2);
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(provider.requests().len(), 2);
+    assert!(outcome.final_text.contains("Agent turn limit (2) reached"));
+    assert!(matches!(
+        outcome.events.last(),
+        Some(RuntimeEvent::Finished(RuntimeFinishReason::TurnLimit))
     ));
 }
 
@@ -768,11 +808,14 @@ async fn cancel_during_a_read_waits_for_it_then_skips_the_next_call() {
 }
 
 #[tokio::test]
-async fn repeated_call_id_counts_every_observation_and_rejects_the_101st() {
+async fn repeated_call_id_counts_every_observation_and_executes_once() {
+    // A repeated provider call id is observed on every proposal but executed
+    // only once; there is no per-tool-call count gate anymore (Issue #114).
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.txt"), "ok\n").unwrap();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
-    let calls: Vec<ProviderEvent> = (0..=TOOL_CALL_LIMIT)
+    let observations = 150usize;
+    let calls: Vec<ProviderEvent> = (0..observations)
         .map(|_| ProviderEvent::ToolUse {
             id: "same-call".into(),
             name: "read".into(),
@@ -782,7 +825,12 @@ async fn repeated_call_id_counts_every_observation_and_rejects_the_101st() {
             stop_reason: StopReason::ToolUse,
         }))
         .collect();
-    let provider = MockProvider::new(vec![ScriptStep::events(calls)]);
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(calls)],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
 
     let outcome = run_agent(
         &provider,
@@ -793,7 +841,7 @@ async fn repeated_call_id_counts_every_observation_and_rejects_the_101st() {
     .await
     .unwrap();
 
-    assert_eq!(outcome.tool_call_count, TOOL_CALL_LIMIT);
+    assert_eq!(outcome.tool_call_count, observations);
     assert_eq!(outcome.executed_tool_call_count, 1);
     assert_eq!(
         outcome
@@ -801,16 +849,18 @@ async fn repeated_call_id_counts_every_observation_and_rejects_the_101st() {
             .iter()
             .filter(|event| matches!(event, RuntimeEvent::ToolCallFinished(_)))
             .count(),
-        TOOL_CALL_LIMIT
+        observations
     );
     assert!(matches!(
         outcome.events.last(),
-        Some(RuntimeEvent::Finished(RuntimeFinishReason::ToolLimit))
+        Some(RuntimeEvent::Finished(RuntimeFinishReason::End))
     ));
 }
 
 #[tokio::test]
 async fn repeated_call_id_across_rounds_cannot_loop_forever() {
+    // A provider that always asks for another round is bounded by the
+    // configured turn limit, not by a tool-call count.
     let dir = tempdir().unwrap();
     fs::write(dir.path().join("a.txt"), "ok\n").unwrap();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
@@ -824,25 +874,22 @@ async fn repeated_call_id_across_rounds_cannot_loop_forever() {
             stop_reason: StopReason::ToolUse,
         },
     ])]);
+    let mut req = request(Vec::new());
+    req.tool_config = RuntimeToolConfig::default().with_turn_limit(3);
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(2),
-        run_agent(
-            &provider,
-            &tools,
-            request(Vec::new()),
-            CancellationToken::new(),
-        ),
+        run_agent(&provider, &tools, req, CancellationToken::new()),
     )
     .await
-    .expect("tool-use safety limit must converge")
+    .expect("configured turn limit must converge")
     .unwrap();
 
-    assert_eq!(outcome.tool_call_count, TOOL_CALL_LIMIT);
+    assert_eq!(outcome.tool_call_count, 3);
     assert_eq!(outcome.executed_tool_call_count, 1);
-    assert_eq!(provider.requests().len(), TOOL_CALL_LIMIT + 1);
+    assert_eq!(provider.requests().len(), 3);
     assert!(matches!(
         outcome.events.last(),
-        Some(RuntimeEvent::Finished(RuntimeFinishReason::ToolLimit))
+        Some(RuntimeEvent::Finished(RuntimeFinishReason::TurnLimit))
     ));
 }

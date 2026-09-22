@@ -77,8 +77,8 @@ pub use agent::{
     REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES, REASONING_TURN_MAX_BYTES, RuntimeEvent,
     RuntimeExactRule, RuntimeFinishReason, RuntimePermissionHook, RuntimeTokenUsage,
     RuntimeToolCall, RuntimeToolConfig, RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing,
-    TOOL_CALL_LIMIT, run_agent, run_agent_with_permission_sink,
-    run_agent_with_permission_sink_and_context, run_agent_with_sink, tool_definitions,
+    run_agent, run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,
+    run_agent_with_sink, tool_definitions,
 };
 pub use context::{
     CONTEXT_ESTIMATOR_VERSION, ContextBudget, ContextCheck, ContextCompactionFailure,
