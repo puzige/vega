@@ -362,3 +362,75 @@ async fn issue98_a7_button_is_mounted_and_focusable(cx: &mut TestAppContext) {
         "the control's focus handle must be reachable on the mounted control"
     );
 }
+
+/// A11 (occlusion regression): the floating control must paint **above** the
+/// transcript, not behind it.
+///
+/// The first #98 delivery mounted the control as the content column's child
+/// *before* `body`, so the full-size scroll list — a later sibling — painted
+/// over the opaque white circle. Natively that read as the button being
+/// half-covered and translucent (list text bled through the fill), even though
+/// `bg_elevated` is `FFFFFFFF`. The fill was never transparent; the z-order was
+/// wrong. The fix mounts the control as the column's **last** child.
+///
+/// `Window::painted_quads()` returns the frame's quads **in paint order**
+/// (gpui-pre `window.rs`), so the regression is directly assertable: the
+/// control's own fill quad must come *after* every transcript row quad it
+/// overlaps. This is the paint-order claim A1–A8 cannot make — they only read
+/// `debug_bounds`, which proves layout, not stacking.
+#[gpui_kit::test]
+async fn issue98_a11_button_paints_above_the_transcript(cx: &mut TestAppContext) {
+    let (window, stream, _events) = open_controller_stream(cx, "issue98-a11");
+    seed_and_detach(window, &stream, cx);
+
+    let button = bounds(window, BUTTON, cx);
+    let (quads, scale) = painted_quads(window, cx);
+    let scaled = button.scale(scale);
+
+    // The control's own circular fill: exactly the button's bounds, opaque
+    // `bg_elevated`, fully rounded (its corner radius is half the size).
+    let fill_index = quads
+        .iter()
+        .position(|quad| {
+            quad_matches(quad, button, scale)
+                && quad
+                    .background
+                    .as_solid()
+                    .is_some_and(|solid| same_colour(solid, vega_theme::LIGHT.bg_elevated))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the control's bg_elevated fill must be painted; quads at its bounds: {:?}",
+                quads
+                    .iter()
+                    .filter(|quad| quad.bounds.intersects(&scaled))
+                    .map(|quad| (quad.bounds, quad.background))
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    // Every quad that overlaps the button but is **not** the control (fill,
+    // border, shadow) must have been painted before it. The transcript rows and
+    // their text live in that set; if the control is mounted too early, at least
+    // one row paints after the fill and this fails.
+    let half = (Layout::SCROLL_TO_BOTTOM_SIZE / 2.0) * scale;
+    let control_radius = half + 1.0; // fill/border share the box; shadow is wider
+    let mut after: Vec<usize> = Vec::new();
+    for (index, quad) in quads.iter().enumerate() {
+        if index <= fill_index {
+            continue;
+        }
+        // Ignore the control's own trailing quads (border/shadow), which are
+        // expected to paint right after its fill.
+        let own = quad.corner_radii.top_left.as_f32() >= control_radius - 1.0
+            && quad.bounds.intersects(&scaled);
+        if quad.bounds.intersects(&scaled) && !own {
+            after.push(index);
+        }
+    }
+    assert!(
+        after.is_empty(),
+        "the control must be the topmost quad in its region: these quads still \
+         paint over it (fill is quad #{fill_index}): {after:?}"
+    );
+}

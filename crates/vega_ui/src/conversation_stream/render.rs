@@ -1198,15 +1198,22 @@ impl Render for ConversationStream {
                             .when(!self.entries.is_empty(), |body| {
                                 body.h_full().overflow_hidden()
                             })
+                            .child(body)
                             // Issue #98: the detached-tail control floats at the
                             // bottom of the transcript viewport, centred on this
-                            // content column. tech-spec §5.4 动效禁令：流式期间
+                            // content column. It MUST be the column's **last**
+                            // child so it paints above the transcript: GPUI paints
+                            // siblings in tree order, so a control mounted before
+                            // `body` is overdrawn by the list rows — which showed
+                            // up as the circle being half-covered and the opaque
+                            // white fill reading as translucent (list text bled
+                            // through). The fill was never transparent; only the
+                            // z-order was wrong. tech-spec §5.4 动效禁令：流式期间
                             // 节点无任何入场 opacity/动画（本管线自 T17 起即不
                             // 引入入场动画，T18 维持）。
                             .when(!self.following_tail(), |column| {
                                 column.relative().child(self.render_resume_tail(cx))
-                            })
-                            .child(body),
+                            }),
                     ),
             )
             // #76 correction: actual compaction lifecycle is conversation

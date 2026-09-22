@@ -115,8 +115,17 @@ pub const SCROLL_TO_BOTTOM_GAP: f32 = 24.0;
 | A8 | R5 token | — | 编译期 | `SCROLL_TO_BOTTOM_SIZE==32`、`GAP==24` | 单元 | 冻结测试 |
 | A9 | 回归 | 既有滚动跟随 | 运行既有 `scroll_follow`/`e2e_variable_height` | 全绿 | 单元/E2E | 既有套件 |
 | A10 | 真实 UI | 真实 Vega、脱离底部 | 原生截图 | 悬浮圆钮出现在输入框上方居中，Light+Dark 各一张 | E2E-REAL | 截图 + SHA-256 |
+| A11 | R6 叠放 | 脱离底部 | 渲染 | 按钮填充 quad 的绘制次序在与其重叠的所有正文行 quad **之后**（不被覆盖） | 生产测试 | `painted_quads` 次序断言 |
 
 **E2E-first 边界**：A1–A8 用 GPUI `TestAppContext`（可观测绘制/焦点，见 `AGENTS.md` §原生 UI 验收）；A10 用真实构建的原生截图 + 像素量测（悬浮位置/尺寸/配色）。合成键盘事件不可用于焦点路径（工具限制），焦点以生产测试为准。
+
+### R6 · 叠放：按钮必须绘制在正文之上（v2 新增）
+
+v1 把按钮作为 `conversation-column` 的**前序**子节点（在 `body` 之前），而 GPUI 按树序绘制兄弟节点，于是全屏滚动列表（后序兄弟）把不透明白色圆盖住 —— 实机表现为**按钮下半被正文行覆盖、且白色填充看起来是半透明**（行文字透过填充显示）。填充 token 本身是不透明的（`bg_elevated = 0xFFFFFFFF`），**不存在透明度问题，只有 z-order 问题**。
+
+- 冻结：按钮必须是 `conversation-column` 的**最后一个**子节点（`.child(body)` 之后），从而绘制在正文之上。
+- 冻结：不得给按钮或其填充引入任何 opacity / 半透明合成；填充保持 `bg_elevated` 全不透明。
+- 可观测断言：`Window::painted_quads()` 按**绘制次序**返回帧内 quad（gpui-pre `window.rs`），故「按钮填充 quad 晚于其区域内所有非自身 quad」可直接断言（A11）。
 
 ---
 
@@ -124,8 +133,8 @@ pub const SCROLL_TO_BOTTOM_GAP: f32 = 24.0;
 
 1. `vega_theme::Layout` 新增 `SCROLL_TO_BOTTOM_SIZE=32.0`、`SCROLL_TO_BOTTOM_GAP=24.0`，并在该文件既有 token 冻结测试补两条断言。
 2. `render_resume_tail`（`render.rs:77`）重写：`div().id("scroll-to-bottom")`（hover 需要 id）、32px 正圆、`bg_elevated`/`border_subtle`/`shadow_sm`、`Icon::ArrowDown`（`text_secondary`）、`aria_label("回到底部")`；保留 `resume_tail_focus`、`ResumeTailButton` key context、`on_action`/`on_mouse_up` → `resume_tail`。
-3. 挂载点从根元素改到 `conversation-column` 包裹层（`render.rs:1173` 一带）：该层加 `.relative()`；按钮 `.absolute().bottom(px(GAP)).left_0().right_0()` 内层居中；移除根元素上的 `.when(!following_tail, ...)` 挂载。
-4. 新增 GPUI 测试文件 `crates/vega_ui/src/conversation_stream/tests/issue98_scroll_button.rs`，覆盖 A1–A8；登记进 `tests/mod.rs`。
+3. 挂载点从根元素改到 `conversation-column` 包裹层（`render.rs:1173` 一带）：该层加 `.relative()`；按钮 `.absolute().bottom(px(GAP)).left_0().right_0()` 内层居中；移除根元素上的 `.when(!following_tail, ...)` 挂载。**按钮必须是该层的最后一个子节点**（R6：在 `.child(body)` 之后），否则正文列表按树序后绘会盖住它。
+4. 新增 GPUI 测试文件 `crates/vega_ui/src/conversation_stream/tests/issue98_scroll_button.rs`，覆盖 A1–A8、A11；登记进 `tests/mod.rs`。
 5. 受影响包：`vega_theme`、`vega_ui` 及其传递依赖方；门禁走 `python3 scripts/verify.py`。
 6. 回滚：单文件级 revert（spec + render.rs + theme + 测试）。
 
@@ -136,3 +145,4 @@ pub const SCROLL_TO_BOTTOM_GAP: f32 = 24.0;
 ## §7 变更记录
 
 - v1 (2026-09-22)：首版冻结。基线 `8cff36b`；参考几何来自 Issue #98 截图像素量测。
+- v2 (2026-09-22)：实机回归修复。用户实测反馈「按钮被遮挡 + 看起来半透明」。根因：v1 把按钮挂在 `body` **之前**，GPUI 按树序绘制兄弟 → 正文列表盖住不透明白色填充（文字透出即「半透明」观感）。**无透明度问题**，纯 z-order。修复：按钮改为 `conversation-column` 的**最后一个**子节点（`.child(body)` 之后）。新增 R6 与 A11（`painted_quads` 绘制次序断言），并做反向对照：还原 v1 次序时 A11 失败（quad #19 仍盖住填充），修复后通过。基线 `f1a958b`。
