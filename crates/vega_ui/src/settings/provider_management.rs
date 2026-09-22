@@ -1009,6 +1009,12 @@ impl SettingsView {
                     cx,
                 ));
         } else if let Some(p) = self.selected_provider() {
+            let api_label = match p.api {
+                vega_conversation::types::ProviderApi::ChatCompletions => {
+                    "API 格式 · Chat Completions"
+                }
+                vega_conversation::types::ProviderApi::Responses => "API 格式 · Responses",
+            };
             let index = self
                 .config
                 .providers
@@ -1081,8 +1087,9 @@ impl SettingsView {
                 )
                 .child(
                     div()
+                        .debug_selector(move || format!("provider-api-format:{api_label}"))
                         .text_color(colors.text_secondary)
-                        .child("API 格式 · Chat Completions"),
+                        .child(api_label),
                 )
                 .child(div().text_color(colors.text_secondary).child(
                     if self.available_key_refs.contains(&p.key_ref) {

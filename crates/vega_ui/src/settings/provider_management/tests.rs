@@ -926,6 +926,18 @@ async fn i71_settings_api_selection_keyboard_save_reopen_and_add(cx: &mut TestAp
         vega_store::config::read_from(&path).unwrap().providers[0].api,
         vega_conversation::types::ProviderApi::Responses
     );
+    // Assert the production detail's rendered label uses the saved transport.
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(
+        visual
+            .debug_bounds("provider-api-format:API 格式 · Responses")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("provider-api-format:API 格式 · Chat Completions")
+            .is_none()
+    );
     view.update(cx, |view, cx| {
         view.begin_edit_provider("owned", cx);
         assert_eq!(
