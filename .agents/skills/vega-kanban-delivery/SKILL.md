@@ -33,7 +33,7 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 ## 3. 隔离实现与并行调度
 
-1. 修改仓库前 fetch，按仓库规则更新本地基线；有脏改动或分叉先保护、核实，不 reset、不强行覆盖。每卡独立任务分支和 sibling worktree，禁止直接在 master 实现。
+1. 修改仓库前 fetch，按仓库规则更新本地基线；有脏改动或分叉先保护、核实，不 reset、不强行覆盖。每卡独立任务分支和 `~/Workspace/worktrees/` 下的 worktree，禁止直接在 master 实现。
 2. 主控负责需求、计划、审查、验收与集成；代码实现委派给专职子 agent，提供卡片/spec、所有权边界、测试矩阵、允许修改范围和返回证据要求。每卡使用独立 worktree 与 Cargo 默认 target，不再链接共享 target、不再经本地调度器排队。
 3. 只有不共享状态/接口、不修改冲突文件且无先后依赖的卡可以并行。相同文件或公共契约必须明确单一所有者或串行；不得让两个 agent 在同一 worktree 写代码。
 4. 本地直接运行 `cargo` 即可：本地无 hooks、无调度器、不锁 target（2026-09-22 门禁全部上云，见仓库 AGENTS.md 与 [Issue #123 规格](../../../docs/vega-issue-123-pr-check-pipeline.md)）。安装/启动被测 Vega、原生 UI 操作、共享测试账号/数据仍须独占；不要在另一张卡验收中途替换二进制。
@@ -43,7 +43,7 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 ## 4. 测试与真实验收
 
-- 门禁全部在云端：PR 由 `.github/workflows/ci.yml` 跑 fmt/clippy/`cargo test --workspace`，push master 打包；本地 commit/push 不做强制检查。本地自查与任务特定 production-root 回归仍须覆盖。复用主/子 agent 已完成且身份一致、日志完整的成功证据；源码、基线或环境变化、失败及缺失证据不能复用。记录命令、退出码、数量、日志及内容哈希，不重复跑相同门禁来制造独立验收的表象。
+- 门禁全部在云端：PR 由 `.github/workflows/pr-check.yml` 跑 fmt/clippy/`cargo test --workspace`，push master 由 `.github/workflows/master-build.yml` 打包（两者共享 cargo 缓存 key）；本地 commit/push 不做强制检查。本地自查与任务特定 production-root 回归仍须覆盖。复用主/子 agent 已完成且身份一致、日志完整的成功证据；源码、基线或环境变化、失败及缺失证据不能复用。记录命令、退出码、数量、日志及内容哈希，不重复跑相同门禁来制造独立验收的表象。
 - 产品功能必须在真实 Vega 中端到端验收：确认被测构建对应本次代码，通过 UI 完成配置/选择项目/输入/提交/观察结果等相关用户路径。需要真实模型或服务的路径必须收到真实结果；mock、直接调内部函数、修改数据库、仅编译通过均不替代 E2E。
 - 不要求用户手改测试或本地配置以绕过缺陷。登录/凭据/计费授权若确实需要用户参与，明确阻碍和最小操作；未经授权不外发私人文件或测试图片。
 - 覆盖验收矩阵，尤其检查 UI 状态、焦点、时间线、错误提示和重启后的恢复。外部服务失败也要保留失败证据，不能把未验证标成通过。

@@ -14,7 +14,7 @@
 
 ## 合同（Contract）
 
-- C1. 新增 `.github/workflows/ci.yml`：
+- C1. 新增 `.github/workflows/ci.yml`（2026-09-22 后续拆分为 `pr-check.yml` + `master-build.yml`，见 C7；`ci.yml` 已删除）：
   - `pull_request`（base `master`）触发 `check` job：`macos-latest`，checkout → `dtolnay/rust-toolchain`（按 `rust-toolchain.toml` = 1.98.0）→ `Swatinem/rust-cache` → `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace`。
   - `push` 到 `master` 触发 `build` job：同 runner/toolchain/cache，`cargo xtask package`，`actions/upload-artifact` 上传 `dist/Vega-macos-arm64.zip`。
   - 同 ref 并发取消（`concurrency`），避免 PR 连续 push 堆积。
@@ -24,6 +24,11 @@
 - C4. 文档口径同步为「云端 CI 为准，本地无强制门禁」：`AGENTS.md`、`README.md`、`docs/vega-exec-guide.md` §7、`docs/vega-phase1-plan.md` §3.5、`docs/vega-s1-tasks.md` T03、`docs/vega-release.md`、`.agents/skills/vega-kanban-delivery/SKILL.md`。`docs/vega-issue-107-test-workflow.md` 标注被本卡取代。
 - C5. 不改产品行为；不改 `release.yml` 触发逻辑（仅注释）。
 - C6.（2026-09-22 后续修复，PR #127）`ci.yml` 两个 job 的 `Swatinem/rust-cache` 统一 `shared-key: vega` 且 `save-if: ${{ github.ref == 'refs/heads/master' }}`。原配置因默认把 job 名计入 key，`check` 只找 `-check-` 缓存，而 master 只跑 `build`（`-build-`），导致每个新 PR 都冷编译；且 PR run 的缓存挂在 `refs/pull/<n>/merge`，其他 PR 无法继承，还占 10 GB 配额。共享 key 后 PR 可继承默认分支缓存。
+- C7.（2026-09-22 后续拆分，用户裁决）把单文件 `ci.yml` 拆成两条独立 workflow，缓存 key 继续共享：
+  - `.github/workflows/pr-check.yml`（`name: pr-check`）：仅 `pull_request`（base `master`）触发 `check` job（job name 保持 `check (fmt, clippy, test)`，与分支保护 required check 一致），跑 fmt/clippy/test；rust-cache 用 `shared-key: vega` + `save-if: false`（只读，不写缓存）。
+  - `.github/workflows/master-build.yml`（`name: master-build`）：仅 `push`（`master`）触发 `build` job，跑 `cargo xtask package` 并上传 artifact；rust-cache 用同一个 `shared-key: vega` + `save-if: ${{ github.ref == 'refs/heads/master' }}`（唯一写缓存方）。
+  - 两条 workflow 各自 `concurrency`（`group: ${{ github.workflow }}-${{ github.ref }}`）与 `permissions: contents: read`；触发条件互斥（PR 不触发 build，master push 不触发 check），故不再需要 `if: github.event_name == ...` 守卫。
+  - 删除 `ci.yml`。
 
 ## 非目标
 
@@ -58,7 +63,7 @@
 ## 实施步骤
 
 1. 新增 `docs/vega-issue-123-pr-check-pipeline.md`（本文件）。
-2. 新增 `.github/workflows/ci.yml`。
+2. 新增 `.github/workflows/ci.yml`（后续 C7 拆分为 `pr-check.yml` + `master-build.yml`）。
 3. 订正 `release.yml` 顶部注释。
 4. 删除本地门禁资产（C3）。
 5. 同步文档口径（C4）。
@@ -66,4 +71,4 @@
 
 ## 回滚
 
-`git revert` 本 PR 即恢复本地 hooks/脚本与旧文档口径；`ci.yml` 删除即停用云端 check。产品与安装不受影响。
+`git revert` 本 PR 即恢复本地 hooks/脚本与旧文档口径；删除 `pr-check.yml` / `master-build.yml` 即停用云端 check 与 master 打包。产品与安装不受影响。

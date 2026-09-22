@@ -114,12 +114,12 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 **门禁全部在云端，本地 commit/push 不做任何强制检查、不排队、不锁 target**（2026-09-22 用户裁决，见 [Issue #123 规格](docs/vega-issue-123-pr-check-pipeline.md)）。本地不再安装 git hooks；`.githooks/`、`scripts/verify.py` 与 `cargo-lock` 调度器已删除。
 
-`.github/workflows/ci.yml`：
+PR check 与 master build 是两条独立 workflow（2026-09-22 拆分），共享同一个 cargo 缓存 key（`shared-key: vega`）：PR 只读缓存，master build 写缓存。
 
-| 触发 | 检查 |
-|---|---|
-| `pull_request`（base `master`） | `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace` |
-| `push` 到 `master`（PR merge 后） | `cargo xtask package`，产物上传为 artifact（不发 Release） |
+| Workflow | 触发 | 检查 |
+|---|---|---|
+| [`.github/workflows/pr-check.yml`](.github/workflows/pr-check.yml) | `pull_request`（base `master`） | `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace` |
+| [`.github/workflows/master-build.yml`](.github/workflows/master-build.yml) | `push` 到 `master`（PR merge 后） | `cargo xtask package`，产物上传为 artifact（不发 Release） |
 
 **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check` 才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。发布仍由 `v*` tag 触发（[vega-release.md](docs/vega-release.md)）。
 

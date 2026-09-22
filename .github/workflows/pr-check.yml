@@ -1,0 +1,75 @@
+# PR check pipeline for Vega (macOS arm64) — pull requests only.
+#
+# ── Design notes ─────────────────────────────────────────────────────────────
+# - This repo is PUBLIC: GitHub-hosted runners (including macos-latest) are
+#   free and do not consume the minute quota.
+# - Split out of the former single ci.yml (2026-09-22 owner decision): PR gating
+#   and the master build are now two independent pipelines so a master build
+#   never re-runs the fmt/clippy/test gate and a PR never queues behind a build.
+#   The two files deliberately share one cargo cache key (`shared-key: vega`) so
+#   a PR restores the dependency cache written by the master build — see below.
+# - Gate placement (2026-09-22 owner decision, issue #123): all verification
+#   lives here, in the cloud. Local git hooks and the Python verifier
+#   (scripts/verify.py, cargo-lock/cargo-coordinate) were removed so a
+#   developer's commit/push never blocks on machine performance.
+# - Standard Cargo steps, no bespoke Python: fmt -> clippy -> test on PRs.
+#   `dtolnay/rust-toolchain` follows rust-toolchain.toml (1.98.0) so local and CI
+#   toolchains match.
+#
+# ── Required status check ────────────────────────────────────────────────────
+# Branch protection requires the job context "check (fmt, clippy, test)". Do not
+# rename the job without updating Settings -> Branches, or merges will block.
+
+name: pr-check
+
+on:
+  pull_request:
+    branches: [master]
+
+# Cancel a superseded run for the same ref (e.g. rapid PR pushes).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check (fmt, clippy, test)
+    runs-on: macos-latest # arm64, matches local; free for public repos
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain (rust-toolchain.toml = 1.98.0)
+        # The action ref IS the toolchain version: using @stable would install
+        # rustfmt/clippy for stable while rust-toolchain.toml still forces
+        # 1.98.0, so `cargo fmt` would fail with "cargo-fmt is not installed".
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Share one key with the master-build pipeline (master-build.yml).
+          # By default the job name is part of the key, so a PR-only key would
+          # never match the cache the master build writes. A shared key lets a
+          # PR restore the default branch's cache (GitHub only inherits caches
+          # from the base/default branch).
+          shared-key: vega
+          # PR runs must not write the cache: they would save under
+          # refs/pull/<n>/merge, which no other PR can read and which would
+          # otherwise accumulate against the 10 GB repo cache quota.
+          save-if: false
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
