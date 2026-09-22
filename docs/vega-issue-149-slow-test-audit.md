@@ -231,7 +231,7 @@ real_gitlink（15.025s）真实submodule clone/clean/dirty/union语义、SHA256�
 |54|2.268|`vega_conversation::git_workspace::branch::tests::state_guards::staged_and_untracked_states_are_dirty_and_every_marker_is_rejected`|rawdirtyfixture+真实marker文件遍历，保留各marker拒绝；缩减真实Git准备。|
 |55|2.253|`vega::bin/vega::window::workspace::tests::r21_shell_mounts_resizable_sidebar_and_exact_environment_boundaries`|UI shell是应用外壳非OSshell；保留真实GPUI几何边界，查fixture是否不必要创建Git/terminal，勿错误归因Shell。|
 |56|2.060|`vega_conversation::git_workspace::branch::tests::switch_e2e::ignored_collision_is_not_overwritten_and_failure_refresh_is_authoritative`|真实ignoredcollision不覆盖需保留小adapter契约；失败后authority刷新业务移stub。|
-|57|2.008|`vega_runtime::images::tests::issue63_pixel_budget_rejects_valid_overbudget_header_before_decode`|当前encode(4001,4000,Png)先分配/压缩16M像素；改用预生成完整有效PNG小fixture(验证尺寸/可解码一次)再跑同入口；不能仅伪造损坏header让测试假过。|
+|57|2.008|`vega_runtime::images::tests::issue63_pixel_budget_rejects_valid_overbudget_header_before_decode`|**已迁移(batch6)** 改用预生成完整有效PNG小fixture(15 629字节)，解码一次验证4001x4000真实尺寸，再跑同一生产入口；同范围1.152s→0.011s；负控制放宽budget→测试失败。|
 
 ## Access constraints and next action
 
