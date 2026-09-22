@@ -34,6 +34,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-68-model-picker-delivery.md](docs/vega-issue-68-model-picker-delivery.md) | #68 测试先行、门禁与原生验收记录 |
 | [vega-issue-70-tool-activity.md](docs/vega-issue-70-tool-activity.md) | #70 紧凑工具活动分组、渐进展开与安全显示规格 |
 | [vega-issue-100-composer-width.md](docs/vega-issue-100-composer-width.md) | #100 Composer 与正文列统一为 768px（参考实现共用同一宽度 token） |
+| [vega-issue-98-scroll-to-bottom.md](docs/vega-issue-98-scroll-to-bottom.md) | #98 「回到底部」改为悬浮圆形向下箭头按钮（参考 Codex 实测 32px / 居中 / 悬浮 composer 上方） |
 | [vega-issue-70-tool-activity-delivery.md](docs/vega-issue-70-tool-activity-delivery.md) | #70 测试先行矩阵、门禁与原生验收记录 |
 | [vega-issue-74-skills.md](docs/vega-issue-74-skills.md) | #74 Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
 | [vega-issue-74-skills-delivery.md](docs/vega-issue-74-skills-delivery.md) | #74 测试先行验收矩阵（均未运行） |
