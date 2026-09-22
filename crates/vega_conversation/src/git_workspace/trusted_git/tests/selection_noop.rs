@@ -45,127 +45,112 @@ async fn empty_selection_never_spawns_add_for_each_staged_delta() {
 
 #[tokio::test]
 async fn clean_and_normalized_noop_are_no_staged_changes_without_commit() {
-    let repo = Repo::new();
-    let (workspace, trusted) = repo.services().await;
-    let checklist = trusted
-        .open_checklist(CancellationToken::new())
-        .await
-        .expect("clean checklist");
-    let clean = trusted
-        .prepare(checklist.id, Vec::new(), CancellationToken::new())
-        .await;
-    assert_eq!(clean.error, Some(CommitErrorCode::NoStagedChanges));
-    assert!(clean.prepared.is_none());
-
-    run_git(repo.path(), &["config", "core.filemode", "false"]);
-    let path = repo.path().join("tracked.txt");
-    let mut permissions = fs::metadata(&path).expect("mode metadata").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&path, permissions).expect("ignored mode change");
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("ignored mode refresh");
-    let checklist = trusted
-        .open_checklist(CancellationToken::new())
-        .await
-        .expect("ignored mode checklist");
-    assert!(checklist.staged.is_empty() && checklist.optional.is_empty());
-    let ignored = trusted
-        .prepare(checklist.id, Vec::new(), CancellationToken::new())
-        .await;
-    assert_eq!(ignored.error, Some(CommitErrorCode::NoStagedChanges));
-    assert!(ignored.prepared.is_none());
-
-    let repo = Repo::new();
-    fs::write(repo.path().join(".gitattributes"), "* text eol=lf\n").expect("eol attributes");
-    run_git(repo.path(), &["add", ".gitattributes"]);
-    run_git(repo.path(), &["commit", "-qm", "eol policy"]);
-    fs::write(repo.path().join("tracked.txt"), b"base\r\n").expect("crlf worktree");
-    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("eol refresh");
-    let (_recorder, script, argv, _input) = mutation_recorder();
-    let trusted = TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, script)
-        .expect("trusted eol");
-    let checklist = trusted
-        .open_checklist(CancellationToken::new())
-        .await
-        .expect("eol checklist");
-    assert_eq!(checklist.optional.len(), 1);
-    let normalized = trusted
-        .prepare(
-            checklist.id,
-            vec![checklist.optional[0].file_id],
-            CancellationToken::new(),
-        )
-        .await;
-    assert_eq!(normalized.error, Some(CommitErrorCode::NoStagedChanges));
-    assert!(normalized.prepared.is_none());
-    assert_eq!(
-        fs::read(argv).expect("one normalization add"),
-        expected_mutation_argv(
-            b"add",
-            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
-        )
-    );
-
-    let repo = Repo::new();
-    fs::write(repo.path().join(".gitattributes"), "* text eol=lf\n").expect("drift eol attributes");
-    fs::write(repo.path().join("other.txt"), "other\n").expect("other fixture");
-    run_git(repo.path(), &["add", ".gitattributes", "other.txt"]);
-    run_git(repo.path(), &["commit", "-qm", "eol drift policy"]);
-    fs::write(repo.path().join("tracked.txt"), b"base\r\n").expect("selected crlf");
-    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("drift A");
-    let (fixture, script, ready, release) = blocking_before_mutation();
-    let trusted = Arc::new(
-        TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, script)
-            .expect("trusted drift"),
-    );
-    let checklist = trusted
-        .open_checklist(CancellationToken::new())
-        .await
-        .expect("drift checklist");
-    let selected = checklist.optional[0].file_id;
-    let worker = tokio::spawn({
-        let trusted = trusted.clone();
-        async move {
-            trusted
-                .prepare(checklist.id, vec![selected], CancellationToken::new())
-                .await
+    use super::filter_gitlink::{ADD_ARGS, expected_top_mutation, top_matrix_fixture};
+    for case in ["clean", "ignored-mode"] {
+        let fixture = top_matrix_fixture(case);
+        let (_workspace, trusted) = fixture.services().await;
+        let checklist = trusted
+            .open_checklist(CancellationToken::new())
+            .await
+            .expect("no-op checklist");
+        assert!(checklist.staged.is_empty() && checklist.optional.is_empty());
+        let completion = trusted
+            .prepare(checklist.id, Vec::new(), CancellationToken::new())
+            .await;
+        assert_eq!(
+            completion.error,
+            Some(CommitErrorCode::NoStagedChanges),
+            "{case}"
+        );
+        assert!(completion.prepared.is_none());
+        fixture.assert_no_mutation();
+    }
+    for drift in [false, true] {
+        let fixture = top_matrix_fixture("normalization-before");
+        fixture.expect_mutation(
+            "add",
+            ADD_ARGS,
+            if drift {
+                "normalization-drift-after"
+            } else {
+                "normalization-after"
+            },
+        );
+        let (_workspace, trusted) = fixture.services().await;
+        let checklist = trusted
+            .open_checklist(CancellationToken::new())
+            .await
+            .expect("normalization checklist");
+        assert_eq!(checklist.optional.len(), 1);
+        let completion = trusted
+            .prepare(
+                checklist.id,
+                vec![checklist.optional[0].file_id],
+                CancellationToken::new(),
+            )
+            .await;
+        let _ = fixture.mutation_argv();
+        assert_eq!(
+            completion.error,
+            Some(if drift {
+                CommitErrorCode::ChangedDuringRead
+            } else {
+                CommitErrorCode::NoStagedChanges
+            })
+        );
+        assert!(completion.prepared.is_none());
+        assert_eq!(
+            fixture.mutation_argv(),
+            expected_top_mutation(b"add", ADD_ARGS)
+        );
+        assert_eq!(fixture.mutation_inputs(), vec![b"tracked.txt\0".to_vec()]);
+        if drift {
+            assert_terminal_workspace(
+                &trusted,
+                completion.workspace.as_ref().expect("terminal workspace"),
+            );
+            let state = trusted
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            assert!(!state.mutation_active);
+            assert!(state.prepared.is_none());
         }
-    });
-    wait_for_path(&ready).await;
+    }
+}
+
+#[test]
+fn ignored_mode_and_normalization_git_adapter_matches_captured_states() {
+    use super::filter_gitlink::assert_top_adapter_state;
+    let repo = Repo::new();
+    assert_top_adapter_state(repo.path(), "clean");
+    run_git(repo.path(), &["config", "core.filemode", "false"]);
+    fs::set_permissions(
+        repo.path().join("tracked.txt"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .expect("ignored mode");
+    assert_top_adapter_state(repo.path(), "ignored-mode");
+    fs::set_permissions(
+        repo.path().join("tracked.txt"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .expect("restore mode");
+    fs::write(repo.path().join(".gitattributes"), "* text eol=lf\n").expect("attributes");
+    fs::write(repo.path().join("other.txt"), "other\n").expect("other");
+    run_git(repo.path(), &["add", ".gitattributes", "other.txt"]);
+    run_git(repo.path(), &["commit", "-qm", "normalization policy"]);
+    fs::write(repo.path().join("tracked.txt"), b"base\r\n").expect("CRLF");
+    assert_top_adapter_state(repo.path(), "normalization-before");
+    run_git(repo.path(), &["add", "-A", "--", "tracked.txt"]);
+    assert_top_adapter_state(repo.path(), "normalization-after");
+    assert!(run_git_output(repo.path(), &["diff", "--cached", "--name-only"]).is_empty());
+    assert_eq!(
+        fs::read(repo.path().join("tracked.txt")).expect("worktree"),
+        b"base\r\n"
+    );
     fs::write(repo.path().join("other.txt"), b"other\r\n").expect("outside-S drift");
-    fs::write(release, b"release").expect("release normalized add");
-    let completion = worker.await.expect("normalized drift worker");
-    assert_eq!(completion.error, Some(CommitErrorCode::ChangedDuringRead));
-    assert!(completion.prepared.is_none());
-    let terminal = completion.workspace.as_ref().expect("terminal workspace");
-    assert_terminal_workspace(&trusted, terminal);
-    assert_eq!(
-        fs::read(fixture.path().join("mutation-attempts")).expect("one add attempt"),
-        b"x"
-    );
-    assert_eq!(
-        fs::read(fixture.path().join("mutation-argv.bin")).expect("only add argv"),
-        expected_mutation_argv(
-            b"add",
-            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
-        )
-    );
-    let state = trusted
-        .state
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner());
-    assert!(!state.mutation_active);
-    assert!(state.prepared.is_none());
+    assert_top_adapter_state(repo.path(), "normalization-drift-after");
 }
 
 #[tokio::test]

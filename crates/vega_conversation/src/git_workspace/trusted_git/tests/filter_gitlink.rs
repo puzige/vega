@@ -684,9 +684,8 @@ async fn real_gitlink_is_allowed_only_as_exact_clean_unchanged_union_entry() {
 
 #[tokio::test]
 async fn empty_blob_add_worktree_delete_and_staged_empty_delete_remain_distinct() {
-    let added = Repo::new();
-    fs::write(added.path().join("empty.txt"), b"").expect("empty add");
-    run_git(added.path(), &["add", "empty.txt"]);
+    let added = top_matrix_fixture("empty-added");
+    added.expect_mutation("commit", COMMIT_ARGS, "empty-added-committed");
     let (_workspace, trusted) = added.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
@@ -711,11 +710,16 @@ async fn empty_blob_add_worktree_delete_and_staged_empty_delete_remain_distinct(
         CommitOutcome::Committed
     );
 
-    let deleted = Repo::new();
-    fs::write(deleted.path().join("empty.txt"), b"").expect("tracked empty");
-    run_git(deleted.path(), &["add", "empty.txt"]);
-    run_git(deleted.path(), &["commit", "-qm", "empty base"]);
-    fs::remove_file(deleted.path().join("empty.txt")).expect("worktree empty delete");
+    assert_eq!(
+        added.mutation_argv(),
+        expected_top_mutation(b"commit", COMMIT_ARGS)
+    );
+    assert_eq!(
+        added.mutation_inputs(),
+        vec![b"test: add empty blob".to_vec()]
+    );
+
+    let deleted = top_matrix_fixture("empty-worktree-deleted");
     let (_workspace, trusted) = deleted.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
@@ -725,11 +729,21 @@ async fn empty_blob_add_worktree_delete_and_staged_empty_delete_remain_distinct(
     assert_eq!(checklist.optional.len(), 1);
     assert_eq!(checklist.optional[0].kind, CommitSelectionKind::Deleted);
 
+    deleted.assert_no_mutation();
     for select_delete in [false, true] {
-        let repo = Repo::new();
-        fs::write(repo.path().join("tracked.txt"), b"").expect("stage empty blob");
-        run_git(repo.path(), &["add", "tracked.txt"]);
-        fs::remove_file(repo.path().join("tracked.txt")).expect("delete after staged empty");
+        let repo = top_matrix_fixture("staged-empty-deleted");
+        if select_delete {
+            repo.expect_mutation("add", ADD_ARGS, "staged-empty-selected-added");
+        }
+        repo.expect_mutation(
+            "commit",
+            COMMIT_ARGS,
+            if select_delete {
+                "staged-empty-selected-committed"
+            } else {
+                "staged-empty-kept-committed"
+            },
+        );
         let (_workspace, trusted) = repo.services().await;
         let checklist = trusted
             .open_checklist(CancellationToken::new())
@@ -747,7 +761,13 @@ async fn empty_blob_add_worktree_delete_and_staged_empty_delete_remain_distinct(
         let completion = trusted
             .prepare(checklist.id, selected, CancellationToken::new())
             .await;
-        let prepared = completion.prepared.expect("staged-empty prepared");
+        let _ = repo.mutation_argv();
+        let prepared = completion.prepared.unwrap_or_else(|| {
+            panic!(
+                "staged-empty selected={select_delete}: {:?}",
+                completion.error
+            )
+        });
         let committed = trusted
             .commit(
                 prepared.id,
@@ -756,8 +776,146 @@ async fn empty_blob_add_worktree_delete_and_staged_empty_delete_remain_distinct(
             )
             .await;
         assert_eq!(committed.outcome, CommitOutcome::Committed);
+        let mut argv = Vec::new();
+        let mut inputs = Vec::new();
+        if select_delete {
+            argv.extend(expected_top_mutation(b"add", ADD_ARGS));
+            inputs.push(b"tracked.txt\0".to_vec());
+        }
+        argv.extend(expected_top_mutation(b"commit", COMMIT_ARGS));
+        inputs.push(format!("test: staged empty delete selected={select_delete}").into_bytes());
+        assert_eq!(repo.mutation_argv(), argv);
+        assert_eq!(repo.mutation_inputs(), inputs);
+        // Actual index presence for both choices is protected by the real adapter contract below.
+    }
+}
+
+const TOP_MATRIX_JSON: &str = include_str!("top-matrix-fixtures.json");
+pub(super) const ADD_ARGS: &[&str] = &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"];
+const COMMIT_ARGS: &[&str] = &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"];
+
+pub(super) fn top_matrix_fixture(case: &str) -> command_stub::PolicyFixture {
+    command_stub::PolicyFixture::new_from_json(TOP_MATRIX_JSON, case)
+}
+
+pub(super) fn expected_top_mutation(verb: &[u8], args: &[&str]) -> Vec<u8> {
+    expected_mutation_argv(
+        verb,
+        &args.iter().map(|arg| arg.as_bytes()).collect::<Vec<_>>(),
+    )
+}
+
+// Compare captured bytes with actual Git, normalizing only the nondeterministic commit identity.
+// Blob identities, raw statuses, paths and index/tree modes remain exact.
+pub(super) fn assert_top_adapter_state(root: &Path, case: &str) {
+    let fixtures: serde_json::Value = serde_json::from_str(TOP_MATRIX_JSON).expect("raw fixtures");
+    let raw = &fixtures[case]["raw"];
+    let mut command = Command::new(GIT);
+    command
+        .current_dir(root)
+        .args(["check-attr", "-z", "--stdin", "--all"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    scrub_git_environment(&mut command);
+    let mut child = command.spawn().expect("real attribute adapter");
+    std::io::Write::write_all(
+        &mut child.stdin.take().expect("attribute stdin"),
+        b"tracked.txt\0",
+    )
+    .expect("selected path input");
+    let attrs = child.wait_with_output().expect("attribute result");
+    assert!(attrs.status.success());
+    assert_eq!(
+        attrs.stdout,
+        fixtures[case]["attrs_by_input"]["tracked.txt\0"]
+            .as_str()
+            .expect("selected attrs")
+            .as_bytes(),
+        "{case}: selected attrs"
+    );
+    let head = String::from_utf8(run_git_output(root, &["rev-parse", "HEAD"])).expect("head");
+    for (key, args) in [
+        (
+            "status",
+            vec![
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--branch",
+                "--renames",
+                "--untracked-files=all",
+            ],
+        ),
+        ("stage", vec!["ls-files", "--stage", "-z"]),
+        ("tree", vec!["ls-tree", "-r", "-z", "--full-tree", "HEAD"]),
+        (
+            "staged_raw",
+            vec![
+                "diff",
+                "--cached",
+                "--raw",
+                "-z",
+                "--abbrev=64",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+            ],
+        ),
+    ] {
+        let actual =
+            String::from_utf8(run_git_output(root, &args)).expect("captured UTF-8 fixture");
+        assert_eq!(
+            actual.replace(head.trim(), raw["head"].as_str().expect("fixture head")),
+            raw[key].as_str().expect("raw key"),
+            "{case}: {key}"
+        );
+    }
+}
+
+#[test]
+fn empty_blob_and_selected_delete_git_adapter_matches_captured_states() {
+    let repo = Repo::new();
+    fs::write(repo.path().join("empty.txt"), b"").expect("empty add");
+    run_git(repo.path(), &["add", "empty.txt"]);
+    assert_top_adapter_state(repo.path(), "empty-added");
+    run_git(repo.path(), &["commit", "-qm", "empty add"]);
+    assert_top_adapter_state(repo.path(), "empty-added-committed");
+    fs::remove_file(repo.path().join("empty.txt")).expect("empty worktree deletion");
+    assert_top_adapter_state(repo.path(), "empty-worktree-deleted");
+
+    let repo = Repo::new();
+    let base =
+        String::from_utf8(run_git_output(repo.path(), &["rev-parse", "HEAD"])).expect("base");
+    for select_delete in [false, true] {
+        if select_delete {
+            run_git(repo.path(), &["reset", "--hard", base.trim()]);
+        }
+        fs::write(repo.path().join("tracked.txt"), b"").expect("staged empty");
+        run_git(repo.path(), &["add", "tracked.txt"]);
+        fs::remove_file(repo.path().join("tracked.txt")).expect("optional deletion");
+        assert_top_adapter_state(repo.path(), "staged-empty-deleted");
+        if select_delete {
+            run_git(repo.path(), &["add", "-A", "--", "tracked.txt"]);
+            assert_top_adapter_state(repo.path(), "staged-empty-selected-added");
+        }
+        run_git(repo.path(), &["commit", "-qm", "empty deletion choice"]);
+        assert_top_adapter_state(
+            repo.path(),
+            if select_delete {
+                "staged-empty-selected-committed"
+            } else {
+                "staged-empty-kept-committed"
+            },
+        );
         let indexed = run_git_output(repo.path(), &["ls-files", "--stage", "tracked.txt"]);
         assert_eq!(indexed.is_empty(), select_delete);
+        if !select_delete {
+            assert!(
+                String::from_utf8(indexed)
+                    .expect("index")
+                    .contains("100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
+            );
+        }
     }
 }
 
