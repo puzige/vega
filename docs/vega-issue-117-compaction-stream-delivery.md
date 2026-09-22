@@ -68,3 +68,42 @@ the restored row aligns to the conversation column; scrolling moves it out of
 the viewport and returning to the tail restores it. Existing conversation
 content was neither edited nor submitted to a provider. These screenshots are
 kept local because they include existing conversation content.
+
+## Follow-up: compaction icon parity (C8)
+
+Owner review of the installed build found the row still disagreed with the
+reference: the old renderer swapped glyph per state (`Refresh` while running,
+`Check` on success, `Warning` on failure, `Close` otherwise), and the reference
+shows one outline glyph in both the running and completed states.
+
+The reference glyph is Lucide's public `text-select` icon (ISC), which the
+reference product registers as `text-select-light-16` and uses as its
+`context-compaction` marker. It is a published library symbol, not a private
+asset, so the path data was taken from the public Lucide source and committed
+through Vega's existing inline-SVG convention; `gpui-kit-assets 0.6.0` does not
+ship it. No third-party bundle was copied.
+
+Implementation: new `Icon::TextSelect` in `crates/vega_ui/src/icons.rs`
+(inline `TEXT_SELECT_SVG`, 24px viewBox, stroke-2, round cap/join, consistent
+with the file's other missing-symbol icons), plus one shared
+`context_compaction_visual` helper in
+`crates/vega_ui/src/conversation_stream/render_rows.rs` that returns the same
+glyph for every state and recolors only failure. `Status` no longer selects a
+shape; the existing label still carries the transition, and the row geometry,
+`Typography::METADATA` size and `text_secondary` neutral color are unchanged.
+
+Verification:
+
+| Check | Command | Result |
+|---|---|---|
+| Old behavior is detectable | `cargo test -p vega_ui --lib issue117_compaction_row_uses_one_glyph_for_every_state` with the previous per-state mapping restored | RED, exit 101: "Compacting must share the single text-select glyph" |
+| C8 regression | same test on the fix | PASS, 1 test, exit 0 |
+| All #117 stream tests | `cargo test -p vega_ui --lib issue117` | PASS, 4 tests, exit 0 |
+| Broader stream regression | `cargo test -p vega_ui --lib conversation_stream` | PASS, 270 tests, exit 0 |
+| Controller regression | `cargo test -p vega context_compaction` | PASS, 15 tests, exit 0 |
+| Formatting | `cargo fmt --all -- --check` | PASS, empty output |
+| Strict lint | `cargo clippy --workspace --all-targets -- -D warnings` | PASS, exit 0 |
+| Asset parity | normalized element comparison of the committed `TEXT_SELECT_SVG` against Lucide's published `text-select` SVG | identical: 15/15 elements, same viewBox/stroke attributes |
+
+Native pixel acceptance of C8 on a real compaction, plus the C7 Light/Dark and
+narrow-window matrix, remain owner-run; this report does not claim them.

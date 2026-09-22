@@ -1,4 +1,5 @@
 use super::*;
+use crate::icons::Icon;
 use gpui_kit::{TestAppContext, VisualTestContext, WindowHandle};
 use vega_conversation::types::{
     ContextAccountingRecord, ContextAccountingSource, ContextAccountingStage,
@@ -170,6 +171,39 @@ fn issue88_internal_stage_limit_and_model_budget_have_distinct_copy() {
     record.failure = Some(Failure::OverLimit);
     assert!(status_label(&record).contains("本地上下文预算检查未通过"));
     assert!(!status_label(&record).contains("安全分段上限"));
+}
+
+/// #117 C8: every compaction state renders the same shared `text-select`
+/// glyph, so the row never changes shape as the operation advances. Only the
+/// failure state is recolored; the label carries the transition.
+#[test]
+fn issue117_compaction_row_uses_one_glyph_for_every_state() {
+    let colors = vega_theme::Theme::light().colors;
+    let states = [
+        Status::Compacting,
+        Status::Succeeded,
+        Status::Failed,
+        Status::Cancelled,
+    ];
+    for state in states {
+        let (glyph, color) = context_compaction_visual(state, &colors);
+        assert!(
+            matches!(glyph, Icon::TextSelect),
+            "{state:?} must share the single text-select glyph"
+        );
+        let expected = if state == Status::Failed {
+            colors.danger
+        } else {
+            colors.text_secondary
+        };
+        assert_eq!(color, expected, "{state:?} has the wrong icon color");
+    }
+    // Ready/Unknown never produce a row, so they are not part of the contract.
+    for state in [Status::Ready, Status::Unknown] {
+        let (glyph, color) = context_compaction_visual(state, &colors);
+        assert!(matches!(glyph, Icon::TextSelect));
+        assert_eq!(color, colors.text_secondary);
+    }
 }
 
 #[gpui_kit::test]
