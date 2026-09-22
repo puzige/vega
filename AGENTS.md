@@ -42,6 +42,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
   - `.github/workflows/master-build.yml`：push 到 master（PR merge 后）跑 `cargo xtask package` 并上传 artifact；唯一写缓存的一方。
   - 两条都用标准 Cargo 步骤，不复用自定义 Python 脚本。
 - 发布仍由 `v*` tag 触发（`release.yml`），master build 不发 Release，避免每个 commit 都发版。
+- [Issue #136](docs/vega-issue-136-test-selection-shadow.md) 新增 CI 专用影子选择报告与选择器测试；报告只解释影响范围，四分片仍全量执行，不恢复本地门禁或调度器。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。本地直接 `cargo` 命令即可，不受调度器约束。
 - 本地开发仍建议自行运行相关 `cargo fmt/clippy/test` 快速自查；任务级 production-root 回归与真实 E2E 证据要求不变（见 exec-guide §7）。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
 
