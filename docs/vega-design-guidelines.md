@@ -178,6 +178,10 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 完整的 hover、pressed、focus、disabled、loading、error 和键盘状态是组件交付的一部分。R19 尚未宣称完整视觉 parity 的状态，不得仅凭本文件把它们标记为已完成。
 
+### 8.1 用户消息气泡（Issue #78）
+
+用户文字右对齐于可读消息列；短消息随内容收缩，最大宽度为列宽的 80%（`Layout::USER_MESSAGE_MAX_WIDTH_RATIO`）。气泡采用 `brand_soft` 背景与 `text_primary` 正文，圆角 16px（`Layout::USER_MESSAGE_RADIUS`），水平/垂直内边距为 12/8px，不显示「你」标签。内部空行、CJK/Latin 混排与无空格长文本必须完整换行。用户图片同样沿列右对齐；助手、工具和错误呈现保持既有布局。最大列宽 768px 时，气泡宽不超过 614.4px，正文宽不超过 590.4px。详见 [Issue #78](vega-issue-78-message-bubbles.md)。
+
 ## 9. Composer
 
 - Composer 是单个主表面：增长输入区在上，一行真实操作在下；不要再套多层卡片或装饰性工具栏。
