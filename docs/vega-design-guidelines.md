@@ -213,6 +213,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 ```
 
 - Environment 只在有真实 project authority 时出现；standalone task 不显示 project-only rail。
+- Issue #141：新窗口与重启后 Environment 默认折叠，由用户点击头部按钮展开；未手动展开前，项目/任务切换与窗口 resize 不自动展开。不新增持久化设置，详见 [Environment 默认折叠](vega-issue-141-environment-default-collapsed.md)。
 - Environment 卡片不再承载分支入口（R49 人类裁决）：`environment-branch` 行已删除，分支入口唯一化到 composer utility bar，符合「同一动作只有一个入口」。卡片其余行（标题、项目行、Changes / Review、Local terminal）保持不变。
 - 持久右侧 workspace 打开后替代 Environment rail；底部 workspace 横跨 center 与 right。
 - Workspace header 只承载标签与 pane 级操作；内容级工具栏单独成行，并把相关操作收进同一尾部按钮组，禁止用三个同级 `space-between` 元素把中间操作推到面板中央。
