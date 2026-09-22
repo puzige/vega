@@ -23,6 +23,7 @@
 - C3. 删除本地门禁与并发调度资产：`.githooks/pre-commit`、`.githooks/pre-push`、`scripts/verify.py`、`scripts/cargo-lock.sh`、`scripts/cargo-coordinate.py`、`scripts/cargo-share-target.sh`、`scripts/tests/test_coordinator.py`、`scripts/tests/test_verification.py`。
 - C4. 文档口径同步为「云端 CI 为准，本地无强制门禁」：`AGENTS.md`、`README.md`、`docs/vega-exec-guide.md` §7、`docs/vega-phase1-plan.md` §3.5、`docs/vega-s1-tasks.md` T03、`docs/vega-release.md`、`.agents/skills/vega-kanban-delivery/SKILL.md`。`docs/vega-issue-107-test-workflow.md` 标注被本卡取代。
 - C5. 不改产品行为；不改 `release.yml` 触发逻辑（仅注释）。
+- C6.（2026-09-22 后续修复，PR #127）`ci.yml` 两个 job 的 `Swatinem/rust-cache` 统一 `shared-key: vega` 且 `save-if: ${{ github.ref == 'refs/heads/master' }}`。原配置因默认把 job 名计入 key，`check` 只找 `-check-` 缓存，而 master 只跑 `build`（`-build-`），导致每个新 PR 都冷编译；且 PR run 的缓存挂在 `refs/pull/<n>/merge`，其他 PR 无法继承，还占 10 GB 配额。共享 key 后 PR 可继承默认分支缓存。
 
 ## 非目标
 
