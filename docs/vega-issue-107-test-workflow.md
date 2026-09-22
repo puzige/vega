@@ -1,5 +1,7 @@
 # Vega task verification and build coordination
 
+> **Superseded (2026-09-22, Issue #123):** 门禁已全部上云。本文件描述的 `scripts/verify.py`、`cargo-lock` 调度器、本地 hooks 与 worktree target 隔离机制**已随 Issue #123 删除**；当前口径以 [Issue #123 规格](vega-issue-123-pr-check-pipeline.md) 与 `AGENTS.md` 为准。本文件仅保留为历史设计记录。
+
 ## Contract
 User decision 2026-09-21: reduce testing time and concurrent task conflicts without weakening regression coverage. Replaces mandatory per-push workspace-wide testing and shared-target worktree wiring.
 

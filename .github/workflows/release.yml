@@ -1,20 +1,19 @@
 # Tag-triggered release pipeline for Vega (macOS arm64 app bundle).
 #
-# ── Cost warning ─────────────────────────────────────────────────────────────
-# This repo is PRIVATE: macOS runners are billed at 10x the Linux minute rate
-# (a 30-minute build consumes 300 billed minutes of quota). This pipeline runs
-# ONLY on `v*` tags and manual dispatch — never on pushes/PRs — so cost stays
-# per-release, not per-commit. Keep it that way.
+# ── Cost note ────────────────────────────────────────────────────────────────
+# This repo is PUBLIC (verified 2026-09-22, issue #123): GitHub-hosted runners,
+# including macos-latest, are free and do not consume the minute quota. The old
+# "PRIVATE / 10x cost" warning was obsolete. Releases stay tag-driven so not
+# every commit becomes a version; PR checks and the master build run in ci.yml.
 #
 # ── Design notes ─────────────────────────────────────────────────────────────
 # - Tag-derived values reach `run:` only via `env:` indirection, never inline
 #   `${{ }}` interpolation: tag names legally contain `$()`, quotes, `;`, and
 #   pushing a tag needs only write access — inline interpolation into `run:`
 #   would be shell injection.
-# - Tests deliberately do NOT run here: the full workspace suite gates every
-#   PR locally (repo AGENTS.md hooks) and will gate in CI; a tag build rebuilds
-#   everything already verified, so re-running ~30 min of tests on a 10x-cost
-#   runner only adds cost without adding verification.
+# - Tests deliberately do NOT run here: they gate every PR in ci.yml (fmt,
+#   clippy, workspace test) before merge, so a tag build rebuilds already
+#   verified code and re-running the suite here would only add time.
 # - Structure learned from zed-industries/zed (xtask-driven bundling,
 #   concurrency cancel for duplicate tags) and BurntSushi/ripgrep (tag→version
 #   extraction, gh release create/upload) — simplified per the "simplest

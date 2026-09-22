@@ -1,9 +1,10 @@
 # ✦ Vega — S1 任务卡（Sprint 1 · 脚手架 & 外壳骨架 · W1-2）
 
-**版本** v0.3 · 2026-08-29 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
-**S1 目标**（phase1-plan）：workspace 可编译运行、本地门禁绿、bench 骨架可报数、schema/keychain 落地、主题 token 就位。
+**版本** v0.4 · 2026-09-22 · 使用方式：每张任务卡 + [vega-exec-guide.md](vega-exec-guide.md) = 一条完整的执行 prompt
+**S1 目标**（phase1-plan）：workspace 可编译运行、云端门禁绿、bench 骨架可报数、schema/keychain 落地、主题 token 就位。
 > v0.2 变更（2026-08-29，人类决策）：T03 由 GitHub Actions 云端 CI 改为**本地 Git Hooks 质量门禁**（防 macOS runner 费用；产品稳定后再评估上云）；DoD 对应调整。
 > v0.3 变更（2026-08-29，人类批准）：T02 GPUI 依赖来源改为 **zed 官方仓库 git rev 锁定**（`gpui_platform` 无 crates.io 发布版，详见 phase1-plan E1 修订）。
+> v0.4 变更（2026-09-22，人类裁决，Issue #123）：门禁**全部上云**。删除本地 `.githooks/` 与 `scripts/verify.py`、cargo-lock 调度器；PR 走云端 `ci.yml`（fmt/clippy/test），push master 打包，发布仍由 tag 触发。T03 的本地 hooks 方案已被取代，详见 [Issue #123 规格](vega-issue-123-pr-check-pipeline.md)。
 
 ---
 
@@ -59,20 +60,19 @@ unwrap/expect 禁止出现在非测试代码；验收命令全绿才算完成。
 - **禁区**：不引入任何第三方 gpui 发行版（gpui-box/gpui-standalone/unofficial 等）；不写布局组件
 > v0.3 修订（2026-08-29，人类批准）：`gpui_platform` 无 crates.io 发布版，依赖来源改为 zed 官方仓库 git rev 锁定（见 phase1-plan E1 修订）。
 
-## T03 · 本地质量门禁（Git Hooks）
+## T03 · 云端质量门禁（GitHub Actions，2026-09-22 取代本地 hooks）
 
-- **前置**：T01 · **参考**：phase1-plan §3.5（修订注）；exec-guide §7（验收协议）
-- **目标**：无云端依赖的本地质量门禁——git hooks 在 commit/push 时强制执行验收底线四条（2026-08-29 决策：暂不上 GitHub Actions，防 macOS runner 费用；产品稳定后再按 phase1-plan §3.5 原案上云）
+- **前置**：T01 · **参考**：phase1-plan §3.5；exec-guide §7（验收协议）；Issue #123 规格
+- **目标**：门禁全部上云（2026-09-22 用户裁决，Issue #123）——PR 由 GitHub Actions 跑 fmt/clippy/test，本地 commit/push 不做任何强制检查
 - **产出**：
-  - `.githooks/pre-commit`：`cargo fmt --all -- --check`（秒级快检查）
-  - `.githooks/pre-push`：`cargo clippy --all-targets -- -D warnings` → `cargo test --workspace` → `cargo build --workspace`（push 前全量门禁）
-  - 安装机制：README「开发」节写明一次性执行 `git config core.hooksPath .githooks`；未安装时无提示风险写明（本地纪律 + 架构师验收兜底）
-  - README 更新：hooks 安装步骤 + 前置环境说明（完整 Xcode——Metal 着色器编译所需、Rust 工具链、gpui git 依赖首次拉取耗时提示；支撑 DoD「新机器 5 分钟跑通」）
+  - `.github/workflows/ci.yml`：`pull_request`（base master）跑 `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace`；push 到 master 跑 `cargo xtask package` 并上传 artifact
+  - 删除本地门禁：`.githooks/`、`scripts/verify.py`、`scripts/cargo-lock.sh`、`scripts/cargo-coordinate.py`、`scripts/cargo-share-target.sh`、`scripts/tests/`
+  - README 更新：前置环境说明（完整 Xcode——Metal 着色器编译所需、Rust 工具链、gpui git 依赖首次拉取耗时提示）；质量门禁章节改为云端 CI
 - **验收**：
-  - 安装 hooks 后，故意引入未格式化代码 → `git commit` 被拒绝；修复后可提交
-  - 故意引入 clippy warning → `git push` 被拒绝；修复后可推送
-  - `git config core.hooksPath .githooks` 后 hooks 生效（可用临时提交验证后还原）
-- **禁区**：不创建 `.github/workflows/`；不做云端 CD/notarize（Phase 5 前重新评估）
+  - PR 打开/更新 → 云端 `check` 自动触发，失败可查看原始日志
+  - push 到 master（PR merge 后）→ `build` 触发并上传 artifact
+  - 本地 commit/push 无任何检查、无 target 锁
+- **禁区**：不做云端 CD/notarize（Phase 5 前重新评估）
 
 ## T04 · xtask bench 骨架（E4）
 
@@ -140,7 +140,7 @@ unwrap/expect 禁止出现在非测试代码；验收命令全绿才算完成。
 
 ## S1 完成定义（DoD，Sprint 验收）
 
-- [ ] T01-T08 全绿；本地 hooks 门禁在 master 上可用（云端 CI 延后，见 T03 v0.2 变更）
+- [ ] T01-T08 全绿；云端 PR check（fmt/clippy/test）与 master build 在 GitHub Actions 上可用
 - [ ] `cargo xtask bench` 出数（占位指标允许 not implemented）
 - [ ] 新机器 clone → `cargo run -p vega` 5 分钟内跑起来（README 写清 Xcode CLT 前置）
 - [ ] exec-guide §3 红线全过（架构师走查）

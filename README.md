@@ -39,6 +39,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-74-skills.md](docs/vega-issue-74-skills.md) | #74 Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
 | [vega-issue-74-skills-delivery.md](docs/vega-issue-74-skills-delivery.md) | #74 测试先行验收矩阵（均未运行） |
 | [vega-issue-114-tool-call-limit.md](docs/vega-issue-114-tool-call-limit.md) | #114 把硬编码 tool call 上限改为可配的 agentic turn 上限（默认不限，对齐 Claude Code） |
+| [vega-issue-123-pr-check-pipeline.md](docs/vega-issue-123-pr-check-pipeline.md) | #123 PR check + master build 云端流水线；门禁全部上云，删除本地 hooks/脚本 |
 | [vega-issues-58-59-61-delivery.md](docs/vega-issues-58-59-61-delivery.md) | #58/#59/#61 测试、原生模型回复与安装验收记录 |
 | [vega-feature-teardown.md](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
 | [vega-features.md](docs/vega-features.md) | 功能点全表（Phase 1 P0 ×38） |
@@ -109,27 +110,25 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 - **Rust（rustup）**：通过 [rustup](https://rustup.rs/) 安装；进入仓库后会自动按 [`rust-toolchain.toml`](rust-toolchain.toml) 下载并使用 1.98.0 工具链。
 
-### 安装本地质量门禁（每次新 clone 后执行一次）
+### 质量门禁（云端 CI）
 
-```sh
-git config core.hooksPath .githooks
-```
+**门禁全部在云端，本地 commit/push 不做任何强制检查、不排队、不锁 target**（2026-09-22 用户裁决，见 [Issue #123 规格](docs/vega-issue-123-pr-check-pipeline.md)）。本地不再安装 git hooks；`.githooks/`、`scripts/verify.py` 与 `cargo-lock` 调度器已删除。
 
-commit / push 时自动执行验收底线（见 [exec-guide §7](docs/vega-exec-guide.md)）：
+`.github/workflows/ci.yml`：
 
-| Hook | 检查 |
+| 触发 | 检查 |
 |---|---|
-| `pre-commit` | `cargo fmt --all -- --check`（秒级快检查） |
-| `pre-push` | `python3 scripts/verify.py`：受影响包及依赖方的门禁；同一源码和环境的有效证据直接复用 |
+| `pull_request`（base `master`） | `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace` |
+| `push` 到 `master`（PR merge 后） | `cargo xtask package`，产物上传为 artifact（不发 Release） |
 
-**必须手动安装**：git 无法自动强制仓库内的 hooks。未执行上面这条命令时，commit / push 不会做任何检查，也没有任何提示——目前靠本地纪律 + 架构师验收兜底（云端 CI 延后引入，见 [phase1-plan §3.5](docs/vega-phase1-plan.md)）。
+**Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check` 才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。发布仍由 `v*` tag 触发（[vega-release.md](docs/vega-release.md)）。
 
-开发工具需要 Python 3.9+（仅标准库）。先用 `python3 scripts/verify.py --plan` 查看验证范围；根依赖或工具链等全局改动要求显式 `--full`。详见 [验证与并发构建规格](docs/vega-issue-107-test-workflow.md)。
+本地可直接运行 `cargo fmt/clippy/test` 自查，但云端 CI 是合并前的唯一强制门禁。
 
 ### 构建与运行
 
 ```sh
-scripts/cargo-lock.sh --wait run -p vega
+cargo run -p vega
 ```
 
 首次构建会通过 git 依赖拉取 Zed monorepo（约 1–3 GB 进入 `~/.cargo/git` 缓存）并编译 GPUI 依赖链，耗时 10 分钟量级，属正常现象；之后为增量构建。

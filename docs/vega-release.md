@@ -5,8 +5,9 @@
 
 ## 发版三步（主人视角）
 
-1. **确认 master 可发**：master 上本地门禁通过（`cargo fmt --all -- --check`
-   / `cargo clippy --all-targets -- -D warnings` / `cargo test --workspace`）。
+1. **确认 master 可发**：合并的 PR 已通过云端 `check`（`cargo fmt --all --
+   --check` / `cargo clippy --workspace --all-targets -- -D warnings` /
+   `cargo test --workspace`，见 [.github/workflows/ci.yml](../.github/workflows/ci.yml)）。
 2. **打 tag 并推送**：
    ```sh
    git tag v0.1.0 && git push origin v0.1.0
@@ -15,15 +16,16 @@
    package` 构建 dist/Vega-macos-arm64.zip，版本号 = tag 去掉 `v`）→
    GitHub Releases 自动出现 v0.1.0，附按提交自动生成的 notes 与 zip。
 
-## 成本提示（重要）
+## 成本提示
 
-- 仓库是 **private**：macOS runner 按 Linux 分钟 **10x 计费**。一次发版
-  冷缓存构建约 25-45 分钟 ≈ 250-450 计费分钟（配额随 GitHub 计划）。
-- 流水线只在 `v*` tag push 与手动触发时运行，**不在 push/PR 上跑**；
-  单 job、超时 60 分钟上限；tag 构建内不跑全量测试（测试由 PR 门禁承担，
-  见 workflow 头注释的取舍说明）。
+- 仓库是 **public**（2026-09-22 核实）：GitHub 托管 runner（含 `macos-latest`）
+  免费、不计分钟配额。
+- 发布流水线只在 `v*` tag push 与手动触发时运行；单 job、超时 60 分钟上限；
+  tag 构建内不跑全量测试（测试由 PR check 承担，见 [ci.yml](../.github/workflows/ci.yml)）。
 - rust-cache 按 tag 隔离（`key: v-<tag>`）：手动 re-run 命中缓存很快，
   新 tag 每次冷构建。
+- 每次 PR merge 后 master 会跑 `ci.yml` 的 `build` job 打包上传 artifact，
+  但**不发 Release**；发布仍只由 tag 触发。
 
 ## 签名与公证（HUMAN 前置）
 

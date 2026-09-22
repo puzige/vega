@@ -418,7 +418,7 @@ mod artifact_tests {
 }
 
 /// Prefers the rustup proxy so rust-toolchain.toml is honored even when
-/// Homebrew's cargo shadows it in PATH (same fix as .githooks).
+/// Homebrew's cargo shadows it in PATH, so prefer the rustup proxy.
 fn cargo_bin() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         let proxy = Path::new(&home).join(".cargo/bin/cargo");
