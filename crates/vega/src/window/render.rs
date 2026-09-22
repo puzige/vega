@@ -709,7 +709,10 @@ impl VegaWindow {
                     Icon::Summary,
                     "切换环境",
                     None,
-                    environment_visible,
+                    project_route
+                        && !right_visible
+                        && self.workspace_fullscreen_index().is_none()
+                        && environment_visible,
                     project_route && !right_visible,
                     colors,
                     cx.listener(|this, _, window, cx| this.toggle_environment(window, cx)),

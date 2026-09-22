@@ -2952,6 +2952,155 @@ mod tests {
         );
     }
 
+    fn issue69_slot_paint(
+        window: WindowHandle<VegaWindow>,
+        cx: &mut TestAppContext,
+    ) -> (bool, bool) {
+        let bounds = shell_bounds(window, "main-header-environment", cx);
+        window
+            .update(cx, |_, window, cx| {
+                let colors = vega_theme::theme(cx).colors;
+                let same_color = |actual: gpui_kit::Hsla, expected: gpui_kit::Rgba| {
+                    let actual = gpui_kit::Rgba::from(actual);
+                    [
+                        (actual.r, expected.r),
+                        (actual.g, expected.g),
+                        (actual.b, expected.b),
+                        (actual.a, expected.a),
+                    ]
+                    .into_iter()
+                    .all(|(a, b)| (a - b).abs() <= 1. / 255.)
+                };
+                let scale = window.scale_factor();
+                let quads = window.painted_quads();
+                let slot_quads = quads
+                    .iter()
+                    .filter(|quad| {
+                        (quad.bounds.origin.x.as_f32() / scale - f32::from(bounds.origin.x)).abs()
+                            < 1.
+                            && (quad.bounds.origin.y.as_f32() / scale - f32::from(bounds.origin.y))
+                                .abs()
+                                < 1.
+                            && (quad.bounds.size.width.as_f32() / scale
+                                - f32::from(bounds.size.width))
+                            .abs()
+                                < 1.
+                            && (quad.bounds.size.height.as_f32() / scale
+                                - f32::from(bounds.size.height))
+                            .abs()
+                                < 1.
+                    })
+                    .collect::<Vec<_>>();
+                (
+                    slot_quads.iter().any(|q| {
+                        q.background
+                            .as_solid()
+                            .is_some_and(|color| same_color(color, colors.bg_active))
+                    }),
+                    slot_quads.iter().any(|q| {
+                        same_color(q.border_color, colors.accent)
+                            && q.border_widths.top.as_f32() > 0.
+                    }),
+                )
+            })
+            .expect("read production painted shell quads")
+    }
+
+    #[gpui_kit::test]
+    async fn issue69_environment_selection_is_not_focus(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (root, window) = r45_mount_project_window(&repo, "Issue 69", 1403., 860., cx);
+        assert!(issue69_slot_paint(window, cx).0, "default rail is selected");
+        shell_click(window, "main-header-environment", cx);
+        assert!(shell_absent(window, "environment-rail", cx));
+        let focus = window
+            .update(cx, |_, window, cx| window.focused(cx))
+            .expect("window focus")
+            .expect("clicked toggle retains focus");
+        let title = shell_bounds(window, "main-header-title", cx);
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_mouse_move(title.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            window
+                .update(cx, |_, window, _| focus.is_focused(window))
+                .expect("focus")
+        );
+        assert!(
+            !issue69_slot_paint(window, cx).0,
+            "closed rail must not paint selected fill while focused"
+        );
+
+        cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
+        window
+            .update(cx, |_, window, _| window.refresh())
+            .expect("dark theme repaint");
+        cx.run_until_parked();
+        assert!(
+            !issue69_slot_paint(window, cx).0,
+            "dark closed rail must not paint selection"
+        );
+
+        // A keyboard event exposes the focus affordance without changing selection.
+        cx.simulate_keystrokes(window.into(), "left");
+        cx.run_until_parked();
+        assert_eq!(
+            issue69_slot_paint(window, cx),
+            (false, true),
+            "keyboard focus is a border, not selection"
+        );
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let _ = shell_bounds(window, "environment-rail", cx);
+        assert_eq!(issue69_slot_paint(window, cx), (true, true));
+        cx.update(|cx| cx.set_global(vega_theme::Theme::light()));
+        window
+            .update(cx, |_, window, _| window.refresh())
+            .expect("light theme repaint");
+        cx.run_until_parked();
+        assert_eq!(issue69_slot_paint(window, cx), (true, true));
+        shell_click(window, "environment-close", cx);
+        assert!(shell_absent(window, "environment-rail", cx));
+        assert!(!issue69_slot_paint(window, cx).0);
+
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1100.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("narrow viewport");
+        cx.run_until_parked();
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-overlay", cx);
+        assert!(issue69_slot_paint(window, cx).0);
+        shell_click(window, "main-header-environment", cx);
+        assert!(shell_absent(window, "environment-overlay", cx));
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_mouse_move(title.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert!(!issue69_slot_paint(window, cx).0);
+
+        window
+            .update(cx, |_, window, cx| {
+                window.resize(size(px(1403.), px(860.)));
+                window.bounds_changed(cx);
+            })
+            .expect("wide viewport");
+        cx.run_until_parked();
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-rail", cx);
+        assert!(issue69_slot_paint(window, cx).0);
+        root.update(cx, |root, cx| root.workspace_open_diff(cx));
+        cx.run_until_parked();
+        assert!(shell_absent(window, "environment-rail", cx));
+        shell_click(window, "main-header-environment", cx);
+        assert!(
+            !issue69_slot_paint(window, cx).0,
+            "disabled Environment cannot claim the right dock's surface"
+        );
+        r45_assert_three_shell_slots(window, cx);
+    }
+
     #[gpui_kit::test]
     async fn r45_right_toggle_hide_restore_open_diff_priority(cx: &mut TestAppContext) {
         let repo = diff_controller_repo();
