@@ -34,6 +34,10 @@ evidence directory under Documents/Vega/evidence, outside the worktree.
 | Detect original y mismatch before fix | Production-root regression | `RUSTC_WRAPPER= TMPDIR=/tmp cargo test -p vega production_root_palette_escape_preserves_composer_and_settings_action -- --nocapture` | EXPECTED FAIL: `toggle-sidebar center 32px must align with header 23px`; `0 passed; 1 failed`; 0.10s; `red-palette-no-cache.log` |
 | A1–A5 geometry and existing Search/Back/Forward behavior | E2E-REAL production UI controller, test platform | Same command after fix | PASS: `1 passed; 0 failed`; 1.66s; `green-palette.log` |
 | Existing resize, responsive boundaries and sidebar footer | E2E-REAL production UI controller, test platform | `RUSTC_WRAPPER= TMPDIR=/tmp cargo test -p vega r21_shell_mounts_resizable_sidebar_and_exact_environment_boundaries -- --nocapture` | PASS: `1 passed; 0 failed`; 1.77s; `green-shell.log` |
+| Spacing token freeze | UNIT | `RUSTC_WRAPPER= TMPDIR=/tmp cargo test -p vega_theme r21_phase_two_geometry_is_frozen -- --nocapture` | PASS: `1 passed; 0 failed`; 0.00s; `green-theme.log` |
+| Formatting | Static | `cargo fmt --all -- --check` | PASS, exit 0, no output; `fmt.log` |
+| Candidate executable | BUILD | `RUSTC_WRAPPER= TMPDIR=/tmp cargo build -p vega` | PASS: `Finished dev profile` in 22.17s; `build.log`; not installed or launched |
+| Patch whitespace | Static | `git diff --check` | PASS, exit 0, no output |
 
 The strengthened existing palette test covers Light/Dark at 1403×860,
 1200×760, 960×600, 1229×860 and 1230×860; disabled/enabled history;
