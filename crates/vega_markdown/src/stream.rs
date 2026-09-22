@@ -458,6 +458,170 @@ mod tests {
     }
 
     #[test]
+    fn issue119_tight_list_preserves_inline_content_in_one_paragraph() {
+        let mut stream = stream_all("- 选 **A**，继续\n");
+        stream.finish();
+        assert_eq!(
+            stream.snapshot().blocks[0].nodes,
+            &[RenderNode::List(ListBlock {
+                ordered: false,
+                start: 1,
+                items: vec![ListItem {
+                    checked: None,
+                    children: vec![para(vec![
+                        text("选 "),
+                        Inline::Strong(vec![text("A")]),
+                        text("，继续")
+                    ])],
+                }],
+            })]
+        );
+    }
+
+    fn issue119_finished_nodes(doc: &str, streaming: bool) -> Vec<RenderNode> {
+        let mut stream = MarkdownStream::new();
+        if streaming {
+            // A character at a time also splits each delimiter and link target.
+            for ch in doc.chars() {
+                stream.append(&ch.to_string());
+            }
+        } else {
+            stream.append(doc);
+        }
+        stream.finish();
+        let snapshot = stream.snapshot();
+        assert!(snapshot.pending.is_none());
+        snapshot
+            .blocks
+            .iter()
+            .flat_map(|block| block.nodes.to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn issue119_inline_containers_keep_nested_list_and_break_boundaries() {
+        let doc = "3. **粗 *斜* 体** ~~删~~ [链接](https://example.com \"标题\") ![替代](image.png) `码`\n   续行  \n   硬换行\n   - [x] **完成**\n   - [ ] *待办*\n";
+        let expected = vec![RenderNode::List(ListBlock {
+            ordered: true,
+            start: 3,
+            items: vec![ListItem {
+                checked: None,
+                children: vec![
+                    para(vec![
+                        Inline::Strong(vec![
+                            text("粗 "),
+                            Inline::Emphasis(vec![text("斜")]),
+                            text(" 体"),
+                        ]),
+                        text(" "),
+                        Inline::Strikethrough(vec![text("删")]),
+                        text(" "),
+                        Inline::Link {
+                            url: "https://example.com".into(),
+                            title: Some("标题".into()),
+                            spans: vec![text("链接")],
+                        },
+                        text(" "),
+                        text("替代 "),
+                        Inline::Code("码".into()),
+                        text(" 续行\n硬换行"),
+                    ]),
+                    RenderNode::List(ListBlock {
+                        ordered: false,
+                        start: 1,
+                        items: vec![
+                            ListItem {
+                                checked: Some(true),
+                                children: vec![para(vec![Inline::Strong(vec![text("完成")])])],
+                            },
+                            ListItem {
+                                checked: Some(false),
+                                children: vec![para(vec![Inline::Emphasis(vec![text("待办")])])],
+                            },
+                        ],
+                    }),
+                ],
+            }],
+        })];
+        for streaming in [false, true] {
+            assert_eq!(issue119_finished_nodes(doc, streaming), expected);
+        }
+    }
+
+    #[test]
+    fn issue119_loose_list_keeps_real_paragraph_and_quote_boundaries() {
+        let doc = "- **首段**\n\n  第二段 *斜体*\n\n  > **引用**\n\n- 尾项\n";
+        let expected = vec![RenderNode::List(ListBlock {
+            ordered: false,
+            start: 1,
+            items: vec![
+                ListItem {
+                    checked: None,
+                    children: vec![
+                        para(vec![Inline::Strong(vec![text("首段")])]),
+                        para(vec![text("第二段 "), Inline::Emphasis(vec![text("斜体")])]),
+                        RenderNode::BlockQuote {
+                            children: vec![para(vec![Inline::Strong(vec![text("引用")])])],
+                        },
+                    ],
+                },
+                ListItem {
+                    checked: None,
+                    children: vec![para(vec![text("尾项")])],
+                },
+            ],
+        })];
+        for streaming in [false, true] {
+            assert_eq!(issue119_finished_nodes(doc, streaming), expected);
+            assert!(issue119_finished_nodes("", streaming).is_empty());
+        }
+    }
+
+    #[test]
+    fn issue119_table_preserves_commonmark_literal_and_styled_delimiters() {
+        let doc = "| 合法 | 字面量 |\n|---|---|\n| **粗体** `**代码**` [链接](https://example.com) | \\*\\*转义\\*\\* **未闭合 |\n| 改为 **\"整轮没有新执行任何 tool call 即收敛\"** 的 | 改为**\"整轮没有新执行任何 tool call 即收敛\"**的 |\n";
+        let direct_events: Vec<_> = pulldown_cmark::Parser::new_ext(doc, PULLDOWN_GFM).collect();
+        let direct = render_nodes_from_events(&direct_events);
+        let [RenderNode::Table(table)] = direct.as_slice() else {
+            panic!("expected table")
+        };
+        assert_eq!(table.header.len(), 2);
+        assert_eq!(table.rows.len(), 2);
+        assert_eq!(
+            table.rows[0][0].spans,
+            vec![
+                Inline::Strong(vec![text("粗体")]),
+                text(" "),
+                Inline::Code("**代码**".into()),
+                text(" "),
+                Inline::Link {
+                    url: "https://example.com".into(),
+                    title: None,
+                    spans: vec![text("链接")]
+                }
+            ]
+        );
+        assert_eq!(table.rows[0][1].spans, vec![text("**转义** **未闭合")]);
+        assert_eq!(
+            table.rows[1][0].spans,
+            vec![
+                text("改为 "),
+                Inline::Strong(vec![text("\"整轮没有新执行任何 tool call 即收敛\"")]),
+                text(" 的")
+            ]
+        );
+        // CommonMark 0.31.2 §6.2 / example 380: punctuation after an
+        // opening delimiter preceded by a letter is not left-flanking.
+        assert_eq!(
+            table.rows[1][1].spans,
+            vec![text("改为**\"整轮没有新执行任何 tool call 即收敛\"**的")]
+        );
+        for streaming in [false, true] {
+            assert_eq!(issue119_finished_nodes(doc, streaming), direct);
+        }
+    }
+
+    #[test]
     fn unordered_and_ordered_lists_nest() {
         let doc = "- alpha\n- beta\n  - inner\n\n1. first\n2. second\n   1. sub\n";
         let mut stream = stream_all(doc);
