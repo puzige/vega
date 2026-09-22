@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "id": "git-commit-fault-matrices",
+      "protects": "Fail-closed commit proof and authoritative state after process faults. The zero-parent case and real successful commits remain unlisted and always run.",
+      "package": "vega_conversation",
+      "affected_crates": [
+        "vega_conversation"
+      ],
+      "trigger_paths": [
+        "crates/vega/src/"
+      ],
+      "tests": [
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_wrong_parent_after_one_commit",
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_two_parent_after_one_commit",
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_tree_diff_after_one_commit",
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_malformed_parent_after_one_commit",
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_short_parent_after_one_commit",
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_mixed_parent_after_one_commit",
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_object_missing_after_one_commit",
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_ref_moved_after_one_commit",
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_ref_deleted_after_one_commit",
+        "git_workspace::trusted_git::tests::commit_proof::commit_proof_rejects_ref_renamed_after_one_commit",
+        "git_workspace::trusted_git::tests::runner_mutation::service_reports_authoritative_state_after_add_and_commit_process_failures",
+        "git_workspace::trusted_git::tests::runner_mutation::service_entry_pre_mutation_failures_are_authoritative_and_single_use",
+        "git_workspace::trusted_git::tests::runner_mutation::service_entry_stderr_caps_are_exact_for_add_and_commit"
+      ]
+    },
+    {
+      "id": "automatic-title-deadline",
+      "protects": "Production 15-second deadline retains fallback and never retries. Virtual time makes this cheap; keep it always running.",
+      "package": "vega_conversation",
+      "affected_crates": [
+        "vega_conversation"
+      ],
+      "trigger_paths": [
+        "crates/vega/src/"
+      ],
+      "always_run": true,
+      "tests": [
+        "automatic_titles::tests::automatic_title_timeout_keeps_fallback_without_retry"
+      ]
+    }
+  ]
+}
