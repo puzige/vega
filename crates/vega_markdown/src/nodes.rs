@@ -108,6 +108,13 @@ fn parse_blocks(events: &[Event<'_>], cursor: &mut usize) -> Vec<RenderNode> {
     let mut nodes = Vec::new();
     let mut stray: Vec<Inline> = Vec::new();
     while *cursor < events.len() {
+        // Tight list items have no Paragraph tag. Consume their inline events
+        // before block dispatch so formatting neither drops content nor flushes
+        // the surrounding implicit paragraph.
+        if parse_inline_event(events, cursor, &mut stray) {
+            continue;
+        }
+
         match &events[*cursor] {
             Event::Start(tag) => {
                 flush_stray(&mut nodes, &mut stray);
@@ -160,26 +167,6 @@ fn parse_blocks(events: &[Event<'_>], cursor: &mut usize) -> Vec<RenderNode> {
                 *cursor += 1;
                 nodes.push(RenderNode::ThematicBreak);
             }
-            Event::Text(text) => {
-                push_text(&mut stray, text.to_string());
-                *cursor += 1;
-            }
-            Event::Code(code) => {
-                stray.push(Inline::Code(code.to_string()));
-                *cursor += 1;
-            }
-            Event::InlineHtml(html) => {
-                push_text(&mut stray, html.to_string());
-                *cursor += 1;
-            }
-            Event::SoftBreak => {
-                push_text(&mut stray, " ".to_string());
-                *cursor += 1;
-            }
-            Event::HardBreak => {
-                push_text(&mut stray, "\n".to_string());
-                *cursor += 1;
-            }
             // TaskListMarker 已在条目层消费；其余叶子事件（未启用的数学/脚注引用）跳过
             _ => *cursor += 1,
         }
@@ -191,70 +178,80 @@ fn parse_blocks(events: &[Event<'_>], cursor: &mut usize) -> Vec<RenderNode> {
 fn parse_inline(events: &[Event<'_>], cursor: &mut usize) -> Vec<Inline> {
     let mut spans = Vec::new();
     while *cursor < events.len() {
-        match &events[*cursor] {
-            // 当前行内容器的 End：消费掉并归还给上层
-            Event::End(_) => {
-                *cursor += 1;
-                return spans;
-            }
-            Event::Start(Tag::Strong) => {
-                *cursor += 1;
-                let spans_inner = parse_inline(events, cursor);
-                spans.push(Inline::Strong(spans_inner));
-            }
-            Event::Start(Tag::Emphasis) => {
-                *cursor += 1;
-                let spans_inner = parse_inline(events, cursor);
-                spans.push(Inline::Emphasis(spans_inner));
-            }
-            Event::Start(Tag::Strikethrough) => {
-                *cursor += 1;
-                let spans_inner = parse_inline(events, cursor);
-                spans.push(Inline::Strikethrough(spans_inner));
-            }
-            Event::Start(Tag::Link {
-                dest_url, title, ..
-            }) => {
-                let url = dest_url.to_string();
-                let title = (!title.is_empty()).then(|| title.to_string());
-                *cursor += 1;
-                let spans_inner = parse_inline(events, cursor);
-                spans.push(Inline::Link {
-                    url,
-                    title,
-                    spans: spans_inner,
-                });
-            }
-            // 图片未建模（任务卡行内集之外）：保留 alt 文本，URL 降级丢弃
-            Event::Start(Tag::Image { .. }) => {
-                *cursor += 1;
-                let spans_inner = parse_inline(events, cursor);
-                spans.extend(spans_inner);
-            }
-            Event::Text(text) => {
-                push_text(&mut spans, text.to_string());
-                *cursor += 1;
-            }
-            Event::Code(code) => {
-                spans.push(Inline::Code(code.to_string()));
-                *cursor += 1;
-            }
-            Event::InlineHtml(html) => {
-                push_text(&mut spans, html.to_string());
-                *cursor += 1;
-            }
-            Event::SoftBreak => {
-                push_text(&mut spans, " ".to_string());
-                *cursor += 1;
-            }
-            Event::HardBreak => {
-                push_text(&mut spans, "\n".to_string());
-                *cursor += 1;
-            }
-            _ => *cursor += 1,
+        // Consume this container's closing event, but leave nested containers
+        // to the shared inline consumer.
+        if matches!(&events[*cursor], Event::End(_)) {
+            *cursor += 1;
+            break;
+        }
+        if !parse_inline_event(events, cursor, &mut spans) {
+            *cursor += 1;
         }
     }
     spans
+}
+
+/// Consumes one inline event (including its children), leaving block events
+/// and container ends untouched for the caller.
+fn parse_inline_event(events: &[Event<'_>], cursor: &mut usize, spans: &mut Vec<Inline>) -> bool {
+    match &events[*cursor] {
+        Event::Start(Tag::Strong) => {
+            *cursor += 1;
+            let spans_inner = parse_inline(events, cursor);
+            spans.push(Inline::Strong(spans_inner));
+        }
+        Event::Start(Tag::Emphasis) => {
+            *cursor += 1;
+            let spans_inner = parse_inline(events, cursor);
+            spans.push(Inline::Emphasis(spans_inner));
+        }
+        Event::Start(Tag::Strikethrough) => {
+            *cursor += 1;
+            let spans_inner = parse_inline(events, cursor);
+            spans.push(Inline::Strikethrough(spans_inner));
+        }
+        Event::Start(Tag::Link {
+            dest_url, title, ..
+        }) => {
+            let url = dest_url.to_string();
+            let title = (!title.is_empty()).then(|| title.to_string());
+            *cursor += 1;
+            let spans_inner = parse_inline(events, cursor);
+            spans.push(Inline::Link {
+                url,
+                title,
+                spans: spans_inner,
+            });
+        }
+        // 图片未建模（任务卡行内集之外）：保留 alt 文本，URL 降级丢弃
+        Event::Start(Tag::Image { .. }) => {
+            *cursor += 1;
+            let spans_inner = parse_inline(events, cursor);
+            spans.extend(spans_inner);
+        }
+        Event::Text(text) => {
+            push_text(spans, text.to_string());
+            *cursor += 1;
+        }
+        Event::Code(code) => {
+            spans.push(Inline::Code(code.to_string()));
+            *cursor += 1;
+        }
+        Event::InlineHtml(html) => {
+            push_text(spans, html.to_string());
+            *cursor += 1;
+        }
+        Event::SoftBreak => {
+            push_text(spans, " ".to_string());
+            *cursor += 1;
+        }
+        Event::HardBreak => {
+            push_text(spans, "\n".to_string());
+            *cursor += 1;
+        }
+        _ => return false,
+    }
+    true
 }
 
 fn parse_code_block(events: &[Event<'_>], cursor: &mut usize, kind: &CodeBlockKind) -> RenderNode {
