@@ -26,6 +26,7 @@ mod core_flow;
 mod e2e_variable_height;
 mod hydration;
 mod issue70_tool_activity;
+mod issue98_scroll_button;
 mod menu_lists;
 mod model_markdown;
 mod model_picker_levels;
