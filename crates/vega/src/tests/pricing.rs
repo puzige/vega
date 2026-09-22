@@ -167,6 +167,8 @@ impl Render for PricingWindowHarness {
 async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui_kit::TestAppContext) {
     let repo = diff_controller_repo();
     let data = tempfile::tempdir().expect("pricing data root");
+    let config_path = data.path().join("config.toml");
+    super::model_selection::model_selection_config(&config_path);
     let store = Store::open(data.path().join("vega.db")).expect("pricing file store");
     store.migrate().expect("pricing migrations");
     let project = vega_store::projects::create(
@@ -195,6 +197,7 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui_kit::
     ]));
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(config_path.clone());
         root.stream_view = Some((thread.id.clone(), stream.clone()));
         root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
     });
@@ -206,12 +209,18 @@ async fn pricing_settings_and_agent_preflight_production_e2e(cx: &mut gpui_kit::
             })
         })
         .expect("pricing window");
+    // Pricing and the provider/reasoning catalog finish on independent workers.
+    // A ready pricing snapshot alone does not make the production submit legal.
     pump_test_app(cx, |cx| {
-        root.read_with(cx, |root, _| {
-            matches!(
-                root.pricing_controller.state,
-                PricingControllerState::Ready { .. }
-            )
+        root.read_with(cx, |root, cx| {
+            root.configured_models.is_some()
+                && !root.model_catalog_loading
+                && !stream.read(cx).has_pending_model_selection()
+                && !stream.read(cx).reasoning_unavailable()
+                && matches!(
+                    root.pricing_controller.state,
+                    PricingControllerState::Ready { .. }
+                )
         })
     });
 

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 #[path = "codec_topology.rs"]
 mod codec_topology;
+mod command_stub;
 #[path = "commit_proof.rs"]
 mod commit_proof;
 #[path = "filter_gitlink.rs"]
@@ -375,24 +376,23 @@ fn after_git_mutation(plan: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathB
     let argv = dir.path().join("argv");
     let input = dir.path().join("input");
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
+    // Construct output before the timed mutation so its boundary is not coupled
+    // to Python interpreter startup on a loaded runner.
+    let output = |size: usize, stderr: bool| {
+        let payload = dir.path().join("output.bin");
+        fs::write(&payload, vec![b'x'; size]).expect("after-git output payload");
+        format!(
+            "/bin/cat '{}'{}",
+            quote(&payload),
+            if stderr { " >&2" } else { "" }
+        )
+    };
     let tail = match plan {
         "nonzero" => "exit 17".to_string(),
-        "stdout-exact" => format!(
-            "/usr/bin/python3 -c 'import sys; sys.stdout.buffer.write(b\"x\" * {})'",
-            MUTATION_STDOUT_LIMIT
-        ),
-        "stdout-overflow" => format!(
-            "/usr/bin/python3 -c 'import sys; sys.stdout.buffer.write(b\"x\" * {})'",
-            MUTATION_STDOUT_LIMIT + 1
-        ),
-        "stderr-exact" => format!(
-            "/usr/bin/python3 -c 'import sys; sys.stderr.buffer.write(b\"x\" * {})'",
-            STDERR_LIMIT
-        ),
-        "stderr-overflow" => format!(
-            "/usr/bin/python3 -c 'import sys; sys.stderr.buffer.write(b\"x\" * {})'",
-            STDERR_LIMIT + 1
-        ),
+        "stdout-exact" => output(MUTATION_STDOUT_LIMIT, false),
+        "stdout-overflow" => output(MUTATION_STDOUT_LIMIT + 1, false),
+        "stderr-exact" => output(STDERR_LIMIT, true),
+        "stderr-overflow" => output(STDERR_LIMIT + 1, true),
         "wait" => "/bin/sleep 30".to_string(),
         "inherited-pipe" => "/bin/sleep 30 & exit 0".to_string(),
         _ => panic!("unknown after-git plan"),
@@ -425,27 +425,26 @@ fn proof_read_recorder(
     let dir = tempfile::tempdir().expect("proof recorder tempdir");
     let script = dir.path().join("read-recorder.sh");
     let log = dir.path().join("read-argv.bin");
-    let base = dir.path().join("base-oid");
-    let attached_ref_file = dir.path().join("attached-ref");
     let status_count = dir.path().join("post-status-count");
     let root_backup = dir.path().join("root-backup");
-    fs::write(&base, base_oid).expect("base oid");
+    let base = std::str::from_utf8(base_oid).expect("base oid ASCII");
     let attached_ref = run_git_output(root, &["symbolic-ref", "HEAD"]);
-    fs::write(
-        &attached_ref_file,
+    let attached_ref = std::str::from_utf8(
         attached_ref
             .strip_suffix(b"\n")
             .expect("attached ref newline"),
     )
-    .expect("attached ref");
+    .expect("attached ref UTF-8");
+    // These fixture values never change; embed them instead of spawning two cats
+    // on every Git read. HEAD and the post-mutation counter remain dynamic.
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
     fs::write(
         &script,
         production_git_script(format!(
             r#"#!/bin/sh
 set -eu
-base=$(/bin/cat '{base}')
-attached_ref=$(/bin/cat '{attached_ref_file}')
+base='{base}'
+attached_ref='{attached_ref}'
 current=$(/usr/bin/git rev-parse --verify HEAD 2>/dev/null || true)
 phase=pre
 [ "$current" != "$base" ] && phase=post
@@ -500,8 +499,8 @@ esac
 fi
 exec /usr/bin/git "$@"
 "#,
-            base = quote(&base),
-            attached_ref_file = quote(&attached_ref_file),
+            base = base.replace('\'', "'\\''"),
+            attached_ref = attached_ref.replace('\'', "'\\''"),
             log = quote(&log),
             status_count = quote(&status_count),
             plan = plan,

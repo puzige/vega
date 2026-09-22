@@ -3,7 +3,7 @@ use crate::icons::{Icon, icon};
 
 /// Materializes a user echo block (T18 消息块结构): the 「你」 label, one
 /// line per source line (blank lines preserved as empty spans), and a
-/// trailing spacer. The item model renders these as ONE natural-height card
+/// trailing spacer. The item model renders these as ONE natural-height bubble
 /// ([`user_message_item`]); the flat form stays for row accounting and tests.
 pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     let mut lines = vec![StreamLine::new(block_id, LineKind::UserLabel)];
@@ -221,6 +221,7 @@ pub(crate) fn markdown_item(
     colors: &ThemeColors,
 ) -> AnyElement {
     div()
+        .debug_selector(|| "assistant-message".into())
         .w_full()
         .flex_shrink_0()
         .pt(px(4.0))
@@ -245,14 +246,24 @@ pub(crate) fn markdown_item(
         .into_any_element()
 }
 
-/// One user echo as one natural-height item: the 「你」 label plus a single
-/// light rounded surface whose lines remain a continuous wrapping region.
-/// There are no per-line separators, so a long CJK/Latin message reads as one
-/// calm block while the variable-height item still preserves every line.
+#[cfg(test)]
+thread_local! {
+    // Observe production text layouts without changing measurement or paint.
+    pub(super) static USER_TEXT_LAYOUTS: std::cell::RefCell<Vec<gpui_kit::TextLayout>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// One right-aligned, content-hugging user bubble. Logical source lines retain
+/// their natural wrapping height; the legacy label stays only in the row model.
 pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> AnyElement {
+    #[cfg(test)]
+    USER_TEXT_LAYOUTS.with_borrow_mut(Vec::clear);
     let mut body = div()
-        .bg(colors.bg_elevated)
-        .rounded(px(Layout::PANEL_RADIUS))
+        .debug_selector(|| "user-message-bubble".into())
+        .max_w(gpui_kit::relative(Layout::USER_MESSAGE_MAX_WIDTH_RATIO))
+        .bg(colors.brand_soft)
+        .rounded(px(Layout::USER_MESSAGE_RADIUS))
+        .text_size(px(Typography::MESSAGE))
+        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
         .px_3()
         .py_2()
         .text_color(colors.text_primary)
@@ -271,7 +282,10 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
             // 空行保留一行正文行高的自然占位（非定高行模型）。
             body = body.child(div().h(user_line_height()));
         } else {
-            body = body.child(block_text(&line.spans, user_body_style(colors), colors));
+            let text = block_text(&line.spans, user_body_style(colors), colors);
+            #[cfg(test)]
+            USER_TEXT_LAYOUTS.with_borrow_mut(|layouts| layouts.push(text.layout().clone()));
+            body = body.child(text);
         }
     }
     div()
@@ -281,13 +295,7 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
         .pb(px(8.0))
         .flex()
         .flex_col()
-        .child(
-            div()
-                .text_size(px(Typography::SIDEBAR))
-                .text_color(colors.text_secondary)
-                .px_2()
-                .child("你"),
-        )
+        .items_end()
         .child(body)
         .into_any_element()
 }

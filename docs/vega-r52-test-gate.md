@@ -1,5 +1,7 @@
 # R52 · 隔离负载敏感的测试，让并行门禁可用
 
+> 2026-09-22 [Issue #140](vega-issue-140-ci-test-throughput.md) supersedes the shadow selector and per-shard compilation topology: Python shadow reporting is removed; full-suite native nextest archives are built once and reused across workers. Existing safety assertions, resource weights and ignored inventory remain.
+
 > 状态：**SPEC FROZEN**
 > 基线：`master @ 1c23fc4`
 > 分支：`chore/isolate-load-sensitive-tests`
@@ -96,6 +98,10 @@ cargo test --workspace -- --ignored --test-threads=1
 ```
 
 **禁止**再用 `cargo test --workspace -- --test-threads=1` 作为日常门禁——它比并行慢 4.7 倍，且当初的理由（进程间 git fixture 竞争）已被共享 target 的文件锁消除。
+
+**2026-09-22 后续（issue #123）**：云端 PR 门禁的常规测试改由 `cargo nextest run --workspace` 执行（配置 `.config/nextest.toml`，`retries = 0`），语义与上面「快速门禁」一致：并行、跳过 `#[ignore]` 的负载敏感测试；因 nextest 不跑 doc-tests，workflow 另加 `cargo test --workspace --doc`。本地命令不变，`cargo test --workspace` 仍可用。用 nextest 单独跑被隔离的 10 个测试：`cargo nextest run --workspace --run-ignored ignored-only --test-threads=1`（实测 10 passed）。
+
+**同日 C9 提速**：云端使用 4 个 macOS runner 执行 `--partition hash:<shard>/4`，quality job 并行跑 fmt/clippy/doc-tests。`vega_conversation` 的 `git_workspace::trusted_git::` 测试设置 `threads-required = 2` 以降低重型测试并发竞争；该权重不保证消除 flaky，也不增加单测 CPU 数。首轮云端发现取消/pricing 两条测试失败：按 C9 对 pricing 测试及后续暴露 8 秒超时的真实 PTY 测试精确设置 `threads-required = "num-test-threads"`；取消测试在独占运行仍失败，改用仅测试构建可见的同步点替代 2ms 定时猜测，保留全部断言和真实文件读取。保留既有 10 项 ignored 清单，不新增 ignore 或重试；独占调度不保证消除测试内在时钟竞态。所有分片必须成功才能通过汇总门禁。
 
 ### 2.5 冻结测试
 

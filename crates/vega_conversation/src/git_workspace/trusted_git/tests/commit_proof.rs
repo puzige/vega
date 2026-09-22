@@ -61,70 +61,124 @@ async fn commit_proof_uses_explicit_new_oid_for_born_and_unborn_commits() {
     }
 }
 
+// Keep each fault independently discoverable so nextest can distribute the matrix.
+async fn assert_commit_proof_fault_after_one_commit(plan: &str, expected: CommitErrorCode) {
+    let (_repo, _read_dir, mutation_dir, trusted, prepared, _read_log, mutation_argv, _base) =
+        prepared_with_proof_plan(false, plan).await;
+    let completion = trusted
+        .commit(
+            prepared.id,
+            "test: proof must fail closed".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        completion.outcome,
+        CommitOutcome::Failed(expected),
+        "proof plan {plan}"
+    );
+    assert!(completion.workspace.is_some(), "{plan} terminal refresh");
+    assert_eq!(
+        fs::read(&mutation_argv).expect("one commit argv"),
+        expected_mutation_argv(
+            b"commit",
+            &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
+        ),
+        "proof plan {plan}"
+    );
+    assert_eq!(
+        fs::read(mutation_dir.path().join("mutation-attempts"))
+            .expect("one commit process attempt"),
+        b"x",
+        "proof plan {plan}"
+    );
+    let duplicate = trusted
+        .commit(
+            prepared.id,
+            "test: duplicate proof".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        duplicate.outcome,
+        CommitOutcome::Failed(CommitErrorCode::StaleAuthority),
+        "proof plan {plan}"
+    );
+    assert_eq!(
+        fs::read(mutation_argv).expect("still one commit"),
+        expected_mutation_argv(
+            b"commit",
+            &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
+        )
+    );
+}
+
 #[tokio::test]
-async fn commit_proof_rejects_parent_tree_and_final_ref_faults_after_one_commit() {
-    for (plan, expected) in [
-        ("zero-parent", CommitErrorCode::ChangedDuringRead),
-        ("wrong-parent", CommitErrorCode::ChangedDuringRead),
-        ("two-parent", CommitErrorCode::ChangedDuringRead),
-        ("tree-diff", CommitErrorCode::ChangedDuringRead),
-        ("malformed-parent", CommitErrorCode::MalformedOutput),
-        ("short-parent", CommitErrorCode::MalformedOutput),
-        ("mixed-parent", CommitErrorCode::MalformedOutput),
-        ("object-missing", CommitErrorCode::GitFailed),
-        ("ref-moved", CommitErrorCode::ChangedDuringRead),
-        ("ref-deleted", CommitErrorCode::ChangedDuringRead),
-        ("ref-renamed", CommitErrorCode::ChangedDuringRead),
-    ] {
-        let (_repo, _read_dir, mutation_dir, trusted, prepared, _read_log, mutation_argv, _base) =
-            prepared_with_proof_plan(false, plan).await;
-        let completion = trusted
-            .commit(
-                prepared.id,
-                "test: proof must fail closed".into(),
-                CancellationToken::new(),
-            )
-            .await;
-        assert_eq!(
-            completion.outcome,
-            CommitOutcome::Failed(expected),
-            "proof plan {plan}"
-        );
-        assert!(completion.workspace.is_some(), "{plan} terminal refresh");
-        assert_eq!(
-            fs::read(&mutation_argv).expect("one commit argv"),
-            expected_mutation_argv(
-                b"commit",
-                &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
-            ),
-            "proof plan {plan}"
-        );
-        assert_eq!(
-            fs::read(mutation_dir.path().join("mutation-attempts"))
-                .expect("one commit process attempt"),
-            b"x",
-            "proof plan {plan}"
-        );
-        let duplicate = trusted
-            .commit(
-                prepared.id,
-                "test: duplicate proof".into(),
-                CancellationToken::new(),
-            )
-            .await;
-        assert_eq!(
-            duplicate.outcome,
-            CommitOutcome::Failed(CommitErrorCode::StaleAuthority),
-            "proof plan {plan}"
-        );
-        assert_eq!(
-            fs::read(mutation_argv).expect("still one commit"),
-            expected_mutation_argv(
-                b"commit",
-                &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
-            )
-        );
-    }
+async fn commit_proof_rejects_zero_parent_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("zero-parent", CommitErrorCode::ChangedDuringRead)
+        .await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_wrong_parent_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("wrong-parent", CommitErrorCode::ChangedDuringRead)
+        .await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_two_parent_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("two-parent", CommitErrorCode::ChangedDuringRead)
+        .await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_tree_diff_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("tree-diff", CommitErrorCode::ChangedDuringRead)
+        .await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_malformed_parent_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit(
+        "malformed-parent",
+        CommitErrorCode::MalformedOutput,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_short_parent_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("short-parent", CommitErrorCode::MalformedOutput)
+        .await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_mixed_parent_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("mixed-parent", CommitErrorCode::MalformedOutput)
+        .await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_object_missing_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("object-missing", CommitErrorCode::GitFailed).await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_ref_moved_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("ref-moved", CommitErrorCode::ChangedDuringRead)
+        .await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_ref_deleted_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("ref-deleted", CommitErrorCode::ChangedDuringRead)
+        .await;
+}
+
+#[tokio::test]
+async fn commit_proof_rejects_ref_renamed_after_one_commit() {
+    assert_commit_proof_fault_after_one_commit("ref-renamed", CommitErrorCode::ChangedDuringRead)
+        .await;
 }
 
 #[tokio::test]
@@ -165,25 +219,23 @@ async fn commit_proof_rejects_root_identity_swap_after_exactly_one_commit() {
 #[tokio::test]
 async fn commit_third_capture_mismatch_consumes_prepared_and_spawns_zero_commit() {
     for change in ["status", "index", "ref", "operation"] {
-        let (repo, _recorder, trusted, prepared, argv, _input) =
-            staged_service_with_recorder().await;
+        let fixture = command_stub::PolicyFixture::new("staged");
+        let (_workspace, trusted) = fixture.services().await;
+        let checklist = trusted
+            .open_checklist(CancellationToken::new())
+            .await
+            .expect("checklist");
+        let prepared = trusted
+            .prepare(checklist.id, Vec::new(), CancellationToken::new())
+            .await
+            .prepared
+            .expect("prepared through real policy");
+        fixture.assert_no_mutation();
         match change {
-            "status" => {
-                fs::write(repo.path().join("tracked.txt"), "changed after B\n")
-                    .expect("status drift");
-            }
-            "index" => {
-                fs::write(repo.path().join("other.txt"), "index drift\n").expect("index drift");
-                run_git(repo.path(), &["add", "other.txt"]);
-            }
-            "ref" => run_git(
-                repo.path(),
-                &["commit", "--allow-empty", "-qm", "ref drift"],
-            ),
-            "operation" => {
-                let oid = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
-                fs::write(repo.path().join(".git/MERGE_HEAD"), oid).expect("operation marker");
-            }
+            "status" => fixture.set_case("status-drift"),
+            "index" => fixture.set_case("index-drift"),
+            "ref" => fixture.set_case("ref-drift"),
+            "operation" => fixture.operation_marker(),
             _ => unreachable!(),
         }
         let completion = trusted
@@ -198,7 +250,7 @@ async fn commit_third_capture_mismatch_consumes_prepared_and_spawns_zero_commit(
             "{change} drift"
         );
         assert!(completion.workspace.is_some(), "{change} terminal refresh");
-        assert!(!argv.exists(), "{change} drift spawned commit");
+        fixture.assert_no_mutation();
         let stale = trusted
             .commit(
                 prepared.id,
@@ -210,8 +262,39 @@ async fn commit_third_capture_mismatch_consumes_prepared_and_spawns_zero_commit(
             stale.outcome,
             CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
         );
-        assert!(!argv.exists(), "duplicate spawned commit");
+        fixture.assert_no_mutation();
     }
+}
+
+#[tokio::test]
+async fn commit_status_drift_real_git_consumes_prepared_and_spawns_zero_commit() {
+    let (repo, _recorder, trusted, prepared, argv, _input) = staged_service_with_recorder().await;
+    fs::write(repo.path().join("tracked.txt"), "changed after B\n").expect("status drift");
+    let completion = trusted
+        .commit(
+            prepared.id,
+            "test: must not execute".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert!(
+        matches!(completion.outcome, CommitOutcome::Failed(_)),
+        "status drift"
+    );
+    assert!(completion.workspace.is_some(), "status terminal refresh");
+    assert!(!argv.exists(), "status drift spawned commit");
+    let stale = trusted
+        .commit(
+            prepared.id,
+            "test: duplicate".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        stale.outcome,
+        CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
+    );
+    assert!(!argv.exists(), "duplicate spawned commit");
 }
 
 #[tokio::test]

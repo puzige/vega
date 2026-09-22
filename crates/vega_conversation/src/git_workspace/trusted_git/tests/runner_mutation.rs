@@ -95,10 +95,19 @@ fn trusted_mutation_runner_enforces_spawn_cancel_exit_and_output_caps_for_add_an
         assert_eq!(fs::read(&attempts).expect("one attempt"), b"x");
 
         for (stream, limit) in [("stdout", MUTATION_STDOUT_LIMIT), ("stderr", STDERR_LIMIT)] {
-            let body = format!(
-                "/usr/bin/python3 -c 'import sys; sys.{}.buffer.write(b\"x\" * {})'",
-                stream, limit
-            );
+            // Generate fixed bytes before the runner's deadline starts, avoiding
+            // interpreter startup in the output-boundary measurement.
+            let payload_dir = tempfile::tempdir().expect("output payload fixture");
+            let output = |size: usize| {
+                let payload = payload_dir.path().join(size.to_string());
+                fs::write(&payload, vec![b'x'; size]).expect("output payload");
+                format!(
+                    "/bin/cat '{}'{}",
+                    payload.to_string_lossy().replace('\'', "'\\''"),
+                    if stream == "stderr" { " >&2" } else { "" }
+                )
+            };
+            let body = output(limit);
             let (_fixture, script, attempts) = scripted_mutation(&body);
             run_fake_mutation(
                 &runner,
@@ -111,11 +120,7 @@ fn trusted_mutation_runner_enforces_spawn_cancel_exit_and_output_caps_for_add_an
             .expect("inclusive output cap");
             assert_eq!(fs::read(&attempts).expect("inclusive attempt"), b"x");
 
-            let body = format!(
-                "/usr/bin/python3 -c 'import sys; sys.{}.buffer.write(b\"x\" * {})'",
-                stream,
-                limit + 1
-            );
+            let body = output(limit + 1);
             let (_fixture, script, attempts) = scripted_mutation(&body);
             assert_eq!(
                 mutation_error_code(run_fake_mutation(
@@ -225,95 +230,233 @@ fn trusted_mutation_runner_drains_floods_while_writing_large_stdin() {
     }
 }
 
-#[tokio::test]
-async fn service_reports_authoritative_state_after_add_and_commit_process_failures() {
-    for (plan, expected) in [
-        ("nonzero", CommitErrorCode::GitFailed),
-        ("stdout-overflow", CommitErrorCode::OutputTooLarge),
-        ("wait", CommitErrorCode::TimedOut),
-        ("inherited-pipe", CommitErrorCode::ProcessControlFailed),
-    ] {
-        let repo = Repo::new();
-        fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
-        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-        workspace
-            .refresh(CancellationToken::new())
-            .await
-            .expect("add A");
-        let (_fixture, script, attempts, _argv, _input) = after_git_mutation(plan);
-        let trusted = TrustedGitService::new_with_mutation_timeout_for_test(
-            repo.path(),
-            workspace,
-            script,
-            Duration::from_secs(3),
+// Keep each existing matrix case independently discoverable by nextest.
+async fn assert_add_process_failure(plan: &str, expected: CommitErrorCode) {
+    let repo = Repo::new();
+    fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
+    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+    workspace
+        .refresh(CancellationToken::new())
+        .await
+        .expect("add A");
+    let (_fixture, script, attempts, _argv, _input) = after_git_mutation(plan);
+    let trusted = TrustedGitService::new_with_mutation_timeout_for_test(
+        repo.path(),
+        workspace,
+        script,
+        Duration::from_secs(3),
+    )
+    .expect("trusted add fault");
+    let checklist = trusted
+        .open_checklist(CancellationToken::new())
+        .await
+        .expect("add checklist");
+    let completion = trusted
+        .prepare(
+            checklist.id,
+            vec![checklist.optional[0].file_id],
+            CancellationToken::new(),
         )
-        .expect("trusted add fault");
-        let checklist = trusted
-            .open_checklist(CancellationToken::new())
-            .await
-            .expect("add checklist");
+        .await;
+    assert_eq!(completion.error, Some(expected), "add plan {plan}");
+    assert!(completion.prepared.is_none(), "add plan {plan}");
+    assert!(completion.workspace.is_some(), "add plan {plan}");
+    assert_eq!(
+        fs::read(attempts).unwrap_or_else(|error| panic!("add plan {plan} marker: {error}")),
+        b"x"
+    );
+    assert!(
+        !run_git_output(repo.path(), &["diff", "--cached", "--name-only"]).is_empty(),
+        "add plan {plan} lost real index mutation"
+    );
+}
+
+async fn assert_commit_process_failure(plan: &str, expected: CommitErrorCode) {
+    let repo = Repo::new();
+    fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged fixture");
+    run_git(repo.path(), &["add", "staged.txt"]);
+    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+    workspace
+        .refresh(CancellationToken::new())
+        .await
+        .expect("commit B refresh");
+    // Recreate an exact prepared capability under the faulting service.
+    let (_fixture, script, attempts, _argv, _input) = after_git_mutation(plan);
+    let trusted = TrustedGitService::new_with_mutation_timeout_for_test(
+        repo.path(),
+        workspace,
+        script,
+        Duration::from_secs(3),
+    )
+    .expect("trusted commit fault");
+    let checklist = trusted
+        .open_checklist(CancellationToken::new())
+        .await
+        .expect("commit checklist");
+    let prepared = trusted
+        .prepare(checklist.id, Vec::new(), CancellationToken::new())
+        .await
+        .prepared
+        .expect("commit prepared");
+    let before = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
+    let completion = trusted
+        .commit(
+            prepared.id,
+            "test: process fault".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        completion.outcome,
+        CommitOutcome::Failed(expected),
+        "{plan}"
+    );
+    assert!(completion.workspace.is_some(), "commit plan {plan}");
+    assert_eq!(fs::read(attempts).expect("one commit"), b"x");
+    let after = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(before, after, "commit plan {plan} lost real commit");
+    let duplicate = trusted
+        .commit(
+            prepared.id,
+            "test: no retry".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        duplicate.outcome,
+        CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
+    );
+}
+
+async fn assert_exact_stdout(phase: &str) {
+    let repo = Repo::new();
+    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+    if phase == "add" {
+        fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
+    } else {
+        fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged");
+        run_git(repo.path(), &["add", "staged.txt"]);
+    }
+    workspace
+        .refresh(CancellationToken::new())
+        .await
+        .expect("exact output A");
+    let (_fixture, script, attempts, _argv, _input) = after_git_mutation("stdout-exact");
+    let trusted = TrustedGitService::new_with_mutation_timeout_for_test(
+        repo.path(),
+        workspace,
+        script,
+        Duration::from_secs(3),
+    )
+    .expect("trusted exact output");
+    let checklist = trusted
+        .open_checklist(CancellationToken::new())
+        .await
+        .expect("exact output checklist");
+    let selected = if phase == "add" {
+        vec![checklist.optional[0].file_id]
+    } else {
+        Vec::new()
+    };
+    let prepared = trusted
+        .prepare(checklist.id, selected, CancellationToken::new())
+        .await
+        .prepared
+        .expect("inclusive stdout prepared");
+    if phase == "commit" {
         let completion = trusted
-            .prepare(
-                checklist.id,
-                vec![checklist.optional[0].file_id],
+            .commit(
+                prepared.id,
+                "test: inclusive output".into(),
                 CancellationToken::new(),
             )
             .await;
-        assert_eq!(completion.error, Some(expected), "add plan {plan}");
-        assert!(completion.prepared.is_none(), "add plan {plan}");
-        assert!(completion.workspace.is_some(), "add plan {plan}");
-        assert_eq!(
-            fs::read(attempts).unwrap_or_else(|error| panic!("add plan {plan} marker: {error}")),
-            b"x"
-        );
-        assert!(
-            !run_git_output(repo.path(), &["diff", "--cached", "--name-only"]).is_empty(),
-            "add plan {plan} lost real index mutation"
-        );
+        assert_eq!(completion.outcome, CommitOutcome::Committed);
+    }
+    assert_eq!(fs::read(attempts).expect("inclusive attempt"), b"x");
+}
 
-        let repo = Repo::new();
-        fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged fixture");
+async fn assert_pre_mutation_failure(
+    phase: &str,
+    case: &str,
+    expected: CommitErrorCode,
+    expected_attempts: usize,
+) {
+    let repo = Repo::new();
+    if phase == "add" {
+        fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
+    } else {
+        fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged");
         run_git(repo.path(), &["add", "staged.txt"]);
-        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-        workspace
-            .refresh(CancellationToken::new())
-            .await
-            .expect("commit B refresh");
-        // Recreate an exact prepared capability under the faulting service.
-        let (_fixture, script, attempts, _argv, _input) = after_git_mutation(plan);
-        let trusted = TrustedGitService::new_with_mutation_timeout_for_test(
-            repo.path(),
-            workspace,
-            script,
-            Duration::from_secs(3),
-        )
-        .expect("trusted commit fault");
-        let checklist = trusted
-            .open_checklist(CancellationToken::new())
-            .await
-            .expect("commit checklist");
+    }
+    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+    workspace
+        .refresh(CancellationToken::new())
+        .await
+        .expect("entry A");
+    let (fixture, executable, attempts, argv) = if case == "missing" {
+        let fixture = tempfile::tempdir().expect("missing fixture");
+        let executable = fixture.path().join("missing-executable");
+        let attempts = fixture.path().join("attempts");
+        let argv = fixture.path().join("argv");
+        (fixture, executable, attempts, argv)
+    } else {
+        let (fixture, executable, attempts, argv, _input) = before_git_mutation("exit 17");
+        (fixture, executable, attempts, argv)
+    };
+    let trusted = TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, executable)
+        .expect("trusted pre-mutation fault");
+    let checklist = trusted
+        .open_checklist(CancellationToken::new())
+        .await
+        .expect("entry checklist");
+    let cancel = CancellationToken::new();
+    if case == "pre-cancel" {
+        cancel.cancel();
+    }
+    if phase == "add" {
+        let completion = trusted
+            .prepare(checklist.id, vec![checklist.optional[0].file_id], cancel)
+            .await;
+        assert_eq!(completion.error, Some(expected), "add {case}");
+        assert!(completion.prepared.is_none(), "add {case}");
+        let terminal = completion.workspace.as_ref().expect("add terminal");
+        assert_terminal_workspace(&trusted, terminal);
+        assert!(
+            run_git_output(repo.path(), &["diff", "--cached", "--name-only"]).is_empty(),
+            "add {case} changed index"
+        );
+        let duplicate = trusted
+            .prepare(checklist.id, Vec::new(), CancellationToken::new())
+            .await;
+        assert_eq!(duplicate.error, Some(CommitErrorCode::StaleAuthority));
+    } else {
         let prepared = trusted
             .prepare(checklist.id, Vec::new(), CancellationToken::new())
             .await
             .prepared
-            .expect("commit prepared");
+            .expect("entry prepared");
+        let invalid = trusted
+            .commit(prepared.id, String::new(), cancel.clone())
+            .await;
+        assert_eq!(
+            invalid.outcome,
+            CommitOutcome::Failed(CommitErrorCode::InvalidMessage)
+        );
+        assert!(invalid.workspace.is_none());
+        assert!(!attempts.exists(), "invalid message spawned {case}");
         let before = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
         let completion = trusted
-            .commit(
-                prepared.id,
-                "test: process fault".into(),
-                CancellationToken::new(),
-            )
+            .commit(prepared.id, "test: entry failure".into(), cancel)
             .await;
         assert_eq!(
             completion.outcome,
             CommitOutcome::Failed(expected),
-            "{plan}"
+            "{case}"
         );
-        assert!(completion.workspace.is_some(), "commit plan {plan}");
-        assert_eq!(fs::read(attempts).expect("one commit"), b"x");
-        let after = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
-        assert_ne!(before, after, "commit plan {plan} lost real commit");
+        let terminal = completion.workspace.as_ref().expect("commit terminal");
+        assert_terminal_workspace(&trusted, terminal);
+        assert_eq!(before, run_git_output(repo.path(), &["rev-parse", "HEAD"]));
         let duplicate = trusted
             .commit(
                 prepared.id,
@@ -326,267 +469,217 @@ async fn service_reports_authoritative_state_after_add_and_commit_process_failur
             CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
         );
     }
-
-    for phase in ["add", "commit"] {
-        let repo = Repo::new();
-        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-        if phase == "add" {
-            fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
+    let actual_attempts = fs::read(&attempts).map_or(0, |bytes| bytes.len());
+    assert_eq!(actual_attempts, expected_attempts, "{phase} {case}");
+    if expected_attempts == 1 {
+        let expected_argv = if phase == "add" {
+            expected_mutation_argv(
+                b"add",
+                &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"],
+            )
         } else {
-            fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged");
-            run_git(repo.path(), &["add", "staged.txt"]);
-        }
-        workspace
-            .refresh(CancellationToken::new())
-            .await
-            .expect("exact output A");
-        let (_fixture, script, attempts, _argv, _input) = after_git_mutation("stdout-exact");
-        let trusted = TrustedGitService::new_with_mutation_timeout_for_test(
-            repo.path(),
-            workspace,
-            script,
-            Duration::from_secs(3),
-        )
-        .expect("trusted exact output");
-        let checklist = trusted
-            .open_checklist(CancellationToken::new())
-            .await
-            .expect("exact output checklist");
-        let selected = if phase == "add" {
-            vec![checklist.optional[0].file_id]
-        } else {
-            Vec::new()
+            expected_mutation_argv(
+                b"commit",
+                &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"],
+            )
         };
+        assert_eq!(fs::read(&argv).expect("exact safe argv"), expected_argv);
+    } else {
+        assert!(!argv.exists(), "zero-spawn {phase} {case} wrote argv");
+    }
+    drop(fixture);
+}
+
+async fn assert_stderr_cap(phase: &str, plan: &str, expected: Option<CommitErrorCode>) {
+    let repo = Repo::new();
+    if phase == "add" {
+        fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
+    } else {
+        fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged");
+        run_git(repo.path(), &["add", "staged.txt"]);
+    }
+    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+    workspace
+        .refresh(CancellationToken::new())
+        .await
+        .expect("stderr A");
+    let (_fixture, script, attempts, argv, _input) = after_git_mutation(plan);
+    let trusted = TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, script)
+        .expect("trusted stderr cap");
+    let checklist = trusted
+        .open_checklist(CancellationToken::new())
+        .await
+        .expect("stderr checklist");
+    if phase == "add" {
+        let completion = trusted
+            .prepare(
+                checklist.id,
+                vec![checklist.optional[0].file_id],
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(completion.error, expected, "add {plan}");
+        assert_eq!(completion.prepared.is_some(), expected.is_none());
+        let terminal = completion.workspace.as_ref().expect("add stderr terminal");
+        assert_terminal_workspace(&trusted, terminal);
+        assert!(!run_git_output(repo.path(), &["diff", "--cached", "--name-only"]).is_empty());
+    } else {
         let prepared = trusted
-            .prepare(checklist.id, selected, CancellationToken::new())
+            .prepare(checklist.id, Vec::new(), CancellationToken::new())
             .await
             .prepared
-            .expect("inclusive stdout prepared");
-        if phase == "commit" {
-            let completion = trusted
-                .commit(
-                    prepared.id,
-                    "test: inclusive output".into(),
-                    CancellationToken::new(),
-                )
-                .await;
-            assert_eq!(completion.outcome, CommitOutcome::Committed);
-        }
-        assert_eq!(fs::read(attempts).expect("inclusive attempt"), b"x");
+            .expect("stderr prepared");
+        let before = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
+        let completion = trusted
+            .commit(
+                prepared.id,
+                "test: stderr cap".into(),
+                CancellationToken::new(),
+            )
+            .await;
+        let expected_outcome = expected.map_or(CommitOutcome::Committed, CommitOutcome::Failed);
+        assert_eq!(completion.outcome, expected_outcome, "commit {plan}");
+        let terminal = completion
+            .workspace
+            .as_ref()
+            .expect("commit stderr terminal");
+        assert_terminal_workspace(&trusted, terminal);
+        assert_ne!(before, run_git_output(repo.path(), &["rev-parse", "HEAD"]));
+        let duplicate = trusted
+            .commit(
+                prepared.id,
+                "test: no retry".into(),
+                CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(
+            duplicate.outcome,
+            CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
+        );
     }
+    assert_eq!(fs::read(attempts).expect("one stderr attempt"), b"x");
+    let expected_argv = if phase == "add" {
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"],
+        )
+    } else {
+        expected_mutation_argv(
+            b"commit",
+            &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"],
+        )
+    };
+    assert_eq!(fs::read(argv).expect("stderr safe argv"), expected_argv);
 }
 
 #[tokio::test]
-async fn service_entry_pre_mutation_failures_are_authoritative_and_single_use() {
-    for phase in ["add", "commit"] {
-        for (case, expected, expected_attempts) in [
-            ("missing", CommitErrorCode::SpawnFailed, 0_usize),
-            ("pre-cancel", CommitErrorCode::Cancelled, 0),
-            ("nonzero-before", CommitErrorCode::GitFailed, 1),
-        ] {
-            let repo = Repo::new();
-            if phase == "add" {
-                fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
-            } else {
-                fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged");
-                run_git(repo.path(), &["add", "staged.txt"]);
-            }
-            let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-            workspace
-                .refresh(CancellationToken::new())
-                .await
-                .expect("entry A");
-            let (fixture, executable, attempts, argv) = if case == "missing" {
-                let fixture = tempfile::tempdir().expect("missing fixture");
-                let executable = fixture.path().join("missing-executable");
-                let attempts = fixture.path().join("attempts");
-                let argv = fixture.path().join("argv");
-                (fixture, executable, attempts, argv)
-            } else {
-                let (fixture, executable, attempts, argv, _input) = before_git_mutation("exit 17");
-                (fixture, executable, attempts, argv)
-            };
-            let trusted =
-                TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, executable)
-                    .expect("trusted pre-mutation fault");
-            let checklist = trusted
-                .open_checklist(CancellationToken::new())
-                .await
-                .expect("entry checklist");
-            let cancel = CancellationToken::new();
-            if case == "pre-cancel" {
-                cancel.cancel();
-            }
-            if phase == "add" {
-                let completion = trusted
-                    .prepare(checklist.id, vec![checklist.optional[0].file_id], cancel)
-                    .await;
-                assert_eq!(completion.error, Some(expected), "add {case}");
-                assert!(completion.prepared.is_none(), "add {case}");
-                let terminal = completion.workspace.as_ref().expect("add terminal");
-                assert_terminal_workspace(&trusted, terminal);
-                assert!(
-                    run_git_output(repo.path(), &["diff", "--cached", "--name-only"]).is_empty(),
-                    "add {case} changed index"
-                );
-                let duplicate = trusted
-                    .prepare(checklist.id, Vec::new(), CancellationToken::new())
-                    .await;
-                assert_eq!(duplicate.error, Some(CommitErrorCode::StaleAuthority));
-            } else {
-                let prepared = trusted
-                    .prepare(checklist.id, Vec::new(), CancellationToken::new())
-                    .await
-                    .prepared
-                    .expect("entry prepared");
-                let invalid = trusted
-                    .commit(prepared.id, String::new(), cancel.clone())
-                    .await;
-                assert_eq!(
-                    invalid.outcome,
-                    CommitOutcome::Failed(CommitErrorCode::InvalidMessage)
-                );
-                assert!(invalid.workspace.is_none());
-                assert!(!attempts.exists(), "invalid message spawned {case}");
-                let before = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
-                let completion = trusted
-                    .commit(prepared.id, "test: entry failure".into(), cancel)
-                    .await;
-                assert_eq!(
-                    completion.outcome,
-                    CommitOutcome::Failed(expected),
-                    "{case}"
-                );
-                let terminal = completion.workspace.as_ref().expect("commit terminal");
-                assert_terminal_workspace(&trusted, terminal);
-                assert_eq!(before, run_git_output(repo.path(), &["rev-parse", "HEAD"]));
-                let duplicate = trusted
-                    .commit(
-                        prepared.id,
-                        "test: no retry".into(),
-                        CancellationToken::new(),
-                    )
-                    .await;
-                assert_eq!(
-                    duplicate.outcome,
-                    CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
-                );
-            }
-            let actual_attempts = fs::read(&attempts).map_or(0, |bytes| bytes.len());
-            assert_eq!(actual_attempts, expected_attempts, "{phase} {case}");
-            if expected_attempts == 1 {
-                let expected_argv = if phase == "add" {
-                    expected_mutation_argv(
-                        b"add",
-                        &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"],
-                    )
-                } else {
-                    expected_mutation_argv(
-                        b"commit",
-                        &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"],
-                    )
-                };
-                assert_eq!(fs::read(&argv).expect("exact safe argv"), expected_argv);
-            } else {
-                assert!(!argv.exists(), "zero-spawn {phase} {case} wrote argv");
-            }
-            drop(fixture);
-        }
-    }
+async fn service_add_process_failure_nonzero() {
+    assert_add_process_failure("nonzero", CommitErrorCode::GitFailed).await;
 }
 
 #[tokio::test]
-async fn service_entry_stderr_caps_are_exact_for_add_and_commit() {
-    for phase in ["add", "commit"] {
-        for (plan, expected) in [
-            ("stderr-exact", None),
-            ("stderr-overflow", Some(CommitErrorCode::OutputTooLarge)),
-        ] {
-            let repo = Repo::new();
-            if phase == "add" {
-                fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
-            } else {
-                fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged");
-                run_git(repo.path(), &["add", "staged.txt"]);
-            }
-            let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-            workspace
-                .refresh(CancellationToken::new())
-                .await
-                .expect("stderr A");
-            let (_fixture, script, attempts, argv, _input) = after_git_mutation(plan);
-            let trusted =
-                TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, script)
-                    .expect("trusted stderr cap");
-            let checklist = trusted
-                .open_checklist(CancellationToken::new())
-                .await
-                .expect("stderr checklist");
-            if phase == "add" {
-                let completion = trusted
-                    .prepare(
-                        checklist.id,
-                        vec![checklist.optional[0].file_id],
-                        CancellationToken::new(),
-                    )
-                    .await;
-                assert_eq!(completion.error, expected, "add {plan}");
-                assert_eq!(completion.prepared.is_some(), expected.is_none());
-                let terminal = completion.workspace.as_ref().expect("add stderr terminal");
-                assert_terminal_workspace(&trusted, terminal);
-                assert!(
-                    !run_git_output(repo.path(), &["diff", "--cached", "--name-only"]).is_empty()
-                );
-            } else {
-                let prepared = trusted
-                    .prepare(checklist.id, Vec::new(), CancellationToken::new())
-                    .await
-                    .prepared
-                    .expect("stderr prepared");
-                let before = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
-                let completion = trusted
-                    .commit(
-                        prepared.id,
-                        "test: stderr cap".into(),
-                        CancellationToken::new(),
-                    )
-                    .await;
-                let expected_outcome =
-                    expected.map_or(CommitOutcome::Committed, CommitOutcome::Failed);
-                assert_eq!(completion.outcome, expected_outcome, "commit {plan}");
-                let terminal = completion
-                    .workspace
-                    .as_ref()
-                    .expect("commit stderr terminal");
-                assert_terminal_workspace(&trusted, terminal);
-                assert_ne!(before, run_git_output(repo.path(), &["rev-parse", "HEAD"]));
-                let duplicate = trusted
-                    .commit(
-                        prepared.id,
-                        "test: no retry".into(),
-                        CancellationToken::new(),
-                    )
-                    .await;
-                assert_eq!(
-                    duplicate.outcome,
-                    CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
-                );
-            }
-            assert_eq!(fs::read(attempts).expect("one stderr attempt"), b"x");
-            let expected_argv = if phase == "add" {
-                expected_mutation_argv(
-                    b"add",
-                    &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"],
-                )
-            } else {
-                expected_mutation_argv(
-                    b"commit",
-                    &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"],
-                )
-            };
-            assert_eq!(fs::read(argv).expect("stderr safe argv"), expected_argv);
-        }
-    }
+async fn service_commit_process_failure_nonzero() {
+    assert_commit_process_failure("nonzero", CommitErrorCode::GitFailed).await;
+}
+
+#[tokio::test]
+async fn service_add_process_failure_stdout_overflow() {
+    assert_add_process_failure("stdout-overflow", CommitErrorCode::OutputTooLarge).await;
+}
+
+#[tokio::test]
+async fn service_commit_process_failure_stdout_overflow() {
+    assert_commit_process_failure("stdout-overflow", CommitErrorCode::OutputTooLarge).await;
+}
+
+#[tokio::test]
+async fn service_add_process_failure_wait() {
+    assert_add_process_failure("wait", CommitErrorCode::TimedOut).await;
+}
+
+#[tokio::test]
+async fn service_commit_process_failure_wait() {
+    assert_commit_process_failure("wait", CommitErrorCode::TimedOut).await;
+}
+
+#[tokio::test]
+async fn service_add_process_failure_inherited_pipe() {
+    assert_add_process_failure("inherited-pipe", CommitErrorCode::ProcessControlFailed).await;
+}
+
+#[tokio::test]
+async fn service_commit_process_failure_inherited_pipe() {
+    assert_commit_process_failure("inherited-pipe", CommitErrorCode::ProcessControlFailed).await;
+}
+
+#[tokio::test]
+async fn service_add_stdout_exact() {
+    assert_exact_stdout("add").await;
+}
+
+#[tokio::test]
+async fn service_commit_stdout_exact() {
+    assert_exact_stdout("commit").await;
+}
+
+#[tokio::test]
+async fn service_add_pre_mutation_missing() {
+    assert_pre_mutation_failure("add", "missing", CommitErrorCode::SpawnFailed, 0).await;
+}
+
+#[tokio::test]
+async fn service_add_pre_mutation_pre_cancel() {
+    assert_pre_mutation_failure("add", "pre-cancel", CommitErrorCode::Cancelled, 0).await;
+}
+
+#[tokio::test]
+async fn service_add_pre_mutation_nonzero_before() {
+    assert_pre_mutation_failure("add", "nonzero-before", CommitErrorCode::GitFailed, 1).await;
+}
+
+#[tokio::test]
+async fn service_commit_pre_mutation_missing() {
+    assert_pre_mutation_failure("commit", "missing", CommitErrorCode::SpawnFailed, 0).await;
+}
+
+#[tokio::test]
+async fn service_commit_pre_mutation_pre_cancel() {
+    assert_pre_mutation_failure("commit", "pre-cancel", CommitErrorCode::Cancelled, 0).await;
+}
+
+#[tokio::test]
+async fn service_commit_pre_mutation_nonzero_before() {
+    assert_pre_mutation_failure("commit", "nonzero-before", CommitErrorCode::GitFailed, 1).await;
+}
+
+#[tokio::test]
+async fn service_add_stderr_exact() {
+    assert_stderr_cap("add", "stderr-exact", None).await;
+}
+
+#[tokio::test]
+async fn service_add_stderr_overflow() {
+    assert_stderr_cap(
+        "add",
+        "stderr-overflow",
+        Some(CommitErrorCode::OutputTooLarge),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn service_commit_stderr_exact() {
+    assert_stderr_cap("commit", "stderr-exact", None).await;
+}
+
+#[tokio::test]
+async fn service_commit_stderr_overflow() {
+    assert_stderr_cap(
+        "commit",
+        "stderr-overflow",
+        Some(CommitErrorCode::OutputTooLarge),
+    )
+    .await;
 }
 
 #[tokio::test]

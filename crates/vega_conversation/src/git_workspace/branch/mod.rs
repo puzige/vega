@@ -231,6 +231,8 @@ impl BranchWorkspaceService {
                 &cancel_for_check,
                 #[cfg(test)]
                 executable,
+                #[cfg(test)]
+                None,
             )?;
             validate_target_changes(
                 &runner,
@@ -325,6 +327,8 @@ impl BranchWorkspaceService {
                                 &mutation_cancel,
                                 #[cfg(test)]
                                 executable,
+                                #[cfg(test)]
+                                None,
                             )?;
                             let authority = validate_target_changes(
                                 &runner,
@@ -455,6 +459,8 @@ impl BranchWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
+                #[cfg(test)]
+                None,
             )?;
             build_branch_identity(&runner, &cancel)
         })

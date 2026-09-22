@@ -26,37 +26,10 @@ async fn trusted_git_empty_selection_spawns_zero_add() {
 }
 
 #[tokio::test]
-async fn empty_selection_never_spawns_add_for_each_real_staged_delta() {
+async fn empty_selection_never_spawns_add_for_each_staged_delta() {
     for kind in ["add", "modify", "mode", "delete", "rename"] {
-        let repo = Repo::new();
-        match kind {
-            "add" => {
-                fs::write(repo.path().join("added.txt"), "added\n").expect("add fixture");
-                run_git(repo.path(), &["add", "added.txt"]);
-            }
-            "modify" => {
-                fs::write(repo.path().join("tracked.txt"), "modified\n").expect("modify fixture");
-                run_git(repo.path(), &["add", "tracked.txt"]);
-            }
-            "mode" => {
-                let path = repo.path().join("tracked.txt");
-                let mut permissions = fs::metadata(&path).expect("mode metadata").permissions();
-                permissions.set_mode(0o755);
-                fs::set_permissions(path, permissions).expect("mode fixture");
-                run_git(repo.path(), &["add", "tracked.txt"]);
-            }
-            "delete" => run_git(repo.path(), &["rm", "-q", "tracked.txt"]),
-            "rename" => run_git(repo.path(), &["mv", "tracked.txt", "renamed.txt"]),
-            _ => unreachable!(),
-        }
-        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-        workspace
-            .refresh(CancellationToken::new())
-            .await
-            .expect("staged refresh");
-        let (_recorder, script, argv, _input) = mutation_recorder();
-        let trusted = TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, script)
-            .expect("trusted recorder");
+        let fixture = command_stub::PolicyFixture::new(kind);
+        let (_workspace, trusted) = fixture.services().await;
         let checklist = trusted
             .open_checklist(CancellationToken::new())
             .await
@@ -66,7 +39,7 @@ async fn empty_selection_never_spawns_add_for_each_real_staged_delta() {
             .await;
         assert!(completion.prepared.is_some(), "{kind} staged delta");
         assert_eq!(completion.error, None, "{kind} staged delta");
-        assert!(!argv.exists(), "{kind} empty selection spawned add");
+        fixture.assert_no_mutation();
     }
 }
 
