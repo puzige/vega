@@ -39,6 +39,56 @@ The code-level audit finds a useful split for the two largest cases; they are no
 
 All original distinctions must map to explicit assertions at the appropriate layer. Reuse the command boundary and finite fixture protocol from B1-B3; one owner controls shared command_stub changes. Prefer bounded capture/action transitions, no arbitrary nth-read counters. H1/H2 receive same before/after, no-exec, negative-control and full-gate acceptance as B1-B7. Record any irreducible real-process portion and its measured cost. Dedicated implementation owners may work in separate worktrees but shared backend changes integrate sequentially.
 
+## Batch 5 — workspace lifecycle generation/race
+
+Three `git_workspace::tests::lifecycle` race tests were migrated to the finite
+in-process snapshot-read boundary (`lifecycle_stub.rs` + captured
+`lifecycle-fixtures.json`). The real `GitWorkspaceService::refresh`,
+`begin_owned_refresh` and `refresh_owned_after_mutation` still run their entire
+read protocol; only the external `git` process is replaced by captured bytes and
+an explicit completion channel. The shell `mkdir`/`sleep` gates and their Git
+repositories are gone.
+
+| Test | Original assertions preserved | Retained real contract |
+|---|---|---|
+| `git_workspace_latest_refresh_wins_without_stale_overwrite` | superseded refresh returns `StaleGeneration`; the latest snapshot stays diffable | `lifecycle_captured_states_match_real_git` |
+| `git_workspace_owner_finalize_fences_pre_registered_poll_completion` | pre-registered poll returns `StaleGeneration`; `state.generation` equals the owner terminal generation | same |
+| `git_workspace_obsolete_failure_does_not_invalidate_newer_snapshot` | obsolete failed capture returns `StaleGeneration`; the newer snapshot stays diffable | same |
+
+Same-machine same-scope: three migrated tests **0.032s** wall (was 3.290s
+cumulative); retained real adapter `lifecycle_captured_states_match_real_git`
+**0.378s**. Full `git_workspace` suite 181/181 in 30.219s. 3 negative controls
+exit 100 with byte-identical restore. No-exec: the 3 migrated tests pass under
+`deny process-exec`; the real adapter is denied (exit 101) and passes normally.
+
+Kept real: `git_workspace_read_timeout_is_typed_and_bounded` (10.36s real
+process timeout + descendant reap), `git_workspace_early_parent_exit_…`,
+`git_workspace_cancel_is_typed_and_reaps_fixture_group`,
+`git_workspace_ctime_detects_equal_size_edit_with_restored_mtime` (real FS ctime)
+and `git_workspace_metadata_remaining_cap_is_inclusive_and_plus_one_fails`.
+
 ## Disposition record
 
 [Per-test audit](vega-issue-149-slow-test-audit.md) records the baseline observations, raw duration totals and remaining groups. These are measured costs, not claimed savings. The highest two matrices are now approved for a split under H1/H2, superseding the initial audit's recommendation to retain them whole. The audit records observation-time status; delivery results will explicitly identify which rows have migrated and which remain outstanding.
+
+### Migrated rows (verified, on `feat/test-dependency-isolation-next`)
+
+Batches 1–5, all with negative controls, no-exec verification and retained real
+adapter contracts:
+
+- commit proof faults + message boundaries (`0adbefc`)
+- empty-blob and no-op normalization matrices (`b1a5d9c`)
+- head-oid / failed-draft / disconnected-recovery policy (`762a99d`)
+- service mutation-outcome error mapping and authoritative recovery, 21 tests (`87d5d75`)
+- explicit-filter, `.gitattributes` and attrs-drift policy, 3 tests (`e8549b9`)
+- workspace lifecycle generation/race, 3 tests (this batch)
+
+### Outstanding rows
+
+The remaining 127-item optimization is **not** complete. Still outstanding:
+`filter_gitlink::real_gitlink_…`, `commit_proof` new-OID/root-inode contracts,
+`codec_topology::sha256_…`, the artifact `preview_open` group, the branch
+lease/generation/guard policies, the `vega_runtime` pixel-budget header test,
+`provider_settings::production_cancel_and_total_deadline`, UI controllers/layout
+and agent concurrency, `vega_markdown` ten-thousand-line document, and
+`s6_acceptance::agent_diff_artifact_dirty_reject_and_two_stage_commit`.

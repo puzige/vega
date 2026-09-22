@@ -5,6 +5,7 @@ use tempfile::{TempDir, tempdir};
 
 mod caps_runner;
 mod lifecycle;
+mod lifecycle_stub;
 mod snapshot;
 
 struct Repo {

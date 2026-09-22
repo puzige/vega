@@ -200,10 +200,10 @@ real_gitlink（15.025s）真实submodule clone/clean/dirty/union语义、SHA256�
 |23|4.681|`vega_conversation::git_workspace::branch::tests::switch_e2e::newer_permit_invalidates_older_and_target_move_fails_before_switch`|fixture refs变化+permit轮换，assert零switch；保留真实ref更新小契约。|
 |24|4.438|`vega_conversation::git_workspace::tests::snapshot::git_workspace_unborn_detached_nonrepo_and_stale_ids_are_typed`|拆4种状态：raw返回/unborn/detached/notrepo错误供业务typed映射，真实探测各状态小契约不重复全service。|
 |25|4.321|`vega_conversation::artifact::tests::capture_reconcile::artifact_provenance_downgrades_once_and_aba_does_not_upgrade`|优先fake A→B→A捕获序列，保留降级一次/不升回断言；真实文件指纹继续读取。|
-|26|3.755|`vega_conversation::git_workspace::tests::lifecycle::git_workspace_latest_refresh_wins_without_stale_overwrite`|以backend channel确定完成顺序替代shellmkdir/sleep gate，保留latest胜出。|
+|26|3.755|`vega_conversation::git_workspace::tests::lifecycle::git_workspace_latest_refresh_wins_without_stale_overwrite`|**已迁移(batch5)** 以backend channel确定完成顺序替代shellmkdir/sleep gate，保留latest胜出；同范围3.290s→0.032s(3项)，保留真实adapter 0.378s。|
 |27|3.752|`vega_conversation::git_workspace::tests::snapshot::git_workspace_private_content_head_and_raw_rename_rotate_ids`|用定序raw/content变化保留每种generation旋转，真实内容指纹不mock。|
 |28|3.729|`vega_markdown::stream::tests::ten_thousand_line_document_keeps_cache_bounded_and_linear`|这是48k增量的真实算法/内存界契约，不能换假parser；保留大样本，检查doc生成/重复parse开销并profile，不降低规模掩盖复杂度。|
-|29|3.657|`vega_conversation::git_workspace::tests::lifecycle::git_workspace_owner_finalize_fences_pre_registered_poll_completion`|backend gate控制poll/finalize顺序，保留owner fence及最终generation；无需Git进程。|
+|29|3.657|`vega_conversation::git_workspace::tests::lifecycle::git_workspace_owner_finalize_fences_pre_registered_poll_completion`|**已迁移(batch5)** backend gate控制poll/finalize顺序，保留owner fence及最终generation；无需Git进程。|
 |30|3.616|`vega::bin/vega::tests::agent::issue67_production_routes_keep_one_background_run_and_origin_stream`|保留真实route/stream归属，定序provider events，去重复repo准备；不mock active run判定。|
 |31|3.526|`vega::bin/vega::tests::commit_controller::commit_controller_same_id_entity_aba_is_stale_and_worker_recovers_authority`|真实entity ABA/ownership判定+受控完成事件，避免为每个ABA场景真commit；保留worker恢复adapter对照。|
 |32|3.497|`vega::bin/vega::tests::agent::issue67_concurrent_stop_a_only`|对应stopB反向断言，真实cancel隔离+受控provider gate，清理同组Gitfixture。|
@@ -225,7 +225,7 @@ real_gitlink（15.025s）真实submodule clone/clean/dirty/union语义、SHA256�
 |48|2.463|`vega_conversation::git_workspace::tests::snapshot::git_workspace_binary_symlink_and_special_are_metadata_only`|保留真实binary/symlink/special文件和围栏，stub无关Gitmetadata读取；不mock文件分类结果。|
 |49|2.460|`vega_conversation::git_workspace::tests::snapshot::git_workspace_aba_allocates_fresh_generation_without_id_revival`|raw A→B→A；断言旧ID绝不复活，优先无进程业务迁移。|
 |50|2.430|`vega_conversation::git_workspace::tests::snapshot::git_workspace_clean_info_attributes_change_rotates_generation`|真实info/attributes文件变化保留，rawcapture相同；断言attrs变化仍旋转generation。|
-|51|2.388|`vega_conversation::git_workspace::tests::lifecycle::git_workspace_obsolete_failure_does_not_invalidate_newer_snapshot`|backend延迟旧请求返回错误，新请求先完成；保留新snapshot有效，无需shellgate。|
+|51|2.388|`vega_conversation::git_workspace::tests::lifecycle::git_workspace_obsolete_failure_does_not_invalidate_newer_snapshot`|**已迁移(batch5)** backend延迟旧请求返回错误，新请求先完成；保留新snapshot有效，无需shellgate。|
 |52|2.292|`vega::bin/vega::tests::branch::branch_controller_close_cancels_owner_but_releases_only_after_cleanup`|channel暂停真实cleanupcompletion，assert先cancel后release，不靠shell忙等；真实branch cleanup另测试。|
 |53|2.280|`vega_conversation::git_workspace::branch::tests::snapshot_ids::opaque_ids_are_service_generation_slot_and_seal_bound`|录制相同投影创建独立service/epoch，保留跨service/slot/seal拒绝，不需重复Gitrepo。|
 |54|2.268|`vega_conversation::git_workspace::branch::tests::state_guards::staged_and_untracked_states_are_dirty_and_every_marker_is_rejected`|rawdirtyfixture+真实marker文件遍历，保留各marker拒绝；缩减真实Git准备。|

@@ -1,3 +1,4 @@
+use super::lifecycle_stub::{GateTarget, LifecycleFixture, assert_lifecycle_adapter_state};
 use super::*;
 
 #[test]
@@ -47,40 +48,22 @@ fn git_workspace_read_timeout_is_typed_and_bounded() {
 
 #[tokio::test]
 async fn git_workspace_latest_refresh_wins_without_stale_overwrite() {
-    let repo = Repo::new();
-    repo.write("latest.txt", b"latest\n");
-    let script = repo.path().join("fixture-git");
-    let gate = tempdir().unwrap();
-    let lock = gate.path().join("first.lock");
-    let ready = gate.path().join("first.ready");
-    let release = gate.path().join("first.release");
-    fs::write(
-            &script,
-            production_git_script(format!(
-                "#!/bin/sh\nif mkdir '{}' 2>/dev/null; then : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; fi\nexec /usr/bin/git \"$@\"\n",
-                lock.display(),
-                ready.display(),
-                release.display()
-            )),
-        )
-        .unwrap();
-    let mut permissions = fs::metadata(&script).unwrap().permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&script, permissions).unwrap();
-    let service = Arc::new(GitWorkspaceService::new_for_test(repo.path(), script).unwrap());
+    // The real `GitWorkspaceService::refresh` still runs its whole read
+    // protocol; only the external Git process is replaced by the exact captured
+    // bytes for an unborn branch with one untracked file. The first refresh is
+    // held at its own declared read while the latest refresh completes, so the
+    // completion order is explicit and no shell `mkdir`/`sleep` gate or
+    // repository is involved.
+    let fixture = LifecycleFixture::new("latest-untracked");
+    let service = Arc::new(fixture.service());
+    let mut gate = fixture.arm_gate(GateTarget::TopLevel, false);
     let first = tokio::spawn({
         let service = service.clone();
         async move { service.refresh(CancellationToken::new()).await }
     });
-    for _ in 0..500 {
-        if ready.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(ready.exists(), "first refresh did not enter fixture delay");
+    gate.wait_entered().await;
     let latest = service.refresh(CancellationToken::new()).await.unwrap();
-    fs::write(&release, b"release\n").unwrap();
+    gate.release();
     assert_eq!(
         first.await.unwrap().unwrap_err().code(),
         GitWorkspaceErrorCode::StaleGeneration
@@ -98,101 +81,57 @@ async fn git_workspace_latest_refresh_wins_without_stale_overwrite() {
             .file_id(),
         file.id
     );
+    fixture.assert_clean();
 }
 
 #[tokio::test]
 async fn git_workspace_owner_finalize_fences_pre_registered_poll_completion() {
-    let repo = Repo::new();
-    repo.write("tracked.txt", b"base\n");
-    repo.commit_all();
-    let fixture = tempdir().unwrap();
-    let script = fixture.path().join("fixture-git");
-    let arm = fixture.path().join("arm");
-    let lock = fixture.path().join("poll.lock");
-    let ready = fixture.path().join("poll.ready");
-    let release = fixture.path().join("poll.release");
-    fs::write(
-            &script,
-            production_git_script(format!(
-                "#!/bin/sh\nset -eu\nis_status=0\nfor arg in \"$@\"; do [ \"$arg\" = status ] && is_status=1 || true; done\nif [ \"$is_status\" = 1 ] && [ -e '{}' ] && mkdir '{}' 2>/dev/null; then : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; fi\nexec /usr/bin/git \"$@\"\n",
-                arm.display(),
-                lock.display(),
-                ready.display(),
-                release.display(),
-            )),
-        )
-        .unwrap();
-    let mut permissions = fs::metadata(&script).unwrap().permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&script, permissions).unwrap();
-    let service = Arc::new(GitWorkspaceService::new_for_test(repo.path(), script).unwrap());
+    // The owner handoff is real service policy. Only the external reads are
+    // served from two captured states: A is the clean tracked baseline and the
+    // terminal state is the same path modified. The ordinary poll is held at
+    // its status read until the owner refresh publishes the terminal
+    // generation, so a poll registered before the owner cannot win.
+    let fixture = LifecycleFixture::new("owner-base");
+    let service = Arc::new(fixture.service());
     let a = service.refresh(CancellationToken::new()).await.unwrap();
     let owner = service.begin_owned_refresh(a.generation).unwrap();
-    repo.write("tracked.txt", b"terminal B\n");
-    fs::write(&arm, b"arm").unwrap();
+    fixture.set_case("owner-terminal");
+    let mut gate = fixture.arm_gate(GateTarget::Status, false);
     let poll = tokio::spawn({
         let service = service.clone();
         async move { service.refresh(CancellationToken::new()).await }
     });
-    for _ in 0..500 {
-        if ready.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(ready.exists(), "ordinary poll did not enter barrier");
+    gate.wait_entered().await;
     let b = service
         .refresh_owned_after_mutation(owner, CancellationToken::new())
         .await
         .unwrap();
     assert!(b.generation > a.generation);
-    fs::write(&release, b"release").unwrap();
+    gate.release();
     assert_eq!(
         poll.await.unwrap().unwrap_err().code(),
         GitWorkspaceErrorCode::StaleGeneration
     );
     assert_eq!(service.state.lock().unwrap().generation, b.generation);
+    fixture.assert_clean();
 }
 
 #[tokio::test]
 async fn git_workspace_obsolete_failure_does_not_invalidate_newer_snapshot() {
-    let repo = Repo::new();
-    repo.write("newer.txt", b"newer\n");
-    let script = repo.path().join("fixture-git");
-    let gate = tempdir().unwrap();
-    let lock = gate.path().join("first.lock");
-    let ready = gate.path().join("first.ready");
-    let release = gate.path().join("first.release");
-    fs::write(
-            &script,
-            production_git_script(format!(
-                "#!/bin/sh\nif mkdir '{}' 2>/dev/null; then : > '{}'; while [ ! -e '{}' ]; do sleep 0.01; done; exit 91; fi\nexec /usr/bin/git \"$@\"\n",
-                lock.display(),
-                ready.display(),
-                release.display()
-            )),
-        )
-        .unwrap();
-    let mut permissions = fs::metadata(&script).unwrap().permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&script, permissions).unwrap();
-    let service = Arc::new(GitWorkspaceService::new_for_test(repo.path(), script).unwrap());
+    // An obsolete refresh whose modelled external read fails must not disturb
+    // the newer successful snapshot. The failure is reported only after the
+    // latest-request fence, so the obsolete caller observes StaleGeneration and
+    // the newer snapshot and its identifiers stay authoritative.
+    let fixture = LifecycleFixture::new("newer-untracked");
+    let service = Arc::new(fixture.service());
+    let mut gate = fixture.arm_gate(GateTarget::TopLevel, true);
     let obsolete = tokio::spawn({
         let service = service.clone();
         async move { service.refresh(CancellationToken::new()).await }
     });
-    for _ in 0..500 {
-        if ready.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(
-        ready.exists(),
-        "obsolete refresh did not enter fixture delay"
-    );
+    gate.wait_entered().await;
     let latest = service.refresh(CancellationToken::new()).await.unwrap();
-    fs::write(&release, b"release\n").unwrap();
+    gate.release();
     assert_eq!(
         obsolete.await.unwrap().unwrap_err().code(),
         GitWorkspaceErrorCode::StaleGeneration
@@ -210,6 +149,7 @@ async fn git_workspace_obsolete_failure_does_not_invalidate_newer_snapshot() {
             .file_id(),
         file.id
     );
+    fixture.assert_clean();
 }
 
 #[tokio::test]
@@ -398,4 +338,25 @@ async fn git_workspace_early_parent_exit_with_inherited_pipes_fails_and_reaps_gr
             .success(),
         "inherited-pipe descendant survived cleanup"
     );
+}
+
+/// Retained real adapter contract: the exact bytes the lifecycle race tests
+/// consume from `lifecycle-fixtures.json` must still match actual Git for the
+/// same owned states. Only the nondeterministic commit identity is normalized.
+#[test]
+fn lifecycle_captured_states_match_real_git() {
+    let latest = Repo::new();
+    latest.write("latest.txt", b"latest\n");
+    assert_lifecycle_adapter_state(latest.path(), "latest-untracked");
+
+    let newer = Repo::new();
+    newer.write("newer.txt", b"newer\n");
+    assert_lifecycle_adapter_state(newer.path(), "newer-untracked");
+
+    let owner = Repo::new();
+    owner.write("tracked.txt", b"base\n");
+    owner.commit_all();
+    assert_lifecycle_adapter_state(owner.path(), "owner-base");
+    owner.write("tracked.txt", b"terminal B\n");
+    assert_lifecycle_adapter_state(owner.path(), "owner-terminal");
 }

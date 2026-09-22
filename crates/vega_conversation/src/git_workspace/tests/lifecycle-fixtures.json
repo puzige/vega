@@ -1,0 +1,66 @@
+{
+  "latest-untracked": {
+    "raw": {
+      "status": "# branch.oid (initial)\u0000# branch.head main\u0000? latest.txt\u0000",
+      "paths": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": "",
+      "head": "(initial)"
+    },
+    "files": {
+      "latest.txt": "latest\n"
+    },
+    "executable_files": []
+  },
+  "newer-untracked": {
+    "raw": {
+      "status": "# branch.oid (initial)\u0000# branch.head main\u0000? newer.txt\u0000",
+      "paths": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": "",
+      "head": "(initial)"
+    },
+    "files": {
+      "newer.txt": "newer\n"
+    },
+    "executable_files": []
+  },
+  "owner-base": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u0000",
+      "paths": "tracked.txt\u0000",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": "",
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "tracked.txt": "base\n"
+    },
+    "executable_files": []
+  },
+  "owner-terminal": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u00001 .M N... 100644 100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 df967b96a579e45a18b8251732d16804b2e56a55 tracked.txt\u0000",
+      "paths": "tracked.txt\u0000",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": ":100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 0000000000000000000000000000000000000000 M\u0000tracked.txt\u0000",
+      "unstaged_numstat": "1\t1\ttracked.txt\u0000",
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "tracked.txt": "terminal B\n"
+    },
+    "executable_files": []
+  }
+}
