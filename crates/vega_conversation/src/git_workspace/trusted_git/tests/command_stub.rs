@@ -12,11 +12,22 @@ struct FixtureData {
     attrs_by_input: BTreeMap<String, String>,
 }
 
+/// One explicit external mutation response: the exact argv the production code
+/// must build, the captured state the real Git mutation produced (if any), and
+/// the typed result the process boundary reports. `record` distinguishes a real
+/// spawn from a modelled pre-spawn denial (missing executable / pre-cancel).
+struct ExpectedMutation {
+    argv: Vec<OsString>,
+    post: Option<FixtureData>,
+    result: Option<GitWorkspaceErrorCode>,
+    record: bool,
+}
+
 struct StubState {
     data: FixtureData,
     requests: Vec<Vec<OsString>>,
     unexpected: Vec<Vec<OsString>>,
-    mutations_expected: std::collections::VecDeque<(Vec<OsString>, FixtureData)>,
+    mutations_expected: std::collections::VecDeque<ExpectedMutation>,
     mutations: Vec<(Vec<OsString>, Vec<u8>)>,
     proof_plan: Option<String>,
 }
@@ -35,6 +46,13 @@ pub(super) struct PolicyFixture {
 impl PolicyFixture {
     pub(super) fn new(case: &str) -> Self {
         Self::new_from_json(include_str!("command-fixtures.json"), case)
+    }
+
+    /// Captured owned-Git states for the service mutation-outcome cases. The
+    /// raw bytes are the same adapter inputs as `command-fixtures.json`; they
+    /// live separately only so one mutation may apply a real post-state.
+    pub(super) fn service(case: &str) -> Self {
+        Self::new_from_json(include_str!("service-fixtures.json"), case)
     }
 
     pub(super) fn new_from_json(json: &str, case: &str) -> Self {
@@ -127,6 +145,20 @@ impl PolicyFixture {
     // Explicit external protocol responses, never simulated Git operations.
     // Only the expected mutations are ordered; ordinary reads remain unordered.
     pub(super) fn expect_mutation(&self, verb: &str, args: &[&str], post_case: &str) {
+        self.expect_mutation_result(verb, args, Some(post_case), None, true);
+    }
+
+    /// Declares the single expected external mutation and the finite result the
+    /// process boundary reports: an optional captured post-state, an optional
+    /// typed process error, and whether the boundary actually spawned.
+    pub(super) fn expect_mutation_result(
+        &self,
+        verb: &str,
+        args: &[&str],
+        post_case: Option<&str>,
+        result: Option<GitWorkspaceErrorCode>,
+        record: bool,
+    ) {
         let mut state = self.backend.state.lock().expect("stub state");
         let argv = PREFIX
             .iter()
@@ -135,9 +167,12 @@ impl PolicyFixture {
             .chain(args.iter().copied())
             .map(OsString::from)
             .collect();
-        state
-            .mutations_expected
-            .push_back((argv, self.fixtures[post_case].clone()));
+        state.mutations_expected.push_back(ExpectedMutation {
+            argv,
+            post: post_case.map(|case| self.fixtures[case].clone()),
+            result,
+            record,
+        });
     }
 
     pub(super) fn proof_plan(&self, plan: &str) {
@@ -266,21 +301,31 @@ impl GitCommandBackend for CommandStub {
             && command.get_current_dir() == Some(self.root.as_path())
             && args.starts_with(&prefix)
             && strings.len() == args.len();
-        if let (true, Some(input)) = (
-            valid_command
-                && state
-                    .mutations_expected
-                    .front()
-                    .is_some_and(|(expected, _)| expected == &args),
-            input,
-        ) {
-            let (_, post) = state
+        if valid_command
+            && state
+                .mutations_expected
+                .front()
+                .is_some_and(|expected| expected.argv == args)
+        {
+            let expected = state
                 .mutations_expected
                 .pop_front()
                 .expect("expected mutation");
-            state.mutations.push((args, input.to_vec()));
-            PolicyFixture::apply_files(&self.root, &state.data, &post);
-            state.data = post;
+            // Only a boundary that actually spawned records an external attempt;
+            // a modelled pre-spawn denial (missing executable / pre-cancel) is not
+            // an observed process invocation.
+            if expected.record {
+                state
+                    .mutations
+                    .push((args, input.map_or_else(Vec::new, <[u8]>::to_vec)));
+            }
+            if let Some(post) = expected.post {
+                PolicyFixture::apply_files(&self.root, &state.data, &post);
+                state.data = post;
+            }
+            if let Some(code) = expected.result {
+                return Err(error(code));
+            }
             return Ok(Output {
                 stdout: Vec::new(),
                 overflow: false,
