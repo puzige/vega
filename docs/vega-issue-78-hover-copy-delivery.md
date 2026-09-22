@@ -18,7 +18,7 @@
 | C1–C6, historical hydration, attachments, live timeline, 10k list | production GPUI/controller regression | `cargo test -p vega_ui conversation_stream::tests -- --nocapture` | 199 passed, 0 failed (`07-stream-regressions.log`, 4.65s test execution). |
 | Keyboard activation, distinct clipboard sentinel before Enter and Space | production GPUI handler/render | `cargo test -p vega_ui issue78_hover_copy_geometry_pointer_path_and_keyboard -- --nocapture` | 1 passed, 0 failed (`08-keyboard-sentinel.log`, 0.02s test execution). |
 | Format | static | `cargo fmt --all -- --check` | PASS (exit 0, empty `09-fmt.log`). |
-| Candidate | build/package | `cargo build -p vega`; `cargo xtask package` | Pending. No install/launch performed by implementation agent. |
+| Candidate | build/package | `cargo build -p vega`; `cargo xtask package` | PASS, debug build 43.70s; signed release package complete (`10-build.log`, `11-package.log`). No install/launch performed. |
 
 Real GPUI tests read the clipboard, compare exact raw user trailing newlines and assistant Markdown URLs/fences, check successive live deltas, preserve the unsent Composer draft, and ensure empty failed answers have no copy action. Drawing tests cover both roles, Light/Dark and 320px content width, mouse path from body across the gap to the button, moving out after clicking, fixed geometry, and keyboard activation. Painted-quad alpha observes actual visibility after focus; initial un-focused SVG visibility remains part of native acceptance.
 
@@ -29,6 +29,13 @@ Real GPUI tests read the clipboard, compare exact raw user trailing newlines and
 - `03-green-attempt.log`: missing private MessageCopy import in benchmark module; fixed.
 - `05-focused.log`: actual mouse-focus visibility regression, fixed to keyboard-only `focus_visible`; old direct `draw` fixture had no GPUI current view for a new focusable control. Switched the bubble geometry fixture to a mounted `EntryView`; all original geometry/text assertions remain unchanged.
 - All original failed outputs remain in the local evidence directory. No ignored or weakened assertions; no retries hide failures.
+
+## Candidate
+
+- Built source: `5f2b8675b08e25b1044ebc3a18164989a42aa6b6`.
+- Binary SHA-256: `52650a7983f7b393703f749d200f9cd6b4b6416243a44955aadd8a3b3e704a47`.
+- `codesign --verify --deep --strict --verbose=2 dist/Vega.app`: PASS (`12-codesign.log`).
+- This candidate is based on `c0a444c` and does not include Issue #141. Integration/rebase requires a fresh candidate identity; do not present this as latest master.
 
 ## Log hashes
 
@@ -41,6 +48,9 @@ Real GPUI tests read the clipboard, compare exact raw user trailing newlines and
 - `07-stream-regressions.log`: `eb4399d04e82ff0824906eb6f034c0be0de0732b89505c8df5ecd2553bb83aca`
 - `08-keyboard-sentinel.log`: `61d5a0e6136bbf80286f1a118fe4f6dcf439f4b38991500ba72d6a81aa189dbb`
 - `09-fmt.log`: `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+- `10-build.log`: `a925e977091fdbb9df86e6877db0b4e47358baa57c49e5a2d832e173cd9e2ef9`
+- `11-package.log`: `8cba7a021b3c96dab5280723756f2450b540ae201dfe867d1eadbf9a8f20ee7d`
+- `12-codesign.log`: `8f286a083210fac02910d8e7b36e183450bb435b1c9bdb93a17a85c98a09225e`
 
 ## Residuals
 
