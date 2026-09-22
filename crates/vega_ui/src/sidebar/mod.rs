@@ -575,7 +575,12 @@ impl Sidebar {
     /// Compact functional sidebar toolbar, aligned with the native titlebar.
     fn render_brand(&self, colors: &ThemeColors, cx: &App) -> AnyElement {
         div()
-            .h(px(40.))
+            .h(px(Layout::MAIN_HEADER_HEIGHT))
+            .flex_shrink_0()
+            // The parent already contributes the standard section gap.
+            .mb(px(
+                Layout::SIDEBAR_TOOLBAR_CONTENT_GAP - Layout::SIDEBAR_SECTION_GAP
+            ))
             .flex()
             .items_center()
             .justify_end()
@@ -720,7 +725,6 @@ impl Render for Sidebar {
                     .flex_1()
                     .min_h_0()
                     .px(px(Layout::SIDEBAR_PADDING))
-                    .pt(px(Layout::SIDEBAR_PADDING))
                     .pb(px(Layout::SIDEBAR_PADDING))
                     .gap_3()
                     .child(self.render_brand(&colors, cx))
