@@ -4,6 +4,8 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## 最高原则：SDD（Spec-Driven Development）
 
+**2026-09-22 用户更新（Issue #140）**：按 [测试依赖隔离规格](docs/vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 将 Git/Shell 业务分支测试迁移到进程内测试替身，保留真实业务与安全断言，并以适配层集成测试验证真实进程行为。该明确授权优先于下文要求每个业务场景均走真实 E2E 的旧约束；不得把 mock 证据标作真实进程验收。
+
 **Spec 先行，代码不允许先于 spec。** 所有实现工作必须对应 [`docs/`](docs/) 中的具体规格章节。设计文档以本仓库 `docs/` 为准（主索引见 [README](README.md#状态)）。
 
 - [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md) 是**执行宪法**：红线清单、依赖白名单、遇阻上报协议、验收协议。任何 agent 开工前必读。
@@ -38,10 +40,11 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 - **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
 - 云端流水线拆成两条独立 workflow，共享同一个 cargo 缓存 key（`shared-key: vega`，2026-09-22 用户裁决）：
-  - `.github/workflows/pr-check.yml`：`pull_request`（base `master`）跑 `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace`；只读缓存（`save-if: false`）。
+  - `.github/workflows/pr-check.yml`：`pull_request`（base `master`）并行运行 quality（fmt / clippy / doc-tests）与一次 nextest archive 构建，再由 4 个 macOS 分片复用归档执行全量测试（`--partition hash:<shard>/4`）；`trusted_git` 测试 `threads-required = 2`；C9 中的 pricing 与真实 PTY 端到端测试各自独占测试时段（`num-test-threads`），`retries = 0`。汇总门禁名保持 `check (fmt, clippy, test)`，仅所有依赖成功才放行；失败、取消或跳过都不放行。quality/build 只读缓存（`save-if: false`），测试分片不恢复编译缓存，详见 [Issue #140](docs/vega-issue-140-ci-test-throughput.md)。
   - `.github/workflows/master-build.yml`：push 到 master（PR merge 后）跑 `cargo xtask package` 并上传 artifact；唯一写缓存的一方。
   - 两条都用标准 Cargo 步骤，不复用自定义 Python 脚本。
 - 发布仍由 `v*` tag 触发（`release.yml`），master build 不发 Release，避免每个 commit 都发版。
+- [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 删除 #136 的 Python 影子选择器及报告；全量测试保持必跑，不恢复本地门禁或调度器。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。本地直接 `cargo` 命令即可，不受调度器约束。
 - 本地开发仍建议自行运行相关 `cargo fmt/clippy/test` 快速自查；任务级 production-root 回归与真实 E2E 证据要求不变（见 exec-guide §7）。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
 

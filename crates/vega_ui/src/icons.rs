@@ -287,11 +287,13 @@ pub fn shell_icon_button(
         .justify_center()
         .rounded_md()
         .when(selected, |button| button.bg(colors.bg_active))
+        .when(enabled, |button| {
+            button.focus_visible(move |style| style.border_2().border_color(colors.accent))
+        })
         .when(enabled && !selected, |button| {
             button
                 .cursor_pointer()
                 .hover(move |style| style.bg(colors.bg_hover))
-                .focus(move |style| style.bg(colors.bg_active))
         })
         .tooltip(move |_, cx| {
             cx.new(|_| IconTooltip(tooltip_label.clone(), shortcut.clone()))

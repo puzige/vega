@@ -738,7 +738,7 @@ fn tool_output_keeps_two_thousand_head_and_tail_lines() {
     assert_eq!(lines[4_000], "line-4004");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "current_thread")]
 async fn cancel_during_a_read_waits_for_it_then_skips_the_next_call() {
     let dir = tempdir().unwrap();
     let slow_content = "line\n".repeat(400_000);
@@ -761,14 +761,27 @@ async fn cancel_during_a_read_waits_for_it_then_skips_the_next_call() {
         },
     ])]);
     let cancel = CancellationToken::new();
+    let (_gate_scope, started, release) = register_readonly_execution_gate();
     let trigger = cancel.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(2)).await;
+    // The worker has passed its cancellation check but cannot complete the real
+    // read until released. No timer determines when cancellation is requested.
+    let interrupt = async move {
+        let observed = tokio::time::timeout(Duration::from_secs(5), started).await;
         trigger.cancel();
-    });
-    let outcome = run_agent(&provider, &tools, request(Vec::new()), cancel)
-        .await
-        .unwrap();
+        // Release even if observing the start failed, before asserting below.
+        let released = release.send(());
+        (observed, released)
+    };
+    let (outcome, (observed, released)) = tokio::join!(
+        run_agent(&provider, &tools, request(Vec::new()), cancel),
+        interrupt,
+    );
+    observed
+        .expect("read start within bound")
+        .expect("read started");
+    released.expect("read worker waiting for release");
+    let outcome = outcome.unwrap();
+    assert_eq!(outcome.executed_tool_call_count, 1);
     assert!(outcome.interrupted);
     let approved = outcome
             .events
@@ -800,6 +813,11 @@ async fn cancel_during_a_read_waits_for_it_then_skips_the_next_call() {
         .iter()
         .position(|event| matches!(event, RuntimeEvent::Interrupted))
         .unwrap();
+    let RuntimeEvent::ToolCallFinished(result) = &outcome.events[cancelled] else {
+        unreachable!("cancelled index identifies a finished read");
+    };
+    assert!(result.output.contains("1 | line"));
+    assert!(!result.output.contains(CANCELLED_BEFORE_EXECUTION_OUTPUT));
     assert!(approved < running && running < cancelled && cancelled < interrupted);
     assert!(!outcome.events.iter().any(|event| matches!(
         event,

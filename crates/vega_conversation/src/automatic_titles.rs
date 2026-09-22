@@ -336,12 +336,14 @@ mod tests {
         assert_eq!(usage, Some((1, 2, 0, 0)));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn automatic_title_timeout_keeps_fallback_without_retry() {
         let (req, provider) = request(vec![ScriptStep::delay(Duration::from_secs(60))]);
+        let started = tokio::time::Instant::now();
         let result = tokio::time::timeout(Duration::from_secs(25), req.collect("model"))
             .await
             .expect("production 15 second deadline must beat stalled provider");
+        assert_eq!(started.elapsed(), Duration::from_secs(15));
         assert_eq!(result, (None, None));
         assert_eq!(provider.requests().len(), 1);
     }

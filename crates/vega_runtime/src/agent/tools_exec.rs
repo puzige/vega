@@ -1423,6 +1423,51 @@ pub(crate) fn outcome(
     }
 }
 
+// A one-shot test barrier at the worker's committed-to-execute boundary.
+#[cfg(test)]
+struct ReadonlyExecutionGate {
+    started: tokio::sync::oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static READONLY_EXECUTION_GATE: std::cell::RefCell<Option<ReadonlyExecutionGate>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) struct ReadonlyExecutionGateScope(std::marker::PhantomData<std::rc::Rc<()>>);
+
+#[cfg(test)]
+impl Drop for ReadonlyExecutionGateScope {
+    fn drop(&mut self) {
+        READONLY_EXECUTION_GATE.with(|gate| gate.borrow_mut().take());
+    }
+}
+
+#[cfg(test)]
+pub(super) fn register_readonly_execution_gate() -> (
+    ReadonlyExecutionGateScope,
+    tokio::sync::oneshot::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (started, observed) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    READONLY_EXECUTION_GATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        assert!(slot.is_none(), "readonly gate already registered");
+        *slot = Some(ReadonlyExecutionGate {
+            started,
+            release: released,
+        });
+    });
+    (
+        ReadonlyExecutionGateScope(std::marker::PhantomData),
+        observed,
+        release,
+    )
+}
+
 pub(crate) async fn execute_readonly_waiting(
     tools: &vega_tools::Tools,
     call: &RuntimeToolCall,
@@ -1431,6 +1476,8 @@ pub(crate) async fn execute_readonly_waiting(
     let owned_tools = tools.clone();
     let owned_call = call.clone();
     let worker_cancel = cancel.child_token();
+    #[cfg(test)]
+    let gate = READONLY_EXECUTION_GATE.with(|gate| gate.borrow_mut().take());
     let mut task = tokio::task::spawn_blocking(move || {
         if worker_cancel.is_cancelled() {
             terminal_result(
@@ -1440,6 +1487,13 @@ pub(crate) async fn execute_readonly_waiting(
                 None,
             )
         } else {
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                gate.started.send(()).expect("read observer remains alive");
+                gate.release
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("read gate released within bound");
+            }
             execute_readonly(&owned_tools, &owned_call)
         }
     });

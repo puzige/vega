@@ -179,6 +179,10 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 完整的 hover、pressed、focus、disabled、loading、error 和键盘状态是组件交付的一部分。R19 尚未宣称完整视觉 parity 的状态，不得仅凭本文件把它们标记为已完成。
 
+### 8.1 用户消息气泡（Issue #78）
+
+用户文字右对齐于可读消息列；短消息随内容收缩，最大宽度为列宽的 80%（`Layout::USER_MESSAGE_MAX_WIDTH_RATIO`）。气泡采用 `brand_soft` 背景与 `text_primary` 正文，圆角 16px（`Layout::USER_MESSAGE_RADIUS`），水平/垂直内边距为 12/8px，不显示「你」标签。内部空行、CJK/Latin 混排与无空格长文本必须完整换行。用户图片同样沿列右对齐；助手、工具和错误呈现保持既有布局。最大列宽 768px 时，气泡宽不超过 614.4px，正文宽不超过 590.4px。详见 [Issue #78](vega-issue-78-message-bubbles.md)。
+
 ## 9. Composer
 
 - Composer 是单个主表面：增长输入区在上，一行真实操作在下；不要再套多层卡片或装饰性工具栏。
@@ -206,6 +210,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 ```
 
 - Environment 只在有真实 project authority 时出现；standalone task 不显示 project-only rail。
+- Issue #141：新窗口与重启后 Environment 默认折叠，由用户点击头部按钮展开；未手动展开前，项目/任务切换与窗口 resize 不自动展开。不新增持久化设置，详见 [Environment 默认折叠](vega-issue-141-environment-default-collapsed.md)。
 - Environment 卡片不再承载分支入口（R49 人类裁决）：`environment-branch` 行已删除，分支入口唯一化到 composer utility bar，符合「同一动作只有一个入口」。卡片其余行（标题、项目行、Changes / Review、Local terminal）保持不变。
 - 持久右侧 workspace 打开后替代 Environment rail；底部 workspace 横跨 center 与 right。
 - Workspace header 只承载标签与 pane 级操作；内容级工具栏单独成行，并把相关操作收进同一尾部按钮组，禁止用三个同级 `space-between` 元素把中间操作推到面板中央。

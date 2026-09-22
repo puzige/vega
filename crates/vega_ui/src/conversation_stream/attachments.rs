@@ -263,6 +263,7 @@ impl ConversationStream {
 
 fn thumbnail(image: &ImagePreview) -> AnyElement {
     div()
+        .debug_selector(|| "attachment-thumbnail".into())
         .w(px(Layout::ATTACHMENT_THUMBNAIL))
         .h(px(Layout::ATTACHMENT_THUMBNAIL))
         .when_some(image.preview.get().cloned(), |el, preview| {
@@ -273,7 +274,9 @@ fn thumbnail(image: &ImagePreview) -> AnyElement {
 
 pub(crate) fn render_user_images(images: &[ImagePreview]) -> AnyElement {
     div()
+        .w_full()
         .flex()
+        .justify_end()
         .flex_wrap()
         .gap_2()
         .children(images.iter().map(thumbnail))

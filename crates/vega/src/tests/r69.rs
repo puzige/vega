@@ -1627,6 +1627,8 @@ async fn r69_a7_project_draft_lists_and_switches_without_materializing(
         None,
         "the existing switch controller clears its operation"
     );
+    // Explicit reveal preserves the project-context row coverage after #141.
+    f.click("main-header-environment", cx);
     // R6 corollary: artifact-only review stays unoffered; the branch chip is
     // the deliberate project-bound draft exception covered above.
     assert!(
@@ -2836,6 +2838,7 @@ async fn a8_remove_project_keeps_open_task_and_clears_project_authority(
             .expect("durable route")
     });
     assert_eq!(opened.project_id, removed_project);
+    f.click("main-header-environment", cx);
     assert!(!f.absent("environment-rail", cx));
     let message_count = f.message_rows(&opened.id);
     assert!(message_count > 0);
