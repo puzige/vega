@@ -35,7 +35,7 @@ one_hundred_case_delay_matrix_converges_with_p99_under_one_second
 
 判定标准：测试体内存在对 `Instant::elapsed()` 的**上界断言**，且上界是绝对时间预算。这类断言在并行负载下可能失败，与产品正确性无关。
 
-**本轮禁用的测试（9 个）**——已逐个核对属性行与预算：
+**本轮禁用的测试（9 个）**——已逐个核对属性行与预算（第 10 个见下方 2026-09-22 追加）：
 
 | # | 文件 | 行 | 测试函数 | 预算 |
 |---|---|---|---|---|
@@ -48,6 +48,8 @@ one_hundred_case_delay_matrix_converges_with_p99_under_one_second
 | 7 | `crates/vega_runtime/src/openai/tests/http.rs` | 462 | `cancel_during_backoff_aborts_without_another_request` | 2000 ms |
 | 8 | `crates/vega_runtime/src/openai/tests/http.rs` | 500 | `cancel_mid_stream_stops_immediately_with_no_further_events` | 1000 ms |
 | 9 | `crates/vega_conversation/src/git_workspace/trusted_git/tests/summary_draft.rs` | 367 | `draft_deadline_covers_setup_pre_done_and_post_done_stalls` | 1000 ms ×3 phases |
+
+**2026-09-22 追加（issue #123）**：第 10 个负载敏感测试入列——`crates/vega_conversation/src/mcp_settings.rs` 的 `issue73_connection_deadline_covers_probe_and_catalog_together`（断言 probe <280 ms、总耗时 <700 ms 的共享 deadline 预算）。该测试在 CI 并行负载下偶发失败并阻塞 PR check，按用户指示先临时禁用（测试体与断言原样保留，`cargo test -- --ignored` 可手动运行）。`R52_LOAD_SENSITIVE_TESTS` 冻结清单已同步从 9 项更新为 10 项。
 
 ### 2.2 机制：`#[ignore]`，不删测试
 

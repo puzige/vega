@@ -100,16 +100,22 @@ fn r21_default_window_geometry_is_frozen() {
 // ---------------------------------------------------------------------------
 // R52 (docs/vega-r52-test-gate.md §2.5): the load-sensitive disabled set is
 // frozen. Rust has no runtime reflection over test attributes, so this gate
-// scans the workspace sources instead: the tree may contain exactly the nine
+// scans the workspace sources instead: the tree may contain exactly the ten
 // `ignore` attributes below, each must carry a reason starting with
-// `load-sensitive:`, and each must sit on one of the nine named tests. Any
+// `load-sensitive:`, and each must sit on one of the ten named tests. Any
 // silent growth of the disabled set fails here instead of quietly weakening
 // the parallel gate.
 // ---------------------------------------------------------------------------
 
-/// The nine tests R52 disables, each asserting a wall-clock budget that is
+/// The ten tests R52 disables, each asserting a wall-clock budget that is
 /// only reliable when the test binary runs without parallel CPU contention.
-const R52_LOAD_SENSITIVE_TESTS: [&str; 9] = [
+///
+/// `issue73_connection_deadline_covers_probe_and_catalog_together` was added
+/// to this set on 2026-09-22 (issue #123): it asserts a shared-deadline
+/// wall-clock budget (probe <280ms, total <700ms) and was observed flaking
+/// under CI parallel load, blocking PR check. The test body and its
+/// assertions are unchanged; it runs via `--ignored`.
+const R52_LOAD_SENSITIVE_TESTS: [&str; 10] = [
     "lone_text_delta_flushes_during_provider_stall_within_sixteen_ms",
     "cancellation_is_persisted_as_interrupted_under_one_second",
     "duplicate_stop_races_converge_to_exactly_one_terminal_event",
@@ -119,6 +125,7 @@ const R52_LOAD_SENSITIVE_TESTS: [&str; 9] = [
     "cancel_during_backoff_aborts_without_another_request",
     "cancel_mid_stream_stops_immediately_with_no_further_events",
     "draft_deadline_covers_setup_pre_done_and_post_done_stalls",
+    "issue73_connection_deadline_covers_probe_and_catalog_together",
 ];
 
 /// Workspace root: walk up from the running test binary's directory until the
