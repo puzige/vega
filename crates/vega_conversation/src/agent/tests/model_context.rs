@@ -199,3 +199,27 @@ fn model_policy_cannot_be_applied_to_a_different_thread_model() {
             .is_none()
     );
 }
+
+#[test]
+fn issue114_configured_turn_limit_reaches_runtime_tool_config() {
+    let (store, _dir, _) = setup();
+    let prepared = prepare_run_with_images_and_reasoning(
+        store.database_path().unwrap().to_path_buf(),
+        "thread-1".into(),
+        "hello".into(),
+        "system".into(),
+        "user-turn-limit".into(),
+        "assistant-turn-limit".into(),
+        PersistenceActorConfig::default().with_turn_limit(7),
+        false,
+        None,
+        Some(FrozenReasoning::unknown("provider-a", "mock-model")),
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(prepared.request.tool_config.turn_limit, 7);
+
+    // The default stays unlimited (0) for legacy callers.
+    let unlimited = prepare(&store, "thread-1", "provider-a", "unlimited").unwrap();
+    assert_eq!(unlimited.request.tool_config.turn_limit, 0);
+}

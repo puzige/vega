@@ -437,3 +437,30 @@ fn converts_errors_without_losing_structured_fields() {
             if matches!(error.as_ref(), vega_runtime::VegaError::Cancelled)
     ));
 }
+
+#[test]
+fn issue114_finish_reasons_map_end_length_and_turn_limit() {
+    use super::ConversationStopReason;
+
+    for (runtime, expected) in [
+        (
+            vega_runtime::RuntimeFinishReason::End,
+            ConversationStopReason::End,
+        ),
+        (
+            vega_runtime::RuntimeFinishReason::Length,
+            ConversationStopReason::Length,
+        ),
+        (
+            vega_runtime::RuntimeFinishReason::TurnLimit,
+            ConversationStopReason::TurnLimit,
+        ),
+    ] {
+        let event = vega_runtime::RuntimeEvent::Finished(runtime);
+        assert!(matches!(
+            from_runtime_event("assistant-1", &event),
+            Some(ConversationEvent::MessageFinished { message_id, stop_reason })
+                if message_id == "assistant-1" && stop_reason == expected
+        ));
+    }
+}

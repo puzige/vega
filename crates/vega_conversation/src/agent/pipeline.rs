@@ -876,7 +876,8 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
                 checkpoint_root,
                 exact_rules,
             )
-            .with_foreign_call_ids(foreign_call_ids),
+            .with_foreign_call_ids(foreign_call_ids)
+            .with_turn_limit(config.turn_limit as usize),
         },
         next_tool_seq,
     })

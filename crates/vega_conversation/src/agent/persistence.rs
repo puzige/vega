@@ -3,6 +3,10 @@ use super::*;
 #[derive(Clone, Default)]
 pub struct PersistenceActorConfig {
     pub automatic_title: Option<crate::types::AutomaticTitleRequest>,
+    /// Maximum agentic turns (provider round-trips) for this run; `0` means
+    /// unlimited (Issue #114, mirrors Claude Code's `--max-turns`). Carried
+    /// from `[agent] turn_limit` in config.toml through to the runtime.
+    pub turn_limit: u32,
     #[cfg(test)]
     pub(crate) snapshot_writes: Option<Arc<AtomicUsize>>,
     #[cfg(test)]
@@ -35,6 +39,13 @@ impl PersistenceActorConfig {
         request: Option<crate::types::AutomaticTitleRequest>,
     ) -> Self {
         self.automatic_title = request;
+        self
+    }
+
+    /// Sets the maximum number of agentic turns for this run; `0` means
+    /// unlimited (Issue #114).
+    pub fn with_turn_limit(mut self, limit: u32) -> Self {
+        self.turn_limit = limit;
         self
     }
 

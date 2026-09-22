@@ -172,6 +172,20 @@ impl Default for UiPrefs {
     }
 }
 
+/// Agent loop guardrails (Issue #114).
+///
+/// The turn limit mirrors Claude Code's `--max-turns` / `maxTurns`: it caps
+/// the number of agentic turns (provider round-trips) in one run, not the
+/// number of tool calls. `0` means unlimited, which is the default so that
+/// convergence is driven by the context/token budget rather than a fixed
+/// call count.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct AgentConfig {
+    /// Maximum number of agentic turns before a run stops. `0` = unlimited.
+    #[serde(default)]
+    pub turn_limit: u32,
+}
+
 /// Top-level configuration at the config root (tech-spec §6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AppConfig {
@@ -181,6 +195,9 @@ pub struct AppConfig {
     pub defaults: Defaults,
     /// UI preferences.
     pub ui: UiPrefs,
+    /// Agent loop guardrails.
+    #[serde(default)]
+    pub agent: AgentConfig,
 }
 
 /// Comment header written at the top of the config file so every field is
@@ -208,6 +225,11 @@ const FILE_HEADER: &str = "\
 #                        (default: false)
 #   sessions_collapsed - whether the sidebar 「会话」 block starts collapsed
 #                        (default: false)
+#
+# [agent]
+#   turn_limit - maximum number of agentic turns (provider round-trips) in one
+#                run before it stops; 0 means unlimited (default: 0). This caps
+#                turns, not tool calls, mirroring Claude Code's --max-turns.
 ";
 
 /// Path of the config file: `${XDG_CONFIG_HOME:-$HOME/.config}/vega/config.toml`
@@ -366,6 +388,7 @@ mod tests {
                 projects_collapsed: false,
                 sessions_collapsed: false,
             },
+            agent: AgentConfig { turn_limit: 0 },
         }
     }
 
@@ -377,6 +400,28 @@ mod tests {
         config.save_to(&path).unwrap();
         let loaded = load_from(&path).unwrap();
         assert_eq!(config, loaded);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn agent_turn_limit_round_trips_and_defaults_zero() {
+        let dir = temp_dir("agent-turn-limit");
+        let path = dir.join("config.toml");
+        // Round-trip preserves a non-default turn_limit.
+        let mut config = sample_config();
+        config.agent.turn_limit = 7;
+        config.save_to(&path).unwrap();
+        assert_eq!(load_from(&path).unwrap().agent.turn_limit, 7);
+        // A config written before `[agent]` existed loads with the serde
+        // default (`0` = unlimited).
+        let legacy_path = dir.join("legacy.toml");
+        fs::write(
+            &legacy_path,
+            "providers = []\n\n[defaults]\nmodel = \"\"\npermission_mode = \"confirm\"\n\n[ui]\ntheme = \"dark\"\n",
+        )
+        .unwrap();
+        assert_eq!(load_from(&legacy_path).unwrap().agent.turn_limit, 0);
+        assert_eq!(AgentConfig::default().turn_limit, 0);
         fs::remove_dir_all(&dir).unwrap();
     }
 

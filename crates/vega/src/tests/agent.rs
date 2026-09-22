@@ -2103,3 +2103,252 @@ fn local_credential_preparation_failure_has_no_durable_messages() {
         assert!(commit_provider(&thread, Some(&config_path)).is_err());
     }
 }
+
+#[test]
+fn production_agent_worker_applies_configured_turn_limit() {
+    // Issue #114: `[agent] turn_limit` from config.toml must reach the runtime
+    // loop through the real worker entry point and soft-stop before issuing
+    // the (limit + 1)th provider request.
+    let repo = diff_controller_repo();
+    fs::write(repo.path().join("a.txt"), "ok\n").expect("turn limit fixture file");
+    let config_root = tempfile::tempdir().expect("turn limit config root");
+    let config_path = config_root.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"[[providers]]
+name = "owned"
+base_url = "https://provider.invalid/v1"
+models = ["mock-model"]
+key_ref = "owned"
+
+[defaults]
+model = "mock-model"
+permission_mode = "confirm"
+
+[ui]
+theme = "light"
+
+[agent]
+turn_limit = 2
+"#,
+    )
+    .expect("turn limit config");
+    vega_store::keystore::set_key(config_root.path(), "owned", "turn-limit-test-key")
+        .expect("turn limit credential");
+    let data = tempfile::tempdir().expect("turn limit data root");
+    let database_path = data.path().join("vega.db");
+    let store = Store::open(&database_path).expect("turn limit store");
+    store.migrate().expect("turn limit migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        repo.path().to_str().expect("UTF-8 turn limit repo"),
+        "turn-limit-e2e",
+        None,
+    )
+    .expect("turn limit project");
+    let thread =
+        vega_conversation::threads::create_thread(&store, &project.id, "mock-model", "confirm")
+            .expect("turn limit thread");
+
+    // Every provider request proposes one read and asks for another round, so
+    // only the configured turn limit can bound the run.
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::ToolUse {
+                id: "same-call".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"a.txt"}"#.into(),
+            },
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::ToolUse,
+            },
+        ]),
+    ]));
+
+    let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
+    // The worker blocks until the whole run completes and pushes every event
+    // through a bounded channel, so it must run on its own thread while the
+    // test drains concurrently; otherwise a run emitting more than
+    // AGENT_EVENT_CAPACITY events deadlocks the bounded channel.
+    let worker = std::thread::spawn({
+        let database_path = database_path.clone();
+        let project_path = repo.path().to_path_buf();
+        let thread = thread.clone();
+        let config_path = config_path.clone();
+        let provider = provider.clone();
+        move || {
+            run_agent_worker(
+                database_path,
+                project_path,
+                thread,
+                PendingAgentRun::UserMessage("loop until the turn limit".into()),
+                vega_conversation::agent::PermissionQueue::new(),
+                tokio_util::sync::CancellationToken::new(),
+                sender,
+                None,
+                Some(config_path),
+                None,
+                None,
+                Some(provider),
+                Arc::new(AgentWorkerStartProbe::default()),
+            )
+        }
+    });
+
+    let mut events = Vec::new();
+    let finished = loop {
+        let batch = drain_agent_updates(&receiver);
+        events.extend(batch.events);
+        if let Some(finished) = batch.finished {
+            break finished;
+        }
+        std::thread::yield_now();
+    };
+    worker.join().expect("turn limit worker thread");
+    assert!(finished, "the bounded run must terminate successfully");
+    assert_eq!(
+        provider.requests().len(),
+        2,
+        "the (turn_limit + 1)th provider request must never be issued"
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        vega_conversation::types::ConversationEvent::TextDelta { delta, .. }
+            if delta.contains("Agent turn limit (2) reached")
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        vega_conversation::types::ConversationEvent::MessageFinished {
+            stop_reason: vega_conversation::types::ConversationStopReason::TurnLimit,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn production_agent_worker_defaults_to_unlimited_turns() {
+    // Without `[agent] turn_limit`, the worker must keep running tool rounds
+    // with no per-tool-call cap (Issue #114 regression for the old limit 100).
+    let repo = diff_controller_repo();
+    fs::write(repo.path().join("a.txt"), "ok\n").expect("unlimited fixture file");
+    let config_root = tempfile::tempdir().expect("unlimited config root");
+    let config_path = config_root.path().join("config.toml");
+    fs::write(
+        &config_path,
+        r#"[[providers]]
+name = "owned"
+base_url = "https://provider.invalid/v1"
+models = ["mock-model"]
+key_ref = "owned"
+
+[defaults]
+model = "mock-model"
+permission_mode = "confirm"
+
+[ui]
+theme = "light"
+"#,
+    )
+    .expect("unlimited config");
+    vega_store::keystore::set_key(config_root.path(), "owned", "unlimited-test-key")
+        .expect("unlimited credential");
+    let data = tempfile::tempdir().expect("unlimited data root");
+    let database_path = data.path().join("vega.db");
+    let store = Store::open(&database_path).expect("unlimited store");
+    store.migrate().expect("unlimited migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        repo.path().to_str().expect("UTF-8 unlimited repo"),
+        "unlimited-e2e",
+        None,
+    )
+    .expect("unlimited project");
+    let thread =
+        vega_conversation::threads::create_thread(&store, &project.id, "mock-model", "confirm")
+            .expect("unlimited thread");
+
+    // One turn proposes 101 distinct read calls; with no turn limit the run
+    // must execute all of them and converge on the provider's natural end.
+    let calls: Vec<vega_runtime::ProviderEvent> = (0..101)
+        .map(|index| vega_runtime::ProviderEvent::ToolUse {
+            id: format!("call-{index}"),
+            name: "read".into(),
+            input_json: r#"{"path":"a.txt"}"#.into(),
+        })
+        .chain(std::iter::once(vega_runtime::ProviderEvent::Done {
+            stop_reason: vega_runtime::StopReason::ToolUse,
+        }))
+        .collect();
+    let provider = Arc::new(vega_runtime::MockProvider::new_rounds(vec![
+        vec![vega_runtime::ScriptStep::events(calls)],
+        vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("done".into()),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ])],
+    ]));
+
+    let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
+    // A 101-call turn emits far more than AGENT_EVENT_CAPACITY events, and the
+    // worker blocks on the bounded channel, so run it on its own thread and
+    // drain concurrently to avoid a channel deadlock.
+    let worker = std::thread::spawn({
+        let database_path = database_path.clone();
+        let project_path = repo.path().to_path_buf();
+        let thread = thread.clone();
+        let config_path = config_path.clone();
+        let provider = provider.clone();
+        move || {
+            run_agent_worker(
+                database_path,
+                project_path,
+                thread,
+                PendingAgentRun::UserMessage("run every call".into()),
+                vega_conversation::agent::PermissionQueue::new(),
+                tokio_util::sync::CancellationToken::new(),
+                sender,
+                None,
+                Some(config_path),
+                None,
+                None,
+                Some(provider),
+                Arc::new(AgentWorkerStartProbe::default()),
+            )
+        }
+    });
+
+    let mut events = Vec::new();
+    let finished = loop {
+        let batch = drain_agent_updates(&receiver);
+        events.extend(batch.events);
+        if let Some(finished) = batch.finished {
+            break finished;
+        }
+        std::thread::yield_now();
+    };
+    worker.join().expect("unlimited worker thread");
+    assert!(
+        finished,
+        "the unbounded run must terminate on the provider end"
+    );
+    assert_eq!(provider.requests().len(), 2);
+    let finished_calls = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                vega_conversation::types::ConversationEvent::ToolCallFinished { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        finished_calls, 101,
+        "no per-tool-call hard stop may truncate a single turn"
+    );
+    assert!(events.iter().all(|event| !matches!(
+        event,
+        vega_conversation::types::ConversationEvent::TextDelta { delta, .. }
+            if delta.contains("limit")
+    )));
+}
