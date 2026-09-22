@@ -1216,17 +1216,6 @@ impl Render for ConversationStream {
                             }),
                     ),
             )
-            // #76 correction: actual compaction lifecycle is conversation
-            // state, never a Composer setting or action. Keep its own band
-            // between the transcript viewport and the Composer surface.
-            .children(self.render_context_status(cx).map(|status| {
-                div()
-                    .debug_selector(|| "context-status-band".into())
-                    .px(px(Layout::CONTENT_PADDING))
-                    .pb_2()
-                    .flex_shrink_0()
-                    .child(status)
-            }))
             .child(self.render_composer(window, cx))
             .when(project_bound, |root| root.child(self.commit_panel.clone()))
             .into_any_element();

@@ -203,9 +203,7 @@ async fn context_ui_unknown_usage_restore_is_idempotent_and_load_error_is_not_us
 }
 
 #[gpui_kit::test]
-async fn context_ui_composer_has_no_context_control_and_real_status_has_separate_band(
-    cx: &mut TestAppContext,
-) {
+async fn issue117_context_status_is_a_conversation_item(cx: &mut TestAppContext) {
     let window = setup(cx);
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -240,13 +238,19 @@ async fn context_ui_composer_has_no_context_control_and_real_status_has_separate
         .expect("compacting");
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    let status_band = visual
-        .debug_bounds("context-status-band")
-        .expect("status band");
-    let composer = visual
-        .debug_bounds("composer-shell")
-        .expect("composer shell");
-    assert!(status_band.bottom() <= composer.top());
+    assert!(visual.debug_bounds("context-status-band").is_none());
+    assert!(visual.debug_bounds("context-compaction-row").is_some());
+    window
+        .update(cx, |stream, _, cx| {
+            assert_eq!(stream.entries.len(), 1);
+            stream.apply_context_status("context-thread", "mock", status(2, Status::Succeeded), cx);
+            assert_eq!(
+                stream.entries.len(),
+                1,
+                "terminal updates the same list item"
+            );
+        })
+        .expect("terminal");
     assert!(visual.debug_bounds("composer-context").is_none());
 }
 
@@ -319,4 +323,233 @@ async fn context_ui_terminal_and_aba_status_transitions_remain_fenced(cx: &mut T
             assert!(stream.reserve_context_operation_id(cx).expect("ABA") > auto);
         })
         .expect("status fencing");
+}
+
+#[gpui_kit::test]
+async fn issue117_compaction_preserves_stream_order_and_detached_tail(cx: &mut TestAppContext) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "run".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "run".into(),
+                    delta: "before".into(),
+                },
+                cx,
+            );
+            stream.list.set_follow_mode(gpui_kit::FollowMode::Normal);
+            stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(1, Status::Compacting),
+                cx,
+            );
+            assert_eq!(
+                stream.entries.len(),
+                2,
+                "compaction is a semantic list item"
+            );
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "run".into(),
+                    delta: "after".into(),
+                },
+                cx,
+            );
+            stream.apply_context_status("context-thread", "mock", status(1, Status::Succeeded), cx);
+            assert_eq!(stream.entries.len(), 3, "later text follows compaction");
+            assert!(!stream.following_tail());
+            assert_eq!(
+                compaction_timeline(stream),
+                vec!["before", "1:Succeeded:live", "after"]
+            );
+            let mut late = status(1, Status::Compacting);
+            late.updated_at = 99;
+            assert!(!stream.apply_context_status("context-thread", "mock", late, cx));
+            assert_eq!(
+                compaction_timeline(stream),
+                vec!["before", "1:Succeeded:live", "after"]
+            );
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: vega_conversation::types::ToolCall {
+                        id: "tool".into(),
+                        tool: "bash".into(),
+                        input_json: serde_json::json!({"cmd": "pwd"}).to_string(),
+                    },
+                },
+                cx,
+            );
+            assert_eq!(
+                compaction_timeline(stream),
+                vec!["before", "1:Succeeded:live", "after", "tool"]
+            );
+            for generation in 2..10 {
+                stream.apply_context_status(
+                    "context-thread",
+                    "mock",
+                    status(generation, Status::Compacting),
+                    cx,
+                );
+                stream.apply_context_status(
+                    "context-thread",
+                    "mock",
+                    status(generation, Status::Cancelled),
+                    cx,
+                );
+            }
+            assert_eq!(
+                stream.entries.len(),
+                12,
+                "each operation keeps one row without eviction"
+            );
+            assert!(!stream.following_tail());
+            let timeline = compaction_timeline(stream);
+            assert_eq!(
+                &timeline[..4],
+                &["before", "1:Succeeded:live", "after", "tool"]
+            );
+            assert_eq!(
+                &timeline[4..],
+                (2..10)
+                    .map(|id| format!("{id}:Cancelled:live"))
+                    .collect::<Vec<_>>()
+            );
+        })
+        .expect("ordered compaction");
+}
+
+fn compaction_timeline(stream: &mut ConversationStream) -> Vec<String> {
+    stream
+        .entries
+        .iter_mut()
+        .map(|entry| match entry {
+            StreamEntry::Assistant {
+                stream: parser,
+                model,
+                ..
+            } => {
+                model.sync(&parser.snapshot(), &stream.counters);
+                model
+                    .committed_lines
+                    .iter()
+                    .chain(&model.pending_lines)
+                    .flat_map(|line| &line.spans)
+                    .map(|span| span.text.as_str())
+                    .collect()
+            }
+            StreamEntry::ContextCompaction {
+                record, restored, ..
+            } => format!(
+                "{}:{:?}:{}",
+                record.generation,
+                record.status,
+                if *restored { "restored" } else { "live" }
+            ),
+            StreamEntry::Tool { .. } => "tool".into(),
+            StreamEntry::User { .. } => "user".into(),
+            _ => "other".into(),
+        })
+        .collect()
+}
+
+#[gpui_kit::test]
+async fn issue117_restore_is_historical_idempotent_and_rejects_late_results(
+    cx: &mut TestAppContext,
+) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            assert!(!stream.restore_context_status(
+                "foreign",
+                "mock",
+                status(10, Status::Succeeded),
+                cx
+            ));
+            assert!(!stream.restore_context_status(
+                "context-thread",
+                "foreign",
+                status(10, Status::Succeeded),
+                cx
+            ));
+            assert!(stream.restore_context_status(
+                "context-thread",
+                "mock",
+                status(10, Status::Succeeded),
+                cx
+            ));
+            assert_eq!(compaction_timeline(stream), vec!["1:Succeeded:restored"]);
+            assert!(!stream.restore_context_status(
+                "context-thread",
+                "mock",
+                status(10, Status::Succeeded),
+                cx
+            ));
+            // History can finish asynchronously after the status projection; it
+            // prepends before the explicitly historical row, never after it.
+            stream.apply_history_page(
+                HistoryPage {
+                    entries: vec![HistoryEntry::UserText {
+                        seq: 1,
+                        content: "history".into(),
+                    }],
+                    older_cursor: None,
+                    newest_seq: Some(1),
+                },
+                cx,
+            );
+            assert_eq!(
+                compaction_timeline(stream),
+                vec!["user", "1:Succeeded:restored"]
+            );
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "new".into(),
+                    seq: 2,
+                },
+                cx,
+            );
+            stream.apply_event(
+                ConversationEvent::TextDelta {
+                    message_id: "new".into(),
+                    delta: "new answer".into(),
+                },
+                cx,
+            );
+            assert!(!stream.restore_context_status(
+                "context-thread",
+                "mock",
+                status(10, Status::Failed),
+                cx
+            ));
+            stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(2, Status::Compacting),
+                cx,
+            );
+            assert!(!stream.restore_context_status(
+                "context-thread",
+                "mock",
+                status(10, Status::Failed),
+                cx
+            ));
+            assert_eq!(
+                compaction_timeline(stream),
+                vec![
+                    "user",
+                    "1:Succeeded:restored",
+                    "new answer",
+                    "2:Compacting:live"
+                ]
+            );
+        })
+        .expect("historical restore");
 }
