@@ -428,12 +428,8 @@ impl VegaWindow {
                                 projection.compactable,
                                 cx,
                             );
-                            if restore_status
-                                && let Some(mut record) = projection.last_status
-                                && let Some(id) = stream.reserve_context_operation_id(cx)
-                            {
-                                record.generation = id;
-                                stream.apply_context_status(
+                            if restore_status && let Some(record) = projection.last_status {
+                                stream.restore_context_status(
                                     &owner.thread_id,
                                     &owner.model,
                                     record,
