@@ -38,7 +38,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 - **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
 - 云端流水线拆成两条独立 workflow，共享同一个 cargo 缓存 key（`shared-key: vega`，2026-09-22 用户裁决）：
-  - `.github/workflows/pr-check.yml`：`pull_request`（base `master`）并行运行 quality（fmt / clippy / doc-tests）与 4 个 macOS nextest 分片（`cargo nextest run --workspace --partition hash:<shard>/4`）；`trusted_git` 测试 `threads-required = 2`，`retries = 0`。汇总门禁名保持 `check (fmt, clippy, test)`，仅所有依赖成功才放行；失败、取消或跳过都不放行。所有 Rust job 只读缓存（`save-if: false`），详见规格 C9。
+  - `.github/workflows/pr-check.yml`：`pull_request`（base `master`）并行运行 quality（fmt / clippy / doc-tests）与 4 个 macOS nextest 分片（`cargo nextest run --workspace --partition hash:<shard>/4`）；`trusted_git` 测试 `threads-required = 2`；C9 中的 pricing 端到端测试独占测试时段（`num-test-threads`），`retries = 0`。汇总门禁名保持 `check (fmt, clippy, test)`，仅所有依赖成功才放行；失败、取消或跳过都不放行。所有 Rust job 只读缓存（`save-if: false`），详见规格 C9。
   - `.github/workflows/master-build.yml`：push 到 master（PR merge 后）跑 `cargo xtask package` 并上传 artifact；唯一写缓存的一方。
   - 两条都用标准 Cargo 步骤，不复用自定义 Python 脚本。
 - 发布仍由 `v*` tag 触发（`release.yml`），master build 不发 Release，避免每个 commit 都发版。

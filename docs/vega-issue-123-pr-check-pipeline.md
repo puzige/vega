@@ -125,3 +125,38 @@ speedup, report the measured bottleneck before adding more shards.
 
 References: https://www.nexte.st/docs/ci-features/partitioning/ and
 https://www.nexte.st/docs/configuration/threads-required/ .
+
+### C9 scheduling and deterministic cancellation acceptance
+
+Hosted run `35705471651` completed all 1760 runnable tests (1758 passed, two
+failed) in 8m29s from first job start to aggregate completion. Aggregate correctly
+failed. Preserve this run; do not retry it to obtain a pass.
+
+| Failure | Evidence | Required correction |
+|---|---|---|
+| `vega::tests::pricing::pricing_settings_and_agent_preflight_production_e2e` | Bounded test-app polling failed under shard contention; first isolated local execution passed | Exact package/test override `threads-required = "num-test-threads"`, unchanged assertions/timeouts |
+| `vega_runtime::agent::tests::loop_tools::cancel_during_a_read_waits_for_it_then_skips_the_next_call` | 2ms cancellation can precede ToolCallApproved; first isolated local execution also failed | Replace time guess with deterministic test-only synchronization; no runtime scheduling override |
+
+Only the named runtime test in `crates/vega_runtime/src/agent/tests/loop_tools.rs`
+may change. Preserve every original lifecycle/order/second-call assertion and add
+proof of exactly one executed call and real fixture content in the returned read
+result. Do not enlarge timeouts, introduce ignores/retries, fake output or change
+product cancellation semantics.
+
+There is no existing read-start signal: Running is followed by cancellation checks
+both in the agent and at blocking-worker entry, and regular-file fencing rejects
+FIFO fixtures. Permit a narrow `#[cfg(test)]`-only private synchronization gate in
+`crates/vega_runtime/src/agent/tools_exec.rs` after the worker's child-token check
+and before the unchanged real `execute_readonly` call. Capture the one-shot gate
+before spawn_blocking on a current-thread test runtime. Registration is thread-local,
+scoped and cleaned up on failure. The worker signals started and waits with a
+bounded channel receive; the test awaits started, cancels, releases the gate, and
+awaits the real file result. All hook types/registration/branches compile only
+under cfg(test); no public API or normal-build behavior changes. This seam controls
+an otherwise unobservable concurrency boundary without replacing real Tools.
+
+Acceptance: exact pricing-only override selection; runtime targeted test and
+related loop_tools regressions; fmt and affected clippy; next complete hosted
+matrix all green with zero retries. Preserve the first isolated runtime failure
+and successful pricing evidence. No stronger claim of general flake elimination
+is made: pricing serialization is mitigation for observed contention.
