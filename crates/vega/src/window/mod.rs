@@ -218,6 +218,20 @@ impl VegaWindow {
     }
 
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+        // R8 backstop: releasing this window's root (window closed) means no
+        // run it owned can still be live, so clear any liveness the normal
+        // finish path could not report. `on_release` runs before `Drop`, while
+        // the controller map is still populated, and only the shared liveness
+        // projection is cleared here — the map itself is left for
+        // `window_terminal_cleanup`, which still has to cancel each run's
+        // token.
+        cx.on_release(|this, cx| {
+            let thread_ids: Vec<String> = this.agent_controller.active.keys().cloned().collect();
+            for thread_id in thread_ids {
+                vega_ui::sidebar::set_thread_running(&thread_id, false, cx);
+            }
+        })
+        .detach();
         cx.observe_global::<OpenedThread>(|this, cx| {
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);

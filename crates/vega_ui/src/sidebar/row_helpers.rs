@@ -186,6 +186,20 @@ pub(crate) fn archive_section_visible(archived_count: usize) -> bool {
     archived_count > 0
 }
 
+/// Whether the row tail shows the relative timestamp at rest (#150 R10).
+///
+/// The tail is one slot. A running row owns it with its indicator, so the
+/// timestamp is suppressed there: showing both would either push the action
+/// trigger sideways or crowd the 28px slot. Hover (which reveals the action
+/// trigger) keeps its existing precedence over the resting timestamp.
+pub(crate) fn shows_timestamp_at_rest(
+    actions_visible: bool,
+    show_timestamp_at_rest: bool,
+    running: bool,
+) -> bool {
+    !actions_visible && show_timestamp_at_rest && !running
+}
+
 /// Relative time for a session row (ui-spec §4.1, "2h" style).
 pub(crate) fn relative_time(updated_at_ms: i64) -> String {
     relative_time_from(updated_at_ms, now_ms())

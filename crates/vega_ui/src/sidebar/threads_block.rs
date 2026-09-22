@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::component::{IconName, spinner::Spinner};
 use vega_conversation::types::ThreadUpdate;
 mod organization;
 use organization::{Organization, OrganizationSection};
@@ -1267,6 +1268,9 @@ impl ThreadsBlock {
         let action_prefix = selector_prefix
             .strip_suffix("thread-row-")
             .unwrap_or(selector_prefix);
+        // R12: the indicator is driven only by the real liveness projection,
+        // never inferred from unread/updated_at/selection.
+        let running = thread_is_running(&thread.id, cx);
         let menu_open = self.actions_open.as_deref() == Some(thread.id.as_str());
         let mut trigger = div()
             .id(ElementId::Name(
@@ -1401,7 +1405,7 @@ impl ThreadsBlock {
         if menu_open {
             group = group.track_focus(&self.actions_scope_focus);
         }
-        if !actions_visible && show_timestamp_at_rest {
+        if shows_timestamp_at_rest(actions_visible, show_timestamp_at_rest, running) {
             group = group.child(
                 div()
                     .debug_selector({
@@ -1414,6 +1418,34 @@ impl ThreadsBlock {
                     .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
                     .child(relative_time(thread.updated_at)),
+            );
+        }
+        // R9/R10: a running thread shows a rotating indicator in the row tail
+        // slot. It is inserted to the *left* of the action trigger inside the
+        // right-aligned group, so the trigger keeps its column and the row
+        // never shifts when the indicator appears or disappears. The slot is
+        // empty at rest for production rows, which is exactly where Codex puts
+        // it; the trigger stays mounted (opacity 0) as before.
+        if running {
+            group = group.child(
+                div()
+                    .debug_selector({
+                        let id = thread.id.clone();
+                        let action_prefix = action_prefix.to_owned();
+                        move || format!("{action_prefix}thread-running-{id}")
+                    })
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        // Spinner animates via `AnimationExt::with_animation`,
+                        // which GPUI automatically freezes under reduce-motion.
+                        Spinner::new()
+                            .with_size(px(16.))
+                            .icon(IconName::LoaderCircle)
+                            .color(colors.text_secondary.into()),
+                    ),
             );
         }
         // Keep the trigger mounted even at rest so Tab can reach every row's

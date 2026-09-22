@@ -731,3 +731,167 @@ async fn r11_composer_stop_revokes_pending_permission_without_tool_execution(
     assert_eq!(audit.source, ApprovalSource::Timeout);
     assert_eq!(provider.requests().len(), 1);
 }
+
+/// #150 R14/R15: the running-state action is a brand-blue primary surface.
+///
+/// The assertion reads the real painted scene (the same `painted_quads`
+/// production path the utility-bar tests use) rather than the source, so
+/// reverting the fill to the old neutral `bg_hover` fails here. The
+/// non-running `composer-send` branch must stay on `accent` (R15).
+#[gpui_kit::test]
+async fn issue150_running_stop_button_is_brand_blue_and_send_is_unchanged(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    fn same_colour(actual: gpui_kit::Hsla, expected: gpui_kit::Rgba) -> bool {
+        let actual = gpui_kit::Rgba::from(actual);
+        [
+            (actual.r, expected.r),
+            (actual.g, expected.g),
+            (actual.b, expected.b),
+            (actual.a, expected.a),
+        ]
+        .into_iter()
+        .all(|(actual, expected)| (actual - expected).abs() <= 1.0 / 255.0)
+    }
+
+    /// Whether a solid fill of `expected` is painted at exactly `selector`'s
+    /// bounds. A containment check would let an ancestor surface pass.
+    fn paints(
+        f: &Fixture,
+        selector: &'static str,
+        expected: gpui_kit::Rgba,
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> bool {
+        cx.run_until_parked();
+        let target = VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        f.window
+            .update(cx, |_, window, _| {
+                let scale = window.scale_factor();
+                window.painted_quads().into_iter().any(|quad| {
+                    let Some(solid) = quad.background.as_solid() else {
+                        return false;
+                    };
+                    if !same_colour(solid, expected) {
+                        return false;
+                    }
+                    let tolerance = 0.5;
+                    (quad.bounds.left().as_f32() / scale - f32::from(target.left())).abs()
+                        <= tolerance
+                        && (quad.bounds.right().as_f32() / scale - f32::from(target.right())).abs()
+                            <= tolerance
+                        && (quad.bounds.top().as_f32() / scale - f32::from(target.top())).abs()
+                            <= tolerance
+                        && (quad.bounds.bottom().as_f32() / scale - f32::from(target.bottom()))
+                            .abs()
+                            <= tolerance
+                })
+            })
+            .expect("composer window must remain open")
+    }
+
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::text("running"),
+        vega_runtime::ScriptStep::delay(Duration::from_secs(30)),
+    ]));
+    let f = fixture(cx, provider);
+    let colors = cx.update(|cx| vega_theme::theme(cx).colors);
+
+    // R15: a sendable draft keeps the existing accent fill. The draft must be
+    // non-empty first: `can_send` is what selects the enabled accent branch,
+    // and an empty draft is a legitimately disabled (neutral) button.
+    edit(&f, "start a run for the stop button", cx);
+    assert!(
+        paints(&f, "composer-send", colors.accent, cx),
+        "the sendable send button must keep its accent fill"
+    );
+
+    cx.simulate_keystrokes(f.window.into(), "cmd-enter");
+    pump_test_app(cx, |cx| {
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("composer-stop")
+            .is_some()
+    });
+
+    // R14: the running action is brand blue, not the former neutral hover grey.
+    assert!(
+        paints(&f, "composer-stop", colors.accent, cx),
+        "the running stop button must be filled with the brand accent"
+    );
+    assert!(
+        !paints(&f, "composer-stop", colors.bg_hover, cx),
+        "the running stop button must no longer use the neutral hover fill"
+    );
+}
+
+/// #150 C8 (E2E-REAL): the projection the sidebar reads is driven by the real
+/// run lifecycle through the production submit and terminal paths — it is not
+/// a render-time guess. The sidebar row therefore lights up and clears with the
+/// actual worker, and the real controller's `active` map is the source.
+#[gpui_kit::test]
+async fn issue150_running_indicator_follows_the_real_run_lifecycle(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::text("lifecycle"),
+        vega_runtime::ScriptStep::delay(Duration::from_secs(30)),
+    ]));
+    let f = fixture(cx, provider);
+    let indicator: &'static str =
+        Box::leak(format!("project-thread-running-{}", f.thread.id).into_boxed_str());
+
+    // At rest the projection is empty and the row tail shows no indicator.
+    assert!(
+        !cx.update(|cx| vega_ui::sidebar::thread_is_running(&f.thread.id, cx)),
+        "no run has started yet"
+    );
+    assert!(
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds(indicator)
+            .is_none()
+    );
+
+    // A real submit starts the worker: the projection turns true and the
+    // sidebar row renders the indicator.
+    edit(&f, "run for the lifecycle proof", cx);
+    cx.simulate_keystrokes(f.window.into(), "cmd-enter");
+    pump_test_app(cx, |cx| {
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("composer-stop")
+            .is_some()
+    });
+    assert!(
+        f.root.read_with(cx, |root, _| root
+            .agent_controller
+            .active
+            .contains_key(&f.thread.id)),
+        "the real controller must own the accepted run"
+    );
+    assert!(
+        cx.update(|cx| vega_ui::sidebar::thread_is_running(&f.thread.id, cx)),
+        "an accepted run must project thread liveness"
+    );
+    assert!(
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds(indicator)
+            .is_some(),
+        "the running row must render its indicator"
+    );
+
+    // Cancelling reaches the real terminal path, which must clear the
+    // projection so the row stops spinning.
+    click(&f, "composer-stop", cx);
+    assert_terminal(&f, cx);
+    assert!(
+        !cx.update(|cx| vega_ui::sidebar::thread_is_running(&f.thread.id, cx)),
+        "the terminal must clear thread liveness"
+    );
+    assert!(
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds(indicator)
+            .is_none(),
+        "a finished run must leave no indicator behind"
+    );
+}

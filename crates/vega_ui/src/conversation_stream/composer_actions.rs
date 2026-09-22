@@ -687,16 +687,24 @@ impl ConversationStream {
             .flex()
             .items_center()
             .justify_center()
-            .bg(colors.bg_hover)
-            .text_color(colors.text_primary)
-            .when(!self.actions.stopping, |button| button.cursor_pointer())
+            // #150 R14: the running-state action is a primary brand surface.
+            // It keeps the blue while `stopping` because the run has not
+            // actually ended yet (state must stay real, design guidelines
+            // §2.3); only the cursor and aria label change.
+            .bg(colors.accent)
+            .text_color(colors.brand_on_accent)
+            .when(!self.actions.stopping, |button| {
+                button
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(colors.brand_primary_strong))
+            })
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| this.request_composer_stop(cx)),
             )
             .child(crate::icons::icon(
                 crate::icons::Icon::Close,
-                colors.text_primary,
+                colors.brand_on_accent,
             ))
             .into_any_element()
     }

@@ -2016,3 +2016,116 @@ async fn r50_pinned_section_carries_no_extra_margin(cx: &mut gpui_kit::TestAppCo
     cx.run_until_parked();
     assert_no_extra_margin(&f, cx);
 }
+
+/// #150 R9/R12: the row indicator is driven only by the real thread-liveness
+/// projection. Nothing about `unread`, `updated_at` or selection may light it.
+#[gpui_kit::test]
+async fn issue150_row_indicator_follows_only_real_thread_liveness(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let running = format!("project-thread-running-{}", f.first.id);
+
+    // C4/R12: nothing is running, so the tail slot stays empty — and the
+    // opened/selected row alone must not imply liveness.
+    assert!(absent(&f, cx, running.clone()));
+
+    // C3: the projection turns the indicator on for exactly that thread.
+    cx.update(|cx| set_thread_running(&f.first.id, true, cx));
+    cx.run_until_parked();
+    assert!(f32::from(bounds(&f, cx, running.clone()).size.width) > 0.0);
+
+    // Releasing liveness restores the rest state exactly.
+    cx.update(|cx| set_thread_running(&f.first.id, false, cx));
+    cx.run_until_parked();
+    assert!(absent(&f, cx, running.clone()));
+}
+
+/// #150 R10: the tail is a single slot. Production rows never render a resting
+/// timestamp (`show_timestamp_at_rest = false`), so the running-row precedence
+/// is asserted on the pure predicate in `sidebar/mod.rs`; this mounted case
+/// pins the part the scene can prove — a running row still shows exactly one
+/// tail indicator and never a `thread-timestamp-*` selector.
+#[gpui_kit::test]
+async fn issue150_running_row_shows_no_resting_timestamp(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let timestamp = format!("thread-timestamp-{}", f.first.id);
+    cx.update(|cx| set_thread_running(&f.first.id, true, cx));
+    cx.run_until_parked();
+    assert!(absent(&f, cx, timestamp));
+    assert!(
+        f32::from(
+            bounds(&f, cx, format!("project-thread-running-{}", f.first.id))
+                .size
+                .width
+        ) > 0.0
+    );
+}
+
+/// #150 R10: the indicator is inserted left of the action trigger inside the
+/// right-aligned tail group, so appearing/disappearing never shifts the
+/// trigger or the row.
+#[gpui_kit::test]
+async fn issue150_row_indicator_does_not_displace_the_row_or_trigger(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let row_selector = format!("project-thread-row-{}", f.first.id);
+    let trigger_selector = format!("project-thread-actions-{}", f.first.id);
+    let running = format!("project-thread-running-{}", f.first.id);
+
+    let row_before = bounds(&f, cx, row_selector.clone());
+    let trigger_before = bounds(&f, cx, trigger_selector.clone());
+
+    cx.update(|cx| set_thread_running(&f.first.id, true, cx));
+    cx.run_until_parked();
+    assert!(f32::from(bounds(&f, cx, running.clone()).size.width) > 0.0);
+
+    // C5: the row height is a token and the trigger keeps its column, so the
+    // indicator is purely additive inside the existing slot.
+    assert_eq!(bounds(&f, cx, row_selector.clone()), row_before);
+    assert_eq!(bounds(&f, cx, trigger_selector.clone()), trigger_before);
+    assert_eq!(
+        f32::from(bounds(&f, cx, row_selector).size.height),
+        Typography::SIDEBAR_LINE_HEIGHT
+    );
+}
+
+/// #150 R4: a background run lights its own row even when another thread is
+/// the opened route (Issue #67 concurrency).
+#[gpui_kit::test]
+async fn issue150_background_thread_lights_its_own_row(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let background = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let background_indicator = format!("standalone-thread-running-{}", background.id);
+    let opened_indicator = format!("project-thread-running-{}", f.first.id);
+    assert!(absent(&f, cx, background_indicator.clone()));
+
+    cx.update(|cx| set_thread_running(&background.id, true, cx));
+    cx.run_until_parked();
+
+    assert!(f32::from(bounds(&f, cx, background_indicator).size.width) > 0.0);
+    assert!(
+        absent(&f, cx, opened_indicator),
+        "the opened row must not borrow another thread's liveness"
+    );
+}
+
+/// #150 R12: without the projection installed the UI never invents liveness,
+/// even for the opened row.
+#[gpui_kit::test]
+async fn issue150_missing_liveness_projection_shows_no_indicator(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    cx.update(|cx| assert!(!cx.has_global::<RunningThreadsGlobal>()));
+    assert!(absent(
+        &f,
+        cx,
+        format!("project-thread-running-{}", f.first.id)
+    ));
+}
