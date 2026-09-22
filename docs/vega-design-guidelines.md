@@ -132,6 +132,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 | Sidebar | default 304px / 240–365px | 内边距 12px；行高 32px；导航行圆角 8px；拖拽宽度持久化 |
 | 主内容外间隙 | 0px | R21 平直分栏；Sidebar 与主面板用 1px 分隔 |
 | 主 Header | 46px | 底部 1px 分隔线 |
+| Sidebar 顶部工具栏 | `MAIN_HEADER_HEIGHT` 46px / `SIDEBAR_TOOLBAR_CONTENT_GAP` 18px | Issue #129：工具栏从窗口 y=0 起且不收缩；后接 18px 间距，使新建任务仍从 y=64 起 |
 | 可读内容列 | max 768px | 居中；最小水平内边距 16px；与 Composer **同宽**（issue #100） |
 | Composer | max 768px / min-height 100px | **与正文列同宽**（issue #100；参考实现两者共用 `--thread-content-max-width: 48rem`）；圆角 20px，内容可因多行或错误增长；包裹列上下 padding 12/16px（`Layout::COMPOSER_PADDING_TOP/BOTTOM`，值不变，R45 起 token 化） |
 | Composer utility bar | h 37px / inset 19px / radius 12px（顶部） | 仅新建任务页；宽 = 卡片宽 − 2×19，`mx_auto` 共用卡片中轴；bar 底 == 卡片顶（零重叠）；chip gap 8px、首 chip inset 14.5px；chip 高 28px、水平 padding 8px |

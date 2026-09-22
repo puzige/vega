@@ -11,6 +11,19 @@ impl Render for PaletteHarness {
 }
 
 fn assert_titlebar_control_grid(visual: &mut gpui_kit::VisualTestContext) {
+    let header = visual.debug_bounds("main-header").unwrap();
+    let title = visual.debug_bounds("main-header-title").unwrap();
+    assert!((f32::from(title.center().y - header.center().y)).abs() <= 0.5);
+    if let Some(sidebar) = visual.debug_bounds("sidebar") {
+        let new_task = visual.debug_bounds("sidebar-new-task").unwrap();
+        let scroll = visual.debug_bounds("sidebar-scroll").unwrap();
+        let footer = visual.debug_bounds("sidebar-settings-surface").unwrap();
+        assert_eq!(f32::from(new_task.top() - sidebar.top()), 64.0);
+        assert_eq!(f32::from(new_task.left() - sidebar.left()), 12.0);
+        assert_eq!(f32::from(scroll.top() - sidebar.top()), 108.0);
+        assert_eq!(f32::from(sidebar.bottom() - footer.bottom()), 12.0);
+        assert_eq!(f32::from(footer.top() - scroll.bottom()), 12.0);
+    }
     let controls = [
         ("toggle-sidebar", "titlebar-sidebar-icon"),
         ("titlebar-search-button", "titlebar-search-icon"),
@@ -21,6 +34,12 @@ fn assert_titlebar_control_grid(visual: &mut gpui_kit::VisualTestContext) {
     for (surface_selector, icon_selector) in controls {
         let surface = visual.debug_bounds(surface_selector).unwrap();
         let icon = visual.debug_bounds(icon_selector).unwrap();
+        assert!(
+            f32::from(surface.center().y - header.center().y).abs() <= 0.5,
+            "{surface_selector} center {:?} must align with header {:?}",
+            surface.center().y,
+            header.center().y
+        );
         assert_eq!(
             f32::from(surface.size.width),
             Layout::TITLEBAR_CONTROL_SIZE,
@@ -94,6 +113,26 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
         assert!(!state.back);
         assert!(!state.forward);
     });
+    // Exercise the production root across both palettes and responsive edges.
+    for theme in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
+        cx.update(|cx| cx.set_global(theme));
+        for (width, height) in [
+            (1403., 860.),
+            (1200., 760.),
+            (960., 600.),
+            (1229., 860.),
+            (1230., 860.),
+        ] {
+            window
+                .update(cx, |_, window, _| {
+                    window.resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(height)))
+                })
+                .unwrap();
+            cx.run_until_parked();
+            let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            assert_titlebar_control_grid(&mut visual);
+        }
+    }
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let search = visual.debug_bounds("titlebar-search-button").unwrap();
     assert_titlebar_control_grid(&mut visual);
@@ -130,6 +169,10 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
     let hidden_sidebar = hidden_visual.debug_bounds("toggle-sidebar").unwrap();
     hidden_visual.simulate_click(hidden_sidebar.center(), Default::default());
     pump_test_app(cx, |cx| cx.update(|cx| !cx.global::<SidebarCollapsed>().0));
+    assert_titlebar_control_grid(&mut gpui_kit::VisualTestContext::from_window(
+        window.into(),
+        cx,
+    ));
     window
         .update(cx, |_, window, cx| {
             window.focus(&input.read(cx).focus_handle(cx), cx)
@@ -358,6 +401,11 @@ async fn production_root_palette_escape_preserves_composer_and_settings_action(
         );
         assert!(!cx.global::<SettingsOpen>().0);
     });
+    // The empty home draft retains the same titlebar and sidebar geometry.
+    assert_titlebar_control_grid(&mut gpui_kit::VisualTestContext::from_window(
+        window.into(),
+        cx,
+    ));
     // Selecting a previously registered folder reuses its row and activates it.
     cx.simulate_keystrokes(window.into(), "cmd-o");
     cx.run_until_parked();

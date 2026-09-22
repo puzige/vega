@@ -436,6 +436,8 @@ impl Layout {
     pub const SIDEBAR_RESIZE_HIT_AREA: f32 = 5.0;
     /// Sidebar horizontal and vertical padding.
     pub const SIDEBAR_PADDING: f32 = 12.0;
+    /// Space below the aligned toolbar, preserving New Task at y=64 (issue #129).
+    pub const SIDEBAR_TOOLBAR_CONTENT_GAP: f32 = 18.0;
     /// Shared leading origin for Sidebar navigation row titles.
     pub const SIDEBAR_NAV_CONTENT_INSET: f32 = 32.0;
     /// R48 indent ladder, label column: extra leading inset a Sidebar section
@@ -631,6 +633,11 @@ mod tests {
     fn r21_phase_two_geometry_is_frozen() {
         assert_eq!(Typography::SIDEBAR_LINE_HEIGHT, 32.0);
         assert_eq!(Layout::SIDEBAR_WIDTH, 304.0);
+        assert_eq!(Layout::SIDEBAR_TOOLBAR_CONTENT_GAP, 18.0);
+        assert_eq!(
+            Layout::MAIN_HEADER_HEIGHT + Layout::SIDEBAR_TOOLBAR_CONTENT_GAP,
+            64.0
+        );
         assert_eq!(Layout::SIDEBAR_MIN_WIDTH, 240.0);
         assert_eq!(Layout::SIDEBAR_MAX_WIDTH, 365.0);
         assert_eq!(Layout::SIDEBAR_RESIZE_HIT_AREA, 5.0);
