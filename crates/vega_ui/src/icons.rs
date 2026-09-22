@@ -19,6 +19,7 @@ const ICON_SIZE: f32 = 16.0;
 /// The small set of functional symbols shared by Vega's native chrome.
 #[derive(Clone, Copy)]
 pub enum Icon {
+    Copy,
     Search,
     Sidebar,
     Plus,
@@ -99,6 +100,7 @@ const GIT_BRANCH_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBo
 
 fn icon_name(kind: Icon) -> IconName {
     match kind {
+        Icon::Copy => IconName::Copy,
         Icon::Search => IconName::Search,
         Icon::Sidebar => IconName::PanelLeft,
         Icon::Plus => IconName::Plus,

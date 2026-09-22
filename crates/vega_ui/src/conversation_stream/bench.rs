@@ -35,7 +35,7 @@ use vega_conversation::types::{
 };
 use vega_markdown::{MarkdownStream, split_deltas};
 
-use super::{INJECT_TICK, StreamCounters, StreamEntry, StreamModel, render_entry};
+use super::{INJECT_TICK, MessageCopy, StreamCounters, StreamEntry, StreamModel, render_entry};
 
 use crate::plan_card::PlanCard;
 use crate::summary_card::SummaryCard;
@@ -212,6 +212,7 @@ fn user_echo(index: usize) -> String {
 fn user_echo_entry(index: usize, seq: u64) -> StreamEntry {
     let block_id = u64::MAX - (1 << 32) + seq;
     StreamEntry::User {
+        copy: MessageCopy::new(&user_echo(index)),
         lines: super::user_message_lines(block_id, &user_echo(index)),
     }
 }
@@ -223,6 +224,7 @@ fn finished_assistant(doc: &str, counters: &StreamCounters) -> StreamEntry {
     let mut model = StreamModel::default();
     model.sync(&stream.snapshot(), counters);
     StreamEntry::Assistant {
+        copy: MessageCopy::new(doc),
         stream: Box::new(stream),
         model,
         failure: None,
@@ -413,13 +415,14 @@ impl BenchStreamView {
                         let target = target.min(this.deltas.len());
                         if this.cursor < target {
                             {
-                                let Some(StreamEntry::Assistant { stream, .. }) =
+                                let Some(StreamEntry::Assistant { stream, copy, .. }) =
                                     this.entries.last_mut()
                                 else {
                                     return false;
                                 };
                                 for delta in &this.deltas[this.cursor..target] {
                                     stream.append(delta);
+                                    copy.append(delta);
                                 }
                             }
                             let added = (target - this.cursor) as u64;

@@ -3,7 +3,6 @@ use super::*;
 #[gpui_kit::test]
 fn issue78_user_bubble_hugs_text_and_wraps_within_column(cx: &mut TestAppContext) {
     init_permission_test(cx);
-    let visual = cx.add_empty_window();
     for width in [320.0, 600.0, 768.0] {
         let mut short_height = px(0.);
         for (index, text) in [
@@ -16,18 +15,12 @@ fn issue78_user_bubble_hugs_text_and_wraps_within_column(cx: &mut TestAppContext
         .enumerate()
         {
             let entry = StreamEntry::User {
+                copy: MessageCopy::new(text),
                 lines: user_message_lines(1, text),
             };
-            visual.draw(
-                gpui_kit::point(px(0.), px(0.)),
-                gpui_kit::size(px(width), px(4000.)),
-                |window, cx| {
-                    div()
-                        .w(px(width))
-                        .child(render_entry(&entry, &StreamCounters::default(), window, cx))
-                        .into_any_element()
-                },
-            );
+            let (_, visual) = cx.add_window_view(|_, _| EntryView(entry));
+            visual.simulate_resize(gpui_kit::size(px(width), px(4000.)));
+            visual.run_until_parked();
             let bubble = visual
                 .debug_bounds("user-message-bubble")
                 .expect("production user bubble");
@@ -137,6 +130,7 @@ fn issue78_bubble_paints_theme_color_and_radius(cx: &mut TestAppContext) {
         cx.update(|cx| cx.set_global(theme_value));
         let (_, visual) = cx.add_window_view(|_, _| {
             EntryView(StreamEntry::User {
+                copy: MessageCopy::new("Hello"),
                 lines: user_message_lines(1, "Hello"),
             })
         });
@@ -217,4 +211,151 @@ async fn issue78_history_and_streaming_keep_assistant_outside_user_bubble(cx: &m
             2
         );
     });
+}
+
+#[gpui_kit::test]
+fn issue78_hover_copy_user_action_is_mounted(cx: &mut TestAppContext) {
+    init_permission_test(cx);
+    let (_, visual) = cx.add_window_view(|_, _| {
+        EntryView(StreamEntry::User {
+            copy: MessageCopy::new("原文\n\n末尾\n"),
+            lines: user_message_lines(7, "原文\n\n末尾\n"),
+        })
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("message-copy-user").is_some(),
+        "message must expose its copy action below the body"
+    );
+}
+
+#[gpui_kit::test]
+fn issue78_hover_copy_geometry_pointer_path_and_keyboard(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, point, size};
+    init_permission_test(cx);
+    for dark in [false, true] {
+        cx.update(|cx| {
+            cx.set_global(if dark {
+                vega_theme::Theme::dark()
+            } else {
+                vega_theme::Theme::light()
+            })
+        });
+        for user in [false, true] {
+            let source = "中文\n\n**raw**\n";
+            let copy = MessageCopy::new(source);
+            let entry = if user {
+                StreamEntry::User {
+                    lines: user_message_lines(1, source),
+                    copy,
+                }
+            } else {
+                let mut stream = MarkdownStream::new();
+                stream.append(source);
+                stream.finish();
+                let mut model = StreamModel::default();
+                model.sync(&stream.snapshot(), &StreamCounters::default());
+                StreamEntry::Assistant {
+                    stream: Box::new(stream),
+                    model,
+                    failure: None,
+                    copy,
+                }
+            };
+            let (_, visual) = cx.add_window_view(|_, _| EntryView(entry));
+            visual.simulate_resize(size(px(320.), px(600.)));
+            visual.run_until_parked();
+            let selector = if user {
+                "message-copy-user"
+            } else {
+                "message-copy-assistant"
+            };
+            let button = visual.debug_bounds(selector).expect("copy button");
+            let body = visual
+                .debug_bounds(if user {
+                    "user-message-bubble"
+                } else {
+                    "assistant-message"
+                })
+                .expect("message body");
+            assert_eq!(button.size, size(px(24.), px(24.)));
+            assert!(button.top() >= body.bottom());
+            assert_eq!(
+                if user { button.right() } else { button.left() },
+                if user { px(320.) } else { px(0.) }
+            );
+            visual.simulate_mouse_move(body.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            visual.simulate_mouse_move(button.center(), None, Modifiers::default());
+            visual.simulate_click(button.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                Some(source.to_string())
+            );
+            assert_eq!(visual.debug_bounds(selector), Some(button));
+            // A focused button has a background. Its painted alpha observes
+            // actual GPUI opacity rather than merely testing style builders.
+            let has_visible_background = |visual: &mut gpui_kit::VisualTestContext| {
+                visual.update(|window, _| {
+                    let scale = window.scale_factor();
+                    window.painted_quads().iter().any(|quad| {
+                        quad.bounds == button.scale(scale)
+                            && quad.background.as_solid().is_some_and(|color| color.a > 0.)
+                    })
+                })
+            };
+            assert!(
+                has_visible_background(visual),
+                "pointer on button exposes its background"
+            );
+            visual.simulate_mouse_move(body.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            assert!(
+                has_visible_background(visual),
+                "message hover keeps the action visible"
+            );
+            visual.simulate_mouse_move(
+                point(button.center().x, button.top() - px(1.)),
+                None,
+                Modifiers::default(),
+            );
+            visual.run_until_parked();
+            assert!(
+                has_visible_background(visual),
+                "the gap to the action stays in the hover group"
+            );
+            visual.simulate_mouse_move(point(px(300.), px(550.)), None, Modifiers::default());
+            visual.run_until_parked();
+            assert!(
+                !has_visible_background(visual),
+                "mouse focus must not keep the action visible after leaving"
+            );
+            assert_eq!(visual.debug_bounds(selector), Some(button));
+            visual.update(|window, cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("before-enter".into()));
+                window.blur(cx);
+                window.focus_next(cx);
+            });
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            assert!(
+                has_visible_background(visual),
+                "keyboard focus exposes the copy action"
+            );
+            assert_eq!(
+                visual.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                Some(source.to_string())
+            );
+            visual.update(|_, cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("before-space".into()))
+            });
+            visual.simulate_keystrokes("space");
+            assert_eq!(
+                visual.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                Some(source.to_string())
+            );
+            assert_eq!(visual.debug_bounds(selector), Some(button));
+        }
+    }
 }
