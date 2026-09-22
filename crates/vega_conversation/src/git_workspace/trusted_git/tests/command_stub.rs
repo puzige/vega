@@ -29,6 +29,7 @@ struct StubState {
     unexpected: Vec<Vec<OsString>>,
     mutations_expected: std::collections::VecDeque<ExpectedMutation>,
     mutations: Vec<(Vec<OsString>, Vec<u8>)>,
+    selected_attrs_expected: std::collections::VecDeque<(String, String)>,
     proof_plan: Option<String>,
 }
 
@@ -55,6 +56,12 @@ impl PolicyFixture {
         Self::new_from_json(include_str!("service-fixtures.json"), case)
     }
 
+    /// Captured owned-Git states for the explicit filter-value, `.gitattributes`
+    /// and attribute-drift policy cases.
+    pub(super) fn filter(case: &str) -> Self {
+        Self::new_from_json(include_str!("filter-fixtures.json"), case)
+    }
+
     pub(super) fn new_from_json(json: &str, case: &str) -> Self {
         let fixtures: BTreeMap<String, FixtureData> =
             serde_json::from_str(json).expect("raw fixtures");
@@ -70,6 +77,7 @@ impl PolicyFixture {
                 unexpected: Vec::new(),
                 mutations_expected: std::collections::VecDeque::new(),
                 mutations: Vec::new(),
+                selected_attrs_expected: std::collections::VecDeque::new(),
                 proof_plan: None,
             }),
         });
@@ -175,6 +183,43 @@ impl PolicyFixture {
         });
     }
 
+    /// Declares the exact captured `check-attr` response for the *next* selected
+    /// path read, keyed by the NUL-joined stdin the production code must build.
+    /// Ordinary whole-index filter reads remain the fixture's `attrs`. Unknown
+    /// inputs still fail, so a missing declaration cannot silently pass.
+    pub(super) fn expect_selected_attrs(&self, input: &[u8], response: &str) {
+        let key = std::str::from_utf8(input)
+            .expect("attribute stdin is UTF-8")
+            .to_owned();
+        assert!(
+            self.fixtures
+                .values()
+                .any(|fixture| fixture.attrs_by_input.contains_key(&key)),
+            "selected attrs key {key:?} is not a captured state"
+        );
+        self.backend
+            .state
+            .lock()
+            .expect("stub state")
+            .selected_attrs_expected
+            .push_back((key, response.to_owned()));
+    }
+
+    /// Declares the exact captured selected-path attribute response for the
+    /// fixture's own recorded path input.
+    pub(super) fn expect_fixture_selected_attrs(&self, response: &str) {
+        let state = self.backend.state.lock().expect("stub state");
+        let key = state
+            .data
+            .attrs_by_input
+            .keys()
+            .next()
+            .expect("fixture has a selected attrs key")
+            .clone();
+        drop(state);
+        self.expect_selected_attrs(key.as_bytes(), response);
+    }
+
     pub(super) fn proof_plan(&self, plan: &str) {
         assert!(
             [
@@ -224,6 +269,11 @@ impl PolicyFixture {
             state.unexpected.is_empty(),
             "unexpected command: {:?}",
             state.unexpected
+        );
+        assert!(
+            state.selected_attrs_expected.is_empty(),
+            "declared selected attrs were never requested: {:?}",
+            state.selected_attrs_expected
         );
         assert!(
             !self.dir.path().join(".git").exists(),
@@ -328,6 +378,38 @@ impl GitCommandBackend for CommandStub {
             }
             return Ok(Output {
                 stdout: Vec::new(),
+                overflow: false,
+            });
+        }
+        // A declared selected-path attribute response is consumed by exact stdin
+        // match before any ordinary read, so one drift is fed through the real
+        // parser without changing any other command response.
+        if valid_command
+            && tail
+                == [
+                    "--no-optional-locks",
+                    "check-attr",
+                    "-z",
+                    "--stdin",
+                    "--all",
+                ]
+            && let Some(input) = input
+            && let Ok(text) = std::str::from_utf8(input)
+            && state
+                .selected_attrs_expected
+                .front()
+                .is_some_and(|(key, _)| key == text)
+        {
+            let (_, response) = state
+                .selected_attrs_expected
+                .pop_front()
+                .expect("declared selected attrs");
+            let bytes = response.into_bytes();
+            if bytes.len() > stdout_limit {
+                return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+            }
+            return Ok(Output {
+                stdout: bytes,
                 overflow: false,
             });
         }
