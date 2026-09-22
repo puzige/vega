@@ -25,3 +25,9 @@ slow-timeout = { period = "600s", terminate-after = 1 }
 # Leave the thread count at nextest's default (= number of CPUs). Do NOT
 # over-subscribe: at 32 threads on a 10-core box a timing test was observed to
 # flake, which is exactly the load-sensitivity R52 quarantines.
+
+# Reserve two scheduler slots for spawn-heavy trusted Git tests. This bounds
+# their concurrency without changing global CPU-default threads or assertions.
+[[profile.default.overrides]]
+filter = 'package(vega_conversation) & test(/^git_workspace::trusted_git::/)'
+threads-required = 2

@@ -99,6 +99,8 @@ cargo test --workspace -- --ignored --test-threads=1
 
 **2026-09-22 后续（issue #123）**：云端 PR 门禁的常规测试改由 `cargo nextest run --workspace` 执行（配置 `.config/nextest.toml`，`retries = 0`），语义与上面「快速门禁」一致：并行、跳过 `#[ignore]` 的负载敏感测试；因 nextest 不跑 doc-tests，workflow 另加 `cargo test --workspace --doc`。本地命令不变，`cargo test --workspace` 仍可用。用 nextest 单独跑被隔离的 10 个测试：`cargo nextest run --workspace --run-ignored ignored-only --test-threads=1`（实测 10 passed）。
 
+**同日 C9 提速**：云端使用 4 个 macOS runner 执行 `--partition hash:<shard>/4`，quality job 并行跑 fmt/clippy/doc-tests。`vega_conversation` 的 `git_workspace::trusted_git::` 测试设置 `threads-required = 2` 以降低重型测试并发竞争；该权重不保证消除 flaky，也不增加单测 CPU 数。保留既有 10 项隔离清单，不新增 ignore 或重试。所有分片必须成功才能通过汇总门禁。
+
 ### 2.5 冻结测试
 
 新增一个测试，断言"被禁用的测试集合"不会悄悄扩大：遍历 `#[ignore]` 标注，要求每个 reason 都以 `load-sensitive:` 开头。防止后人把无关测试也 `#[ignore]` 掉。

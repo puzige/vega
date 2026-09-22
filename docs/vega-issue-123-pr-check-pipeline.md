@@ -73,3 +73,55 @@
 ## 回滚
 
 `git revert` 本 PR 即恢复本地 hooks/脚本与旧文档口径；删除 `pr-check.yml` / `master-build.yml` 即停用云端 check 与 master 打包。产品与安装不受影响。
+
+## C9 — Parallel cloud checks (2026-09-22 takeover)
+
+User request: substantially reduce test/pipeline wall time, use cross-runner sharding,
+and add heavy-test scheduling first to reduce load-sensitive failures.
+This section supersedes C1/C7/C8's sequential single-job topology only.
+
+- Four independent `macos-latest` test jobs run identical source/toolchain/nextest
+  versions with `cargo nextest run --workspace --partition hash:<shard>/4`.
+  Matrix shard values are exactly `[1, 2, 3, 4]`; `fail-fast: false` preserves
+  diagnostics from the other shards. No subset/path filters or retries.
+- A parallel macOS quality job runs fmt, clippy and workspace doc-tests once.
+- Every Rust job restores the existing `shared-key: vega` cache read-only;
+  master-build remains the only cache writer. The first implementation retains
+  ordinary Cargo builds in each shard; build archives/profile changes are outside
+  this slice, since transfer cost and runtime fixture relocation need measurement.
+- The required check remains exactly `check (fmt, clippy, test)`. A lightweight
+  `always()` aggregate job depends on both quality and the complete test matrix,
+  and succeeds only when both dependency results equal `success`. Failure,
+  cancellation and skipped dependencies must fail closed. No branch-protection
+  edits are necessary and no `continue-on-error` is allowed.
+- Add a default-profile nextest override scoped to package `vega_conversation`
+  and the `git_workspace::trusted_git::` test namespace: `threads-required = 2`.
+  Keep CPU-default global concurrency, retries=0, fail-fast=false, and the existing
+  600-second bounded timeout. Weighting reserves scheduler slots; it does not
+  allocate CPU affinity or guarantee freedom from flakes. On a 3-slot runner it
+  allows at most one such heavy test plus one ordinary test concurrently.
+- Preserve every existing assertion, ignored-test inventory, true Git process
+  boundary and product source behavior. Revert the failed environment-variable
+  experiment before validating this topology. Do not modify Git wrappers here.
+
+### C9 acceptance and implementation plan
+
+| ID | Operation | Required result |
+|---|---|---|
+| P1 | Parse/lint workflow and nextest configuration | Valid with pinned nextest 0.9.146; heavy override selects the intended namespace |
+| P2 | List all runnable tests and each of four hash partitions | Pairwise disjoint partition sets; their union equals the unpartitioned suite; no lost tests |
+| P3 | Evaluate aggregate gate with success/failure/cancelled/skipped combinations | Only all-success passes; exact required check name retained |
+| P4 | Execute cloud PR check on the delivered head | All four shards plus fmt/clippy/doc-tests pass with zero retries; skipped inventory unchanged except unrelated upstream changes |
+| P5 | Compare successful run to baseline 35695291651 | Report total wall time, queue delays, each shard build/run duration and percentage change; target at least 30% lower wall time, not assumed as proven |
+| P6 | Verify scope and local regression | No new ignores, loosened assertions, environment injection, local hooks, branch settings, packaging or installed-app changes |
+
+Implementation: coordinator freezes this contract, delegates workflow/config to a
+single executor, updates affected authoritative documentation, reviews static
+coverage/fail-closed evidence, updates existing PR 131 without force pushing, then
+observes one complete cloud run. A failing run is investigated, not retried to green.
+Product UI E2E is inapplicable: no product behavior is changed. Real cloud workflow
+execution is the integration acceptance for this slice. If runner contention limits
+speedup, report the measured bottleneck before adding more shards.
+
+References: https://www.nexte.st/docs/ci-features/partitioning/ and
+https://www.nexte.st/docs/configuration/threads-required/ .
