@@ -1,5 +1,5 @@
 //! Finite command stubs for application policy tests, not a Git implementation.
-//! command-fixtures.json contains raw outputs captured from nine owned Git states.
+//! command-fixtures.json contains raw outputs captured from owned Git states.
 //! Only commit OIDs are normalized consistently; real parsers consume every byte.
 use super::*;
 
@@ -8,12 +8,17 @@ struct FixtureData {
     raw: BTreeMap<String, String>,
     files: BTreeMap<String, String>,
     executable_files: Vec<String>,
+    #[serde(default)]
+    attrs_by_input: BTreeMap<String, String>,
 }
 
 struct StubState {
     data: FixtureData,
     requests: Vec<Vec<OsString>>,
     unexpected: Vec<Vec<OsString>>,
+    mutations_expected: std::collections::VecDeque<(Vec<OsString>, FixtureData)>,
+    mutations: Vec<(Vec<OsString>, Vec<u8>)>,
+    proof_plan: Option<String>,
 }
 
 struct CommandStub {
@@ -24,10 +29,17 @@ struct CommandStub {
 pub(super) struct PolicyFixture {
     dir: tempfile::TempDir,
     backend: Arc<CommandStub>,
+    fixtures: BTreeMap<String, FixtureData>,
 }
 
 impl PolicyFixture {
     pub(super) fn new(case: &str) -> Self {
+        Self::new_from_json(include_str!("command-fixtures.json"), case)
+    }
+
+    pub(super) fn new_from_json(json: &str, case: &str) -> Self {
+        let fixtures: BTreeMap<String, FixtureData> =
+            serde_json::from_str(json).expect("raw fixtures");
         let dir = tempfile::tempdir().expect("policy fixture directory");
         let root = fs::canonicalize(dir.path()).expect("policy root");
         // A plain directory for real marker/path validation; never a Git repository.
@@ -35,12 +47,19 @@ impl PolicyFixture {
         let backend = Arc::new(CommandStub {
             root,
             state: Mutex::new(StubState {
-                data: Self::data(case),
+                data: fixtures[case].clone(),
                 requests: Vec::new(),
                 unexpected: Vec::new(),
+                mutations_expected: std::collections::VecDeque::new(),
+                mutations: Vec::new(),
+                proof_plan: None,
             }),
         });
-        let fixture = Self { dir, backend };
+        let fixture = Self {
+            dir,
+            backend,
+            fixtures,
+        };
         fixture.set_case(case);
         fixture
     }
@@ -53,14 +72,19 @@ impl PolicyFixture {
 
     pub(super) fn set_case(&self, case: &str) {
         let mut state = self.backend.state.lock().expect("stub state");
-        let next = Self::data(case);
-        for path in state.data.files.keys() {
+        let next = self.fixtures[case].clone();
+        Self::apply_files(self.dir.path(), &state.data, &next);
+        state.data = next;
+    }
+
+    fn apply_files(root: &Path, before: &FixtureData, next: &FixtureData) {
+        for path in before.files.keys() {
             if !next.files.contains_key(path) {
-                fs::remove_file(self.dir.path().join(path)).expect("remove old fixture file");
+                fs::remove_file(root.join(path)).expect("remove old fixture file");
             }
         }
         for (path, content) in &next.files {
-            let path = self.dir.path().join(path);
+            let path = root.join(path);
             if fs::read(&path).ok().as_deref() != Some(content.as_bytes()) {
                 fs::write(&path, content).expect("plain worktree file");
             }
@@ -80,12 +104,98 @@ impl PolicyFixture {
                 fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("file mode");
             }
         }
-        state.data = next;
     }
 
     pub(super) fn operation_marker(&self) {
         fs::write(self.dir.path().join("metadata/MERGE_HEAD"), b"marker")
             .expect("operation marker");
+    }
+
+    // Explicit external protocol responses, never simulated Git operations.
+    // Only the expected mutations are ordered; ordinary reads remain unordered.
+    pub(super) fn expect_mutation(&self, verb: &str, args: &[&str], post_case: &str) {
+        let mut state = self.backend.state.lock().expect("stub state");
+        let argv = PREFIX
+            .iter()
+            .copied()
+            .chain(["-c", "core.hooksPath=/dev/null", verb])
+            .chain(args.iter().copied())
+            .map(OsString::from)
+            .collect();
+        state
+            .mutations_expected
+            .push_back((argv, self.fixtures[post_case].clone()));
+    }
+
+    pub(super) fn proof_plan(&self, plan: &str) {
+        assert!(
+            [
+                "pass",
+                "zero-parent",
+                "wrong-parent",
+                "two-parent",
+                "tree-diff",
+                "malformed-parent",
+                "short-parent",
+                "mixed-parent",
+                "object-missing",
+                "ref-moved",
+                "ref-deleted",
+                "ref-renamed"
+            ]
+            .contains(&plan)
+        );
+        self.backend.state.lock().expect("stub state").proof_plan = Some(plan.into());
+    }
+
+    pub(super) fn mutation_argv(&self) -> Vec<u8> {
+        let state = self.backend.state.lock().expect("stub state");
+        self.assert_valid(&state);
+        state
+            .mutations
+            .iter()
+            .flat_map(|(args, _)| {
+                args.iter()
+                    .flat_map(|arg| arg.as_bytes().iter().copied().chain([0]))
+            })
+            .collect()
+    }
+
+    pub(super) fn mutation_inputs(&self) -> Vec<Vec<u8>> {
+        let state = self.backend.state.lock().expect("stub state");
+        self.assert_valid(&state);
+        state
+            .mutations
+            .iter()
+            .map(|(_, input)| input.clone())
+            .collect()
+    }
+
+    fn assert_valid(&self, state: &StubState) {
+        assert!(
+            state.unexpected.is_empty(),
+            "unexpected command: {:?}",
+            state.unexpected
+        );
+        assert!(
+            !self.dir.path().join(".git").exists(),
+            "policy test created a Git repository"
+        );
+    }
+
+    pub(super) async fn prepared(&self) -> (TrustedGitService, PreparedCommit) {
+        let (_, trusted) = self.services().await;
+        let checklist = trusted
+            .open_checklist(CancellationToken::new())
+            .await
+            .expect("checklist");
+        let prepared = trusted
+            .prepare(checklist.id, Vec::new(), CancellationToken::new())
+            .await
+            .prepared
+            .expect("real prepared capability");
+        self.assert_no_mutation();
+        (trusted, prepared)
     }
 
     pub(super) async fn services(&self) -> (Arc<GitWorkspaceService>, TrustedGitService) {
@@ -139,12 +249,91 @@ impl GitCommandBackend for CommandStub {
         let prefix: Vec<OsString> = PREFIX.iter().map(OsString::from).collect();
         let strings: Vec<&str> = args.iter().filter_map(|arg| arg.to_str()).collect();
         let tail = strings.get(PREFIX.len()..).unwrap_or_default();
-        let raw = &state.data.raw;
-        let bytes = if command.get_program() == OsStr::new("/dev/null")
+        let valid_command = command.get_program() == OsStr::new("/dev/null")
             && command.get_current_dir() == Some(self.root.as_path())
             && args.starts_with(&prefix)
-            && strings.len() == args.len()
-        {
+            && strings.len() == args.len();
+        if let (true, Some(input)) = (
+            valid_command
+                && state
+                    .mutations_expected
+                    .front()
+                    .is_some_and(|(expected, _)| expected == &args),
+            input,
+        ) {
+            let (_, post) = state
+                .mutations_expected
+                .pop_front()
+                .expect("expected mutation");
+            state.mutations.push((args, input.to_vec()));
+            PolicyFixture::apply_files(&self.root, &state.data, &post);
+            state.data = post;
+            return Ok(Output {
+                stdout: Vec::new(),
+                overflow: false,
+            });
+        }
+        // Faults are raw responses at immutable proof reads; ordinary reads stay unordered.
+        let post_commit = state.mutations.iter().any(|(args, _)| {
+            args.get(PREFIX.len() + 2)
+                .is_some_and(|verb| verb == "commit")
+        });
+        let plan = state.proof_plan.clone();
+        if valid_command && post_commit && input.is_none() {
+            if tail
+                == [
+                    "--no-optional-locks",
+                    "rev-parse",
+                    &format!("{}^@", state.data.raw["head"]),
+                ]
+            {
+                if plan.as_deref() == Some("object-missing") {
+                    return Err(error(GitWorkspaceErrorCode::GitFailed));
+                }
+                let parents = match plan.as_deref() {
+                    Some("zero-parent") => String::new(),
+                    Some("wrong-parent") => format!("{}\n", "b".repeat(40)),
+                    Some("two-parent") => format!("{0}\n{0}\n", "a".repeat(40)),
+                    Some("malformed-parent") => "not-an-oid\n".into(),
+                    Some("short-parent") => "0123456789abcdef\n".into(),
+                    Some("mixed-parent") => format!("{}\n", "0".repeat(64)),
+                    _ => state.data.raw["parents"].clone(),
+                };
+                return Ok(Output {
+                    stdout: parents.into_bytes(),
+                    overflow: false,
+                });
+            }
+            if tail
+                == [
+                    "--no-optional-locks",
+                    "ls-tree",
+                    "-r",
+                    "-z",
+                    "--full-tree",
+                    &state.data.raw["head"],
+                ]
+            {
+                let tree = if plan.as_deref() == Some("tree-diff") {
+                    PolicyFixture::data("staged").raw["tree"].clone()
+                } else {
+                    state.data.raw["tree"].clone()
+                };
+                // Drift occurs after the immutable tree read, before the final head proof.
+                // No unrelated status/read count is part of this contract.
+                if let Some(drift @ ("ref-moved" | "ref-deleted" | "ref-renamed")) = plan.as_deref()
+                {
+                    state.data = PolicyFixture::data(&format!("proof-{drift}"));
+                    state.proof_plan = Some("pass".into());
+                }
+                return Ok(Output {
+                    stdout: tree.into_bytes(),
+                    overflow: false,
+                });
+            }
+        }
+        let raw = &state.data.raw;
+        let bytes = if valid_command {
             match tail {
                 ["--no-optional-locks", "rev-parse", "--show-toplevel"] => {
                     Some(format!("{}\n", self.root.display()).into_bytes())
@@ -212,7 +401,19 @@ impl GitCommandBackend for CommandStub {
                     "-z",
                     "--stdin",
                     "--all",
-                ] if input == Some(raw["paths"].as_bytes()) => Some(Vec::new()),
+                ] => input.and_then(|input| {
+                    state
+                        .data
+                        .attrs_by_input
+                        .get(std::str::from_utf8(input).ok()?)
+                        .map(|attrs| attrs.as_bytes().to_vec())
+                        .or_else(|| {
+                            (input == raw["paths"].as_bytes()).then(|| {
+                                raw.get("attrs")
+                                    .map_or_else(Vec::new, |attrs| attrs.as_bytes().to_vec())
+                            })
+                        })
+                }),
                 [
                     "--no-optional-locks",
                     "diff",
