@@ -270,3 +270,101 @@ async fn i61_thinking_bounds_are_utf8_safe_and_cumulative(cx: &mut TestAppContex
         );
     });
 }
+
+#[gpui_kit::test]
+async fn issue103_thinking_body_is_bounded(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "issue103-thinking");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(start("m"), cx);
+        stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
+    });
+    cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let toggle = visual.debug_bounds("thinking-toggle").expect("header");
+    visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    let body = visual.debug_bounds("thinking-content").expect("body");
+    assert!(
+        body.size.height <= px(240.),
+        "thinking body: {:?}",
+        body.size.height
+    );
+}
+
+#[gpui_kit::test]
+async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "issue103-thinking-scroll");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(start("m"), cx);
+        stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
+    });
+    cx.run_until_parked();
+    let block = stream.read_with(cx, |stream, _| cards(stream)[0].clone());
+    let scroll = block.read_with(cx, |block, _| block.scroll_handle());
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let toggle = visual.debug_bounds("thinking-toggle").expect("header");
+    visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    let body = visual.debug_bounds("thinking-content").expect("body");
+    assert!(
+        scroll.max_offset().y > px(1000.),
+        "full reasoning remains reachable"
+    );
+    visual.simulate_event(gpui_kit::ScrollWheelEvent {
+        position: body.center(),
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-100.))),
+        modifiers: gpui_kit::Modifiers::default(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    visual.run_until_parked();
+    assert_eq!(scroll.offset().y, px(-100.));
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_event(thinking("m", &"new reasoning\n".repeat(20)), cx)
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        scroll.offset().y,
+        px(-100.),
+        "streaming must not follow the bottom"
+    );
+    assert_eq!(
+        visual.debug_bounds("thinking-toggle").expect("header"),
+        toggle
+    );
+    visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_none());
+    visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(scroll.offset().y, px(-100.), "reopen retains offset");
+    // Reasoning is append-only in normal operation. Exercise the layout's
+    // shrink clamp on the real mounted entity without changing production APIs.
+    block.update(&mut visual, |block, cx| {
+        block.text = "short".into();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(scroll.offset().y, px(0.));
+    assert_eq!(scroll.max_offset().y, px(0.));
+    assert!(
+        visual
+            .debug_bounds("thinking-content")
+            .expect("short body")
+            .size
+            .height
+            < px(240.)
+    );
+    block.update(&mut visual, |block, cx| {
+        block.text.clear();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("thinking-content")
+            .expect("empty body")
+            .size
+            .height
+            < px(240.)
+    );
+}

@@ -3,13 +3,13 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, Task, div, px};
+use gpui_kit::{AnyElement, App, Entity, MouseButton, MouseUpEvent, ScrollHandle, Task, div, px};
 use vega_conversation::types::{
     Approval, InvalidToolKind, ReadOnlyToolKind, SkillCardOutcome, ToolCall, ToolCallStatus,
     ToolCardInputProjection, ToolCardResultProjection, ToolResult, tool_card_input_projection,
     tool_card_result_projection,
 };
-use vega_theme::{ThemeColors, Typography, theme};
+use vega_theme::{Layout, ThemeColors, Typography, theme};
 
 use crate::conversation_stream::{MONOFONT, ROW_HEIGHT};
 use crate::icons::Icon;
@@ -123,12 +123,18 @@ pub struct ToolCard {
     summary: String,
     output_rows: Vec<String>,
     expanded: bool,
+    detail_scroll: ScrollHandle,
     running_started_at: Option<Instant>,
     running_elapsed_seconds: Option<u64>,
     elapsed_refresh_task: Option<Task<()>>,
 }
 
 impl ToolCard {
+    #[cfg(test)]
+    pub(crate) fn scroll_handle(&self) -> ScrollHandle {
+        self.detail_scroll.clone()
+    }
+
     /// Creates a pending card from a durable safe proposal.
     pub fn proposed(call: &ToolCall) -> Self {
         let input = tool_card_input_projection(call);
@@ -145,6 +151,7 @@ impl ToolCard {
             summary: String::new(),
             output_rows: Vec::new(),
             expanded: false,
+            detail_scroll: ScrollHandle::new(),
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
@@ -168,6 +175,7 @@ impl ToolCard {
             summary: String::new(),
             output_rows: Vec::new(),
             expanded: false,
+            detail_scroll: ScrollHandle::new(),
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
@@ -186,6 +194,7 @@ impl ToolCard {
             summary: String::new(),
             output_rows: Vec::new(),
             expanded: false,
+            detail_scroll: ScrollHandle::new(),
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
@@ -212,6 +221,7 @@ impl ToolCard {
             result,
             summary: String::new(),
             expanded: false,
+            detail_scroll: ScrollHandle::new(),
             running_started_at: None,
             running_elapsed_seconds: None,
             elapsed_refresh_task: None,
@@ -488,6 +498,8 @@ impl ToolCard {
                 if expanded { card_ref.detail() } else { None },
             )
         };
+        let detail_scroll = card.read(cx).detail_scroll.clone();
+        let detail_id = format!("tool-detail-{}", card.entity_id());
         let toggle_card = card.clone();
         let debug_selector = selector.clone();
         let title_selector = format!("{selector}-title");
@@ -552,12 +564,19 @@ impl ToolCard {
         div()
             .w_full()
             .min_w_0()
+            .flex_shrink_0()
             .flex()
             .flex_col()
             .when(indented, |card| card.pl_4())
             .child(row)
             .when_some(expanded.then_some(detail).flatten(), move |card, detail| {
-                card.child(render_detail(detail, format!("{selector}-detail"), &colors))
+                card.child(render_detail(
+                    detail,
+                    format!("{selector}-detail"),
+                    detail_id,
+                    &detail_scroll,
+                    &colors,
+                ))
             })
             .into_any_element()
     }
@@ -951,7 +970,32 @@ fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> 
     output.lines().map(str::to_string).collect()
 }
 
-fn render_detail(detail: ToolDetail, selector: String, colors: &ThemeColors) -> AnyElement {
+// GPUI applies its built-in scroll delta before custom bubble listeners, but
+// does not stop bubbling when the viewport moves. Consume only actual movement;
+// at an edge (including a short body) retain the normal parent scroll policy.
+pub(crate) fn contain_disclosure_scroll(
+    scroll: &ScrollHandle,
+) -> impl Fn(&gpui_kit::ScrollWheelEvent, &mut gpui_kit::Window, &mut App) + 'static {
+    let scroll = scroll.clone();
+    move |event, window, cx| {
+        let delta = event.delta.pixel_delta(window.line_height());
+        let dy = if delta.y != px(0.) { delta.y } else { delta.x };
+        let max = scroll.max_offset().y;
+        let after = scroll.offset().y;
+        let before = (after - dy).clamp(-max, px(0.));
+        if before != after.clamp(-max, px(0.)) {
+            cx.stop_propagation();
+        }
+    }
+}
+
+fn render_detail(
+    detail: ToolDetail,
+    selector: String,
+    id: String,
+    scroll: &ScrollHandle,
+    colors: &ThemeColors,
+) -> AnyElement {
     let debug_selector = selector.clone();
     let mut rows = Vec::with_capacity(detail.logical_rows());
     if let Some(title) = detail.title {
@@ -970,7 +1014,11 @@ fn render_detail(detail: ToolDetail, selector: String, colors: &ThemeColors) -> 
         rows.push(detail_row(footer, state.terminal_color(colors), false));
     }
     div()
+        .id(gpui_kit::SharedString::from(id))
         .debug_selector(move || debug_selector.clone())
+        .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
+        .track_scroll(scroll)
+        .on_scroll_wheel(contain_disclosure_scroll(scroll))
         .w_full()
         .min_w_0()
         .mt_1()
@@ -979,7 +1027,8 @@ fn render_detail(detail: ToolDetail, selector: String, colors: &ThemeColors) -> 
         .border_1()
         .border_color(colors.border_subtle)
         .bg(colors.code_bg)
-        .overflow_hidden()
+        .overflow_x_hidden()
+        .overflow_y_scroll()
         .flex()
         .flex_col()
         .children(rows)
@@ -991,6 +1040,7 @@ fn detail_row(text: String, color: gpui_kit::Rgba, code: bool) -> AnyElement {
         .w_full()
         .min_w_0()
         .min_h(px(ROW_HEIGHT))
+        .flex_shrink_0()
         .px_2()
         .py_1()
         .when(code, |row| row.font_family(MONOFONT))
