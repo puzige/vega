@@ -1,4 +1,5 @@
 use super::*;
+use crate::icons::{Icon, icon};
 
 /// Materializes a user echo block (T18 消息块结构): the 「你」 label, one
 /// line per source line (blank lines preserved as empty spans), and a
@@ -40,6 +41,50 @@ pub(crate) fn render_entry(
     let row_t0 = Instant::now();
     let colors = theme(cx).colors;
     let item = match entry {
+        StreamEntry::ContextCompaction {
+            record, restored, ..
+        } => {
+            use vega_conversation::types::ContextCompactionStatus as Status;
+            let (glyph, color) = match record.status {
+                Status::Compacting => (Icon::Refresh, colors.text_secondary),
+                Status::Succeeded => (Icon::Check, colors.text_secondary),
+                Status::Failed => (Icon::Warning, colors.danger),
+                _ => (Icon::Close, colors.text_secondary),
+            };
+            let restored = *restored;
+            let label = context_control::status_label(record);
+            let label = if restored {
+                format!("上次{label}")
+            } else {
+                label.to_owned()
+            };
+            div()
+                .debug_selector(|| "context-compaction-row".into())
+                .w_full()
+                .flex_shrink_0()
+                .pt_1()
+                .pb_2()
+                .flex()
+                .items_start()
+                .gap_2()
+                .text_size(px(Typography::METADATA))
+                .text_color(colors.text_secondary)
+                .child(icon(glyph, color))
+                .child(
+                    div()
+                        .debug_selector(move || {
+                            if restored {
+                                "context-compaction-restored".into()
+                            } else {
+                                "context-compaction-live".into()
+                            }
+                        })
+                        .min_w_0()
+                        .flex_1()
+                        .child(label),
+                )
+                .into_any_element()
+        }
         StreamEntry::Thinking { card } => div().child(card.clone()).into_any_element(),
         StreamEntry::User { lines, copy } => {
             message_with_copy(user_message_item(lines, &colors), copy, true, colors)

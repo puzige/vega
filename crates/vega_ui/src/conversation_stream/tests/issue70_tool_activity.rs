@@ -72,6 +72,7 @@ fn entry_shapes(stream: &ConversationStream, cx: &App) -> Vec<String> {
             StreamEntry::Permission { .. } => "permission".to_string(),
             StreamEntry::Plan { .. } => "plan".to_string(),
             StreamEntry::Summary { .. } => "summary".to_string(),
+            StreamEntry::ContextCompaction { .. } => "compaction".to_string(),
             StreamEntry::SkillActivation { .. } => "skill".to_string(),
             StreamEntry::Thinking { .. } => "thinking".to_string(),
             StreamEntry::User { .. } => "user".to_string(),

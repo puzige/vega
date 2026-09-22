@@ -264,6 +264,7 @@ fn hydrated_entry_kinds(stream: &ConversationStream) -> Vec<&'static str> {
             StreamEntry::Permission { .. } => "permission",
             StreamEntry::Plan { .. } => "plan",
             StreamEntry::Summary { .. } => "summary",
+            StreamEntry::ContextCompaction { .. } => "compaction",
             StreamEntry::SkillActivation { .. } => "skill-activation",
         })
         .collect()

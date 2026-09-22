@@ -41,6 +41,7 @@ fn timeline(stream: &ConversationStream, cx: &App) -> Vec<String> {
             StreamEntry::Plan { .. } => "plan".into(),
             StreamEntry::Artifact { .. } => "artifact".into(),
             StreamEntry::Permission { .. } => "permission".into(),
+            StreamEntry::ContextCompaction { .. } => "compaction".into(),
             StreamEntry::SkillActivation { .. } => "skill-activation".into(),
         })
         .collect()
