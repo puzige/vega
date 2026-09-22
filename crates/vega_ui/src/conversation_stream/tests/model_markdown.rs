@@ -130,6 +130,84 @@ impl Render for TableView {
 }
 
 #[gpui_kit::test]
+fn issue119_streamed_and_replayed_inline_content_reaches_markdown_renderer(
+    cx: &mut TestAppContext,
+) {
+    let doc = "- 选 **A**，*继续* ~~旧~~ [链接](https://example.com) ![替代](image.png)\n\n| 合法 | 字面量 |\n|---|---|\n| **粗体** `**代码**` [链接](https://example.com) | 改为**\"收敛\"**的 |\n";
+    let history = issue59_model(vec![doc.into()]);
+    let streamed = issue59_model(split_deltas(doc, 119));
+    assert_eq!(streamed.committed_lines, history.committed_lines);
+    assert!(streamed.pending_lines.is_empty());
+    let lines: Vec<_> = streamed
+        .committed_lines
+        .iter()
+        .filter(|line| line.kind != LineKind::Spacer)
+        .collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "formatting must not introduce extra list paragraphs"
+    );
+    assert_eq!(lines[0].kind, LineKind::ListItem);
+    assert_eq!(lines[0].marker, "•");
+    assert_eq!(spans_text(lines[0]), "选 A，继续 旧 链接 替代");
+    for (text, style) in [
+        ("A", SpanStyle::Strong),
+        ("继续", SpanStyle::Emphasis),
+        ("旧", SpanStyle::Strikethrough),
+        ("链接", SpanStyle::Link),
+    ] {
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|span| span.text == text && span.style == style)
+        );
+    }
+    let table_line = lines[1];
+    let table = table_line.table.as_ref().expect("structured table");
+    assert_eq!(table.rows.len(), 2);
+    assert!(table.rows.iter().all(|row| row.len() == 2));
+    assert_eq!(table.rows[1][0][0].style, SpanStyle::Strong);
+    assert!(
+        table.rows[1][0]
+            .iter()
+            .any(|span| span.style == SpanStyle::Code && span.text == "**代码**")
+    );
+    assert!(
+        table.rows[1][0]
+            .iter()
+            .any(|span| span.style == SpanStyle::Link && span.text == "链接")
+    );
+    assert_eq!(
+        table.rows[1][1],
+        vec![StreamSpan {
+            text: "改为**\"收敛\"**的".into(),
+            style: SpanStyle::Plain
+        }]
+    );
+    assert_eq!(table_line.block_id, 2);
+    assert_eq!(table.ordinal, 0);
+    let (_view, visual) = cx.add_window_view(|_, _| TableView(streamed));
+    visual.simulate_resize(gpui_kit::size(px(820.), px(600.)));
+    visual.run_until_parked();
+    let viewport = visual
+        .debug_bounds("markdown-table-2-0")
+        .expect("real table viewport");
+    for (header_selector, body_selector) in [
+        ("markdown-table-2-0-0-0", "markdown-table-2-0-1-0"),
+        ("markdown-table-2-0-0-1", "markdown-table-2-0-1-1"),
+    ] {
+        let header = visual.debug_bounds(header_selector).expect("header cell");
+        let body = visual.debug_bounds(body_selector).expect("body cell");
+        assert_eq!(header.left(), body.left());
+        assert_eq!(header.right(), body.right());
+        assert!(body.size.height > px(0.));
+        assert!(body.left() >= viewport.left() && body.right() <= viewport.right());
+    }
+}
+
+#[gpui_kit::test]
 fn issue59_real_table_cells_align_wrap_and_stay_inside_local_scroll(cx: &mut TestAppContext) {
     let model = issue59_model(vec![ISSUE59_TABLE.into()]);
     // The first block is assigned id 1 by the production streaming parser.
