@@ -71,7 +71,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install the pinned toolchain (rust-toolchain.toml = 1.98.0)
-        uses: dtolnay/rust-toolchain@stable
+        # Ref is the toolchain version so it matches rust-toolchain.toml; @stable
+        # would install for stable while the pin still forces 1.98.0.
+        uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Cache cargo build (keyed per tag)
         uses: Swatinem/rust-cache@v2
