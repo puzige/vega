@@ -7,7 +7,7 @@
 
 1. **确认 master 可发**：合并的 PR 已通过云端 `check`（`cargo fmt --all --
    --check` / `cargo clippy --workspace --all-targets -- -D warnings` /
-   `cargo test --workspace`，见 [.github/workflows/ci.yml](../.github/workflows/ci.yml)）。
+   `cargo test --workspace`，见 [.github/workflows/pr-check.yml](../.github/workflows/pr-check.yml)）。
 2. **打 tag 并推送**：
    ```sh
    git tag v0.1.0 && git push origin v0.1.0
@@ -21,11 +21,11 @@
 - 仓库是 **public**（2026-09-22 核实）：GitHub 托管 runner（含 `macos-latest`）
   免费、不计分钟配额。
 - 发布流水线只在 `v*` tag push 与手动触发时运行；单 job、超时 60 分钟上限；
-  tag 构建内不跑全量测试（测试由 PR check 承担，见 [ci.yml](../.github/workflows/ci.yml)）。
+  tag 构建内不跑全量测试（测试由 PR check 承担，见 [pr-check.yml](../.github/workflows/pr-check.yml)）。
 - rust-cache 按 tag 隔离（`key: v-<tag>`）：手动 re-run 命中缓存很快，
   新 tag 每次冷构建。
-- 每次 PR merge 后 master 会跑 `ci.yml` 的 `build` job 打包上传 artifact，
-  但**不发 Release**；发布仍只由 tag 触发。
+- 每次 PR merge 后 master 会跑 [master-build.yml](../.github/workflows/master-build.yml)
+  的 `build` job 打包上传 artifact，但**不发 Release**；发布仍只由 tag 触发。
 
 ## 签名与公证（HUMAN 前置）
 

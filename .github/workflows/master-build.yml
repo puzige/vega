@@ -1,0 +1,63 @@
+# Master build pipeline for Vega (macOS arm64) — push to master only.
+#
+# ── Design notes ─────────────────────────────────────────────────────────────
+# - This repo is PUBLIC: GitHub-hosted runners (including macos-latest) are
+#   free and do not consume the minute quota.
+# - Split out of the former single ci.yml (2026-09-22 owner decision): this
+#   pipeline packages the bundle after a PR merge and is the one that writes the
+#   shared cargo cache; the PR gate (pr-check.yml) only reads it. Both use the
+#   same `shared-key: vega` so a PR restores exactly this cache.
+# - master is protected (PR-only): this `push` trigger fires after a PR merge
+#   and produces the packaged bundle as a downloadable artifact. It does NOT
+#   publish a Release — releases stay tag-driven (release.yml) so not every
+#   commit becomes a version.
+# - Standard Cargo steps, no bespoke Python. `dtolnay/rust-toolchain` follows
+#   rust-toolchain.toml (1.98.0) so local and CI toolchains match.
+
+name: master-build
+
+on:
+  push:
+    branches: [master]
+
+# Cancel a superseded run for the same ref (e.g. rapid merges).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (master)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain (rust-toolchain.toml = 1.98.0)
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Same shared key as the PR gate (pr-check.yml) so the cache saved
+          # here is exactly what PR runs restore.
+          shared-key: vega
+          # This job only runs on master, so it is the one that writes the
+          # cache for the whole repo.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build the bundle (cargo xtask package)
+        # Assembles dist/Vega.app, ad-hoc signs it and zips
+        # dist/Vega-macos-arm64.zip. Version falls back to Cargo.toml (no tag).
+        run: cargo xtask package
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vega-macos-arm64-master
+          path: dist/Vega-macos-arm64.zip
+          if-no-files-found: error

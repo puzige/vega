@@ -37,7 +37,10 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 **门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 详见 [Issue #123 规格](docs/vega-issue-123-pr-check-pipeline.md)。
 
 - **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
-- 云端流水线 `.github/workflows/ci.yml`：`pull_request`（base `master`）跑 `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace`；push 到 master（PR merge 后）跑 `cargo xtask package` 并上传 artifact。用标准 Cargo 步骤，不复用自定义 Python 脚本。
+- 云端流水线拆成两条独立 workflow，共享同一个 cargo 缓存 key（`shared-key: vega`，2026-09-22 用户裁决）：
+  - `.github/workflows/pr-check.yml`：`pull_request`（base `master`）跑 `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace`；只读缓存（`save-if: false`）。
+  - `.github/workflows/master-build.yml`：push 到 master（PR merge 后）跑 `cargo xtask package` 并上传 artifact；唯一写缓存的一方。
+  - 两条都用标准 Cargo 步骤，不复用自定义 Python 脚本。
 - 发布仍由 `v*` tag 触发（`release.yml`），master build 不发 Release，避免每个 commit 都发版。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。本地直接 `cargo` 命令即可，不受调度器约束。
 - 本地开发仍建议自行运行相关 `cargo fmt/clippy/test` 快速自查；任务级 production-root 回归与真实 E2E 证据要求不变（见 exec-guide §7）。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。

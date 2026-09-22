@@ -105,7 +105,7 @@ loop {
 
 ### 3.5 CI
 `macos-latest` runner；PR check：fmt → clippy(-D warnings) → test（含 headless runtime 测试）；push 到 master：release build 打包上传 artifact。`Swatinem/rust-cache`。
-> 2026-09-22 修订（Issue #123）：仓库为 public，macOS runner 免费。门禁**全部上云**到 `.github/workflows/ci.yml`；本地 git hooks、`scripts/verify.py` 与 cargo-lock 调度器已删除，本地 commit/push 不再封锁。发布仍由 `v*` tag 触发。
+> 2026-09-22 修订（Issue #123）：仓库为 public，macOS runner 免费。门禁**全部上云**到 `.github/workflows/`（PR check 与 master build 两条独立 workflow，共享 `shared-key: vega` 缓存）；本地 git hooks、`scripts/verify.py` 与 cargo-lock 调度器已删除，本地 commit/push 不再封锁。发布仍由 `v*` tag 触发。
 
 ---
 
