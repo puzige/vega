@@ -406,6 +406,16 @@ impl Layout {
     pub const COMPOSER_UTILITY_CHIP_PADDING_X: f32 = 8.0;
     /// R1 utility chip capsule radius (half of the 28px chip height).
     pub const COMPOSER_UTILITY_CHIP_RADIUS: f32 = 14.0;
+    /// Issue #98: the floating "back to bottom" control's circular hit face.
+    ///
+    /// The reference implementation (Codex) shows a 32px circle above the
+    /// composer when the transcript is detached from the live tail; the Issue
+    /// #98 screenshot measured 63–64px at 2x, i.e. 32px logical.
+    pub const SCROLL_TO_BOTTOM_SIZE: f32 = 32.0;
+    /// Issue #98: clearance between the floating "back to bottom" control's
+    /// bottom edge and the transcript viewport's bottom edge (measured ≈24px
+    /// above the composer card in the reference).
+    pub const SCROLL_TO_BOTTOM_GAP: f32 = 24.0;
     /// Height reserved by every non-Settings main route.
     pub const MAIN_HEADER_HEIGHT: f32 = 46.0;
     /// Gap between the main content panel and the native window edges/sidebar.
@@ -663,6 +673,15 @@ mod tests {
         assert_eq!(Layout::TAB_RADIUS, 10.0);
         assert_eq!(Layout::TAB_HORIZONTAL_INSET, 8.0);
         assert_eq!(Layout::TAB_CONTENT_GAP, 8.0);
+    }
+
+    #[test]
+    fn issue98_scroll_to_bottom_tokens_are_frozen() {
+        // Issue #98: the floating "back to bottom" circle is 32px (63–64px at
+        // 2x in the reference screenshot) and floats 24px above the transcript
+        // viewport's bottom edge.
+        assert_eq!(Layout::SCROLL_TO_BOTTOM_SIZE, 32.0);
+        assert_eq!(Layout::SCROLL_TO_BOTTOM_GAP, 24.0);
     }
 
     #[test]

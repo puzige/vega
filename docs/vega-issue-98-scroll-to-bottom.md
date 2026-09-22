@@ -111,7 +111,7 @@ pub const SCROLL_TO_BOTTOM_GAP: f32 = 24.0;
 | A4 | R3 可见性 | 贴底跟随中 | 渲染 | 按钮**不**渲染；上翻后渲染 | 生产测试 | 谓词/树断言 |
 | A5 | R3 行为 | 脱离底部 | 点击 / Enter | `following_tail()` 变真，按钮消失 | 生产测试 | 事件断言 |
 | A6 | R3 键盘 | 脱离底部 | 焦点到按钮后 Enter | 触发 resume，焦点语义保留 | 生产测试 | 焦点断言 |
-| A7 | R4 无障碍 | 脱离底部 | 渲染 | 节点 aria_label = 回到底部 | 生产测试 | 树断言 |
+| A7 | R4 无障碍 | 脱离底部 | 渲染 | 节点 aria_label = 回到底部 | 源码审查 | 平台无 a11y-tree 查询，SKIP（见下） |
 | A8 | R5 token | — | 编译期 | `SCROLL_TO_BOTTOM_SIZE==32`、`GAP==24` | 单元 | 冻结测试 |
 | A9 | 回归 | 既有滚动跟随 | 运行既有 `scroll_follow`/`e2e_variable_height` | 全绿 | 单元/E2E | 既有套件 |
 | A10 | 真实 UI | 真实 Vega、脱离底部 | 原生截图 | 悬浮圆钮出现在输入框上方居中，Light+Dark 各一张 | E2E-REAL | 截图 + SHA-256 |

@@ -71,31 +71,54 @@ impl ConversationStream {
         self.resume_tail(cx);
     }
 
-    /// Keeps the existing detached-tail recovery on the conversation surface
-    /// after R19 moves route identity and project actions into the window
-    /// header. This control is backed by the original scroll handler.
+    /// Issue #98: the detached-tail recovery control, matching the reference
+    /// implementation's floating circular "back to bottom" button.
+    ///
+    /// R19 moved route identity and project actions into the window header, so
+    /// this control stays on the conversation surface. It is a 32px circle
+    /// (`bg_elevated` fill, 1px `border_subtle`, `ArrowDown` glyph) that floats
+    /// `SCROLL_TO_BOTTOM_GAP` above the transcript viewport's bottom edge and
+    /// is centred on the content column; the caller mounts it only while
+    /// `!following_tail()`. Backed by the original scroll handler
+    /// (`resume_tail`), reachable by pointer and keyboard.
+    ///
+    /// `.id()` is required for `.hover()` to repaint (R67).
     fn render_resume_tail(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         div()
             .absolute()
-            .top_2()
-            .right_3()
-            .track_focus(&self.resume_tail_focus)
-            .key_context("ResumeTailButton")
-            .on_action(cx.listener(Self::on_resume_tail))
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .shadow_sm()
-            .text_size(px(Typography::METADATA))
-            .text_color(colors.text_secondary)
-            .cursor_pointer()
-            .hover(move |style| style.bg(colors.bg_hover))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_resume_tail_clicked))
-            .child("回到底部")
+            .bottom(px(Layout::SCROLL_TO_BOTTOM_GAP))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id("scroll-to-bottom")
+                    .debug_selector(|| "scroll-to-bottom".into())
+                    .aria_label("回到底部")
+                    .track_focus(&self.resume_tail_focus)
+                    .tab_stop(true)
+                    .key_context("ResumeTailButton")
+                    .on_action(cx.listener(Self::on_resume_tail))
+                    .flex_shrink_0()
+                    .size(px(Layout::SCROLL_TO_BOTTOM_SIZE))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .bg(colors.bg_elevated)
+                    .shadow_sm()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(move |style| style.bg(colors.bg_hover))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::on_resume_tail_clicked))
+                    .child(crate::icons::icon(
+                        crate::icons::Icon::ArrowDown,
+                        colors.text_secondary,
+                    )),
+            )
             .into_any_element()
     }
 
@@ -1150,11 +1173,6 @@ impl Render for ConversationStream {
                 }),
             )
             .on_action(cx.listener(Self::open_diff_action))
-            // tech-spec §5.4 动效禁令：流式期间节点无任何入场 opacity/动画
-            // （本管线自 T17 起即不引入入场动画，T18 维持）。
-            .when(!self.following_tail(), |root| {
-                root.child(self.render_resume_tail(cx))
-            })
             .child(
                 div()
                     .w_full()
@@ -1179,6 +1197,14 @@ impl Render for ConversationStream {
                             .mx_auto()
                             .when(!self.entries.is_empty(), |body| {
                                 body.h_full().overflow_hidden()
+                            })
+                            // Issue #98: the detached-tail control floats at the
+                            // bottom of the transcript viewport, centred on this
+                            // content column. tech-spec §5.4 动效禁令：流式期间
+                            // 节点无任何入场 opacity/动画（本管线自 T17 起即不
+                            // 引入入场动画，T18 维持）。
+                            .when(!self.following_tail(), |column| {
+                                column.relative().child(self.render_resume_tail(cx))
                             })
                             .child(body),
                     ),
