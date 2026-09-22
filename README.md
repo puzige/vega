@@ -118,7 +118,7 @@ PR check 与 master build 是两条独立 workflow（2026-09-22 拆分），共�
 
 | Workflow | 触发 | 检查 |
 |---|---|---|
-| [`.github/workflows/pr-check.yml`](.github/workflows/pr-check.yml) | `pull_request`（base `master`） | `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace` |
+| [`.github/workflows/pr-check.yml`](.github/workflows/pr-check.yml) | `pull_request`（base `master`） | `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo nextest run --workspace` → `cargo test --workspace --doc` |
 | [`.github/workflows/master-build.yml`](.github/workflows/master-build.yml) | `push` 到 `master`（PR merge 后） | `cargo xtask package`，产物上传为 artifact（不发 Release） |
 
 **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check` 才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。发布仍由 `v*` tag 触发（[vega-release.md](docs/vega-release.md)）。

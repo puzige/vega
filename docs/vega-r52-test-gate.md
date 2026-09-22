@@ -97,6 +97,8 @@ cargo test --workspace -- --ignored --test-threads=1
 
 **禁止**再用 `cargo test --workspace -- --test-threads=1` 作为日常门禁——它比并行慢 4.7 倍，且当初的理由（进程间 git fixture 竞争）已被共享 target 的文件锁消除。
 
+**2026-09-22 后续（issue #123）**：云端 PR 门禁的常规测试改由 `cargo nextest run --workspace` 执行（配置 `.config/nextest.toml`，`retries = 0`），语义与上面「快速门禁」一致：并行、跳过 `#[ignore]` 的负载敏感测试；因 nextest 不跑 doc-tests，workflow 另加 `cargo test --workspace --doc`。本地命令不变，`cargo test --workspace` 仍可用。用 nextest 单独跑被隔离的 10 个测试：`cargo nextest run --workspace --run-ignored ignored-only --test-threads=1`（实测 10 passed）。
+
 ### 2.5 冻结测试
 
 新增一个测试，断言"被禁用的测试集合"不会悄悄扩大：遍历 `#[ignore]` 标注，要求每个 reason 都以 `load-sensitive:` 开头。防止后人把无关测试也 `#[ignore]` 掉。

@@ -15,7 +15,7 @@
 ## 合同（Contract）
 
 - C1. 新增 `.github/workflows/ci.yml`（2026-09-22 后续拆分为 `pr-check.yml` + `master-build.yml`，见 C7；`ci.yml` 已删除）：
-  - `pull_request`（base `master`）触发 `check` job：`macos-latest`，checkout → `dtolnay/rust-toolchain`（按 `rust-toolchain.toml` = 1.98.0）→ `Swatinem/rust-cache` → `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace`。
+  - `pull_request`（base `master`）触发 `check` job：`macos-latest`，checkout → `dtolnay/rust-toolchain`（按 `rust-toolchain.toml` = 1.98.0）→ `taiki-e/install-action`（nextest@0.9.146）→ `Swatinem/rust-cache` → `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo nextest run --workspace`（`.config/nextest.toml`，`retries = 0`）→ `cargo test --workspace --doc`（2026-09-22 后续优化，见 C8）。
   - `push` 到 `master` 触发 `build` job：同 runner/toolchain/cache，`cargo xtask package`，`actions/upload-artifact` 上传 `dist/Vega-macos-arm64.zip`。
   - 同 ref 并发取消（`concurrency`），避免 PR 连续 push 堆积。
   - `permissions` 最小化：`contents: read`。
@@ -29,6 +29,7 @@
   - `.github/workflows/master-build.yml`（`name: master-build`）：仅 `push`（`master`）触发 `build` job，跑 `cargo xtask package` 并上传 artifact；rust-cache 用同一个 `shared-key: vega` + `save-if: ${{ github.ref == 'refs/heads/master' }}`（唯一写缓存方）。
   - 两条 workflow 各自 `concurrency`（`group: ${{ github.workflow }}-${{ github.ref }}`）与 `permissions: contents: read`；触发条件互斥（PR 不触发 build，master push 不触发 check），故不再需要 `if: github.event_name == ...` 守卫。
   - 删除 `ci.yml`。
+- C8.（2026-09-22 后续优化，用户裁决）PR 的 test 步骤从 `cargo test --workspace` 换成 `cargo nextest run --workspace`（配置 `.config/nextest.toml`）：每个测试独立进程、独立超时，失败直接给出测试名，挂起有界。`retries = 0`（**禁止**自动重试到绿，见「非目标」；flaky 一律走 `#[ignore]` + R52 冻结清单）；`fail-fast = false`（一次报出全部失败）；`slow-timeout = 600s`；线程数保持 nextest 默认（= CPU 数），不超订。因 nextest **不跑 doc-tests**，新增一步 `cargo test --workspace --doc` 保留原有 doc-test 覆盖。runner/toolchain/cache/job 名不变。
 
 ## 非目标
 

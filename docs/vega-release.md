@@ -7,7 +7,7 @@
 
 1. **确认 master 可发**：合并的 PR 已通过云端 `check`（`cargo fmt --all --
    --check` / `cargo clippy --workspace --all-targets -- -D warnings` /
-   `cargo test --workspace`，见 [.github/workflows/pr-check.yml](../.github/workflows/pr-check.yml)）。
+   `cargo nextest run --workspace` + `cargo test --workspace --doc`，见 [.github/workflows/pr-check.yml](../.github/workflows/pr-check.yml)）。
 2. **打 tag 并推送**：
    ```sh
    git tag v0.1.0 && git push origin v0.1.0

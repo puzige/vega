@@ -15,6 +15,13 @@
 # - Standard Cargo steps, no bespoke Python: fmt -> clippy -> test on PRs.
 #   `dtolnay/rust-toolchain` follows rust-toolchain.toml (1.98.0) so local and CI
 #   toolchains match.
+# - Tests run under `cargo-nextest` (2026-09-22 owner decision, option B): each
+#   test gets its own process and timeout, so a hang fails fast with a named test
+#   instead of stalling the job, and the per-test progress makes the slow suite
+#   legible. Same binaries, same assertions, no code change. nextest does NOT
+#   run doc-tests, so they stay as an explicit `cargo test --doc` step.
+#   Retries stay 0 (.config/nextest.toml): this repo forbids auto-retrying a
+#   flake to green — a flaky test is quarantined via `#[ignore]` + R52 instead.
 #
 # ── Required status check ────────────────────────────────────────────────────
 # Branch protection requires the job context "check (fmt, clippy, test)". Do not
@@ -51,6 +58,16 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install cargo-nextest
+        # Prebuilt binary (no `cargo install` compile). nextest is the test
+        # runner configured in .config/nextest.toml; it runs each test in its
+        # own process, so a failure names the exact test and a hang is bounded.
+        # Version pinned to the one validated locally (0.9.146), matching this
+        # repo's exact-version pinning habit; bump deliberately.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.146
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -71,5 +88,14 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --workspace
+      - name: Test (cargo-nextest)
+        # Same test binaries and assertions as `cargo test`; see
+        # .config/nextest.toml. Retries stay disabled: a flaky test is
+        # quarantined via #[ignore] + the R52 frozen list, never retried green.
+        run: cargo nextest run --workspace
+
+      - name: Doc-tests
+        # `cargo nextest` does not run doc-tests, so keep them explicit or the
+        # coverage `cargo test --workspace` provided (vega_markdown, vega_runtime,
+        # vega_tools) would be silently dropped.
+        run: cargo test --workspace --doc
