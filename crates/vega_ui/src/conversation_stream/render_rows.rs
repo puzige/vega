@@ -1,4 +1,5 @@
 use super::*;
+use crate::icons::{Icon, icon};
 
 /// Materializes a user echo block (T18 消息块结构): the 「你」 label, one
 /// line per source line (blank lines preserved as empty spans), and a
@@ -40,10 +41,61 @@ pub(crate) fn render_entry(
     let row_t0 = Instant::now();
     let colors = theme(cx).colors;
     let item = match entry {
+        StreamEntry::ContextCompaction {
+            record, restored, ..
+        } => {
+            use vega_conversation::types::ContextCompactionStatus as Status;
+            let (glyph, color) = match record.status {
+                Status::Compacting => (Icon::Refresh, colors.text_secondary),
+                Status::Succeeded => (Icon::Check, colors.text_secondary),
+                Status::Failed => (Icon::Warning, colors.danger),
+                _ => (Icon::Close, colors.text_secondary),
+            };
+            let restored = *restored;
+            let label = context_control::status_label(record);
+            let label = if restored {
+                format!("上次{label}")
+            } else {
+                label.to_owned()
+            };
+            div()
+                .debug_selector(|| "context-compaction-row".into())
+                .w_full()
+                .flex_shrink_0()
+                .pt_1()
+                .pb_2()
+                .flex()
+                .items_start()
+                .gap_2()
+                .text_size(px(Typography::METADATA))
+                .text_color(colors.text_secondary)
+                .child(icon(glyph, color))
+                .child(
+                    div()
+                        .debug_selector(move || {
+                            if restored {
+                                "context-compaction-restored".into()
+                            } else {
+                                "context-compaction-live".into()
+                            }
+                        })
+                        .min_w_0()
+                        .flex_1()
+                        .child(label),
+                )
+                .into_any_element()
+        }
         StreamEntry::Thinking { card } => div().child(card.clone()).into_any_element(),
-        StreamEntry::User { lines } => user_message_item(lines, &colors),
+        StreamEntry::User { lines, copy } => {
+            message_with_copy(user_message_item(lines, &colors), copy, true, colors)
+        }
         StreamEntry::UserImages { images } => attachments::render_user_images(images),
-        StreamEntry::Assistant { model, failure, .. } => markdown_item(model, *failure, &colors),
+        StreamEntry::Assistant {
+            model,
+            failure,
+            copy,
+            ..
+        } => message_with_copy(markdown_item(model, *failure, &colors), copy, false, colors),
         StreamEntry::Tool { card } => {
             let card = card.clone();
             div()
@@ -579,3 +631,54 @@ pub(crate) fn sample_document(blocks: usize) -> String {
 }
 
 // (split_deltas moved to vega_markdown::replay — T18 公共回放器基建)
+
+/// The group includes the message, the gap and the action row, keeping the
+/// pointer path continuous. Opacity preserves the exact rest/hover geometry.
+fn message_with_copy(
+    body: AnyElement,
+    copy: &MessageCopy,
+    user: bool,
+    colors: ThemeColors,
+) -> AnyElement {
+    if !copy.has_text() {
+        return body;
+    }
+    let id = copy.id;
+    let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
+    let source = copy.clone();
+    div()
+        .id(("message-with-copy", id))
+        .group(group.clone())
+        .w_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .child(body)
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .when(user, |row| row.justify_end())
+                .child(
+                    crate::icons::icon_button(
+                        crate::icons::Icon::Copy,
+                        "复制消息",
+                        colors,
+                        move |_, _, cx| source.copy(cx),
+                    )
+                    .id(("message-copy", id))
+                    .debug_selector(move || {
+                        if user {
+                            "message-copy-user"
+                        } else {
+                            "message-copy-assistant"
+                        }
+                        .into()
+                    })
+                    .opacity(0.)
+                    .group_hover(group, |style| style.opacity(1.))
+                    .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
+                ),
+        )
+        .into_any_element()
+}

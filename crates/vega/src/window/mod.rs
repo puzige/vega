@@ -285,7 +285,7 @@ impl VegaWindow {
             file_index_controller: FileIndexController::default(),
             diff_controller: DiffController::default(),
             workspace: workspace::Workspace::default(),
-            environment_collapsed: false,
+            environment_collapsed: true,
             environment_overlay_open: false,
             sidebar_resize_dragging: false,
             appearance_subscription: None,

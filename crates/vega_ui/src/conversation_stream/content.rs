@@ -101,6 +101,7 @@ impl ConversationStream {
                     let block_id = self.user_block_seq;
                     self.user_block_seq += 1;
                     hydrated.push(StreamEntry::User {
+                        copy: MessageCopy::new(&content),
                         lines: user_message_lines(block_id, &content),
                     });
                 }
@@ -118,6 +119,7 @@ impl ConversationStream {
                     let mut model = StreamModel::default();
                     model.sync(&stream.snapshot(), &self.counters);
                     hydrated.push(StreamEntry::Assistant {
+                        copy: MessageCopy::new(&content),
                         stream: Box::new(stream),
                         model,
                         // The original provider body is intentionally not
@@ -518,6 +520,7 @@ impl ConversationStream {
                 self.active_skills.clear();
                 let entry_index = self.entries.len();
                 self.entries.push(StreamEntry::Assistant {
+                    copy: MessageCopy::default(),
                     stream: Box::new(MarkdownStream::new()),
                     model: StreamModel::default(),
                     failure: None,
@@ -538,6 +541,7 @@ impl ConversationStream {
                 let entry_index = if *entry_index == usize::MAX {
                     let index = self.entries.len();
                     self.entries.push(StreamEntry::Assistant {
+                        copy: MessageCopy::default(),
                         stream: Box::new(MarkdownStream::new()),
                         model: StreamModel::default(),
                         failure: None,
@@ -550,10 +554,11 @@ impl ConversationStream {
                 } else {
                     *entry_index
                 };
-                if let Some(StreamEntry::Assistant { stream, .. }) =
+                if let Some(StreamEntry::Assistant { stream, copy, .. }) =
                     self.entries.get_mut(entry_index)
                 {
                     stream.append(&delta);
+                    copy.append(&delta);
                     self.active_segment_has_text = true;
                     cx.notify();
                 }
@@ -755,6 +760,7 @@ impl ConversationStream {
     fn append_empty_terminal_segment(&mut self) {
         let index = self.entries.len();
         self.entries.push(StreamEntry::Assistant {
+            copy: MessageCopy::default(),
             stream: Box::new(MarkdownStream::new()),
             model: StreamModel::default(),
             failure: None,

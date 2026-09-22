@@ -101,6 +101,7 @@ fn seed_and_detach(
     stream.update(cx, |stream, cx| {
         let entries: Vec<StreamEntry> = (0..40)
             .map(|index| StreamEntry::User {
+                copy: MessageCopy::new(&format!("滚动消息 {index}")),
                 lines: user_message_lines(index as u64, &format!("滚动消息 {index}")),
             })
             .collect();
@@ -135,6 +136,7 @@ async fn issue98_a4_button_mounts_only_when_detached(cx: &mut TestAppContext) {
     stream.update(cx, |stream, cx| {
         let entries: Vec<StreamEntry> = (0..40)
             .map(|index| StreamEntry::User {
+                copy: MessageCopy::new(&format!("滚动消息 {index}")),
                 lines: user_message_lines(index as u64, &format!("滚动消息 {index}")),
             })
             .collect();

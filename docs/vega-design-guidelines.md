@@ -132,6 +132,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 | Sidebar | default 304px / 240–365px | 内边距 12px；行高 32px；导航行圆角 8px；拖拽宽度持久化 |
 | 主内容外间隙 | 0px | R21 平直分栏；Sidebar 与主面板用 1px 分隔 |
 | 主 Header | 46px | 底部 1px 分隔线 |
+| Sidebar 顶部工具栏 | `MAIN_HEADER_HEIGHT` 46px / `SIDEBAR_TOOLBAR_CONTENT_GAP` 18px | Issue #129：工具栏从窗口 y=0 起且不收缩；后接 18px 间距，使新建任务仍从 y=64 起 |
 | 可读内容列 | max 768px | 居中；最小水平内边距 16px；与 Composer **同宽**（issue #100） |
 | Composer | max 768px / min-height 100px | **与正文列同宽**（issue #100；参考实现两者共用 `--thread-content-max-width: 48rem`）；圆角 20px，内容可因多行或错误增长；包裹列上下 padding 12/16px（`Layout::COMPOSER_PADDING_TOP/BOTTOM`，值不变，R45 起 token 化） |
 | Composer utility bar | h 37px / inset 19px / radius 12px（顶部） | 仅新建任务页；宽 = 卡片宽 − 2×19，`mx_auto` 共用卡片中轴；bar 底 == 卡片顶（零重叠）；chip gap 8px、首 chip inset 14.5px；chip 高 28px、水平 padding 8px |
@@ -182,6 +183,10 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 用户文字右对齐于可读消息列；短消息随内容收缩，最大宽度为列宽的 80%（`Layout::USER_MESSAGE_MAX_WIDTH_RATIO`）。气泡采用 `brand_soft` 背景与 `text_primary` 正文，圆角 16px（`Layout::USER_MESSAGE_RADIUS`），水平/垂直内边距为 12/8px，不显示「你」标签。内部空行、CJK/Latin 混排与无空格长文本必须完整换行。用户图片同样沿列右对齐；助手、工具和错误呈现保持既有布局。最大列宽 768px 时，气泡宽不超过 614.4px，正文宽不超过 590.4px。详见 [Issue #78](vega-issue-78-message-bubbles.md)。
 
+### 8.2 消息复制（Issue #78 follow-up）
+
+用户文字与助手正文在消息下方各保留一行共享 24px 图标按钮位置，用户侧靠右、助手侧靠左。动作默认透明，消息与动作组成连续 hover 区域；hover 或按钮获得键盘焦点时显现，显隐不改变高度。复制图标复用共享 SVG，tooltip 与可访问名称为「复制消息」，颜色采用 `text_secondary`、`bg_hover`、`bg_active`。只复制该项完整源文，保留 Markdown 与尾换行；流式读取最新正文，不包含工具/思考/错误提示，空正文与纯图片不提供复制动作。详见 [冻结契约](vega-issue-78-hover-copy.md)。
+
 ## 9. Composer
 
 - Composer 是单个主表面：增长输入区在上，一行真实操作在下；不要再套多层卡片或装饰性工具栏。
@@ -209,6 +214,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 ```
 
 - Environment 只在有真实 project authority 时出现；standalone task 不显示 project-only rail。
+- Issue #141：新窗口与重启后 Environment 默认折叠，由用户点击头部按钮展开；未手动展开前，项目/任务切换与窗口 resize 不自动展开。不新增持久化设置，详见 [Environment 默认折叠](vega-issue-141-environment-default-collapsed.md)。
 - Environment 卡片不再承载分支入口（R49 人类裁决）：`environment-branch` 行已删除，分支入口唯一化到 composer utility bar，符合「同一动作只有一个入口」。卡片其余行（标题、项目行、Changes / Review、Local terminal）保持不变。
 - 持久右侧 workspace 打开后替代 Environment rail；底部 workspace 横跨 center 与 right。
 - Workspace header 只承载标签与 pane 级操作；内容级工具栏单独成行，并把相关操作收进同一尾部按钮组，禁止用三个同级 `space-between` 元素把中间操作推到面板中央。

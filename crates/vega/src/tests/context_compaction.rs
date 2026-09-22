@@ -484,7 +484,7 @@ async fn i76_context_reopened_controller_recovers_abandoned_status_without_busy(
     });
     pump_test_app(cx, |cx| {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
-        visual.debug_bounds("context-status").is_some()
+        visual.debug_bounds("context-compaction-restored").is_some()
     });
     let stream = root.read_with(cx, |root, _| {
         root.stream_view
@@ -493,6 +493,9 @@ async fn i76_context_reopened_controller_recovers_abandoned_status_without_busy(
             .1
             .clone()
     });
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("context-compaction-row").is_some());
+    assert!(visual.debug_bounds("context-status-band").is_none());
     assert_ne!(stream, f.stream);
     assert!(!stream.read_with(cx, |stream, _| stream.context_operation_busy()));
     let reopened = Store::open(database).expect("independent reopen");
