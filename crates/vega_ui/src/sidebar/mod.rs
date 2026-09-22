@@ -183,6 +183,41 @@ pub fn project_worker_is_active(project_id: &str, cx: &App) -> bool {
         .is_some_and(|activity| activity.0.is_active(project_id))
 }
 
+/// Thin GPUI bridge for the conversation layer's thread-scoped liveness
+/// projection. App-owned (not per window/sidebar) so every sidebar reads the
+/// same truth and a run in a background thread still lights its own row.
+pub struct RunningThreadsGlobal(pub vega_conversation::types::RunningThreads);
+
+impl Global for RunningThreadsGlobal {}
+
+/// Records one thread's Agent liveness and repaints every window so all
+/// sidebars agree (A1-14). A repeated value is skipped: writing the same
+/// projection would otherwise repaint for nothing, and `RunningThreads` is
+/// cheap to compare.
+pub fn set_thread_running(thread_id: &str, running: bool, cx: &mut App) {
+    let mut next = cx
+        .try_global::<RunningThreadsGlobal>()
+        .map(|global| global.0.clone())
+        .unwrap_or_default();
+    next.set(thread_id, running);
+    if cx
+        .try_global::<RunningThreadsGlobal>()
+        .is_some_and(|global| global.0 == next)
+    {
+        return;
+    }
+    cx.set_global(RunningThreadsGlobal(next));
+    cx.refresh_windows();
+}
+
+/// Whether `thread_id` currently owns a live Agent worker. A missing global
+/// (isolated embedder or an un-seeded test) degrades to `false`, matching
+/// [`project_worker_is_active`]; the UI never invents running state.
+pub fn thread_is_running(thread_id: &str, cx: &App) -> bool {
+    cx.try_global::<RunningThreadsGlobal>()
+        .is_some_and(|running| running.0.is_running(thread_id))
+}
+
 /// The opened-thread content column is rendered by the window root since
 /// S3-T17: an inline [`crate::conversation_stream::ConversationStream`] view
 /// (thread header + virtualized stream) replaces the former
@@ -809,8 +844,9 @@ pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};
 mod tests {
 
     use super::{
-        OpenedThread, RenameResolution, archive_section_visible, civil_from_days,
-        clear_opened_thread_of_project, relative_time_from, resolve_rename, row_shows_actions,
+        OpenedThread, RenameResolution, RunningThreadsGlobal, archive_section_visible,
+        civil_from_days, clear_opened_thread_of_project, relative_time_from, resolve_rename,
+        row_shows_actions, set_thread_running, shows_timestamp_at_rest, thread_is_running,
         thread_title,
     };
     use vega_conversation::types::Thread;
@@ -880,6 +916,46 @@ mod tests {
         assert!(!archive_section_visible(0));
         assert!(archive_section_visible(1));
         assert!(archive_section_visible(3));
+    }
+
+    #[test]
+    fn running_row_owns_the_tail_slot() {
+        // #150 R10: the tail is one slot. A running row suppresses the resting
+        // timestamp; hover still wins because it reveals the action trigger.
+        assert!(shows_timestamp_at_rest(false, true, false));
+        assert!(!shows_timestamp_at_rest(false, true, true));
+        assert!(!shows_timestamp_at_rest(true, true, false));
+        assert!(!shows_timestamp_at_rest(true, true, true));
+        // A row that never shows a resting timestamp is unaffected either way.
+        assert!(!shows_timestamp_at_rest(false, false, false));
+        assert!(!shows_timestamp_at_rest(false, false, true));
+    }
+
+    #[gpui_kit::test]
+    async fn thread_liveness_bridge_is_idempotent_and_fails_closed(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            // R12: without the global the answer is false — the UI never
+            // invents running state.
+            assert!(!thread_is_running("t1", cx));
+
+            set_thread_running("t1", true, cx);
+            assert!(thread_is_running("t1", cx));
+            assert!(!thread_is_running("t2", cx));
+
+            // A repeated true keeps the same value (no spurious repaint).
+            set_thread_running("t1", true, cx);
+            assert_eq!(cx.global::<RunningThreadsGlobal>().0.len(), 1);
+
+            set_thread_running("t1", false, cx);
+            assert!(!thread_is_running("t1", cx));
+            assert!(cx.global::<RunningThreadsGlobal>().0.is_empty());
+
+            // Clearing an already-clear thread is a no-op, not a panic.
+            set_thread_running("t1", false, cx);
+            assert!(!thread_is_running("t1", cx));
+        });
     }
 
     #[test]
