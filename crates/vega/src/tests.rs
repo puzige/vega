@@ -128,33 +128,17 @@ const R52_LOAD_SENSITIVE_TESTS: [&str; 10] = [
     "issue73_connection_deadline_covers_probe_and_catalog_together",
 ];
 
-/// Workspace root: walk up from the running test binary's directory until the
-/// manifest declaring `[workspace]` is found.
-///
-/// This deliberately resolves at RUNTIME rather than via
-/// `env!("CARGO_MANIFEST_DIR")`. All worktrees share one `target/` directory,
-/// so a test binary compiled in one worktree can be executed from another.
-/// A compile-time path would then point at a directory that no longer exists
-/// (observed: "no workspace Cargo.toml above .../vega-final-verify/crates/vega"
-/// after that worktree was removed). The test binary always lives under the
-/// target dir of the worktree actually running the tests, so walking up from
-/// it finds the right root in every case.
+/// Resolve source paths from nextest's remapped runtime manifest directory.
+/// Cargo test uses the compile-time manifest directory when no remap is present.
 fn r52_workspace_root() -> PathBuf {
-    let exe = std::env::current_exe().expect("test binary path");
-    // .../<worktree>/target/debug/deps/<test-binary>
-    let mut dir = exe
-        .parent()
-        .and_then(|deps| deps.parent())
-        .and_then(|debug| debug.parent())
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
-        .expect("test binary lives under <worktree>/target/debug/deps");
-    loop {
-        let manifest = dir.join("Cargo.toml");
-        if fs::read_to_string(&manifest).is_ok_and(|raw| raw.contains("[workspace]")) {
-            return dir;
-        }
-        assert!(dir.pop(), "no workspace Cargo.toml above {}", exe.display());
-    }
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    manifest_dir
+        .parent()
+        .and_then(|crates| crates.parent())
+        .expect("vega manifest lives under <workspace>/crates/vega")
+        .to_path_buf()
 }
 
 fn r52_collect_rust_sources(dir: &std::path::Path, out: &mut Vec<PathBuf>) {

@@ -31,6 +31,8 @@ slow-timeout = { period = "600s", terminate-after = 1 }
 [[profile.default.overrides]]
 filter = 'package(vega_conversation) & test(/^git_workspace::trusted_git::/)'
 threads-required = 2
+# Start the expensive Git work early so it does not leave a serial tail.
+priority = 100
 
 # This timing-sensitive test failed under shard contention. Reserve the whole
 # shard for this exact test without relaxing its assertions or timeout.
