@@ -43,7 +43,7 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 ## 4. 测试与真实验收
 
-- 门禁全部在云端：PR 由 `.github/workflows/pr-check.yml` 跑 fmt/clippy/`cargo test --workspace`，push master 由 `.github/workflows/master-build.yml` 打包（两者共享 cargo 缓存 key）；本地 commit/push 不做强制检查。本地自查与任务特定 production-root 回归仍须覆盖。复用主/子 agent 已完成且身份一致、日志完整的成功证据；源码、基线或环境变化、失败及缺失证据不能复用。记录命令、退出码、数量、日志及内容哈希，不重复跑相同门禁来制造独立验收的表象。
+- 门禁全部在云端：PR 由 `.github/workflows/pr-check.yml` 跑 fmt/clippy/4 个 `cargo nextest run --workspace --partition hash:<shard>/4` 分片（`.config/nextest.toml`，`retries = 0`，`trusted_git` 的 `threads-required = 2`；与 fmt/clippy/doc-tests 并行，汇总门禁仅在所有依赖成功时通过）/`cargo test --workspace --doc`，push master 由 `.github/workflows/master-build.yml` 打包（两者共享 cargo 缓存 key）；本地 commit/push 不做强制检查。本地自查与任务特定 production-root 回归仍须覆盖。复用主/子 agent 已完成且身份一致、日志完整的成功证据；源码、基线或环境变化、失败及缺失证据不能复用。记录命令、退出码、数量、日志及内容哈希，不重复跑相同门禁来制造独立验收的表象。
 - 产品功能必须在真实 Vega 中端到端验收：确认被测构建对应本次代码，通过 UI 完成配置/选择项目/输入/提交/观察结果等相关用户路径。需要真实模型或服务的路径必须收到真实结果；mock、直接调内部函数、修改数据库、仅编译通过均不替代 E2E。
 - 不要求用户手改测试或本地配置以绕过缺陷。登录/凭据/计费授权若确实需要用户参与，明确阻碍和最小操作；未经授权不外发私人文件或测试图片。
 - 覆盖验收矩阵，尤其检查 UI 状态、焦点、时间线、错误提示和重启后的恢复。外部服务失败也要保留失败证据，不能把未验证标成通过。

@@ -12,9 +12,16 @@
 #   lives here, in the cloud. Local git hooks and the Python verifier
 #   (scripts/verify.py, cargo-lock/cargo-coordinate) were removed so a
 #   developer's commit/push never blocks on machine performance.
-# - Standard Cargo steps, no bespoke Python: fmt -> clippy -> test on PRs.
+# - Standard Cargo steps: quality checks and four test shards run in parallel.
 #   `dtolnay/rust-toolchain` follows rust-toolchain.toml (1.98.0) so local and CI
 #   toolchains match.
+# - Tests run under `cargo-nextest` (2026-09-22 owner decision, option B): each
+#   test gets its own process and timeout, so a hang fails fast with a named test
+#   instead of stalling the job, and the per-test progress makes the slow suite
+#   legible. Same binaries, same assertions, no code change. nextest does NOT
+#   run doc-tests, so they stay as an explicit `cargo test --doc` step.
+#   Retries stay 0 (.config/nextest.toml): this repo forbids auto-retrying a
+#   flake to green — a flaky test is quarantined via `#[ignore]` + R52 instead.
 #
 # ── Required status check ────────────────────────────────────────────────────
 # Branch protection requires the job context "check (fmt, clippy, test)". Do not
@@ -35,18 +42,15 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    name: check (fmt, clippy, test)
-    runs-on: macos-latest # arm64, matches local; free for public repos
+  quality:
+    name: Quality (fmt, clippy, doc-tests)
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install the pinned toolchain (rust-toolchain.toml = 1.98.0)
-        # The action ref IS the toolchain version: using @stable would install
-        # rustfmt/clippy for stable while rust-toolchain.toml still forces
-        # 1.98.0, so `cargo fmt` would fail with "cargo-fmt is not installed".
+      - name: Install the pinned toolchain
         uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt, clippy
@@ -54,15 +58,7 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          # Share one key with the master-build pipeline (master-build.yml).
-          # By default the job name is part of the key, so a PR-only key would
-          # never match the cache the master build writes. A shared key lets a
-          # PR restore the default branch's cache (GitHub only inherits caches
-          # from the base/default branch).
           shared-key: vega
-          # PR runs must not write the cache: they would save under
-          # refs/pull/<n>/merge, which no other PR can read and which would
-          # otherwise accumulate against the 10 GB repo cache quota.
           save-if: false
 
       - name: Format
@@ -71,5 +67,54 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --workspace
+      - name: Doc-tests
+        # nextest does not run doc-tests; keep their coverage explicit.
+        run: cargo test --workspace --doc
+
+  test:
+    name: Test shard ${{ matrix.shard }}/4
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.146
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # All shards inherit the master build's dependency cache, read-only.
+          shared-key: vega
+          save-if: false
+
+      - name: Test (cargo-nextest)
+        # Hash partitions cover the same suite once; retries remain disabled.
+        run: cargo nextest run --workspace --partition hash:${{ matrix.shard }}/4
+
+  check:
+    name: check (fmt, clippy, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [quality, test]
+    if: ${{ always() }}
+    steps:
+      - name: Require every quality check and test shard to pass
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          test "$QUALITY_RESULT" = success
+          test "$TEST_RESULT" = success

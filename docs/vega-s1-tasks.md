@@ -65,7 +65,7 @@ unwrap/expect 禁止出现在非测试代码；验收命令全绿才算完成。
 - **前置**：T01 · **参考**：phase1-plan §3.5；exec-guide §7（验收协议）；Issue #123 规格
 - **目标**：门禁全部上云（2026-09-22 用户裁决，Issue #123）——PR 由 GitHub Actions 跑 fmt/clippy/test，本地 commit/push 不做任何强制检查
 - **产出**：
-  - `.github/workflows/pr-check.yml`：`pull_request`（base master）跑 `cargo fmt --all -- --check` → `cargo clippy --workspace --all-targets -- -D warnings` → `cargo test --workspace`
+  - `.github/workflows/pr-check.yml`：`pull_request`（base master）并行跑 quality（fmt / clippy / doc-tests）和 4 个 nextest hash 分片，最后汇总为 `check (fmt, clippy, test)`，所有依赖成功才放行（规格 C9）
   - `.github/workflows/master-build.yml`：push 到 master 跑 `cargo xtask package` 并上传 artifact；两条 workflow 共享 cargo 缓存 key（`shared-key: vega`），PR 只读、master build 只写
   - 删除本地门禁：`.githooks/`、`scripts/verify.py`、`scripts/cargo-lock.sh`、`scripts/cargo-coordinate.py`、`scripts/cargo-share-target.sh`、`scripts/tests/`
   - README 更新：前置环境说明（完整 Xcode——Metal 着色器编译所需、Rust 工具链、gpui git 依赖首次拉取耗时提示）；质量门禁章节改为云端 CI

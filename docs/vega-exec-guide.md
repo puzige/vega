@@ -96,7 +96,7 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ## 7. 验收协议（每个任务卡通用）
 
-- **底线（2026-09-22 用户裁决，Issue #123）**：门禁全部在云端。PR 由 `.github/workflows/pr-check.yml` 跑 `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets -- -D warnings` / `cargo test --workspace`，通过后才能合并；push 到 master（PR merge 后）由 `.github/workflows/master-build.yml` 跑 `cargo xtask package`（两条流水线共享 `shared-key: vega` 缓存）。本地 commit/push 不做任何强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。详见 [Issue #123](vega-issue-123-pr-check-pipeline.md)。
+- **底线（2026-09-22 用户裁决，Issue #123）**：门禁全部在云端。PR 由 `.github/workflows/pr-check.yml` 跑 `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets -- -D warnings` / 4 个 `cargo nextest run --workspace --partition hash:<shard>/4` 分片（`.config/nextest.toml`，`retries = 0`，`trusted_git` 的 `threads-required = 2`；与 fmt/clippy/doc-tests 并行，汇总门禁仅在所有依赖成功时通过）/ `cargo test --workspace --doc`，通过后才能合并；push 到 master（PR merge 后）由 `.github/workflows/master-build.yml` 跑 `cargo xtask package`（两条流水线共享 `shared-key: vega` 缓存）。本地 commit/push 不做任何强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。详见 [Issue #123](vega-issue-123-pr-check-pipeline.md)。
 - **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败可在 PR 页面查看原始日志；Master 只允许 PR merge，不允许直接 push。本地可自行运行 `cargo fmt/clippy/test` 自查，但不构成门禁，也不重复跑相同门禁制造独立验收的表象。架构师验收永远是最终门禁。
 - **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
