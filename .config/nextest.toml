@@ -37,3 +37,9 @@ threads-required = 2
 [[profile.default.overrides]]
 filter = 'package(=vega) & test(=tests::pricing::pricing_settings_and_agent_preflight_production_e2e)'
 threads-required = "num-test-threads"
+
+# Reserve the shard for this real-PTY child-process test after its unchanged
+# UI polling deadline failed under contention. Keep the real PTY and timeout.
+[[profile.default.overrides]]
+filter = 'package(=vega_ui) & test(=terminal::tests::production_terminal_input_handler_and_keys_reach_real_pty)'
+threads-required = "num-test-threads"

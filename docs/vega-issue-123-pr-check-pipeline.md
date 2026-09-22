@@ -160,3 +160,15 @@ related loop_tools regressions; fmt and affected clippy; next complete hosted
 matrix all green with zero retries. Preserve the first isolated runtime failure
 and successful pricing evidence. No stronger claim of general flake elimination
 is made: pricing serialization is mitigation for observed contention.
+
+### C9 real-PTY scheduling correction
+
+Run `35707121554` passed the previously failing cancellation and pricing tests,
+but `vega_ui::terminal::tests::production_terminal_input_handler_and_keys_reach_real_pty`
+failed its unchanged 8-second UI/PTY polling deadline in an owned child process.
+The complete run was 1759 passed / 1 failed, and the aggregate correctly failed.
+Add one exact package/test override with `threads-required = "num-test-threads"`
+for this child-process test, using the same scheduling mitigation as pricing.
+Do not change its 8-second deadline, assertions, subprocess isolation or real PTY.
+Validate exact two exclusive-test selections, focused PTY execution, then a new
+complete hosted matrix. Preserve both failed hosted runs as evidence.
