@@ -315,9 +315,13 @@ impl ProviderSettingsService {
                 if !request.provider.models.contains(model) {
                     return Err(ProviderSettingsError::Invalid);
                 }
-                provider_check::probe(&request.provider.base_url, &key, model, cancel)
-                    .await
-                    .map(|()| ProviderNetworkOutcome::ModelTestSucceeded)
+                let result = if request.provider.api == vega_store::config::ProviderApi::Responses {
+                    provider_check::probe_responses(&request.provider.base_url, &key, model, cancel)
+                        .await
+                } else {
+                    provider_check::probe(&request.provider.base_url, &key, model, cancel).await
+                };
+                result.map(|()| ProviderNetworkOutcome::ModelTestSucceeded)
             }
         };
         result.map_err(|error| match error {

@@ -29,6 +29,7 @@ async fn model_context_editor_projects_assumed_unknown_and_saved_states(cx: &mut
         crate::init(cx);
     });
     let provider = ProviderConfig {
+        api: Default::default(),
         name: "owned".into(),
         enabled: true,
         base_url: "https://owned.invalid/v1".into(),
@@ -175,6 +176,7 @@ async fn new_or_renamed_model_stays_in_editor_without_inheriting_an_old_policy(
     let path = root.path().join("config.toml");
     AppConfig {
         providers: vec![ProviderConfig {
+            api: Default::default(),
             name: "owned".into(),
             enabled: true,
             base_url: "https://owned.invalid/v1".into(),
@@ -350,6 +352,7 @@ async fn pointer_settings_uses_real_service_config_and_loopback_transport(cx: &m
         verbs
     });
     let a = ProviderConfig {
+        api: Default::default(),
         name: "Owned A".into(),
         enabled: true,
         base_url: format!("http://{address}/v1"),
@@ -357,6 +360,7 @@ async fn pointer_settings_uses_real_service_config_and_loopback_transport(cx: &m
         key_ref: "owned-a".into(),
     };
     let b = ProviderConfig {
+        api: Default::default(),
         name: "Owned B".into(),
         enabled: true,
         base_url: "https://owned.invalid/v1".into(),
@@ -465,6 +469,7 @@ async fn pointer_credential_recovery_patch_and_reload_clear_obsolete_network_res
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("config.toml");
     let provider = ProviderConfig {
+        api: Default::default(),
         name: "Owned".into(),
         enabled: true,
         base_url: "https://owned.invalid/v1".into(),
@@ -554,6 +559,7 @@ async fn small_provider_detail_retains_url_height_with_multiple_models(cx: &mut 
     let path = root.path().join("config.toml");
     AppConfig {
         providers: vec![ProviderConfig {
+            api: Default::default(),
             name: "Owned".into(),
             enabled: true,
             base_url: "https://owned.invalid/v1".into(),
@@ -642,6 +648,7 @@ async fn pointer_stop_clears_pending_connection_projection(cx: &mut TestAppConte
         crate::init(cx);
     });
     let provider = ProviderConfig {
+        api: Default::default(),
         name: "Owned".into(),
         enabled: true,
         base_url: "https://owned.invalid/v1".into(),
@@ -719,6 +726,7 @@ fn mounted_pi_fixture(
     let path = root.path().join("config.toml");
     let pi_path = root.path().join("pi-models.json");
     let provider = ProviderConfig {
+        api: Default::default(),
         enabled: false,
         name: "cpa".into(),
         base_url: "https://cpa.example.test/v1".into(),
@@ -858,4 +866,76 @@ async fn mounted_pi_import_in_progress_disables_action(cx: &mut TestAppContext) 
     }));
     let saved = config::read_from(&root.path().join("config.toml")).unwrap();
     assert!(!saved.providers[0].enabled);
+}
+
+#[gpui_kit::test]
+async fn i71_settings_api_selection_keyboard_save_reopen_and_add(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.toml");
+    AppConfig {
+        providers: vec![ProviderConfig {
+            name: "owned".into(),
+            base_url: "https://owned.invalid/v1".into(),
+            models: vec!["model".into()],
+            key_ref: "owned".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+    .save_to(&path)
+    .unwrap();
+    let view = cx.new(|cx| SettingsView::from_path(Some(path.clone()), cx));
+    view.update(cx, |view, cx| {
+        view.section = 0;
+        view.begin_edit_provider("owned", cx);
+    });
+    let window = cx
+        .update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|_| Harness(view.clone()))
+            })
+        })
+        .unwrap();
+    cx.run_until_parked();
+    click(cx, window, "provider-api-responses");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.provider_management.form_api),
+        vega_conversation::types::ProviderApi::Responses
+    );
+    window
+        .update(cx, |_, window, cx| {
+            view.read(cx).provider_api_focuses[0]
+                .clone()
+                .focus(window, cx)
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "space");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.provider_management.form_api),
+        vega_conversation::types::ProviderApi::ChatCompletions
+    );
+    click(cx, window, "provider-api-responses");
+    view.update(cx, |view, cx| view.submit_provider(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        vega_store::config::read_from(&path).unwrap().providers[0].api,
+        vega_conversation::types::ProviderApi::Responses
+    );
+    view.update(cx, |view, cx| {
+        view.begin_edit_provider("owned", cx);
+        assert_eq!(
+            view.provider_management.form_api,
+            vega_conversation::types::ProviderApi::Responses
+        );
+        view.provider_command(Command::Add, cx);
+        assert_eq!(
+            view.provider_management.form_api,
+            vega_conversation::types::ProviderApi::ChatCompletions
+        );
+    });
 }

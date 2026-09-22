@@ -246,9 +246,9 @@ impl ConversationMeter {
             }
             // C3: thinking/reasoning is not visible output and stays out of
             // the estimate.
-            ConversationEvent::ThinkingDelta { .. } | ConversationEvent::SkillActivated { .. } => {
-                false
-            }
+            ConversationEvent::ThinkingDelta { .. }
+            | ConversationEvent::SummaryDelta { .. }
+            | ConversationEvent::SkillActivated { .. } => false,
             ConversationEvent::ToolCallProposed { .. } => {
                 if !self.in_run {
                     return false;

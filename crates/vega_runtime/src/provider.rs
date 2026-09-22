@@ -289,6 +289,8 @@ pub struct ChatMessage {
     /// This field is run-memory only. It is never persisted by
     /// `vega_conversation`, rendered as visible text, or printed by `Debug`.
     pub reasoning_content: Option<String>,
+    /// Opaque Responses reasoning items retained only inside this run.
+    pub response_reasoning: Vec<serde_json::Value>,
 }
 
 impl std::fmt::Debug for ChatMessage {
@@ -321,6 +323,7 @@ impl ChatMessage {
             tool_call_id: None,
             tool_calls: Vec::new(),
             reasoning_content: None,
+            response_reasoning: Vec::new(),
         }
     }
 
@@ -333,6 +336,7 @@ impl ChatMessage {
             tool_call_id: None,
             tool_calls,
             reasoning_content: None,
+            response_reasoning: Vec::new(),
         }
     }
 
@@ -349,6 +353,7 @@ impl ChatMessage {
             tool_call_id: None,
             tool_calls,
             reasoning_content,
+            response_reasoning: Vec::new(),
             images: Vec::new(),
         }
     }
@@ -362,6 +367,7 @@ impl ChatMessage {
             tool_call_id: Some(call_id.into()),
             tool_calls: Vec::new(),
             reasoning_content: None,
+            response_reasoning: Vec::new(),
         }
     }
 }
@@ -464,6 +470,11 @@ pub enum ProviderEvent {
     TextDelta(String),
     /// Incremental reasoning text (OpenAI-compatible `reasoning_content`).
     ThinkingDelta(String),
+    /// Incremental provider-supplied summary, distinct from raw reasoning.
+    SummaryDelta(String),
+    /// Bounded opaque reasoning items for stateless Responses tool continuations.
+    /// Run-memory only; never shown, persisted, or printed.
+    ReasoningReplay(Vec<serde_json::Value>),
     /// A complete tool call: id / name / raw JSON input string.
     ToolUse {
         /// Provider-side tool call id (aligns with `tool_calls.id`, §2).
@@ -496,6 +507,14 @@ impl std::fmt::Debug for ProviderEvent {
         match self {
             Self::TextDelta(text) => formatter
                 .debug_tuple("TextDelta")
+                .field(&format_args!("[redacted; {} bytes]", text.len()))
+                .finish(),
+            Self::ReasoningReplay(items) => formatter
+                .debug_tuple("ReasoningReplay")
+                .field(&items.len())
+                .finish(),
+            Self::SummaryDelta(text) => formatter
+                .debug_tuple("SummaryDelta")
                 .field(&format_args!("[redacted; {} bytes]", text.len()))
                 .finish(),
             Self::ThinkingDelta(text) => formatter

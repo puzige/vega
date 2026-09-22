@@ -2051,6 +2051,7 @@ fn local_credential_preparation_failure_has_no_durable_messages() {
     let config_path = root.path().join("config.toml");
     let mut config = vega_store::config::AppConfig::default();
     config.providers.push(vega_store::config::ProviderConfig {
+        api: Default::default(),
         enabled: true,
         name: "owned".into(),
         base_url: "https://owned.invalid/v1".into(),

@@ -1489,7 +1489,8 @@ async fn collect_summary_with_timeout(
                 }
                 text.push_str(&delta);
             }
-            Ok(ProviderEvent::ThinkingDelta(delta)) => {
+            Ok(ProviderEvent::ReasoningReplay(_)) => {}
+            Ok(ProviderEvent::ThinkingDelta(delta) | ProviderEvent::SummaryDelta(delta)) => {
                 if done.is_some() {
                     return Err(failure(
                         context_error(ContextRuntimeError::InvalidSummary),

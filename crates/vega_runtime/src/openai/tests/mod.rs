@@ -773,3 +773,225 @@ fn assert_error_eq(actual: &VegaError, expected: &VegaError, index: usize) {
 }
 
 mod http;
+
+#[tokio::test]
+async fn i71_responses_terminal_failures_never_release_tools() {
+    for terminal in [
+        None,
+        Some("response.failed"),
+        Some("response.incomplete"),
+        Some("error"),
+    ] {
+        let added = r#"{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"bad","name":"read","arguments":""}}"#;
+        let partial = r#"{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\":"}"#;
+        let ending = terminal
+            .map(|kind| serde_json::json!({"type":kind,"error":{"message":KEY}}).to_string());
+        let mut frames = vec![added, partial];
+        if let Some(ending) = &ending {
+            frames.push(ending);
+        }
+        let server = spawn_server(scripted_server(vec![sse_response(&frames, false)])).await;
+        let stream = provider_for(&server, fast_policy(1))
+            .with_responses_api(true)
+            .chat_stream(request(), CancellationToken::new())
+            .await
+            .unwrap();
+        let events = collect_events(stream, 20).await;
+        assert!(events.iter().any(Result::is_err));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            Ok(ProviderEvent::ToolUse { .. } | ProviderEvent::Done { .. })
+        )));
+        assert!(!format!("{events:?}").contains(KEY));
+    }
+}
+
+#[test]
+fn i71_responses_summary_parts_snapshots_and_refusal() {
+    let mut parser = responses::Assembler::default();
+    let mut events = Vec::new();
+    for event in [
+        serde_json::json!({"type":"response.reasoning_summary_text.delta","item_id":"r","summary_index":0,"delta":"First"}),
+        serde_json::json!({"type":"response.reasoning_summary_text.done","item_id":"r","summary_index":0,"text":"First"}),
+        serde_json::json!({"type":"response.reasoning_summary_text.done","item_id":"r","summary_index":1,"text":"Second"}),
+        serde_json::json!({"type":"response.refusal.delta","item_id":"m","content_index":0,"delta":"Cannot do that."}),
+        serde_json::json!({"type":"response.refusal.done","item_id":"m","content_index":0,"refusal":"Cannot do that."}),
+        serde_json::json!({"type":"response.completed","response":{"status":"completed","output":[]}}),
+    ] {
+        events.extend(parser.absorb(&event.to_string()).unwrap());
+    }
+    assert_eq!(
+        events,
+        vec![
+            ProviderEvent::SummaryDelta("First".into()),
+            ProviderEvent::SummaryDelta("\n\n".into()),
+            ProviderEvent::SummaryDelta("Second".into()),
+            ProviderEvent::TextDelta("Cannot do that.".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End
+            }
+        ]
+    );
+    assert!(parser.terminal);
+}
+
+#[tokio::test]
+async fn i71_responses_rejects_incompatible_profile_before_network() {
+    let provider = OpenAiProvider::new("http://127.0.0.1:1", KEY)
+        .unwrap()
+        .with_responses_api(true);
+    let mut req = request();
+    req.reasoning = Some(FrozenReasoning {
+        provider: "owned".into(),
+        model: MODEL.into(),
+        protocol: ReasoningProtocol::OpenAiChatCompletions,
+        choice: ReasoningChoice::ProviderDefault,
+        supports_disabled: false,
+        preserve_reasoning_content: true,
+        disabled_wire: None,
+        declared_efforts: vec![],
+    });
+    assert!(matches!(
+        provider.chat_stream(req, CancellationToken::new()).await,
+        Err(VegaError::ReasoningSelectionInvalid { .. })
+    ));
+}
+
+#[test]
+fn i71_responses_done_reconciles_empty_and_partial_deltas_without_duplicates() {
+    let mut parser = responses::Assembler::default();
+    let mut out = Vec::new();
+    for (kind, text) in [
+        ("delta", ""),
+        ("done", "hello"),
+        ("done", "hello"),
+        ("delta", " world"),
+        ("done", "hello world!"),
+    ] {
+        let mut event = serde_json::json!({"type":format!("response.reasoning_summary_text.{kind}"),"item_id":"r","summary_index":0});
+        event[if kind == "delta" { "delta" } else { "text" }] = serde_json::json!(text);
+        out.extend(parser.absorb(&event.to_string()).unwrap());
+    }
+    assert_eq!(
+        out,
+        vec![
+            ProviderEvent::SummaryDelta("hello".into()),
+            ProviderEvent::SummaryDelta(" world".into()),
+            ProviderEvent::SummaryDelta("!".into())
+        ]
+    );
+    assert!(
+        !format!(
+            "{:?}",
+            ProviderEvent::ReasoningReplay(vec![
+                serde_json::json!({"encrypted_content":"private opaque"})
+            ])
+        )
+        .contains("private opaque")
+    );
+    let mut parser = responses::Assembler::default();
+    let text = "界".repeat(40_000);
+    let event = serde_json::json!({"type":"response.reasoning_summary_text.done","item_id":"r","summary_index":0,"text":text});
+    let out = parser.absorb(&event.to_string()).unwrap();
+    let combined: String = out
+        .into_iter()
+        .map(|event| match event {
+            ProviderEvent::SummaryDelta(text) => {
+                assert!(text.len() <= 64 * 1024);
+                text
+            }
+            _ => panic!("unexpected event"),
+        })
+        .collect();
+    assert_eq!(combined, text);
+}
+
+#[tokio::test]
+async fn i71_responses_cancellation_discards_pending_tools() {
+    let completed = r#"{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","call_id":"owned","name":"read","arguments":"{}"}]}}"#;
+    let server = spawn_server(scripted_server(vec![sse_response(&[completed], false)])).await;
+    let cancel = CancellationToken::new();
+    let mut stream = provider_for(&server, fast_policy(1))
+        .with_responses_api(true)
+        .chat_stream(request(), cancel.clone())
+        .await
+        .unwrap();
+    cancel.cancel();
+    assert!(stream.next().await.is_none());
+}
+
+#[test]
+fn i71_responses_request_effort_off_tools_and_chat_compatibility() {
+    let mut req = request();
+    req.reasoning = Some(FrozenReasoning {
+        provider: "owned".into(),
+        model: MODEL.into(),
+        protocol: ReasoningProtocol::OpenAiChatCompletions,
+        choice: ReasoningChoice::Effort("low".into()),
+        supports_disabled: true,
+        preserve_reasoning_content: false,
+        disabled_wire: Some(ReasoningDisabledWire::ReasoningEffortNone),
+        declared_efforts: vec!["low".into()],
+    });
+    req.tools = vec![ToolDefinition {
+        name: "read".into(),
+        description: "Read".into(),
+        input_schema: serde_json::json!({"type":"object"}),
+        strict: true,
+    }];
+    let body = responses::build_body(&req).unwrap();
+    assert_eq!(
+        body["reasoning"],
+        serde_json::json!({"summary":"auto","effort":"low"})
+    );
+    assert_eq!(body["tools"][0]["strict"], true);
+    assert_eq!(body["tools"][0]["type"], "function");
+    req.tools[0].strict = false;
+    req.tools[0].input_schema =
+        serde_json::json!({"type":"object","properties":{"optional":{"type":"string"}}});
+    let non_strict = responses::build_body(&req).unwrap();
+    assert_eq!(non_strict["tools"][0]["strict"], false);
+    assert_eq!(
+        non_strict["tools"][0]["parameters"],
+        req.tools[0].input_schema
+    );
+    assert!(
+        non_strict["tools"][0]["parameters"]
+            .get("required")
+            .is_none()
+    );
+    req.reasoning.as_mut().unwrap().choice = ReasoningChoice::Disabled;
+    assert_eq!(
+        responses::build_body(&req).unwrap()["reasoning"]["effort"],
+        "none"
+    );
+    let chat = build_request_body(&req);
+    assert_eq!(chat["reasoning_effort"], "none");
+    assert!(chat.get("reasoning").is_none());
+    assert!(chat.get("input").is_none());
+    req.reasoning.as_mut().unwrap().disabled_wire =
+        Some(ReasoningDisabledWire::ThinkingTypeDisabled);
+    assert!(responses::build_body(&req).is_err());
+}
+
+#[test]
+fn i71_responses_item_and_terminal_snapshots_recover_missing_deltas_once() {
+    let mut parser = responses::Assembler::default();
+    let reasoning = serde_json::json!({"type":"reasoning","id":"r","summary":[{"type":"summary_text","text":"Summary"}],"encrypted_content":"opaque"});
+    let message = serde_json::json!({"type":"message","id":"m","role":"assistant","content":[{"type":"output_text","text":"Answer"}]});
+    let mut out = parser.absorb(&serde_json::json!({"type":"response.output_item.done","output_index":0,"item":reasoning}).to_string()).unwrap();
+    out.extend(parser.absorb(&serde_json::json!({"type":"response.completed","response":{"status":"completed","output":[reasoning,message]}}).to_string()).unwrap());
+    assert_eq!(
+        out.iter()
+            .filter(|event| matches!(event, ProviderEvent::SummaryDelta(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        out.iter()
+            .filter(|event| matches!(event,ProviderEvent::TextDelta(text) if text == "Answer"))
+            .count(),
+        1
+    );
+    assert!(matches!(out.last(), Some(ProviderEvent::Done { .. })));
+}

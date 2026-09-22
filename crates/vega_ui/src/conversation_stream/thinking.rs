@@ -16,30 +16,161 @@ fn accepted_prefix_len(delta: &str, limit: usize) -> usize {
     end
 }
 
+// Only the current line is inspected; accepting a delta never rescans retained content.
+#[derive(Default)]
+struct Preview {
+    line: String,
+    title: String,
+    heading: bool,
+    continued: bool,
+    fence: Option<char>,
+}
+impl Preview {
+    fn append(&mut self, delta: &str) {
+        for ch in delta.chars() {
+            if ch == '\n' {
+                self.update();
+                let trimmed = self.line.trim_start();
+                let marker = if !self.continued && trimmed.starts_with("```") {
+                    Some('`')
+                } else if !self.continued && trimmed.starts_with("~~~") {
+                    Some('~')
+                } else {
+                    None
+                };
+                if let Some(marker) = marker {
+                    if self.fence == Some(marker) {
+                        self.fence = None;
+                    } else if self.fence.is_none() {
+                        self.fence = Some(marker);
+                    }
+                }
+                self.line.clear();
+                self.continued = false;
+            } else {
+                self.line.push(ch);
+                if self.line.len() > 1024 {
+                    self.update();
+                    let mut cut = self.line.len() - 768;
+                    while !self.line.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    self.line.drain(..cut);
+                    self.continued = true;
+                }
+            }
+        }
+        self.update();
+    }
+    fn update(&mut self) {
+        let line = self.line.trim();
+        if self.fence.is_some() || line.starts_with("```") || line.starts_with("~~~") {
+            return;
+        }
+        let hashes = line.bytes().take_while(|ch| *ch == b'#').count();
+        let atx = !self.continued
+            && (1..=6).contains(&hashes)
+            && line
+                .as_bytes()
+                .get(hashes)
+                .is_some_and(u8::is_ascii_whitespace);
+        let bold = !self.continued
+            && line.len() > 4
+            && ((line.starts_with("**") && line.ends_with("**"))
+                || (line.starts_with("__") && line.ends_with("__")));
+        let is_heading = atx || bold;
+        if self.heading && !is_heading {
+            return;
+        }
+        let line = if atx {
+            line[hashes..].trim().trim_end_matches('#').trim()
+        } else if bold {
+            &line[2..line.len() - 2]
+        } else {
+            line
+        };
+        let readable: String = line
+            .chars()
+            .filter(|ch| !ch.is_control() && *ch != '`')
+            .collect();
+        let readable = readable.trim().trim_matches('*').trim_matches('_').trim();
+        if readable.is_empty() || readable.chars().all(|ch| matches!(ch, '#' | '~' | '_')) {
+            return;
+        }
+        let chars: Vec<_> = readable.chars().collect();
+        self.title = if chars.len() <= 96 {
+            readable.to_owned()
+        } else if is_heading {
+            chars[..95]
+                .iter()
+                .copied()
+                .chain(std::iter::once('…'))
+                .collect()
+        } else {
+            std::iter::once('…')
+                .chain(chars[chars.len() - 95..].iter().copied())
+                .collect()
+        };
+        self.heading |= is_heading;
+    }
+}
+
 pub(crate) struct ThinkingBlock {
     pub(crate) text: String,
+    summary: String,
+    summary_has_content: bool,
+    thinking_preview: Preview,
+    summary_preview: Preview,
     pub(crate) expanded: bool,
     pub(crate) truncated: bool,
     focus: FocusHandle,
 }
 
 impl ThinkingBlock {
+    pub(crate) fn title(&self) -> &str {
+        if !self.summary_preview.title.is_empty() {
+            &self.summary_preview.title
+        } else if !self.thinking_preview.title.is_empty() {
+            &self.thinking_preview.title
+        } else {
+            "思考过程"
+        }
+    }
+    pub(crate) fn visible_text(&self) -> &str {
+        if !self.summary_has_content {
+            &self.text
+        } else {
+            &self.summary
+        }
+    }
+
     fn new(cx: &mut Context<Self>) -> Self {
         Self {
             text: String::new(),
+            summary: String::new(),
+            summary_has_content: false,
+            thinking_preview: Preview::default(),
+            summary_preview: Preview::default(),
             expanded: false,
             truncated: false,
             focus: cx.focus_handle(),
         }
     }
-    pub(crate) fn append(&mut self, delta: &str, remaining: usize) -> usize {
+    pub(crate) fn append(&mut self, delta: &str, summary: bool, remaining: usize) -> usize {
         let end = accepted_prefix_len(
             delta,
             THINKING_BLOCK_BYTES
-                .saturating_sub(self.text.len())
+                .saturating_sub(self.text.len() + self.summary.len())
                 .min(remaining),
         );
-        self.text.push_str(&delta[..end]);
+        if summary {
+            self.summary_has_content |= delta[..end].chars().any(|ch| !ch.is_whitespace());
+            self.summary.push_str(&delta[..end]);
+            self.summary_preview.append(&delta[..end]);
+        } else {
+            self.text.push_str(&delta[..end]);
+            self.thinking_preview.append(&delta[..end]);
+        }
         self.truncated |= end < delta.len();
         end
     }
@@ -95,7 +226,13 @@ impl Render for ThinkingBlock {
                         },
                         colors.text_secondary,
                     ))
-                    .child("思考过程"),
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .child(self.title().to_owned()),
+                    ),
             )
             .when(self.expanded, |block| {
                 block.child(
@@ -105,7 +242,7 @@ impl Render for ThinkingBlock {
                         .min_w_0()
                         .text_size(px(Typography::BODY))
                         .text_color(colors.text_secondary)
-                        .child(self.text.clone()),
+                        .child(self.visible_text().to_owned()),
                 )
             })
             .when(self.truncated, |block| {
@@ -125,6 +262,15 @@ impl ConversationStream {
         &mut self,
         message_id: &str,
         delta: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.append_reasoning(message_id, delta, false, cx);
+    }
+    pub(crate) fn append_reasoning(
+        &mut self,
+        message_id: &str,
+        delta: &str,
+        summary: bool,
         cx: &mut Context<Self>,
     ) {
         if delta.is_empty()
@@ -172,10 +318,36 @@ impl ConversationStream {
         if let Some(card) = &self.active_thinking {
             let remaining = THINKING_VIEW_BYTES.saturating_sub(self.thinking_bytes);
             self.thinking_bytes += card.update(cx, |card, cx| {
-                let appended = card.append(delta, remaining);
+                let appended = card.append(delta, summary, remaining);
                 cx.notify();
                 appended
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::Preview;
+    #[test]
+    fn i71_preview_incremental_markdown_and_identifiers() {
+        let mut preview = Preview::default();
+        for chunk in ["`foo_", "bar` needs inspection"] {
+            preview.append(chunk);
+        }
+        assert_eq!(preview.title, "foo_bar needs inspection");
+        preview.append("\n10*7 + 9*11 = foo_bar");
+        assert_eq!(preview.title, "10*7 + 9*11 = foo_bar");
+        preview.append("\n#hashtag is prose");
+        assert_eq!(preview.title, "#hashtag is prose");
+        preview.append("\n## ");
+        assert_eq!(preview.title, "#hashtag is prose");
+        preview.append("真实标题\nbody\n\nmore body");
+        assert_eq!(preview.title, "真实标题");
+        preview.append("\n```\n## fake\n```\n**下一");
+        assert_eq!(preview.title, "真实标题");
+        preview.append("阶段**\nbody");
+        assert_eq!(preview.title, "下一阶段");
+        assert!(preview.line.len() <= 1024);
     }
 }

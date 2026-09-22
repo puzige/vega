@@ -915,3 +915,53 @@ fn reasoning_budget_boundaries_are_byte_exact() {
 }
 
 mod claude_compaction;
+
+#[tokio::test]
+async fn i71_summary_shares_reasoning_budget_and_opaque_replay_is_run_bounded() {
+    let project = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    fs::write(project.path().join("source.txt"), "owned").unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(
+        (0..5)
+            .map(|_| ProviderEvent::SummaryDelta("x".repeat(64 * 1024)))
+            .collect::<Vec<_>>(),
+    )]);
+    let result = run_agent(
+        &provider,
+        &tools,
+        request(Vec::new()),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(result.failed);
+    assert!(result.final_text.is_empty());
+    assert_eq!(
+        result
+            .events
+            .iter()
+            .filter(|event| matches!(event, RuntimeEvent::SummaryDelta(_)))
+            .count(),
+        4
+    );
+    let rounds = (0..5).map(|i| vec![ScriptStep::events(vec![
+        ProviderEvent::ReasoningReplay(vec![serde_json::json!({"type":"reasoning","encrypted_content":"x".repeat(220*1024)})]),
+        ProviderEvent::ToolUse { id:format!("read-{i}"),name:"read".into(),input_json:r#"{"path":"source.txt"}"#.into() },
+        ProviderEvent::Done { stop_reason:StopReason::ToolUse },
+    ])]).collect();
+    let provider = MockProvider::new_rounds(rounds);
+    let mut req = request(Vec::new());
+    req.tool_config = RuntimeToolConfig::new(
+        RuntimeRunMode::Ask,
+        RuntimePermissionMode::ReadOnly,
+        "project-1".into(),
+        "thread-1".into(),
+        data.path().join("checkpoints"),
+        Vec::new(),
+    );
+    let result = run_agent(&provider, &tools, req, CancellationToken::new()).await;
+    assert!(matches!(result, Err(VegaError::Provider { .. })));
+    assert_eq!(provider.requests().len(), 5);
+    assert!(!format!("{:?}", provider.requests()).contains(&"x".repeat(100)));
+}

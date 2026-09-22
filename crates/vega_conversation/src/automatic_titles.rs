@@ -188,7 +188,9 @@ impl AutomaticTitleRequest {
                         }
                         text.push_str(&delta);
                     }
-                    ProviderEvent::ThinkingDelta(_) => {}
+                    ProviderEvent::ThinkingDelta(_)
+                    | ProviderEvent::SummaryDelta(_)
+                    | ProviderEvent::ReasoningReplay(_) => {}
                     ProviderEvent::Usage {
                         input,
                         output,

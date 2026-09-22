@@ -61,12 +61,26 @@ pub enum ConfigError {
     Serialize(#[from] toml::ser::Error),
 }
 
+/// Explicit provider transport. Existing configurations remain Chat Completions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderApi {
+    /// OpenAI-compatible Chat Completions.
+    #[default]
+    ChatCompletions,
+    /// OpenAI Responses, with stateless reasoning replay.
+    Responses,
+}
+
 /// One OpenAI-compatible provider entry.
 ///
 /// `key_ref` is only a reference name into the local credential store; the credential
 /// value itself never appears in this file (see [`crate::keystore`]).
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderConfig {
+    /// Explicit API transport; never inferred from URL or model.
+    #[serde(default)]
+    pub api: ProviderApi,
     /// Whether this provider is available for new runs.
     #[serde(default = "provider_enabled_default")]
     pub enabled: bool,
@@ -84,6 +98,7 @@ pub struct ProviderConfig {
 impl std::fmt::Debug for ProviderConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderConfig")
+            .field("api", &self.api)
             .field("enabled", &self.enabled)
             .field("name", &self.name)
             .field("base_url", &"<redacted>")
@@ -100,6 +115,7 @@ fn provider_enabled_default() -> bool {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
+            api: ProviderApi::default(),
             enabled: true,
             name: String::new(),
             base_url: String::new(),
@@ -371,6 +387,7 @@ mod tests {
     fn sample_config() -> AppConfig {
         AppConfig {
             providers: vec![ProviderConfig {
+                api: Default::default(),
                 enabled: true,
                 name: "deepseek".to_string(),
                 base_url: "https://api.deepseek.com".to_string(),
@@ -588,5 +605,24 @@ mod tests {
         assert_eq!(provider.key_ref, provider.name);
         let body = toml::to_string_pretty(&config).unwrap();
         assert!(body.contains("key_ref = \"deepseek\""));
+    }
+}
+
+#[cfg(test)]
+mod issue71_tests {
+    use super::*;
+    #[test]
+    fn i71_api_legacy_default_and_explicit_roundtrip() {
+        let legacy = "name = 'owned'\nbase_url = 'https://owned.invalid/v1'\nmodels = ['model']\nkey_ref = 'owned'";
+        let mut provider: ProviderConfig = toml::from_str(legacy).unwrap();
+        assert_eq!(provider.api, ProviderApi::ChatCompletions);
+        provider.api = ProviderApi::Responses;
+        let encoded = toml::to_string(&provider).unwrap();
+        assert!(encoded.contains("responses"));
+        assert_eq!(
+            toml::from_str::<ProviderConfig>(&encoded).unwrap(),
+            provider
+        );
+        assert!(toml::from_str::<ProviderConfig>(&format!("{legacy}\napi='unknown'")).is_err());
     }
 }

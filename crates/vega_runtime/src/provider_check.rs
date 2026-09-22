@@ -55,6 +55,7 @@ async fn response_bytes(
     base: &str,
     key: &str,
     model: Option<&str>,
+    responses: bool,
     cancel: CancellationToken,
 ) -> Result<Vec<u8>, CheckError> {
     if !valid_base_url(base) || key.is_empty() {
@@ -72,14 +73,24 @@ async fn response_bytes(
             if !valid_model_id(model) {
                 return Err(CheckError::Invalid);
             }
-            let body = crate::openai::build_request_body(&ChatRequest {
+            let request = ChatRequest {
                 model: model.into(),
                 messages: vec![ChatMessage::new(ChatRole::User, "Reply with OK.")],
                 max_tokens: Some(128),
                 ..Default::default()
-            });
+            };
+            let body = if responses {
+                crate::openai::responses::build_body(&request).map_err(|_| CheckError::Invalid)?
+            } else {
+                crate::openai::build_request_body(&request)
+            };
+            let path = if responses {
+                "responses"
+            } else {
+                "chat/completions"
+            };
             client
-                .post(format!("{}/chat/completions", base.trim_end_matches('/')))
+                .post(format!("{}/{path}", base.trim_end_matches('/')))
                 .json(&body)
         } else {
             client.get(format!("{}/models", base.trim_end_matches('/')))
@@ -134,7 +145,7 @@ pub async fn discover(
     key: &str,
     cancel: CancellationToken,
 ) -> Result<Vec<String>, CheckError> {
-    let bytes = response_bytes(base, key, None, cancel).await?;
+    let bytes = response_bytes(base, key, None, false, cancel).await?;
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| CheckError::Malformed)?;
     let data = value
@@ -167,7 +178,7 @@ pub async fn probe(
     model: &str,
     cancel: CancellationToken,
 ) -> Result<(), CheckError> {
-    let bytes = response_bytes(base, key, Some(model), cancel).await?;
+    let bytes = response_bytes(base, key, Some(model), false, cancel).await?;
     let source = futures::stream::once(async { Ok::<_, std::io::Error>(bytes) });
     let mut events = Box::pin(source.eventsource());
     let mut content = false;
@@ -211,6 +222,42 @@ pub async fn probe(
         }
     }
     if content && finished && done {
+        Ok(())
+    } else {
+        Err(CheckError::Malformed)
+    }
+}
+
+/// Test Responses using the production encoder and event parser, without retries.
+pub async fn probe_responses(
+    base: &str,
+    key: &str,
+    model: &str,
+    cancel: CancellationToken,
+) -> Result<(), CheckError> {
+    let bytes = response_bytes(base, key, Some(model), true, cancel.clone()).await?;
+    let source = futures::stream::once(async { Ok::<_, std::io::Error>(bytes) });
+    let mut events = Box::pin(source.eventsource());
+    let mut parser = crate::openai::responses::Assembler::default();
+    let mut content = false;
+    while let Some(event) = events.next().await {
+        if cancel.is_cancelled() {
+            return Err(CheckError::Cancelled);
+        }
+        let event = event.map_err(|_| CheckError::Malformed)?;
+        if parser.terminal && event.data.trim() == "[DONE]" {
+            continue;
+        }
+        for event in parser
+            .absorb(&event.data)
+            .map_err(|_| CheckError::Malformed)?
+        {
+            if let crate::ProviderEvent::TextDelta(text) = event {
+                content |= !text.trim().is_empty();
+            }
+        }
+    }
+    if content && parser.terminal {
         Ok(())
     } else {
         Err(CheckError::Malformed)

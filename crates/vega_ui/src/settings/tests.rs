@@ -245,6 +245,7 @@ impl Render for SettingsHarness {
 
 fn provider(name: &str, models: &[&str]) -> ProviderConfig {
     ProviderConfig {
+        api: Default::default(),
         enabled: true,
         name: name.to_string(),
         base_url: format!("https://{name}.example.com"),

@@ -17,6 +17,7 @@ pub(crate) struct ProviderManagement {
     cancel: Option<CancellationToken>,
     pub(super) saving: bool,
     pub(super) form: bool,
+    pub(super) form_api: vega_conversation::types::ProviderApi,
     pub(super) form_base: Option<ProviderConfig>,
     candidates: Option<Vec<String>>,
     checked: BTreeSet<String>,
@@ -146,6 +147,7 @@ impl SettingsView {
                 self.cancel_provider_operation(cx);
                 self.provider_management.form = true;
                 self.provider_management.form_base = None;
+                self.provider_management.form_api = Default::default();
                 self.name_input.update(cx, TextInput::clear);
                 self.base_url_input.update(cx, TextInput::clear);
                 self.models_input.update(cx, TextInput::clear);

@@ -558,6 +558,9 @@ impl ConversationStream {
                     cx.notify();
                 }
             }
+            ConversationEvent::SummaryDelta { message_id, delta } => {
+                self.append_reasoning(&message_id, &delta, true, cx);
+            }
             ConversationEvent::ThinkingDelta { message_id, delta } => {
                 self.append_thinking(&message_id, &delta, cx);
             }

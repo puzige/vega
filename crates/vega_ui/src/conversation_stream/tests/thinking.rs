@@ -270,3 +270,114 @@ async fn i61_thinking_bounds_are_utf8_safe_and_cumulative(cx: &mut TestAppContex
         );
     });
 }
+
+#[gpui_kit::test]
+async fn i71_live_heading_replaces_thinking_label(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "summary-live-title");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(start("m"), cx);
+        stream.apply_event(thinking("m", "## 检"), cx);
+        stream.apply_event(thinking("m", "查条件"), cx);
+        assert_eq!(cards(stream)[0].read(cx).title(), "检查条件");
+        stream.apply_event(thinking("m", "\n\n## 现在验证结果"), cx);
+        assert_eq!(cards(stream)[0].read(cx).title(), "现在验证结果");
+    });
+    cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let toggle = visual
+        .debug_bounds("thinking-toggle")
+        .expect("production toggle");
+    visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_some());
+    stream.read_with(cx, |stream, cx| {
+        assert_eq!(cards(stream)[0].read(cx).title(), "现在验证结果")
+    });
+}
+
+#[gpui_kit::test]
+async fn i71_summary_priority_fallback_bounds_and_terminal(cx: &mut TestAppContext) {
+    let (_, stream, _) = open_controller_stream(cx, "summary-priority");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(start("m"), cx);
+        stream.apply_event(thinking("m", "initial useful fragment"), cx);
+        let card = cards(stream)[0].clone();
+        let summary = |delta: &str| ConversationEvent::SummaryDelta {
+            message_id: "m".into(),
+            delta: delta.into(),
+        };
+        stream.apply_event(summary(" \n**"), cx);
+        assert_eq!(card.read(cx).title(), "initial useful fragment");
+        stream.apply_event(summary("检查摘要**\nbody under heading"), cx);
+        assert_eq!(card.read(cx).title(), "检查摘要");
+        stream.apply_event(thinking("m", "\n## raw must not override"), cx);
+        assert_eq!(card.read(cx).title(), "检查摘要");
+        stream.apply_event(
+            summary("\n```rust\n# not a heading\n```\n## 下个阶段\n正文"),
+            cx,
+        );
+        assert_eq!(card.read(cx).title(), "下个阶段");
+        stream.apply_event(finish("m"), cx);
+        stream.apply_event(summary("\n## stale"), cx);
+        assert_eq!(card.read(cx).title(), "下个阶段");
+        assert_eq!(cards(stream).len(), 1);
+        assert!(stream.meter_snapshot().tokens == 0);
+        stream.apply_event(start("next"), cx);
+        stream.apply_event(thinking("next", &"中文 fragment ".repeat(150)), cx);
+        let next = cards(stream)[1].clone();
+        assert!(next.read(cx).title().chars().count() <= 96);
+        stream.apply_event(thinking("next", "最新尾部"), cx);
+        assert!(next.read(cx).title().ends_with("最新尾部"));
+        stream.apply_event(thinking("next", "\n\n**"), cx);
+        assert!(next.read(cx).title().ends_with("最新尾部"));
+    });
+}
+
+#[gpui_kit::test]
+async fn i71_summary_and_thinking_share_display_budget(cx: &mut TestAppContext) {
+    let (_, stream, _) = open_controller_stream(cx, "summary-shared-limit");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(start("m"), cx);
+        for n in 0..8 {
+            let delta = "界".repeat(THINKING_DELTA_BYTES / 3);
+            let event = if n % 2 == 0 {
+                thinking("m", &delta)
+            } else {
+                ConversationEvent::SummaryDelta {
+                    message_id: "m".into(),
+                    delta,
+                }
+            };
+            stream.apply_event(event, cx);
+        }
+        let card = cards(stream)[0].read(cx);
+        assert!(card.truncated);
+        assert!(stream.thinking_bytes <= THINKING_BLOCK_BYTES);
+        assert!(card.title().chars().count() <= 96);
+    });
+}
+
+#[gpui_kit::test]
+async fn i71_fenced_summary_retains_actual_expanded_content(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "summary-fenced-body");
+    let content = "```rust\nlet foo_bar = 1;\n```";
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(start("m"), cx);
+        stream.apply_event(
+            ConversationEvent::SummaryDelta {
+                message_id: "m".into(),
+                delta: content.into(),
+            },
+            cx,
+        );
+        let card = cards(stream)[0].read(cx);
+        assert_eq!(card.title(), "思考过程");
+        assert_eq!(card.visible_text(), content);
+    });
+    cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let toggle = visual.debug_bounds("thinking-toggle").unwrap();
+    visual.simulate_click(toggle.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_some());
+}

@@ -747,6 +747,8 @@ where
     // (limit + 1)th request.
     let mut turn_index = 0usize;
     let mut reasoning_run_bytes = 0usize;
+    let mut replay_run_bytes = 0usize;
+    let mut replay_run_items = 0usize;
     let mut direct_user_skill_round = true;
     let mut input_anchor: Option<InputAnchor> = None;
     let mut primary_revision = 0_u64;
@@ -1367,6 +1369,7 @@ where
             .as_ref()
             .is_some_and(|reasoning| reasoning.preserve_reasoning_content);
         let mut assistant_reasoning = String::new();
+        let mut response_reasoning = Vec::new();
         let mut calls = Vec::new();
         let mut stop_reason = None;
         loop {
@@ -1390,13 +1393,34 @@ where
             if stop_reason.is_some() {
                 anchor_protocol_valid = false;
             }
+            let is_summary = matches!(&item, Ok(ProviderEvent::SummaryDelta(_)));
             match item {
                 Ok(ProviderEvent::TextDelta(delta)) => {
                     assistant_text.push_str(&delta);
                     final_text.push_str(&delta);
                     emit!(events, sink, RuntimeEvent::TextDelta(delta));
                 }
-                Ok(ProviderEvent::ThinkingDelta(delta)) => {
+                Ok(ProviderEvent::ReasoningReplay(items)) => {
+                    let bytes = items
+                        .iter()
+                        .map(|item| item.to_string().len())
+                        .sum::<usize>();
+                    replay_run_bytes = replay_run_bytes.saturating_add(bytes);
+                    replay_run_items = replay_run_items.saturating_add(items.len());
+                    if bytes > 256 * 1024
+                        || replay_run_bytes > 1024 * 1024
+                        || replay_run_items > 256
+                        || !response_reasoning.is_empty()
+                    {
+                        return Err(VegaError::Provider {
+                            status: None,
+                            message: "Responses replay budget exceeded".into(),
+                            retryable: false,
+                        });
+                    }
+                    response_reasoning = items;
+                }
+                Ok(ProviderEvent::ThinkingDelta(delta) | ProviderEvent::SummaryDelta(delta)) => {
                     if let Some((scope, observed_bytes)) = reasoning_budget_violation(
                         delta.len(),
                         reasoning_turn_bytes,
@@ -1421,13 +1445,17 @@ where
                     }
                     reasoning_turn_bytes += delta.len();
                     reasoning_run_bytes += delta.len();
-                    if preserve_reasoning_content {
+                    if preserve_reasoning_content && !is_summary {
                         assistant_reasoning.push_str(&delta);
                     }
                     // Preserve the existing event contract. The conversation
                     // layer keeps this out of visible content, persistence,
                     // cost, and Debug projections.
-                    emit!(events, sink, RuntimeEvent::ThinkingDelta(delta));
+                    if is_summary {
+                        emit!(events, sink, RuntimeEvent::SummaryDelta(delta));
+                    } else {
+                        emit!(events, sink, RuntimeEvent::ThinkingDelta(delta));
+                    }
                 }
                 Ok(ProviderEvent::ToolUse {
                     id,
@@ -1687,11 +1715,13 @@ where
                 }
             })
             .collect();
-        messages.push(ChatMessage::assistant_with_tools_and_reasoning(
+        let mut assistant_message = ChatMessage::assistant_with_tools_and_reasoning(
             assistant_text,
             preserve_reasoning_content.then_some(assistant_reasoning),
             wire_calls,
-        ));
+        );
+        assistant_message.response_reasoning = response_reasoning;
+        messages.push(assistant_message);
 
         if batch_policy == BatchPolicy::RejectOtherTools {
             // A provider can emit operational calls before a load in the

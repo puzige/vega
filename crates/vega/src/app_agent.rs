@@ -589,7 +589,13 @@ pub(crate) fn commit_provider(
     let provider = unique_provider_for_model(&config, &thread.model).ok_or(())?;
     let key = vega_store::keystore::get_key(path.parent().ok_or(())?, &provider.key_ref)
         .map_err(|_| ())?;
-    let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key).map_err(|_| ())?;
+    let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
+        .map(|transport| {
+            transport.with_responses_api(
+                provider.api == vega_conversation::types::ProviderApi::Responses,
+            )
+        })
+        .map_err(|_| ())?;
     Ok(Arc::new(provider.with_retry_policy(commit_retry_policy())))
 }
 
@@ -825,6 +831,11 @@ pub(crate) fn run_agent_worker_with_mcp(
             })?;
             provider_known_credential = Some(key.clone());
             let provider = vega_runtime::OpenAiProvider::new(provider.base_url, key)
+                .map(|transport| {
+                    transport.with_responses_api(
+                        provider.api == vega_conversation::types::ProviderApi::Responses,
+                    )
+                })
                 .map_err(|_| ())?
                 .with_pre_attempt_guard(
                     vega_conversation::agent::OwnerCredentialProvider::pre_attempt_guard(

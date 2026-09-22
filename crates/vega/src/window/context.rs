@@ -693,8 +693,13 @@ fn run_manual_context_worker(
         let key =
             vega_store::keystore::get_key(config_path.parent().ok_or(())?, &configured.key_ref)
                 .map_err(|_| ())?;
-        let provider =
-            vega_runtime::OpenAiProvider::new(configured.base_url, key).map_err(|_| ())?;
+        let provider = vega_runtime::OpenAiProvider::new(configured.base_url, key)
+            .map(|transport| {
+                transport.with_responses_api(
+                    configured.api == vega_conversation::types::ProviderApi::Responses,
+                )
+            })
+            .map_err(|_| ())?;
         Ok(Arc::new(provider))
     };
     let provider = make_provider()?;

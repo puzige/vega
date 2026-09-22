@@ -30,6 +30,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-58-full-access.md](docs/vega-issue-58-full-access.md) | #58 独立 Full access 模式、沙箱边界与生产链路验收 |
 | [vega-issue-59-markdown.md](docs/vega-issue-59-markdown.md) | #59 Markdown 表格的结构化单元格与窄窗布局 |
 | [vega-issue-61-thinking.md](docs/vega-issue-61-thinking.md) | #61 Thinking 流式展示、事件顺序与显示边界 |
+| [vega-issue-71-reasoning-summary.md](docs/vega-issue-71-reasoning-summary.md) | #71 实时思考摘要标题、Responses 接入与内容回退 |
 | [vega-issue-68-model-picker.md](docs/vega-issue-68-model-picker.md) | #68 无思考档位模型的菜单入口规格与测试矩阵 |
 | [vega-issue-68-model-picker-delivery.md](docs/vega-issue-68-model-picker-delivery.md) | #68 测试先行、门禁与原生验收记录 |
 | [vega-issue-70-tool-activity.md](docs/vega-issue-70-tool-activity.md) | #70 紧凑工具活动分组、渐进展开与安全显示规格 |
