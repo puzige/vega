@@ -1819,6 +1819,7 @@ mod tests {
         });
         cx.run_until_parked();
 
+        shell_click(window, "main-header-environment", cx);
         let sidebar = shell_bounds(window, "sidebar", cx);
         let resizer = shell_bounds(window, "sidebar-resize-handle", cx);
         let panel = shell_bounds(window, "main-content-panel", cx);
@@ -2296,6 +2297,7 @@ mod tests {
     async fn r46_slot_cluster_is_window_anchored(cx: &mut TestAppContext) {
         let repo = diff_controller_repo();
         let (root, window) = r45_mount_project_window(&repo, "R46 anchored", 1403., 860., cx);
+        shell_click(window, "main-header-environment", cx);
 
         // a) No panel: the baseline the five other states must match exactly.
         let baseline = r46_shell_slot_bounds(window, cx);
@@ -2306,7 +2308,7 @@ mod tests {
         r47_assert_slot_centers(window, cx);
 
         // b) Environment rail open. The wide project route renders the 320px
-        // rail by default, so closing and reopening it proves the rail's own
+        // rail after the explicit reveal above; closing and reopening proves its own
         // open/close transition cannot drag the cluster.
         shell_click(window, "main-header-environment", cx);
         assert!(shell_absent(window, "environment-rail", cx));
@@ -2452,6 +2454,7 @@ mod tests {
     async fn r46_overlay_and_rail_start_below_header_band(cx: &mut TestAppContext) {
         let repo = diff_controller_repo();
         let (root, window) = r45_mount_project_window(&repo, "R46 header band", 1403., 860., cx);
+        shell_click(window, "main-header-environment", cx);
         let _ = root;
         let header = shell_bounds(window, "main-header", cx);
         assert_close(
@@ -2913,6 +2916,7 @@ mod tests {
             })
             .expect("resize to a wide viewport");
         cx.run_until_parked();
+        shell_click(window, "main-header-environment", cx);
         let _ = shell_bounds(window, "environment-rail", cx);
         cx.simulate_keystrokes(window.into(), "escape");
         cx.run_until_parked();
@@ -2924,7 +2928,8 @@ mod tests {
     async fn r45_environment_slot_tracks_rendered_state(cx: &mut TestAppContext) {
         let repo = diff_controller_repo();
         let (root, window) = r45_mount_project_window(&repo, "R45 env slot", 1403., 860., cx);
-        // The wide rail is rendered by default, so slot 1 owns a visible
+        shell_click(window, "main-header-environment", cx);
+        // The explicitly opened wide rail makes slot 1 own a visible
         // surface. The painted bg_active surface itself is covered by the
         // native acceptance screenshot (R45 §4, 04-env-rail.png); these
         // assertions pin the rendered state that drives it.
@@ -2950,6 +2955,52 @@ mod tests {
             collapsed,
             "slot 1 must stay disabled while the right dock replaces the rail"
         );
+    }
+
+    #[gpui_kit::test]
+    async fn issue141_environment_starts_collapsed_until_requested(cx: &mut TestAppContext) {
+        let repo = diff_controller_repo();
+        let (_root, window) = r45_mount_project_window(&repo, "Issue 141", 1403., 860., cx);
+        assert!(
+            shell_absent(window, "environment-rail", cx),
+            "new project window must start collapsed"
+        );
+        assert!(shell_absent(window, "environment-overlay", cx));
+        assert!(!issue69_slot_paint(window, cx).0);
+        let thread = cx.update(|cx| cx.global::<OpenedThread>().0.clone());
+        cx.update(|cx| {
+            cx.set_global(OpenedThread(None));
+            cx.refresh_windows();
+        });
+        assert!(shell_absent(window, "environment-rail", cx));
+        cx.update(|cx| {
+            cx.set_global(OpenedThread(thread));
+            cx.refresh_windows();
+        });
+        assert!(shell_absent(window, "environment-rail", cx));
+        for width in [1100., 1403.] {
+            window
+                .update(cx, |_, window, cx| {
+                    window.resize(size(px(width), px(860.)));
+                    window.bounds_changed(cx);
+                })
+                .expect("resize never-opened Environment");
+            assert!(shell_absent(window, "environment-rail", cx));
+            assert!(shell_absent(window, "environment-overlay", cx));
+            assert!(!issue69_slot_paint(window, cx).0);
+        }
+        shell_click(window, "main-header-environment", cx);
+        let _ = shell_bounds(window, "environment-rail", cx);
+        assert!(
+            issue69_slot_paint(window, cx).0,
+            "manual reveal still selects the slot"
+        );
+        // A fresh window never inherits another window's manual reveal.
+        let (_next_root, next_window) =
+            r45_mount_project_window(&repo, "Issue 141 new window", 1403., 860., cx);
+        assert!(shell_absent(next_window, "environment-rail", cx));
+        assert!(shell_absent(next_window, "environment-overlay", cx));
+        assert!(!issue69_slot_paint(next_window, cx).0);
     }
 
     fn issue69_slot_paint(
@@ -3010,7 +3061,11 @@ mod tests {
     async fn issue69_environment_selection_is_not_focus(cx: &mut TestAppContext) {
         let repo = diff_controller_repo();
         let (root, window) = r45_mount_project_window(&repo, "Issue 69", 1403., 860., cx);
-        assert!(issue69_slot_paint(window, cx).0, "default rail is selected");
+        shell_click(window, "main-header-environment", cx);
+        assert!(
+            issue69_slot_paint(window, cx).0,
+            "manually opened rail is selected"
+        );
         shell_click(window, "main-header-environment", cx);
         assert!(shell_absent(window, "environment-rail", cx));
         let focus = window
@@ -3255,6 +3310,7 @@ mod tests {
     async fn r45_composer_centering_and_geometry(cx: &mut TestAppContext) {
         let repo = diff_controller_repo();
         let (_root, window) = r45_mount_project_window(&repo, "R45 composer", 1403., 860., cx);
+        shell_click(window, "main-header-environment", cx);
         let panel = shell_bounds(window, "main-content-panel", cx);
         let rail = shell_bounds(window, "environment-rail", cx);
         let composer = shell_bounds(window, "composer-shell", cx);
@@ -3384,6 +3440,7 @@ mod tests {
     ) {
         let repo = diff_controller_repo();
         let (root, window) = r45_mount_project_window(&repo, "R49 utility bar", 1403., 860., cx);
+        shell_click(window, "main-header-environment", cx);
         let card = shell_bounds(window, "composer-shell", cx);
         let bar = shell_bounds(window, "composer-utility-bar", cx);
         assert_close(
@@ -3455,6 +3512,7 @@ mod tests {
     async fn r49_environment_card_drops_the_branch_row(cx: &mut TestAppContext) {
         let repo = diff_controller_repo();
         let (_root, window) = r45_mount_project_window(&repo, "R49 environment", 1403., 860., cx);
+        shell_click(window, "main-header-environment", cx);
         for selector in [
             "environment-project",
             "environment-review",
@@ -4104,6 +4162,7 @@ mod terminal_tests {
                 .read(cx)
                 .composer_input()
         });
+        click_mounted(window, "main-header-environment", cx);
         window
             .update(cx, |root, window, cx| {
                 root.workspace_focus_composer(window, cx)
