@@ -28,6 +28,21 @@ pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     lines
 }
 
+/// #117: the compaction row's icon and color. Every state shares one glyph
+/// (Lucide `text-select`), so the row never changes shape as the operation
+/// advances; only failure is recolored and the label carries the transition.
+pub(crate) fn context_compaction_visual(
+    status: vega_conversation::types::ContextCompactionStatus,
+    colors: &ThemeColors,
+) -> (Icon, Rgba) {
+    use vega_conversation::types::ContextCompactionStatus as Status;
+    let color = match status {
+        Status::Failed => colors.danger,
+        _ => colors.text_secondary,
+    };
+    (Icon::TextSelect, color)
+}
+
 /// Renders one visible semantic entry as a single variable-height list item
 /// (S8-T44/C4: 一项=一个 user/assistant/tool/permission/plan/artifact/
 /// summary item 的自然高度). Per-frame: clone-only element assembly from
@@ -44,13 +59,7 @@ pub(crate) fn render_entry(
         StreamEntry::ContextCompaction {
             record, restored, ..
         } => {
-            use vega_conversation::types::ContextCompactionStatus as Status;
-            let (glyph, color) = match record.status {
-                Status::Compacting => (Icon::Refresh, colors.text_secondary),
-                Status::Succeeded => (Icon::Check, colors.text_secondary),
-                Status::Failed => (Icon::Warning, colors.danger),
-                _ => (Icon::Close, colors.text_secondary),
-            };
+            let (glyph, color) = context_compaction_visual(record.status, &colors);
             let restored = *restored;
             let label = context_control::status_label(record);
             let label = if restored {
