@@ -1,5 +1,7 @@
 # Issue #136 — 慢测试优化与影响范围影子验证
 
+> 2026-09-22 [Issue #140](vega-issue-140-ci-test-throughput.md) supersedes the shadow selector and per-shard compilation topology: Python shadow reporting is removed; full-suite native nextest archives are built once and reused across workers. Existing safety assertions, resource weights and ignored inventory remain.
+
 ## 用户决策与边界（2026-09-22）
 
 用户批准按默认全测、已审查慢测试按影响选择的方向继续优化。第一阶段只生成选择报告，PR 实际仍执行所有既有非 ignored 测试；不因报告而放行失败。正式选择执行须经后续影子证据审查，届时必须具备每晚全量和发布提交全量验证。当前全量 PR 门禁已经覆盖这些测试，本阶段不另增加重复定时任务。

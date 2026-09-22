@@ -12,7 +12,7 @@ use vega_mcp::{HttpClient, LocalServer, McpError, ProtocolVersion, StdioClient};
 async fn m02_modern_stdio_real_child_round_trip() {
     let temp = tempfile::tempdir().expect("owned cwd");
     let server = LocalServer {
-        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        executable: owned_stdio_server(),
         args: vec!["modern".into()],
         working_directory: temp.path().into(),
         environment: Vec::new(),
@@ -36,7 +36,7 @@ async fn m03_legacy_stdio_only_after_nonmodern_probe() {
     let temp = tempfile::tempdir().expect("owned cwd");
     let trace = temp.path().join("methods.txt");
     let server = LocalServer {
-        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        executable: owned_stdio_server(),
         args: vec!["legacy".into(), trace.to_string_lossy().into_owned()],
         working_directory: temp.path().into(),
         environment: Vec::new(),
@@ -59,7 +59,7 @@ async fn m03_modern_version_error_never_initializes_legacy() {
     let temp = tempfile::tempdir().expect("owned cwd");
     let trace = temp.path().join("methods.txt");
     let server = LocalServer {
-        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        executable: owned_stdio_server(),
         args: vec!["modern-error".into(), trace.to_string_lossy().into_owned()],
         working_directory: temp.path().into(),
         environment: Vec::new(),
@@ -74,7 +74,7 @@ async fn m03_modern_version_error_never_initializes_legacy() {
 async fn m11_stdio_oversized_line_is_rejected_before_parsing() {
     let temp = tempfile::tempdir().expect("owned cwd");
     let server = LocalServer {
-        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        executable: owned_stdio_server(),
         args: vec!["oversize".into()],
         working_directory: temp.path().into(),
         environment: Vec::new(),
@@ -90,7 +90,7 @@ async fn m11_stdio_line_accepts_exact_1m_and_rejects_plus_one() {
     let temp = tempfile::tempdir().expect("owned cwd");
     for (mode, allowed) in [("modern-line-exact", true), ("modern-line-over", false)] {
         let server = LocalServer {
-            executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+            executable: owned_stdio_server(),
             args: vec![mode.into()],
             working_directory: temp.path().into(),
             environment: Vec::new(),
@@ -110,7 +110,7 @@ async fn m12_stdio_stop_cancels_exact_inflight_call_id() {
     let temp = tempfile::tempdir().expect("owned cwd");
     let trace = temp.path().join("cancel.txt");
     let server = LocalServer {
-        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        executable: owned_stdio_server(),
         args: vec!["cancel-slow".into(), trace.to_string_lossy().into_owned()],
         working_directory: temp.path().into(),
         environment: Vec::new(),
@@ -155,7 +155,7 @@ async fn m12_stdio_timeout_cancels_inflight_call_but_completed_call_does_not() {
     let temp = tempfile::tempdir().expect("owned cwd");
     let slow_trace = temp.path().join("timeout.txt");
     let server = LocalServer {
-        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        executable: owned_stdio_server(),
         args: vec![
             "cancel-slow".into(),
             slow_trace.to_string_lossy().into_owned(),
@@ -185,7 +185,7 @@ async fn m12_stdio_timeout_cancels_inflight_call_but_completed_call_does_not() {
 
     let fast_trace = temp.path().join("fast.txt");
     let server = LocalServer {
-        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        executable: owned_stdio_server(),
         args: vec![
             "cancel-fast".into(),
             fast_trace.to_string_lossy().into_owned(),
@@ -228,7 +228,7 @@ async fn m12_stdio_child_exit_after_dispatch_is_transport_failure_without_replay
     let temp = tempfile::tempdir().expect("owned cwd");
     let trace = temp.path().join("exited.txt");
     let server = LocalServer {
-        executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+        executable: owned_stdio_server(),
         args: vec!["exit-on-call".into(), trace.to_string_lossy().into_owned()],
         working_directory: temp.path().into(),
         environment: Vec::new(),
@@ -625,7 +625,7 @@ async fn m11_stdio_paginated_catalog_counts_exact_raw_wire_bytes() {
     for over in [false, true] {
         let temp = tempfile::tempdir().expect("owned cwd");
         let server = LocalServer {
-            executable: env!("CARGO_BIN_EXE_owned_stdio_server").into(),
+            executable: owned_stdio_server(),
             args: vec![if over {
                 "modern-catalog-wire-over".into()
             } else {
@@ -1136,4 +1136,11 @@ async fn write_response(
     head.push_str("\r\n");
     stream.write_all(head.as_bytes()).await.expect("head write");
     stream.write_all(body.as_bytes()).await.expect("body write");
+}
+
+// nextest rewrites this runtime path when executing a relocated archive.
+fn owned_stdio_server() -> std::path::PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_owned_stdio_server")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_owned_stdio_server").into())
 }

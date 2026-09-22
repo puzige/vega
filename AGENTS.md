@@ -38,11 +38,11 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 - **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
 - 云端流水线拆成两条独立 workflow，共享同一个 cargo 缓存 key（`shared-key: vega`，2026-09-22 用户裁决）：
-  - `.github/workflows/pr-check.yml`：`pull_request`（base `master`）并行运行 quality（fmt / clippy / doc-tests）与 4 个 macOS nextest 分片（`cargo nextest run --workspace --partition hash:<shard>/4`）；`trusted_git` 测试 `threads-required = 2`；C9 中的 pricing 与真实 PTY 端到端测试各自独占测试时段（`num-test-threads`），`retries = 0`。汇总门禁名保持 `check (fmt, clippy, test)`，仅所有依赖成功才放行；失败、取消或跳过都不放行。所有 Rust job 只读缓存（`save-if: false`），详见规格 C9。
+  - `.github/workflows/pr-check.yml`：`pull_request`（base `master`）并行运行 quality（fmt / clippy / doc-tests）与一次 nextest archive 构建，再由 4 个 macOS 分片复用归档执行全量测试（`--partition hash:<shard>/4`）；`trusted_git` 测试 `threads-required = 2`；C9 中的 pricing 与真实 PTY 端到端测试各自独占测试时段（`num-test-threads`），`retries = 0`。汇总门禁名保持 `check (fmt, clippy, test)`，仅所有依赖成功才放行；失败、取消或跳过都不放行。quality/build 只读缓存（`save-if: false`），测试分片不恢复编译缓存，详见 [Issue #140](docs/vega-issue-140-ci-test-throughput.md)。
   - `.github/workflows/master-build.yml`：push 到 master（PR merge 后）跑 `cargo xtask package` 并上传 artifact；唯一写缓存的一方。
   - 两条都用标准 Cargo 步骤，不复用自定义 Python 脚本。
 - 发布仍由 `v*` tag 触发（`release.yml`），master build 不发 Release，避免每个 commit 都发版。
-- [Issue #136](docs/vega-issue-136-test-selection-shadow.md) 新增 CI 专用影子选择报告与选择器测试；报告只解释影响范围，四分片仍全量执行，不恢复本地门禁或调度器。
+- [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 删除 #136 的 Python 影子选择器及报告；全量测试保持必跑，不恢复本地门禁或调度器。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。本地直接 `cargo` 命令即可，不受调度器约束。
 - 本地开发仍建议自行运行相关 `cargo fmt/clippy/test` 快速自查；任务级 production-root 回归与真实 E2E 证据要求不变（见 exec-guide §7）。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
 
