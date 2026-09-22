@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 #[path = "codec_topology.rs"]
 mod codec_topology;
+mod command_stub;
 #[path = "commit_proof.rs"]
 mod commit_proof;
 #[path = "filter_gitlink.rs"]
@@ -375,24 +376,23 @@ fn after_git_mutation(plan: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathB
     let argv = dir.path().join("argv");
     let input = dir.path().join("input");
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
+    // Construct output before the timed mutation so its boundary is not coupled
+    // to Python interpreter startup on a loaded runner.
+    let output = |size: usize, stderr: bool| {
+        let payload = dir.path().join("output.bin");
+        fs::write(&payload, vec![b'x'; size]).expect("after-git output payload");
+        format!(
+            "/bin/cat '{}'{}",
+            quote(&payload),
+            if stderr { " >&2" } else { "" }
+        )
+    };
     let tail = match plan {
         "nonzero" => "exit 17".to_string(),
-        "stdout-exact" => format!(
-            "/usr/bin/python3 -c 'import sys; sys.stdout.buffer.write(b\"x\" * {})'",
-            MUTATION_STDOUT_LIMIT
-        ),
-        "stdout-overflow" => format!(
-            "/usr/bin/python3 -c 'import sys; sys.stdout.buffer.write(b\"x\" * {})'",
-            MUTATION_STDOUT_LIMIT + 1
-        ),
-        "stderr-exact" => format!(
-            "/usr/bin/python3 -c 'import sys; sys.stderr.buffer.write(b\"x\" * {})'",
-            STDERR_LIMIT
-        ),
-        "stderr-overflow" => format!(
-            "/usr/bin/python3 -c 'import sys; sys.stderr.buffer.write(b\"x\" * {})'",
-            STDERR_LIMIT + 1
-        ),
+        "stdout-exact" => output(MUTATION_STDOUT_LIMIT, false),
+        "stdout-overflow" => output(MUTATION_STDOUT_LIMIT + 1, false),
+        "stderr-exact" => output(STDERR_LIMIT, true),
+        "stderr-overflow" => output(STDERR_LIMIT + 1, true),
         "wait" => "/bin/sleep 30".to_string(),
         "inherited-pipe" => "/bin/sleep 30 & exit 0".to_string(),
         _ => panic!("unknown after-git plan"),

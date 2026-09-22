@@ -28,7 +28,8 @@ impl Global for AppMcpSettings {}
 #[derive(Default)]
 pub(crate) struct AgentWorkerStartProbe {
     starts: AtomicUsize,
-    /// One bounded test-only delay at the existing MockProvider construction boundary.
+    /// Test-only handshake at the existing MockProvider construction boundary.
+    /// The sender releases the worker explicitly; dropping it also unblocks cleanup.
     pub(crate) provider_construction_gate:
         Mutex<Option<(mpsc::SyncSender<()>, mpsc::Receiver<()>)>>,
 }
@@ -805,8 +806,10 @@ pub(crate) fn run_agent_worker_with_mcp(
                     .ok()
                     .and_then(|mut gate| gate.take());
                 if let Some((entered, release)) = gate {
-                    let _ = entered.send(());
-                    let _ = release.recv_timeout(Duration::from_secs(5));
+                    entered.send(()).map_err(|_| ())?;
+                    // Elapsed time is not a release. Test panic drops the sender,
+                    // which terminates this worker without constructing a provider.
+                    release.recv().map_err(|_| ())?;
                 }
                 if let Some(provider) = provider_override.clone() {
                     return Ok(provider);

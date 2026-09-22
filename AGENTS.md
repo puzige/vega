@@ -4,6 +4,8 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 ## 最高原则：SDD（Spec-Driven Development）
 
+**2026-09-22 用户更新（Issue #140）**：按 [测试依赖隔离规格](docs/vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 将 Git/Shell 业务分支测试迁移到进程内测试替身，保留真实业务与安全断言，并以适配层集成测试验证真实进程行为。该明确授权优先于下文要求每个业务场景均走真实 E2E 的旧约束；不得把 mock 证据标作真实进程验收。
+
 **Spec 先行，代码不允许先于 spec。** 所有实现工作必须对应 [`docs/`](docs/) 中的具体规格章节。设计文档以本仓库 `docs/` 为准（主索引见 [README](README.md#状态)）。
 
 - [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md) 是**执行宪法**：红线清单、依赖白名单、遇阻上报协议、验收协议。任何 agent 开工前必读。

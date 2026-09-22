@@ -267,6 +267,8 @@ pub struct GitWorkspaceService {
     state: Arc<Mutex<ServiceState>>,
     #[cfg(test)]
     executable: Option<PathBuf>,
+    #[cfg(test)]
+    command_backend: Option<Arc<dyn GitCommandBackend>>,
 }
 
 impl std::fmt::Debug for GitWorkspaceService {
@@ -315,6 +317,8 @@ impl GitWorkspaceService {
             state: Arc::new(Mutex::new(ServiceState::default())),
             #[cfg(test)]
             executable,
+            #[cfg(test)]
+            command_backend: None,
         })
     }
 
@@ -343,6 +347,8 @@ impl GitWorkspaceService {
         let instance_nonce = self.instance_nonce;
         #[cfg(test)]
         let executable = self.executable.clone();
+        #[cfg(test)]
+        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
                 root,
@@ -350,6 +356,8 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
+                #[cfg(test)]
+                command_backend,
             )?;
             build_snapshot(&runner, 0, instance_nonce, &cancel)
         })
@@ -468,6 +476,8 @@ impl GitWorkspaceService {
         let instance_nonce = self.instance_nonce;
         #[cfg(test)]
         let executable = self.executable.clone();
+        #[cfg(test)]
+        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
                 root,
@@ -475,6 +485,8 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
+                #[cfg(test)]
+                command_backend,
             )?;
             build_snapshot(&runner, 0, instance_nonce, &cancel)
         })
@@ -603,6 +615,8 @@ impl GitWorkspaceService {
         let identity = self.identity;
         #[cfg(test)]
         let executable = self.executable.clone();
+        #[cfg(test)]
+        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
                 root,
@@ -610,6 +624,8 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
+                #[cfg(test)]
+                command_backend,
             )?;
             build_projection(&runner, private, &cancel)
         })
@@ -696,6 +712,8 @@ impl GitWorkspaceService {
         let identity = self.identity;
         #[cfg(test)]
         let executable = self.executable.clone();
+        #[cfg(test)]
+        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
                 root,
@@ -703,6 +721,8 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
+                #[cfg(test)]
+                command_backend,
             )?;
             build_artifact_evidence(&runner, &file, &cancel)
         })
@@ -723,6 +743,8 @@ impl GitWorkspaceService {
         let identity = self.identity;
         #[cfg(test)]
         let executable = self.executable.clone();
+        #[cfg(test)]
+        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
                 root,
@@ -730,6 +752,8 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
+                #[cfg(test)]
+                command_backend,
             )?;
             read_artifact_file(&runner, &file, limit, &cancel)
         })
@@ -756,6 +780,8 @@ impl GitWorkspaceService {
         let identity = self.identity;
         #[cfg(test)]
         let executable = self.executable.clone();
+        #[cfg(test)]
+        let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
                 root,
@@ -763,6 +789,8 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
+                #[cfg(test)]
+                command_backend,
             )?;
             let guard = build_artifact_open_guard(&runner, &file, &cancel)?;
             guard.revalidate()?;
@@ -793,6 +821,8 @@ impl GitWorkspaceService {
             cancel,
             #[cfg(test)]
             None,
+            #[cfg(test)]
+            self.command_backend.clone(),
         )
     }
 
@@ -803,6 +833,9 @@ impl GitWorkspaceService {
     ) -> Result<Runner, GitWorkspaceError> {
         #[cfg(test)]
         if executable.is_some() {
+            if self.command_backend.is_some() {
+                return Err(error(GitWorkspaceErrorCode::GitFailed));
+            }
             return Ok(Runner::new(self.root.clone(), self.identity, executable));
         }
         self.runner(cancel)
@@ -820,7 +853,19 @@ fn runner_for_parts(
     identity: RootIdentity,
     cancel: &CancellationToken,
     #[cfg(test)] executable: Option<PathBuf>,
+    #[cfg(test)] command_backend: Option<Arc<dyn GitCommandBackend>>,
 ) -> Result<Runner, GitWorkspaceError> {
+    #[cfg(test)]
+    if let Some(backend) = command_backend {
+        if executable.is_some() {
+            return Err(error(GitWorkspaceErrorCode::GitFailed));
+        }
+        return Ok(Runner::new(
+            root,
+            identity,
+            RunnerExecutable::InProcess(backend),
+        ));
+    }
     #[cfg(test)]
     if let Some(executable) = executable {
         return Ok(Runner::new(root, identity, Some(executable)));

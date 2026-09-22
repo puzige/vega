@@ -28,6 +28,11 @@ on:
         type: choice
         options: ['4', '5', '8']
         default: '4'
+      partition:
+        description: Native partition method for throughput measurements
+        type: choice
+        options: ['hash', 'slice']
+        default: 'hash'
 
 # Cancel a superseded run for the same ref (e.g. rapid PR pushes).
 concurrency:
@@ -115,9 +120,11 @@ jobs:
         env:
           SHARD_COUNT: ${{ inputs.shards || '4' }}
           SHARD: ${{ matrix.shard }}
+          PARTITION_METHOD: ${{ inputs.partition || 'hash' }}
         run: |
           case "$SHARD_COUNT" in 4|5|8) ;; *) exit 1 ;; esac
-          cargo-nextest nextest run --archive-file tests.tar.zst --workspace-remap "$GITHUB_WORKSPACE" --partition "hash:$SHARD/$SHARD_COUNT"
+          case "$PARTITION_METHOD" in hash|slice) ;; *) exit 1 ;; esac
+          cargo-nextest nextest run --archive-file tests.tar.zst --workspace-remap "$GITHUB_WORKSPACE" --partition "$PARTITION_METHOD:$SHARD/$SHARD_COUNT"
 
   check:
     name: check (fmt, clippy, test)

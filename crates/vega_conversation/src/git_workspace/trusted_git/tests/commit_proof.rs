@@ -219,25 +219,23 @@ async fn commit_proof_rejects_root_identity_swap_after_exactly_one_commit() {
 #[tokio::test]
 async fn commit_third_capture_mismatch_consumes_prepared_and_spawns_zero_commit() {
     for change in ["status", "index", "ref", "operation"] {
-        let (repo, _recorder, trusted, prepared, argv, _input) =
-            staged_service_with_recorder().await;
+        let fixture = command_stub::PolicyFixture::new("staged");
+        let (_workspace, trusted) = fixture.services().await;
+        let checklist = trusted
+            .open_checklist(CancellationToken::new())
+            .await
+            .expect("checklist");
+        let prepared = trusted
+            .prepare(checklist.id, Vec::new(), CancellationToken::new())
+            .await
+            .prepared
+            .expect("prepared through real policy");
+        fixture.assert_no_mutation();
         match change {
-            "status" => {
-                fs::write(repo.path().join("tracked.txt"), "changed after B\n")
-                    .expect("status drift");
-            }
-            "index" => {
-                fs::write(repo.path().join("other.txt"), "index drift\n").expect("index drift");
-                run_git(repo.path(), &["add", "other.txt"]);
-            }
-            "ref" => run_git(
-                repo.path(),
-                &["commit", "--allow-empty", "-qm", "ref drift"],
-            ),
-            "operation" => {
-                let oid = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
-                fs::write(repo.path().join(".git/MERGE_HEAD"), oid).expect("operation marker");
-            }
+            "status" => fixture.set_case("status-drift"),
+            "index" => fixture.set_case("index-drift"),
+            "ref" => fixture.set_case("ref-drift"),
+            "operation" => fixture.operation_marker(),
             _ => unreachable!(),
         }
         let completion = trusted
@@ -252,7 +250,7 @@ async fn commit_third_capture_mismatch_consumes_prepared_and_spawns_zero_commit(
             "{change} drift"
         );
         assert!(completion.workspace.is_some(), "{change} terminal refresh");
-        assert!(!argv.exists(), "{change} drift spawned commit");
+        fixture.assert_no_mutation();
         let stale = trusted
             .commit(
                 prepared.id,
@@ -264,8 +262,39 @@ async fn commit_third_capture_mismatch_consumes_prepared_and_spawns_zero_commit(
             stale.outcome,
             CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
         );
-        assert!(!argv.exists(), "duplicate spawned commit");
+        fixture.assert_no_mutation();
     }
+}
+
+#[tokio::test]
+async fn commit_status_drift_real_git_consumes_prepared_and_spawns_zero_commit() {
+    let (repo, _recorder, trusted, prepared, argv, _input) = staged_service_with_recorder().await;
+    fs::write(repo.path().join("tracked.txt"), "changed after B\n").expect("status drift");
+    let completion = trusted
+        .commit(
+            prepared.id,
+            "test: must not execute".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert!(
+        matches!(completion.outcome, CommitOutcome::Failed(_)),
+        "status drift"
+    );
+    assert!(completion.workspace.is_some(), "status terminal refresh");
+    assert!(!argv.exists(), "status drift spawned commit");
+    let stale = trusted
+        .commit(
+            prepared.id,
+            "test: duplicate".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        stale.outcome,
+        CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
+    );
+    assert!(!argv.exists(), "duplicate spawned commit");
 }
 
 #[tokio::test]

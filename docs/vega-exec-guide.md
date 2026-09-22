@@ -1,5 +1,7 @@
 # ✦ Vega — 执行层开发总纲（Executor's Constitution）
 
+> **2026-09-22 Issue #140 用户更新：** [Git/Shell 测试依赖隔离](vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 允许通过内部执行边界替身迁移业务分支测试，保留真实策略与安全断言，另用真实适配层集成测试验证 OS/Git 契约。该范围优先于 §7 的旧 E2E-first 限制；mockall 获批准用于本卡 dev-only 依赖（若需要），证据必须准确标注 mock/real。
+
 > **2026-09-22 Issue #112 supersession:** Read/Edit/Write paths, read-before-mutation, replacement matching and audit/checkpoint path support follow [the file edit parity contract](vega-issue-112-file-edit-parity.md). Its user-authorized absolute/external paths and resolved symlinks replace the earlier project-only/relative-only prohibition for those tools; glob/grep/bash boundaries are unchanged. Existing permission, Git/checkpoint protection and race checks remain.
 
 **版本** v0.6 · 2026-08-31 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）

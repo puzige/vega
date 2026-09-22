@@ -10,6 +10,19 @@ pub(crate) enum RunnerExecutable {
     Production(Arc<GitExecutable>),
     #[cfg(test)]
     Test(Option<PathBuf>),
+    #[cfg(test)]
+    InProcess(Arc<dyn GitCommandBackend>),
+}
+
+/// Test-local external command boundary. Real policy and raw-byte parsing stay above it.
+#[cfg(test)]
+pub(crate) trait GitCommandBackend: Send + Sync {
+    fn execute(
+        &self,
+        command: &Command,
+        input: Option<&[u8]>,
+        stdout_limit: usize,
+    ) -> Result<Output, GitWorkspaceError>;
 }
 
 impl From<Arc<GitExecutable>> for RunnerExecutable {
@@ -48,6 +61,11 @@ impl Runner {
                 executable.verify()?;
                 Ok(executable.path())
             }
+            // This non-executable marker is only used to build the Command.
+            // execute_command dispatches in-process before any spawn, even for
+            // explicit test executable overrides.
+            #[cfg(test)]
+            RunnerExecutable::InProcess(_) => Ok(Path::new("/dev/null")),
             #[cfg(test)]
             RunnerExecutable::Test(executable) => {
                 Ok(executable.as_deref().unwrap_or_else(|| Path::new(GIT)))
@@ -119,17 +137,11 @@ impl Runner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
-        let mut child = command
-            .spawn()
-            .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
-        collect_child(
-            &mut child,
+        self.execute_command(
+            &mut command,
             input,
-            stdout_limit,
-            STDERR_LIMIT,
-            READ_TIMEOUT,
+            (stdout_limit, READ_TIMEOUT, OverflowPolicy::IMMEDIATE),
             cancel,
-            OverflowPolicy::IMMEDIATE,
         )
     }
 
@@ -224,17 +236,11 @@ impl Runner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
-        let mut child = command
-            .spawn()
-            .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
-        collect_child(
-            &mut child,
+        self.execute_command(
+            &mut command,
             Some(input),
-            MUTATION_STDOUT_LIMIT,
-            STDERR_LIMIT,
-            timeout,
+            (MUTATION_STDOUT_LIMIT, timeout, OverflowPolicy::IMMEDIATE),
             cancel,
-            OverflowPolicy::IMMEDIATE,
         )
     }
 
@@ -279,17 +285,11 @@ impl Runner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
-        let mut child = command
-            .spawn()
-            .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
-        collect_child(
-            &mut child,
+        self.execute_command(
+            &mut command,
             None,
-            stdout_limit,
-            STDERR_LIMIT,
-            timeout,
+            (stdout_limit, timeout, OverflowPolicy::DEFERRED),
             cancel,
-            OverflowPolicy::DEFERRED,
         )
     }
 
@@ -320,17 +320,15 @@ impl Runner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0);
-        let mut child = command
-            .spawn()
-            .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
-        collect_child(
-            &mut child,
+        self.execute_command(
+            &mut command,
             None,
-            MUTATION_STDOUT_LIMIT,
-            STDERR_LIMIT,
-            MUTATION_TIMEOUT,
+            (
+                MUTATION_STDOUT_LIMIT,
+                MUTATION_TIMEOUT,
+                OverflowPolicy::IMMEDIATE,
+            ),
             cancel,
-            OverflowPolicy::IMMEDIATE,
         )
     }
 
@@ -342,6 +340,32 @@ impl Runner {
         executable: &Path,
     ) -> Result<Output, GitWorkspaceError> {
         self.run_trusted_switch_with_path(branch, cancel, executable)
+    }
+
+    fn execute_command(
+        &self,
+        command: &mut Command,
+        input: Option<Arc<[u8]>>,
+        limits: (usize, Duration, OverflowPolicy),
+        cancel: &CancellationToken,
+    ) -> Result<Output, GitWorkspaceError> {
+        let (stdout_limit, timeout, overflow_policy) = limits;
+        #[cfg(test)]
+        if let RunnerExecutable::InProcess(backend) = &self.executable {
+            return backend.execute(command, input.as_deref(), stdout_limit);
+        }
+        let mut child = command
+            .spawn()
+            .map_err(|_| error(GitWorkspaceErrorCode::SpawnFailed))?;
+        collect_child(
+            &mut child,
+            input,
+            stdout_limit,
+            STDERR_LIMIT,
+            timeout,
+            cancel,
+            overflow_policy,
+        )
     }
 
     pub(crate) fn verify_root(&self) -> Result<(), GitWorkspaceError> {

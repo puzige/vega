@@ -95,10 +95,19 @@ fn trusted_mutation_runner_enforces_spawn_cancel_exit_and_output_caps_for_add_an
         assert_eq!(fs::read(&attempts).expect("one attempt"), b"x");
 
         for (stream, limit) in [("stdout", MUTATION_STDOUT_LIMIT), ("stderr", STDERR_LIMIT)] {
-            let body = format!(
-                "/usr/bin/python3 -c 'import sys; sys.{}.buffer.write(b\"x\" * {})'",
-                stream, limit
-            );
+            // Generate fixed bytes before the runner's deadline starts, avoiding
+            // interpreter startup in the output-boundary measurement.
+            let payload_dir = tempfile::tempdir().expect("output payload fixture");
+            let output = |size: usize| {
+                let payload = payload_dir.path().join(size.to_string());
+                fs::write(&payload, vec![b'x'; size]).expect("output payload");
+                format!(
+                    "/bin/cat '{}'{}",
+                    payload.to_string_lossy().replace('\'', "'\\''"),
+                    if stream == "stderr" { " >&2" } else { "" }
+                )
+            };
+            let body = output(limit);
             let (_fixture, script, attempts) = scripted_mutation(&body);
             run_fake_mutation(
                 &runner,
@@ -111,11 +120,7 @@ fn trusted_mutation_runner_enforces_spawn_cancel_exit_and_output_caps_for_add_an
             .expect("inclusive output cap");
             assert_eq!(fs::read(&attempts).expect("inclusive attempt"), b"x");
 
-            let body = format!(
-                "/usr/bin/python3 -c 'import sys; sys.{}.buffer.write(b\"x\" * {})'",
-                stream,
-                limit + 1
-            );
+            let body = output(limit + 1);
             let (_fixture, script, attempts) = scripted_mutation(&body);
             assert_eq!(
                 mutation_error_code(run_fake_mutation(
