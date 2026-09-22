@@ -54,12 +54,20 @@ pub struct ThreadsBlock {
     pub(crate) focused_project: Option<String>,
     pub(crate) focused_thread_action: Option<String>,
     pub(crate) focused_section: Option<OrganizationSection>,
-    /// In-memory progressive-list state; each section starts compact and
-    /// expands independently for the lifetime of this block.
+    /// In-memory progressive-list state. Projects keeps the R29
+    /// `Show More / Show Less` toggle; Recents no longer has a control — it
+    /// grows its render window as the outer Sidebar scroller reaches the
+    /// bottom (Issue #57).
     pub(crate) projects_expanded: bool,
-    pub(crate) recents_expanded: bool,
     pub(crate) projects_progressive_focus: FocusHandle,
-    pub(crate) recents_progressive_focus: FocusHandle,
+    /// Issue #57: how many Recents rows the current render window contains.
+    /// Starts at [`organization::RECENTS_PAGE`] and only grows (never shrinks)
+    /// for the lifetime of this block.
+    pub(crate) recents_visible: usize,
+    /// Issue #57: the number of eligible Recents rows observed by the last
+    /// render. Written during render; read by [`Self::grow_recents`] so the
+    /// outer scroller never asks for more than exists.
+    pub(crate) recents_total: usize,
     /// Thread id whose compact low-frequency action menu is open.
     pub(crate) actions_open: Option<String>,
     /// Highlighted action inside the open menu (arrow keys move it).
@@ -107,9 +115,9 @@ impl ThreadsBlock {
             focused_thread_action: None,
             focused_section: None,
             projects_expanded: false,
-            recents_expanded: false,
             projects_progressive_focus: cx.focus_handle(),
-            recents_progressive_focus: cx.focus_handle(),
+            recents_visible: organization::RECENTS_PAGE,
+            recents_total: 0,
             actions_open: None,
             actions_highlight: 0,
             actions_scope_focus: cx.focus_handle(),
@@ -125,6 +133,25 @@ impl ThreadsBlock {
         };
         view.reload(cx);
         view
+    }
+
+    /// Issue #57: appends one page to the Recents render window when the
+    /// outer Sidebar scroller has reached the bottom and more eligible rows
+    /// exist. Returns whether the window changed; a change notifies so the
+    /// next frame paints the appended rows.
+    ///
+    /// The window only ever grows, so already-painted rows keep their
+    /// positions and the stable sort is never re-ordered.
+    pub(crate) fn grow_recents(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.recents_visible >= self.recents_total {
+            return false;
+        }
+        self.recents_visible = self
+            .recents_visible
+            .saturating_add(organization::RECENTS_PAGE)
+            .min(self.recents_total);
+        cx.notify();
+        true
     }
 
     /// Re-reads the selected project's thread lists: active rows for the

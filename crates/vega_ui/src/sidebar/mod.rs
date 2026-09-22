@@ -422,6 +422,10 @@ fn with_store<R>(
 pub struct Sidebar {
     projects_block: Entity<ProjectsBlock>,
     sessions_block: Entity<ThreadsBlock>,
+    /// Issue #57: tracked scroll state for the outer `sidebar-scroll` column.
+    /// Its `offset`/`max_offset` are read in the `on_children_prepainted`
+    /// callback to decide whether the lazy Recents list should grow.
+    sidebar_scroll: gpui_kit::ScrollHandle,
     /// Inline error from thread creation (ui-spec §4.6: no modals).
     new_task_error: Option<String>,
 }
@@ -441,6 +445,7 @@ impl Sidebar {
         Self {
             projects_block,
             sessions_block,
+            sidebar_scroll: gpui_kit::ScrollHandle::new(),
             new_task_error: None,
         }
     }
@@ -727,6 +732,46 @@ impl Render for Sidebar {
                     .child(self.render_new_task(cx, &colors))
                     .child(
                         div()
+                            // Issue #57: Recents lazy-loads instead of showing a
+                            // `Show More` control. This container is the sidebar's
+                            // only scroller, and the tracked handle is updated in
+                            // this element's own prepaint (`clamp_scroll_position`)
+                            // *before* children prepaint, so the values read here are
+                            // this frame's. `ThreadsBlock::render` cannot drive this:
+                            // scrolling dirties only `Sidebar`, and the child
+                            // `ViewElement` subtree is reused from its prepaint cache.
+                            // (`on_children_prepainted` must precede `.id()`, which
+                            // returns `Stateful<Div>` and no longer exposes it.)
+                            .on_children_prepainted({
+                                let scroll = self.sidebar_scroll.clone();
+                                let sessions = self.sessions_block.clone();
+                                move |_, _, cx| {
+                                    // `offset.y ∈ [-max_offset.y, 0]`; the sum is 0
+                                    // exactly at the bottom (and for content that
+                                    // does not overflow at all), so `> 0` means
+                                    // there is still content below the viewport.
+                                    if scroll.offset().y + scroll.max_offset().y > px(0.0) {
+                                        return;
+                                    }
+                                    // Nothing left to append: skip the defer so an
+                                    // already-fully-loaded list stops scheduling work.
+                                    if !sessions.read_with(cx, |block, _| {
+                                        block.recents_visible < block.recents_total
+                                    }) {
+                                        return;
+                                    }
+                                    let sessions = sessions.clone();
+                                    // Prepaint runs with `draw_phase != None`, where
+                                    // `notify` is dropped; deferring to the end of the
+                                    // effect cycle both grows the window and produces
+                                    // the follow-up draw in the same flush.
+                                    cx.defer(move |cx| {
+                                        sessions.update(cx, |block, cx| {
+                                            block.grow_recents(cx);
+                                        });
+                                    });
+                                }
+                            })
                             .id("sidebar-scroll")
                             .debug_selector(|| "sidebar-scroll".into())
                             // Organization content keeps an 8px application-edge inset;
@@ -739,6 +784,7 @@ impl Render for Sidebar {
                             .flex_col()
                             .gap_3()
                             .overflow_y_scroll()
+                            .track_scroll(&self.sidebar_scroll)
                             .child(self.sessions_block.clone()),
                     ),
             )

@@ -1030,7 +1030,7 @@ async fn r28_sidebar_section_labels_use_title_case(cx: &mut gpui_kit::TestAppCon
 }
 
 #[gpui_kit::test]
-async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
+async fn r29_projects_expand_and_recents_has_no_progressive_control(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
@@ -1092,6 +1092,9 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
         ),
         Layout::SIDEBAR_SECTION_GAP
     );
+    // Issue #57: Recents has no progressive control at all. It still starts at
+    // the compact 10-row window; the outer scroller fills the rest (covered by
+    // the dedicated r57 tests below).
     assert_eq!(
         recent_ids
             .iter()
@@ -1099,7 +1102,8 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
             .count(),
         10
     );
-    assert!(!absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
 
     click(&f, cx, "organization-projects-show-more");
     assert_eq!(
@@ -1110,7 +1114,9 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
         9
     );
     assert!(!absent(&f, cx, "organization-projects-show-less"));
-    assert!(!absent(&f, cx, "organization-recents-show-more"));
+    // Issue #57: Recents has no progressive control, so this scroll never
+    // changes which Recents control exists — there is none to change.
+    assert!(absent(&f, cx, "organization-recents-show-more"));
     let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
     let sidebar_scroll = visual.debug_bounds("sidebar-scroll").unwrap();
     visual.simulate_event(gpui_kit::ScrollWheelEvent {
@@ -1140,30 +1146,10 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
     cx.simulate_keystrokes(f.window.into(), "enter");
     assert!(!absent(&f, cx, "organization-projects-show-less"));
 
-    let recents_focus =
-        sessions(&f, cx).read_with(cx, |block, _| block.recents_progressive_focus.clone());
-    f.window
-        .update(cx, |_, window, cx| recents_focus.focus(window, cx))
-        .unwrap();
-    cx.simulate_keystrokes(f.window.into(), "enter");
-    assert_eq!(
-        recent_ids
-            .iter()
-            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
-            .count(),
-        11
-    );
-    assert!(!absent(&f, cx, "organization-recents-show-less"));
-    assert!(!absent(&f, cx, "organization-projects-show-less"));
-    cx.simulate_keystrokes(f.window.into(), "space");
-    assert_eq!(
-        recent_ids
-            .iter()
-            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
-            .count(),
-        10
-    );
-    assert!(!absent(&f, cx, "organization-recents-show-more"));
+    // Issue #57: the Projects control still toggles by keyboard, and the
+    // absence of a Recents control is unaffected by it.
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
     assert!(!absent(&f, cx, "organization-projects-show-less"));
 }
 
@@ -1176,6 +1162,134 @@ async fn r29_progressive_controls_are_absent_without_hidden_items(
     assert!(absent(&f, cx, "organization-projects-show-less"));
     assert!(absent(&f, cx, "organization-recents-show-more"));
     assert!(absent(&f, cx, "organization-recents-show-less"));
+}
+
+/// Issue #57 / T57-1, T57-2, T57-4: with a viewport tall enough to hold every
+/// eligible Recents row, the list renders **all** of them with no `Show More`
+/// control, and the painted order is the stable projection order.
+#[gpui_kit::test]
+async fn r57_recents_fill_a_tall_viewport_without_a_progressive_control(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture_with_size(cx, 1200., 2600.);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let mut recent_ids = Vec::new();
+    for _ in 0..12 {
+        recent_ids.push(
+            conversation::create_standalone_thread(&store, "model", "confirm")
+                .unwrap()
+                .id,
+        );
+    }
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    // R1: no progressive control exists for Recents, in either state.
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
+
+    // R3: the whole list fits, so nothing is withheld.
+    assert_eq!(
+        recent_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
+            .count(),
+        recent_ids.len()
+    );
+
+    // R5: painted top-to-bottom order equals the stable sort projection.
+    let preferences = snapshot(&f).preferences;
+    let mut expected: Vec<String> = super::projections::sorted_threads(
+        &snapshot(&f)
+            .threads
+            .into_iter()
+            .filter(|thread| thread.is_standalone() && !thread.pinned)
+            .collect::<Vec<_>>(),
+        preferences.sort,
+    )
+    .into_iter()
+    .map(|thread| thread.id)
+    .collect();
+    expected.sort_by_key(|id| bounds(&f, cx, format!("standalone-thread-row-{id}")).top());
+    let mut painted: Vec<String> = recent_ids.clone();
+    painted.sort_by_key(|id| bounds(&f, cx, format!("standalone-thread-row-{id}")).top());
+    assert_eq!(painted, expected);
+}
+
+/// Issue #57 / T57-3: when the list does not fit, Recents starts at one page
+/// and each reach of the outer scroller bottom appends exactly one more page —
+/// never a `Show More` control, never a reorder.
+#[gpui_kit::test]
+async fn r57_recents_grow_one_page_per_scroll_to_bottom(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let mut recent_ids = Vec::new();
+    for _ in 0..30 {
+        recent_ids.push(
+            conversation::create_standalone_thread(&store, "model", "confirm")
+                .unwrap()
+                .id,
+        );
+    }
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let page = super::RECENTS_PAGE;
+    let mounted = |cx: &mut gpui_kit::TestAppContext| {
+        recent_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
+            .count()
+    };
+    // The window is short, so the initial content overflows and the lazy list
+    // holds at the first page instead of filling.
+    assert_eq!(mounted(cx), page);
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    let viewport = visual.debug_bounds("sidebar-scroll").unwrap();
+    let scroll_to_bottom = |visual: &mut gpui_kit::VisualTestContext| {
+        visual.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: viewport.center(),
+            // A delta far past the scroll maximum clamps to the bottom, which
+            // is the state the lazy list keys on.
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(-100_000.),
+            )),
+            modifiers: gpui_kit::Modifiers::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    };
+
+    scroll_to_bottom(&mut visual);
+    assert_eq!(mounted(cx), page * 2);
+    scroll_to_bottom(&mut visual);
+    assert_eq!(mounted(cx), page * 3);
+    // At the end of the data the list stops growing and still has no control.
+    scroll_to_bottom(&mut visual);
+    assert_eq!(mounted(cx), recent_ids.len());
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
+
+    // The appended pages kept the stable order: the newest row is on top.
+    let preferences = snapshot(&f).preferences;
+    let expected_first = super::projections::sorted_threads(
+        &snapshot(&f)
+            .threads
+            .into_iter()
+            .filter(|thread| thread.is_standalone() && !thread.pinned)
+            .collect::<Vec<_>>(),
+        preferences.sort,
+    )
+    .first()
+    .map(|thread| thread.id.clone())
+    .unwrap();
+    let mut painted: Vec<String> = recent_ids.clone();
+    painted.sort_by_key(|id| bounds(&f, cx, format!("standalone-thread-row-{id}")).top());
+    assert_eq!(painted.first(), Some(&expected_first));
 }
 
 #[gpui_kit::test]
