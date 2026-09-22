@@ -425,27 +425,26 @@ fn proof_read_recorder(
     let dir = tempfile::tempdir().expect("proof recorder tempdir");
     let script = dir.path().join("read-recorder.sh");
     let log = dir.path().join("read-argv.bin");
-    let base = dir.path().join("base-oid");
-    let attached_ref_file = dir.path().join("attached-ref");
     let status_count = dir.path().join("post-status-count");
     let root_backup = dir.path().join("root-backup");
-    fs::write(&base, base_oid).expect("base oid");
+    let base = std::str::from_utf8(base_oid).expect("base oid ASCII");
     let attached_ref = run_git_output(root, &["symbolic-ref", "HEAD"]);
-    fs::write(
-        &attached_ref_file,
+    let attached_ref = std::str::from_utf8(
         attached_ref
             .strip_suffix(b"\n")
             .expect("attached ref newline"),
     )
-    .expect("attached ref");
+    .expect("attached ref UTF-8");
+    // These fixture values never change; embed them instead of spawning two cats
+    // on every Git read. HEAD and the post-mutation counter remain dynamic.
     let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
     fs::write(
         &script,
         production_git_script(format!(
             r#"#!/bin/sh
 set -eu
-base=$(/bin/cat '{base}')
-attached_ref=$(/bin/cat '{attached_ref_file}')
+base='{base}'
+attached_ref='{attached_ref}'
 current=$(/usr/bin/git rev-parse --verify HEAD 2>/dev/null || true)
 phase=pre
 [ "$current" != "$base" ] && phase=post
@@ -500,8 +499,8 @@ esac
 fi
 exec /usr/bin/git "$@"
 "#,
-            base = quote(&base),
-            attached_ref_file = quote(&attached_ref_file),
+            base = base.replace('\'', "'\\''"),
+            attached_ref = attached_ref.replace('\'', "'\\''"),
             log = quote(&log),
             status_count = quote(&status_count),
             plan = plan,
