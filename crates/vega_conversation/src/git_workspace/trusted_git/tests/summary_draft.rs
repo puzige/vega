@@ -662,11 +662,10 @@ async fn commit_draft_request_matches_frozen_literals_for_both_truncation_flags(
 
 #[tokio::test]
 async fn failed_draft_keeps_prepared_authority_usable() {
-    let (_repo, _recorder, trusted, prepared, argv, input) = staged_service_with_recorder().await;
-    assert!(
-        !argv.exists() && !input.exists(),
-        "draft fixture mutated before provider"
-    );
+    // Real refresh/prepare over captured staged raw bytes; the provider and the
+    // draft recovery path are the only external boundary under test here.
+    let fixture = command_stub::PolicyFixture::new("staged");
+    let (trusted, prepared) = fixture.prepared().await;
     let invalid = Arc::new(vega_runtime::MockProvider::new(vec![
         vega_runtime::ScriptStep::text("partial"),
     ]));
@@ -712,10 +711,7 @@ async fn failed_draft_keeps_prepared_authority_usable() {
         Some(prepared.id)
     );
     assert!(!state.mutation_active);
-    assert!(
-        !argv.exists() && !input.exists(),
-        "draft path started a Git mutation"
-    );
+    fixture.assert_no_mutation();
 }
 
 #[tokio::test]

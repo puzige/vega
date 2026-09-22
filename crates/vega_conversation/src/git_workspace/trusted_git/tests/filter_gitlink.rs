@@ -34,35 +34,17 @@ async fn capture_head_service_rejects_bad_born_oids_before_any_mutation() {
         "a".repeat(39),
         "a".repeat(64),
     ] {
-        let repo = Repo::new();
-        fs::write(repo.path().join("tracked.txt"), "candidate\n").expect("candidate");
-        let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
+        // Real service refresh over a captured clean status, then only the raw
+        // status bytes for the checklist read are replaced with one malformed
+        // branch header. No repository or read wrapper is created; the real
+        // head parser must reject the bytes before any mutation.
+        let fixture = command_stub::PolicyFixture::new("staged");
+        let (workspace, trusted) = fixture.services().await;
         let terminal = workspace
             .refresh(CancellationToken::new())
             .await
             .expect("baseline workspace");
-        let read_dir = tempfile::tempdir().expect("bad head read fixture");
-        let read = read_dir.path().join("git-read.sh");
-        fs::write(
-                &read,
-                production_git_script(format!(
-                    "#!/bin/sh\nset -eu\nfor arg in \"$@\"; do if [ \"$arg\" = status ]; then printf '# branch.oid {bad_oid}\\0# branch.head master\\0'; exit 0; fi; done\nexec /usr/bin/git \"$@\"\n"
-                )),
-            )
-            .expect("bad head read script");
-        let mut permissions = fs::metadata(&read)
-            .expect("bad head read metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&read, permissions).expect("bad head read executable");
-        let (mutation_dir, mutation, _argv, _input) = mutation_recorder();
-        let trusted = TrustedGitService::new_with_executables_for_test(
-            repo.path(),
-            workspace,
-            mutation,
-            read,
-        )
-        .expect("bad head trusted service");
+        fixture.override_status(&format!("# branch.oid {bad_oid}\0# branch.head master\0"));
         assert!(
             matches!(
                 trusted.open_checklist(CancellationToken::new()).await,
@@ -72,7 +54,7 @@ async fn capture_head_service_rejects_bad_born_oids_before_any_mutation() {
             bad_oid.len(),
             bad_oid.as_bytes().first()
         );
-        assert!(!mutation_dir.path().join("mutation-attempts").exists());
+        fixture.assert_no_mutation();
         assert_terminal_workspace(&trusted, &terminal);
     }
 }

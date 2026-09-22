@@ -111,6 +111,19 @@ impl PolicyFixture {
             .expect("operation marker");
     }
 
+    /// Replaces only the captured status raw for subsequent reads. Used to feed
+    /// one malformed branch header through the real parser without any Git
+    /// process or second repository. No other command response changes.
+    pub(super) fn override_status(&self, status: &str) {
+        self.backend
+            .state
+            .lock()
+            .expect("stub state")
+            .data
+            .raw
+            .insert("status".to_owned(), status.to_owned());
+    }
+
     // Explicit external protocol responses, never simulated Git operations.
     // Only the expected mutations are ordered; ordinary reads remain unordered.
     pub(super) fn expect_mutation(&self, verb: &str, args: &[&str], post_case: &str) {

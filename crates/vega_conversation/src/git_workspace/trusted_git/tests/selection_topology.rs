@@ -177,8 +177,10 @@ async fn owner_refresh_commit_first_capture_failure_recovers_new_head_once() {
 
 #[tokio::test]
 async fn disconnected_recovery_consumes_zombie_owner_before_future_checklist() {
-    let repo = Repo::new();
-    let (workspace, trusted) = repo.services().await;
+    // Real refresh over captured raw bytes then a real owner/generation
+    // recovery; no Git process or repository is needed for this business rule.
+    let fixture = command_stub::PolicyFixture::new("staged");
+    let (workspace, trusted) = fixture.services().await;
     let parent = workspace
         .state
         .lock()
@@ -192,7 +194,10 @@ async fn disconnected_recovery_consumes_zombie_owner_before_future_checklist() {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .mutation_active = true;
-    fs::write(repo.path().join("tracked.txt"), "terminal state\n").expect("mutate");
+    // The terminal mutation changed the worktree; the real owner refresh must
+    // observe a new authoritative snapshot (a real content generation), not
+    // merely re-read the pre-mutation raw bytes.
+    fixture.set_case("modify");
     let recovered = trusted
         .recover_disconnected_mutation()
         .await
