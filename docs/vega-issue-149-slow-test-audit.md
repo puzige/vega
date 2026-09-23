@@ -192,7 +192,7 @@ real_gitlink（15.025s）真实submodule clone/clean/dirty/union语义、SHA256�
 |15|5.237|`vega::bin/vega::tests::agent::issue67_concurrent_b_preprovider_failure_can_retry`|B启动前失败+恢复可重试；保留真实owner/路由/凭据前置，MockProvider门闩代替延时，去无关Gitsetup。|
 |16|5.171|`vega::bin/vega::tests::agent::issue67_concurrent_stop_b_only`|两provider显式进入后只cancel B，保留A继续/独立事件；减少真实Gitartifact刷新非本断言部分。|
 |17|5.100|`vega::bin/vega::tests::agent::issue67_concurrent_production_new_thread_enters_before_origin_finishes`|MockProvider受控进入/结束顺序替代预设sleep；真实两个任务controller不替换。|
-|18|4.999|`vega_conversation::git_workspace::branch::tests::lease_cleanup::rejected_execute_cannot_compete_with_owner_cleanup_refresh`|backend显式gate lease/cleanup顺序；拒绝执行不得抢lease，保留authority发布。|
+|18|4.999|`vega_conversation::git_workspace::branch::tests::lease_cleanup::rejected_execute_cannot_compete_with_owner_cleanup_refresh`|**已迁移(batch8)** BranchWorkspaceService新增cfg(test) backend；显式gate lease/cleanup顺序，拒绝执行不抢lease，保留authority发布；同范围1.377s→0.011s，保留真实adapter 0.157s。|
 |19|4.965|`vega::bin/vega::tests::artifact_terminal::artifact_controller_real_batch_pairing_conflict_overflow_and_route_cancel`|pairing/conflict/overflow/cancel是业务矩阵，复用真实controller+定序workercompletion；file/Git适配最少一条真实链。|
 |20|4.901|`vega::bin/vega::tests::agent::issue67_concurrent_finishes_under_settings_without_route_change`|providercompletion+settings route fence业务，不需真实shell；先隔离无关Git后台刷新。|
 |21|4.889|`vega_conversation::artifact::tests::capture_reconcile::artifact_rename_tracks_raw_path_and_delete_disables_actions`|录制rename/delete投影跑真实卡片归属和禁用逻辑；小真实Git契约校验rename原始路径事实。|
@@ -209,7 +209,7 @@ real_gitlink（15.025s）真实submodule clone/clean/dirty/union语义、SHA256�
 |32|3.497|`vega::bin/vega::tests::agent::issue67_concurrent_stop_a_only`|对应stopB反向断言，真实cancel隔离+受控provider gate，清理同组Gitfixture。|
 |33|3.486|`vega_conversation::git_workspace::branch::tests::snapshot_ids::stale_permit_after_generation_rotation_does_not_leak_mutation_lease`|rawgeneration变化触发stalepermit，后续owner还能获取lease；无进程业务。|
 |34|3.479|`vega_conversation::git_workspace::tests::snapshot::git_workspace_clean_staged_unstaged_untracked_and_structured_projection`|4个raw状态业务映射迁移；实际Git状态/codec一次契约验证。|
-|35|3.477|`vega_conversation::git_workspace::branch::tests::lease_cleanup::refresh_registered_before_owner_cannot_commit_after_lease_acquisition`|channel控制注册/lease时序，assert旧refresh不能发布；真实switch adapter另保留。|
+|35|3.477|`vega_conversation::git_workspace::branch::tests::lease_cleanup::refresh_registered_before_owner_cannot_commit_after_lease_acquisition`|**已迁移(batch8)** channel控制注册/lease时序，assert旧refresh不能发布；真实switch/refs adapter在branch_captured_states_match_real_git保留；同范围1.391s→0.010s。|
 |36|3.355|`vega::bin/vega::window::navigation::tests::navigation_coalesces_attributes_bounds_history_and_rejects_stale_result`|保持coalescing/bounds/history/stale逻辑，backend/workergate替代Git等待；真实attrs读取小对照。|
 |37|3.265|`vega::bin/vega::tests::diff::diff_controller_worker_preserves_unchanged_generation_and_rejects_stale_file`|相同投影/新投影顺序喂真实worker/controller；保持generation及stale文件拒绝，实际diff解析单独真实契约。|
 |38|3.244|`vega_conversation::artifact::tests::capture_reconcile::artifact_strict_success_duplicate_and_non_candidates`|成功/重复/noncandidate全保留真实判定，以相同rawprojection消除重复Git；unexpected mutation拒绝。|

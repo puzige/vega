@@ -97,6 +97,11 @@ pub struct BranchWorkspaceService {
     executable: Option<PathBuf>,
     #[cfg(test)]
     mutation_executable: Option<PathBuf>,
+    /// Test-only in-process external-command boundary. Production always
+    /// spawns the verified Git executable; this field exists only under
+    /// `cfg(test)` and is set directly by the branch policy fixtures.
+    #[cfg(test)]
+    command_backend: Option<Arc<dyn GitCommandBackend>>,
 }
 
 impl std::fmt::Debug for BranchWorkspaceService {
@@ -146,6 +151,8 @@ impl BranchWorkspaceService {
             executable,
             #[cfg(test)]
             mutation_executable: None,
+            #[cfg(test)]
+            command_backend: None,
         })
     }
 
@@ -224,6 +231,8 @@ impl BranchWorkspaceService {
         #[cfg(test)]
         let executable = self.executable.clone();
         let cancel_for_check = cancel.clone();
+        #[cfg(test)]
+        let command_backend = self.command_backend.clone();
         let authority = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
                 root,
@@ -232,7 +241,7 @@ impl BranchWorkspaceService {
                 #[cfg(test)]
                 executable,
                 #[cfg(test)]
-                None,
+                command_backend,
             )?;
             validate_target_changes(
                 &runner,
@@ -317,6 +326,8 @@ impl BranchWorkspaceService {
                     let executable = self.executable.clone();
                     #[cfg(test)]
                     let mutation_executable = self.mutation_executable.clone();
+                    #[cfg(test)]
+                    let command_backend = self.command_backend.clone();
                     let mutation_cancel = cancel.clone();
                     match current_oid {
                         Err(failure) => Err(failure),
@@ -328,7 +339,7 @@ impl BranchWorkspaceService {
                                 #[cfg(test)]
                                 executable,
                                 #[cfg(test)]
-                                None,
+                                command_backend,
                             )?;
                             let authority = validate_target_changes(
                                 &runner,
@@ -452,6 +463,8 @@ impl BranchWorkspaceService {
         let identity = self.root_identity;
         #[cfg(test)]
         let executable = self.executable.clone();
+        #[cfg(test)]
+        let command_backend = self.command_backend.clone();
         tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
                 root,
@@ -460,7 +473,7 @@ impl BranchWorkspaceService {
                 #[cfg(test)]
                 executable,
                 #[cfg(test)]
-                None,
+                command_backend,
             )?;
             build_branch_identity(&runner, &cancel)
         })
@@ -493,27 +506,6 @@ impl BranchWorkspaceService {
             self.root_identity,
             self.instance_nonce,
         )
-    }
-
-    #[cfg(test)]
-    fn new_with_mutation_for_test(
-        root: &Path,
-        mutation_executable: PathBuf,
-    ) -> Result<Self, GitWorkspaceError> {
-        let mut service = Self::new_inner(root, None)?;
-        service.mutation_executable = Some(mutation_executable);
-        Ok(service)
-    }
-
-    #[cfg(test)]
-    fn new_with_executables_for_test(
-        root: &Path,
-        executable: PathBuf,
-        mutation_executable: PathBuf,
-    ) -> Result<Self, GitWorkspaceError> {
-        let mut service = Self::new_inner(root, Some(executable))?;
-        service.mutation_executable = Some(mutation_executable);
-        Ok(service)
     }
 }
 

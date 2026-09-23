@@ -81,7 +81,8 @@ adapter contracts:
 - head-oid / failed-draft / disconnected-recovery policy (`762a99d`)
 - service mutation-outcome error mapping and authoritative recovery, 21 tests (`87d5d75`)
 - explicit-filter, `.gitattributes` and attrs-drift policy, 3 tests (`e8549b9`)
-- workspace lifecycle generation/race, 3 tests (this batch)
+- workspace lifecycle generation/race, 3 tests (`1385a63`)
+- branch lease/cleanup race policy, 2 tests (this batch)
 
 ## Batch 6 — `vega_runtime` pixel-budget header test
 
@@ -109,12 +110,38 @@ production `USER_PREFIX` literal) fails the owning test; source restored
 byte-identically. No-exec: the migrated test passes under `deny process-exec`;
 the retained real summary-authority adapter is denied and passes normally.
 
+## Batch 8 — branch lease/cleanup race policy
+
+The two `git_workspace::branch::tests::lease_cleanup` race tests now run the real
+`BranchWorkspaceService` over the finite in-process command boundary
+(`branch/tests/branch_stub.rs` + captured `branch/tests/branch-fixtures.json`).
+The service still performs its complete capture protocol (`rev-parse`,
+operation-marker checks, `for-each-ref`, filter identity, `status`), the
+target-tree authority diff and the trusted `switch`; only the external `git`
+process is replaced by captured bytes plus explicit completion gates. The shell
+`mkdir`/`sleep` wrappers (`blocking-switch.sh`, `read-wrapper.sh`) and their Git
+repositories are gone. `BranchWorkspaceService` gains the same `#[cfg(test)]
+command_backend` field the workspace service already has, within the
+`git_workspace` module boundary; no public interface changed.
+
+| Test | Original assertions preserved | Retained real contract |
+|---|---|---|
+| `rejected_execute_cannot_compete_with_owner_cleanup_refresh` | owner-exclusive refresh returns `StaleGeneration`; generation unchanged; rejected and third executes fail with no snapshot while `active_mutation` stays set; exactly one switch attempt; owner ends `Switched` on `topic-current` | `branch_captured_states_match_real_git` |
+| `refresh_registered_before_owner_cannot_commit_after_lease_acquisition` | late refresh returns `StaleGeneration`; generation and `main`-current snapshot unchanged; owner ends `Switched` on `topic-current`; exactly one switch attempt | same |
+
+Same-machine same-scope: two migrated tests **0.011s / 0.010s** (was 1.377s /
+1.391s isolated); retained real adapter `branch_captured_states_match_real_git`
+**0.157s**. Full `branch` suite 30/30 in 2.215s. 3 negative controls exit 100 with
+byte-identical restore (`branch_sha256 e56e732a…`). No-exec: both migrated tests
+pass under `deny process-exec`; the real adapter is denied (exit 101) and passes
+normally.
+
 ### Outstanding rows
 
 The remaining 127-item optimization is **not** complete. Still outstanding:
 `filter_gitlink::real_gitlink_…`, `commit_proof` new-OID/root-inode contracts,
-`codec_topology::sha256_…`, the artifact `preview_open` group, the branch
-lease/generation/guard policies, the `vega_runtime` pixel-budget header test,
-`provider_settings::production_cancel_and_total_deadline`, UI controllers/layout
+`codec_topology::sha256_…`, the artifact `preview_open` group, the remaining
+branch lease/generation/guard policies (`snapshot_ids`, `state_guards`,
+`switch_e2e`), `provider_settings::production_cancel_and_total_deadline`, UI controllers/layout
 and agent concurrency, `vega_markdown` ten-thousand-line document, and
 `s6_acceptance::agent_diff_artifact_dirty_reject_and_two_stage_commit`.
