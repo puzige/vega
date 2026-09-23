@@ -183,9 +183,11 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 
 用户文字右对齐于可读消息列；短消息随内容收缩，最大宽度为列宽的 80%（`Layout::USER_MESSAGE_MAX_WIDTH_RATIO`）。气泡采用 `brand_soft` 背景与 `text_primary` 正文，圆角 16px（`Layout::USER_MESSAGE_RADIUS`），水平/垂直内边距为 12/8px，不显示「你」标签。内部空行、CJK/Latin 混排与无空格长文本必须完整换行。用户图片同样沿列右对齐；助手、工具和错误呈现保持既有布局。最大列宽 768px 时，气泡宽不超过 614.4px，正文宽不超过 590.4px。详见 [Issue #78](vega-issue-78-message-bubbles.md)。
 
-### 8.2 消息复制（Issue #78 follow-up）
+### 8.2 消息复制（Issue #78 follow-up，当前禁用）
 
-用户文字与助手正文在消息下方各保留一行共享 24px 图标按钮位置，用户侧靠右、助手侧靠左。动作默认透明，消息与动作组成连续 hover 区域；hover 或按钮获得键盘焦点时显现，显隐不改变高度。复制图标复用共享 SVG，tooltip 与可访问名称为「复制消息」，颜色采用 `text_secondary`、`bg_hover`、`bg_active`。只复制该项完整源文，保留 Markdown 与尾换行；流式读取最新正文，不包含工具/思考/错误提示，空正文与纯图片不提供复制动作。详见 [冻结契约](vega-issue-78-hover-copy.md)。
+2026-09-23 用户复验：消息下方常驻的动作行读起来很丑、且与布局耦合，先禁用该交互。开关 `conversation_stream::MESSAGE_COPY_ACTIONS_ENABLED = false` 时 `message_with_copy` 原样返回消息体，不挂载也不预留任何动作行，几何回到 #144 之前的基线；`MessageCopy` 缓冲、共享 Copy 图标与渲染分支全部保留，待重新设计放置方式后只需翻转该开关即可恢复。
+
+启用状态下的冻结契约如下（保留供恢复时对照）：用户文字与助手正文在消息下方各保留一行共享 24px 图标按钮位置，用户侧靠右、助手侧靠左。动作默认透明，消息与动作组成连续 hover 区域；hover 或按钮获得键盘焦点时显现，显隐不改变高度。复制图标复用共享 SVG，tooltip 与可访问名称为「复制消息」，颜色采用 `text_secondary`、`bg_hover`、`bg_active`。只复制该项完整源文，保留 Markdown 与尾换行；流式读取最新正文，不包含工具/思考/错误提示，空正文与纯图片不提供复制动作。详见 [冻结契约](vega-issue-78-hover-copy.md)。
 
 ## 9. Composer
 
@@ -289,6 +291,8 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 本文件不以“搬运更多 token”为目标；只有被 Vega 产品需要、能形成语义、可由实现和测试约束的值，才进入设计系统。
 
 ## 15. 变更记录
+
+- Issue #78 follow-up (2026-09-23)：消息悬停复制动作**当前禁用**。用户复验认为消息下方常驻的动作行很丑、且与布局耦合，要求先禁用。开关 `conversation_stream::MESSAGE_COPY_ACTIONS_ENABLED = false` 时 `message_with_copy` 原样返回消息体，不挂载也不预留动作行，几何回到 #144 之前基线；缓冲、图标与渲染分支保留，翻转开关即可恢复。详见 [禁用记录](vega-issue-78-disable-copy-delivery.md) 与 [冻结契约](vega-issue-78-hover-copy.md)。
 
 - Issue #100 (2026-09-21)：Composer 与正文列**统一为 768px**。参考实现用**同一个** `--thread-content-max-width: 48rem`（=768px）同时驱动正文列与 Composer 容器，两者本应共用一条边；Vega 此前从截图分别量出 820 / 736，Composer 每侧窄 42px。`Layout::CONTENT_MAX_WIDTH` 与 `Layout::COMPOSER_MAX_WIDTH` 均改为 768，并由冻结测试与编译期断言保证恒等；Composer 的圆角/高度/内边距/发送按钮与 utility bar 几何全部不变。详见 [Issue #100 composer width](vega-issue-100-composer-width.md)。
 

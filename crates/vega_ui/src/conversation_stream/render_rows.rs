@@ -643,12 +643,23 @@ pub(crate) fn sample_document(blocks: usize) -> String {
 
 /// The group includes the message, the gap and the action row, keeping the
 /// pointer path continuous. Opacity preserves the exact rest/hover geometry.
+///
+/// Temporarily disabled by [`MESSAGE_COPY_ACTIONS_ENABLED`] (Issue #78
+/// follow-up): the reserved action row read as an ugly, layout-coupled
+/// affordance, so while the flag is false the body is returned unchanged and
+/// no row is reserved. The plumbing below is retained so the interaction can
+/// be re-enabled by flipping that one flag; keeping the branch here (rather
+/// than at the call site) also keeps `MessageCopy` and the `Copy` icon
+/// reachable for the compiler.
 fn message_with_copy(
     body: AnyElement,
     copy: &MessageCopy,
     user: bool,
     colors: ThemeColors,
 ) -> AnyElement {
+    if !MESSAGE_COPY_ACTIONS_ENABLED {
+        return body;
+    }
     if !copy.has_text() {
         return body;
     }

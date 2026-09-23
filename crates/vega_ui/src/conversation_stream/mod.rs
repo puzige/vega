@@ -142,6 +142,15 @@ pub(crate) const ANCHOR_EPSILON_PX: f32 = 1.0;
 /// conversation list is variable-height and never uses this value.
 pub(crate) const ROW_HEIGHT: f32 = 24.0;
 
+/// Message hover-copy actions (Issue #78 follow-up) are temporarily disabled:
+/// the reserved action row below every message reads as an ugly, layout-coupled
+/// affordance in the installed build. The plumbing (`MessageCopy`, the `Copy`
+/// icon and the renderer) stays in place so the interaction can be re-enabled
+/// by flipping this single flag once the placement is redesigned. While false,
+/// `message_with_copy` returns the message body unchanged and no action row is
+/// reserved, so geometry matches the pre-#144 baseline exactly.
+pub(crate) const MESSAGE_COPY_ACTIONS_ENABLED: bool = false;
+
 /// Demo injection pacing: the 16ms tick polls; the injected count follows
 /// `INJECT_RATE × elapsed` (≈500 δ/s 任务卡口径，自校正抵消主线程抖动).
 const INJECT_TICK: Duration = Duration::from_millis(16);

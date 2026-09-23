@@ -223,16 +223,60 @@ fn issue78_hover_copy_user_action_is_mounted(cx: &mut TestAppContext) {
         })
     });
     visual.run_until_parked();
-    assert!(
-        visual.debug_bounds("message-copy-user").is_some(),
-        "message must expose its copy action below the body"
-    );
+    if MESSAGE_COPY_ACTIONS_ENABLED {
+        assert!(
+            visual.debug_bounds("message-copy-user").is_some(),
+            "message must expose its copy action below the body"
+        );
+    } else {
+        assert!(
+            visual.debug_bounds("user-message-bubble").is_some(),
+            "the message body must keep rendering while the action is disabled"
+        );
+        assert!(
+            visual.debug_bounds("message-copy-user").is_none(),
+            "the disabled action must not reserve or mount a row"
+        );
+    }
 }
 
+/// Builds one user/assistant entry carrying a `MessageCopy` buffer, shared by
+/// the enabled/disabled halves of the geometry contract below.
+fn copy_geometry_entry(user: bool, source: &str) -> StreamEntry {
+    let copy = MessageCopy::new(source);
+    if user {
+        StreamEntry::User {
+            lines: user_message_lines(1, source),
+            copy,
+        }
+    } else {
+        let mut stream = MarkdownStream::new();
+        stream.append(source);
+        stream.finish();
+        let mut model = StreamModel::default();
+        model.sync(&stream.snapshot(), &StreamCounters::default());
+        StreamEntry::Assistant {
+            stream: Box::new(stream),
+            model,
+            failure: None,
+            copy,
+        }
+    }
+}
+
+/// While the hover-copy actions are disabled (Issue #78 follow-up) the wrapper
+/// must not mount or reserve any action row: the message body renders at its
+/// own geometry, and no copy can reach the clipboard. This is the regression
+/// that proves the disabled state matches the pre-#144 baseline.
 #[gpui_kit::test]
-fn issue78_hover_copy_geometry_pointer_path_and_keyboard(cx: &mut TestAppContext) {
-    use gpui_kit::{Modifiers, point, size};
+fn issue78_hover_copy_disabled_mounts_no_action_row(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, size};
     init_permission_test(cx);
+    if MESSAGE_COPY_ACTIONS_ENABLED {
+        // Re-enabling the action flips this contract; the enabled geometry
+        // path is covered by the pointer/keyboard regression below.
+        return;
+    }
     for dark in [false, true] {
         cx.update(|cx| {
             cx.set_global(if dark {
@@ -243,26 +287,66 @@ fn issue78_hover_copy_geometry_pointer_path_and_keyboard(cx: &mut TestAppContext
         });
         for user in [false, true] {
             let source = "中文\n\n**raw**\n";
-            let copy = MessageCopy::new(source);
-            let entry = if user {
-                StreamEntry::User {
-                    lines: user_message_lines(1, source),
-                    copy,
-                }
+            let (_, visual) =
+                cx.add_window_view(|_, _| EntryView(copy_geometry_entry(user, source)));
+            visual.simulate_resize(size(px(320.), px(600.)));
+            visual.run_until_parked();
+            let selector = if user {
+                "message-copy-user"
             } else {
-                let mut stream = MarkdownStream::new();
-                stream.append(source);
-                stream.finish();
-                let mut model = StreamModel::default();
-                model.sync(&stream.snapshot(), &StreamCounters::default());
-                StreamEntry::Assistant {
-                    stream: Box::new(stream),
-                    model,
-                    failure: None,
-                    copy,
-                }
+                "message-copy-assistant"
             };
-            let (_, visual) = cx.add_window_view(|_, _| EntryView(entry));
+            assert!(
+                visual.debug_bounds(selector).is_none(),
+                "no action row may be mounted while copy actions are disabled"
+            );
+            let body = visual
+                .debug_bounds(if user {
+                    "user-message-bubble"
+                } else {
+                    "assistant-message"
+                })
+                .expect("message body");
+            visual.update(|_, cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("sentinel".into()))
+            });
+            visual.simulate_mouse_move(body.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds(selector).is_none(),
+                "hovering the message must not reveal a disabled action"
+            );
+            assert_eq!(
+                visual.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text())),
+                Some("sentinel".to_string()),
+                "no copy may reach the clipboard while the action is disabled"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn issue78_hover_copy_geometry_pointer_path_and_keyboard(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, point, size};
+    init_permission_test(cx);
+    if !MESSAGE_COPY_ACTIONS_ENABLED {
+        // The enabled geometry contract only applies when the action is on;
+        // `issue78_hover_copy_disabled_mounts_no_action_row` covers the off
+        // state. Kept as a guard so re-enabling restores full coverage.
+        return;
+    }
+    for dark in [false, true] {
+        cx.update(|cx| {
+            cx.set_global(if dark {
+                vega_theme::Theme::dark()
+            } else {
+                vega_theme::Theme::light()
+            })
+        });
+        for user in [false, true] {
+            let source = "中文\n\n**raw**\n";
+            let (_, visual) =
+                cx.add_window_view(|_, _| EntryView(copy_geometry_entry(user, source)));
             visual.simulate_resize(size(px(320.), px(600.)));
             visual.run_until_parked();
             let selector = if user {
