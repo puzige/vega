@@ -150,5 +150,16 @@ Verification:
 
 The C9 assertion also fails if `上下文压缩完成` or `上次` returns in any
 rendered row (live or restored, all four states), so the retired wording cannot
-silently come back. Native pixel acceptance of C9, plus the C7 Light/Dark and
-narrow-window matrix, remain owner-run; this report does not claim them.
+silently come back.
+
+## Follow-up: comment red line
+
+Master gained `ed49e74` (#162, "forbid code comments repo-wide") before this
+card merged, so the card's own diff must contain no new comments. The C9 card
+had added 20 comment lines (3 in `context_control.rs`, 5 in `render_rows.rs`,
+12 in the test file); a follow-up commit removes exactly those and touches no
+pre-existing comment. Behaviour, strings and tests are unchanged, and the
+verification table above was re-run on the cleaned tree.
+
+Native pixel acceptance of C9, plus the C7 Light/Dark and narrow-window matrix,
+remain owner-run; this report does not claim them.
