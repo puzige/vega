@@ -13,10 +13,10 @@ the provider transcript. Existing generation/model/thread fences remain.
 
 Reopen uses the existing latest durable status projection. Since legacy records
 have no transcript anchor, the restored row appears after loaded history with an
-explicit “上次” label. This does not reconstruct all prior operations or claim an
-exact original position. An active/new operation rejects late restoration; the
-controller also retains its owner/load-sequence fence. No schema, provider,
-budget, compaction algorithm or dependency change.
+explicit “已恢复 · ” prefix. This does not reconstruct all prior operations
+or claim an exact original position. An active/new operation rejects late
+restoration; the controller also retains its owner/load-sequence fence. No
+schema, provider, budget, compaction algorithm or dependency change.
 
 ## Verification
 
