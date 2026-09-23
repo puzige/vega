@@ -183,6 +183,41 @@ pub fn project_worker_is_active(project_id: &str, cx: &App) -> bool {
         .is_some_and(|activity| activity.0.is_active(project_id))
 }
 
+/// Thin GPUI bridge for the conversation layer's thread-scoped liveness
+/// projection. App-owned (not per window/sidebar) so every sidebar reads the
+/// same truth and a run in a background thread still lights its own row.
+pub struct RunningThreadsGlobal(pub vega_conversation::types::RunningThreads);
+
+impl Global for RunningThreadsGlobal {}
+
+/// Records one thread's Agent liveness and repaints every window so all
+/// sidebars agree (A1-14). A repeated value is skipped: writing the same
+/// projection would otherwise repaint for nothing, and `RunningThreads` is
+/// cheap to compare.
+pub fn set_thread_running(thread_id: &str, running: bool, cx: &mut App) {
+    let mut next = cx
+        .try_global::<RunningThreadsGlobal>()
+        .map(|global| global.0.clone())
+        .unwrap_or_default();
+    next.set(thread_id, running);
+    if cx
+        .try_global::<RunningThreadsGlobal>()
+        .is_some_and(|global| global.0 == next)
+    {
+        return;
+    }
+    cx.set_global(RunningThreadsGlobal(next));
+    cx.refresh_windows();
+}
+
+/// Whether `thread_id` currently owns a live Agent worker. A missing global
+/// (isolated embedder or an un-seeded test) degrades to `false`, matching
+/// [`project_worker_is_active`]; the UI never invents running state.
+pub fn thread_is_running(thread_id: &str, cx: &App) -> bool {
+    cx.try_global::<RunningThreadsGlobal>()
+        .is_some_and(|running| running.0.is_running(thread_id))
+}
+
 /// The opened-thread content column is rendered by the window root since
 /// S3-T17: an inline [`crate::conversation_stream::ConversationStream`] view
 /// (thread header + virtualized stream) replaces the former
@@ -422,6 +457,10 @@ fn with_store<R>(
 pub struct Sidebar {
     projects_block: Entity<ProjectsBlock>,
     sessions_block: Entity<ThreadsBlock>,
+    /// Issue #57: tracked scroll state for the outer `sidebar-scroll` column.
+    /// Its `offset`/`max_offset` are read in the `on_children_prepainted`
+    /// callback to decide whether the lazy Recents list should grow.
+    sidebar_scroll: gpui_kit::ScrollHandle,
     /// Inline error from thread creation (ui-spec §4.6: no modals).
     new_task_error: Option<String>,
 }
@@ -441,6 +480,7 @@ impl Sidebar {
         Self {
             projects_block,
             sessions_block,
+            sidebar_scroll: gpui_kit::ScrollHandle::new(),
             new_task_error: None,
         }
     }
@@ -575,7 +615,12 @@ impl Sidebar {
     /// Compact functional sidebar toolbar, aligned with the native titlebar.
     fn render_brand(&self, colors: &ThemeColors, cx: &App) -> AnyElement {
         div()
-            .h(px(40.))
+            .h(px(Layout::MAIN_HEADER_HEIGHT))
+            .flex_shrink_0()
+            // The parent already contributes the standard section gap.
+            .mb(px(
+                Layout::SIDEBAR_TOOLBAR_CONTENT_GAP - Layout::SIDEBAR_SECTION_GAP
+            ))
             .flex()
             .items_center()
             .justify_end()
@@ -720,13 +765,52 @@ impl Render for Sidebar {
                     .flex_1()
                     .min_h_0()
                     .px(px(Layout::SIDEBAR_PADDING))
-                    .pt(px(Layout::SIDEBAR_PADDING))
                     .pb(px(Layout::SIDEBAR_PADDING))
                     .gap_3()
                     .child(self.render_brand(&colors, cx))
                     .child(self.render_new_task(cx, &colors))
                     .child(
                         div()
+                            // Issue #57: Recents lazy-loads instead of showing a
+                            // `Show More` control. This container is the sidebar's
+                            // only scroller, and the tracked handle is updated in
+                            // this element's own prepaint (`clamp_scroll_position`)
+                            // *before* children prepaint, so the values read here are
+                            // this frame's. `ThreadsBlock::render` cannot drive this:
+                            // scrolling dirties only `Sidebar`, and the child
+                            // `ViewElement` subtree is reused from its prepaint cache.
+                            // (`on_children_prepainted` must precede `.id()`, which
+                            // returns `Stateful<Div>` and no longer exposes it.)
+                            .on_children_prepainted({
+                                let scroll = self.sidebar_scroll.clone();
+                                let sessions = self.sessions_block.clone();
+                                move |_, _, cx| {
+                                    // `offset.y ∈ [-max_offset.y, 0]`; the sum is 0
+                                    // exactly at the bottom (and for content that
+                                    // does not overflow at all), so `> 0` means
+                                    // there is still content below the viewport.
+                                    if scroll.offset().y + scroll.max_offset().y > px(0.0) {
+                                        return;
+                                    }
+                                    // Nothing left to append: skip the defer so an
+                                    // already-fully-loaded list stops scheduling work.
+                                    if !sessions.read_with(cx, |block, _| {
+                                        block.recents_visible < block.recents_total
+                                    }) {
+                                        return;
+                                    }
+                                    let sessions = sessions.clone();
+                                    // Prepaint runs with `draw_phase != None`, where
+                                    // `notify` is dropped; deferring to the end of the
+                                    // effect cycle both grows the window and produces
+                                    // the follow-up draw in the same flush.
+                                    cx.defer(move |cx| {
+                                        sessions.update(cx, |block, cx| {
+                                            block.grow_recents(cx);
+                                        });
+                                    });
+                                }
+                            })
                             .id("sidebar-scroll")
                             .debug_selector(|| "sidebar-scroll".into())
                             // Organization content keeps an 8px application-edge inset;
@@ -739,6 +823,7 @@ impl Render for Sidebar {
                             .flex_col()
                             .gap_3()
                             .overflow_y_scroll()
+                            .track_scroll(&self.sidebar_scroll)
                             .child(self.sessions_block.clone()),
                     ),
             )
@@ -759,8 +844,9 @@ pub use threads_block::{ThreadsBlock, ThreadsBlockEvent};
 mod tests {
 
     use super::{
-        OpenedThread, RenameResolution, archive_section_visible, civil_from_days,
-        clear_opened_thread_of_project, relative_time_from, resolve_rename, row_shows_actions,
+        OpenedThread, RenameResolution, RunningThreadsGlobal, archive_section_visible,
+        civil_from_days, clear_opened_thread_of_project, relative_time_from, resolve_rename,
+        row_shows_actions, set_thread_running, shows_timestamp_at_rest, thread_is_running,
         thread_title,
     };
     use vega_conversation::types::Thread;
@@ -830,6 +916,46 @@ mod tests {
         assert!(!archive_section_visible(0));
         assert!(archive_section_visible(1));
         assert!(archive_section_visible(3));
+    }
+
+    #[test]
+    fn running_row_owns_the_tail_slot() {
+        // #150 R10: the tail is one slot. A running row suppresses the resting
+        // timestamp; hover still wins because it reveals the action trigger.
+        assert!(shows_timestamp_at_rest(false, true, false));
+        assert!(!shows_timestamp_at_rest(false, true, true));
+        assert!(!shows_timestamp_at_rest(true, true, false));
+        assert!(!shows_timestamp_at_rest(true, true, true));
+        // A row that never shows a resting timestamp is unaffected either way.
+        assert!(!shows_timestamp_at_rest(false, false, false));
+        assert!(!shows_timestamp_at_rest(false, false, true));
+    }
+
+    #[gpui_kit::test]
+    async fn thread_liveness_bridge_is_idempotent_and_fails_closed(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            // R12: without the global the answer is false — the UI never
+            // invents running state.
+            assert!(!thread_is_running("t1", cx));
+
+            set_thread_running("t1", true, cx);
+            assert!(thread_is_running("t1", cx));
+            assert!(!thread_is_running("t2", cx));
+
+            // A repeated true keeps the same value (no spurious repaint).
+            set_thread_running("t1", true, cx);
+            assert_eq!(cx.global::<RunningThreadsGlobal>().0.len(), 1);
+
+            set_thread_running("t1", false, cx);
+            assert!(!thread_is_running("t1", cx));
+            assert!(cx.global::<RunningThreadsGlobal>().0.is_empty());
+
+            // Clearing an already-clear thread is a no-op, not a panic.
+            set_thread_running("t1", false, cx);
+            assert!(!thread_is_running("t1", cx));
+        });
     }
 
     #[test]

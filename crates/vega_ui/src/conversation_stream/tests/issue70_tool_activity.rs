@@ -72,6 +72,7 @@ fn entry_shapes(stream: &ConversationStream, cx: &App) -> Vec<String> {
             StreamEntry::Permission { .. } => "permission".to_string(),
             StreamEntry::Plan { .. } => "plan".to_string(),
             StreamEntry::Summary { .. } => "summary".to_string(),
+            StreamEntry::ContextCompaction { .. } => "compaction".to_string(),
             StreamEntry::SkillActivation { .. } => "skill".to_string(),
             StreamEntry::Thinking { .. } => "thinking".to_string(),
             StreamEntry::User { .. } => "user".to_string(),
@@ -199,13 +200,18 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
             cx,
         );
     });
-    assert_eq!(
-        stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
-            .read(cx)
-            .visible_text()),
-        "正在运行 printf 'tick'",
-        "approval alone must not estimate a start time"
-    );
+    stream.read_with(cx, |stream, cx| {
+        let card = stream.tool_cards["elapsed"].read(cx);
+        assert!(
+            card.is_expanded(),
+            "#151 R151-1: the newest live activity unit opens by default"
+        );
+        assert_eq!(
+            card.compact_visible_text(),
+            "正在运行 printf 'tick'",
+            "approval alone must not estimate a start time"
+        );
+    });
     cx.run_until_parked();
     let frames_before_running = stream.read_with(cx, |stream, _| {
         stream.counters.frames.load(Ordering::Relaxed)
@@ -230,7 +236,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
     let _mounted_zero_second_row = bounds(window, "tool-activity-single-row", cx);
     stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["elapsed"].read(cx);
-        assert_eq!(card.visible_text(), "正在运行 printf 'tick' · 0 秒");
+        assert_eq!(card.compact_visible_text(), "正在运行 printf 'tick' · 0 秒");
         assert!(card.live_elapsed_active());
         let colors = theme(cx).colors;
         assert!(matches!(card.leading_icon(), Icon::Terminal));
@@ -242,7 +248,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
-            .visible_text()),
+            .compact_visible_text()),
         "正在运行 printf 'tick' · 1 秒"
     );
 
@@ -251,7 +257,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
-            .visible_text()),
+            .compact_visible_text()),
         "正在运行 printf 'tick' · 2 秒",
         "the compact row refreshes at the next whole-second boundary"
     );
@@ -261,7 +267,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
-            .visible_text()),
+            .compact_visible_text()),
         "正在运行 printf 'tick' · 1 分 5 秒"
     );
 
@@ -288,7 +294,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
             !card.live_elapsed_active(),
             "terminal state cancels its timer"
         );
-        card.visible_text()
+        card.compact_visible_text()
     });
     assert_eq!(terminal, "已运行 printf 'tick' · 1.2 秒");
     cx.executor().advance_clock(Duration::from_secs(30));
@@ -296,7 +302,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
     assert_eq!(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
-            .visible_text()),
+            .compact_visible_text()),
         terminal,
         "advancing the UI clock after terminal cannot replace runtime duration"
     );
@@ -342,11 +348,15 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
             !aggregate.contains('秒') && !aggregate.contains("分钟") && !aggregate.contains("毫秒"),
             "aggregate must not expose child or total elapsed time: {aggregate}"
         );
-        assert_eq!(group.read(cx).row_count(cx), 1);
+        // #151 R151-3: the group is the newest activity unit, so it opens by
+        // default and shows its children as compact rows (three children here).
+        assert!(
+            group.read(cx).expanded(),
+            "#151: the newest tool group opens by default"
+        );
+        assert_eq!(group.read(cx).row_count(cx), 4);
     });
 
-    let expanded_group = stream.read_with(cx, |stream, _| group(stream));
-    expanded_group.update(cx, ToolActivityGroup::toggle_expanded);
     let expanded = stream.read_with(cx, |stream, cx| group(stream).read(cx).visible_text(cx));
     assert!(
         expanded.contains("正在运行 sleep first · 5 秒"),
@@ -445,8 +455,8 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
             "aggregate must remain duration-free: {aggregate}"
         );
     });
-    click(window, "tool-activity-group-toggle", cx);
-
+    // #151 R151-3: the newest group opens by default, so its child rows are
+    // already mounted without a manual disclosure click.
     let row = bounds(window, "tool-activity-child-0", cx);
     let title = bounds(window, "tool-activity-child-0-title", cx);
     let running_duration = bounds(window, "tool-activity-child-0-duration", cx);
@@ -650,17 +660,30 @@ async fn issue70_t70_1_single_shell_is_one_surface_free_compact_row(cx: &mut Tes
     cx.run_until_parked();
 
     let colors = cx.update(|cx| theme(cx).colors);
-    let (rows, visible, leading_icon, leading_icon_color) = stream.read_with(cx, |stream, cx| {
-        let card = stream.tool_cards["shell"].read(cx);
-        (
-            stream.entries[0].row_count(cx),
-            card.visible_text(),
-            card.leading_icon(),
-            card.leading_icon_color(&colors),
-        )
-    });
-    assert_eq!(rows, 1, "collapsed one-call activity is one compact row");
-    assert_eq!(visible, "已运行 printf ok · 12 毫秒");
+    let (rows, expanded, compact, leading_icon, leading_icon_color) =
+        stream.read_with(cx, |stream, cx| {
+            let card = stream.tool_cards["shell"].read(cx);
+            (
+                stream.entries[0].row_count(cx),
+                card.is_expanded(),
+                card.compact_visible_text(),
+                card.leading_icon(),
+                card.leading_icon_color(&colors),
+            )
+        });
+    // #151 R151-1: this single call is the newest activity unit, so its own
+    // bounded detail is disclosed by default. It is still one compact resting
+    // row — the detail is a separate surface below it (asserted by the painted
+    // quad check at the end), not a permanent card fill on the row.
+    assert!(
+        expanded,
+        "#151: the newest single-call activity unit opens by default"
+    );
+    assert_eq!(
+        rows, 5,
+        "one compact row plus the four disclosed shell detail rows"
+    );
+    assert_eq!(compact, "已运行 printf ok · 12 毫秒");
     assert!(
         matches!(leading_icon, Icon::Terminal),
         "successful Shell keeps its category icon instead of Check"
@@ -720,7 +743,13 @@ async fn issue70_t70_2_adjacent_mixed_tools_share_one_collapsed_item(cx: &mut Te
         let group = group(stream);
         let group = group.read(cx);
         assert_eq!(group.len(), 3);
-        assert_eq!(group.row_count(cx), 1);
+        // #151 R151-3: the group is the newest activity unit, so it opens by
+        // default — one aggregate row plus three compact child rows.
+        assert!(
+            group.expanded(),
+            "#151: the newest tool group opens by default"
+        );
+        assert_eq!(group.row_count(cx), 4);
         let colors = theme(cx).colors;
         assert!(
             matches!(group.leading_icon(cx), Icon::Document),
@@ -874,18 +903,33 @@ async fn issue70_t70_3_permission_merge_preserves_right_group_disclosure(cx: &mu
             ["group:3", "permission", "group:2"]
         );
     });
-    let right_group = stream.read_with(cx, |stream, _| match &stream.entries[2] {
-        StreamEntry::ToolGroup { group } => group.clone(),
-        _ => panic!("right tool group"),
+    // #151 R151-2 auto-collapsed the superseded left group when the newer right
+    // group appeared; the right group is the newest unit and opens by default.
+    // This keeps the #70 merge contract discriminating: the merged group must
+    // adopt the *expanded* side (right), not the collapsed one (left).
+    let (left_expanded, right_expanded) = stream.read_with(cx, |stream, cx| {
+        let left = match &stream.entries[0] {
+            StreamEntry::ToolGroup { group } => group.read(cx).expanded(),
+            _ => panic!("left tool group"),
+        };
+        let right = match &stream.entries[2] {
+            StreamEntry::ToolGroup { group } => group.read(cx).expanded(),
+            _ => panic!("right tool group"),
+        };
+        (left, right)
     });
-    right_group.update(cx, ToolActivityGroup::toggle_expanded);
+    assert!(
+        !left_expanded,
+        "#151: the superseded left group stepped down"
+    );
+    assert!(right_expanded, "#151: the newest right group opened");
     stream.update(cx, |stream, cx| stream.remove_active_permission(cx));
     drop(future);
     stream.read_with(cx, |stream, cx| {
         assert_eq!(entry_shapes(stream, cx), ["group:5"]);
         assert!(
             group(stream).read(cx).expanded(),
-            "merging into an existing left group preserves the right disclosure state"
+            "merging into an existing left group preserves the expanded side's disclosure state"
         );
     });
 }
@@ -916,14 +960,8 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
         );
     });
     cx.run_until_parked();
-    let collapsed_height = f32::from(bounds(window, "tool-activity-group", cx).size.height);
-    assert!(
-        gpui_kit::VisualTestContext::from_window(window.into(), cx)
-            .debug_bounds("tool-activity-child-0")
-            .is_none()
-    );
-
-    click(window, "tool-activity-group-toggle", cx);
+    // #151 R151-3: this group is the newest activity unit, so it starts
+    // expanded. Collapsing and re-expanding below still prove the toggle works.
     let expanded_rows = stream.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx));
     assert_eq!(expanded_rows, 4, "aggregate plus three compact children");
     for selector in [
@@ -939,7 +977,30 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
         );
     }
     let children_height = f32::from(bounds(window, "tool-activity-group", cx).size.height);
-    assert!(children_height > collapsed_height);
+
+    click(window, "tool-activity-group-toggle", cx);
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)),
+        1,
+        "collapsing the group leaves the aggregate-only row count"
+    );
+    let collapsed_height = f32::from(bounds(window, "tool-activity-group", cx).size.height);
+    assert!(collapsed_height < children_height);
+    assert!(
+        gpui_kit::VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("tool-activity-child-0")
+            .is_none()
+    );
+    click(window, "tool-activity-group-toggle", cx);
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)),
+        expanded_rows,
+        "re-expanding restores the child-list row count"
+    );
+    assert_eq!(
+        f32::from(bounds(window, "tool-activity-group", cx).size.height),
+        children_height
+    );
 
     click(window, "tool-activity-child-2", cx);
     assert!(
@@ -1125,7 +1186,11 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
             Some(colors.danger),
             "the failed footer state resolves to the theme danger token"
         );
-        assert_eq!(group.read(cx).row_count(cx), 1);
+        // #151: terminal updates do not supersede the newest unit, so the group
+        // stays expanded (aggregate + two children). Its resting row count is
+        // stable across lifecycle changes.
+        assert!(group.read(cx).expanded());
+        assert_eq!(group.read(cx).row_count(cx), 3);
     });
 }
 
@@ -1431,7 +1496,9 @@ async fn issue70_t70_7_grouping_preserves_redaction_and_fail_closed_visibility(
             cx,
         );
     });
-    click(window, "tool-activity-group-toggle", cx);
+    // #151 R151-3: the newest group already opens by default, so its children
+    // are mounted without a disclosure click. Child detail stays manual (#70
+    // §3.2), so only the child needs one click to disclose its bounded rows.
     click(window, "tool-activity-child-0", cx);
     let visible = stream.read_with(cx, |stream, cx| group(stream).read(cx).visible_text(cx));
     for safe in [

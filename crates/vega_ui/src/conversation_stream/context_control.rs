@@ -239,13 +239,38 @@ impl ConversationStream {
             self.context_control.compact_pending = None;
             self.context_control.cancel_pending = false;
         }
-        if self.context_control.records.last() != Some(&record) {
-            // A bounded chronological strip, not raw assistant/transcript data.
-            if self.context_control.records.len() == 6 {
-                self.context_control.records.remove(0);
+        if matches!(
+            record.status,
+            Status::Compacting | Status::Succeeded | Status::Failed | Status::Cancelled
+        ) {
+            let index = self.entries.iter().position(|entry| {
+                matches!(entry,
+                StreamEntry::ContextCompaction { model: owner, record: old, .. }
+                if owner == model && old.generation == record.generation)
+            });
+            if let Some(index) = index {
+                if let StreamEntry::ContextCompaction { record: old, .. } = &mut self.entries[index]
+                {
+                    *old = record.clone();
+                }
+                self.invalidate_item(Some(index));
+            } else {
+                // Just like a tool boundary: future text must follow this row,
+                // even when compaction happens in the middle of an agent turn.
+                self.close_active_segment_before_tool();
+                let index = self.entries.len();
+                self.entries.push(StreamEntry::ContextCompaction {
+                    model: model.to_owned(),
+                    record: record.clone(),
+                    restored: false,
+                });
+                self.list_append(index);
             }
-            self.context_control.records.push(record);
         }
+        // Keep only the newest transition for fencing/busy state. The list
+        // owns every operation's single visible row, without a six-row cap.
+        self.context_control.records.clear();
+        self.context_control.records.push(record);
         cx.notify();
         true
     }
@@ -304,42 +329,51 @@ impl ConversationStream {
             .update(cx, |input, cx| input.set_text(&reserve, cx));
     }
 
-    pub(crate) fn render_context_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        // Ready/Unknown are not lifecycle events and the old per-thread
-        // settings must not leak back into the Composer as a status chip.
-        let visible_records = self.context_control.records.iter().filter(|record| {
-            matches!(
-                record.status,
-                Status::Compacting | Status::Succeeded | Status::Failed | Status::Cancelled
-            )
-        });
-        visible_records.clone().next()?;
-        let colors = theme(cx).colors;
-        Some(
-            div()
-                .id("context-status")
-                .debug_selector(|| "context-status".into())
-                .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                .w_full()
-                .mx_auto()
-                .text_size(px(Typography::METADATA))
-                .text_color(colors.text_secondary)
-                .flex()
-                .flex_col()
-                .children(visible_records.map(|record| div().child(status_label(record))))
-                .into_any_element(),
-        )
+    /// Restore the latest durable result at the loaded history tail. Legacy
+    /// records have no transcript anchor, so the row is explicitly historical.
+    /// The controller must also accept the original owner/load-sequence fence.
+    pub fn restore_context_status(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        mut record: ContextCompactionStatusRecord,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if thread_id != self.thread.id
+            || model != self.thread.model
+            || self.actions.running
+            || self.active_agent_message.is_some()
+            || !self.context_control.records.is_empty()
+            || self.context_control.busy()
+            || self.entries.iter().any(|entry| {
+                matches!(entry,
+                StreamEntry::ContextCompaction { model: owner, .. } if owner == model)
+            })
+        {
+            return false;
+        }
+        let Some(id) = self.reserve_context_operation_id(cx) else {
+            return false;
+        };
+        record.generation = id;
+        if !self.apply_context_status(thread_id, model, record, cx) {
+            return false;
+        }
+        if let Some(StreamEntry::ContextCompaction { restored, .. }) = self.entries.last_mut() {
+            *restored = true;
+        }
+        true
     }
 }
 
-fn status_label(record: &ContextCompactionStatusRecord) -> &'static str {
-    match record.status {
+pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'static str {
+    match status {
         Status::Unknown => "上下文容量未配置",
         Status::Ready => "上下文已就绪",
-        Status::Compacting => "正在压缩上下文…",
-        Status::Succeeded => "上下文压缩完成，原始对话已保留",
+        Status::Compacting => "正在压缩上下文",
+        Status::Succeeded => "上下文已压缩",
         Status::Cancelled => "上下文压缩已取消，原始对话未更改",
-        Status::Failed => match record.failure {
+        Status::Failed => match failure {
             Some(Failure::SourceChanged) => "历史已变化，请重试压缩",
             Some(Failure::NoCompactablePrefix) => "暂无可压缩的完整历史",
             Some(Failure::TooLarge) => "历史内容已达到安全分段上限，原始对话已保留；请在新会话继续",

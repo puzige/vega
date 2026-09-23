@@ -485,6 +485,10 @@ impl VegaWindow {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         };
+        // R8: an accepted run is mirrored into the app-wide thread liveness
+        // projection immediately, so the sidebar row lights up while the
+        // worker is still preparing its first durable message.
+        vega_ui::sidebar::set_thread_running(thread_id, true, cx);
         self.agent_controller.preparation_stream = None;
         self.begin_context_primary_owner(generation, cx);
         stream.update(cx, ConversationStream::begin_composer_run);
@@ -551,6 +555,9 @@ impl VegaWindow {
             stream.update(cx, |stream, cx| stream.finish_composer_run(false, cx));
             self.poison_artifact_agent_generation(generation, &stream);
             let failed_run = self.agent_controller.finish(generation, thread_id, &stream);
+            // A spawn failure releases the run it just registered; the row
+            // must not keep spinning for a worker that never started.
+            vega_ui::sidebar::set_thread_running(thread_id, false, cx);
             self.finish_context_primary_owner(generation);
             if failed_run
                 .as_ref()

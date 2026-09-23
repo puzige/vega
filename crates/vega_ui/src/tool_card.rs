@@ -380,6 +380,15 @@ impl ToolCard {
         Some((input.tool()?, input.permission_target()?))
     }
 
+    /// #151: the newest live activity unit is expanded; older units step down.
+    /// Pure UI state, never persisted and never part of the safe projection.
+    pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut gpui_kit::Context<Self>) {
+        if self.expanded != expanded {
+            self.expanded = expanded;
+            cx.notify();
+        }
+    }
+
     /// Number of logical compact/detail rows carried by this call.
     pub fn row_count(&self) -> usize {
         1 + if self.expanded {
@@ -457,6 +466,20 @@ impl ToolCard {
     #[cfg(test)]
     pub(crate) fn live_elapsed_active(&self) -> bool {
         self.running_started_at.is_some() && self.elapsed_refresh_task.is_some()
+    }
+
+    /// #151: whether this card's bounded detail is currently disclosed.
+    #[cfg(test)]
+    pub(crate) fn is_expanded(&self) -> bool {
+        self.expanded
+    }
+
+    /// The resting compact row copy, without any disclosed detail rows. #151
+    /// opens the newest unit's detail by default, so elapsed-copy assertions
+    /// read this instead of [`Self::visible_text`].
+    #[cfg(test)]
+    pub(crate) fn compact_visible_text(&self) -> String {
+        self.summary.clone()
     }
 
     pub(crate) fn render(

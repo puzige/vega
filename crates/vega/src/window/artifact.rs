@@ -309,6 +309,10 @@ impl VegaWindow {
         let Some(run) = self.agent_controller.finish(generation, thread_id, stream) else {
             return AgentBatchIngress::Stale;
         };
+        // R8: the terminal ingress is the only successful release path; clear
+        // the row's running projection here so a finished run never leaves a
+        // stale indicator behind.
+        vega_ui::sidebar::set_thread_running(thread_id, false, cx);
         self.finish_context_primary_owner(generation);
         // S7-T40/C4: the run's durable terminal message becomes a read-only
         // per-task cost summary card. The projection reads only the persisted

@@ -16,10 +16,11 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 1. **不在 `master` 上直接做功能开发**——用 feature 分支（`feat/<task-id>-<slug>`，如 `feat/t01-scaffold`）。
 2. **动手前先 `git fetch && git rebase origin/master`**。
-3. **任务来源**：默认从 [GitHub Project](https://github.com/users/puzige/projects/2/views/1?system_template=kanban) 的 Ready 卡取任务，用户指定任务优先；关联 `docs/vega-s*-tasks.md` 等规格。一张卡 = 一个 PR。卡外工作先问。取卡、实现与交付必须使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)，验收、合并、任务分支/worktree 清理及卡片回写全部完成后才能关闭。
-4. **主 agent 角色**：协调、验收、集成；**代码实现委托给专用 subagent**，主上下文不被实现细节污染。
-5. **遇阻**：按 exec-guide §6 用 `[BLOCKED]` 格式上报，禁止自创方案绕过。
-6. **验收强制 E2E-first**：优先以真实 production 入口、owned temp repo 与真实 controller 的端到端证据验收；test-only seam 仅保留无法由 E2E 稳定证明的安全不变量，证据分级与留存格式见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
+3. **任务来源**：默认从 [GitHub Project](https://github.com/users/puzige/projects/2/views/1?system_template=kanban) 的 Ready 卡取任务，用户指定任务优先；关联 `docs/vega-s*-tasks.md` 等规格。一张卡 = 一个 PR。卡外工作先问。取卡、实现与交付必须使用 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)。
+4. **交付节奏（2026-09-23 用户裁决）**：接卡立即置 `In progress` → 需求分析/测试用例/实现计划 → 实现（**只跑本卡功能点测试，不跑本地全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写上下文、关闭 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress` 修复。**未收到用户手测结论前不得关闭或清理。**
+5. **主 agent 角色**：协调、集成、开 PR 与合并；**代码实现委托给专用 subagent**，主上下文不被实现细节污染。
+6. **遇阻**：按 exec-guide §6 用 `[BLOCKED]` 格式上报，禁止自创方案绕过。
+7. **真实验收由用户手测**：真实模型/服务/UI 路径的验收由用户在合并后的 master 上手动完成；Agent 不再以自产全量 E2E/截图作为合并前门禁。本卡测试仍须 E2E-first 覆盖真实 production 入口，证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ## 问题与需求收集
 
@@ -31,8 +32,9 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
 - 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 [vega-features.md](docs/vega-features.md)）
 - 小步提交，一个任务卡 ≤3 个 commit
-- PR 必须附：验收命令原始输出 + 与 spec 的偏离说明（必须为无）
+- PR 必须附：本卡功能点测试命令与原始输出 + 与 spec 的偏离说明（必须为无）；**不附本地全量测试**（全量门禁由云端 `pr-check` 承担）
 - 合并方式：squash merge，合并后删除功能分支（2026-08-29 决策）
+- **合并由 Agent 主动完成**：云端 `check` 绿后由 Agent 合并 master，合并完成后才把卡片改为 `In review` 等待用户手测（2026-09-23 用户裁决）
 
 ## 验证门禁与云端 CI（2026-09-22 用户裁决，Issue #123）
 
@@ -46,7 +48,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - 发布仍由 `v*` tag 触发（`release.yml`），master build 不发 Release，避免每个 commit 都发版。
 - [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 删除 #136 的 Python 影子选择器及报告；全量测试保持必跑，不恢复本地门禁或调度器。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。本地直接 `cargo` 命令即可，不受调度器约束。
-- 本地开发仍建议自行运行相关 `cargo fmt/clippy/test` 快速自查；任务级 production-root 回归与真实 E2E 证据要求不变（见 exec-guide §7）。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
+- **本地只跑本卡功能点测试，不跑 workspace 全量**（2026-09-23 用户裁决）：`cargo nextest run -p <crate> <filter>` 等定向命令，确保本卡自己新增/修改的测试通过；全量 fmt/clippy/nextest 交给云端 `pr-check`。任务级 production-root 回归与测试矩阵仍须覆盖，只是不再在本地重复全量门禁。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
 
 ## 固定应用安装入口（2026-09-21 用户更新约定）
 
@@ -286,10 +288,11 @@ R68 就踩了：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-hei
 - API key 只存配置根下独立的 owner-only 明文凭据文件（R10），不写 config.toml/项目文件/日志；不访问旧 Keychain
 - 非测试代码禁止 `unwrap()`/`expect()`
 - schema 只增不删，走 `migrations/` 递增文件
+- **代码中禁止任何注释**（`///`/`//!`/行内 `//`/`/* */`）：注释说明必要 = 命名或结构没写好，去改命名/拆函数/提类型。仅 `unsafe` 块的 `// SAFETY:` 例外（2026-09-23 用户裁决，详见 exec-guide §3/§4）
 
 ## 行为技能
 
-- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：看板取卡到关闭的工程交付流程；测试用例先行、真实 E2E 与持久截图、并行隔离、master 集成及清理的统一完成标准。
+- [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)：看板取卡到关闭的工程交付流程；测试用例先行、本地只跑本卡功能点测试、开 PR 与云端 check、Agent 合并 master、用户手测后收尾的统一完成标准。
 
 - [karpathy-guidelines](.agents/skills/karpathy-guidelines/SKILL.md)：写/审/重构代码时的
   行为准则（最小改动、表面化假设、可验证成功判据）。**冲突时以本文件与 exec-guide 为准**，

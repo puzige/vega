@@ -84,3 +84,7 @@ Vega 规则为准。具体边界：
    全绿（fmt / clippy / test / build 及任务卡规定项），并附原始输出。
 5. **遇阻即停**：本技能 "ask when unclear" 在 Vega 落地为 exec-guide §6 的
    `[BLOCKED]` 上报格式，不自创方案绕过。
+6. **代码禁止任何注释**（2026-09-23 用户裁决，exec-guide §3/§4）：`///`、`//!`、
+   行内 `//`、`/* */` 一律不加。需要注释才能读懂，说明命名或结构没写清楚——改命名、
+   拆函数、提类型。唯一例外：`unsafe` 块紧邻的 `// SAFETY:` 一行。本技能
+   "Don't improve adjacent comments" 指不改他人已有的无关注释，不等于可以新增注释。

@@ -1,4 +1,5 @@
 use super::*;
+use crate::icons::{Icon, icon};
 
 /// Materializes a user echo block (T18 消息块结构): the 「你」 label, one
 /// line per source line (blank lines preserved as empty spans), and a
@@ -27,6 +28,34 @@ pub(crate) fn user_message_lines(block_id: u64, text: &str) -> Vec<StreamLine> {
     lines
 }
 
+/// #117: the compaction row's icon and color. Every state shares one glyph
+/// (Lucide `text-select`), so the row never changes shape as the operation
+/// advances; only failure is recolored and the label carries the transition.
+pub(crate) fn context_compaction_visual(
+    status: vega_conversation::types::ContextCompactionStatus,
+    colors: &ThemeColors,
+) -> (Icon, Rgba) {
+    use vega_conversation::types::ContextCompactionStatus as Status;
+    let color = match status {
+        Status::Failed => colors.danger,
+        _ => colors.text_secondary,
+    };
+    (Icon::TextSelect, color)
+}
+
+pub(crate) fn context_compaction_label(
+    status: vega_conversation::types::ContextCompactionStatus,
+    failure: Option<vega_conversation::types::ContextCompactionFailureCode>,
+    restored: bool,
+) -> String {
+    let base = context_control::status_label_for(status, failure);
+    if restored {
+        format!("已恢复 · {base}")
+    } else {
+        base.to_owned()
+    }
+}
+
 /// Renders one visible semantic entry as a single variable-height list item
 /// (S8-T44/C4: 一项=一个 user/assistant/tool/permission/plan/artifact/
 /// summary item 的自然高度). Per-frame: clone-only element assembly from
@@ -40,10 +69,50 @@ pub(crate) fn render_entry(
     let row_t0 = Instant::now();
     let colors = theme(cx).colors;
     let item = match entry {
+        StreamEntry::ContextCompaction {
+            record, restored, ..
+        } => {
+            let (glyph, color) = context_compaction_visual(record.status, &colors);
+            let restored = *restored;
+            let label = context_compaction_label(record.status, record.failure, restored);
+            div()
+                .debug_selector(|| "context-compaction-row".into())
+                .w_full()
+                .flex_shrink_0()
+                .pt_1()
+                .pb_2()
+                .flex()
+                .items_start()
+                .gap_2()
+                .text_size(px(Typography::METADATA))
+                .text_color(colors.text_secondary)
+                .child(icon(glyph, color))
+                .child(
+                    div()
+                        .debug_selector(move || {
+                            if restored {
+                                "context-compaction-restored".into()
+                            } else {
+                                "context-compaction-live".into()
+                            }
+                        })
+                        .min_w_0()
+                        .flex_1()
+                        .child(label),
+                )
+                .into_any_element()
+        }
         StreamEntry::Thinking { card } => div().child(card.clone()).into_any_element(),
-        StreamEntry::User { lines } => user_message_item(lines, &colors),
+        StreamEntry::User { lines, copy } => {
+            message_with_copy(user_message_item(lines, &colors), copy, true, colors)
+        }
         StreamEntry::UserImages { images } => attachments::render_user_images(images),
-        StreamEntry::Assistant { model, failure, .. } => markdown_item(model, *failure, &colors),
+        StreamEntry::Assistant {
+            model,
+            failure,
+            copy,
+            ..
+        } => message_with_copy(markdown_item(model, *failure, &colors), copy, false, colors),
         StreamEntry::Tool { card } => {
             let card = card.clone();
             div()
@@ -579,3 +648,65 @@ pub(crate) fn sample_document(blocks: usize) -> String {
 }
 
 // (split_deltas moved to vega_markdown::replay — T18 公共回放器基建)
+
+/// The group includes the message, the gap and the action row, keeping the
+/// pointer path continuous. Opacity preserves the exact rest/hover geometry.
+///
+/// Temporarily disabled by [`MESSAGE_COPY_ACTIONS_ENABLED`] (Issue #78
+/// follow-up): the reserved action row read as an ugly, layout-coupled
+/// affordance, so while the flag is false the body is returned unchanged and
+/// no row is reserved. The plumbing below is retained so the interaction can
+/// be re-enabled by flipping that one flag; keeping the branch here (rather
+/// than at the call site) also keeps `MessageCopy` and the `Copy` icon
+/// reachable for the compiler.
+fn message_with_copy(
+    body: AnyElement,
+    copy: &MessageCopy,
+    user: bool,
+    colors: ThemeColors,
+) -> AnyElement {
+    if !MESSAGE_COPY_ACTIONS_ENABLED {
+        return body;
+    }
+    if !copy.has_text() {
+        return body;
+    }
+    let id = copy.id;
+    let group: gpui_kit::SharedString = format!("message-copy-group-{id}").into();
+    let source = copy.clone();
+    div()
+        .id(("message-with-copy", id))
+        .group(group.clone())
+        .w_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .child(body)
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .when(user, |row| row.justify_end())
+                .child(
+                    crate::icons::icon_button(
+                        crate::icons::Icon::Copy,
+                        "复制消息",
+                        colors,
+                        move |_, _, cx| source.copy(cx),
+                    )
+                    .id(("message-copy", id))
+                    .debug_selector(move || {
+                        if user {
+                            "message-copy-user"
+                        } else {
+                            "message-copy-assistant"
+                        }
+                        .into()
+                    })
+                    .opacity(0.)
+                    .group_hover(group, |style| style.opacity(1.))
+                    .focus_visible(|style| style.opacity(1.).bg(colors.bg_active)),
+                ),
+        )
+        .into_any_element()
+}

@@ -1030,7 +1030,7 @@ async fn r28_sidebar_section_labels_use_title_case(cx: &mut gpui_kit::TestAppCon
 }
 
 #[gpui_kit::test]
-async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
+async fn r29_projects_expand_and_recents_has_no_progressive_control(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     let f = fixture(cx);
@@ -1092,6 +1092,9 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
         ),
         Layout::SIDEBAR_SECTION_GAP
     );
+    // Issue #57: Recents has no progressive control at all. It still starts at
+    // the compact 10-row window; the outer scroller fills the rest (covered by
+    // the dedicated r57 tests below).
     assert_eq!(
         recent_ids
             .iter()
@@ -1099,7 +1102,8 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
             .count(),
         10
     );
-    assert!(!absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
 
     click(&f, cx, "organization-projects-show-more");
     assert_eq!(
@@ -1110,7 +1114,9 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
         9
     );
     assert!(!absent(&f, cx, "organization-projects-show-less"));
-    assert!(!absent(&f, cx, "organization-recents-show-more"));
+    // Issue #57: Recents has no progressive control, so this scroll never
+    // changes which Recents control exists — there is none to change.
+    assert!(absent(&f, cx, "organization-recents-show-more"));
     let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
     let sidebar_scroll = visual.debug_bounds("sidebar-scroll").unwrap();
     visual.simulate_event(gpui_kit::ScrollWheelEvent {
@@ -1140,30 +1146,10 @@ async fn r29_projects_and_recents_expand_independently_in_the_outer_scroller(
     cx.simulate_keystrokes(f.window.into(), "enter");
     assert!(!absent(&f, cx, "organization-projects-show-less"));
 
-    let recents_focus =
-        sessions(&f, cx).read_with(cx, |block, _| block.recents_progressive_focus.clone());
-    f.window
-        .update(cx, |_, window, cx| recents_focus.focus(window, cx))
-        .unwrap();
-    cx.simulate_keystrokes(f.window.into(), "enter");
-    assert_eq!(
-        recent_ids
-            .iter()
-            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
-            .count(),
-        11
-    );
-    assert!(!absent(&f, cx, "organization-recents-show-less"));
-    assert!(!absent(&f, cx, "organization-projects-show-less"));
-    cx.simulate_keystrokes(f.window.into(), "space");
-    assert_eq!(
-        recent_ids
-            .iter()
-            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
-            .count(),
-        10
-    );
-    assert!(!absent(&f, cx, "organization-recents-show-more"));
+    // Issue #57: the Projects control still toggles by keyboard, and the
+    // absence of a Recents control is unaffected by it.
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
     assert!(!absent(&f, cx, "organization-projects-show-less"));
 }
 
@@ -1176,6 +1162,134 @@ async fn r29_progressive_controls_are_absent_without_hidden_items(
     assert!(absent(&f, cx, "organization-projects-show-less"));
     assert!(absent(&f, cx, "organization-recents-show-more"));
     assert!(absent(&f, cx, "organization-recents-show-less"));
+}
+
+/// Issue #57 / T57-1, T57-2, T57-4: with a viewport tall enough to hold every
+/// eligible Recents row, the list renders **all** of them with no `Show More`
+/// control, and the painted order is the stable projection order.
+#[gpui_kit::test]
+async fn r57_recents_fill_a_tall_viewport_without_a_progressive_control(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture_with_size(cx, 1200., 2600.);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let mut recent_ids = Vec::new();
+    for _ in 0..12 {
+        recent_ids.push(
+            conversation::create_standalone_thread(&store, "model", "confirm")
+                .unwrap()
+                .id,
+        );
+    }
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    // R1: no progressive control exists for Recents, in either state.
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
+
+    // R3: the whole list fits, so nothing is withheld.
+    assert_eq!(
+        recent_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
+            .count(),
+        recent_ids.len()
+    );
+
+    // R5: painted top-to-bottom order equals the stable sort projection.
+    let preferences = snapshot(&f).preferences;
+    let mut expected: Vec<String> = super::projections::sorted_threads(
+        &snapshot(&f)
+            .threads
+            .into_iter()
+            .filter(|thread| thread.is_standalone() && !thread.pinned)
+            .collect::<Vec<_>>(),
+        preferences.sort,
+    )
+    .into_iter()
+    .map(|thread| thread.id)
+    .collect();
+    expected.sort_by_key(|id| bounds(&f, cx, format!("standalone-thread-row-{id}")).top());
+    let mut painted: Vec<String> = recent_ids.clone();
+    painted.sort_by_key(|id| bounds(&f, cx, format!("standalone-thread-row-{id}")).top());
+    assert_eq!(painted, expected);
+}
+
+/// Issue #57 / T57-3: when the list does not fit, Recents starts at one page
+/// and each reach of the outer scroller bottom appends exactly one more page —
+/// never a `Show More` control, never a reorder.
+#[gpui_kit::test]
+async fn r57_recents_grow_one_page_per_scroll_to_bottom(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let mut recent_ids = Vec::new();
+    for _ in 0..30 {
+        recent_ids.push(
+            conversation::create_standalone_thread(&store, "model", "confirm")
+                .unwrap()
+                .id,
+        );
+    }
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let page = super::RECENTS_PAGE;
+    let mounted = |cx: &mut gpui_kit::TestAppContext| {
+        recent_ids
+            .iter()
+            .filter(|id| !absent(&f, cx, format!("standalone-thread-row-{id}")))
+            .count()
+    };
+    // The window is short, so the initial content overflows and the lazy list
+    // holds at the first page instead of filling.
+    assert_eq!(mounted(cx), page);
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    let viewport = visual.debug_bounds("sidebar-scroll").unwrap();
+    let scroll_to_bottom = |visual: &mut gpui_kit::VisualTestContext| {
+        visual.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: viewport.center(),
+            // A delta far past the scroll maximum clamps to the bottom, which
+            // is the state the lazy list keys on.
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                gpui_kit::px(0.),
+                gpui_kit::px(-100_000.),
+            )),
+            modifiers: gpui_kit::Modifiers::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    };
+
+    scroll_to_bottom(&mut visual);
+    assert_eq!(mounted(cx), page * 2);
+    scroll_to_bottom(&mut visual);
+    assert_eq!(mounted(cx), page * 3);
+    // At the end of the data the list stops growing and still has no control.
+    scroll_to_bottom(&mut visual);
+    assert_eq!(mounted(cx), recent_ids.len());
+    assert!(absent(&f, cx, "organization-recents-show-more"));
+    assert!(absent(&f, cx, "organization-recents-show-less"));
+
+    // The appended pages kept the stable order: the newest row is on top.
+    let preferences = snapshot(&f).preferences;
+    let expected_first = super::projections::sorted_threads(
+        &snapshot(&f)
+            .threads
+            .into_iter()
+            .filter(|thread| thread.is_standalone() && !thread.pinned)
+            .collect::<Vec<_>>(),
+        preferences.sort,
+    )
+    .first()
+    .map(|thread| thread.id.clone())
+    .unwrap();
+    let mut painted: Vec<String> = recent_ids.clone();
+    painted.sort_by_key(|id| bounds(&f, cx, format!("standalone-thread-row-{id}")).top());
+    assert_eq!(painted.first(), Some(&expected_first));
 }
 
 #[gpui_kit::test]
@@ -1901,4 +2015,117 @@ async fn r50_pinned_section_carries_no_extra_margin(cx: &mut gpui_kit::TestAppCo
     cx.update(|cx| cx.set_global(vega_theme::Theme::dark()));
     cx.run_until_parked();
     assert_no_extra_margin(&f, cx);
+}
+
+/// #150 R9/R12: the row indicator is driven only by the real thread-liveness
+/// projection. Nothing about `unread`, `updated_at` or selection may light it.
+#[gpui_kit::test]
+async fn issue150_row_indicator_follows_only_real_thread_liveness(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let running = format!("project-thread-running-{}", f.first.id);
+
+    // C4/R12: nothing is running, so the tail slot stays empty — and the
+    // opened/selected row alone must not imply liveness.
+    assert!(absent(&f, cx, running.clone()));
+
+    // C3: the projection turns the indicator on for exactly that thread.
+    cx.update(|cx| set_thread_running(&f.first.id, true, cx));
+    cx.run_until_parked();
+    assert!(f32::from(bounds(&f, cx, running.clone()).size.width) > 0.0);
+
+    // Releasing liveness restores the rest state exactly.
+    cx.update(|cx| set_thread_running(&f.first.id, false, cx));
+    cx.run_until_parked();
+    assert!(absent(&f, cx, running.clone()));
+}
+
+/// #150 R10: the tail is a single slot. Production rows never render a resting
+/// timestamp (`show_timestamp_at_rest = false`), so the running-row precedence
+/// is asserted on the pure predicate in `sidebar/mod.rs`; this mounted case
+/// pins the part the scene can prove — a running row still shows exactly one
+/// tail indicator and never a `thread-timestamp-*` selector.
+#[gpui_kit::test]
+async fn issue150_running_row_shows_no_resting_timestamp(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let timestamp = format!("thread-timestamp-{}", f.first.id);
+    cx.update(|cx| set_thread_running(&f.first.id, true, cx));
+    cx.run_until_parked();
+    assert!(absent(&f, cx, timestamp));
+    assert!(
+        f32::from(
+            bounds(&f, cx, format!("project-thread-running-{}", f.first.id))
+                .size
+                .width
+        ) > 0.0
+    );
+}
+
+/// #150 R10: the indicator is inserted left of the action trigger inside the
+/// right-aligned tail group, so appearing/disappearing never shifts the
+/// trigger or the row.
+#[gpui_kit::test]
+async fn issue150_row_indicator_does_not_displace_the_row_or_trigger(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let row_selector = format!("project-thread-row-{}", f.first.id);
+    let trigger_selector = format!("project-thread-actions-{}", f.first.id);
+    let running = format!("project-thread-running-{}", f.first.id);
+
+    let row_before = bounds(&f, cx, row_selector.clone());
+    let trigger_before = bounds(&f, cx, trigger_selector.clone());
+
+    cx.update(|cx| set_thread_running(&f.first.id, true, cx));
+    cx.run_until_parked();
+    assert!(f32::from(bounds(&f, cx, running.clone()).size.width) > 0.0);
+
+    // C5: the row height is a token and the trigger keeps its column, so the
+    // indicator is purely additive inside the existing slot.
+    assert_eq!(bounds(&f, cx, row_selector.clone()), row_before);
+    assert_eq!(bounds(&f, cx, trigger_selector.clone()), trigger_before);
+    assert_eq!(
+        f32::from(bounds(&f, cx, row_selector).size.height),
+        Typography::SIDEBAR_LINE_HEIGHT
+    );
+}
+
+/// #150 R4: a background run lights its own row even when another thread is
+/// the opened route (Issue #67 concurrency).
+#[gpui_kit::test]
+async fn issue150_background_thread_lights_its_own_row(cx: &mut gpui_kit::TestAppContext) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let background = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let background_indicator = format!("standalone-thread-running-{}", background.id);
+    let opened_indicator = format!("project-thread-running-{}", f.first.id);
+    assert!(absent(&f, cx, background_indicator.clone()));
+
+    cx.update(|cx| set_thread_running(&background.id, true, cx));
+    cx.run_until_parked();
+
+    assert!(f32::from(bounds(&f, cx, background_indicator).size.width) > 0.0);
+    assert!(
+        absent(&f, cx, opened_indicator),
+        "the opened row must not borrow another thread's liveness"
+    );
+}
+
+/// #150 R12: without the projection installed the UI never invents liveness,
+/// even for the opened row.
+#[gpui_kit::test]
+async fn issue150_missing_liveness_projection_shows_no_indicator(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    cx.update(|cx| assert!(!cx.has_global::<RunningThreadsGlobal>()));
+    assert!(absent(
+        &f,
+        cx,
+        format!("project-thread-running-{}", f.first.id)
+    ));
 }

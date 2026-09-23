@@ -187,10 +187,23 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let Some(org) = &self.organization else {
+        // Every value the sections need is copied out before the first
+        // `&mut self` section renderer runs, so no borrow of
+        // `self.organization` is held across it. `render_recents_pi` is
+        // `&mut self` because lazy loading records the live total.
+        let Some((snapshot, show_archived, menu_open, projects_error)) =
+            self.organization.as_ref().map(|org| {
+                (
+                    org.snapshot.clone(),
+                    org.archive,
+                    org.menu.is_some(),
+                    org.projects.read(cx).error.clone(),
+                )
+            })
+        else {
             return div().into_any_element();
         };
-        let Some(snapshot) = org.snapshot.clone() else {
+        let Some(snapshot) = snapshot else {
             return div()
                 .id("sidebar-organization")
                 .flex()
@@ -199,8 +212,6 @@ impl ThreadsBlock {
                 .child(self.section_label("正在载入", cx))
                 .into_any_element();
         };
-        let show_archived = org.archive;
-        let menu_open = org.menu.is_some();
         let mut body = div()
             .id("sidebar-organization")
             .debug_selector(|| "sidebar-organization".into())
@@ -216,13 +227,7 @@ impl ThreadsBlock {
         body = body.child(self.render_projects_pi(&snapshot, show_archived, cx));
         body = body.child(self.render_recents_pi(&snapshot, show_archived, cx));
         body = body.children(menu_open.then(|| self.render_organization_menu(cx)));
-        body = body.children(
-            org.projects
-                .read(cx)
-                .error
-                .clone()
-                .map(|message| error_bar(message, &colors)),
-        );
+        body = body.children(projects_error.map(|message| error_bar(message, &colors)));
         body = body.children(
             self.error
                 .clone()
@@ -372,8 +377,10 @@ impl ThreadsBlock {
         )
     }
 
+    /// Issue #57: `&mut self` because the lazy render window records the live
+    /// eligible total (`recents_total`) for [`Self::grow_recents`].
     fn render_recents_pi(
-        &self,
+        &mut self,
         snapshot: &SidebarOrganizationSnapshot,
         show_archived: bool,
         cx: &mut Context<Self>,
@@ -458,23 +465,26 @@ impl ThreadsBlock {
             .as_ref()
             .map(|thread| thread.id.clone());
         let empty = standalone.is_empty();
-        let has_hidden = standalone.len() > 10;
-        let visible_count = if self.recents_expanded {
-            standalone.len()
-        } else {
-            10
-        };
-        let rows = standalone.into_iter().take(visible_count).map(|thread| {
-            let archived = thread.status == ThreadStatus::Archived;
-            self.render_recent_row(
-                &thread,
-                &opened_id,
-                archived,
-                "standalone-thread-row-",
-                true,
-                cx,
-            )
-        });
+        // Issue #57: Recents is a lazy list, not a Show More list. Record the
+        // total so the outer scroller can grow the render window one page at a
+        // time; the rows are always the first `recents_visible` of the stable
+        // sort, so growing only appends and never reorders what is already
+        // painted.
+        self.recents_total = standalone.len();
+        let rows = standalone
+            .into_iter()
+            .take(self.recents_visible)
+            .map(|thread| {
+                let archived = thread.status == ThreadStatus::Archived;
+                self.render_recent_row(
+                    &thread,
+                    &opened_id,
+                    archived,
+                    "standalone-thread-row-",
+                    true,
+                    cx,
+                )
+            });
         let empty = empty.then(|| {
             div()
                 .id("organization-recents-empty")
@@ -500,14 +510,7 @@ impl ThreadsBlock {
                     .flex()
                     .flex_col()
                     .children(empty)
-                    .children(rows)
-                    .children(has_hidden.then(|| {
-                        self.render_progressive_control(
-                            OrganizationSection::Recents,
-                            self.recents_expanded,
-                            cx,
-                        )
-                    })),
+                    .children(rows),
             )
             .into_any_element()
     }
@@ -584,13 +587,9 @@ impl ThreadsBlock {
         for project in ordered.into_iter().take(visible_count) {
             rows = rows.child(self.render_pi_project(project, snapshot, show_archived, cx));
         }
-        rows = rows.children(has_hidden.then(|| {
-            self.render_progressive_control(
-                OrganizationSection::Projects,
-                self.projects_expanded,
-                cx,
-            )
-        }));
+        rows = rows.children(
+            has_hidden.then(|| self.render_progressive_control(self.projects_expanded, cx)),
+        );
         div()
             .id("organization-projects")
             .debug_selector(|| "organization-section-projects".into())
@@ -601,26 +600,16 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    fn render_progressive_control(
-        &self,
-        section: OrganizationSection,
-        expanded: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// Issue #57: the `Show More / Show Less` row is **Projects-only**. Recents
+    /// is now a lazy list (viewport fill + scroll-to-bottom growth), so it has
+    /// no progressive control and no `organization-recents-show-*` selector.
+    fn render_progressive_control(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let section_name = match section {
-            OrganizationSection::Projects => "projects",
-            OrganizationSection::Recents => "recents",
-        };
         let state_name = if expanded { "less" } else { "more" };
         let label = if expanded { "Show Less" } else { "Show More" };
-        let id = format!("organization-{section_name}-show-{state_name}");
-        let label_id = format!("organization-{section_name}-progressive-label");
-        let keyboard_section = section;
-        let focus = match section {
-            OrganizationSection::Projects => &self.projects_progressive_focus,
-            OrganizationSection::Recents => &self.recents_progressive_focus,
-        };
+        let id = format!("organization-projects-show-{state_name}");
+        let label_id = "organization-projects-progressive-label".to_string();
+        let focus = &self.projects_progressive_focus;
         div()
             .id(ElementId::Name(id.clone().into()))
             .debug_selector(move || id.clone())
@@ -650,14 +639,14 @@ impl ThreadsBlock {
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.toggle_progressive_section(section, cx);
+                    this.toggle_progressive_section(cx);
                 }),
             )
             .on_key_down(
                 cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                         cx.stop_propagation();
-                        this.toggle_progressive_section(keyboard_section, cx);
+                        this.toggle_progressive_section(cx);
                     }
                 }),
             )
@@ -665,11 +654,10 @@ impl ThreadsBlock {
             .into_any_element()
     }
 
-    fn toggle_progressive_section(&mut self, section: OrganizationSection, cx: &mut Context<Self>) {
-        match section {
-            OrganizationSection::Projects => self.projects_expanded = !self.projects_expanded,
-            OrganizationSection::Recents => self.recents_expanded = !self.recents_expanded,
-        }
+    /// Issue #57: only Projects still has a progressive control, so the toggle
+    /// no longer takes a section parameter.
+    fn toggle_progressive_section(&mut self, cx: &mut Context<Self>) {
+        self.projects_expanded = !self.projects_expanded;
         cx.notify();
     }
 

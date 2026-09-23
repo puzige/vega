@@ -101,6 +101,7 @@ impl ConversationStream {
                     let block_id = self.user_block_seq;
                     self.user_block_seq += 1;
                     hydrated.push(StreamEntry::User {
+                        copy: MessageCopy::new(&content),
                         lines: user_message_lines(block_id, &content),
                     });
                 }
@@ -118,6 +119,7 @@ impl ConversationStream {
                     let mut model = StreamModel::default();
                     model.sync(&stream.snapshot(), &self.counters);
                     hydrated.push(StreamEntry::Assistant {
+                        copy: MessageCopy::new(&content),
                         stream: Box::new(stream),
                         model,
                         // The original provider body is intentionally not
@@ -518,6 +520,7 @@ impl ConversationStream {
                 self.active_skills.clear();
                 let entry_index = self.entries.len();
                 self.entries.push(StreamEntry::Assistant {
+                    copy: MessageCopy::default(),
                     stream: Box::new(MarkdownStream::new()),
                     model: StreamModel::default(),
                     failure: None,
@@ -534,10 +537,21 @@ impl ConversationStream {
                 if active_id != &message_id || delta.is_empty() {
                     return;
                 }
+                // Ends the `active_agent_message` borrow so the collapse below
+                // can take `&mut self`.
+                let entry_index = *entry_index;
+                // #151 R151-4: the first nonempty delta of a new text segment
+                // is newer content, so the current activity unit steps down.
+                // Only the segment's first delta pays this scan — never the
+                // per-token path.
+                if !self.active_segment_has_text {
+                    self.collapse_current_activity(cx);
+                }
                 self.active_thinking = None;
-                let entry_index = if *entry_index == usize::MAX {
+                let entry_index = if entry_index == usize::MAX {
                     let index = self.entries.len();
                     self.entries.push(StreamEntry::Assistant {
+                        copy: MessageCopy::default(),
                         stream: Box::new(MarkdownStream::new()),
                         model: StreamModel::default(),
                         failure: None,
@@ -548,12 +562,13 @@ impl ConversationStream {
                     }
                     index
                 } else {
-                    *entry_index
+                    entry_index
                 };
-                if let Some(StreamEntry::Assistant { stream, .. }) =
+                if let Some(StreamEntry::Assistant { stream, copy, .. }) =
                     self.entries.get_mut(entry_index)
                 {
                     stream.append(&delta);
+                    copy.append(&delta);
                     self.active_segment_has_text = true;
                     cx.notify();
                 }
@@ -752,9 +767,41 @@ impl ConversationStream {
         self.active_segment_has_text = false;
     }
 
+    /// #151 R151-2: at most one auto-expanded activity unit exists at a time.
+    /// The newest thinking block / tool row / tool group is the current unit;
+    /// creating a newer one steps this one down. Manual expansion of *older*
+    /// units is deliberately untouched — they are not the newest, so the user
+    /// may keep them open alongside the current one.
+    pub(crate) fn collapse_current_activity(&mut self, cx: &mut Context<Self>) {
+        let Some(index) = self.entries.iter().rposition(|entry| {
+            matches!(
+                entry,
+                StreamEntry::Thinking { .. }
+                    | StreamEntry::Tool { .. }
+                    | StreamEntry::ToolGroup { .. }
+            )
+        }) else {
+            return;
+        };
+        match &self.entries[index] {
+            StreamEntry::Thinking { card } => {
+                card.update(cx, |card, cx| card.set_expanded(false, cx));
+            }
+            StreamEntry::Tool { card } => {
+                card.update(cx, |card, cx| card.set_expanded(false, cx));
+            }
+            StreamEntry::ToolGroup { group } => {
+                group.update(cx, |group, cx| group.set_expanded(false, cx));
+            }
+            _ => return,
+        }
+        self.invalidate_item(Some(index));
+    }
+
     fn append_empty_terminal_segment(&mut self) {
         let index = self.entries.len();
         self.entries.push(StreamEntry::Assistant {
+            copy: MessageCopy::default(),
             stream: Box::new(MarkdownStream::new()),
             model: StreamModel::default(),
             failure: None,
@@ -888,20 +935,35 @@ impl ConversationStream {
         };
         match tail {
             Tail::Single(first) => {
+                // #151 R151-3: the newest unit becomes an expanded group. The
+                // row it replaces was the previous current unit and has just
+                // been superseded, so its own detail steps down into a compact
+                // child row; the group itself is what opens.
+                first.update(cx, |card, cx| card.set_expanded(false, cx));
                 let group = self.new_tool_group(first, card, cx);
+                group.update(cx, |group, cx| group.set_expanded(true, cx));
                 if let Some(entry) = self.entries.last_mut() {
                     *entry = StreamEntry::ToolGroup { group };
                 }
                 self.invalidate_item(Some(index));
             }
             Tail::Group(group) => {
-                group.update(cx, |group, cx| group.append(card, cx));
+                // Appending to the current group keeps it the newest unit, so
+                // it stays (or returns to) expanded; child detail untouched.
+                group.update(cx, |group, cx| {
+                    group.append(card, cx);
+                    group.set_expanded(true, cx);
+                });
                 self.invalidate_item(Some(index));
             }
             Tail::Boundary => {
+                // #151 R151-1/R151-2: a new single-call unit supersedes the
+                // previous current unit and opens itself.
+                self.collapse_current_activity(cx);
                 let previous_len = self.entries.len();
-                self.entries.push(StreamEntry::Tool { card });
+                self.entries.push(StreamEntry::Tool { card: card.clone() });
                 self.list_append(previous_len);
+                card.update(cx, |card, cx| card.set_expanded(true, cx));
             }
         }
     }
