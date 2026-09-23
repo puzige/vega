@@ -209,29 +209,6 @@ fn mutation_recorder() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     (dir, script, argv, input)
 }
 
-fn blocking_mutation() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
-    let dir = tempfile::tempdir().expect("blocking mutation tempdir");
-    let script = dir.path().join("blocking-mutation.sh");
-    let ready = dir.path().join("ready");
-    let release = dir.path().join("release");
-    let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
-    fs::write(
-        &script,
-        production_git_script(format!(
-            "#!/bin/sh\nset -eu\n/usr/bin/git \"$@\"\n: > '{}'\nwhile [ ! -e '{}' ]; do /bin/sleep 0.01; done\n",
-            quote(&ready),
-            quote(&release),
-        )),
-    )
-    .expect("blocking script");
-    let mut permissions = fs::metadata(&script)
-        .expect("blocking metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script, permissions).expect("blocking executable");
-    (dir, script, ready, release)
-}
-
 fn blocking_before_mutation() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().expect("pre-mutation tempdir");
     let script = dir.path().join("pre-mutation.sh");
@@ -425,29 +402,6 @@ exec /usr/bin/git "$@"
     permissions.set_mode(0o755);
     fs::set_permissions(&script, permissions).expect("proof recorder executable");
     (dir, script, log)
-}
-
-fn blocking_summary_reader() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
-    let dir = tempfile::tempdir().expect("summary reader tempdir");
-    let script = dir.path().join("summary-reader.sh");
-    let ready = dir.path().join("summary-drained");
-    let release = dir.path().join("summary-release");
-    let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
-    fs::write(
-        &script,
-        production_git_script(format!(
-            "#!/bin/sh\nset -eu\nis_summary=false\nfor arg in \"$@\"; do [ \"$arg\" = --patch ] && is_summary=true; done\n/usr/bin/git \"$@\"\nstatus=$?\nif [ \"$is_summary\" = true ]; then : > '{}'; while [ ! -e '{}' ]; do /bin/sleep 0.01; done; fi\nexit \"$status\"\n",
-            quote(&ready),
-            quote(&release),
-        )),
-    )
-    .expect("summary reader script");
-    let mut permissions = fs::metadata(&script)
-        .expect("summary reader metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script, permissions).expect("summary reader executable");
-    (dir, script, ready, release)
 }
 
 fn read_invocations(path: &Path) -> Vec<Vec<Vec<u8>>> {

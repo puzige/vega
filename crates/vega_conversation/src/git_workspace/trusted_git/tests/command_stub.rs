@@ -47,6 +47,50 @@ struct StubState {
     /// owning test asserts this is exactly one, so a silently unarmed fault
     /// cannot make the retry assertion pass without exercising the retry.
     faults_served: u32,
+    /// At most one declared completion barrier. When armed, the matching
+    /// command signals that it was reached and then waits for an explicit
+    /// release before the production call continues. This replaces a shell
+    /// `sleep` gate with a deterministic in-process handshake, so a concurrent
+    /// ordinary poll can be ordered between one mutation and its owner capture.
+    gate: Option<Gate>,
+}
+
+/// Which declared command of the in-flight operation the barrier holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum GateTarget {
+    /// The declared external mutation, held *after* its captured post-state is
+    /// applied so a concurrent ordinary poll observes the post state.
+    Mutation,
+    /// The commit-summary `diff --cached --patch` read.
+    Summary,
+}
+
+struct Gate {
+    target: GateTarget,
+    entered: Option<tokio::sync::oneshot::Sender<()>>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+/// Handle to one armed completion barrier.
+pub(super) struct GateHandle {
+    entered: Option<tokio::sync::oneshot::Receiver<()>>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+impl GateHandle {
+    /// Awaits the moment the in-flight operation reaches the declared command.
+    pub(super) async fn wait_entered(&mut self) {
+        let entered = self.entered.take().expect("gate entered receiver");
+        tokio::time::timeout(Duration::from_secs(10), entered)
+            .await
+            .expect("gated command entered the barrier")
+            .expect("gate entered signal");
+    }
+
+    /// Lets the gated operation continue past the barrier.
+    pub(super) fn release(&self) {
+        self.release.send(()).expect("release gated command");
+    }
 }
 
 struct CommandStub {
@@ -99,6 +143,7 @@ impl PolicyFixture {
                 status_fault_pending: false,
                 status_fault_ready: false,
                 faults_served: 0,
+                gate: None,
             }),
         });
         let fixture = Self {
@@ -119,6 +164,17 @@ impl PolicyFixture {
     pub(super) fn set_case(&self, case: &str) {
         let mut state = self.backend.state.lock().expect("stub state");
         let next = self.fixtures[case].clone();
+        Self::apply_files(self.dir.path(), &state.data, &next);
+        state.data = next;
+    }
+
+    /// Replaces the served raw bytes with a *different* captured case from
+    /// `command-fixtures.json`, leaving the service fixture's own recorded state
+    /// behind. Used to drive one authoritative drift that only a re-read of the
+    /// external bytes can observe, without publishing a new workspace generation.
+    pub(super) fn set_captured_case(&self, case: &str) {
+        let next = Self::data(case);
+        let mut state = self.backend.state.lock().expect("stub state");
         Self::apply_files(self.dir.path(), &state.data, &next);
         state.data = next;
     }
@@ -236,6 +292,28 @@ impl PolicyFixture {
             .lock()
             .expect("stub state")
             .fail_owner_capture_after_mutation = true;
+    }
+
+    /// Arms one deterministic completion barrier on a declared command of the
+    /// in-flight operation. The matching command signals that it was reached and
+    /// then waits for an explicit release, so a test can order a concurrent
+    /// ordinary poll between the mutation and its owner capture without a shell
+    /// `sleep` gate. The barrier is consumed once; a later operation is never
+    /// reordered.
+    pub(super) fn arm_gate(&self, target: GateTarget) -> GateHandle {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let mut state = self.backend.state.lock().expect("stub state");
+        assert!(state.gate.is_none(), "gate already armed");
+        state.gate = Some(Gate {
+            target,
+            entered: Some(entered_tx),
+            release: release_rx,
+        });
+        GateHandle {
+            entered: Some(entered_rx),
+            release: release_tx,
+        }
     }
 
     /// Declares the exact captured selected-path attribute response for the
@@ -388,6 +466,18 @@ impl PolicyFixture {
     }
 }
 
+impl CommandStub {
+    /// Signals that a gated command was reached, then blocks the calling
+    /// operation until the test releases it. The stub lock is always dropped by
+    /// the caller first, so a concurrent ordinary poll can still be served.
+    fn serve_gate(gate: Gate) {
+        if let Some(entered) = gate.entered {
+            let _ = entered.send(());
+        }
+        let _ = gate.release.recv_timeout(Duration::from_secs(30));
+    }
+}
+
 impl GitCommandBackend for CommandStub {
     fn execute(
         &self,
@@ -468,6 +558,18 @@ impl GitCommandBackend for CommandStub {
             if state.fail_owner_capture_after_mutation {
                 state.fail_owner_capture_after_mutation = false;
                 state.status_fault_pending = true;
+            }
+            // The mutation barrier holds *after* the captured post-state is
+            // applied, so a concurrent ordinary poll started here observes the
+            // post state instead of the pre state.
+            if state
+                .gate
+                .as_ref()
+                .is_some_and(|gate| gate.target == GateTarget::Mutation)
+            {
+                let gate = state.gate.take().expect("armed mutation gate");
+                drop(state);
+                Self::serve_gate(gate);
             }
             if let Some(code) = expected.result {
                 return Err(error(code));
@@ -712,6 +814,35 @@ impl GitCommandBackend for CommandStub {
             state.unexpected.push(args);
             return Err(error(GitWorkspaceErrorCode::GitFailed));
         };
+        // The summary barrier holds the commit-summary read after its captured
+        // bytes are resolved, so a test can drive an authoritative drift while
+        // the real `capture_summary` re-verification is still in flight.
+        let summary_read = tail
+            == [
+                "-c",
+                "core.quotePath=true",
+                "--no-optional-locks",
+                "diff",
+                "--cached",
+                "--patch",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--full-index",
+                "--",
+            ];
+        if valid_command
+            && summary_read
+            && state
+                .gate
+                .as_ref()
+                .is_some_and(|gate| gate.target == GateTarget::Summary)
+        {
+            let gate = state.gate.take().expect("armed summary gate");
+            drop(state);
+            Self::serve_gate(gate);
+            state = self.state.lock().expect("stub state");
+        }
         if input.is_some() && !tail.contains(&"check-attr") {
             state.unexpected.push(args);
             return Err(error(GitWorkspaceErrorCode::GitFailed));

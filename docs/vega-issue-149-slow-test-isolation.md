@@ -239,6 +239,46 @@ d49140a0…`). No-exec: both migrated tests pass under `deny process-exec`; the
 retained real E2E is denied (exit 101) and passes normally. The now-dead shell
 `fail_first_status_after_trigger` read-fault helper was removed.
 
+## Batch 13 — trusted_git owner/generation completion ordering
+
+The three remaining `trusted_git` owner/generation completion-ordering tests now
+run the real `TrustedGitService` `prepare` protocol and the real
+`GitWorkspaceService::refresh`/`refresh_owned_after_mutation` linearization over
+the finite in-process command boundary (`trusted_git/tests/command_stub.rs`).
+Only the external `git` process is replaced by captured bytes.
+
+The shell `sleep` gates (`blocking_mutation`, `blocking_summary_reader` plus
+`wait_for_path`/`release` markers) and their real repositories are gone. They are
+replaced by one deterministic in-process completion barrier, `arm_gate`:
+`GateTarget::Mutation` holds the declared mutation *after* its captured
+post-state is applied, and `GateTarget::Summary` holds the commit-summary
+`diff --cached --patch` read after its captured bytes are resolved. The gated
+command signals `entered` and then waits for an explicit `release`, so the test
+orders a concurrent ordinary poll (or an authoritative index drift) at exactly
+the intended protocol point with no filesystem polling or timing assumption. The
+barrier is consumed once; a later operation is never reordered.
+
+| Test | Original assertions preserved | Retained real contract |
+|---|---|---|
+| `owned_prepare_accepts_exact_b_published_by_ordinary_poll` | ordinary poll publishes the exact B while the owner is held; `prepared.is_some()`; the completion workspace generation equals the concurrently observed B; a later poll keeps that generation; exactly one `add` with exact argv/stdin | real E2E `e2e_owned_repo_checklist_prepare_mock_draft_commit` |
+| `owned_prepare_rejects_a_to_b_to_a_without_capability` | content driven A -> B -> A while the owner is held; `prepared.is_none()`; `error == ChangedDuringRead`; an authoritative workspace is still carried | same |
+| `summary_authority_change_after_capture_fails_before_provider` | authoritative index drift (a *different* captured state, so the workspace generation is provably untouched) lands during the summary read; `error == ChangedDuringRead`; `prepared.is_none()`; `workspace.is_some()`; zero provider requests | real summary authority `commit_status_drift_real_git_consumes_prepared_and_spawns_zero_commit` |
+
+Same-machine same-scope (nextest, `--test-threads=1`, original sources restored
+for the baseline): `owned_prepare_accepts_exact_b_published_by_ordinary_poll`
+**2.523s → 0.030s**, `owned_prepare_rejects_a_to_b_to_a_without_capability`
+**2.109s → 0.031s**, `summary_authority_change_after_capture_fails_before_provider`
+**1.919s → 0.032s**.
+
+Negative controls exit 100 with byte-identical restore (`mod.rs d49140a0…`,
+`service.rs 60604e02…`, `parsing.rs b0417f1d…`): tightening the exact-B bound to
+`revision_delta == 0` fails the acceptance test; removing the layered ABA guards
+fails the A→B→A test; dropping the post-summary `require_exact_authority` fails
+the summary-drift test. No-exec: all three migrated tests pass under
+`deny process-exec`; the retained real adapter contracts are denied (exit 101)
+and pass normally. The now-dead shell gate helpers (`blocking_mutation`,
+`blocking_summary_reader`, `wait_for_path`) were removed.
+
 ### Outstanding rows
 
 The remaining 127-item optimization is **not** complete. Still outstanding:

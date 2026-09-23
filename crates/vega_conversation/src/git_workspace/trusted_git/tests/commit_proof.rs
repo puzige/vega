@@ -438,37 +438,45 @@ async fn commit_message_byte_bounds_and_exact_stdin_are_enforced() {
 
 #[tokio::test]
 async fn owned_prepare_accepts_exact_b_published_by_ordinary_poll() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
-    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("A refresh");
-    let (_barrier, script, ready, release) = blocking_mutation();
-    let trusted = Arc::new(
-        TrustedGitService::new_with_mutation_for_test(repo.path(), workspace.clone(), script)
-            .expect("trusted"),
+    // Real `prepare` over the finite command boundary: the boundary holds the
+    // declared mutation *after* its captured post-state is applied, so an
+    // ordinary poll can publish the exact B before the owner capture runs. The
+    // real owner must accept that byte-exact B instead of treating it as C.
+    let fixture = command_stub::PolicyFixture::service("add-selected");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "add-staged-after",
     );
+    let (workspace, trusted) = fixture.services().await;
+    let trusted = Arc::new(trusted);
+    let a = workspace
+        .state
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .generation;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
         .expect("checklist");
     let selected = vec![checklist.optional[0].file_id];
-    let worker = {
+    let checklist_id = checklist.id;
+    let mut gate = fixture.arm_gate(command_stub::GateTarget::Mutation);
+    let worker = tokio::spawn({
         let trusted = trusted.clone();
-        tokio::spawn(async move {
+        async move {
             trusted
-                .prepare(checklist.id, selected, CancellationToken::new())
+                .prepare(checklist_id, selected, CancellationToken::new())
                 .await
-        })
-    };
-    wait_for_path(&ready).await;
+        }
+    });
+    gate.wait_entered().await;
     let observed_b = workspace
         .refresh(CancellationToken::new())
         .await
         .expect("ordinary B poll");
-    fs::write(&release, b"release").expect("release");
+    assert_ne!(observed_b.generation, a);
+    gate.release();
     let completion = worker.await.expect("prepare task");
     assert!(completion.prepared.is_some());
     assert_eq!(
@@ -483,51 +491,66 @@ async fn owned_prepare_accepts_exact_b_published_by_ordinary_poll() {
         .await
         .expect("post completion poll");
     assert_eq!(after.generation, observed_b.generation);
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"],
+        )
+    );
+    assert_eq!(fixture.mutation_inputs(), vec![b"tracked.txt\0".to_vec()]);
 }
 
 #[tokio::test]
 async fn owned_prepare_rejects_a_to_b_to_a_without_capability() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
-    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-    let a = workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("A refresh");
-    let (_barrier, script, ready, release) = blocking_mutation();
-    let trusted = Arc::new(
-        TrustedGitService::new_with_mutation_for_test(repo.path(), workspace.clone(), script)
-            .expect("trusted"),
+    // Real `prepare` over the finite command boundary: the same deterministic
+    // barrier, but the content is driven A -> B -> A while the owner is in
+    // flight. Two content revisions must never revive the owner's capability.
+    let fixture = command_stub::PolicyFixture::service("add-selected");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "add-staged-after",
     );
+    let (workspace, trusted) = fixture.services().await;
+    let trusted = Arc::new(trusted);
+    let a = workspace
+        .state
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .generation;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
         .expect("checklist");
     let selected = vec![checklist.optional[0].file_id];
-    let worker = {
+    let checklist_id = checklist.id;
+    let mut gate = fixture.arm_gate(command_stub::GateTarget::Mutation);
+    let worker = tokio::spawn({
         let trusted = trusted.clone();
-        tokio::spawn(async move {
+        async move {
             trusted
-                .prepare(checklist.id, selected, CancellationToken::new())
+                .prepare(checklist_id, selected, CancellationToken::new())
                 .await
-        })
-    };
-    wait_for_path(&ready).await;
+        }
+    });
+    gate.wait_entered().await;
     let b = workspace
         .refresh(CancellationToken::new())
         .await
         .expect("B poll");
-    assert_ne!(b.generation, a.generation);
-    run_git(repo.path(), &["reset", "-q", "HEAD", "--", "tracked.txt"]);
+    assert_ne!(b.generation, a);
+    fixture.set_case("add-selected");
     let aba = workspace
         .refresh(CancellationToken::new())
         .await
         .expect("ABA poll");
     assert_ne!(aba.generation, b.generation);
-    fs::write(&release, b"release").expect("release");
+    gate.release();
     let completion = worker.await.expect("prepare task");
     assert!(completion.prepared.is_none());
     assert_eq!(completion.error, Some(CommitErrorCode::ChangedDuringRead));
+    assert!(completion.workspace.is_some());
 }
 
 #[tokio::test]

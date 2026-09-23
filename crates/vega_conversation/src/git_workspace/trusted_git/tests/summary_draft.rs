@@ -721,45 +721,48 @@ async fn failed_draft_keeps_prepared_authority_usable() {
 
 #[tokio::test]
 async fn summary_authority_change_after_capture_fails_before_provider() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged file");
-    fs::write(repo.path().join("outside.txt"), "base\n").expect("outside file");
-    run_git(repo.path(), &["add", "staged.txt", "outside.txt"]);
-    run_git(repo.path(), &["commit", "-qm", "summary base"]);
-    fs::write(repo.path().join("staged.txt"), "staged changed\n").expect("staged change");
-    run_git(repo.path(), &["add", "staged.txt"]);
-    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("workspace A");
-    let (_gate, read, ready, release) = blocking_summary_reader();
-    let trusted = Arc::new(
-        TrustedGitService::new_with_executables_for_test(
-            repo.path(),
-            workspace,
-            PathBuf::from(GIT),
-            read,
-        )
-        .expect("trusted summary barrier"),
-    );
+    // Real `prepare` over the finite command boundary: the boundary holds the
+    // commit-summary read after its captured bytes are resolved, so the test can
+    // drive an authoritative index drift while the real summary re-verification
+    // is still in flight. The rejection must come from that re-read, not from a
+    // workspace generation bump, and must precede any provider call.
+    let fixture = command_stub::PolicyFixture::service("commit-staged");
+    let (workspace, trusted) = fixture.services().await;
+    let trusted = Arc::new(trusted);
+    let generation_before = workspace
+        .state
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .generation;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
         .expect("checklist");
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![]));
+    let checklist_id = checklist.id;
+    let mut gate = fixture.arm_gate(command_stub::GateTarget::Summary);
     let worker = tokio::spawn({
         let trusted = trusted.clone();
         async move {
             trusted
-                .prepare(checklist.id, Vec::new(), CancellationToken::new())
+                .prepare(checklist_id, Vec::new(), CancellationToken::new())
                 .await
         }
     });
-    wait_for_path(&ready).await;
-    fs::write(repo.path().join("outside.txt"), "outside drift\n").expect("outside drift");
-    run_git(repo.path(), &["add", "outside.txt"]);
-    fs::write(release, b"release").expect("release summary");
+    gate.wait_entered().await;
+    // The index changes without any workspace poll, so the generation the owner
+    // published is untouched and only the summary authority re-read can see it.
+    fixture.set_captured_case("index-drift");
+    assert_eq!(
+        workspace
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .generation,
+        generation_before,
+        "the drift must not be observed through a workspace generation bump"
+    );
+    gate.release();
     let completion = worker.await.expect("prepare worker");
     assert_eq!(completion.error, Some(CommitErrorCode::ChangedDuringRead));
     assert!(completion.prepared.is_none());
