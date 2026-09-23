@@ -82,11 +82,16 @@ pub(crate) fn render_entry(
                 .pt_1()
                 .pb_2()
                 .flex()
-                .items_start()
+                .items_center()
                 .gap_2()
                 .text_size(px(Typography::METADATA))
                 .text_color(colors.text_secondary)
-                .child(icon(glyph, color))
+                .child(
+                    div()
+                        .debug_selector(|| "context-compaction-icon-slot".into())
+                        .flex_shrink_0()
+                        .child(icon(glyph, color)),
+                )
                 .child(
                     div()
                         .debug_selector(move || {
