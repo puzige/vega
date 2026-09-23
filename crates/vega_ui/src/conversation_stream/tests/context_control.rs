@@ -164,13 +164,70 @@ fn status(generation: u64, status: Status) -> ContextCompactionStatusRecord {
 
 #[test]
 fn issue88_internal_stage_limit_and_model_budget_have_distinct_copy() {
-    let mut record = status(1, Status::Failed);
-    record.failure = Some(Failure::TooLarge);
-    assert!(status_label(&record).contains("安全分段上限"));
-    assert!(!status_label(&record).contains("模型容量"));
-    record.failure = Some(Failure::OverLimit);
-    assert!(status_label(&record).contains("本地上下文预算检查未通过"));
-    assert!(!status_label(&record).contains("安全分段上限"));
+    assert!(status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("安全分段上限"));
+    assert!(!status_label_for(Status::Failed, Some(Failure::TooLarge)).contains("模型容量"));
+    assert!(
+        status_label_for(Status::Failed, Some(Failure::OverLimit))
+            .contains("本地上下文预算检查未通过")
+    );
+    assert!(!status_label_for(Status::Failed, Some(Failure::OverLimit)).contains("安全分段上限"));
+}
+
+/// #117 C9: the live row uses the reference product's zh-CN wording, and a
+/// recovered row carries an explicit restore marker instead of the old
+/// "上次" prefix, so reopening a conversation cannot look like a stale
+/// leftover from a previous session.
+#[test]
+fn issue117_compaction_copy_matches_reference_and_marks_restored_rows() {
+    assert_eq!(status_label_for(Status::Compacting, None), "正在压缩上下文");
+    assert_eq!(status_label_for(Status::Succeeded, None), "上下文已压缩");
+    assert!(
+        !status_label_for(Status::Compacting, None).contains('…'),
+        "the in-progress label must not keep the trailing ellipsis"
+    );
+
+    // Failure/cancel keep their existing diagnostic copy.
+    assert_eq!(
+        status_label_for(Status::Cancelled, None),
+        "上下文压缩已取消，原始对话未更改"
+    );
+    assert_eq!(
+        status_label_for(Status::Failed, Some(Failure::InvalidSummary)),
+        "压缩结果无效，请重试"
+    );
+
+    // A recovered row is marked as restored, for success and for failure.
+    assert_eq!(
+        context_compaction_label(Status::Succeeded, None, true),
+        "已恢复 · 上下文已压缩"
+    );
+    assert_eq!(
+        context_compaction_label(Status::Failed, Some(Failure::SourceChanged), true),
+        "已恢复 · 历史已变化，请重试压缩"
+    );
+
+    // A live row has no prefix at all.
+    assert_eq!(
+        context_compaction_label(Status::Succeeded, None, false),
+        "上下文已压缩"
+    );
+
+    // The retired wording must not come back in any rendered row.
+    for restored in [false, true] {
+        for (state, failure) in [
+            (Status::Compacting, None),
+            (Status::Succeeded, None),
+            (Status::Failed, Some(Failure::InvalidSummary)),
+            (Status::Cancelled, None),
+        ] {
+            let label = context_compaction_label(state, failure, restored);
+            assert!(!label.contains("上次"), "restored={restored}: {label}");
+            assert!(
+                !label.contains("上下文压缩完成"),
+                "restored={restored}: {label}"
+            );
+        }
+    }
 }
 
 /// #117 C8: every compaction state renders the same shared `text-select`
