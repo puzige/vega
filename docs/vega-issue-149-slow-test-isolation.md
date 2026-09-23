@@ -83,7 +83,8 @@ adapter contracts:
 - explicit-filter, `.gitattributes` and attrs-drift policy, 3 tests (`e8549b9`)
 - workspace lifecycle generation/race, 3 tests (`1385a63`)
 - branch lease/cleanup race policy, 2 tests (`956f7ea`)
-- branch snapshot-id/generation policy, 4 tests (this batch)
+- branch snapshot-id/generation policy, 4 tests (`668baf0`)
+- branch state-guard policy, 3 tests (this batch)
 
 ## Batch 6 — `vega_runtime` pixel-budget header test
 
@@ -162,11 +163,32 @@ post-switch states. 3 negative controls exit 100 with byte-identical restore
 migrated tests pass under `deny process-exec`; the real adapter is denied
 (exit 101) and passes normally.
 
+## Batch 10 — branch state-guard policy
+
+The three raw-status `git_workspace::branch::tests::state_guards` policy tests now
+run the real `BranchWorkspaceService` over the finite in-process command boundary
+with captured dirty/detached/staged/untracked/unmerged status bytes. The
+operation markers remain real filesystem facts written under the stub's plain
+`metadata` directory, so the production marker traversal is still exercised. The
+symlink and linked-worktree `--git-path` nofollow contract is retained as a real
+Git/filesystem test.
+
+| Test | Original assertions preserved |
+|---|---|
+| `dirty_detached_and_operation_state_fail_closed` | dirty tracked -> `BranchDirty`; detached -> `BranchDetached`; `MERGE_HEAD` -> `BranchOperationInProgress` |
+| `staged_and_untracked_states_are_dirty_and_every_marker_is_rejected` | staged and untracked -> `BranchDirty`; every `OPERATION_MARKERS` entry rejected |
+| `unmerged_index_is_dirty_and_never_enumerated_as_switchable` | unmerged index -> `BranchDirty` |
+
+Same-machine same-scope: three migrated tests **0.011–0.033s** (isolated baseline
+0.435s / 0.830s / 0.341s). 3 negative controls exit 100 with byte-identical
+restore (`parsing_sha256 1bc0b78b…`). No-exec: all three migrated tests pass under
+`deny process-exec`; the real adapter is denied (exit 101) and passes normally.
+
 ### Outstanding rows
 
 The remaining 127-item optimization is **not** complete. Still outstanding:
 `filter_gitlink::real_gitlink_…`, `commit_proof` new-OID/root-inode contracts,
 `codec_topology::sha256_…`, the artifact `preview_open` group, the remaining
-the remaining branch `state_guards`/`switch_e2e` policies, `provider_settings::production_cancel_and_total_deadline`, UI controllers/layout
+the remaining branch `switch_e2e` policies, `provider_settings::production_cancel_and_total_deadline`, UI controllers/layout
 and agent concurrency, `vega_markdown` ten-thousand-line document, and
 `s6_acceptance::agent_diff_artifact_dirty_reject_and_two_stage_commit`.

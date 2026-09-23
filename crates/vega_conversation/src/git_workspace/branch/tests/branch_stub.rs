@@ -193,6 +193,18 @@ impl BranchFixture {
             });
     }
 
+    /// Writes one real operation-marker file under the stub's plain `metadata`
+    /// directory, so the production marker traversal sees a real filesystem fact.
+    pub(super) fn marker(&self, name: &str) -> PathBuf {
+        let path = self.backend.root.join("metadata").join(name);
+        if name.contains('-') || name == "sequencer" {
+            fs::create_dir(&path).expect("marker directory");
+        } else {
+            fs::write(&path, b"marker\n").expect("marker file");
+        }
+        path
+    }
+
     pub(super) fn service(&self) -> BranchWorkspaceService {
         let mut service =
             BranchWorkspaceService::new(&self.backend.root).expect("branch workspace");
