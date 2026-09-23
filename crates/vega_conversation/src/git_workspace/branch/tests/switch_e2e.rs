@@ -1,3 +1,4 @@
+use super::branch_stub::BranchFixture;
 use super::*;
 
 #[tokio::test]
@@ -219,13 +220,8 @@ async fn deleted_and_renamed_away_gitattributes_are_rejected() {
 
 #[tokio::test]
 async fn newer_permit_invalidates_older_and_target_move_fails_before_switch() {
-    let repo = Repo::new();
-    git(repo.path(), &["switch", "-q", "-c", "topic"]);
-    fs::write(repo.path().join("topic.txt"), "topic\n").expect("topic file");
-    git(repo.path(), &["add", "topic.txt"]);
-    git(repo.path(), &["commit", "-q", "-m", "topic"]);
-    git(repo.path(), &["switch", "-q", "main"]);
-    let service = BranchWorkspaceService::new(repo.path()).expect("service");
+    let fixture = BranchFixture::new("main-clean");
+    let service = fixture.service();
     let snapshot = service
         .refresh(CancellationToken::new())
         .await
@@ -247,12 +243,14 @@ async fn newer_permit_invalidates_older_and_target_move_fails_before_switch() {
         BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::StaleGeneration)
     );
     assert!(rejected.snapshot.is_none());
+    fixture.expect_switch(Some("topic-current"));
     let switched = service
         .execute_switch(newer, CancellationToken::new())
         .await;
     assert_eq!(switched.outcome, BranchSwitchOutcome::Switched);
+    assert_eq!(fixture.switch_attempts().len(), 1);
 
-    git(repo.path(), &["switch", "-q", "main"]);
+    fixture.set_case("main-clean");
     let snapshot = service
         .refresh(CancellationToken::new())
         .await
@@ -261,7 +259,9 @@ async fn newer_permit_invalidates_older_and_target_move_fails_before_switch() {
         .prepare_switch(branch_id(&snapshot, "topic"), CancellationToken::new())
         .await
         .expect("permit");
-    git(repo.path(), &["branch", "-f", "topic", "main"]);
+    // The target ref moves onto main's commit after the permit: the mutation
+    // preflight authority differs, so the switch must not run.
+    fixture.set_case("main-topic-forced");
     let raced = service
         .execute_switch(permit, CancellationToken::new())
         .await;
@@ -270,13 +270,14 @@ async fn newer_permit_invalidates_older_and_target_move_fails_before_switch() {
         BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::ChangedDuringRead)
     );
     assert!(raced.snapshot.is_some());
+    assert_eq!(fixture.switch_attempts().len(), 1);
+    fixture.assert_clean();
 }
 
 #[tokio::test]
 async fn dirty_and_operation_races_are_zero_switch_with_owner_cleanup() {
-    let repo = Repo::new();
-    git(repo.path(), &["branch", "topic"]);
-    let service = BranchWorkspaceService::new(repo.path()).expect("service");
+    let fixture = BranchFixture::new("main-clean");
+    let service = fixture.service();
     let snapshot = service
         .refresh(CancellationToken::new())
         .await
@@ -285,7 +286,9 @@ async fn dirty_and_operation_races_are_zero_switch_with_owner_cleanup() {
         .prepare_switch(branch_id(&snapshot, "topic"), CancellationToken::new())
         .await
         .expect("permit");
-    fs::write(repo.path().join("raced.txt"), "dirty\n").expect("dirty race");
+    // The worktree turns dirty after the permit; the pre-mutation capture must
+    // fail closed and no switch may run.
+    fixture.set_case("dirty-untracked");
     let dirty = service
         .execute_switch(permit, CancellationToken::new())
         .await;
@@ -294,12 +297,9 @@ async fn dirty_and_operation_races_are_zero_switch_with_owner_cleanup() {
         BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::BranchDirty)
     );
     assert!(dirty.snapshot.is_none());
-    assert_eq!(
-        git_output(repo.path(), &["branch", "--show-current"]),
-        b"main\n"
-    );
+    assert!(fixture.switch_attempts().is_empty());
 
-    fs::remove_file(repo.path().join("raced.txt")).expect("clean race");
+    fixture.set_case("main-clean");
     let snapshot = service
         .refresh(CancellationToken::new())
         .await
@@ -308,7 +308,8 @@ async fn dirty_and_operation_races_are_zero_switch_with_owner_cleanup() {
         .prepare_switch(branch_id(&snapshot, "topic"), CancellationToken::new())
         .await
         .expect("permit after dirty");
-    fs::write(repo.path().join(".git/MERGE_HEAD"), "marker\n").expect("marker race");
+    // A real operation marker under the captured git dir must also fail closed.
+    fixture.marker("MERGE_HEAD");
     let operation = service
         .execute_switch(permit, CancellationToken::new())
         .await;
@@ -317,8 +318,6 @@ async fn dirty_and_operation_races_are_zero_switch_with_owner_cleanup() {
         BranchSwitchOutcome::Failed(GitWorkspaceErrorCode::BranchOperationInProgress)
     );
     assert!(operation.snapshot.is_none());
-    assert_eq!(
-        git_output(repo.path(), &["branch", "--show-current"]),
-        b"main\n"
-    );
+    assert!(fixture.switch_attempts().is_empty());
+    fixture.assert_clean();
 }

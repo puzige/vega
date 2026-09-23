@@ -84,7 +84,8 @@ adapter contracts:
 - workspace lifecycle generation/race, 3 tests (`1385a63`)
 - branch lease/cleanup race policy, 2 tests (`956f7ea`)
 - branch snapshot-id/generation policy, 4 tests (`668baf0`)
-- branch state-guard policy, 3 tests (this batch)
+- branch state-guard policy, 3 tests (`962567a`)
+- branch switch-race policy, 2 tests (this batch)
 
 ## Batch 6 — `vega_runtime` pixel-budget header test
 
@@ -184,11 +185,32 @@ Same-machine same-scope: three migrated tests **0.011–0.033s** (isolated basel
 restore (`parsing_sha256 1bc0b78b…`). No-exec: all three migrated tests pass under
 `deny process-exec`; the real adapter is denied (exit 101) and passes normally.
 
+## Batch 11 — branch switch-race policy
+
+The two zero-switch `git_workspace::branch::tests::switch_e2e` tests now run the
+real `BranchWorkspaceService` over the finite in-process boundary. The permit
+rotation, the pre-mutation byte-identity fence and the fail-closed dirty/operation
+gates are unchanged; only the external `git` process is replaced by captured
+bytes. `safe_temp_repo_switch_is_exact_and_authoritatively_refreshed`,
+`ignored_collision_…`, `target_gitattributes_…` and `deleted_and_renamed_away_…`
+remain real Git switch contracts.
+
+| Test | Original assertions preserved |
+|---|---|
+| `newer_permit_invalidates_older_and_target_move_fails_before_switch` | older permit rejected `StaleGeneration`; newer permit `Switched` (one attempt); a target ref move after the permit fails `ChangedDuringRead` with a snapshot |
+| `dirty_and_operation_races_are_zero_switch_with_owner_cleanup` | dirty worktree and a real operation marker both fail closed with zero switch attempts |
+
+Same-machine same-scope: two migrated tests **0.038s / 0.039s** (was 1.620s /
+1.100s). 3 negative controls exit 100 with byte-identical restore
+(`branch_sha256 e56e732a…`, `parsing_sha256 1bc0b78b…`). No-exec: both migrated
+tests pass under `deny process-exec`; the real adapter is denied (exit 101) and
+passes normally.
+
 ### Outstanding rows
 
 The remaining 127-item optimization is **not** complete. Still outstanding:
 `filter_gitlink::real_gitlink_…`, `commit_proof` new-OID/root-inode contracts,
 `codec_topology::sha256_…`, the artifact `preview_open` group, the remaining
-the remaining branch `switch_e2e` policies, `provider_settings::production_cancel_and_total_deadline`, UI controllers/layout
+`provider_settings::production_cancel_and_total_deadline`, UI controllers/layout
 and agent concurrency, `vega_markdown` ten-thousand-line document, and
 `s6_acceptance::agent_diff_artifact_dirty_reject_and_two_stage_commit`.

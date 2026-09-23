@@ -197,7 +197,7 @@ real_gitlink（15.025s）真实submodule clone/clean/dirty/union语义、SHA256�
 |20|4.901|`vega::bin/vega::tests::agent::issue67_concurrent_finishes_under_settings_without_route_change`|providercompletion+settings route fence业务，不需真实shell；先隔离无关Git后台刷新。|
 |21|4.889|`vega_conversation::artifact::tests::capture_reconcile::artifact_rename_tracks_raw_path_and_delete_disables_actions`|录制rename/delete投影跑真实卡片归属和禁用逻辑；小真实Git契约校验rename原始路径事实。|
 |22|4.867|`vega_conversation::git_workspace::tests::snapshot::git_workspace_delete_rename_space_and_literal_magic_names`|业务投影用录制raw；原始NUL/空格/pathspec解释留一个实际Gitargv契约。|
-|23|4.681|`vega_conversation::git_workspace::branch::tests::switch_e2e::newer_permit_invalidates_older_and_target_move_fails_before_switch`|fixture refs变化+permit轮换，assert零switch；保留真实ref更新小契约。|
+|23|4.681|`vega_conversation::git_workspace::branch::tests::switch_e2e::newer_permit_invalidates_older_and_target_move_fails_before_switch`|**已迁移(batch11)** fixture refs变化+permit轮换，assert零switch；同范围1.620s→0.039s；真实switch/refs契约在safe_temp_repo_switch及branch_captured_states_match_real_git保留。|
 |24|4.438|`vega_conversation::git_workspace::tests::snapshot::git_workspace_unborn_detached_nonrepo_and_stale_ids_are_typed`|拆4种状态：raw返回/unborn/detached/notrepo错误供业务typed映射，真实探测各状态小契约不重复全service。|
 |25|4.321|`vega_conversation::artifact::tests::capture_reconcile::artifact_provenance_downgrades_once_and_aba_does_not_upgrade`|优先fake A→B→A捕获序列，保留降级一次/不升回断言；真实文件指纹继续读取。|
 |26|3.755|`vega_conversation::git_workspace::tests::lifecycle::git_workspace_latest_refresh_wins_without_stale_overwrite`|**已迁移(batch5)** 以backend channel确定完成顺序替代shellmkdir/sleep gate，保留latest胜出；同范围3.290s→0.032s(3项)，保留真实adapter 0.378s。|
@@ -213,7 +213,7 @@ real_gitlink（15.025s）真实submodule clone/clean/dirty/union语义、SHA256�
 |36|3.355|`vega::bin/vega::window::navigation::tests::navigation_coalesces_attributes_bounds_history_and_rejects_stale_result`|保持coalescing/bounds/history/stale逻辑，backend/workergate替代Git等待；真实attrs读取小对照。|
 |37|3.265|`vega::bin/vega::tests::diff::diff_controller_worker_preserves_unchanged_generation_and_rejects_stale_file`|相同投影/新投影顺序喂真实worker/controller；保持generation及stale文件拒绝，实际diff解析单独真实契约。|
 |38|3.244|`vega_conversation::artifact::tests::capture_reconcile::artifact_strict_success_duplicate_and_non_candidates`|成功/重复/noncandidate全保留真实判定，以相同rawprojection消除重复Git；unexpected mutation拒绝。|
-|39|3.164|`vega_conversation::git_workspace::branch::tests::switch_e2e::dirty_and_operation_races_are_zero_switch_with_owner_cleanup`|真实operation marker文件+rawdirty变化；断言0switch及cleanup，不需真实Git。|
+|39|3.164|`vega_conversation::git_workspace::branch::tests::switch_e2e::dirty_and_operation_races_are_zero_switch_with_owner_cleanup`|**已迁移(batch11)** 真实operation marker文件+rawdirty变化；断言0switch及cleanup；同范围1.100s→0.038s。|
 |40|3.090|`vega_conversation::artifact::tests::capture_reconcile::artifact_rename_old_path_collision_never_binds_replacement`|rawrename+旧路径重建fixture跑所有权拒绝，保留真实pathidentity检查；真实rename事实单独契约。|
 |41|3.026|`vega_conversation::git_workspace::tests::snapshot::git_workspace_identical_refresh_retains_generation_and_opaque_ids`|相同raw响应连续两次，真实service必须保持generation/id；立即适配已有backend。|
 |42|2.865|`vega::bin/vega::tests::r69::r69_a7_project_draft_lists_and_switches_without_materializing`|项目draft/list/switch业务检查不落盘；去除不必要Git准备并记录每个创建入口调用，保留真实store，不mock materialization结果。|
