@@ -43,6 +43,24 @@ pub(crate) fn context_compaction_visual(
     (Icon::TextSelect, color)
 }
 
+/// #117: the compaction row's label. Live rows use the reference product's
+/// zh-CN wording (`正在压缩上下文` / `上下文已压缩`); a row recovered on reopen
+/// carries an explicit `已恢复 · ` marker so it is not mistaken for an
+/// operation that just ran in this session. Failure/cancel keep the existing
+/// diagnostic copy so the original-conversation protection stays readable.
+pub(crate) fn context_compaction_label(
+    status: vega_conversation::types::ContextCompactionStatus,
+    failure: Option<vega_conversation::types::ContextCompactionFailureCode>,
+    restored: bool,
+) -> String {
+    let base = context_control::status_label_for(status, failure);
+    if restored {
+        format!("已恢复 · {base}")
+    } else {
+        base.to_owned()
+    }
+}
+
 /// Renders one visible semantic entry as a single variable-height list item
 /// (S8-T44/C4: 一项=一个 user/assistant/tool/permission/plan/artifact/
 /// summary item 的自然高度). Per-frame: clone-only element assembly from
@@ -61,12 +79,7 @@ pub(crate) fn render_entry(
         } => {
             let (glyph, color) = context_compaction_visual(record.status, &colors);
             let restored = *restored;
-            let label = context_control::status_label(record);
-            let label = if restored {
-                format!("上次{label}")
-            } else {
-                label.to_owned()
-            };
+            let label = context_compaction_label(record.status, record.failure, restored);
             div()
                 .debug_selector(|| "context-compaction-row".into())
                 .w_full()

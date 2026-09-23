@@ -366,14 +366,17 @@ impl ConversationStream {
     }
 }
 
-pub(super) fn status_label(record: &ContextCompactionStatusRecord) -> &'static str {
-    match record.status {
+/// The row label for one status/failure pair, without the restored marker.
+/// Split out from the record so render and tests can exercise the copy without
+/// building a full record.
+pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'static str {
+    match status {
         Status::Unknown => "上下文容量未配置",
         Status::Ready => "上下文已就绪",
-        Status::Compacting => "正在压缩上下文…",
-        Status::Succeeded => "上下文压缩完成",
+        Status::Compacting => "正在压缩上下文",
+        Status::Succeeded => "上下文已压缩",
         Status::Cancelled => "上下文压缩已取消，原始对话未更改",
-        Status::Failed => match record.failure {
+        Status::Failed => match failure {
             Some(Failure::SourceChanged) => "历史已变化，请重试压缩",
             Some(Failure::NoCompactablePrefix) => "暂无可压缩的完整历史",
             Some(Failure::TooLarge) => "历史内容已达到安全分段上限，原始对话已保留；请在新会话继续",

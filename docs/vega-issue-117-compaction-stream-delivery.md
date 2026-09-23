@@ -107,3 +107,48 @@ Verification:
 
 Native pixel acceptance of C8 on a real compaction, plus the C7 Light/Dark and
 narrow-window matrix, remain owner-run; this report does not claim them.
+
+## Follow-up: compaction row copy (C9)
+
+Owner review of the installed build after the icon fix found the wording still
+disagreed with the reference. The rendered row was `上次上下文压缩完成`: the
+`上次` prefix comes from `restored`, which is set only when a conversation is
+reopened and its latest durable status is projected back into a fresh stream —
+so a compaction that had just run in the same conversation reappeared as a
+"last time" leftover. The reference product's own zh-CN bundle
+(`zh-CN-523d79e20e0e.js`) uses `正在压缩上下文` / `上下文已压缩`
+(`contextManuallyCompacting` / `contextManuallyCompacted`).
+
+Owner ruling: change only (1) the restored prefix and (2) the live verb forms.
+The reference's manual/automatic split (`上下文已自动压缩` /
+`正在自动压缩上下文`, and the Work-mode `已优化对话` / `正在优化对话`) was
+**not** adopted: `ContextCompactionStatusRecord` carries no manual/automatic
+source, so that would be new plumbing and is left to a separate card.
+
+Spec was updated first (`docs/vega-issue-117-compaction-stream.md` §2, §5, new
+§7, new C9 row and change log). Implementation:
+
+- `context_control::status_label_for(status, failure)` is the single copy
+  source; the previous record-taking `status_label` wrapper was removed once it
+  had no non-test caller (it would otherwise be dead code under `-D warnings`).
+- `render_rows::context_compaction_label(status, failure, restored)` is the
+  render-side entry point: `已恢复 · ` for a recovered row, otherwise the bare
+  label. The retired `上次` prefix and `上下文压缩完成` no longer appear in any
+  row.
+
+Verification:
+
+| Check | Command | Result |
+|---|---|---|
+| Old copy is detectable | `cargo test -p vega_ui --lib issue117_compaction_copy_matches_reference_and_marks_restored_rows` with the `上次` prefix restored | RED, exit 101: left `"上次上下文已压缩"` ≠ right `"已恢复 · 上下文已压缩"` |
+| C9 regression | same test on the fix | PASS, exit 0 |
+| All #117 stream tests | `cargo test -p vega_ui --lib issue117` | PASS, 5 tests, exit 0 |
+| Broader stream regression | `cargo test -p vega_ui --lib conversation_stream` | PASS, 272 tests, exit 0 |
+| Controller regression | `cargo test -p vega context_compaction` | PASS, 15 tests, exit 0 |
+| Formatting | `cargo fmt --all -- --check` | PASS, empty output |
+| Strict lint | `cargo clippy --workspace --all-targets -- -D warnings` | PASS, exit 0 |
+
+The C9 assertion also fails if `上下文压缩完成` or `上次` returns in any
+rendered row (live or restored, all four states), so the retired wording cannot
+silently come back. Native pixel acceptance of C9, plus the C7 Light/Dark and
+narrow-window matrix, remain owner-run; this report does not claim them.
