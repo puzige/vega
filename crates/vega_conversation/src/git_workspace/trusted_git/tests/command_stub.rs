@@ -31,6 +31,22 @@ struct StubState {
     mutations: Vec<(Vec<OsString>, Vec<u8>)>,
     selected_attrs_expected: std::collections::VecDeque<(String, String)>,
     proof_plan: Option<String>,
+    /// Armed by the test: the next declared mutation that is served converts
+    /// this into `status_fault_pending`, so no capture before the mutation can
+    /// consume the fault.
+    fail_owner_capture_after_mutation: bool,
+    /// Set when the declared mutation is served: the next `build_snapshot`
+    /// capture must report one transient process failure.
+    status_fault_pending: bool,
+    /// Latched by the filter-identity read that begins a `build_snapshot`
+    /// capture while `status_fault_pending` is set, then consumed by that same
+    /// capture's first `status` read. The fault therefore lands exactly on the
+    /// owner's first post-mutation authoritative capture and nowhere else.
+    status_fault_ready: bool,
+    /// How many transient status faults the boundary actually reported. The
+    /// owning test asserts this is exactly one, so a silently unarmed fault
+    /// cannot make the retry assertion pass without exercising the retry.
+    faults_served: u32,
 }
 
 struct CommandStub {
@@ -79,6 +95,10 @@ impl PolicyFixture {
                 mutations: Vec::new(),
                 selected_attrs_expected: std::collections::VecDeque::new(),
                 proof_plan: None,
+                fail_owner_capture_after_mutation: false,
+                status_fault_pending: false,
+                status_fault_ready: false,
+                faults_served: 0,
             }),
         });
         let fixture = Self {
@@ -205,6 +225,19 @@ impl PolicyFixture {
             .push_back((key, response.to_owned()));
     }
 
+    /// Models exactly one transient process failure on the owner's first
+    /// post-mutation authoritative capture: serving the next declared mutation
+    /// arms the fault, the capture-opening filter-identity read latches it, and
+    /// that capture's first `status` read reports `GitFailed` once. No other
+    /// response changes, so the real owner-refresh retry runs.
+    pub(super) fn fail_status_after_next_mutation(&self) {
+        self.backend
+            .state
+            .lock()
+            .expect("stub state")
+            .fail_owner_capture_after_mutation = true;
+    }
+
     /// Declares the exact captured selected-path attribute response for the
     /// fixture's own recorded path input.
     pub(super) fn expect_fixture_selected_attrs(&self, response: &str) {
@@ -239,6 +272,27 @@ impl PolicyFixture {
             .contains(&plan)
         );
         self.backend.state.lock().expect("stub state").proof_plan = Some(plan.into());
+    }
+
+    /// The current captured raw value for one command-fixture key (for example
+    /// `head`), so a test can compare the pre/post-mutation captured identity
+    /// without asserting a fabricated result.
+    pub(super) fn raw(&self, key: &str) -> String {
+        self.backend
+            .state
+            .lock()
+            .expect("stub state")
+            .data
+            .raw
+            .get(key)
+            .unwrap_or_else(|| panic!("fixture raw key {key}"))
+            .clone()
+    }
+
+    /// Number of transient status faults the boundary reported. Used to prove
+    /// the owner-refresh retry path was actually exercised exactly once.
+    pub(super) fn faults_served(&self) -> u32 {
+        self.backend.state.lock().expect("stub state").faults_served
     }
 
     pub(super) fn mutation_argv(&self) -> Vec<u8> {
@@ -351,6 +405,41 @@ impl GitCommandBackend for CommandStub {
             && command.get_current_dir() == Some(self.root.as_path())
             && args.starts_with(&prefix)
             && strings.len() == args.len();
+        // The owner-refresh fault is structural, never an nth-read counter: the
+        // filter-identity read that opens a `build_snapshot` capture latches it,
+        // and only that capture's first `status` read fails once. An ordinary
+        // `capture_head`/authority read does not read filter identity, so the
+        // fault cannot be consumed by an earlier proof read.
+        let opens_snapshot_capture = valid_command
+            && tail
+                == [
+                    "--no-optional-locks",
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--deduplicate",
+                ];
+        if opens_snapshot_capture && state.status_fault_pending {
+            state.status_fault_pending = false;
+            state.status_fault_ready = true;
+        }
+        if valid_command
+            && state.status_fault_ready
+            && tail
+                == [
+                    "--no-optional-locks",
+                    "status",
+                    "--porcelain=v2",
+                    "-z",
+                    "--branch",
+                    "--renames",
+                    "--untracked-files=all",
+                ]
+        {
+            state.status_fault_ready = false;
+            state.faults_served = state.faults_served.saturating_add(1);
+            return Err(error(GitWorkspaceErrorCode::GitFailed));
+        }
         if valid_command
             && state
                 .mutations_expected
@@ -372,6 +461,13 @@ impl GitCommandBackend for CommandStub {
             if let Some(post) = expected.post {
                 PolicyFixture::apply_files(&self.root, &state.data, &post);
                 state.data = post;
+            }
+            // Serving the declared mutation arms the one-shot capture fault;
+            // the capture boundary then latches it, so it cannot fire on any
+            // capture that ran before this mutation.
+            if state.fail_owner_capture_after_mutation {
+                state.fail_owner_capture_after_mutation = false;
+                state.status_fault_pending = true;
             }
             if let Some(code) = expected.result {
                 return Err(error(code));

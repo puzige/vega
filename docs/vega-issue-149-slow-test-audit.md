@@ -104,14 +104,14 @@ real_gitlink（15.025s）真实submodule clone/clean/dirty/union语义、SHA256�
 | `commit_proof.rs:167` `commit_proof_rejects_ref_moved_after_one_commit` | 8.046 | B | 已有shell注入proof raw故障；一次mutation后切换有限读取结果，真实prove_commit判定 |
 | `runner_mutation.rs:606` `service_add_process_failure_inherited_pipe` | 7.631 | B | 服务层error→权威终态/zero-one attempt/消费规则；脚本故障可变为有限backend结果，OS错误产生留runner集成 |
 | `commit_proof.rs:135` `commit_proof_rejects_tree_diff_after_one_commit` | 7.552 | B | 已有shell注入proof raw故障；一次mutation后切换有限读取结果，真实prove_commit判定 |
-| `selection_topology.rs:136` `owner_refresh_commit_first_capture_failure_recovers_new_head_once` | 7.336 | B | 有限mutation→首次read错误→恢复事件，验证相同owner/generation；保留真实恢复代表 |
+| `selection_topology.rs:136` `owner_refresh_commit_first_capture_failure_recovers_new_head_once` | 7.336 | B | **已迁移(batch12)** 真实prepare/commit协议+真实owner-refresh重试跑在有限命令边界；结构化捕获边界故障(服务mutation→ls-files filter-identity latch→该捕获首个status)一次，断言faults_served==1；保留真实E2E e2e_owned_repo_checklist_prepare_mock_draft_commit；同范围3.065s→0.040s。 |
 | `summary_draft.rs:664` `failed_draft_keeps_prepared_authority_usable` | 7.309 | A | 复用staged原始读取fixture与MockProvider，保留真实prepare/draft/opaque ID |
 | `runner_mutation.rs:636` `service_add_pre_mutation_nonzero_before` | 7.182 | B | 服务层error→权威终态/zero-one attempt/消费规则；脚本故障可变为有限backend结果，OS错误产生留runner集成 |
 | `commit_proof.rs:141` `commit_proof_rejects_malformed_parent_after_one_commit` | 6.991 | B | 已有shell注入proof raw故障；一次mutation后切换有限读取结果，真实prove_commit判定 |
 | `commit_proof.rs:162` `commit_proof_rejects_object_missing_after_one_commit` | 6.844 | M | 业务GitFailed映射可进入proof stub组，但保留一例真实对象暂移/恢复及读取失败集成 |
 | `commit_proof.rs:173` `commit_proof_rejects_ref_deleted_after_one_commit` | 6.822 | B | 已有shell注入proof raw故障；一次mutation后切换有限读取结果，真实prove_commit判定 |
 | `runner_mutation.rs:611` `service_commit_process_failure_inherited_pipe` | 6.813 | B | 服务层error→权威终态/zero-one attempt/消费规则；脚本故障可变为有限backend结果，OS错误产生留runner集成 |
-| `selection_topology.rs:103` `owner_refresh_prepare_first_capture_failure_retries_exact_owner` | 6.803 | B | 有限mutation→首次read错误→恢复事件，验证相同owner/generation；保留真实恢复代表 |
+| `selection_topology.rs:103` `owner_refresh_prepare_first_capture_failure_retries_exact_owner` | 6.803 | B | **已迁移(batch12)** 同上；真实prepared能力+精确add argv/stdin+权威终态generation推进；同范围2.394s→0.041s；负控制3项exit100字节还原；no-exec迁移通过/真实E2E被拒101。 |
 | `commit_proof.rs:179` `commit_proof_rejects_ref_renamed_after_one_commit` | 6.789 | B | 已有shell注入proof raw故障；一次mutation后切换有限读取结果，真实prove_commit判定 |
 | `runner_mutation.rs:4` `trusted_git_mutations_use_exact_argv_and_in_memory_stdin` | 6.768 | R | 真实argv/stdin、输出限制、信号/排空/进程回收适配契约 |
 | `commit_proof.rs:370` `owned_prepare_accepts_exact_b_published_by_ordinary_poll` | 6.695 | B | owner/generation ABA业务并发；channel+固定A/B snapshots，不模拟Git reset |

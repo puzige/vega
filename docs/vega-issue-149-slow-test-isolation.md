@@ -85,7 +85,8 @@ adapter contracts:
 - branch lease/cleanup race policy, 2 tests (`956f7ea`)
 - branch snapshot-id/generation policy, 4 tests (`668baf0`)
 - branch state-guard policy, 3 tests (`962567a`)
-- branch switch-race policy, 2 tests (this batch)
+- branch switch-race policy, 2 tests (`4b017d4`)
+- trusted_git owner-refresh first-capture retry, 2 tests (this batch)
 
 ## Batch 6 — `vega_runtime` pixel-budget header test
 
@@ -205,6 +206,38 @@ Same-machine same-scope: two migrated tests **0.038s / 0.039s** (was 1.620s /
 (`branch_sha256 e56e732a…`, `parsing_sha256 1bc0b78b…`). No-exec: both migrated
 tests pass under `deny process-exec`; the real adapter is denied (exit 101) and
 passes normally.
+
+## Batch 12 — trusted_git owner-refresh first-capture retry
+
+The two `git_workspace::trusted_git::tests::selection_topology` owner-recovery
+retry tests now run the real `TrustedGitService` `prepare`/`commit` protocol and
+the real `GitWorkspaceService::refresh_owned_after_mutation` retry loop over the
+finite in-process command boundary (`trusted_git/tests/command_stub.rs`). Only
+the external `git` process is replaced by captured bytes; the real owner/generation
+linearization, the `ChangedDuringRead`/`StaleGeneration` short-circuits and the
+authoritative terminal publication are unchanged. The real `capture_head` proof
+and the real `commit` mutation argv/stdin remain asserted.
+
+The transient fault is modelled **structurally**, never by an nth-read counter:
+the test arms one fault, serving the declared mutation converts it to
+`status_fault_pending`, the capture-opening `ls-files -z --cached --deduplicate`
+read of `build_snapshot` latches it, and that capture's first `status` read
+reports `GitFailed` once. Because the ordinary `capture_head`/authority reads do
+not read filter identity, the fault cannot be consumed by an earlier proof read.
+Each test asserts `faults_served == 1`, so a silently unarmed fault cannot let the
+retry assertion pass without exercising the retry.
+
+| Test | Original assertions preserved | Retained real contract |
+|---|---|---|
+| `owner_refresh_prepare_first_capture_failure_retries_exact_owner` | one transient capture failure; `error.is_none()`; authoritative terminal workspace; terminal generation advanced past the checklist generation; a real prepared capability; exactly one `add` mutation with exact argv/stdin | real E2E `e2e_owned_repo_checklist_prepare_mock_draft_commit` |
+| `owner_refresh_commit_first_capture_failure_recovers_new_head_once` | one transient post-commit capture failure; `Committed` with a terminal workspace; captured head changed; exactly one `commit` mutation with exact argv/stdin | same |
+
+Same-machine same-scope: two migrated tests **0.041s / 0.040s** (was 2.394s /
+3.065s first run and 2.709s / 3.020s second run). 3 negative controls exit 100
+with byte-identical restore (`service_sha256 60604e02…`, `workspace_sha256
+d49140a0…`). No-exec: both migrated tests pass under `deny process-exec`; the
+retained real E2E is denied (exit 101) and passes normally. The now-dead shell
+`fail_first_status_after_trigger` read-fault helper was removed.
 
 ### Outstanding rows
 

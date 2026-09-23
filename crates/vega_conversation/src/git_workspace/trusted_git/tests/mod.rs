@@ -252,29 +252,6 @@ fn blocking_before_mutation() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) 
     (dir, script, ready, release)
 }
 
-fn fail_first_status_after_trigger(trigger: &Path) -> (tempfile::TempDir, PathBuf, PathBuf) {
-    let dir = tempfile::tempdir().expect("read fault tempdir");
-    let script = dir.path().join("read-fault.sh");
-    let failed = dir.path().join("failed-once");
-    let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
-    fs::write(
-        &script,
-        production_git_script(format!(
-            "#!/bin/sh\nset -eu\nis_status=0\nfor arg in \"$@\"; do [ \"$arg\" = status ] && is_status=1 || true; done\nif [ \"$is_status\" = 1 ] && [ -e '{}' ] && [ ! -e '{}' ]; then : > '{}'; exit 7; fi\nexec /usr/bin/git \"$@\"\n",
-            quote(trigger),
-            quote(&failed),
-            quote(&failed),
-        )),
-    )
-    .expect("read fault script");
-    let mut permissions = fs::metadata(&script)
-        .expect("read fault metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script, permissions).expect("read fault executable");
-    (dir, script, failed)
-}
-
 fn scripted_mutation(body: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().expect("scripted mutation tempdir");
     let script = dir.path().join("mutation.sh");
