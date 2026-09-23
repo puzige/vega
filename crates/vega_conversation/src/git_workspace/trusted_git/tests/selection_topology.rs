@@ -101,19 +101,17 @@ async fn e2e_owned_repo_checklist_prepare_mock_draft_commit() {
 
 #[tokio::test]
 async fn owner_refresh_prepare_first_capture_failure_retries_exact_owner() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
-    let (_mutation_dir, mutation, mutation_argv, _input) = mutation_recorder();
-    let (_read_dir, read, failed) = fail_first_status_after_trigger(&mutation_argv);
-    let workspace =
-        Arc::new(GitWorkspaceService::new_for_test(repo.path(), read).expect("fault workspace"));
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("A refresh");
-    let trusted =
-        TrustedGitService::new_with_mutation_for_test(repo.path(), workspace.clone(), mutation)
-            .expect("trusted");
+    // Real `prepare` over the finite command boundary: the boundary reports one
+    // transient failure on the owner's first post-mutation status read, and the
+    // real owner-refresh retry must recover the same owner/generation.
+    let fixture = command_stub::PolicyFixture::service("add-selected");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "add-staged-after",
+    );
+    fixture.fail_status_after_next_mutation();
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
@@ -125,42 +123,49 @@ async fn owner_refresh_prepare_first_capture_failure_retries_exact_owner() {
             CancellationToken::new(),
         )
         .await;
-    assert!(failed.exists(), "first owner status was faulted");
     assert!(completion.error.is_none());
     let terminal = completion.workspace.expect("authoritative B");
     assert!(terminal.generation > checklist.workspace_generation);
     assert!(completion.prepared.is_some());
+    assert_terminal_workspace(&trusted, &terminal);
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"],
+        )
+    );
+    assert_eq!(fixture.mutation_inputs(), vec![b"tracked.txt\0".to_vec()]);
+    assert_eq!(
+        fixture.faults_served(),
+        1,
+        "the owner's first post-mutation capture must have been faulted once"
+    );
 }
 
 #[tokio::test]
 async fn owner_refresh_commit_first_capture_failure_recovers_new_head_once() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("tracked.txt"), "selected\n").expect("modify");
-    let (_mutation_dir, mutation, mutation_argv, _input) = mutation_recorder();
-    let (_read_dir, read, failed) = fail_first_status_after_trigger(&mutation_argv);
-    let workspace =
-        Arc::new(GitWorkspaceService::new_for_test(repo.path(), read).expect("fault workspace"));
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("A refresh");
-    let trusted = TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, mutation)
-        .expect("trusted");
+    // Real `commit` over the finite command boundary: one transient failure on
+    // the owner's first post-commit status read must not lose the commit; the
+    // real retry recovers the new head once.
+    let fixture = command_stub::PolicyFixture::service("commit-staged");
+    fixture.expect_mutation(
+        "commit",
+        &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        "commit-after",
+    );
+    fixture.fail_status_after_next_mutation();
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
         .expect("checklist");
     let prepared = trusted
-        .prepare(
-            checklist.id,
-            vec![checklist.optional[0].file_id],
-            CancellationToken::new(),
-        )
+        .prepare(checklist.id, Vec::new(), CancellationToken::new())
         .await
         .prepared
         .expect("prepared");
-    fs::remove_file(&mutation_argv).expect("re-arm commit trigger");
-    let before = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
+    let before = fixture.raw("head").to_owned();
     let completion = trusted
         .commit(
             prepared.id,
@@ -168,17 +173,35 @@ async fn owner_refresh_commit_first_capture_failure_recovers_new_head_once() {
             CancellationToken::new(),
         )
         .await;
-    assert!(failed.exists(), "first post-commit status was faulted");
     assert_eq!(completion.outcome, CommitOutcome::Committed);
-    assert!(completion.workspace.is_some());
-    let after = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
+    let terminal = completion.workspace.expect("authoritative head");
+    assert_terminal_workspace(&trusted, &terminal);
+    let after = fixture.raw("head").to_owned();
     assert_ne!(before, after);
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"commit",
+            &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"],
+        )
+    );
+    assert_eq!(
+        fixture.mutation_inputs(),
+        vec![b"test: owner retry".to_vec()]
+    );
+    assert_eq!(
+        fixture.faults_served(),
+        1,
+        "the owner's first post-commit capture must have been faulted once"
+    );
 }
 
 #[tokio::test]
 async fn disconnected_recovery_consumes_zombie_owner_before_future_checklist() {
-    let repo = Repo::new();
-    let (workspace, trusted) = repo.services().await;
+    // Real refresh over captured raw bytes then a real owner/generation
+    // recovery; no Git process or repository is needed for this business rule.
+    let fixture = command_stub::PolicyFixture::new("staged");
+    let (workspace, trusted) = fixture.services().await;
     let parent = workspace
         .state
         .lock()
@@ -192,7 +215,10 @@ async fn disconnected_recovery_consumes_zombie_owner_before_future_checklist() {
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
         .mutation_active = true;
-    fs::write(repo.path().join("tracked.txt"), "terminal state\n").expect("mutate");
+    // The terminal mutation changed the worktree; the real owner refresh must
+    // observe a new authoritative snapshot (a real content generation), not
+    // merely re-read the pre-mutation raw bytes.
+    fixture.set_case("modify");
     let recovered = trusted
         .recover_disconnected_mutation()
         .await

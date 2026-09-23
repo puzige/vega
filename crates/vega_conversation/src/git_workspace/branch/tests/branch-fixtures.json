@@ -1,0 +1,252 @@
+{
+  "main-clean": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "A\u0000topic.txt\u0000",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "files": {
+      "README.md": "main\n"
+    },
+    "executable_files": []
+  },
+  "topic-current": {
+    "raw": {
+      "status": "# branch.oid bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000# branch.head topic\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000topic.txt\u0000",
+      "attrs": "",
+      "acmrt": "A\u0000topic.txt\u0000",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "files": {
+      "README.md": "main\n",
+      "topic.txt": "topic\n"
+    },
+    "executable_files": []
+  },
+  "main-aliases": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/alias-a\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/alias-b\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "A\u0000topic.txt\u0000",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "files": {
+      "README.md": "main\n"
+    },
+    "executable_files": []
+  },
+  "main-another": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/another\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "A\u0000topic.txt\u0000",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "files": {
+      "README.md": "main\n"
+    },
+    "executable_files": []
+  },
+  "main-temporary": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/temporary\u0000\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "A\u0000topic.txt\u0000",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "files": {
+      "README.md": "main\n"
+    },
+    "executable_files": []
+  },
+  "main-topic-forced": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "README.md": "main\n"
+    },
+    "executable_files": []
+  },
+  "topic-forced-current": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head topic\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "README.md": "main\n"
+    },
+    "executable_files": []
+  },
+  "main-aliases-only": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/alias-a\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/alias-b\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "README.md": "main\n"
+    },
+    "executable_files": []
+  },
+  "dirty-tracked": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u00001 .M N... 100644 100644 100644 ba2906d0666cf726c7eaadd2cd3db615dedfdf3a ba2906d0666cf726c7eaadd2cd3db615dedfdf3a README.md\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "README.md": "dirty\n"
+    },
+    "executable_files": []
+  },
+  "detached": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head (detached)\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "README.md": "main\n"
+    },
+    "executable_files": []
+  },
+  "dirty-staged": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u00001 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 19d9cc8584ac2c7dcf57d2680375e80f099dc481 staged.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000staged.txt\u0000",
+      "attrs": "",
+      "acmrt": "",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "README.md": "main\n",
+      "staged.txt": "staged\n"
+    },
+    "executable_files": []
+  },
+  "dirty-untracked": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u0000? untracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "untracked.txt": "untracked\n",
+      "README.md": "main\n"
+    },
+    "executable_files": []
+  },
+  "unmerged": {
+    "raw": {
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head main\u0000u UU N... 100644 100644 100644 100644 ba2906d0666cf726c7eaadd2cd3db615dedfdf3a 3523be07d452e676a1b4c655073355be8213a317 2299c37978265a95cbe835a4b0f0bbf15aad5549 README.md\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/main\u0000\n24d5c1d10e88fcc5d4b175add45f105ee6cf115b\u0000refs/heads/side\u0000\nff79618dcaa1fb09a9f2d898ae62511a71c7ac4d\u0000refs/heads/topic\u0000\n",
+      "paths": "README.md\u0000",
+      "attrs": "",
+      "acmrt": "",
+      "deletes": "",
+      "selected_attrs": "",
+      "main": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "topic": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "diff_current": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_target": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "files": {
+      "README.md": "<<<<<<< HEAD\nmain changed\n=======\nside\n>>>>>>> side\n"
+    },
+    "executable_files": []
+  }
+}

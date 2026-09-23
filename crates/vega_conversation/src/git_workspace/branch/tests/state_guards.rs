@@ -1,10 +1,17 @@
+use super::branch_stub::BranchFixture;
 use super::*;
+
+// The dirty/detached/operation and marker policies run the real
+// `BranchWorkspaceService` over the finite in-process command boundary; the raw
+// status bytes are captured real Git output. The operation markers themselves
+// stay real filesystem facts under the stub's plain `metadata` directory. The
+// symlink and linked-worktree `--git-path` nofollow contract is retained as a
+// real Git/filesystem test below.
 
 #[tokio::test]
 async fn dirty_detached_and_operation_state_fail_closed() {
-    let repo = Repo::new();
-    let service = BranchWorkspaceService::new(repo.path()).expect("service");
-    fs::write(repo.path().join("README.md"), "dirty\n").expect("dirty");
+    let fixture = BranchFixture::new("dirty-tracked");
+    let service = fixture.service();
     assert_eq!(
         service
             .refresh(CancellationToken::new())
@@ -13,8 +20,7 @@ async fn dirty_detached_and_operation_state_fail_closed() {
             .code(),
         GitWorkspaceErrorCode::BranchDirty
     );
-    git(repo.path(), &["restore", "README.md"]);
-    git(repo.path(), &["checkout", "--detach", "-q"]);
+    fixture.set_case("detached");
     assert_eq!(
         service
             .refresh(CancellationToken::new())
@@ -23,8 +29,8 @@ async fn dirty_detached_and_operation_state_fail_closed() {
             .code(),
         GitWorkspaceErrorCode::BranchDetached
     );
-    git(repo.path(), &["switch", "main", "-q"]);
-    fs::write(repo.path().join(".git/MERGE_HEAD"), "fixture").expect("marker");
+    fixture.set_case("main-clean");
+    let marker = fixture.marker("MERGE_HEAD");
     assert_eq!(
         service
             .refresh(CancellationToken::new())
@@ -33,14 +39,14 @@ async fn dirty_detached_and_operation_state_fail_closed() {
             .code(),
         GitWorkspaceErrorCode::BranchOperationInProgress
     );
+    fs::remove_file(&marker).expect("remove marker");
+    fixture.assert_clean();
 }
 
 #[tokio::test]
 async fn staged_and_untracked_states_are_dirty_and_every_marker_is_rejected() {
-    let repo = Repo::new();
-    let service = BranchWorkspaceService::new(repo.path()).expect("service");
-    fs::write(repo.path().join("staged.txt"), "staged\n").expect("staged");
-    git(repo.path(), &["add", "staged.txt"]);
+    let fixture = BranchFixture::new("dirty-staged");
+    let service = fixture.service();
     assert_eq!(
         service
             .refresh(CancellationToken::new())
@@ -49,9 +55,7 @@ async fn staged_and_untracked_states_are_dirty_and_every_marker_is_rejected() {
             .code(),
         GitWorkspaceErrorCode::BranchDirty
     );
-    git(repo.path(), &["reset", "-q", "--", "staged.txt"]);
-    fs::remove_file(repo.path().join("staged.txt")).expect("remove staged");
-    fs::write(repo.path().join("untracked.txt"), "untracked\n").expect("untracked");
+    fixture.set_case("dirty-untracked");
     assert_eq!(
         service
             .refresh(CancellationToken::new())
@@ -60,14 +64,9 @@ async fn staged_and_untracked_states_are_dirty_and_every_marker_is_rejected() {
             .code(),
         GitWorkspaceErrorCode::BranchDirty
     );
-    fs::remove_file(repo.path().join("untracked.txt")).expect("remove untracked");
+    fixture.set_case("main-clean");
     for marker in OPERATION_MARKERS {
-        let path = repo.path().join(".git").join(marker);
-        if marker.contains('-') || *marker == "sequencer" {
-            fs::create_dir(&path).expect("marker directory");
-        } else {
-            fs::write(&path, "marker\n").expect("marker file");
-        }
+        let path = fixture.marker(marker);
         assert_eq!(
             service
                 .refresh(CancellationToken::new())
@@ -83,28 +82,13 @@ async fn staged_and_untracked_states_are_dirty_and_every_marker_is_rejected() {
             fs::remove_file(&path).expect("remove marker file");
         }
     }
+    fixture.assert_clean();
 }
 
 #[tokio::test]
 async fn unmerged_index_is_dirty_and_never_enumerated_as_switchable() {
-    let repo = Repo::new();
-    git(repo.path(), &["switch", "-q", "-c", "side"]);
-    fs::write(repo.path().join("README.md"), "side\n").expect("side");
-    git(repo.path(), &["add", "README.md"]);
-    git(repo.path(), &["commit", "-q", "-m", "side"]);
-    git(repo.path(), &["switch", "-q", "main"]);
-    fs::write(repo.path().join("README.md"), "main changed\n").expect("main");
-    git(repo.path(), &["add", "README.md"]);
-    git(repo.path(), &["commit", "-q", "-m", "main"]);
-    let mut merge = Command::new(GIT);
-    merge.current_dir(repo.path()).args(["merge", "side"]);
-    scrub_git_environment(&mut merge);
-    merge
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null");
-    assert!(!merge.status().expect("conflicting merge").success());
-    fs::remove_file(repo.path().join(".git/MERGE_HEAD")).expect("remove operation marker");
-    let service = BranchWorkspaceService::new(repo.path()).expect("service");
+    let fixture = BranchFixture::new("unmerged");
+    let service = fixture.service();
     assert_eq!(
         service
             .refresh(CancellationToken::new())
@@ -113,6 +97,7 @@ async fn unmerged_index_is_dirty_and_never_enumerated_as_switchable() {
             .code(),
         GitWorkspaceErrorCode::BranchDirty
     );
+    fixture.assert_clean();
 }
 
 #[tokio::test]

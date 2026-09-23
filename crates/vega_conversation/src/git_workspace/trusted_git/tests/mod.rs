@@ -28,7 +28,10 @@ struct Repo {
 impl Repo {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("temp repo");
-        run_git(dir.path(), &["init", "-q"]);
+        // Pin the initial branch: the captured fixtures and this module's
+        // `test_head`/`status_prefix` encode `master`, so the real adapter
+        // contract must not inherit a host-dependent `init.defaultBranch`.
+        run_git(dir.path(), &["init", "-q", "--initial-branch=master"]);
         run_git(dir.path(), &["config", "user.name", "Vega Test"]);
         run_git(
             dir.path(),
@@ -42,7 +45,8 @@ impl Repo {
 
     fn unborn() -> Self {
         let dir = tempfile::tempdir().expect("temp unborn repo");
-        run_git(dir.path(), &["init", "-q"]);
+        // See `new`: pin the branch so captured `master` fixtures stay exact.
+        run_git(dir.path(), &["init", "-q", "--initial-branch=master"]);
         run_git(dir.path(), &["config", "user.name", "Vega Test"]);
         run_git(
             dir.path(),
@@ -54,8 +58,12 @@ impl Repo {
     fn try_sha256() -> Result<Self, String> {
         let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
         let mut init = Command::new(GIT);
-        init.current_dir(dir.path())
-            .args(["init", "--object-format=sha256", "-q"]);
+        init.current_dir(dir.path()).args([
+            "init",
+            "--object-format=sha256",
+            "-q",
+            "--initial-branch=master",
+        ]);
         scrub_git_environment(&mut init);
         let output = init.output().map_err(|error| error.to_string())?;
         if !output.status.success() {
@@ -252,29 +260,6 @@ fn blocking_before_mutation() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) 
     (dir, script, ready, release)
 }
 
-fn fail_first_status_after_trigger(trigger: &Path) -> (tempfile::TempDir, PathBuf, PathBuf) {
-    let dir = tempfile::tempdir().expect("read fault tempdir");
-    let script = dir.path().join("read-fault.sh");
-    let failed = dir.path().join("failed-once");
-    let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
-    fs::write(
-        &script,
-        production_git_script(format!(
-            "#!/bin/sh\nset -eu\nis_status=0\nfor arg in \"$@\"; do [ \"$arg\" = status ] && is_status=1 || true; done\nif [ \"$is_status\" = 1 ] && [ -e '{}' ] && [ ! -e '{}' ]; then : > '{}'; exit 7; fi\nexec /usr/bin/git \"$@\"\n",
-            quote(trigger),
-            quote(&failed),
-            quote(&failed),
-        )),
-    )
-    .expect("read fault script");
-    let mut permissions = fs::metadata(&script)
-        .expect("read fault metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script, permissions).expect("read fault executable");
-    (dir, script, failed)
-}
-
 fn scripted_mutation(body: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().expect("scripted mutation tempdir");
     let script = dir.path().join("mutation.sh");
@@ -340,81 +325,6 @@ fn run_fixture_readiness(script: &Path) {
             }
         }
     }
-}
-
-fn before_git_mutation(body: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
-    let dir = tempfile::tempdir().expect("before-git fixture");
-    let script = dir.path().join("before-git.sh");
-    let attempts = dir.path().join("attempts");
-    let argv = dir.path().join("argv");
-    let input = dir.path().join("input");
-    let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
-    fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nset -eu\nprintf x >> '{}'\n: > '{}'\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '{}'; done\n/usr/bin/tee '{}' >/dev/null\n{}\n",
-            quote(&attempts),
-            quote(&argv),
-            quote(&argv),
-            quote(&input),
-            body
-        ),
-    )
-    .expect("before-git script");
-    let mut permissions = fs::metadata(&script)
-        .expect("before-git metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script, permissions).expect("before-git executable");
-    (dir, script, attempts, argv, input)
-}
-
-fn after_git_mutation(plan: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
-    let dir = tempfile::tempdir().expect("after-git fixture");
-    let script = dir.path().join("after-git.sh");
-    let attempts = dir.path().join("attempts");
-    let argv = dir.path().join("argv");
-    let input = dir.path().join("input");
-    let quote = |path: &Path| path.to_string_lossy().replace('\'', "'\\''");
-    // Construct output before the timed mutation so its boundary is not coupled
-    // to Python interpreter startup on a loaded runner.
-    let output = |size: usize, stderr: bool| {
-        let payload = dir.path().join("output.bin");
-        fs::write(&payload, vec![b'x'; size]).expect("after-git output payload");
-        format!(
-            "/bin/cat '{}'{}",
-            quote(&payload),
-            if stderr { " >&2" } else { "" }
-        )
-    };
-    let tail = match plan {
-        "nonzero" => "exit 17".to_string(),
-        "stdout-exact" => output(MUTATION_STDOUT_LIMIT, false),
-        "stdout-overflow" => output(MUTATION_STDOUT_LIMIT + 1, false),
-        "stderr-exact" => output(STDERR_LIMIT, true),
-        "stderr-overflow" => output(STDERR_LIMIT + 1, true),
-        "wait" => "/bin/sleep 30".to_string(),
-        "inherited-pipe" => "/bin/sleep 30 & exit 0".to_string(),
-        _ => panic!("unknown after-git plan"),
-    };
-    fs::write(
-        &script,
-        production_git_script(format!(
-            "#!/bin/sh\nset -eu\nprintf x >> '{}'\n: > '{}'\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '{}'; done\n/usr/bin/tee '{}' | /usr/bin/git \"$@\" >/dev/null\n{}\n",
-            quote(&attempts),
-            quote(&argv),
-            quote(&argv),
-            quote(&input),
-            tail
-        )),
-    )
-    .expect("after-git script");
-    let mut permissions = fs::metadata(&script)
-        .expect("after-git metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script, permissions).expect("after-git executable");
-    (dir, script, attempts, argv, input)
 }
 
 fn proof_read_recorder(

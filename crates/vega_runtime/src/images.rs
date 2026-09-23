@@ -198,7 +198,19 @@ mod tests {
     }
     #[test]
     fn issue63_pixel_budget_rejects_valid_overbudget_header_before_decode() {
-        assert!(ImageAttachment::from_bytes(encode(4001, 4000, ImageFormat::Png)).is_err());
+        // A complete, independently decodable PNG whose header declares
+        // 4001x4000 = 16_004_000 pixels, just over the production 16_000_000
+        // budget. The bytes are a pre-generated compact fixture (uniform
+        // grayscale rows deflate to ~15 KiB) instead of materializing and
+        // re-encoding 16M pixels on every run. Decoding once proves the
+        // rejection comes from the real dimension budget, not a corrupt header.
+        let data = include_bytes!("overbudget_4001x4000.png").to_vec();
+        let decoded = image::load_from_memory(&data).expect("fixture must decode as a real PNG");
+        assert_eq!((decoded.width(), decoded.height()), (4001, 4000));
+        assert_eq!(
+            ImageAttachment::from_bytes(data),
+            Err(ImageError("image dimensions exceed limits"))
+        );
     }
     #[test]
     fn issue63_valid_apng_is_rejected_instead_of_sending_first_frame() {

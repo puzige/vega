@@ -1,0 +1,292 @@
+{
+  "clean": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u0000",
+      "paths": "tracked.txt\u0000",
+      "stage": "100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "",
+      "summary": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "tracked.txt": "base\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "ignored-mode": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u0000",
+      "paths": "tracked.txt\u0000",
+      "stage": "100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "",
+      "summary": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "tracked.txt": "base\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": [
+      "tracked.txt"
+    ]
+  },
+  "empty-added": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u00001 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 empty.txt\u0000",
+      "paths": "empty.txt\u0000tracked.txt\u0000",
+      "stage": "100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tempty.txt\u0000100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "",
+      "summary": "diff --git a/empty.txt b/empty.txt\nnew file mode 100644\nindex 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\n",
+      "attrs": "",
+      "staged_raw": ":000000 100644 0000000000000000000000000000000000000000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 A\u0000empty.txt\u0000",
+      "staged_numstat": "0\t0\tempty.txt\u0000",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "empty.txt": "",
+      "tracked.txt": "base\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "empty-added-committed": {
+    "raw": {
+      "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "status": "# branch.oid bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000# branch.head master\u0000",
+      "paths": "empty.txt\u0000tracked.txt\u0000",
+      "stage": "100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tempty.txt\u0000100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\tempty.txt\u0000100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000refs/heads/master\u0000\n",
+      "parents": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "summary": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "empty.txt": "",
+      "tracked.txt": "base\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "empty-worktree-deleted": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u00001 .D N... 100644 100644 000000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 empty.txt\u0000",
+      "paths": "empty.txt\u0000tracked.txt\u0000",
+      "stage": "100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tempty.txt\u0000100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\tempty.txt\u0000100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "45fd6a758e54742dd8538f548e8e306ba19070ea\n",
+      "summary": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": ":100644 000000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0000000000000000000000000000000000000000 D\u0000empty.txt\u0000",
+      "unstaged_numstat": "0\t0\tempty.txt\u0000"
+    },
+    "files": {
+      "tracked.txt": "base\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "staged-empty-deleted": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u00001 MD N... 100644 100644 000000 df967b96a579e45a18b8251732d16804b2e56a55 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 tracked.txt\u0000",
+      "paths": "tracked.txt\u0000",
+      "stage": "100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\ttracked.txt\u0000",
+      "tree": "100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "",
+      "summary": "diff --git a/tracked.txt b/tracked.txt\nindex df967b96a579e45a18b8251732d16804b2e56a55..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +0,0 @@\n-base\n",
+      "attrs": "",
+      "staged_raw": ":100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 M\u0000tracked.txt\u0000",
+      "staged_numstat": "0\t1\ttracked.txt\u0000",
+      "unstaged_raw": ":100644 000000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0000000000000000000000000000000000000000 D\u0000tracked.txt\u0000",
+      "unstaged_numstat": "0\t0\ttracked.txt\u0000"
+    },
+    "files": {},
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "staged-empty-kept-committed": {
+    "raw": {
+      "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "status": "# branch.oid bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000# branch.head master\u00001 .D N... 100644 100644 000000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 tracked.txt\u0000",
+      "paths": "tracked.txt\u0000",
+      "stage": "100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\ttracked.txt\u0000",
+      "tree": "100644 blob e69de29bb2d1d6434b8b29ae775ad8c2e48c5391\ttracked.txt\u0000",
+      "refs": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000refs/heads/master\u0000\n",
+      "parents": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "summary": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": ":100644 000000 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0000000000000000000000000000000000000000 D\u0000tracked.txt\u0000",
+      "unstaged_numstat": "0\t0\ttracked.txt\u0000"
+    },
+    "files": {},
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "staged-empty-selected-added": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u00001 D. N... 100644 000000 000000 df967b96a579e45a18b8251732d16804b2e56a55 0000000000000000000000000000000000000000 tracked.txt\u0000",
+      "paths": "",
+      "stage": "",
+      "tree": "100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "",
+      "summary": "diff --git a/tracked.txt b/tracked.txt\ndeleted file mode 100644\nindex df967b96a579e45a18b8251732d16804b2e56a55..0000000000000000000000000000000000000000\n--- a/tracked.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-base\n",
+      "attrs": "",
+      "staged_raw": ":100644 000000 df967b96a579e45a18b8251732d16804b2e56a55 0000000000000000000000000000000000000000 D\u0000tracked.txt\u0000",
+      "staged_numstat": "0\t1\ttracked.txt\u0000",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {},
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "staged-empty-selected-committed": {
+    "raw": {
+      "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "status": "# branch.oid bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000# branch.head master\u0000",
+      "paths": "",
+      "stage": "",
+      "tree": "",
+      "refs": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\u0000refs/heads/master\u0000\n",
+      "parents": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+      "summary": "",
+      "attrs": "",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {},
+    "attrs_by_input": {
+      "tracked.txt\u0000": ""
+    },
+    "executable_files": []
+  },
+  "normalization-before": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u00001 .M N... 100644 100644 100644 df967b96a579e45a18b8251732d16804b2e56a55 df967b96a579e45a18b8251732d16804b2e56a55 tracked.txt\u0000",
+      "paths": ".gitattributes\u0000other.txt\u0000tracked.txt\u0000",
+      "stage": "100644 fcadb2cf97913f58a2523f535336e725c6b59d1f 0\t.gitattributes\u0000100644 e45c9c2666d44e0327c1f9c239a74c508336053e 0\tother.txt\u0000100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob fcadb2cf97913f58a2523f535336e725c6b59d1f\t.gitattributes\u0000100644 blob e45c9c2666d44e0327c1f9c239a74c508336053e\tother.txt\u0000100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "320bd698f8409f8c585311ddd1503b8aca9b9e80\n",
+      "summary": "",
+      "attrs": ".gitattributes\u0000text\u0000set\u0000.gitattributes\u0000eol\u0000lf\u0000other.txt\u0000text\u0000set\u0000other.txt\u0000eol\u0000lf\u0000tracked.txt\u0000text\u0000set\u0000tracked.txt\u0000eol\u0000lf\u0000",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "tracked.txt": "base\r\n",
+      ".gitattributes": "* text eol=lf\n",
+      "other.txt": "other\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": "tracked.txt\u0000text\u0000set\u0000tracked.txt\u0000eol\u0000lf\u0000"
+    },
+    "executable_files": []
+  },
+  "normalization-after": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u0000",
+      "paths": ".gitattributes\u0000other.txt\u0000tracked.txt\u0000",
+      "stage": "100644 fcadb2cf97913f58a2523f535336e725c6b59d1f 0\t.gitattributes\u0000100644 e45c9c2666d44e0327c1f9c239a74c508336053e 0\tother.txt\u0000100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob fcadb2cf97913f58a2523f535336e725c6b59d1f\t.gitattributes\u0000100644 blob e45c9c2666d44e0327c1f9c239a74c508336053e\tother.txt\u0000100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "320bd698f8409f8c585311ddd1503b8aca9b9e80\n",
+      "summary": "",
+      "attrs": ".gitattributes\u0000text\u0000set\u0000.gitattributes\u0000eol\u0000lf\u0000other.txt\u0000text\u0000set\u0000other.txt\u0000eol\u0000lf\u0000tracked.txt\u0000text\u0000set\u0000tracked.txt\u0000eol\u0000lf\u0000",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "tracked.txt": "base\r\n",
+      ".gitattributes": "* text eol=lf\n",
+      "other.txt": "other\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": "tracked.txt\u0000text\u0000set\u0000tracked.txt\u0000eol\u0000lf\u0000"
+    },
+    "executable_files": []
+  },
+  "normalization-drift-after": {
+    "raw": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "# branch.oid aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000# branch.head master\u00001 .M N... 100644 100644 100644 e45c9c2666d44e0327c1f9c239a74c508336053e e45c9c2666d44e0327c1f9c239a74c508336053e other.txt\u0000",
+      "paths": ".gitattributes\u0000other.txt\u0000tracked.txt\u0000",
+      "stage": "100644 fcadb2cf97913f58a2523f535336e725c6b59d1f 0\t.gitattributes\u0000100644 e45c9c2666d44e0327c1f9c239a74c508336053e 0\tother.txt\u0000100644 df967b96a579e45a18b8251732d16804b2e56a55 0\ttracked.txt\u0000",
+      "tree": "100644 blob fcadb2cf97913f58a2523f535336e725c6b59d1f\t.gitattributes\u0000100644 blob e45c9c2666d44e0327c1f9c239a74c508336053e\tother.txt\u0000100644 blob df967b96a579e45a18b8251732d16804b2e56a55\ttracked.txt\u0000",
+      "refs": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0000refs/heads/master\u0000\n",
+      "parents": "320bd698f8409f8c585311ddd1503b8aca9b9e80\n",
+      "summary": "",
+      "attrs": ".gitattributes\u0000text\u0000set\u0000.gitattributes\u0000eol\u0000lf\u0000other.txt\u0000text\u0000set\u0000other.txt\u0000eol\u0000lf\u0000tracked.txt\u0000text\u0000set\u0000tracked.txt\u0000eol\u0000lf\u0000",
+      "staged_raw": "",
+      "staged_numstat": "",
+      "unstaged_raw": "",
+      "unstaged_numstat": ""
+    },
+    "files": {
+      "tracked.txt": "base\r\n",
+      ".gitattributes": "* text eol=lf\n",
+      "other.txt": "other\r\n"
+    },
+    "attrs_by_input": {
+      "tracked.txt\u0000": "tracked.txt\u0000text\u0000set\u0000tracked.txt\u0000eol\u0000lf\u0000"
+    },
+    "executable_files": []
+  }
+}

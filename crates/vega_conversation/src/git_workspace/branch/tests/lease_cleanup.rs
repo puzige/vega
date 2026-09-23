@@ -1,41 +1,16 @@
+use super::branch_stub::{BranchFixture, GateTarget};
 use super::*;
+
+// The two lease/cleanup race policies below run the real `BranchWorkspaceService`
+// over the finite in-process command boundary. The production capture, permit,
+// owner-exclusive refresh and cleanup protocol are unchanged; only the external
+// `git` process is replaced by captured bytes and an explicit completion channel.
+// Every original assertion is preserved verbatim.
 
 #[tokio::test]
 async fn rejected_execute_cannot_compete_with_owner_cleanup_refresh() {
-    let repo = Repo::new();
-    git(repo.path(), &["switch", "-q", "-c", "topic"]);
-    fs::write(repo.path().join("topic.txt"), "topic\n").expect("topic file");
-    git(repo.path(), &["add", "topic.txt"]);
-    git(repo.path(), &["commit", "-q", "-m", "topic"]);
-    git(repo.path(), &["switch", "-q", "main"]);
-
-    let controls = tempfile::Builder::new()
-        .prefix("vega-branch-barrier-")
-        .tempdir()
-        .expect("controls");
-    let started = controls.path().join("started");
-    let release = controls.path().join("release");
-    let attempts = controls.path().join("attempts");
-    let git = production_git_shell_quote();
-    let script = controls.path().join("blocking-switch.sh");
-    fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nprintf started > '{}'\nwhile [ ! -f '{}' ]; do /bin/sleep 0.01; done\nprintf 'attempt\\n' >> '{}'\nexec {git} \"$@\"\n",
-                started.display(),
-                release.display(),
-                attempts.display(),
-                git = git
-            ),
-        )
-        .expect("blocking script");
-    let mut permissions = fs::metadata(&script).expect("metadata").permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&script, permissions).expect("chmod");
-
-    let service = Arc::new(
-        BranchWorkspaceService::new_with_mutation_for_test(repo.path(), script).expect("service"),
-    );
+    let fixture = BranchFixture::new("main-clean");
+    let service = Arc::new(fixture.service());
     let snapshot = service
         .refresh(CancellationToken::new())
         .await
@@ -45,19 +20,16 @@ async fn rejected_execute_cannot_compete_with_owner_cleanup_refresh() {
         .prepare_switch(target, CancellationToken::new())
         .await
         .expect("owner permit");
+    fixture.expect_switch(Some("topic-current"));
+    let mut switch_gate = fixture.arm_gate(GateTarget::Switch, false);
     let owner_service = service.clone();
     let owner = tokio::spawn(async move {
         owner_service
             .execute_switch(owner_permit, CancellationToken::new())
             .await
     });
-    for _ in 0..500 {
-        if started.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
-    assert!(started.exists());
+    switch_gate.wait_entered().await;
+
     assert_eq!(
         service
             .refresh(CancellationToken::new())
@@ -113,7 +85,7 @@ async fn rejected_execute_cannot_compete_with_owner_cleanup_refresh() {
             .is_some()
     );
 
-    fs::write(&release, "release\n").expect("release");
+    switch_gate.release();
     let completion = owner.await.expect("owner join");
     assert_eq!(completion.outcome, BranchSwitchOutcome::Switched);
     assert!(
@@ -124,10 +96,7 @@ async fn rejected_execute_cannot_compete_with_owner_cleanup_refresh() {
             .iter()
             .any(|branch| branch.label == "topic" && branch.current)
     );
-    assert_eq!(
-        fs::read_to_string(&attempts).expect("attempts"),
-        "attempt\n"
-    );
+    assert_eq!(fixture.switch_attempts().len(), 1);
     assert!(
         service
             .state
@@ -136,68 +105,13 @@ async fn rejected_execute_cannot_compete_with_owner_cleanup_refresh() {
             .active_mutation
             .is_none()
     );
+    fixture.assert_clean();
 }
 
 #[tokio::test]
 async fn refresh_registered_before_owner_cannot_commit_after_lease_acquisition() {
-    let repo = Repo::new();
-    git(repo.path(), &["switch", "-q", "-c", "topic"]);
-    fs::write(repo.path().join("topic.txt"), "topic\n").expect("topic file");
-    git(repo.path(), &["add", "topic.txt"]);
-    git(repo.path(), &["commit", "-q", "-m", "topic"]);
-    git(repo.path(), &["switch", "-q", "main"]);
-
-    let controls = tempfile::Builder::new()
-        .prefix("vega-refresh-owner-race-")
-        .tempdir()
-        .expect("controls");
-    let read_arm = controls.path().join("read-arm");
-    let read_claim = controls.path().join("read-claim");
-    let read_entered = controls.path().join("read-entered");
-    let read_release = controls.path().join("read-release");
-    let mutation_entered = controls.path().join("mutation-entered");
-    let mutation_release = controls.path().join("mutation-release");
-    let attempts = controls.path().join("attempts");
-    let git = production_git_shell_quote();
-    let read_wrapper = controls.path().join("read-wrapper.sh");
-    fs::write(
-            &read_wrapper,
-            format!(
-                "#!/bin/sh\nif [ -f '{}' ] && /bin/mkdir '{}' 2>/dev/null; then\n  printf entered > '{}'\n  while [ ! -f '{}' ]; do /bin/sleep 0.01; done\nfi\nexec {git} \"$@\"\n",
-                read_arm.display(),
-                read_claim.display(),
-                read_entered.display(),
-                read_release.display(),
-                git = git
-            ),
-        )
-        .expect("read wrapper");
-    let mutation_wrapper = controls.path().join("mutation-wrapper.sh");
-    fs::write(
-        &mutation_wrapper,
-        format!(
-                "#!/bin/sh\nprintf entered > '{}'\nwhile [ ! -f '{}' ]; do /bin/sleep 0.01; done\nprintf 'attempt\\n' >> '{}'\nexec {git} \"$@\"\n",
-                mutation_entered.display(),
-                mutation_release.display(),
-                attempts.display(),
-                git = git
-            ),
-        )
-        .expect("mutation wrapper");
-    for script in [&read_wrapper, &mutation_wrapper] {
-        let mut permissions = fs::metadata(script).expect("metadata").permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(script, permissions).expect("chmod");
-    }
-
-    let service = Arc::new(
-        BranchWorkspaceService::new_with_executables_for_test(
-            repo.path(),
-            read_wrapper,
-            mutation_wrapper,
-        )
-        .expect("service"),
-    );
+    let fixture = BranchFixture::new("main-clean");
+    let service = Arc::new(fixture.service());
     let snapshot = service
         .refresh(CancellationToken::new())
         .await
@@ -207,20 +121,14 @@ async fn refresh_registered_before_owner_cannot_commit_after_lease_acquisition()
         .await
         .expect("permit");
 
-    fs::write(&read_arm, "arm\n").expect("arm read");
+    let mut read_gate = fixture.arm_gate(GateTarget::TopLevel, false);
+    fixture.expect_switch(Some("topic-current"));
+    let mut switch_gate = fixture.arm_gate(GateTarget::Switch, false);
+
     let refresh_service = service.clone();
     let refresh =
         tokio::spawn(async move { refresh_service.refresh(CancellationToken::new()).await });
-    for _ in 0..500 {
-        if read_entered.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
-    assert!(
-        read_entered.exists(),
-        "refresh did not enter capture barrier"
-    );
+    read_gate.wait_entered().await;
 
     let owner_service = service.clone();
     let owner = tokio::spawn(async move {
@@ -228,16 +136,7 @@ async fn refresh_registered_before_owner_cannot_commit_after_lease_acquisition()
             .execute_switch(permit, CancellationToken::new())
             .await
     });
-    for _ in 0..500 {
-        if mutation_entered.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
-    assert!(
-        mutation_entered.exists(),
-        "owner did not enter mutation barrier"
-    );
+    switch_gate.wait_entered().await;
     assert!(
         service
             .state
@@ -247,7 +146,7 @@ async fn refresh_registered_before_owner_cannot_commit_after_lease_acquisition()
             .is_some()
     );
 
-    fs::write(&read_release, "release\n").expect("release read");
+    read_gate.release();
     assert_eq!(
         refresh
             .await
@@ -272,7 +171,7 @@ async fn refresh_registered_before_owner_cannot_commit_after_lease_acquisition()
         assert!(state.active_mutation.is_some());
     }
 
-    fs::write(&mutation_release, "release\n").expect("release mutation");
+    switch_gate.release();
     let completion = owner.await.expect("owner join");
     assert_eq!(completion.outcome, BranchSwitchOutcome::Switched);
     assert!(
@@ -283,10 +182,7 @@ async fn refresh_registered_before_owner_cannot_commit_after_lease_acquisition()
             .iter()
             .any(|branch| branch.label == "topic" && branch.current)
     );
-    assert_eq!(
-        fs::read_to_string(&attempts).expect("attempts"),
-        "attempt\n"
-    );
+    assert_eq!(fixture.switch_attempts().len(), 1);
     assert!(
         service
             .state
@@ -295,6 +191,7 @@ async fn refresh_registered_before_owner_cannot_commit_after_lease_acquisition()
             .active_mutation
             .is_none()
     );
+    fixture.assert_clean();
 }
 
 #[test]

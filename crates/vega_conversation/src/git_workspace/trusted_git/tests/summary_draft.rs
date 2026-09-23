@@ -611,8 +611,12 @@ async fn commit_draft_request_matches_frozen_literals_for_both_truncation_flags(
     const FIXTURE_SUMMARY: &str = "fixture staged summary";
     const EXPECTED_SYSTEM: &str = "Generate one concise Git commit message for the exact staged diff. Return only the commit message text. Do not call tools.";
     for truncated in [false, true] {
-        let (_repo, _recorder, trusted, prepared, _argv, _input) =
-            staged_service_with_recorder().await;
+        // The real service derives the prepared capability from captured staged
+        // bytes; no repository or Git process is needed to verify request
+        // construction. `summary`/`summary_truncated` are request inputs, set
+        // here directly, not asserted results.
+        let fixture = command_stub::PolicyFixture::new("staged");
+        let (trusted, prepared) = fixture.prepared().await;
         {
             let mut state = trusted
                 .state
@@ -657,16 +661,16 @@ async fn commit_draft_request_matches_frozen_literals_for_both_truncation_flags(
             request.messages[1] == ChatMessage::new(ChatRole::User, expected_user),
             "user prompt mismatch"
         );
+        fixture.assert_no_mutation();
     }
 }
 
 #[tokio::test]
 async fn failed_draft_keeps_prepared_authority_usable() {
-    let (_repo, _recorder, trusted, prepared, argv, input) = staged_service_with_recorder().await;
-    assert!(
-        !argv.exists() && !input.exists(),
-        "draft fixture mutated before provider"
-    );
+    // Real refresh/prepare over captured staged raw bytes; the provider and the
+    // draft recovery path are the only external boundary under test here.
+    let fixture = command_stub::PolicyFixture::new("staged");
+    let (trusted, prepared) = fixture.prepared().await;
     let invalid = Arc::new(vega_runtime::MockProvider::new(vec![
         vega_runtime::ScriptStep::text("partial"),
     ]));
@@ -712,10 +716,7 @@ async fn failed_draft_keeps_prepared_authority_usable() {
         Some(prepared.id)
     );
     assert!(!state.mutation_active);
-    assert!(
-        !argv.exists() && !input.exists(),
-        "draft path started a Git mutation"
-    );
+    fixture.assert_no_mutation();
 }
 
 #[tokio::test]

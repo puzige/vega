@@ -1,5 +1,6 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt;
+mod branch_stub;
 mod codec_limits;
 mod lease_cleanup;
 mod mutation_runner;

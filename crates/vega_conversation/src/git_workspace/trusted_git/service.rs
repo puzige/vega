@@ -60,18 +60,6 @@ impl TrustedGitService {
     }
 
     #[cfg(test)]
-    pub(crate) fn new_with_mutation_timeout_for_test(
-        root: impl AsRef<Path>,
-        workspace: Arc<GitWorkspaceService>,
-        executable: PathBuf,
-        timeout: Duration,
-    ) -> Result<Self, CommitErrorCode> {
-        let mut service = Self::new_with_mutation_for_test(root, workspace, executable)?;
-        service.mutation_timeout = timeout;
-        Ok(service)
-    }
-
-    #[cfg(test)]
     pub(crate) fn new_with_executables_for_test(
         root: impl AsRef<Path>,
         workspace: Arc<GitWorkspaceService>,

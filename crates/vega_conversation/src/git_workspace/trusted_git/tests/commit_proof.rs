@@ -63,6 +63,61 @@ async fn commit_proof_uses_explicit_new_oid_for_born_and_unborn_commits() {
 
 // Keep each fault independently discoverable so nextest can distribute the matrix.
 async fn assert_commit_proof_fault_after_one_commit(plan: &str, expected: CommitErrorCode) {
+    let fixture = command_stub::PolicyFixture::new("staged");
+    fixture.proof_plan(plan);
+    fixture.expect_mutation(
+        "commit",
+        &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        "proof-committed",
+    );
+    let (trusted, prepared) = fixture.prepared().await;
+    let completion = trusted
+        .commit(
+            prepared.id,
+            "test: proof must fail closed".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        completion.outcome,
+        CommitOutcome::Failed(expected),
+        "proof plan {plan}"
+    );
+    assert!(completion.workspace.is_some(), "{plan} terminal refresh");
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"commit",
+            &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
+        ),
+        "proof plan {plan}"
+    );
+    assert_eq!(fixture.mutation_inputs().len(), 1, "proof plan {plan}");
+    let duplicate = trusted
+        .commit(
+            prepared.id,
+            "test: duplicate proof".into(),
+            CancellationToken::new(),
+        )
+        .await;
+    assert_eq!(
+        duplicate.outcome,
+        CommitOutcome::Failed(CommitErrorCode::StaleAuthority),
+        "proof plan {plan}"
+    );
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"commit",
+            &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
+        )
+    );
+}
+
+#[tokio::test]
+async fn real_git_object_missing_proof_consumes_prepared_after_one_commit() {
+    let plan = "object-missing";
+    let expected = CommitErrorCode::GitFailed;
     let (_repo, _read_dir, mutation_dir, trusted, prepared, _read_log, mutation_argv, _base) =
         prepared_with_proof_plan(false, plan).await;
     let completion = trusted
@@ -299,7 +354,13 @@ async fn commit_status_drift_real_git_consumes_prepared_and_spawns_zero_commit()
 
 #[tokio::test]
 async fn commit_message_byte_bounds_and_exact_stdin_are_enforced() {
-    let (_repo, _recorder, trusted, prepared, argv, input) = staged_service_with_recorder().await;
+    let fixture = command_stub::PolicyFixture::new("staged");
+    fixture.expect_mutation(
+        "commit",
+        &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        "proof-committed",
+    );
+    let (trusted, prepared) = fixture.prepared().await;
     for invalid in [
         String::new(),
         "nul\0body".into(),
@@ -312,19 +373,22 @@ async fn commit_message_byte_bounds_and_exact_stdin_are_enforced() {
             completion.outcome,
             CommitOutcome::Failed(CommitErrorCode::InvalidMessage)
         );
-        assert!(!argv.exists(), "invalid message spawned commit");
+        fixture.assert_no_mutation();
     }
     let exact = "x".repeat(MESSAGE_LIMIT);
     let completion = trusted
         .commit(prepared.id, exact.clone(), CancellationToken::new())
         .await;
     assert_eq!(completion.outcome, CommitOutcome::Committed);
-    assert_eq!(
-        fs::read(input).expect("exact message stdin"),
-        exact.as_bytes()
-    );
+    assert_eq!(fixture.mutation_inputs(), vec![exact.as_bytes().to_vec()]);
 
-    let (_repo, _recorder, trusted, prepared, argv, input) = staged_service_with_recorder().await;
+    let fixture = command_stub::PolicyFixture::new("staged");
+    fixture.expect_mutation(
+        "commit",
+        &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        "proof-committed",
+    );
+    let (trusted, prepared) = fixture.prepared().await;
     let multibyte_exact = "é".repeat(MESSAGE_LIMIT / 2);
     let multibyte_plus_one = format!("{multibyte_exact}x");
     assert_eq!(multibyte_exact.len(), MESSAGE_LIMIT);
@@ -336,7 +400,7 @@ async fn commit_message_byte_bounds_and_exact_stdin_are_enforced() {
         rejected.outcome,
         CommitOutcome::Failed(CommitErrorCode::InvalidMessage)
     );
-    assert!(!argv.exists(), "multibyte +1 spawned commit");
+    fixture.assert_no_mutation();
     let committed = trusted
         .commit(
             prepared.id,
@@ -346,11 +410,17 @@ async fn commit_message_byte_bounds_and_exact_stdin_are_enforced() {
         .await;
     assert_eq!(committed.outcome, CommitOutcome::Committed);
     assert_eq!(
-        fs::read(input).expect("multibyte stdin"),
-        multibyte_exact.as_bytes()
+        fixture.mutation_inputs(),
+        vec![multibyte_exact.as_bytes().to_vec()]
     );
 
-    let (_repo, _recorder, trusted, prepared, _argv, input) = staged_service_with_recorder().await;
+    let fixture = command_stub::PolicyFixture::new("staged");
+    fixture.expect_mutation(
+        "commit",
+        &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        "proof-committed",
+    );
+    let (trusted, prepared) = fixture.prepared().await;
     let newline_message = "subject\n\nbody\n";
     let committed = trusted
         .commit(
@@ -361,8 +431,8 @@ async fn commit_message_byte_bounds_and_exact_stdin_are_enforced() {
         .await;
     assert_eq!(committed.outcome, CommitOutcome::Committed);
     assert_eq!(
-        fs::read(input).expect("newline stdin"),
-        newline_message.as_bytes()
+        fixture.mutation_inputs(),
+        vec![newline_message.as_bytes().to_vec()]
     );
 }
 
