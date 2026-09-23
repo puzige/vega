@@ -71,10 +71,11 @@ and `git_workspace_metadata_remaining_cap_is_inclusive_and_plus_one_fails`.
 
 [Per-test audit](vega-issue-149-slow-test-audit.md) records the baseline observations, raw duration totals and remaining groups. These are measured costs, not claimed savings. The highest two matrices are now approved for a split under H1/H2, superseding the initial audit's recommendation to retain them whole. The audit records observation-time status; delivery results will explicitly identify which rows have migrated and which remain outstanding.
 
-### Migrated rows (verified, on `feat/test-dependency-isolation-next`)
+### Migrated rows (verified, merged to `master`)
 
-Batches 1–5, all with negative controls, no-exec verification and retained real
-adapter contracts:
+Batches 1–13, all with negative controls, no-exec verification and retained real
+adapter contracts. Batches 1–12 landed together on `master` as the squashed
+commit `1f19f45` (PR #161); batch 13 landed separately as `cbb5261` (PR #166):
 
 - commit proof faults + message boundaries (`0adbefc`)
 - empty-blob and no-op normalization matrices (`b1a5d9c`)
@@ -87,6 +88,7 @@ adapter contracts:
 - branch state-guard policy, 3 tests (`962567a`)
 - branch switch-race policy, 2 tests (`4b017d4`)
 - trusted_git owner-refresh first-capture retry, 2 tests (`f9d7d89`)
+- trusted_git owner/generation completion ordering, 3 tests (`cbb5261`)
 
 ## Batch 6 — `vega_runtime` pixel-budget header test
 
