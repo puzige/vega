@@ -438,10 +438,6 @@ async fn commit_message_byte_bounds_and_exact_stdin_are_enforced() {
 
 #[tokio::test]
 async fn owned_prepare_accepts_exact_b_published_by_ordinary_poll() {
-    // Real `prepare` over the finite command boundary: the boundary holds the
-    // declared mutation *after* its captured post-state is applied, so an
-    // ordinary poll can publish the exact B before the owner capture runs. The
-    // real owner must accept that byte-exact B instead of treating it as C.
     let fixture = command_stub::PolicyFixture::service("add-selected");
     fixture.expect_mutation(
         "add",
@@ -503,9 +499,6 @@ async fn owned_prepare_accepts_exact_b_published_by_ordinary_poll() {
 
 #[tokio::test]
 async fn owned_prepare_rejects_a_to_b_to_a_without_capability() {
-    // Real `prepare` over the finite command boundary: the same deterministic
-    // barrier, but the content is driven A -> B -> A while the owner is in
-    // flight. Two content revisions must never revive the owner's capability.
     let fixture = command_stub::PolicyFixture::service("add-selected");
     fixture.expect_mutation(
         "add",

@@ -721,11 +721,6 @@ async fn failed_draft_keeps_prepared_authority_usable() {
 
 #[tokio::test]
 async fn summary_authority_change_after_capture_fails_before_provider() {
-    // Real `prepare` over the finite command boundary: the boundary holds the
-    // commit-summary read after its captured bytes are resolved, so the test can
-    // drive an authoritative index drift while the real summary re-verification
-    // is still in flight. The rejection must come from that re-read, not from a
-    // workspace generation bump, and must precede any provider call.
     let fixture = command_stub::PolicyFixture::service("commit-staged");
     let (workspace, trusted) = fixture.services().await;
     let trusted = Arc::new(trusted);
@@ -750,8 +745,6 @@ async fn summary_authority_change_after_capture_fails_before_provider() {
         }
     });
     gate.wait_entered().await;
-    // The index changes without any workspace poll, so the generation the owner
-    // published is untouched and only the summary authority re-read can see it.
     fixture.set_captured_case("index-drift");
     assert_eq!(
         workspace
