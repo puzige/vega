@@ -24,13 +24,13 @@ Notion PRD 可以链接 GitHub Project，但两边不要各维护一份状态或
 
 ## 分流与交付
 
-执行卡片必须使用 [vega-kanban-delivery skill](../.agents/skills/vega-kanban-delivery/SKILL.md)：需求分析 → 测试用例 → 实现计划 → 实现 → 真实 E2E/本地截图验收 → 合并 master 并验证 → 清理本卡本地分支/worktree → 回写上下文 → 关闭 Issue/Done。互不影响的卡可并行实现，构建按 worktree 隔离并通过调度器限制并发，旧测试资源和原生 UI 验收仍须互斥。连续取下一张仅限用户已授权连续执行时。
+执行卡片必须使用 [vega-kanban-delivery skill](../.agents/skills/vega-kanban-delivery/SKILL.md)：取卡（立即 `In progress`）→ 需求分析 → 测试用例 → 实现计划 → 实现（**只跑本卡功能点测试，不跑本地全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → 停下等用户手测 → 通过才回写上下文/关闭 Issue/Done/清理本卡分支/worktree，不通过退回 `In progress`。互不影响的卡可并行实现，构建按 worktree 隔离；旧测试资源和原生 UI 验收仍须互斥。连续取下一张仅限用户已授权连续执行时。
 
 - `Backlog`：已记录，尚待分流或补规格；即使暂时没人修，也留在这里。受阻项在 Issue 中写清阻碍和下一责任方。
 - `Ready`：优先级、影响模块、复现/验收条件已明确，并在 `docs/` 找到或补齐相应规格与任务卡。产品取舍冲突回到 Notion PRD/用户裁决；遵守 `AGENTS.md` 的 spec-first 和卡外先问规则。
-- `In progress`：只有实际开始工作才进入。实现使用独立分支/worktree；PR 关联 Issue 和 spec，附真实测试及 E2E 证据。
-- `In review`：代码或方案已提交审查/验收，但尚未完成；不能因为代码已写完就标 `Done`。未通过则留在此列或退回并写明失败证据。
-- `Done`：适用门禁及真实验收通过、证据持久保存、master 集成验证、本卡本地分支/worktree 清理、上下文回写均完成后，才关闭 Issue 并标记。任何一步受阻都不算完成；状态更新后重新查询确认，向用户报告真实链接。
+- `In progress`：接卡后立即进入，表示已领取。实现使用独立分支/worktree；PR 关联 Issue 和 spec，附本卡功能点测试及原始输出。用户手测不通过时退回此列修复。
+- `In review`：PR 通过云端 `pr-check` 并合并 master 后进入，等待用户手动验收。不能因为代码已写完或已合并就标 `Done`。
+- `Done`：用户手测通过后才进入。云端 `check` 通过、已合并 master、用户手测通过、上下文回写、本卡本地分支/worktree 清理均完成后，才关闭 Issue 并标记。任何一步受阻都不算完成；状态更新后重新查询确认，向用户报告真实链接。
 
 `Priority` 现有选项为 `P0`、`P1`、`P2`，`Size` 为 `XS`、`S`、`M`、`L`、`XL`。有足够依据再填写；没有依据就留空或标明待评估，不凭空承诺工期。不要为匹配文档擅改 Project 字段或列。
 
