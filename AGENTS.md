@@ -288,6 +288,7 @@ R68 就踩了：从 `[data-vega-window-type=browser]` 块取了 `--menu-item-hei
 - API key 只存配置根下独立的 owner-only 明文凭据文件（R10），不写 config.toml/项目文件/日志；不访问旧 Keychain
 - 非测试代码禁止 `unwrap()`/`expect()`
 - schema 只增不删，走 `migrations/` 递增文件
+- **代码中禁止任何注释**（`///`/`//!`/行内 `//`/`/* */`）：注释说明必要 = 命名或结构没写好，去改命名/拆函数/提类型。仅 `unsafe` 块的 `// SAFETY:` 例外（2026-09-23 用户裁决，详见 exec-guide §3/§4）
 
 ## 行为技能
 
