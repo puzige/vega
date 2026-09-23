@@ -80,18 +80,30 @@
 
 ## 门禁与结果
 
-分支 `feat/issue-151-latest-expanded`，基线 `origin/master` @ `da4cc48`。独立
-worktree + 默认 Cargo `target/`。
+分支 `feat/issue-151-latest-expanded`，先基于 `da4cc48` 实现，随后 rebase 到
+`origin/master` @ `c926c76`（PR #158）。独立 worktree + 默认 Cargo `target/`。
 
 | 门禁 | 命令 | 退出码 | 结果 | 原始日志 |
 |---|---|---|---|---|
 | 格式 | `cargo fmt --all -- --check` | 0 | 空输出 | `fmt.log` |
 | Clippy | `RUSTC_WRAPPER= cargo clippy --workspace --all-targets -- -D warnings` | 0 | 无警告 | `clippy.log` |
-| 工作区测试 | `RUSTC_WRAPPER= cargo test --workspace` | 0 | 1806 passed / 0 failed / 10 ignored | `workspace-tests.log` |
+| 工作区测试 | `RUSTC_WRAPPER= cargo test --workspace` | 0 | 1828 passed / 0 failed / 10 ignored（rebase 后） | `workspace-tests.log` |
 | Doc 测试 | `RUSTC_WRAPPER= cargo test --workspace --doc` | 0 | 全绿 | `doc-tests.log` |
 | 无 UI 直连 SQLite | `rg -n 'rusqlite' crates/vega_ui/src/` | 1（无匹配） | 空 | 规格 R151-8 |
 
 `#151` 定向：`cargo test -p vega_ui --lib issue151` → 7 passed / 0 failed。
+
+### 云端门禁（PR [#158](https://github.com/puzige/vega/pull/158)，base `master` @ `c926c76`）
+
+| Job | 结论 | 耗时 |
+|---|---|---|
+| Quality (fmt, clippy, doc-tests) | pass | 4m06s |
+| Build test archive | pass | 2m34s |
+| Test shard 1/4 | pass | 4m25s |
+| Test shard 2/4 | pass | 3m29s |
+| Test shard 3/4 | pass | 4m16s |
+| Test shard 4/4 | pass | 2m47s |
+| **check (fmt, clippy, test)**（汇总门禁） | **pass** | 4s |
 
 ### 环境首次失败（保留）
 
@@ -107,7 +119,15 @@ error: could not compile `tokio` (lib)
 
 同一命令加一次性 `RUSTC_WRAPPER=` 后 exit 0。未修改任何用户或仓库配置。
 
-## 原生 E2E 验收要求（未在本地完成）
+## 原生 E2E 验收要求（BLOCKED · 未完成）
+
+**阻碍**：本卡验收时需要独占真实应用；检查时用户日常应用
+`~/Documents/Vega/Vega.app`（PID 35339）**正在运行且有活跃任务**
+（`ps` 观测 ~33% CPU、16 分钟累计 4 分钟 CPU 时间）。仓库约定
+（`AGENTS.md`「安装须独占，先检查正在运行的任务；未经确认空闲不得强退」）
+禁止为本次验收强退用户正在使用的进程。因此本卡**不替换**已安装应用、不执行
+原生截图，按 skill §4「无法真实运行或保存证据时，记录未验收与阻碍，不关闭卡片」
+处理。
 
 需要在真实 `~/Documents/Vega/Vega.app`（`ai.vega`）中，用真实 provider 跑一次
 多轮「思考 → 工具 → 正文」的会话，观察并保存：
@@ -123,8 +143,11 @@ error: could not compile `tokio` (lib)
 
 ## 剩余限制
 
+- BLOCKED：原生 E2E 未执行（用户日常应用正被占用，见上）；真实 provider、原生
+  窗口像素与持久化重启行为尚无本卡证据。合并/安装/清理与 Issue 回写须待该证据
+  补齐后完成。
 - LIMIT：本地 GPUI 测试证明生产 `ConversationStream` + 渲染路径行为，不能证明真实
-  provider、原生窗口像素或持久化重启；上述原生 E2E 待执行。
+  provider、原生窗口像素或持久化重启。
 - LIMIT：现有依赖 `block 0.1.6` 有 Cargo future-incompatibility 提示；本卡未修改
   依赖，测试通过。
 - 规格偏离：无。无 schema 迁移；回滚为撤销本卡代码改动（删除
