@@ -1,10 +1,15 @@
+use super::branch_stub::BranchFixture;
 use super::*;
+
+// These generation/permit policies run the real `BranchWorkspaceService` over
+// the finite in-process command boundary. Capture, generation rotation, opaque
+// id sealing and permit consumption are unchanged; only the external `git`
+// process is replaced by captured bytes. Every original assertion is preserved.
 
 #[tokio::test]
 async fn unchanged_refresh_keeps_ids_and_branch_change_rotates() {
-    let repo = Repo::new();
-    git(repo.path(), &["branch", "topic"]);
-    let service = BranchWorkspaceService::new(repo.path()).expect("service");
+    let fixture = BranchFixture::new("main-clean");
+    let service = fixture.service();
     let first = service
         .refresh(CancellationToken::new())
         .await
@@ -14,20 +19,20 @@ async fn unchanged_refresh_keeps_ids_and_branch_change_rotates() {
         .await
         .expect("refresh");
     assert_eq!(first, second);
-    git(repo.path(), &["branch", "another"]);
+    fixture.set_case("main-another");
     let third = service
         .refresh(CancellationToken::new())
         .await
         .expect("refresh");
     assert_ne!(third.generation, first.generation);
     assert_ne!(third.branches[0].id, first.branches[0].id);
+    fixture.assert_clean();
 }
 
 #[tokio::test]
 async fn opaque_ids_are_service_generation_slot_and_seal_bound() {
-    let repo = Repo::new();
-    git(repo.path(), &["branch", "topic"]);
-    let service = BranchWorkspaceService::new(repo.path()).expect("service");
+    let fixture = BranchFixture::new("main-clean");
+    let service = fixture.service();
     let snapshot = service
         .refresh(CancellationToken::new())
         .await
@@ -71,7 +76,7 @@ async fn opaque_ids_are_service_generation_slot_and_seal_bound() {
         .prepare_switch(topic, CancellationToken::new())
         .await
         .expect("permit");
-    let other = BranchWorkspaceService::new(repo.path()).expect("other service");
+    let other = fixture.service();
     other
         .refresh(CancellationToken::new())
         .await
@@ -83,12 +88,12 @@ async fn opaque_ids_are_service_generation_slot_and_seal_bound() {
     );
     assert!(rejected.snapshot.is_none());
 
-    git(repo.path(), &["branch", "temporary"]);
+    fixture.set_case("main-temporary");
     let changed = service
         .refresh(CancellationToken::new())
         .await
         .expect("changed");
-    git(repo.path(), &["branch", "-D", "temporary"]);
+    fixture.set_case("main-clean");
     let aba = service
         .refresh(CancellationToken::new())
         .await
@@ -101,17 +106,13 @@ async fn opaque_ids_are_service_generation_slot_and_seal_bound() {
             .await
             .is_err()
     );
+    fixture.assert_clean();
 }
 
 #[tokio::test]
 async fn stale_permit_after_generation_rotation_does_not_leak_mutation_lease() {
-    let repo = Repo::new();
-    git(repo.path(), &["switch", "-q", "-c", "topic"]);
-    fs::write(repo.path().join("topic.txt"), "topic\n").expect("topic file");
-    git(repo.path(), &["add", "topic.txt"]);
-    git(repo.path(), &["commit", "-q", "-m", "topic"]);
-    git(repo.path(), &["switch", "-q", "main"]);
-    let service = BranchWorkspaceService::new(repo.path()).expect("service");
+    let fixture = BranchFixture::new("main-clean");
+    let service = fixture.service();
     let snapshot = service
         .refresh(CancellationToken::new())
         .await
@@ -120,7 +121,9 @@ async fn stale_permit_after_generation_rotation_does_not_leak_mutation_lease() {
         .prepare_switch(branch_id(&snapshot, "topic"), CancellationToken::new())
         .await
         .expect("permit");
-    git(repo.path(), &["branch", "-f", "topic", "main"]);
+    // The target ref moves onto main's commit; the next refresh rotates the
+    // generation, invalidating the older permit before it can switch.
+    fixture.set_case("main-topic-forced");
     let rotated = service
         .refresh(CancellationToken::new())
         .await
@@ -143,10 +146,6 @@ async fn stale_permit_after_generation_rotation_does_not_leak_mutation_lease() {
             .active_mutation
             .is_none()
     );
-    assert_eq!(
-        git_output(repo.path(), &["branch", "--show-current"]),
-        b"main\n"
-    );
 
     let current = service
         .refresh(CancellationToken::new())
@@ -156,19 +155,19 @@ async fn stale_permit_after_generation_rotation_does_not_leak_mutation_lease() {
         .prepare_switch(branch_id(&current, "topic"), CancellationToken::new())
         .await
         .expect("fresh permit");
+    fixture.expect_switch(Some("topic-forced-current"));
     let completion = service
         .execute_switch(fresh, CancellationToken::new())
         .await;
     assert_eq!(completion.outcome, BranchSwitchOutcome::Switched);
+    fixture.assert_clean();
 }
 
 #[tokio::test]
 async fn shared_oid_refs_are_distinct_and_current_is_selected_by_raw_ref() {
-    let repo = Repo::new();
-    git(repo.path(), &["branch", "alias-a"]);
-    git(repo.path(), &["branch", "alias-b"]);
-    let snapshot = BranchWorkspaceService::new(repo.path())
-        .expect("service")
+    let fixture = BranchFixture::new("main-aliases-only");
+    let snapshot = fixture
+        .service()
         .refresh(CancellationToken::new())
         .await
         .expect("refresh");
@@ -182,4 +181,5 @@ async fn shared_oid_refs_are_distinct_and_current_is_selected_by_raw_ref() {
             .collect::<Vec<_>>(),
         vec!["main"]
     );
+    fixture.assert_clean();
 }

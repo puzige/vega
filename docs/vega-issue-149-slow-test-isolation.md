@@ -82,7 +82,8 @@ adapter contracts:
 - service mutation-outcome error mapping and authoritative recovery, 21 tests (`87d5d75`)
 - explicit-filter, `.gitattributes` and attrs-drift policy, 3 tests (`e8549b9`)
 - workspace lifecycle generation/race, 3 tests (`1385a63`)
-- branch lease/cleanup race policy, 2 tests (this batch)
+- branch lease/cleanup race policy, 2 tests (`956f7ea`)
+- branch snapshot-id/generation policy, 4 tests (this batch)
 
 ## Batch 6 — `vega_runtime` pixel-budget header test
 
@@ -136,12 +137,36 @@ byte-identical restore (`branch_sha256 e56e732a…`). No-exec: both migrated tes
 pass under `deny process-exec`; the real adapter is denied (exit 101) and passes
 normally.
 
+## Batch 9 — branch snapshot-id/generation policy
+
+The four `git_workspace::branch::tests::snapshot_ids` policy tests now run the real
+`BranchWorkspaceService` over the same finite in-process command boundary. The
+capture protocol, generation rotation, opaque-id sealing, permit consumption and
+the raw-ref current selection are unchanged; only the external `git` process is
+replaced by captured bytes from `branch-fixtures.json` (extended with
+`main-another`, `main-temporary`, `main-topic-forced`, `topic-forced-current` and
+the alias shapes). No shell gate, no repository.
+
+| Test | Original assertions preserved |
+|---|---|
+| `unchanged_refresh_keeps_ids_and_branch_change_rotates` | identical refresh keeps generation/ids; a new ref rotates both |
+| `opaque_ids_are_service_generation_slot_and_seal_bound` | current-branch rejection; forged slot/seal rejected; cross-service permit rejected; A->B->A rotates generation and kills the old id |
+| `stale_permit_after_generation_rotation_does_not_leak_mutation_lease` | rotated permit fails `StaleGeneration` with no lease leaked; a fresh permit then switches |
+| `shared_oid_refs_are_distinct_and_current_is_selected_by_raw_ref` | three distinct labels at one commit, exactly one current (`main`) |
+
+Same-machine same-scope: four migrated tests **0.011–0.032s** (isolated baseline
+0.269s / 0.857s / 1.309s / 0.435s). The retained real adapter
+`branch_captured_states_match_real_git` now also validates the forced-target and
+post-switch states. 3 negative controls exit 100 with byte-identical restore
+(`parsing_sha256 1bc0b78b…`, `branch_sha256 e56e732a…`). No-exec: all four
+migrated tests pass under `deny process-exec`; the real adapter is denied
+(exit 101) and passes normally.
+
 ### Outstanding rows
 
 The remaining 127-item optimization is **not** complete. Still outstanding:
 `filter_gitlink::real_gitlink_…`, `commit_proof` new-OID/root-inode contracts,
 `codec_topology::sha256_…`, the artifact `preview_open` group, the remaining
-branch lease/generation/guard policies (`snapshot_ids`, `state_guards`,
-`switch_e2e`), `provider_settings::production_cancel_and_total_deadline`, UI controllers/layout
+the remaining branch `state_guards`/`switch_e2e` policies, `provider_settings::production_cancel_and_total_deadline`, UI controllers/layout
 and agent concurrency, `vega_markdown` ten-thousand-line document, and
 `s6_acceptance::agent_diff_artifact_dirty_reject_and_two_stage_commit`.

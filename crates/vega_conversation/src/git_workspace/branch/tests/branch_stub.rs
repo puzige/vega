@@ -125,6 +125,11 @@ impl BranchFixture {
         inner.data = next;
     }
 
+    /// Switches to another captured state and its exact plain worktree files.
+    pub(super) fn set_case(&self, case: &str) {
+        self.apply_case(case);
+    }
+
     fn apply_files(root: &Path, before: &BranchData, next: &BranchData) {
         for path in before.files.keys() {
             if !next.files.contains_key(path) {
@@ -361,7 +366,9 @@ impl GitCommandBackend for BranchStub {
                     "--no-textconv",
                     current,
                     target,
-                ] if *current == inner.data.raw["main"] && *target == inner.data.raw["topic"] => {
+                ] if *current == inner.data.raw["diff_current"]
+                    && *target == inner.data.raw["diff_target"] =>
+                {
                     Some(inner.data.raw["acmrt"].as_bytes().to_vec())
                 }
                 [
@@ -375,7 +382,9 @@ impl GitCommandBackend for BranchStub {
                     "--no-textconv",
                     current,
                     target,
-                ] if *current == inner.data.raw["main"] && *target == inner.data.raw["topic"] => {
+                ] if *current == inner.data.raw["diff_current"]
+                    && *target == inner.data.raw["diff_target"] =>
+                {
                     Some(inner.data.raw["deletes"].as_bytes().to_vec())
                 }
                 [
@@ -385,7 +394,7 @@ impl GitCommandBackend for BranchStub {
                     "-z",
                     "--stdin",
                     "--all",
-                ] if *source == format!("--source={}", inner.data.raw["topic"]) => {
+                ] if *source == format!("--source={}", inner.data.raw["diff_target"]) => {
                     input.map(|_| inner.data.raw["selected_attrs"].as_bytes().to_vec())
                 }
                 _ => None,
@@ -577,4 +586,10 @@ async fn branch_captured_states_match_real_git() {
     assert_branch_adapter_state(repo.path(), "main-clean");
     git(repo.path(), &["switch", "-q", "topic"]);
     assert_branch_adapter_state(repo.path(), "topic-current");
+    // The forced-target shape has an empty authority diff but the same refs.
+    git(repo.path(), &["switch", "-q", "main"]);
+    git(repo.path(), &["branch", "-f", "topic", "main"]);
+    assert_branch_adapter_state(repo.path(), "main-topic-forced");
+    git(repo.path(), &["switch", "-q", "topic"]);
+    assert_branch_adapter_state(repo.path(), "topic-forced-current");
 }
