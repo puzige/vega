@@ -198,15 +198,54 @@ async fn i61_provider_reasoning_reaches_live_ui_without_persisting_as_answer(
     ).expect("persisted answer");
     assert!(answer.contains("Checking context.") && answer.contains("Context checked."));
     assert!(!answer.contains("inspect") && !answer.contains("validate result"));
+    // #151 R151-1/R151-4: the newest thinking block opens as soon as it is
+    // created, and the trailing answer delta of the same round supersedes it,
+    // so by the end of the run both blocks rest collapsed. The reasoning is
+    // still mounted as a production thinking block either way.
     let mut visual = VisualTestContext::from_window(f.window.into(), cx);
     assert!(visual.debug_bounds("thinking-block").is_some());
     assert!(visual.debug_bounds("thinking-content").is_none());
+    // #151 R151-5: a manual toggle still discloses the block's bounded text.
     let toggle = visual
         .debug_bounds("thinking-toggle")
         .expect("production thinking header");
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("thinking-content").is_some());
+}
+
+/// #151 R151-1 in the real app: the newest live thinking block discloses its
+/// bounded reasoning with no user action. This round emits only reasoning and
+/// then ends, so nothing newer supersedes the block before the assertion.
+#[gpui_kit::test]
+async fn i61_newest_live_thinking_block_is_expanded_by_default(cx: &mut gpui_kit::TestAppContext) {
+    cx.executor().allow_parking();
+    use vega_runtime::{ProviderEvent, ScriptStep, StopReason};
+    let provider = Arc::new(vega_runtime::MockProvider::new_rounds(vec![vec![
+        ScriptStep::events(vec![
+            ProviderEvent::ThinkingDelta("first block reasoning".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ]),
+    ]]));
+    let f = fixture(cx, provider.clone());
+    edit(&f, "show me the newest reasoning", cx);
+    cx.simulate_keystrokes(f.window.into(), "cmd-enter");
+    // This round emits only reasoning and then ends: no text delta and no tool
+    // call can supersede it, so the block stays the current activity unit and
+    // must be open with no user action.
+    pump_test_app(cx, |cx| {
+        provider.requests().len() == 1
+            && f.root
+                .read_with(cx, |root, _| root.agent_controller.active.is_empty())
+    });
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    assert!(visual.debug_bounds("thinking-block").is_some());
+    assert!(
+        visual.debug_bounds("thinking-content").is_some(),
+        "#151 R151-1: the newest live thinking block is expanded by default"
+    );
 }
 
 #[gpui_kit::test]
