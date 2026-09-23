@@ -366,9 +366,6 @@ impl ConversationStream {
     }
 }
 
-/// The row label for one status/failure pair, without the restored marker.
-/// Split out from the record so render and tests can exercise the copy without
-/// building a full record.
 pub(super) fn status_label_for(status: Status, failure: Option<Failure>) -> &'static str {
     match status {
         Status::Unknown => "上下文容量未配置",
