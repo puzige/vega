@@ -4,7 +4,7 @@
 
 > **2026-09-22 Issue #112 supersession:** Read/Edit/Write paths, read-before-mutation, replacement matching and audit/checkpoint path support follow [the file edit parity contract](vega-issue-112-file-edit-parity.md). Its user-authorized absolute/external paths and resolved symlinks replace the earlier project-only/relative-only prohibition for those tools; glob/grep/bash boundaries are unchanged. Existing permission, Git/checkpoint protection and race checks remain.
 
-**版本** v0.6 · 2026-08-31 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
+**版本** v0.8 · 2026-09-23 · 适用对象：所有承接 Vega 实现任务的执行模型（含低阶模型）
 **关联**：[vega-tech-spec-p1.md](vega-tech-spec-p1.md)（实现规格）· [vega-tech-risks.md](vega-tech-risks.md)（难点方案）· [vega-features.md](vega-features.md)（功能点 ID）· [vega-ui-spec.md](vega-ui-spec.md)（UI 准线）
 
 > 本文件是执行模型的**最高行为准则**。每个任务 prompt 都必须附本文件路径。任何与本文件冲突的"看起来更合理"的做法都是错的。
@@ -23,15 +23,17 @@
 **执行模型三铁律：**
 1. **spec 之外零发挥**。任务卡没写的设计决策，不许自己拍——上报，等裁决。
 2. **红线清单里的行为，一次都不许出现**（见 §3）。
-3. **验收命令全绿才算完成**，"差不多能跑"不算。
+3. **本卡功能点测试通过 + 云端 `pr-check` 绿才算实现完成**，"差不多能跑"不算；真实验收由用户在 master 上手动完成（见 §2、§7）。
 
 ## 2. 工作流（每个任务的标准动作）
 
 1. 读任务卡 → 读它引用的 spec 章节 → 读它列出的参考文件
 2. 复述任务：用 3 句话说明要做什么、验收命令是什么（防止读错题）
-3. 实现 → 本地跑验收命令 → 全绿后提交
-4. 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 vega-features.md）
-5. 输出实现报告：改了哪些文件、验收命令输出、偏离 spec 的地方（必须为无）
+3. 实现 → **只跑本卡功能点测试**（不跑本地全量）→ 提交并开 PR
+4. 等云端 `pr-check` 通过 → 主动合并 master → 卡片改 `In review` → **停下等用户手测**
+5. 用户手测通过 → 回写上下文 → 关闭 Issue/Done → 清理本卡分支/worktree；不通过 → 退回 `In progress` 修复后重开 PR
+6. 提交格式：`feat(A2-09): <一句话>` / `fix(A3-07): <一句话>`（功能点 ID 见 vega-features.md）
+7. 输出实现报告：改了哪些文件、本卡测试命令与原始输出、偏离 spec 的地方（必须为无）
 
 ## 3. 红线清单（违反 = 任务失败重来）
 
@@ -101,7 +103,8 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 [Issue #140](vega-issue-140-ci-test-throughput.md) 删除 #136 Python 影子分析，使用原生 nextest archive 一次构建、分片复用，全量测试不变。
 
 - **底线（2026-09-22 用户裁决，Issue #123）**：门禁全部在云端。PR 由 `.github/workflows/pr-check.yml` 跑 `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets -- -D warnings` / 一次 `cargo nextest archive --workspace` 构建及 4 个 `cargo-nextest nextest run --archive-file tests.tar.zst --workspace-remap "$GITHUB_WORKSPACE" --partition hash:<shard>/4` 分片（`.config/nextest.toml`，`retries = 0`，`trusted_git` 的 `threads-required = 2`；与 fmt/clippy/doc-tests 并行，汇总门禁仅在所有依赖成功时通过）/ `cargo test --workspace --doc`，通过后才能合并；push 到 master（PR merge 后）由 `.github/workflows/master-build.yml` 跑 `cargo xtask package`（两条流水线共享 `shared-key: vega` 缓存）。本地 commit/push 不做任何强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。详见 [Issue #123](vega-issue-123-pr-check-pipeline.md)。
-- **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败可在 PR 页面查看原始日志；Master 只允许 PR merge，不允许直接 push。本地可自行运行 `cargo fmt/clippy/test` 自查，但不构成门禁，也不重复跑相同门禁制造独立验收的表象。架构师验收永远是最终门禁。
+- **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败可在 PR 页面查看原始日志；Master 只允许 PR merge，不允许直接 push。本地**不跑 workspace 全量测试**，只运行本卡新增/修改的功能点测试；不重复跑相同门禁制造独立验收的表象。
+- **验收节奏（2026-09-23 用户裁决）**：实现完成 → 只跑本卡功能点测试 → 开 PR → 云端 `pr-check` 绿 → Agent 主动合并 master → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写、关 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress`。**真实验收（真实模型/服务/UI 路径）由用户在 master 上手动完成**，Agent 不再以自产全量 E2E/截图作为合并前门禁。
 - **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
 - **报告**：贴验收命令原始输出，不许概述"通过了"
@@ -138,4 +141,4 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ---
 
-*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）；v0.4 (2026-08-29) 基础白名单新增 toml（config.toml 解析，人类批准）；v0.5 (2026-08-29) mdstream 白名单条件激活（`待 spike 确认` → T14 spike 确认引入，锁定 =0.3.0）；v0.6 (2026-08-31) 人类冻结 E2E-first 验收与仓库证据留存规则，限制 test-only 笛卡尔扩张；v0.7 (2026-09-22) 门禁全部上云（Issue #123）：删除本地 hooks/verify.py/cargo-lock 调度器，PR 走云端 fmt/clippy/test，push master 打包，发布仍由 tag 触发。*
+*本文件随 spec 演进更新，变更记录：v0.1 (2026-08-29) 初版；v0.2 (2026-08-29) 验收门禁执行方式改为本地 git hooks（人类决策，防 CI 费用）；v0.3 (2026-08-29) UI 白名单 gpui/gpui_platform 来源改为 zed 官方仓库 git rev 锁定（crates.io 停滞且无 gpui_platform，人类批准）；v0.4 (2026-08-29) 基础白名单新增 toml（config.toml 解析，人类批准）；v0.5 (2026-08-29) mdstream 白名单条件激活（`待 spike 确认` → T14 spike 确认引入，锁定 =0.3.0）；v0.6 (2026-08-31) 人类冻结 E2E-first 验收与仓库证据留存规则，限制 test-only 笛卡尔扩张；v0.7 (2026-09-22) 门禁全部上云（Issue #123）：删除本地 hooks/verify.py/cargo-lock 调度器，PR 走云端 fmt/clippy/test，push master 打包，发布仍由 tag 触发；v0.8 (2026-09-23) 交付节奏改为「本地只跑本卡功能点测试 → 开 PR → 云端 check 绿 → Agent 主动合并 master → 卡改 In review → 用户手测」：用户手测通过才回写/关 Issue/Done/清理，未通过退回 In progress；真实验收由用户在 master 手动完成。*
