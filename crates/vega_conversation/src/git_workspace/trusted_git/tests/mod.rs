@@ -28,7 +28,10 @@ struct Repo {
 impl Repo {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("temp repo");
-        run_git(dir.path(), &["init", "-q"]);
+        // Pin the initial branch: the captured fixtures and this module's
+        // `test_head`/`status_prefix` encode `master`, so the real adapter
+        // contract must not inherit a host-dependent `init.defaultBranch`.
+        run_git(dir.path(), &["init", "-q", "--initial-branch=master"]);
         run_git(dir.path(), &["config", "user.name", "Vega Test"]);
         run_git(
             dir.path(),
@@ -42,7 +45,8 @@ impl Repo {
 
     fn unborn() -> Self {
         let dir = tempfile::tempdir().expect("temp unborn repo");
-        run_git(dir.path(), &["init", "-q"]);
+        // See `new`: pin the branch so captured `master` fixtures stay exact.
+        run_git(dir.path(), &["init", "-q", "--initial-branch=master"]);
         run_git(dir.path(), &["config", "user.name", "Vega Test"]);
         run_git(
             dir.path(),
@@ -54,8 +58,12 @@ impl Repo {
     fn try_sha256() -> Result<Self, String> {
         let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
         let mut init = Command::new(GIT);
-        init.current_dir(dir.path())
-            .args(["init", "--object-format=sha256", "-q"]);
+        init.current_dir(dir.path()).args([
+            "init",
+            "--object-format=sha256",
+            "-q",
+            "--initial-branch=master",
+        ]);
         scrub_git_environment(&mut init);
         let output = init.output().map_err(|error| error.to_string())?;
         if !output.status.success() {
