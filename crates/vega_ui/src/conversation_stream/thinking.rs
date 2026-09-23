@@ -32,6 +32,15 @@ impl ThinkingBlock {
             focus: cx.focus_handle(),
         }
     }
+    /// #151 R151-1/R151-2: the newest live activity unit is expanded; older
+    /// units step down. Pure UI state, never persisted.
+    pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        if self.expanded != expanded {
+            self.expanded = expanded;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn append(&mut self, delta: &str, remaining: usize) -> usize {
         let end = accepted_prefix_len(
             delta,
@@ -156,6 +165,10 @@ impl ConversationStream {
                 return;
             }
             self.close_active_segment_before_tool();
+            // #151 R151-1/R151-2: this new block is the newest activity unit,
+            // so the previous current unit steps down before it opens. The
+            // scan happens once per block creation, never per delta.
+            self.collapse_current_activity(cx);
             let card = cx.new(ThinkingBlock::new);
             cx.observe(&card, |this, card, cx| {
                 let index = this.entry_index_where(|entry| matches!(entry, StreamEntry::Thinking { card: owned } if owned == &card));
@@ -167,6 +180,7 @@ impl ConversationStream {
                 .push(StreamEntry::Thinking { card: card.clone() });
             self.list_append(index);
             self.thinking_blocks += 1;
+            card.update(cx, |card, cx| card.set_expanded(true, cx));
             self.active_thinking = Some(card);
         }
         if let Some(card) = &self.active_thinking {
