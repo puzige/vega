@@ -86,7 +86,7 @@ adapter contracts:
 - branch snapshot-id/generation policy, 4 tests (`668baf0`)
 - branch state-guard policy, 3 tests (`962567a`)
 - branch switch-race policy, 2 tests (`4b017d4`)
-- trusted_git owner-refresh first-capture retry, 2 tests (this batch)
+- trusted_git owner-refresh first-capture retry, 2 tests (`f9d7d89`)
 
 ## Batch 6 — `vega_runtime` pixel-budget header test
 
