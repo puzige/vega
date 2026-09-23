@@ -632,3 +632,40 @@ async fn issue117_restore_is_historical_idempotent_and_rejects_late_results(
         })
         .expect("historical restore");
 }
+
+#[gpui_kit::test]
+async fn issue117_compaction_row_icon_and_label_are_vertically_centered(cx: &mut TestAppContext) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            assert!(stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(2, Status::Compacting),
+                cx,
+            ));
+        })
+        .expect("compacting");
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let row = visual
+        .debug_bounds("context-compaction-row")
+        .expect("row bounds");
+    let slot = visual
+        .debug_bounds("context-compaction-icon-slot")
+        .expect("icon slot bounds");
+    let label = visual
+        .debug_bounds("context-compaction-live")
+        .expect("label bounds");
+    let slot_center = f32::from(slot.origin.y) + f32::from(slot.size.height) / 2.0;
+    let label_center = f32::from(label.origin.y) + f32::from(label.size.height) / 2.0;
+    let row_center = f32::from(row.origin.y) + f32::from(row.size.height) / 2.0;
+    assert!(
+        (slot_center - label_center).abs() < 0.5,
+        "icon center {slot_center} and label center {label_center} must share one optical center"
+    );
+    assert!(
+        (slot_center - row_center).abs() < 3.0,
+        "icon center {slot_center} must sit near the row center {row_center}"
+    );
+}

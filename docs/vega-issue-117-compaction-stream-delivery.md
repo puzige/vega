@@ -163,3 +163,38 @@ verification table above was re-run on the cleaned tree.
 
 Native pixel acceptance of C9, plus the C7 Light/Dark and narrow-window matrix,
 remain owner-run; this report does not claim them.
+
+## Follow-up: row vertical alignment (C10)
+
+The user hand-tested the merged copy and reported that the row's left icon and
+right label did not look vertically centered. Measured cause: the row used
+`items_start`, so the 16px icon slot and the 19.5px metadata label shared a top
+edge while their optical centers differed by 1.75px.
+
+Spec was updated first (new §8, change log, new C10 row). Implementation:
+`render_rows.rs` switches the compaction row container from `items_start` to
+`items_center`; the icon now sits in an explicit `context-compaction-icon-slot`
+wrapper so the geometry is selectable by tests. The reference product's
+equivalent `{icon, summary}` divider rows and Vega's existing icon+label rows
+(thinking toggle, Composer utility chip) all use center alignment, so the
+compaction row no longer diverges.
+
+Measured geometry (TestAppContext, 12px metadata):
+
+| Alignment | icon center | label center | offset |
+|---|---|---|---|
+| `items_start` (before) | 12.00 | 13.75 | 1.75px |
+| `items_center` (after) | 13.50 | 13.75 | 0.25px |
+
+Verification:
+
+| Check | Command | Result |
+|---|---|---|
+| Old alignment is detectable | `cargo test -p vega_ui --lib issue117_compaction_row_icon_and_label_are_vertically_centered` with `items_start` restored | RED, exit 101: `icon center 12 and label center 13.75 must share one optical center` |
+| C10 regression | same test on the fix | PASS, exit 0 |
+| All #117 stream tests | `cargo test -p vega_ui --lib issue117` | PASS, 6 tests, exit 0 |
+| Broader stream regression | `cargo test -p vega_ui --lib conversation_stream` | PASS, 280 tests, exit 0 |
+| Formatting | `cargo fmt --all -- --check` | PASS, empty output |
+| Strict lint | `cargo clippy -p vega_ui --all-targets -- -D warnings` | PASS, exit 0 |
+
+Native pixel acceptance of C10 remains owner-run; this report does not claim it.
