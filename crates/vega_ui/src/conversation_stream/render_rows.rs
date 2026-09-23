@@ -43,11 +43,6 @@ pub(crate) fn context_compaction_visual(
     (Icon::TextSelect, color)
 }
 
-/// #117: the compaction row's label. Live rows use the reference product's
-/// zh-CN wording (`正在压缩上下文` / `上下文已压缩`); a row recovered on reopen
-/// carries an explicit `已恢复 · ` marker so it is not mistaken for an
-/// operation that just ran in this session. Failure/cancel keep the existing
-/// diagnostic copy so the original-conversation protection stays readable.
 pub(crate) fn context_compaction_label(
     status: vega_conversation::types::ContextCompactionStatus,
     failure: Option<vega_conversation::types::ContextCompactionFailureCode>,
