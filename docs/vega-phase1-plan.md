@@ -106,7 +106,7 @@ loop {
 ### 3.5 CI
 `macos-latest` runner；PR check：fmt → clippy(-D warnings) → Cargo workspace test（含 headless runtime 和 doc-tests）；push 到 master：release build 打包上传 artifact。
 > 2026-09-22 修订（Issue #123）：仓库为 public，macOS runner 免费。门禁**全部上云**到 `.github/workflows/`；本地 git hooks、`scripts/verify.py` 与 cargo-lock 调度器已删除，本地 commit/push 不再封锁。发布仍由 `v*` tag 触发。
-> 2026-09-24 修订（Issue #175）：PR gate 使用一个 macOS job，顺序运行 fmt、clippy 和无分片的 Cargo 全 workspace 测试；master build 保留独立打包与缓存。具体门禁命令见 [vega-exec-guide §7](vega-exec-guide.md#7-验收协议每个任务卡通用)。
+> 2026-09-24 修订（Issue #175、#179）：PR gate 使用一个 macOS job，顺序运行 fmt、clippy 和无分片的 Cargo 全 workspace 测试；PR 与 master CICD 共用 `vega-master-build` Cargo 缓存，master 独占写入。打包 workflow 位于 `.github/workflows/cicd.yml`（GitHub Actions 名称 `master`）。具体门禁命令见 [vega-exec-guide §7](vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ---
 

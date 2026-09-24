@@ -5,7 +5,7 @@
 # including macos-latest, are free and do not consume the minute quota. The old
 # "PRIVATE / 10x cost" warning was obsolete. Releases stay tag-driven so not
 # every commit becomes a version; PR checks run in pr-check.yml and the master
-# build runs in master-build.yml.
+# build runs in cicd.yml (workflow name: master).
 #
 # ── Design notes ─────────────────────────────────────────────────────────────
 # - Tag-derived values reach `run:` only via `env:` indirection, never inline

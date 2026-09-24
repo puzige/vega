@@ -24,7 +24,7 @@
   tag 构建内不跑全量测试（测试由 PR check 承担，见 [pr-check.yml](../.github/workflows/pr-check.yml)）。
 - rust-cache 按 tag 隔离（`key: v-<tag>`）：手动 re-run 命中缓存很快，
   新 tag 每次冷构建。
-- 每次 PR merge 后 master 会跑 [master-build.yml](../.github/workflows/master-build.yml)
+- 每次 PR merge 后 master 会跑 [cicd.yml](../.github/workflows/cicd.yml)（GitHub Actions 名称 `master`）
   的 `build` job 打包上传 artifact，但**不发 Release**；发布仍只由 tag 触发。
 
 ## 签名与公证（HUMAN 前置）

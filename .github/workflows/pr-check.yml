@@ -25,6 +25,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: vega-master-build
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
       - name: Format
         run: cargo fmt --all -- --check
 
