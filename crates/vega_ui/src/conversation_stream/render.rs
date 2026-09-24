@@ -148,6 +148,7 @@ impl ConversationStream {
             && !self.skill_mutation_pending
             && self.model_selection_pending.is_none();
         div()
+            .debug_selector(|| "composer-wrapper".into())
             .px(px(Layout::CONTENT_PADDING))
             .pt(px(Layout::COMPOSER_PADDING_TOP))
             .pb(px(Layout::COMPOSER_PADDING_BOTTOM))
@@ -308,19 +309,6 @@ impl ConversationStream {
             )
             .child(self.render_active_skills(cx))
             .child(self.render_composer_run_status(cx))
-            .when(self.composer_submit_pending, |composer| {
-                composer.child(
-                    div()
-                        .id("composer-preparing-request")
-                        .w_full()
-                        .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                        .mx_auto()
-                        .mt_2()
-                        .text_size(px(Typography::METADATA))
-                        .text_color(colors.text_secondary)
-                        .child("正在准备请求…"),
-                )
-            })
             .children(self.controller_error.clone().map(|error| {
                 div()
                     .debug_selector(|| "conversation-controller-error".to_string())
