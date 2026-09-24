@@ -114,18 +114,18 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 ### 质量门禁（云端 CI）
 
-**门禁全部在云端，本地 commit/push 不做任何强制检查、不排队、不锁 target**（2026-09-22 用户裁决，见 [Issue #123 规格](docs/vega-issue-123-pr-check-pipeline.md)）。本地不再安装 git hooks；`.githooks/`、`scripts/verify.py` 与 `cargo-lock` 调度器已删除。
+**门禁全部在云端，本地 commit/push 不做任何强制检查、不排队、不锁 target**（当前 PR gate 见 [Issue #175 规格](docs/vega-issue-175-single-pr-check.md)；门禁迁移背景见 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md)）。本地不再安装 git hooks；`.githooks/`、`scripts/verify.py` 与 `cargo-lock` 调度器已删除。
 
-PR check 与 master build 是两条独立 workflow（2026-09-22 拆分），共享同一个 cargo 缓存 key（`shared-key: vega`）：PR 只读缓存，master build 写缓存。
+PR check 与 master build 是两条独立 workflow（2026-09-22 拆分）。2026-09-24 起，PR check 维护简单度优先，不使用 Cargo 缓存；master build 使用自己的 Cargo 缓存。
 
 | Workflow | 触发 | 检查 |
 |---|---|---|
-| [`.github/workflows/pr-check.yml`](.github/workflows/pr-check.yml) | `pull_request`（base `master`） | 并行 quality（fmt / clippy / doc-tests）与一次 nextest archive 构建，再由 4 个 hash 分片复用归档；汇总为 `check (fmt, clippy, test)`，全部成功才放行 |
+| [`.github/workflows/pr-check.yml`](.github/workflows/pr-check.yml) | `pull_request`（base `master`） | 单个 `macos-latest` job `check (fmt, clippy, test)`，依次运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo test --workspace --no-fail-fast -- --test-threads=1`（含 doc-tests）；全部成功才放行 |
 | [`.github/workflows/master-build.yml`](.github/workflows/master-build.yml) | `push` 到 `master`（PR merge 后） | `cargo xtask package`，产物上传为 artifact（不发 Release） |
 
 **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check` 才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。发布仍由 `v*` tag 触发（[vega-release.md](docs/vega-release.md)）。
 
-本地可直接运行 `cargo fmt/clippy/test` 自查，但云端 CI 是合并前的唯一强制门禁。
+本地可直接运行 `cargo fmt/clippy/test` 自查，但云端 CI 是合并前的唯一强制门禁。本地定向 nextest 仍可使用 `.config/nextest.toml`；PR gate 不使用 nextest。
 
 ### 构建与运行
 

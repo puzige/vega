@@ -101,10 +101,8 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 
 ## 7. 验收协议（每个任务卡通用）
 
-[Issue #140](vega-issue-140-ci-test-throughput.md) 删除 #136 Python 影子分析，使用原生 nextest archive 一次构建、分片复用，全量测试不变。
-
-- **底线（2026-09-22 用户裁决，Issue #123）**：门禁全部在云端。PR 由 `.github/workflows/pr-check.yml` 跑 `cargo fmt --all -- --check` / `cargo clippy --workspace --all-targets -- -D warnings` / 一次 `cargo nextest archive --workspace` 构建及 4 个 `cargo-nextest nextest run --archive-file tests.tar.zst --workspace-remap "$GITHUB_WORKSPACE" --partition hash:<shard>/4` 分片（`.config/nextest.toml`，`retries = 0`，`trusted_git` 的 `threads-required = 2`；与 fmt/clippy/doc-tests 并行，汇总门禁仅在所有依赖成功时通过）/ `cargo test --workspace --doc`，通过后才能合并；push 到 master（PR merge 后）由 `.github/workflows/master-build.yml` 跑 `cargo xtask package`（两条流水线共享 `shared-key: vega` 缓存）。本地 commit/push 不做任何强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。详见 [Issue #123](vega-issue-123-pr-check-pipeline.md)。
-- **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败可在 PR 页面查看原始日志；Master 只允许 PR merge，不允许直接 push。本地**不跑 workspace 全量测试**，只运行本卡新增/修改的功能点测试；不重复跑相同门禁制造独立验收的表象。
+**PR gate 拓扑（2026-09-24 用户裁决，[Issue #175](vega-issue-175-single-pr-check.md)）**：门禁全部在云端。`.github/workflows/pr-check.yml` 仅响应 base 为 `master` 的 PR，并以单个 `macos-latest` job、required check `check (fmt, clippy, test)` 顺序执行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings` 和 `cargo test --workspace --no-fail-fast -- --test-threads=1`。Workspace 测试包含单元、集成及文档测试；失败直接阻断合并，不自动重试。该 workflow 保留 Rust 1.98.0、`contents: read`、60 分钟超时和并发取消，不使用 nextest、归档、分片、缓存或手动 dispatch。旧的 [Issue #123](vega-issue-123-pr-check-pipeline.md) / [Issue #140](vega-issue-140-ci-test-throughput.md) 流水线描述只记录历史决策；本地 nextest 定向测试仍可使用 `.config/nextest.toml`。
+- **门禁执行**：云端 `check` 是合并前唯一强制门禁，失败可在 PR 页面查看原始日志；Master 只允许 PR merge，不允许直接 push。本地**不跑 workspace 全量测试**，只运行本卡新增/修改的功能点测试；不重复跑相同门禁制造独立验收的表象。本地 commit/push 不做强制检查、不排队、不锁 target；`.githooks/`、`scripts/verify.py` 与 cargo-lock 调度器已删除。
 - **验收节奏（2026-09-23 用户裁决）**：实现完成 → 只跑本卡功能点测试 → 开 PR → 云端 `pr-check` 绿 → Agent 主动合并 master → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写、关 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress`。**真实验收（真实模型/服务/UI 路径）由用户在 master 上手动完成**，Agent 不再以自产全量 E2E/截图作为合并前门禁。
 - **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`

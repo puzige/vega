@@ -36,19 +36,18 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - 合并方式：squash merge，合并后删除功能分支（2026-08-29 决策）
 - **合并由 Agent 主动完成**：云端 `check` 绿后由 Agent 合并 master，合并完成后才把卡片改为 `In review` 等待用户手测（2026-09-23 用户裁决）
 
-## 验证门禁与云端 CI（2026-09-22 用户裁决，Issue #123）
+## 验证门禁与云端 CI（2026-09-24 用户裁决，Issue #175）
 
-**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 详见 [Issue #123 规格](docs/vega-issue-123-pr-check-pipeline.md)。
+**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 当前 PR gate 见 [Issue #175 规格](docs/vega-issue-175-single-pr-check.md)；云端门禁拆分的历史背景见 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md)。
 
 - **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
-- 云端流水线拆成两条独立 workflow，共享同一个 cargo 缓存 key（`shared-key: vega`，2026-09-22 用户裁决）：
-  - `.github/workflows/pr-check.yml`：`pull_request`（base `master`）并行运行 quality（fmt / clippy / doc-tests）与一次 nextest archive 构建，再由 4 个 macOS 分片复用归档执行全量测试（`--partition hash:<shard>/4`）；`trusted_git` 测试 `threads-required = 2`；C9 中的 pricing 与真实 PTY 端到端测试各自独占测试时段（`num-test-threads`），`retries = 0`。汇总门禁名保持 `check (fmt, clippy, test)`，仅所有依赖成功才放行；失败、取消或跳过都不放行。quality/build 只读缓存（`save-if: false`），测试分片不恢复编译缓存，详见 [Issue #140](docs/vega-issue-140-ci-test-throughput.md)。
-  - `.github/workflows/master-build.yml`：push 到 master（PR merge 后）跑 `cargo xtask package` 并上传 artifact；唯一写缓存的一方。
-  - 两条都用标准 Cargo 步骤，不复用自定义 Python 脚本。
+- `.github/workflows/pr-check.yml`：仅在 `pull_request`（base `master`）运行一个 `macos-latest` job，required check 名固定为 `check (fmt, clippy, test)`。使用 Rust 1.98.0 和 `rustfmt` / `clippy`，在同一 job 顺序运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace --no-fail-fast -- --test-threads=1`。Cargo workspace 测试包含单元、集成和文档测试；任何失败都使 required check 失败。保留 `contents: read`、60 分钟超时和同 ref 并发取消；PR gate 不使用 Cargo 缓存、nextest、归档、分片或手动 dispatch。
+- `.github/workflows/master-build.yml`：push 到 master（PR merge 后）跑 `cargo xtask package` 并上传 artifact；其 Cargo 缓存仅供 master build workflow 自身使用。
 - 发布仍由 `v*` tag 触发（`release.yml`），master build 不发 Release，避免每个 commit 都发版。
-- [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 删除 #136 的 Python 影子选择器及报告；全量测试保持必跑，不恢复本地门禁或调度器。
+- 历史 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md) 与 [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [Issue #175 规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。本地直接 `cargo` 命令即可，不受调度器约束。
-- **本地只跑本卡功能点测试，不跑 workspace 全量**（2026-09-23 用户裁决）：`cargo nextest run -p <crate> <filter>` 等定向命令，确保本卡自己新增/修改的测试通过；全量 fmt/clippy/nextest 交给云端 `pr-check`。任务级 production-root 回归与测试矩阵仍须覆盖，只是不再在本地重复全量门禁。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
+- `.config/nextest.toml` 保留给需要 nextest 的本地定向测试；PR gate 使用标准 Cargo，不安装或读取 nextest 配置。
+- **本地只跑本卡功能点测试，不跑 workspace 全量**（2026-09-23 用户裁决）：`cargo nextest run -p <crate> <filter>` 等定向命令，确保本卡自己新增/修改的测试通过；全量 fmt/clippy/workspace 测试交给云端 `pr-check`。任务级 production-root 回归与测试矩阵仍须覆盖，只是不再在本地重复全量门禁。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
 
 ## 固定应用安装入口（2026-09-21 用户更新约定）
 

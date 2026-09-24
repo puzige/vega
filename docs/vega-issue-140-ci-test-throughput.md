@@ -1,5 +1,7 @@
 # Issue #140 — CI throughput optimization
 
+> 2026-09-24 [Issue #175](vega-issue-175-single-pr-check.md) supersedes this document's PR-gate topology and throughput objective. The current user choice prioritizes maintenance simplicity: one sequential Cargo job, no nextest archive and no shards. All prior measurements, implementation records and test evidence below remain historical; do not treat the former archive/shard plan as current CI requirements.
+
 ## User decision / scope (2026-09-22)
 
 The user explicitly requested an active goal to optimize four directions: avoid repeated compilation/preparation, improve remaining slow tests, balance shard duration, and measure additional shards. Remove Issue #136 Python shadow selection and its policy exceptions: it has not reduced test execution. Retain the useful #136 split proof tests and virtual title timer. Full PR suite remains mandatory; no impact-based test skipping, new ignored tests, automatic retries, relaxed assertions, paid runners, production timeout/API changes, local hooks or custom scheduler.

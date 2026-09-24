@@ -4,9 +4,8 @@
 # - This repo is PUBLIC: GitHub-hosted runners (including macos-latest) are
 #   free and do not consume the minute quota.
 # - Split out of the former single ci.yml (2026-09-22 owner decision): this
-#   pipeline packages the bundle after a PR merge and is the one that writes the
-#   shared cargo cache; the PR gate (pr-check.yml) only reads it. Both use the
-#   same `shared-key: vega` so a PR restores exactly this cache.
+#   pipeline packages the bundle after a PR merge. Its Cargo cache is private
+#   to this workflow; the PR gate does not restore or write a Cargo cache.
 # - master is protected (PR-only): this `push` trigger fires after a PR merge
 #   and produces the packaged bundle as a downloadable artifact. It does NOT
 #   publish a Release — releases stay tag-driven (release.yml) so not every
@@ -43,11 +42,8 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          # Same shared key as the PR gate (pr-check.yml) so the cache saved
-          # here is exactly what PR runs restore.
-          shared-key: vega
-          # This job only runs on master, so it is the one that writes the
-          # cache for the whole repo.
+          shared-key: vega-master-build
+          # This workflow only runs on master and writes its own cache.
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build the bundle (cargo xtask package)
