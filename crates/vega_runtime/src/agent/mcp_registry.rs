@@ -162,7 +162,7 @@ mod credential_tests {
 
 enum McpConnection {
     Stdio(StdioClient),
-    Http(HttpClient),
+    Http(Box<HttpClient>),
 }
 
 #[derive(Clone, Copy)]
@@ -341,7 +341,7 @@ impl McpReadyServer {
             server_id,
             config_revision,
             catalog,
-            McpConnection::Http(client),
+            McpConnection::Http(Box::new(client)),
             sink,
         )
     }

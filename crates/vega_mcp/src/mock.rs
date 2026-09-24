@@ -212,14 +212,13 @@ where
     let mut lines = tokio::io::BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let request = serde_json::from_str(&line).expect("fixture JSON request");
-        if let Some(response) = respond(request).await {
-            if writer
+        if let Some(response) = respond(request).await
+            && writer
                 .write_all(format!("{response}\n").as_bytes())
                 .await
                 .is_err()
-            {
-                break;
-            }
+        {
+            break;
         }
     }
 }

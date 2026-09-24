@@ -93,6 +93,8 @@ test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 454 filtered out; f
 
 证据限制：不再证明实际 TCP socket 关闭/绑定、非 loopback peer、原生进程/PTY 回收、reqwest 自带的底层超时、真实 Git 或系统启动器契约；这些由用户手测。默认发布图不启用 test-support。历史性能报告仍保留，不能据此证明本轮完整流水线的耗时。
 
+MCP mock 缩小 stdio 分支后触发 `large_enum_variant`，主 agent 批准将 `McpConnection::Http` 的 `HttpClient` 置于 `Box` 中；仅调整内存布局与构造点，协议与生命周期行为不变，不通过 allow 属性绕过检查。
+
 ### 云端交付
 
-PR 与 required check 待提交后记录；尚未宣称已合并。
+PR：[#182](https://github.com/puzige/vega/pull/182)。首轮 [required check](https://github.com/puzige/vega/actions/runs/36032245026) 在 Clippy 阶段发现 Bash 预检与 MCP mock 响应写入的两处 `collapsible_if`；fmt 通过，测试阶段未执行。修正写法后重新提交云端门禁，未绕过检查。最终 check 与合并身份以 PR/Issue 交付记录为准。

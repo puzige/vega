@@ -168,10 +168,10 @@ impl Tools {
         sandbox: Option<&SandboxConfig>,
         temp_root: &TempRoot,
     ) -> BashAttempt {
-        if let Some(sandbox) = sandbox {
-            if let Err(error) = sandbox.preflight(temp_root, hooks) {
-                return BashAttempt::safe(Err(error));
-            }
+        if let Some(sandbox) = sandbox
+            && let Err(error) = sandbox.preflight(temp_root, hooks)
+        {
+            return BashAttempt::safe(Err(error));
         }
         #[cfg(any(test, feature = "test-support"))]
         assert!(self.bash_executor.is_some(), "missing Bash test executor");
