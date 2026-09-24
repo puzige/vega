@@ -25,6 +25,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install the pinned nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.146
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
@@ -38,4 +43,4 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test the workspace
-        run: cargo test --workspace --no-fail-fast -- --test-threads=1
+        run: cargo nextest run --workspace

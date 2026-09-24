@@ -1,6 +1,8 @@
 # Issue #175 — Single unsharded PR check
 
-> 2026-09-24 [Issue #179](vega-issue-179-shared-pr-cicd-cache.md) supersedes this specification's no-PR-cache decision and `master-build.yml` path/name: PR Check now restores the master-owned `vega-master-build` Cargo cache without saving, while `.github/workflows/cicd.yml` (workflow name `master`) remains the sole cache writer and package workflow. The single unsharded PR job, required check context, command sequence, and test coverage specified below remain in force; the earlier cache decision and evidence are retained as historical context.
+> 2026-09-25 [Issue #183](vega-issue-183-nextest-ci.md) supersedes the test-runner and coverage decisions below: CI installs `nextest@0.9.146` via `taiki-e/install-action@v2` and runs only `cargo nextest run --workspace`, with default parallelism and the repository default profile (zero retries, fail-fast disabled, 600-second hang timeout). There is no extra build, archive, shard, or Cargo test command. Unit and integration tests remain covered; doctests are no longer part of CI because nextest does not support them. The single job, required check name, fmt/Clippy ordering, shared cache, and master packaging remain unchanged. The original scope and verification record below describe the historical #175 implementation.
+
+> 2026-09-24 [Issue #179](vega-issue-179-shared-pr-cicd-cache.md) supersedes this specification's no-PR-cache decision and `master-build.yml` path/name: PR Check now restores the master-owned `vega-master-build` Cargo cache without saving, while `.github/workflows/cicd.yml` (workflow name `master`) remains the sole cache writer and package workflow. The single unsharded PR job and required check context remain in force; the earlier cache decision and evidence are retained as historical context.
 
 Status: implementation merged via PR #177; its required cloud check passed. This record does not claim that user hand-testing passed.
 

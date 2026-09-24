@@ -68,7 +68,7 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 ## 4. 提交前自查（只跑本卡功能点测试）
 
-- **本地不做全量测试**：不跑 `cargo test --workspace` 等全量门禁，把它留给云端 `pr-check`。PR gate 是 [Issue #175](../../../docs/vega-issue-175-single-pr-check.md) 规定的单个 required job `check (fmt, clippy, test)`，依次运行 fmt、Clippy 和 `cargo test --workspace --no-fail-fast -- --test-threads=1`；Cargo 测试覆盖单元、集成和文档测试，不分片、不重试。`.config/nextest.toml` 仅供本地定向 nextest 命令使用，PR workflow 不安装或读取它。PR 和 master CICD 都用 `Swatinem/rust-cache@v2` 与 `shared-key: vega-master-build`；PR 用 `save-if: ${{ github.ref == 'refs/heads/master' }}` 恢复缓存但不写入，master 是唯一缓存写入方。push master 由 `.github/workflows/cicd.yml`（workflow 名 `master`）打包。
+- **本地不做全量测试**：不跑 `cargo test --workspace` 等全量门禁，把它留给云端 `pr-check`。PR gate 是 [Issue #183](../../../docs/vega-issue-183-nextest-ci.md) 更新的单个 required job `check (fmt, clippy, test)`，依次运行 fmt、Clippy 和 `cargo nextest run --workspace`；通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，默认并发、无分片，不添加额外 build。`.config/nextest.toml` 的默认 profile 供 CI 和本地定向测试共用：零重试、`fail-fast=false`、600 秒挂起保护。nextest 覆盖单元和集成测试，不支持 doctests；按用户只用 nextest 的要求不另跑 `cargo test --doc`。PR 和 master CICD 都用 `Swatinem/rust-cache@v2` 与 `shared-key: vega-master-build`；PR 用 `save-if: ${{ github.ref == 'refs/heads/master' }}` 恢复缓存但不写入，master 是唯一缓存写入方。push master 由 `.github/workflows/cicd.yml`（workflow 名 `master`）打包。
 - **必须本地跑通本卡自己新增/修改的功能点测试**（定向命令，如 `cargo nextest run -p <crate> <filter>`），确认能检出并覆盖本卡行为；这是提交前的最低自查。只跑本卡相关的几个测试，不扩散到全量。
 - 测试设计以进程内业务、安全、存储及 UI 回归为自动门禁；不新增真实外部进程/网络 E2E，系统集成由用户手测。#149 授权移除真实 E2E；保留范围内的测试不得靠删除、ignore、放宽断言或自动重试变绿。
 - **真实验收由用户在 master 上手动完成**。Agent 不把自行产出的全量 E2E/截图当作合并前门禁；需要真实模型/服务/UI 的路径由用户手测确认。
@@ -87,7 +87,7 @@ Applications。`dist` 是构建产物，备份用 zip 加构建身份保存。�
 ## 5. 开 PR、云端 check 与合并 master
 
 1. 实现完成且本卡功能点测试通过后提交并开 PR，关联 Issue 与 spec，附本卡测试命令及原始输出、与 spec 的偏离说明（必须为无）。**此时卡片仍为 In progress。**
-2. 等云端 `pr-check` 的 `check (fmt, clippy, test)` 单 job 通过。它顺序运行 fmt、Clippy 和无分片的 Cargo workspace 全量测试（含 doc-tests）；失败则在 PR 页面查看原始日志并修复，不得绕过、不得以本地结果替代。
+2. 等云端 `pr-check` 的 `check (fmt, clippy, test)` 单 job 通过。它顺序运行 fmt、Clippy 和无分片的 `cargo nextest run --workspace`（单元和集成测试，不含 doctests）；失败则在 PR 页面查看原始日志并修复，不得绕过、不得以本地结果替代。
 3. check 绿后由 Agent 主动合并 master（squash merge，合并后删除功能分支）；若分支保护或权限不允许，明确报告并请用户处理，不伪装成已合并。
 4. 合并完成后把卡片改为 **In review**，重新查询确认状态，然后**停下等待用户手测**，不再自行关闭或清理。
 5. 集成后若发现基线漂移或冲突解决影响结果，重新跑受影响的本卡测试；不得沿用旧结果。
