@@ -1,15 +1,289 @@
 use super::*;
 
+fn run_git_input(root: &Path, args: &[&str], input: &[u8]) {
+    let mut command = Command::new(GIT);
+    command
+        .current_dir(root)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    scrub_git_environment(&mut command);
+    let mut child = command.spawn().expect("git fixture");
+    std::io::Write::write_all(&mut child.stdin.take().expect("git stdin"), input)
+        .expect("git fixture input");
+    let output = child.wait_with_output().expect("git fixture output");
+    assert!(
+        output.status.success(),
+        "git fixture failed: {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn reset_selection_repo(root: &Path, base: &str) {
+    run_git(root, &["reset", "--hard", base]);
+    run_git(root, &["clean", "-fdx"]);
+}
+
+fn assert_selection_adapter_state(root: &Path, fixtures: &serde_json::Value, case: &str) {
+    let raw = &fixtures[case]["raw"];
+    let head = String::from_utf8(run_git_output(root, &["rev-parse", "HEAD"])).expect("head");
+    let fixture_head = raw["head"].as_str().expect("fixture head");
+    for (key, args) in [
+        (
+            "status",
+            &[
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--branch",
+                "--renames",
+                "--untracked-files=all",
+            ][..],
+        ),
+        (
+            "paths",
+            &["ls-files", "-z", "--cached", "--deduplicate"][..],
+        ),
+        ("stage", &["ls-files", "--stage", "-z"][..]),
+        ("tree", &["ls-tree", "-r", "-z", "--full-tree", "HEAD"][..]),
+        (
+            "refs",
+            &[
+                "for-each-ref",
+                "--sort=refname",
+                "--format=%(objectname)%00%(refname)%00",
+                "refs/heads/",
+            ][..],
+        ),
+        (
+            "staged_raw",
+            &[
+                "diff",
+                "--cached",
+                "--raw",
+                "-z",
+                "--abbrev=64",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+            ][..],
+        ),
+        (
+            "unstaged_raw",
+            &[
+                "diff",
+                "--raw",
+                "-z",
+                "--abbrev=64",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+            ][..],
+        ),
+        (
+            "staged_numstat",
+            &[
+                "diff",
+                "--cached",
+                "--numstat",
+                "-z",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+            ][..],
+        ),
+        (
+            "unstaged_numstat",
+            &[
+                "diff",
+                "--numstat",
+                "-z",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+            ][..],
+        ),
+        (
+            "summary",
+            &[
+                "-c",
+                "core.quotePath=true",
+                "diff",
+                "--cached",
+                "--patch",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--full-index",
+                "--",
+            ][..],
+        ),
+    ] {
+        let actual = String::from_utf8(run_git_output(root, args))
+            .expect("captured UTF-8 fixture")
+            .replace(head.trim(), fixture_head);
+        assert_eq!(
+            actual.as_bytes(),
+            raw[key].as_str().expect("raw fixture key").as_bytes(),
+            "{case}: {key}"
+        );
+    }
+    if let Some(attrs) = fixtures[case]["attrs_by_input"].as_object() {
+        for (input, expected) in attrs {
+            let mut command = Command::new(GIT);
+            command
+                .current_dir(root)
+                .args(["check-attr", "-z", "--stdin", "--all"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
+            scrub_git_environment(&mut command);
+            let mut child = command.spawn().expect("real attribute adapter");
+            std::io::Write::write_all(
+                &mut child.stdin.take().expect("attribute stdin"),
+                input.as_bytes(),
+            )
+            .expect("selected path input");
+            let output = child.wait_with_output().expect("attribute result");
+            assert!(output.status.success());
+            assert_eq!(
+                output.stdout,
+                expected.as_str().expect("selected attributes").as_bytes(),
+                "{case}: selected attributes {input:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn selection_topology_captured_states_match_real_git() {
+    let repo = Repo::new();
+    let root = repo.path();
+    let fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("command-fixtures.json")).expect("raw fixtures");
+    let service_fixtures: serde_json::Value =
+        serde_json::from_str(include_str!("service-fixtures.json")).expect("service fixtures");
+    let base = String::from_utf8(run_git_output(root, &["rev-parse", "HEAD"])).expect("base head");
+
+    fs::write(root.join("staged.txt"), "staged\n").expect("staged fixture");
+    run_git(root, &["add", "staged.txt"]);
+    assert_selection_adapter_state(root, &service_fixtures, "commit-staged");
+    run_git_input(
+        root,
+        &["commit", "--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        b"test: staged only",
+    );
+    assert_selection_adapter_state(root, &service_fixtures, "commit-after");
+
+    reset_selection_repo(root, base.trim());
+    fs::write(root.join("added.txt"), "first\n").expect("first add");
+    run_git(root, &["add", "added.txt"]);
+    fs::write(root.join("added.txt"), "second\n").expect("forced add");
+    assert_selection_adapter_state(root, &fixtures, "am-forced");
+    run_git_input(
+        root,
+        &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        b"added.txt\0",
+    );
+    assert_selection_adapter_state(root, &fixtures, "am-forced-after");
+
+    reset_selection_repo(root, base.trim());
+    fs::write(root.join("untracked.txt"), "new\n").expect("untracked fixture");
+    assert_selection_adapter_state(root, &fixtures, "untracked");
+    run_git_input(
+        root,
+        &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        b"untracked.txt\0",
+    );
+    assert_selection_adapter_state(root, &fixtures, "untracked-after");
+
+    reset_selection_repo(root, base.trim());
+    fs::remove_file(root.join("tracked.txt")).expect("delete tracked fixture");
+    fs::write(root.join("renamed.txt"), "base\n").expect("rename destination");
+    assert_selection_adapter_state(root, &fixtures, "delete-untracked");
+    run_git_input(
+        root,
+        &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        b"renamed.txt\0tracked.txt\0",
+    );
+    assert_selection_adapter_state(root, &fixtures, "delete-untracked-after");
+
+    reset_selection_repo(root, base.trim());
+    run_git(root, &["mv", "tracked.txt", "renamed.txt"]);
+    fs::write(root.join("renamed.txt"), "renamed and edited\n").expect("rename edit");
+    assert_selection_adapter_state(root, &fixtures, "rename-rm");
+    run_git_input(
+        root,
+        &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        b"renamed.txt\0",
+    );
+    assert_selection_adapter_state(root, &fixtures, "rename-rm-after");
+
+    reset_selection_repo(root, base.trim());
+    run_git(root, &["mv", "tracked.txt", "renamed.txt"]);
+    fs::write(root.join("renamed.txt"), "renamed and edited\n").expect("mode rename edit");
+    assert_selection_adapter_state(root, &fixtures, "rename-rm");
+    fs::set_permissions(root.join("renamed.txt"), fs::Permissions::from_mode(0o755))
+        .expect("mode flip");
+    assert_selection_adapter_state(root, &fixtures, "rename-rm-mode-flipped");
+    run_git_input(
+        root,
+        &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        b"renamed.txt\0",
+    );
+    assert_selection_adapter_state(root, &fixtures, "rename-rm-mode-after");
+
+    reset_selection_repo(root, base.trim());
+    run_git(root, &["mv", "tracked.txt", "renamed.txt"]);
+    fs::remove_file(root.join("renamed.txt")).expect("delete rename destination");
+    assert_selection_adapter_state(root, &fixtures, "rename-rd");
+    run_git_input(
+        root,
+        &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        b"renamed.txt\0",
+    );
+    assert_selection_adapter_state(root, &fixtures, "rename-rd-after");
+    run_git_input(
+        root,
+        &["commit", "--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        b"test: delete renamed file",
+    );
+    assert_selection_adapter_state(root, &fixtures, "rename-rd-committed");
+
+    reset_selection_repo(root, base.trim());
+    fs::remove_file(root.join("tracked.txt")).expect("remove regular file");
+    std::os::unix::fs::symlink("missing-target", root.join("tracked.txt"))
+        .expect("replace with symlink");
+    assert_selection_adapter_state(root, &fixtures, "symlink-type");
+    run_git_input(
+        root,
+        &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        b"tracked.txt\0",
+    );
+    assert_selection_adapter_state(root, &fixtures, "symlink-after");
+
+    reset_selection_repo(root, base.trim());
+    fs::write(root.join("run.sh"), "#!/bin/sh\nexit 0\n").expect("executable fixture");
+    fs::set_permissions(root.join("run.sh"), fs::Permissions::from_mode(0o755))
+        .expect("executable mode");
+    assert_selection_adapter_state(root, &fixtures, "exec-add");
+    run_git_input(
+        root,
+        &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        b"run.sh\0",
+    );
+    assert_selection_adapter_state(root, &fixtures, "exec-add-after");
+}
+
 #[tokio::test]
 async fn trusted_git_empty_selection_commits_existing_staged_delta() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("staged.txt"), "staged\n").expect("write staged");
-    run_git(repo.path(), &["add", "staged.txt"]);
-    let (workspace, trusted) = repo.services().await;
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("refresh staged");
+    let fixture = command_stub::PolicyFixture::service("commit-staged");
+    fixture.expect_mutation(
+        "commit",
+        &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        "commit-after",
+    );
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
@@ -28,6 +302,19 @@ async fn trusted_git_empty_selection_commits_existing_staged_delta() {
         )
         .await;
     assert_eq!(completion.outcome, CommitOutcome::Committed);
+    assert!(completion.workspace.is_some());
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"commit",
+            &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
+        )
+    );
+    assert_eq!(
+        fixture.mutation_inputs(),
+        vec![b"test: staged only".to_vec()]
+    );
+    fixture.assert_mutations_drained();
 }
 
 #[tokio::test]
@@ -240,15 +527,13 @@ async fn disconnected_recovery_consumes_zombie_owner_before_future_checklist() {
 
 #[tokio::test]
 async fn trusted_git_selected_am_component_preserves_forced_add_topology() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("added.txt"), "first\n").expect("new file");
-    run_git(repo.path(), &["add", "added.txt"]);
-    fs::write(repo.path().join("added.txt"), "second\n").expect("unstaged edit");
-    let (workspace, trusted) = repo.services().await;
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("refresh AM");
+    let fixture = command_stub::PolicyFixture::new("am-forced");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "am-forced-after",
+    );
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
@@ -265,19 +550,26 @@ async fn trusted_git_selected_am_component_preserves_forced_add_topology() {
         .await;
     assert_eq!(completion.error, None);
     assert!(completion.prepared.is_some());
-    let status = run_git_output(repo.path(), &["status", "--porcelain"]);
-    assert_eq!(status, b"A  added.txt\n");
+    assert_eq!(fixture.mutation_inputs(), vec![b"added.txt\0".to_vec()]);
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
+        )
+    );
+    fixture.assert_mutations_drained();
 }
 
 #[tokio::test]
 async fn untracked_entry_is_optional_only_and_prepares_as_added() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("untracked.txt"), "new\n").expect("new file");
-    let (workspace, trusted) = repo.services().await;
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("refresh untracked");
+    let fixture = command_stub::PolicyFixture::new("untracked");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "untracked-after",
+    );
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
@@ -295,25 +587,25 @@ async fn untracked_entry_is_optional_only_and_prepares_as_added() {
         .await;
     assert_eq!(completion.error, None);
     assert!(completion.prepared.is_some());
+    assert_eq!(fixture.mutation_inputs(), vec![b"untracked.txt\0".to_vec()]);
     assert_eq!(
-        run_git_output(repo.path(), &["status", "--porcelain"]),
-        b"A  untracked.txt\n"
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
+        )
     );
+    fixture.assert_mutations_drained();
 }
-
 #[tokio::test]
 async fn selected_delete_and_untracked_destination_may_canonicalize_to_staged_rename() {
-    let repo = Repo::new();
-    fs::rename(
-        repo.path().join("tracked.txt"),
-        repo.path().join("renamed.txt"),
-    )
-    .expect("rename fixture");
-    let (workspace, trusted) = repo.services().await;
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("refresh delete and untracked");
+    let fixture = command_stub::PolicyFixture::new("delete-untracked");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "delete-untracked-after",
+    );
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
@@ -345,11 +637,18 @@ async fn selected_delete_and_untracked_destination_may_canonicalize_to_staged_re
         Some(1)
     );
     assert_eq!(
-        run_git_output(repo.path(), &["status", "--porcelain"]),
-        b"R  tracked.txt -> renamed.txt\n"
+        fixture.mutation_inputs(),
+        vec![b"renamed.txt\0tracked.txt\0".to_vec()]
     );
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
+        )
+    );
+    fixture.assert_mutations_drained();
 }
-
 #[test]
 fn delete_untracked_joint_rename_rejects_any_extra_touching_b_record() {
     let oid = |byte: u8| vec![byte; 40];
@@ -438,14 +737,13 @@ fn delete_untracked_joint_rename_rejects_any_extra_touching_b_record() {
 
 #[tokio::test]
 async fn trusted_git_selected_staged_rename_with_unstaged_edit_proves_structural_split() {
-    let repo = Repo::new();
-    run_git(repo.path(), &["mv", "tracked.txt", "renamed.txt"]);
-    fs::write(repo.path().join("renamed.txt"), "renamed and edited\n").expect("edit rename");
-    let (workspace, trusted) = repo.services().await;
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("refresh RM");
+    let fixture = command_stub::PolicyFixture::new("rename-rm");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "rename-rm-after",
+    );
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
@@ -462,47 +760,59 @@ async fn trusted_git_selected_staged_rename_with_unstaged_edit_proves_structural
         )
         .await;
     assert_eq!(completion.error, None);
-    let status = run_git_output(repo.path(), &["status", "--porcelain"]);
-    assert_eq!(status, b"A  renamed.txt\nD  tracked.txt\n");
+    assert_eq!(fixture.mutation_inputs(), vec![b"renamed.txt\0".to_vec()]);
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
+        )
+    );
+    fixture.assert_mutations_drained();
 }
 
 #[tokio::test]
 async fn staged_rename_destination_mode_flip_is_rejected_after_one_add() {
-    let repo = Repo::new();
-    run_git(repo.path(), &["mv", "tracked.txt", "renamed.txt"]);
-    fs::write(repo.path().join("renamed.txt"), "renamed and edited\n").expect("edit rename");
-    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("A refresh");
-    let (_gate, mutation, ready, release) = blocking_before_mutation();
-    let trusted = Arc::new(
-        TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, mutation)
-            .expect("trusted"),
+    let fixture = command_stub::PolicyFixture::new("rename-rm");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "rename-rm-mode-after",
     );
+    let (workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
         .expect("rename checklist");
     let selected = checklist.optional[0].file_id;
+    let mut gate = fixture.arm_gate(command_stub::GateTarget::BeforeMutation);
     let worker = tokio::spawn({
-        let trusted = trusted.clone();
+        let trusted = Arc::new(trusted);
         async move {
             trusted
                 .prepare(checklist.id, vec![selected], CancellationToken::new())
                 .await
         }
     });
-    wait_for_path(&ready).await;
-    let path = repo.path().join("renamed.txt");
-    let mut mode = fs::metadata(&path).expect("rename metadata").permissions();
-    mode.set_mode(0o755);
-    fs::set_permissions(&path, mode).expect("flip executable mode");
-    fs::write(&release, b"release").expect("release add");
+    gate.wait_entered().await;
+    fixture.set_case("rename-rm-mode-flipped");
+    workspace
+        .refresh(CancellationToken::new())
+        .await
+        .expect("external mode refresh");
+    gate.release();
     let completion = worker.await.expect("prepare worker");
     assert_eq!(completion.error, Some(CommitErrorCode::ChangedDuringRead));
     assert!(completion.prepared.is_none());
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
+        )
+    );
+    assert_eq!(fixture.mutation_inputs(), vec![b"renamed.txt\0".to_vec()]);
+    fixture.assert_mutations_drained();
 }
 
 #[tokio::test]
@@ -548,17 +858,18 @@ async fn staged_rename_source_recreation_is_not_owned_by_destination_edit() {
 
 #[tokio::test]
 async fn staged_rename_destination_delete_claims_only_canonical_old_deletion() {
-    let repo = Repo::new();
-    run_git(repo.path(), &["mv", "tracked.txt", "renamed.txt"]);
-    fs::remove_file(repo.path().join("renamed.txt")).expect("delete rename destination");
-    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("workspace"));
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("RD refresh");
-    let (_recorder, mutation, argv, input) = mutation_recorder();
-    let trusted = TrustedGitService::new_with_mutation_for_test(repo.path(), workspace, mutation)
-        .expect("trusted");
+    let fixture = command_stub::PolicyFixture::new("rename-rd");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "rename-rd-after",
+    );
+    fixture.expect_mutation(
+        "commit",
+        &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        "rename-rd-committed",
+    );
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
@@ -574,14 +885,6 @@ async fn staged_rename_destination_delete_claims_only_canonical_old_deletion() {
         .await;
     assert_eq!(completion.error, None);
     let prepared = completion.prepared.expect("prepared RD");
-    assert_eq!(fs::read(&input).expect("RD add stdin"), b"renamed.txt\0");
-    assert_eq!(
-        fs::read(&argv).expect("RD add argv"),
-        expected_mutation_argv(
-            b"add",
-            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul",],
-        )
-    );
     {
         let state = trusted
             .state
@@ -610,20 +913,40 @@ async fn staged_rename_destination_delete_claims_only_canonical_old_deletion() {
         )
         .await;
     assert_eq!(committed.outcome, CommitOutcome::Committed);
-    assert!(!repo.path().join("tracked.txt").exists());
-    assert!(!repo.path().join("renamed.txt").exists());
+    assert!(!fixture.path().join("tracked.txt").exists());
+    assert!(!fixture.path().join("renamed.txt").exists());
+    assert_eq!(
+        fixture.mutation_argv(),
+        [
+            expected_mutation_argv(
+                b"add",
+                &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
+            ),
+            expected_mutation_argv(
+                b"commit",
+                &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
+            )
+        ]
+        .concat()
+    );
+    assert_eq!(
+        fixture.mutation_inputs(),
+        vec![
+            b"renamed.txt\0".to_vec(),
+            b"test: delete renamed file".to_vec()
+        ]
+    );
+    fixture.assert_mutations_drained();
 }
-
 #[tokio::test]
 async fn trusted_git_selected_regular_to_symlink_binds_type_change() {
-    let repo = Repo::new();
-    fs::remove_file(repo.path().join("tracked.txt")).expect("remove regular");
-    std::os::unix::fs::symlink("missing-target", repo.path().join("tracked.txt")).expect("symlink");
-    let (workspace, trusted) = repo.services().await;
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("refresh type change");
+    let fixture = command_stub::PolicyFixture::new("symlink-type");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "symlink-after",
+    );
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
@@ -637,23 +960,30 @@ async fn trusted_git_selected_regular_to_symlink_binds_type_change() {
         )
         .await;
     assert_eq!(completion.error, None);
-    let index = run_git_output(repo.path(), &["ls-files", "--stage", "--", "tracked.txt"]);
-    assert!(index.starts_with(b"120000 "));
+    assert!(completion.prepared.is_some());
+    assert_eq!(
+        fs::read_link(fixture.path().join("tracked.txt")).expect("symlink target"),
+        Path::new("missing-target")
+    );
+    assert_eq!(fixture.mutation_inputs(), vec![b"tracked.txt\0".to_vec()]);
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
+        )
+    );
+    fixture.assert_mutations_drained();
 }
-
 #[tokio::test]
 async fn trusted_git_selected_executable_add_binds_exact_worktree_mode() {
-    let repo = Repo::new();
-    let path = repo.path().join("run.sh");
-    fs::write(&path, "#!/bin/sh\nexit 0\n").expect("script");
-    let mut permissions = fs::metadata(&path).expect("metadata").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&path, permissions).expect("chmod");
-    let (workspace, trusted) = repo.services().await;
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("refresh executable");
+    let fixture = command_stub::PolicyFixture::new("exec-add");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "exec-add-after",
+    );
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
@@ -666,6 +996,24 @@ async fn trusted_git_selected_executable_add_binds_exact_worktree_mode() {
         )
         .await;
     assert_eq!(completion.error, None);
-    let index = run_git_output(repo.path(), &["ls-files", "--stage", "--", "run.sh"]);
-    assert!(index.starts_with(b"100755 "));
+    assert!(completion.prepared.is_some());
+    assert_eq!(fixture.mutation_inputs(), vec![b"run.sh\0".to_vec()]);
+    assert_eq!(
+        fixture.mutation_argv(),
+        expected_mutation_argv(
+            b"add",
+            &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
+        )
+    );
+    assert!(fixture.raw("stage").starts_with("100755 "));
+    assert!(fixture.raw("stage").contains("\trun.sh\0"));
+    assert_eq!(
+        fs::metadata(fixture.path().join("run.sh"))
+            .expect("executable metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+    fixture.assert_mutations_drained();
 }
