@@ -2,6 +2,8 @@
 
 Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 
+**2026-09-25 用户更新（Issue #149）**：按 [移除真实 E2E 规格](docs/vega-issue-149-remove-real-e2e.md) 优先将真实外部进程/网络/应用依赖 mock 化并保留业务和安全断言；仅删除 mock 后失去意义的纯真实适配契约测试，保留进程内业务、安全、存储及 UI 测试。该决定取代下文及历史规格的 E2E-first、真实适配覆盖和禁止删除此类测试的要求；真实系统集成由用户手测。
+
 ## 最高原则：SDD（Spec-Driven Development）
 
 **2026-09-22 用户更新（Issue #140）**：按 [测试依赖隔离规格](docs/vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 将 Git/Shell 业务分支测试迁移到进程内测试替身，保留真实业务与安全断言，并以适配层集成测试验证真实进程行为。该明确授权优先于下文要求每个业务场景均走真实 E2E 的旧约束；不得把 mock 证据标作真实进程验收。
@@ -20,7 +22,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 4. **交付节奏（2026-09-23 用户裁决）**：接卡立即置 `In progress` → 需求分析/测试用例/实现计划 → 实现（**只跑本卡功能点测试，不跑本地全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**。用户手测通过才回写上下文、关闭 Issue/Done 并清理本卡分支/worktree；不通过则退回 `In progress` 修复。**未收到用户手测结论前不得关闭或清理。**
 5. **主 agent 角色**：协调、集成、开 PR 与合并；**代码实现委托给专用 subagent**，主上下文不被实现细节污染。
 6. **遇阻**：按 exec-guide §6 用 `[BLOCKED]` 格式上报，禁止自创方案绕过。
-7. **真实验收由用户手测**：真实模型/服务/UI 路径的验收由用户在合并后的 master 上手动完成；Agent 不再以自产全量 E2E/截图作为合并前门禁。本卡测试仍须 E2E-first 覆盖真实 production 入口，证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
+7. **真实验收由用户手测**：真实模型/服务/UI 路径的验收由用户在合并后的 master 上手动完成；Agent 不再以自产全量 E2E/截图作为合并前门禁。本卡自动测试覆盖进程内业务行为，真实外部集成由用户手测；证据分级见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ## 问题与需求收集
 
@@ -47,7 +49,7 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - 历史 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md) 与 [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [Issue #175 规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
 - 本地不再安装 git hooks：`.githooks/`、`scripts/verify.py`、`cargo-lock.sh` / `cargo-coordinate.py` / `cargo-share-target.sh` 及 `scripts/tests/` 已删除。本地直接 `cargo` 命令即可，不受调度器约束。
 - `.config/nextest.toml` 保留给需要 nextest 的本地定向测试；PR gate 使用标准 Cargo，不安装或读取 nextest 配置。
-- **本地只跑本卡功能点测试，不跑 workspace 全量**（2026-09-23 用户裁决）：`cargo nextest run -p <crate> <filter>` 等定向命令，确保本卡自己新增/修改的测试通过；全量 fmt/clippy/workspace 测试交给云端 `pr-check`。任务级 production-root 回归与测试矩阵仍须覆盖，只是不再在本地重复全量门禁。保留既有安全断言、失败输出及任务验收矩阵；不得为提速删测试、加 ignore、放宽断言或自动重试到绿。
+- **本地只跑本卡功能点测试，不跑 workspace 全量**（2026-09-23 用户裁决）：`cargo nextest run -p <crate> <filter>` 等定向命令，确保本卡自己新增/修改的测试通过；全量 fmt/clippy/workspace 测试交给云端 `pr-check`。任务级 production-root 回归与测试矩阵仍须覆盖，只是不再在本地重复全量门禁。保留既有安全断言、失败输出及任务验收矩阵；除 #149 明确授权删除的真实 E2E 外，不得为提速删除保留范围内的测试、加 ignore、放宽断言或自动重试到绿。
 
 ## 固定应用安装入口（2026-09-21 用户更新约定）
 

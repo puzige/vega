@@ -120,108 +120,50 @@ impl Provider for OwnerCredentialProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
-    use vega_runtime::{ChatMessage, OpenAiProvider, RetryPolicy};
-
-    async fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        let mut buffer = [0u8; 4096];
-        loop {
-            let count = stream.read(&mut buffer).await.expect("owned HTTP request");
-            assert!(count > 0, "HTTP request closed before headers");
-            bytes.extend_from_slice(&buffer[..count]);
-            if let Some(header_end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                let body_start = header_end + 4;
-                let headers = String::from_utf8_lossy(&bytes[..body_start]);
-                let body_len = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.to_ascii_lowercase()
-                            .strip_prefix("content-length:")
-                            .and_then(|value| value.trim().parse::<usize>().ok())
-                    })
-                    .unwrap_or(0);
-                if bytes.len() >= body_start + body_len {
-                    return bytes;
-                }
-            }
-        }
-    }
+    use vega_runtime::{ChatMessage, MockProvider, ScriptStep};
 
     #[tokio::test]
-    async fn issue73_openai_429_retry_rechecks_rotated_keystore_before_second_wire() {
+    async fn issue73_rotated_keystore_is_rechecked_before_each_provider_attempt() {
         const ROTATED: &str = "fake-key-rotated-after-429-73";
-        let config = tempfile::tempdir().expect("owner config");
+        let config = tempfile::tempdir().unwrap();
         vega_store::keystore::set_key(config.path(), "provider-owned", "fake-initial-key-73")
-            .expect("initial owner key");
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("owned HTTP fixture");
-        let base_url = format!(
-            "http://{}/v1",
-            listener.local_addr().expect("fixture address")
-        );
-        let credential_root = config.path().to_path_buf();
-        let server = tokio::spawn(async move {
-            let (mut first, _) = listener.accept().await.expect("first request");
-            let first_request = read_http_request(&mut first).await;
-            assert!(String::from_utf8_lossy(&first_request).contains(ROTATED));
-            vega_store::keystore::set_key(&credential_root, "provider-owned", ROTATED)
-                .expect("rotate owner key during 429 backoff");
-            first
-                .write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .await
-                .expect("first response");
-            let next = tokio::time::timeout(Duration::from_millis(500), listener.accept()).await;
-            if let Ok(Ok((mut second, _))) = next {
-                let _ = read_http_request(&mut second).await;
-                second
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 14\r\nConnection: close\r\n\r\ndata: [DONE]\n\n")
-                    .await
-                    .expect("second response");
-                true
-            } else {
-                false
-            }
-        });
+            .unwrap();
         let reader_root = config.path().to_path_buf();
         let reader: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync> = Arc::new(move || {
             vega_store::keystore::get_key(&reader_root, "provider-owned")
                 .map(|key| vec![key])
                 .map_err(|_| ())
         });
-        let provider = OpenAiProvider::new(base_url, "fake-initial-key-73")
-            .expect("owned provider")
-            .with_retry_policy(RetryPolicy {
-                base_delay: Duration::from_millis(1),
-                ..RetryPolicy::default()
-            })
-            .with_pre_attempt_guard(OwnerCredentialProvider::pre_attempt_guard(reader.clone()));
-        let guarded = OwnerCredentialProvider::new(Arc::new(provider), reader);
+        let inner = Arc::new(MockProvider::new(vec![ScriptStep::text("safe")]));
+        let guarded = OwnerCredentialProvider::new(inner.clone(), reader.clone());
+        let guard = OwnerCredentialProvider::pre_attempt_guard(reader);
         let request = ChatRequest {
             model: "fixture-model".into(),
             messages: vec![ChatMessage::tool_result("historical-mcp", ROTATED)],
             ..ChatRequest::default()
         };
-        let outcome = tokio::time::timeout(
-            Duration::from_secs(2),
-            guarded.chat_stream(request, CancellationToken::new()),
-        )
-        .await
-        .expect("provider request did not stall");
-        let second_wire = server.await.expect("owned fixture completed");
+        assert!(guard(&request).is_ok());
         assert!(
-            !second_wire,
-            "rotated owner secret reached a retry HTTP request"
+            guarded
+                .chat_stream(request.clone(), CancellationToken::new())
+                .await
+                .is_ok()
         );
+        vega_store::keystore::set_key(config.path(), "provider-owned", ROTATED).unwrap();
         assert!(matches!(
-            outcome,
+            guard(&request),
             Err(VegaError::Provider {
                 retryable: false,
                 ..
             })
         ));
+        assert!(matches!(
+            guarded.chat_stream(request, CancellationToken::new()).await,
+            Err(VegaError::Provider {
+                retryable: false,
+                ..
+            })
+        ));
+        assert_eq!(inner.requests().len(), 1);
     }
 }

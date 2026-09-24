@@ -160,6 +160,20 @@ impl LifecycleFixture {
         }
     }
 
+    pub(super) fn set_attrs(&self, attrs: &str) {
+        self.backend
+            .inner
+            .lock()
+            .unwrap()
+            .data
+            .raw
+            .insert("attrs".into(), attrs.into());
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
     pub(super) fn service(&self) -> GitWorkspaceService {
         let mut workspace =
             GitWorkspaceService::new(&self.backend.root).expect("lifecycle workspace");
@@ -326,126 +340,4 @@ impl GitCommandBackend for SnapshotStub {
             overflow: false,
         })
     }
-}
-
-fn run_git_output(root: &Path, args: &[&str]) -> Vec<u8> {
-    let output = git_command(root, args)
-        .output()
-        .expect("lifecycle git output");
-    assert!(output.status.success(), "lifecycle git failed: {args:?}");
-    output.stdout
-}
-
-// Compare the captured lifecycle raw bytes with actual Git, normalizing only the
-// nondeterministic commit identity. Paths, modes, status records, raw diff
-// headers and numstat counts remain exact.
-pub(super) fn assert_lifecycle_adapter_state(root: &Path, case: &str) {
-    let fixtures: serde_json::Value =
-        serde_json::from_str(include_str!("lifecycle-fixtures.json")).expect("lifecycle fixtures");
-    let raw = &fixtures[case]["raw"];
-    let born = raw["head"].as_str().expect("fixture head") != "(initial)";
-    let head = if born {
-        String::from_utf8(run_git_output(root, &["rev-parse", "HEAD"])).expect("head")
-    } else {
-        String::new()
-    };
-    let mut outputs = vec![
-        (
-            "status",
-            run_git_output(
-                root,
-                &[
-                    "status",
-                    "--porcelain=v2",
-                    "-z",
-                    "--branch",
-                    "--renames",
-                    "--untracked-files=all",
-                ],
-            ),
-        ),
-        (
-            "paths",
-            run_git_output(root, &["ls-files", "-z", "--cached", "--deduplicate"]),
-        ),
-    ];
-    for (key, args) in [
-        (
-            "staged_raw",
-            vec![
-                "diff",
-                "--cached",
-                "--raw",
-                "-z",
-                "--abbrev=64",
-                "--find-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-            ],
-        ),
-        (
-            "unstaged_raw",
-            vec![
-                "diff",
-                "--raw",
-                "-z",
-                "--abbrev=64",
-                "--find-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-            ],
-        ),
-        (
-            "staged_numstat",
-            vec![
-                "diff",
-                "--cached",
-                "--numstat",
-                "-z",
-                "--find-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-            ],
-        ),
-        (
-            "unstaged_numstat",
-            vec![
-                "diff",
-                "--numstat",
-                "-z",
-                "--find-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-            ],
-        ),
-    ] {
-        outputs.push((key, run_git_output(root, &args)));
-    }
-    for (key, actual) in outputs {
-        let actual = String::from_utf8(actual).expect("captured UTF-8 fixture");
-        let actual = if born {
-            actual.replace(head.trim(), raw["head"].as_str().expect("fixture head"))
-        } else {
-            actual
-        };
-        assert_eq!(actual, raw[key].as_str().expect("raw key"), "{case}: {key}");
-    }
-    let paths = run_git_output(root, &["ls-files", "-z", "--cached", "--deduplicate"]);
-    let mut command = Command::new(GIT);
-    command
-        .current_dir(root)
-        .args(["check-attr", "-z", "--stdin", "--all"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
-    scrub_git_environment(&mut command);
-    let mut child = command.spawn().expect("real attribute adapter");
-    std::io::Write::write_all(&mut child.stdin.take().expect("attribute stdin"), &paths)
-        .expect("attribute input");
-    let attrs = child.wait_with_output().expect("attribute result");
-    assert!(attrs.status.success());
-    assert_eq!(
-        String::from_utf8(attrs.stdout).expect("attrs"),
-        raw["attrs"].as_str().expect("attrs"),
-        "{case}: attrs"
-    );
 }

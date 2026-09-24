@@ -53,10 +53,7 @@ use crate::thread_reload::*;
 use crate::trusted_action::*;
 use crate::window::*;
 
-use std::ffi::OsString;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
-use std::process::Command;
 use tempfile::TempDir;
 use vega_store::messages::*;
 
@@ -84,8 +81,7 @@ pub(crate) use artifact_terminal::{
     receive_artifact_terminal,
 };
 pub(crate) use diff::{
-    diff_controller_repo, fixture_git_command, install_diff_window_globals, receive_refresh,
-    run_fixture_git,
+    diff_controller_repo, install_diff_window_globals, receive_refresh, run_fixture_git,
 };
 pub(crate) use pricing::CommitPanelHarness;
 
@@ -97,35 +93,12 @@ fn r21_default_window_geometry_is_frozen() {
     assert_eq!(crate::WINDOW_MIN_HEIGHT, 600.0);
 }
 
-// ---------------------------------------------------------------------------
-// R52 (docs/vega-r52-test-gate.md §2.5): the load-sensitive disabled set is
-// frozen. Rust has no runtime reflection over test attributes, so this gate
-// scans the workspace sources instead: the tree may contain exactly the ten
-// `ignore` attributes below, each must carry a reason starting with
-// `load-sensitive:`, and each must sit on one of the ten named tests. Any
-// silent growth of the disabled set fails here instead of quietly weakening
-// the parallel gate.
-// ---------------------------------------------------------------------------
-
-/// The ten tests R52 disables, each asserting a wall-clock budget that is
-/// only reliable when the test binary runs without parallel CPU contention.
-///
-/// `issue73_connection_deadline_covers_probe_and_catalog_together` was added
-/// to this set on 2026-09-22 (issue #123): it asserts a shared-deadline
-/// wall-clock budget (probe <280ms, total <700ms) and was observed flaking
-/// under CI parallel load, blocking PR check. The test body and its
-/// assertions are unchanged; it runs via `--ignored`.
-const R52_LOAD_SENSITIVE_TESTS: [&str; 10] = [
+const R52_LOAD_SENSITIVE_TESTS: [&str; 5] = [
     "lone_text_delta_flushes_during_provider_stall_within_sixteen_ms",
     "cancellation_is_persisted_as_interrupted_under_one_second",
     "duplicate_stop_races_converge_to_exactly_one_terminal_event",
     "one_hundred_case_delay_matrix_converges_with_p99_under_one_second",
     "cancellation_stops_a_delayed_provider_under_one_second",
-    "retry_429_honors_retry_after_header",
-    "cancel_during_backoff_aborts_without_another_request",
-    "cancel_mid_stream_stops_immediately_with_no_further_events",
-    "draft_deadline_covers_setup_pre_done_and_post_done_stalls",
-    "issue73_connection_deadline_covers_probe_and_catalog_together",
 ];
 
 /// Resolve source paths from nextest's remapped runtime manifest directory.
@@ -283,3 +256,6 @@ fn pending_plan() -> (Store, String) {
     .expect("complete plan");
     (store, thread.id)
 }
+
+mod controller_git_fixture;
+pub(crate) use controller_git_fixture::{ControllerRepo, fixture_git_command};

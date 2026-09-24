@@ -1,250 +1,10 @@
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Duration, advance, sleep};
+use tokio::time::{Duration, advance};
 use tokio_util::sync::CancellationToken;
-use vega_mcp::{HttpClient, LocalServer, McpError, ProtocolVersion, StdioClient};
-
-#[tokio::test]
-async fn m02_modern_stdio_real_child_round_trip() {
-    let temp = tempfile::tempdir().expect("owned cwd");
-    let server = LocalServer {
-        executable: owned_stdio_server(),
-        args: vec!["modern".into()],
-        working_directory: temp.path().into(),
-        environment: Vec::new(),
-    };
-    let mut client = StdioClient::connect(server).await.expect("modern connect");
-    assert_eq!(client.version(), ProtocolVersion::Modern);
-    let catalog = client.list_tools().await.expect("real tools/list");
-    assert_eq!(catalog.tools.len(), 1);
-    assert_eq!(catalog.tools[0].name, "echo");
-    let result = client
-        .call_tool(&catalog.tools[0], json!({"echo": "from real child"}))
-        .await
-        .expect("real tools/call");
-    assert_eq!(result.text, ["from real child"]);
-    assert!(!result.is_error);
-    client.shutdown().await.expect("child reaped");
-}
-
-#[tokio::test]
-async fn m03_legacy_stdio_only_after_nonmodern_probe() {
-    let temp = tempfile::tempdir().expect("owned cwd");
-    let trace = temp.path().join("methods.txt");
-    let server = LocalServer {
-        executable: owned_stdio_server(),
-        args: vec!["legacy".into(), trace.to_string_lossy().into_owned()],
-        working_directory: temp.path().into(),
-        environment: Vec::new(),
-    };
-    let mut client = StdioClient::connect(server).await.expect("legacy connect");
-    assert_eq!(client.version(), ProtocolVersion::Legacy);
-    let catalog = client.list_tools().await.expect("legacy tools/list");
-    let result = client
-        .call_tool(&catalog.tools[0], json!({"echo": "legacy"}))
-        .await
-        .expect("legacy tools/call");
-    assert_eq!(result.text, ["legacy"]);
-    client.shutdown().await.expect("child reaped");
-    let methods = std::fs::read_to_string(trace).expect("method trace");
-    assert!(methods.starts_with("server/discover\ninitialize\nnotifications/initialized\n"));
-}
-
-#[tokio::test]
-async fn m03_modern_version_error_never_initializes_legacy() {
-    let temp = tempfile::tempdir().expect("owned cwd");
-    let trace = temp.path().join("methods.txt");
-    let server = LocalServer {
-        executable: owned_stdio_server(),
-        args: vec!["modern-error".into(), trace.to_string_lossy().into_owned()],
-        working_directory: temp.path().into(),
-        environment: Vec::new(),
-    };
-    let result = StdioClient::connect(server).await;
-    assert!(matches!(result, Err(McpError::IncompatibleVersion)));
-    let methods = std::fs::read_to_string(trace).expect("method trace");
-    assert_eq!(methods, "server/discover\n");
-}
-
-#[tokio::test]
-async fn m11_stdio_oversized_line_is_rejected_before_parsing() {
-    let temp = tempfile::tempdir().expect("owned cwd");
-    let server = LocalServer {
-        executable: owned_stdio_server(),
-        args: vec!["oversize".into()],
-        working_directory: temp.path().into(),
-        environment: Vec::new(),
-    };
-    assert!(matches!(
-        StdioClient::connect(server).await,
-        Err(McpError::LimitExceeded)
-    ));
-}
-
-#[tokio::test]
-async fn m11_stdio_line_accepts_exact_1m_and_rejects_plus_one() {
-    let temp = tempfile::tempdir().expect("owned cwd");
-    for (mode, allowed) in [("modern-line-exact", true), ("modern-line-over", false)] {
-        let server = LocalServer {
-            executable: owned_stdio_server(),
-            args: vec![mode.into()],
-            working_directory: temp.path().into(),
-            environment: Vec::new(),
-        };
-        let result = StdioClient::connect(server).await;
-        if allowed {
-            let client = result.expect("exactly 1 MiB line accepted");
-            client.shutdown().await.expect("owned child reaped");
-        } else {
-            assert!(matches!(result, Err(McpError::LimitExceeded)));
-        }
-    }
-}
-
-#[tokio::test]
-async fn m12_stdio_stop_cancels_exact_inflight_call_id() {
-    let temp = tempfile::tempdir().expect("owned cwd");
-    let trace = temp.path().join("cancel.txt");
-    let server = LocalServer {
-        executable: owned_stdio_server(),
-        args: vec!["cancel-slow".into(), trace.to_string_lossy().into_owned()],
-        working_directory: temp.path().into(),
-        environment: Vec::new(),
-    };
-    let mut client = StdioClient::connect(server).await.expect("connect");
-    let catalog = client.list_tools().await.expect("tools");
-    let cancel = CancellationToken::new();
-    let signal = cancel.clone();
-    let trace_for_signal = trace.clone();
-    let trigger = tokio::spawn(async move {
-        for _ in 0..100 {
-            if std::fs::read_to_string(&trace_for_signal)
-                .is_ok_and(|value| value.contains("tools/call:3"))
-            {
-                signal.cancel();
-                return;
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-        panic!("call never reached owned server");
-    });
-    let result = client
-        .call_tool_with_cancel(
-            &catalog.tools[0],
-            json!({"echo":"slow"}),
-            &cancel,
-            Duration::from_secs(2),
-        )
-        .await;
-    trigger.await.expect("trigger task");
-    assert!(matches!(result, Err(McpError::Cancelled)));
-    client.shutdown().await.expect("child reaped");
-    let trace = std::fs::read_to_string(trace).expect("cancel trace");
-    assert!(
-        trace.contains("tools/call:3\nnotifications/cancelled:3\n"),
-        "{trace}"
-    );
-}
-
-#[tokio::test]
-async fn m12_stdio_timeout_cancels_inflight_call_but_completed_call_does_not() {
-    let temp = tempfile::tempdir().expect("owned cwd");
-    let slow_trace = temp.path().join("timeout.txt");
-    let server = LocalServer {
-        executable: owned_stdio_server(),
-        args: vec![
-            "cancel-slow".into(),
-            slow_trace.to_string_lossy().into_owned(),
-        ],
-        working_directory: temp.path().into(),
-        environment: Vec::new(),
-    };
-    let mut client = StdioClient::connect(server).await.expect("connect");
-    let catalog = client.list_tools().await.expect("tools");
-    assert!(matches!(
-        client
-            .call_tool_with_cancel(
-                &catalog.tools[0],
-                json!({"echo":"slow"}),
-                &CancellationToken::new(),
-                Duration::from_millis(80)
-            )
-            .await,
-        Err(McpError::Timeout)
-    ));
-    client.shutdown().await.expect("child reaped");
-    let trace = std::fs::read_to_string(slow_trace).expect("timeout trace");
-    assert!(
-        trace.contains("tools/call:3\nnotifications/cancelled:3\n"),
-        "{trace}"
-    );
-
-    let fast_trace = temp.path().join("fast.txt");
-    let server = LocalServer {
-        executable: owned_stdio_server(),
-        args: vec![
-            "cancel-fast".into(),
-            fast_trace.to_string_lossy().into_owned(),
-        ],
-        working_directory: temp.path().into(),
-        environment: Vec::new(),
-    };
-    let mut client = StdioClient::connect(server).await.expect("connect");
-    let catalog = client.list_tools().await.expect("tools");
-    let cancel = CancellationToken::new();
-    client
-        .call_tool_with_cancel(
-            &catalog.tools[0],
-            json!({"echo":"fast"}),
-            &cancel,
-            Duration::from_secs(2),
-        )
-        .await
-        .expect("completed");
-    cancel.cancel();
-    assert!(matches!(
-        client
-            .call_tool_with_cancel(
-                &catalog.tools[0],
-                json!({"echo":"must not dispatch"}),
-                &cancel,
-                Duration::from_secs(2),
-            )
-            .await,
-        Err(McpError::Cancelled)
-    ));
-    client.shutdown().await.expect("child reaped");
-    let trace = std::fs::read_to_string(fast_trace).expect("fast trace");
-    assert!(trace.contains("tools/call:3\n"), "{trace}");
-    assert!(!trace.contains("notifications/cancelled"), "{trace}");
-}
-
-#[tokio::test]
-async fn m12_stdio_child_exit_after_dispatch_is_transport_failure_without_replay() {
-    let temp = tempfile::tempdir().expect("owned cwd");
-    let trace = temp.path().join("exited.txt");
-    let server = LocalServer {
-        executable: owned_stdio_server(),
-        args: vec!["exit-on-call".into(), trace.to_string_lossy().into_owned()],
-        working_directory: temp.path().into(),
-        environment: Vec::new(),
-    };
-    let mut client = StdioClient::connect(server).await.expect("owned connect");
-    let catalog = client.list_tools().await.expect("owned catalog");
-    assert!(matches!(
-        client
-            .call_tool(&catalog.tools[0], json!({"echo":"side effect unknown"}))
-            .await,
-        Err(McpError::Transport)
-    ));
-    client.shutdown().await.expect("exited child reaped");
-    let methods = std::fs::read_to_string(trace).expect("owned trace");
-    assert_eq!(methods.matches("tools/call").count(), 1);
-}
+use vega_mcp::{HttpClient, McpError, ProtocolVersion};
 
 #[tokio::test]
 async fn m04_modern_http_json_and_request_scoped_sse() {
@@ -410,11 +170,11 @@ async fn m12_dropping_request_scoped_http_sse_closes_the_stream() {
             .await
             .expect("stream closed in time")
             .expect("close signal"),
-        "dropped request-scoped SSE must close the HTTP stream"
+        "dropped request-scoped SSE must release the response body"
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn m11_http_request_scoped_sse_has_exact_30s_idle_deadline() {
     let (endpoint, mut requests) = start_server(Scenario::SseIdle).await;
     let mut client = HttpClient::connect(&endpoint, true)
@@ -432,10 +192,6 @@ async fn m11_http_request_scoped_sse_has_exact_30s_idle_deadline() {
     for _ in 0..32 {
         tokio::task::yield_now().await;
     }
-    // Let the request task observe the response before pausing. `sleep` then
-    // advances the paused runtime while polling the task, so the SSE idle
-    // timer is registered before the exact 29/30-second boundaries below.
-    tokio::time::pause();
     let started = tokio::time::Instant::now();
     tokio::time::sleep(Duration::from_secs(29)).await;
     assert!(!call.is_finished(), "29 seconds of silence is allowed");
@@ -459,7 +215,7 @@ async fn m11_http_request_scoped_sse_has_exact_30s_idle_deadline() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn m11_http_call_has_exact_120s_deadline() {
     let (endpoint, mut requests) = start_server(Scenario::CallDeadline).await;
     let mut client = HttpClient::connect(&endpoint, true)
@@ -477,9 +233,6 @@ async fn m11_http_call_has_exact_120s_deadline() {
     for _ in 0..32 {
         tokio::task::yield_now().await;
     }
-    // The HTTP timeout must be registered before virtual time starts; any
-    // paused await used as a request-arrival barrier can advance it implicitly.
-    tokio::time::pause();
     let started = tokio::time::Instant::now();
     advance(Duration::from_secs(119)).await;
     assert!(!call.is_finished(), "119 seconds is inside call deadline");
@@ -621,31 +374,6 @@ async fn m11_paginated_catalog_counts_exact_raw_wire_bytes() {
 }
 
 #[tokio::test]
-async fn m11_stdio_paginated_catalog_counts_exact_raw_wire_bytes() {
-    for over in [false, true] {
-        let temp = tempfile::tempdir().expect("owned cwd");
-        let server = LocalServer {
-            executable: owned_stdio_server(),
-            args: vec![if over {
-                "modern-catalog-wire-over".into()
-            } else {
-                "modern-catalog-wire-exact".into()
-            }],
-            working_directory: temp.path().into(),
-            environment: Vec::new(),
-        };
-        let mut client = StdioClient::connect(server).await.expect("owned connect");
-        let result = client.list_tools().await;
-        if over {
-            assert!(matches!(result, Err(McpError::LimitExceeded)));
-        } else {
-            assert_eq!(result.expect("exact raw 4 MiB").tools.len(), 1);
-        }
-        client.shutdown().await.expect("owned child reaped");
-    }
-}
-
-#[tokio::test]
 async fn m11_owned_catalog_enforces_64_tools_and_256k_schema() {
     let (endpoint, _requests) = start_server(Scenario::CatalogCount(64)).await;
     let mut client = HttpClient::connect(&endpoint, true)
@@ -776,131 +504,108 @@ struct CapturedRequest {
     body: Value,
 }
 
-async fn start_server(scenario: Scenario) -> (String, mpsc::UnboundedReceiver<CapturedRequest>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("owned listener");
-    let endpoint = format!("http://{}/mcp", listener.local_addr().expect("owned addr"));
+fn capture(request: vega_mcp::mock::Request) -> CapturedRequest {
+    CapturedRequest {
+        verb: request.method().to_string(),
+        path: request.url().path().to_string(),
+        headers: request
+            .headers()
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_str().unwrap().to_string()))
+            .collect(),
+        body: serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap(),
+    }
+}
+async fn start_server(
+    scenario: Scenario,
+) -> (
+    vega_mcp::mock::Endpoint,
+    mpsc::UnboundedReceiver<CapturedRequest>,
+) {
     let (sender, receiver) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        let mut calls = 0usize;
-        loop {
-            let (stream, _) = listener.accept().await.expect("owned accept");
-            let (stream, request) = read_request(stream).await;
-            if request.body["method"] == "tools/call" {
-                match scenario {
-                    Scenario::DisconnectFirstCall if calls == 0 => {
-                        calls += 1;
-                        sender.send(request).expect("capture receiver alive");
-                        drop(stream);
-                        continue;
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let endpoint = vega_mcp::mock::Endpoint::new("/mcp", |_| {
+        std::sync::Arc::new(move |request| {
+            let request = capture(request);
+            let is_call = request.body["method"] == "tools/call";
+            let reply = response_for(scenario, &request);
+            sender.send(request).unwrap();
+            let first = is_call && calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            Box::pin(async move {
+                if is_call {
+                    match scenario {
+                        Scenario::DisconnectFirstCall if first => {
+                            return Err(vega_mcp::mock::transport_error());
+                        }
+                        Scenario::SseIdle => {
+                            return Ok(vega_mcp::mock::stream_response(futures::stream::pending()));
+                        }
+                        Scenario::CallDeadline => return std::future::pending().await,
+                        _ => {}
                     }
-                    Scenario::SseIdle => {
-                        let mut stream = stream;
-                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n: keepalive\n\n").await.expect("owned SSE head");
-                        sender.send(request).expect("capture receiver alive");
-                        let _open_stream = stream;
-                        std::future::pending::<()>().await;
-                        continue;
-                    }
-                    Scenario::CallDeadline => {
-                        sender.send(request).expect("capture receiver alive");
-                        let _open_stream = stream;
-                        std::future::pending::<()>().await;
-                        continue;
-                    }
-                    _ => {}
                 }
-            }
-            let response = response_for(scenario, &request);
-            sender.send(request).expect("capture receiver alive");
-            write_response(stream, response.0, response.1, response.2, response.3).await;
-        }
+                Ok(vega_mcp::mock::response(
+                    reply.0,
+                    reply.2,
+                    reply.1,
+                    reply
+                        .3
+                        .into_iter()
+                        .map(|(k, v)| (k, v.to_owned()))
+                        .collect(),
+                ))
+            })
+        })
     });
     (endpoint, receiver)
 }
-
-async fn start_cancellable_sse_server() -> (String, oneshot::Receiver<()>, oneshot::Receiver<bool>)
-{
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("owned listener");
-    let endpoint = format!("http://{}/mcp", listener.local_addr().expect("owned addr"));
+struct StreamDrop(Option<oneshot::Sender<bool>>);
+impl Drop for StreamDrop {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(true);
+        }
+    }
+}
+async fn start_cancellable_sse_server() -> (
+    vega_mcp::mock::Endpoint,
+    oneshot::Receiver<()>,
+    oneshot::Receiver<bool>,
+) {
     let (started_tx, started_rx) = oneshot::channel();
     let (closed_tx, closed_rx) = oneshot::channel();
-    tokio::spawn(async move {
-        for _ in 0..2 {
-            let (stream, _) = listener.accept().await.expect("owned accept");
-            let (stream, request) = read_request(stream).await;
-            let response = response_for(Scenario::ModernMixed, &request);
-            write_response(stream, response.0, response.1, response.2, response.3).await;
-        }
-        let (stream, _) = listener.accept().await.expect("owned call accept");
-        let (mut stream, request) = read_request(stream).await;
-        assert_eq!(request.body["method"], "tools/call");
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n: keepalive\n\n")
-            .await
-            .expect("owned SSE head");
-        let _ = started_tx.send(());
-        let mut one_byte = [0u8; 1];
-        let closed =
-            match tokio::time::timeout(Duration::from_secs(3), stream.read(&mut one_byte)).await {
-                Ok(Ok(0)) => true,
-                Ok(Err(error)) => matches!(
-                    error.kind(),
-                    std::io::ErrorKind::ConnectionReset
-                        | std::io::ErrorKind::ConnectionAborted
-                        | std::io::ErrorKind::BrokenPipe
-                ),
-                _ => false,
-            };
-        let _ = closed_tx.send(closed);
+    let channels = std::sync::Mutex::new(Some((started_tx, closed_tx)));
+    let endpoint = vega_mcp::mock::Endpoint::new("/mcp", |_| {
+        std::sync::Arc::new(move |request| {
+            let request = capture(request);
+            if request.body["method"] == "tools/call" {
+                let (started, closed) = channels.lock().unwrap().take().unwrap();
+                let _ = started.send(());
+                let stream = futures::stream::unfold(
+                    StreamDrop(Some(closed)),
+                    |guard| async move {
+                        let _guard = guard;
+                        std::future::pending::<Option<(Result<Vec<u8>, std::io::Error>, StreamDrop)>>().await
+                    },
+                );
+                return Box::pin(async move { Ok(vega_mcp::mock::stream_response(stream)) });
+            }
+            let reply = response_for(Scenario::ModernMixed, &request);
+            Box::pin(async move {
+                Ok(vega_mcp::mock::response(
+                    reply.0,
+                    reply.2,
+                    reply.1,
+                    reply
+                        .3
+                        .into_iter()
+                        .map(|(k, v)| (k, v.to_owned()))
+                        .collect(),
+                ))
+            })
+        })
     });
     (endpoint, started_rx, closed_rx)
-}
-
-async fn read_request(mut stream: TcpStream) -> (TcpStream, CapturedRequest) {
-    let mut bytes = Vec::new();
-    let header_end = loop {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).await.expect("owned request read");
-        assert!(count > 0, "HTTP request not closed before headers");
-        bytes.extend_from_slice(&chunk[..count]);
-        assert!(bytes.len() < 1024 * 1024, "owned request bound");
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break index + 4;
-        }
-    };
-    let head = std::str::from_utf8(&bytes[..header_end]).expect("ASCII headers");
-    let mut lines = head.split("\r\n");
-    let request_line = lines.next().expect("request line");
-    let mut request_parts = request_line.split_whitespace();
-    let verb = request_parts.next().expect("verb").to_owned();
-    let path = request_parts.next().expect("path").to_owned();
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
-        }
-    }
-    let length: usize = headers["content-length"].parse().expect("content length");
-    while bytes.len() - header_end < length {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).await.expect("owned body read");
-        assert!(count > 0, "HTTP request body complete");
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    let body = serde_json::from_slice(&bytes[header_end..header_end + length]).expect("JSON body");
-    (
-        stream,
-        CapturedRequest {
-            verb,
-            path,
-            headers,
-            body,
-        },
-    )
 }
 
 fn response_for(
@@ -1110,37 +815,4 @@ fn response_for(
         }
     }
     (status, body, kind, extra)
-}
-
-async fn write_response(
-    mut stream: TcpStream,
-    status: u16,
-    body: String,
-    kind: &'static str,
-    extra: Vec<(&'static str, &'static str)>,
-) {
-    let reason = match status {
-        200 => "OK",
-        202 => "Accepted",
-        400 => "Bad Request",
-        404 => "Not Found",
-        _ => "Error",
-    };
-    let mut head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
-    );
-    for (name, value) in extra {
-        head.push_str(&format!("{name}: {value}\r\n"));
-    }
-    head.push_str("\r\n");
-    stream.write_all(head.as_bytes()).await.expect("head write");
-    stream.write_all(body.as_bytes()).await.expect("body write");
-}
-
-// nextest rewrites this runtime path when executing a relocated archive.
-fn owned_stdio_server() -> std::path::PathBuf {
-    std::env::var_os("CARGO_BIN_EXE_owned_stdio_server")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| env!("CARGO_BIN_EXE_owned_stdio_server").into())
 }

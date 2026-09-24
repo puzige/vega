@@ -96,6 +96,14 @@ pub(super) struct PolicyFixture {
 }
 
 impl PolicyFixture {
+    pub(super) fn policy(case: &str) -> Self {
+        Self::new_from_json(include_str!("policy-fixtures.json"), case)
+    }
+
+    pub(super) fn requests(&self) -> Vec<Vec<OsString>> {
+        self.backend.state.lock().unwrap().requests.clone()
+    }
+
     pub(super) fn new(case: &str) -> Self {
         Self::new_from_json(include_str!("command-fixtures.json"), case)
     }
@@ -348,7 +356,8 @@ impl PolicyFixture {
                 "object-missing",
                 "ref-moved",
                 "ref-deleted",
-                "ref-renamed"
+                "ref-renamed",
+                "root-swap"
             ]
             .contains(&plan)
         );
@@ -679,6 +688,12 @@ impl GitCommandBackend for CommandStub {
                 } else {
                     state.data.raw["tree"].clone()
                 };
+                if plan.as_deref() == Some("root-swap") {
+                    let backup = self.root.with_extension("root-backup");
+                    fs::rename(&self.root, &backup).expect("move owned fixture root");
+                    fs::create_dir(&self.root).expect("replace owned fixture root");
+                    state.proof_plan = Some("pass".into());
+                }
                 // Drift occurs after the immutable tree read, before the final head proof.
                 // No unrelated status/read count is part of this contract.
                 if let Some(drift @ ("ref-moved" | "ref-deleted" | "ref-renamed")) = plan.as_deref()
@@ -718,9 +733,10 @@ impl GitCommandBackend for CommandStub {
                 {
                     Some(format!("{}/metadata/{marker}\n", self.root.display()).into_bytes())
                 }
-                ["--no-optional-locks", "rev-parse", "--show-object-format"] => {
-                    Some(b"sha1\n".to_vec())
-                }
+                ["--no-optional-locks", "rev-parse", "--show-object-format"] => Some(
+                    raw.get("object_format")
+                        .map_or_else(|| b"sha1\n".to_vec(), |value| value.as_bytes().to_vec()),
+                ),
                 [
                     "--no-optional-locks",
                     "status",
@@ -729,7 +745,16 @@ impl GitCommandBackend for CommandStub {
                     "--branch",
                     "--renames",
                     "--untracked-files=all",
-                ] => Some(raw["status"].as_bytes().to_vec()),
+                ] => Some(
+                    if raw
+                        .get("status_guard_path")
+                        .is_some_and(|path| self.root.join(path).exists())
+                    {
+                        raw["status_guard_present"].as_bytes().to_vec()
+                    } else {
+                        raw["status"].as_bytes().to_vec()
+                    },
+                ),
                 [
                     "--no-optional-locks",
                     "ls-files",

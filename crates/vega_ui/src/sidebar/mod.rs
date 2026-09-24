@@ -396,10 +396,21 @@ fn load_block_state() -> (bool, bool) {
     }
 }
 
-/// Persists one `ui.*` preference change to config.toml and repaints the
-/// windows. Persistence failures degrade to in-memory state (ui-spec §4.6);
-/// the next successful write repairs the file.
+#[cfg(any(test, feature = "test-support"))]
+pub struct SidebarConfigPath(pub std::path::PathBuf);
+#[cfg(any(test, feature = "test-support"))]
+impl Global for SidebarConfigPath {}
+
 fn persist_ui(mutate: impl FnOnce(&mut config::AppConfig), what: &'static str, cx: &mut App) {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(path) = cx.try_global::<SidebarConfigPath>() {
+        if let Err(error) = config::update_from(&path.0, mutate) {
+            tracing::error!(%error, "failed to persist {what} to config.toml");
+        }
+        cx.refresh_windows();
+        return;
+    }
+
     if let Err(error) = config::update(mutate) {
         tracing::error!(%error, "failed to persist {what} to config.toml");
     }

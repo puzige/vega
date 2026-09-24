@@ -494,26 +494,36 @@ mod tests {
 
     #[test]
     fn process_cache_shares_success_and_retries_after_cancellation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("git");
+        version_fixture(&path, "2.55.0");
+        let executable = admitted_test_executable(path);
+        let calls = AtomicU64::new(0);
+        let cache = OnceLock::new();
+        let resolve = || {
+            calls.fetch_add(1, Ordering::Relaxed);
+            Ok(executable.clone())
+        };
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert_eq!(
-            process_git_executable(&cancelled)
-                .expect_err("cancelled resolution")
+            cached_git_executable(&cancelled, &cache, |_| resolve())
+                .unwrap_err()
                 .code(),
             GitWorkspaceErrorCode::Cancelled
         );
-        let first = process_git_executable(&CancellationToken::new()).expect("production Git");
-        let second = process_git_executable(&CancellationToken::new()).expect("cached Git");
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        let first =
+            cached_git_executable(&CancellationToken::new(), &cache, |_| resolve()).unwrap();
+        let second =
+            cached_git_executable(&CancellationToken::new(), &cache, |_| resolve()).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(first.path(), second.path());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     fn version_fixture(path: &Path, version: &str) {
-        fs::write(
-            path,
-            format!("#!/bin/sh\nprintf 'git version {version}\\n'\n"),
-        )
-        .expect("version fixture");
+        fs::write(path, format!("git version {version}\n")).expect("version fixture");
         let mut permissions = fs::metadata(path).expect("version metadata").permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).expect("version permissions");
@@ -521,47 +531,34 @@ mod tests {
 
     #[test]
     fn failed_unsupported_resolution_is_not_cached_and_retries_after_upgrade() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let candidate = directory.path().join("git");
-        version_fixture(&candidate, "2.39.5");
-        let cache = OnceLock::new();
-        let resolve = || {
-            cached_git_executable(&CancellationToken::new(), &cache, |cancel| {
-                let candidate = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
-                resolve_git_executable_from(cancel, [(candidate.clone(), ExecutableKind::System)])
-            })
-        };
-
-        assert_eq!(
-            resolve().expect_err("old Git must be rejected").code(),
-            GitWorkspaceErrorCode::GitUnsupported
-        );
-        version_fixture(&candidate, "2.55.0");
-        let executable = resolve().expect("upgraded Git must be retried");
-        let canonical = fs::canonicalize(&candidate).expect("canonical candidate");
-        assert_eq!(executable.path(), canonical.as_path());
-        assert!(Arc::ptr_eq(&executable, &resolve().expect("cached Git")));
+        assert_failed_resolution_is_retried(GitWorkspaceErrorCode::GitUnsupported);
     }
 
     #[test]
     fn failed_unavailable_resolution_is_not_cached_and_retries_after_install() {
-        let directory = tempfile::tempdir().expect("temporary directory");
+        assert_failed_resolution_is_retried(GitWorkspaceErrorCode::GitUnavailable);
+    }
+
+    fn assert_failed_resolution_is_retried(code: GitWorkspaceErrorCode) {
+        let directory = tempfile::tempdir().unwrap();
         let candidate = directory.path().join("git");
+        version_fixture(&candidate, "2.55.0");
+        let executable = admitted_test_executable(candidate.clone());
         let cache = OnceLock::new();
+        let calls = AtomicU64::new(0);
         let resolve = || {
-            cached_git_executable(&CancellationToken::new(), &cache, |cancel| {
-                let candidate = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
-                resolve_git_executable_from(cancel, [(candidate.clone(), ExecutableKind::System)])
+            cached_git_executable(&CancellationToken::new(), &cache, |_| {
+                if calls.fetch_add(1, Ordering::Relaxed) == 0 {
+                    Err(error(code))
+                } else {
+                    Ok(executable.clone())
+                }
             })
         };
-
-        assert_eq!(
-            resolve().expect_err("missing Git must be rejected").code(),
-            GitWorkspaceErrorCode::GitUnavailable
-        );
-        version_fixture(&candidate, "2.55.0");
-        let executable = resolve().expect("installed Git must be retried");
-        let canonical = fs::canonicalize(&candidate).expect("canonical candidate");
-        assert_eq!(executable.path(), canonical.as_path());
+        assert_eq!(resolve().unwrap_err().code(), code);
+        let selected = resolve().unwrap();
+        assert_eq!(selected.path(), fs::canonicalize(candidate).unwrap());
+        assert!(Arc::ptr_eq(&selected, &resolve().unwrap()));
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 }

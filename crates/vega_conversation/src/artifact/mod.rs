@@ -148,6 +148,8 @@ pub struct ArtifactService {
     instance_nonce: u64,
     state: Mutex<ArtifactState>,
     launcher: PathBuf,
+    #[cfg(test)]
+    launch_mock: tests::LaunchMock,
     open_timeout: Duration,
     launch_attempts: Arc<AtomicU64>,
 }
@@ -192,6 +194,8 @@ impl ArtifactService {
             instance_nonce,
             state: Mutex::new(ArtifactState::default()),
             launcher: PathBuf::from(OPEN),
+            #[cfg(test)]
+            launch_mock: tests::LaunchMock::unexpected(),
             open_timeout: OPEN_TIMEOUT,
             launch_attempts: Arc::new(AtomicU64::new(0)),
         })
@@ -473,6 +477,8 @@ impl ArtifactService {
         let file = self.workspace.artifact_file_by_id(file_id)?;
         self.ensure_card_file_id(card_id, file_id)?;
         let launcher = self.launcher.clone();
+        #[cfg(test)]
+        let launch_mock = self.launch_mock.clone();
         let timeout = self.open_timeout;
         let attempts = self.launch_attempts.clone();
         self.workspace
@@ -481,7 +487,15 @@ impl ArtifactService {
                     return Err(workspace_error(GitWorkspaceErrorCode::Cancelled));
                 }
                 attempts.fetch_add(1, Ordering::SeqCst);
-                launch_open(&launcher, guard, target, timeout, cancel)
+                launch_open(
+                    &launcher,
+                    guard,
+                    target,
+                    timeout,
+                    cancel,
+                    #[cfg(test)]
+                    &launch_mock,
+                )
             })
             .await?;
         Ok(OpenInOutcome { card_id, target })
@@ -581,11 +595,11 @@ impl ArtifactService {
         project_id: String,
         thread_id: String,
         route_epoch: u64,
-        launcher: PathBuf,
+        launcher: tests::LaunchMock,
         timeout: Duration,
     ) -> Result<Self, GitWorkspaceError> {
         let mut service = Self::new(workspace, project_id, thread_id, route_epoch)?;
-        service.launcher = launcher;
+        service.launch_mock = launcher;
         service.open_timeout = timeout;
         Ok(service)
     }

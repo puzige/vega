@@ -7,9 +7,7 @@ use crate::types::{
 };
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use vega_runtime::RuntimeToolCall;
 use vega_runtime::{
     McpReadyServer, RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource,
@@ -699,26 +697,30 @@ async fn issue73_owned_stdio_reaches_durable_conversation_and_second_provider_ro
     let (store, project_dir, data_dir, _) = setup_external("confirm");
     let script = data_dir.path().join("owned-mcp.sh");
     let calls_log = data_dir.path().join("calls.log");
-    fs::write(
+    let _fixture = vega_mcp::mock::StdioFixture::new(
         &script,
-        r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","description":"Owned echo fixture","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]}}'
-      ;;
-    *tools/call*)
-      printf '%s\n' "$request" >> "$1"
-      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":"owned-answer"}],"isError":false}}'
-      ;;
-  esac
-done
-"##,
-    )
-    .unwrap();
+        Arc::new(|server, stream| {
+            Box::pin(vega_mcp::mock::serve_json(stream, move |request| {
+                if request["method"] == "tools/call" {
+                    use std::io::Write;
+                    writeln!(
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&server.args[1])
+                            .unwrap(),
+                        "{request}"
+                    )
+                    .unwrap();
+                }
+                std::future::ready(vega_mcp::mock::catalog_reply(
+                    &request,
+                    &serde_json::json!([{"name":"echo","description":"Owned echo fixture","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]),
+                    "owned-answer",
+                ))
+            }))
+        }),
+    );
     let server_id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
     let ready = McpReadyServer::connect_local(
         server_id.into(),
@@ -828,27 +830,12 @@ async fn issue73_owner_secret_echo_never_reaches_live_events_provider_or_restart
     const SECRET: &str = "fake-durable-owner-credential-73";
     let (store, project_dir, data_dir, _) = setup_external("confirm");
     let script = data_dir.path().join("secret-echo-mcp.sh");
-    fs::write(
+    let _fixture = vega_mcp::mock::catalog_stdio(
         &script,
-        format!(
-            r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","description":"Owned fixture","inputSchema":{{"type":"object"}}}}]}}}}'
-      ;;
-    *tools/call*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"resultType":"complete","content":[{{"type":"text","text":"{SECRET}"}}],"isError":false}}}}'
-      ;;
-  esac
-done
-"##
-        ),
-    )
-    .unwrap();
+        serde_json::json!([{"name":"echo","description":"Owned fixture","inputSchema":{"type":"object"}}]),
+        SECRET.into(),
+        Arc::new(|_| {}),
+    );
     let server_id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
     let ready = McpReadyServer::connect_local(
         server_id.into(),
@@ -957,42 +944,16 @@ done
 
 #[tokio::test]
 async fn issue73_owned_remote_http_reaches_durable_conversation_and_second_provider_round() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
     let (sent, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let server = tokio::spawn(async move {
-        loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (mut stream, request) = read_owned_mcp_http_request(stream).await;
-            let id = request["id"].clone();
-            let method = request["method"].as_str().unwrap();
-            let result = match method {
-                "server/discover" => serde_json::json!({
-                    "resultType":"complete", "supportedVersions":["2026-07-28"],
-                    "capabilities":{"tools":{}}, "ttlMs":0, "cacheScope":"private"
-                }),
-                "tools/list" => serde_json::json!({
-                    "resultType":"complete", "ttlMs":0, "cacheScope":"private",
-                    "tools":[{"name":"lookup","inputSchema":{"type":"object",
-                        "properties":{"query":{"type":"string"}}, "required":["query"]}}]
-                }),
-                "tools/call" => {
-                    sent.send(request["params"]["arguments"].clone()).unwrap();
-                    serde_json::json!({"resultType":"complete", "isError":false,
-                        "content":[{"type":"text", "text":"remote-answer"}]})
-                }
-                other => panic!("unexpected owned MCP method: {other}"),
-            };
-            let response =
-                serde_json::json!({"jsonrpc":"2.0", "id":id, "result":result}).to_string();
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                response.len()
-            );
-            stream.write_all(header.as_bytes()).await.unwrap();
-            stream.write_all(response.as_bytes()).await.unwrap();
-        }
-    });
+    let endpoint = remote_fixture(
+        serde_json::json!([{"name":"lookup","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]),
+        "remote-answer",
+        Arc::new(move |request| {
+            if request["method"] == "tools/call" {
+                sent.send(request["params"]["arguments"].clone()).unwrap();
+            }
+        }),
+    );
     let (store, project_dir, _data_dir, _) = setup_external("confirm");
     let server_id = "01K5KK7PZ5J8V2GSBMQKS8W71B";
     let client = vega_mcp::HttpClient::connect(&endpoint, true)
@@ -1085,38 +1046,6 @@ async fn issue73_owned_remote_http_reaches_durable_conversation_and_second_provi
     assert!(provider.requests()[1].messages.iter().any(|message| {
         message.role == vega_runtime::ChatRole::Tool && message.content.contains("remote-answer")
     }));
-    server.abort();
-}
-
-async fn read_owned_mcp_http_request(mut stream: TcpStream) -> (TcpStream, serde_json::Value) {
-    let mut bytes = Vec::new();
-    let header_end = loop {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).await.unwrap();
-        assert!(count > 0, "HTTP request closed before headers");
-        bytes.extend_from_slice(&chunk[..count]);
-        assert!(bytes.len() < 1024 * 1024, "owned HTTP request bound");
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break index + 4;
-        }
-    };
-    let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
-    let content_length = headers
-        .split("\r\n")
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim().parse::<usize>().unwrap())
-        })
-        .unwrap();
-    while bytes.len() - header_end < content_length {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).await.unwrap();
-        assert!(count > 0, "HTTP request body complete");
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    let request = serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap();
-    (stream, request)
 }
 
 fn owned_runtime() -> tokio::runtime::Runtime {
@@ -1130,26 +1059,12 @@ fn owned_runtime() -> tokio::runtime::Runtime {
 async fn issue73_production_entry_exposes_same_name_server_provenance_to_model() {
     let (store, project_dir, data_dir, _) = setup_external("confirm");
     let script = data_dir.path().join("same-name-provenance-mcp.sh");
-    fs::write(
+    let _fixture = vega_mcp::mock::catalog_stdio(
         &script,
-        r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","description":"Same-name owned fixture","inputSchema":{"type":"object"}}]}}'
-      ;;
-    *tools/call*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":"same-name-answer"}],"isError":false}}'
-      ;;
-  esac
-done
-"##,
-    )
-    .expect("owned same-name MCP fixture");
-
+        serde_json::json!([{"name":"echo","description":"Same-name owned fixture","inputSchema":{"type":"object"}}]),
+        "same-name-answer".into(),
+        Arc::new(|_| {}),
+    );
     let local_id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
     let remote_id = "01K5KK7PZ5J8V2GSBMQKS8W71B";
     let script_path = script.to_string_lossy().into_owned();
@@ -1173,53 +1088,17 @@ done
         }
     };
     let local = make_ready(local_id).await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
-    let remote_server = tokio::spawn(async move {
-        for _ in 0..2 {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (mut stream, request) = read_owned_mcp_http_request(stream).await;
-            let result = match request["method"].as_str().unwrap() {
-                "server/discover" => serde_json::json!({
-                    "resultType": "complete",
-                    "supportedVersions": ["2026-07-28"],
-                    "capabilities": {"tools": {}},
-                    "ttlMs": 0,
-                    "cacheScope": "private"
-                }),
-                "tools/list" => serde_json::json!({
-                    "resultType": "complete",
-                    "ttlMs": 0,
-                    "cacheScope": "private",
-                    "tools": [{
-                        "name": "echo",
-                        "description": "Same-name owned fixture",
-                        "inputSchema": {"type": "object"}
-                    }]
-                }),
-                method => panic!("unexpected same-name MCP method: {method}"),
-            };
-            let response = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": request["id"],
-                "result": result
-            })
-            .to_string();
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                response.len()
-            );
-            stream.write_all(header.as_bytes()).await.unwrap();
-            stream.write_all(response.as_bytes()).await.unwrap();
-        }
-    });
+    let endpoint = remote_fixture(
+        serde_json::json!([{"name":"echo","description":"Same-name owned fixture","inputSchema":{"type":"object"}}]),
+        "",
+        Arc::new(|_| {}),
+    );
     let remote_client = vega_mcp::HttpClient::connect(&endpoint, true)
         .await
         .expect("same-name remote MCP fixture connection");
     let remote = McpReadyServer::connect_http(remote_id.to_owned(), 1, remote_client)
         .await
         .expect("same-name remote MCP discovery");
-    remote_server.await.expect("same-name remote MCP fixture");
 
     let provider =
         MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![ProviderEvent::Done {
@@ -1305,22 +1184,12 @@ done
 async fn issue73_production_entry_exposes_same_transport_server_labels_to_model() {
     let (store, project_dir, data_dir, _) = setup_external("confirm");
     let script = data_dir.path().join("same-transport-label-mcp.sh");
-    fs::write(
+    let _fixture = vega_mcp::mock::catalog_stdio(
         &script,
-        r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","description":"Same-name owned fixture","inputSchema":{"type":"object"}}]}}'
-      ;;
-  esac
-done
-"##,
-    )
-    .expect("owned same-transport MCP fixture");
+        serde_json::json!([{"name":"echo","description":"Same-name owned fixture","inputSchema":{"type":"object"}}]),
+        String::new(),
+        Arc::new(|_| {}),
+    );
     let script_path = script.to_string_lossy().into_owned();
     let working_directory = data_dir.path().to_path_buf();
     let service = McpServerSettingsService::new(
@@ -1520,23 +1389,23 @@ fn issue73_local_enable_then_new_runtime_reconnects_and_calls_tool() {
     let (store, project_dir, data_dir, _) = setup_external("confirm");
     let script = data_dir.path().join("runtime-boundary-mcp.sh");
     let starts = data_dir.path().join("starts.log");
-    fs::write(
+    let _fixture = vega_mcp::mock::catalog_stdio(
         &script,
-        r##"#!/bin/sh
-printf 'started\n' >> "$1"
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}' ;;
-    *tools/list*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}' ;;
-    *tools/call*)
-      id=$(printf '%s\n' "$request" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","content":[{"type":"text","text":"current-runtime-stdio"}],"isError":false}}\n' "$id"
-      ;;
-  esac
-done
-"##,
-    )
-    .expect("owned stdio fixture");
+        serde_json::json!([{"name":"echo","inputSchema":{"type":"object"}}]),
+        "current-runtime-stdio".into(),
+        Arc::new(|server| {
+            use std::io::Write;
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&server.args[1])
+                    .unwrap(),
+                "started"
+            )
+            .unwrap();
+        }),
+    );
     let service = McpServerSettingsService::new(
         data_dir.path().join("vega.db"),
         data_dir.path().join("config"),
@@ -1598,135 +1467,61 @@ done
 
 struct OwnedCrossRuntimeHttpFixture {
     endpoint: String,
+    _registration: vega_mcp::mock::Endpoint,
     discoveries: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
-    stop: Arc<AtomicBool>,
-    worker: Option<std::thread::JoinHandle<()>>,
 }
-
 impl OwnedCrossRuntimeHttpFixture {
     fn start() -> Self {
-        use std::io::Write;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("owned HTTP fixture");
-        listener
-            .set_nonblocking(true)
-            .expect("bounded fixture accept");
-        let endpoint = format!(
-            "http://{}/mcp",
-            listener.local_addr().expect("fixture port")
-        );
         let discoveries = Arc::new(AtomicUsize::new(0));
         let calls = Arc::new(AtomicUsize::new(0));
-        let stop = Arc::new(AtomicBool::new(false));
         let worker_discoveries = discoveries.clone();
         let worker_calls = calls.clone();
-        let worker_stop = stop.clone();
-        let worker = std::thread::spawn(move || {
-            while !worker_stop.load(Ordering::SeqCst) {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(pair) => pair,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(2));
-                        continue;
-                    }
-                    Err(error) => panic!("owned fixture accept: {error}"),
-                };
-                // macOS may inherit O_NONBLOCK from the listener. A first
-                // WouldBlock is not an empty HTTP request.
-                stream
-                    .set_nonblocking(false)
-                    .expect("blocking accepted stream");
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .expect("bounded request read");
-                let Some(request) = read_owned_sync_http_request(&mut stream) else {
-                    continue;
-                };
-                let method = request["method"].as_str().expect("MCP method");
-                let result = match method {
-                    "server/discover" => {
-                        worker_discoveries.fetch_add(1, Ordering::SeqCst);
-                        serde_json::json!({
-                            "resultType":"complete", "supportedVersions":["2026-07-28"],
-                            "capabilities":{"tools":{}}, "ttlMs":0, "cacheScope":"private"
-                        })
-                    }
-                    "tools/list" => serde_json::json!({
-                        "resultType":"complete", "ttlMs":0, "cacheScope":"private",
-                        "tools":[{"name":"lookup","inputSchema":{"type":"object"}}]
-                    }),
-                    "tools/call" => {
-                        worker_calls.fetch_add(1, Ordering::SeqCst);
-                        serde_json::json!({
-                            "resultType":"complete", "isError":false,
-                            "content":[{"type":"text", "text":"current-runtime-http"}]
-                        })
-                    }
-                    other => panic!("unexpected MCP method: {other}"),
-                };
-                let body = serde_json::json!({
-                    "jsonrpc":"2.0", "id":request["id"], "result":result
-                })
-                .to_string();
-                let headers = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                stream
-                    .write_all(headers.as_bytes())
-                    .expect("owned response headers");
-                stream.write_all(body.as_bytes()).expect("owned response");
-            }
-        });
+        let endpoint = remote_fixture(
+            serde_json::json!([{"name":"lookup","inputSchema":{"type":"object"}}]),
+            "current-runtime-http",
+            Arc::new(move |request| match request["method"].as_str().unwrap() {
+                "server/discover" => {
+                    worker_discoveries.fetch_add(1, Ordering::SeqCst);
+                }
+                "tools/call" => {
+                    worker_calls.fetch_add(1, Ordering::SeqCst);
+                }
+                _ => {}
+            }),
+        );
         Self {
-            endpoint,
+            endpoint: endpoint.to_string(),
+            _registration: endpoint,
             discoveries,
             calls,
-            stop,
-            worker: Some(worker),
         }
     }
 }
-
-impl Drop for OwnedCrossRuntimeHttpFixture {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(worker) = self.worker.take() {
-            worker.join().expect("owned fixture worker");
-        }
-    }
-}
-
-fn read_owned_sync_http_request(stream: &mut std::net::TcpStream) -> Option<serde_json::Value> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    let header_end = loop {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).ok()?;
-        if count == 0 || bytes.len() + count > 1024 * 1024 {
-            return None;
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-        if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-            break index + 4;
-        }
-    };
-    let headers = std::str::from_utf8(&bytes[..header_end]).ok()?;
-    let length = headers.split("\r\n").find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("content-length")
-            .then(|| value.trim().parse::<usize>().ok())
-            .flatten()
-    })?;
-    while bytes.len() - header_end < length {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).ok()?;
-        if count == 0 || bytes.len() + count > 1024 * 1024 {
-            return None;
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    serde_json::from_slice(&bytes[header_end..header_end + length]).ok()
+fn remote_fixture(
+    tools: serde_json::Value,
+    answer: &str,
+    observe: Arc<dyn Fn(&serde_json::Value) + Send + Sync>,
+) -> vega_mcp::mock::Endpoint {
+    let answer = answer.to_owned();
+    vega_mcp::mock::Endpoint::new("/mcp", |_| {
+        Arc::new(move |request| {
+            let request: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            observe(&request);
+            let reply = vega_mcp::mock::catalog_reply(&request, &tools, &answer)
+                .unwrap()
+                .to_string();
+            Box::pin(async move {
+                Ok(vega_mcp::mock::response(
+                    200,
+                    "application/json",
+                    reply,
+                    Vec::new(),
+                ))
+            })
+        })
+    })
 }
 
 #[test]

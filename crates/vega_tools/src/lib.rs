@@ -68,3 +68,6 @@ pub use output::{
 pub use tools::{ReadState, Tools};
 
 mod text_file;
+
+#[cfg(any(test, feature = "test-support"))]
+pub use bash::BashTestExecutor;

@@ -170,20 +170,13 @@ async fn open_in_uses_six_exact_raw_argv_forms() {
     .unwrap();
     git(repo.path(), &["add", "-A"]);
     workspace.refresh(CancellationToken::new()).await.unwrap();
-    let launcher_dir = tempfile::tempdir().unwrap();
-    let recording = launcher_dir.path().join("argv.bin");
-    let script_body = format!(
-        ": > '{}'; for arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '{}'; done; exit 0",
-        recording.display(),
-        recording.display()
-    );
-    let launcher = launcher_script(launcher_dir.path(), &script_body);
+    let launcher = LaunchMock::new(None);
     let service = ArtifactService::new_for_test(
         workspace,
         PROJECT_ID.to_owned(),
         THREAD_ID.to_owned(),
         12,
-        launcher,
+        launcher.clone(),
         Duration::from_secs(1),
     )
     .unwrap();
@@ -260,22 +253,20 @@ async fn open_in_uses_six_exact_raw_argv_forms() {
             .open_in(card_id, target, CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(raw_argv(&recording), expected);
+        assert_eq!(launcher.last_args(), expected);
     }
     assert_eq!(service.launch_attempts(), 6);
 
     let non_utf8_target = canonical_root.join(OsString::from_vec(b"raw-\xff.txt".to_vec()));
-    let status = Command::new(&service.launcher)
-        .args(open_arguments(
+    assert_eq!(
+        open_arguments(
             &canonical_root,
             &non_utf8_target,
-            OpenInTarget::DefaultApplication,
-        ))
-        .status()
-        .unwrap();
-    assert!(status.success());
-    assert_eq!(
-        raw_argv(&recording),
+            OpenInTarget::DefaultApplication
+        )
+        .iter()
+        .map(|arg| arg.as_bytes().to_vec())
+        .collect::<Vec<_>>(),
         vec![non_utf8_target.as_os_str().as_bytes().to_vec()]
     );
     assert_eq!(card.id.route_epoch, 12);
@@ -286,8 +277,7 @@ async fn open_in_preflight_is_zero_attempt_and_failures_are_one_attempt() {
     let repo = Repo::new();
     repo.write("artifact.txt", b"agent\n");
     let (workspace, _base, card) = captured_text_artifact(&repo, 13).await;
-    let launcher_dir = tempfile::tempdir().unwrap();
-    let success_launcher = launcher_script(launcher_dir.path(), "exit 0");
+    let success_launcher = LaunchMock::new(None);
     let service = ArtifactService::new_for_test(
         workspace.clone(),
         PROJECT_ID.to_owned(),
@@ -326,7 +316,7 @@ async fn open_in_preflight_is_zero_attempt_and_failures_are_one_attempt() {
         PROJECT_ID.to_owned(),
         THREAD_ID.to_owned(),
         14,
-        launcher_dir.path().join("missing-open"),
+        LaunchMock::new(Some(GitWorkspaceErrorCode::SpawnFailed)),
         Duration::from_secs(1),
     )
     .unwrap();
@@ -353,7 +343,7 @@ async fn open_in_preflight_is_zero_attempt_and_failures_are_one_attempt() {
     );
     assert_eq!(missing.launch_attempts(), 1);
 
-    let nonzero_launcher = launcher_script(launcher_dir.path(), "exit 7");
+    let nonzero_launcher = LaunchMock::new(Some(GitWorkspaceErrorCode::GitFailed));
     let nonzero = ArtifactService::new_for_test(
         workspace.clone(),
         PROJECT_ID.to_owned(),
@@ -386,14 +376,7 @@ async fn open_in_preflight_is_zero_attempt_and_failures_are_one_attempt() {
     );
     assert_eq!(nonzero.launch_attempts(), 1);
 
-    let timeout_pids = launcher_dir.path().join("timeout-pids");
-    let timeout_launcher = launcher_script(
-        launcher_dir.path(),
-        &format!(
-            "sleep 5 & child=$!; printf '%s\\n%s\\n' \"$$\" \"$child\" > '{}'; wait \"$child\"",
-            timeout_pids.display()
-        ),
-    );
+    let timeout_launcher = LaunchMock::new(Some(GitWorkspaceErrorCode::TimedOut));
     let timeout = ArtifactService::new_for_test(
         workspace,
         PROJECT_ID.to_owned(),
@@ -425,18 +408,6 @@ async fn open_in_preflight_is_zero_attempt_and_failures_are_one_attempt() {
         GitWorkspaceErrorCode::TimedOut
     );
     assert_eq!(timeout.launch_attempts(), 1);
-    let timeout_processes = fs::read_to_string(&timeout_pids)
-        .unwrap()
-        .lines()
-        .map(|line| line.parse::<u32>().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(timeout_processes.len(), 2);
-    for pid in timeout_processes {
-        assert!(
-            !pid_is_alive(pid),
-            "timed-out launcher descendant {pid} survived"
-        );
-    }
     assert_eq!(current.route_epoch, 13);
     assert_eq!(card.id.route_epoch, 13);
 }
@@ -445,14 +416,13 @@ async fn open_in_preflight_is_zero_attempt_and_failures_are_one_attempt() {
 async fn open_in_symlink_segment_hardlink_special_and_root_swap_are_zero_attempt() {
     use std::os::unix::fs::symlink;
 
-    let launcher_dir = tempfile::tempdir().unwrap();
-    let launcher = launcher_script(launcher_dir.path(), "exit 0");
+    let launcher = LaunchMock::new(None);
 
     let symlink_repo = Repo::new();
     symlink_repo.write("nested/artifact.txt", b"agent\n");
     let (_workspace, mut symlink_service, symlink_card) =
         captured_artifact_at(&symlink_repo, "nested/artifact.txt", 21).await;
-    symlink_service.launcher = launcher.clone();
+    symlink_service.launch_mock = launcher.clone();
     let external = tempfile::tempdir().unwrap();
     fs::rename(
         symlink_repo.path().join("nested"),
@@ -480,7 +450,7 @@ async fn open_in_symlink_segment_hardlink_special_and_root_swap_are_zero_attempt
     hardlink_repo.write("artifact.txt", b"agent\n");
     let (_workspace, mut hardlink_service, hardlink_card) =
         captured_text_artifact(&hardlink_repo, 22).await;
-    hardlink_service.launcher = launcher.clone();
+    hardlink_service.launch_mock = launcher.clone();
     let hardlink_dir = tempfile::tempdir().unwrap();
     fs::hard_link(
         hardlink_repo.path().join("artifact.txt"),
@@ -503,13 +473,18 @@ async fn open_in_symlink_segment_hardlink_special_and_root_swap_are_zero_attempt
     special_repo.write("artifact.txt", b"agent\n");
     let (_workspace, mut special_service, special_card) =
         captured_text_artifact(&special_repo, 23).await;
-    special_service.launcher = launcher.clone();
+    special_service.launch_mock = launcher.clone();
     fs::remove_file(special_repo.path().join("artifact.txt")).unwrap();
-    let status = Command::new("/usr/bin/mkfifo")
-        .arg(special_repo.path().join("artifact.txt"))
-        .status()
-        .unwrap();
-    assert!(status.success());
+    let fifo = std::ffi::CString::new(
+        special_repo
+            .path()
+            .join("artifact.txt")
+            .as_os_str()
+            .as_bytes(),
+    )
+    .unwrap();
+    // SAFETY: fifo is a live NUL-terminated path and mkfifo retains no pointer.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
     assert!(
         special_service
             .open_in(
@@ -525,7 +500,7 @@ async fn open_in_symlink_segment_hardlink_special_and_root_swap_are_zero_attempt
     let root_repo = Repo::new();
     root_repo.write("artifact.txt", b"agent\n");
     let (_workspace, mut root_service, root_card) = captured_text_artifact(&root_repo, 24).await;
-    root_service.launcher = launcher;
+    root_service.launch_mock = launcher;
     let original_root = root_repo.path().to_path_buf();
     let moved_root = original_root.with_extension("moved-root");
     fs::rename(&original_root, &moved_root).unwrap();

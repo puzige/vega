@@ -184,16 +184,12 @@ mod tests {
         for branch in ["old-owner", "new-owner"] {
             let root = owned.join(branch);
             std::fs::create_dir(&root).unwrap();
-            assert!(
-                std::process::Command::new("/usr/bin/git")
-                    .arg("-C")
-                    .arg(&root)
-                    .args(["init", "-b", branch])
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
-            );
+            std::fs::create_dir(root.join(".git")).unwrap();
+            std::fs::write(
+                root.join(".git/HEAD"),
+                format!("ref: refs/heads/{branch}\n"),
+            )
+            .unwrap();
             let store = vega_store::Store::open(owned.join(format!("{branch}.sqlite"))).unwrap();
             store.migrate().unwrap();
             store.conn().execute("INSERT INTO projects(id,path,name,created_at,last_opened_at) VALUES('same-project',?1,'owned',0,0)", [root.to_str().unwrap()]).unwrap();

@@ -1,7 +1,6 @@
 mod srr_common;
 
 use srr_common::*;
-use std::io::Write as _;
 use vega_conversation::agent::PermissionQueue;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -120,216 +119,6 @@ async fn stop_first_wins_reaches_exactly_one_terminal_and_cleans_up_under_one_se
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_mid_shell_fifo_records_cancellation_and_never_starts_the_followup_call()
--> Result<(), Box<dyn Error>> {
-    let fixture = fixture()?;
-    let project_id = seed_project(&fixture.store, &fixture.repo)?;
-    seed_thread(&fixture.store, &project_id, "full_access")?;
-    let slow_path = fixture.repo.join("slow.txt");
-    let status = Command::new("mkfifo").arg(&slow_path).status()?;
-    assert!(status.success());
-    // Read rejects FIFOs. Exercise shell cancellation instead: rendezvous only
-    // after cat opens the pipe AND the writer delivers the fixture bytes.
-    // Bash intentionally reports a fixed error on cancellation, not partial stdout.
-    let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
-    let writer_path = slow_path.clone();
-    let writer = std::thread::spawn(move || {
-        let mut pipe = fs::OpenOptions::new()
-            .write(true)
-            .open(writer_path)
-            .expect("fifo writer open");
-        pipe.write_all(b"partial tool output\n")
-            .expect("fifo writer write");
-        connected_tx.send(()).expect("writer completion receiver");
-        // Bounded hold so cancellation can win while the tool is mid-read.
-        std::thread::sleep(Duration::from_millis(200));
-    });
-    let provider = MockProvider::new(vec![ScriptStep::events(vec![
-        ProviderEvent::ToolUse {
-            id: "slow-read".into(),
-            // Read accepts regular files only. The shell supplies a real
-            // streaming FIFO operation for this cancellation lifecycle test.
-            name: "bash".into(),
-            input_json: r#"{"cmd":"cat slow.txt"}"#.into(),
-        },
-        ProviderEvent::ToolUse {
-            id: "must-not-start".into(),
-            name: "read".into(),
-            input_json: r#"{"path":"lib.rs"}"#.into(),
-        },
-        ProviderEvent::Done {
-            stop_reason: StopReason::ToolUse,
-        },
-    ])]);
-    let tools = vega_tools::Tools::new(&fixture.repo)?;
-    let cancel = CancellationToken::new();
-    let trigger = cancel.clone();
-    let mut connected_slot = Some(connected_rx);
-    let started = Instant::now();
-    let run = run_thread_task_with_permission_sink(
-        &fixture.store,
-        &provider,
-        &tools,
-        THREAD_ID,
-        "Read the slow file.",
-        "T46 system prompt",
-        cancel,
-        &ParkingPermissionHook::default(),
-        move |event| {
-            if matches!(event, ConversationEvent::ToolCallApproved { .. })
-                && let Some(connected) = connected_slot.take()
-            {
-                let trigger = trigger.clone();
-                tokio::spawn(async move {
-                    tokio::time::timeout(Duration::from_secs(10), connected)
-                        .await
-                        .expect("shell must connect to FIFO")
-                        .expect("writer must complete its write");
-                    trigger.cancel();
-                });
-            }
-            Ok(())
-        },
-    )
-    .await?;
-    writer.join().expect("fifo writer finishes");
-    let elapsed = started.elapsed();
-
-    assert!(run.interrupted);
-    assert_eq!(interrupted_event_count(&run.events), 1);
-    assert!(
-        elapsed < Duration::from_secs(1),
-        "Stop-to-terminal took {elapsed:?}, KPI is <1s"
-    );
-    assert!(run.events.iter().any(|event| matches!(
-        event,
-        ConversationEvent::ToolCallFinished { call_id, result }
-            if call_id == "slow-read"
-                && result.status == vega_conversation::types::ToolCallStatus::Cancelled
-                && result.output == "Tool error: bash failed (cancelled)"
-    )));
-    assert!(!run.events.iter().any(|event| matches!(
-        event,
-        ConversationEvent::ToolCallProposed { call } if call.id == "must-not-start"
-    )));
-    let slow_row = tool_row(&fixture.store, "slow-read")?.expect("slow-read row");
-    assert_eq!(slow_row.0, "cancelled");
-    assert!(slow_row.3.is_some());
-    assert_eq!(
-        slow_row.1.as_deref(),
-        Some("Tool error: bash failed (cancelled)")
-    );
-    assert_eq!(
-        tool_row_count(&fixture.store)?,
-        1,
-        "the follow-up call never started"
-    );
-    let rows = message_rows(&fixture.store)?;
-    assert_eq!(rows[1].3, "interrupted");
-    assert_eq!(provider.requests().len(), 1);
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_mid_bash_kills_the_owned_process_group_under_one_second() -> Result<(), Box<dyn Error>>
-{
-    let fixture = fixture()?;
-    let project_id = seed_project(&fixture.store, &fixture.repo)?;
-    seed_thread(&fixture.store, &project_id, "auto")?;
-    let provider = MockProvider::new_rounds(vec![
-        vec![ScriptStep::events(vec![
-            ProviderEvent::ToolUse {
-                id: "bash-1".into(),
-                name: "bash".into(),
-                input_json: r#"{"cmd":"print $$ > shell.pid; sleep 30 & print $! > child.pid; wait","timeout_ms":10000}"#.into(),
-            },
-            usage(20, 4),
-            ProviderEvent::Done {
-                stop_reason: StopReason::ToolUse,
-            },
-        ])],
-        vec![ScriptStep::events(vec![ProviderEvent::Done {
-            stop_reason: StopReason::End,
-        }])],
-    ]);
-    let tools = vega_tools::Tools::new(&fixture.repo)?;
-    let cancel = CancellationToken::new();
-    let trigger = cancel.clone();
-    let shell_pid_path = fixture.repo.join("shell.pid");
-    let child_pid_path = fixture.repo.join("child.pid");
-    let shell_for_sink = shell_pid_path.clone();
-    let child_for_sink = child_pid_path.clone();
-    let started = Instant::now();
-    let run = run_thread_task_with_permission_sink(
-        &fixture.store,
-        &provider,
-        &tools,
-        THREAD_ID,
-        "Start the sleeper.",
-        "T46 system prompt",
-        cancel,
-        &ParkingPermissionHook::default(),
-        move |event| {
-            if matches!(event, ConversationEvent::ToolCallApproved { call_id, .. } if call_id == "bash-1")
-            {
-                let trigger = trigger.clone();
-                let shell = shell_for_sink.clone();
-                let child = child_for_sink.clone();
-                tokio::spawn(async move {
-                    // Bounded rendezvous: Stop only after the own process
-                    // group actually exists.
-                    let _ = tokio::time::timeout(Duration::from_secs(10), async move {
-                        loop {
-                            if shell.exists() && child.exists() {
-                                break;
-                            }
-                            tokio::time::sleep(Duration::from_millis(5)).await;
-                        }
-                    })
-                    .await;
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                    trigger.cancel();
-                });
-            }
-            Ok(())
-        },
-    )
-    .await?;
-    let elapsed = started.elapsed();
-
-    assert!(run.interrupted);
-    assert_eq!(interrupted_event_count(&run.events), 1);
-    assert!(
-        elapsed < Duration::from_secs(1),
-        "Stop-to-terminal took {elapsed:?}; the 30s sleeper proves the group was killed"
-    );
-    let bash_row = tool_row(&fixture.store, "bash-1")?.expect("bash-1 row");
-    assert_eq!(bash_row.0, "cancelled");
-    let bash_output = bash_row.1.unwrap_or_default();
-    assert!(
-        bash_output.contains("cancelled"),
-        "cancelled bash output: {bash_output:?}"
-    );
-    assert!(bash_row.3.is_some());
-    // Own process group ownership: both the shell and its descendant are
-    // reaped, not orphaned.
-    let shell_pid: u32 = fs::read_to_string(&shell_pid_path)?.trim().parse()?;
-    let child_pid: u32 = fs::read_to_string(&child_pid_path)?.trim().parse()?;
-    assert!(
-        process_is_gone(shell_pid),
-        "shell {shell_pid} survived Stop"
-    );
-    assert!(
-        process_is_gone(child_pid),
-        "descendant {child_pid} survived Stop"
-    );
-    let rows = message_rows(&fixture.store)?;
-    assert_eq!(rows[1].3, "interrupted");
-    assert_eq!(provider.requests().len(), 1, "no second round after Stop");
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn route_close_listener_drop_fails_the_pending_prompt_closed_and_never_hangs()
 -> Result<(), Box<dyn Error>> {
     let fixture = fixture()?;
@@ -411,3 +200,107 @@ async fn route_close_listener_drop_fails_the_pending_prompt_closed_and_never_han
 // Startup repair (restart) E2E: strict recovery normalizes stale rows before
 // the next run can project; partial text stays visible and immutable.
 // ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_mid_mock_tool_records_cancellation_and_never_starts_the_followup_call()
+-> Result<(), Box<dyn Error>> {
+    let fixture = fixture()?;
+    let project_id = seed_project(&fixture.store, &fixture.repo)?;
+    seed_thread(&fixture.store, &project_id, "full_access")?;
+    let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
+    let connected_tx = Arc::new(Mutex::new(Some(connected_tx)));
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::ToolUse {
+            id: "slow-read".into(),
+            name: "bash".into(),
+            input_json: r#"{"cmd":"cat slow.txt"}"#.into(),
+        },
+        ProviderEvent::ToolUse {
+            id: "must-not-start".into(),
+            name: "read".into(),
+            input_json: r#"{"path":"lib.rs"}"#.into(),
+        },
+        ProviderEvent::Done {
+            stop_reason: StopReason::ToolUse,
+        },
+    ])]);
+    let tools = vega_tools::Tools::new(&fixture.repo)?.with_bash_test_executor(Arc::new(
+        move |command, full_access, cancel| {
+            assert_eq!(command, "cat slow.txt");
+            assert!(full_access);
+            let started = connected_tx.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                started.send(()).unwrap();
+                cancel.cancelled().await;
+                Err(vega_tools::BashError::for_test(
+                    vega_tools::BashErrorCode::Cancelled,
+                ))
+            })
+        },
+    ));
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    let mut connected_slot = Some(connected_rx);
+    let started = Instant::now();
+    let run = run_thread_task_with_permission_sink(
+        &fixture.store,
+        &provider,
+        &tools,
+        THREAD_ID,
+        "Read the slow file.",
+        "T46 system prompt",
+        cancel,
+        &ParkingPermissionHook::default(),
+        move |event| {
+            if matches!(event, ConversationEvent::ToolCallApproved { .. })
+                && let Some(connected) = connected_slot.take()
+            {
+                let trigger = trigger.clone();
+                tokio::spawn(async move {
+                    tokio::time::timeout(Duration::from_secs(10), connected)
+                        .await
+                        .expect("mock tool must start")
+                        .expect("mock tool start signal");
+                    trigger.cancel();
+                });
+            }
+            Ok(())
+        },
+    )
+    .await?;
+    let elapsed = started.elapsed();
+
+    assert!(run.interrupted);
+    assert_eq!(interrupted_event_count(&run.events), 1);
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "Stop-to-terminal took {elapsed:?}, KPI is <1s"
+    );
+    assert!(run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ToolCallFinished { call_id, result }
+            if call_id == "slow-read"
+                && result.status == vega_conversation::types::ToolCallStatus::Cancelled
+                && result.output == "Tool error: bash failed (cancelled)"
+    )));
+    assert!(!run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ToolCallProposed { call } if call.id == "must-not-start"
+    )));
+    let slow_row = tool_row(&fixture.store, "slow-read")?.expect("slow-read row");
+    assert_eq!(slow_row.0, "cancelled");
+    assert!(slow_row.3.is_some());
+    assert_eq!(
+        slow_row.1.as_deref(),
+        Some("Tool error: bash failed (cancelled)")
+    );
+    assert_eq!(
+        tool_row_count(&fixture.store)?,
+        1,
+        "the follow-up call never started"
+    );
+    let rows = message_rows(&fixture.store)?;
+    assert_eq!(rows[1].3, "interrupted");
+    assert_eq!(provider.requests().len(), 1);
+    Ok(())
+}

@@ -206,3 +206,20 @@ mod tests {
         }
     }
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod mock;
+mod transport;
+#[cfg(test)]
+extern crate self as vega_mcp;
+#[cfg(test)]
+#[path = "tests/oauth.rs"]
+mod oauth_tests;
+
+#[cfg(test)]
+#[path = "tests/protocol.rs"]
+mod protocol_tests;
+
+#[cfg(test)]
+#[path = "tests/stdio.rs"]
+mod stdio_tests;

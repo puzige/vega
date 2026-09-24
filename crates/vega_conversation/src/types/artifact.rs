@@ -165,6 +165,11 @@ pub struct GitWorkspaceError {
 }
 
 impl GitWorkspaceError {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(code: GitWorkspaceErrorCode) -> Self {
+        Self::new(code)
+    }
+
     pub(crate) const fn new(code: GitWorkspaceErrorCode) -> Self {
         Self { code }
     }

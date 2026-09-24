@@ -1,3 +1,4 @@
+use crate::transport::SendRequest;
 use std::collections::HashSet;
 use std::time::Duration;
 
@@ -298,7 +299,7 @@ impl HttpClient {
         }
         let expected_id = message.get("id").and_then(Value::as_u64);
         timeout(limit, async {
-            let response = request.send().await.map_err(map_http_error)?;
+            let response = request.send_mcp().await.map_err(map_http_error)?;
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED {
                 return Err(McpError::AuthRequired);

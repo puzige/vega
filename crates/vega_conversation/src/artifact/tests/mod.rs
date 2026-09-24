@@ -1,9 +1,8 @@
 use super::*;
 use std::fs;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::PermissionsExt;
 
-use tempfile::TempDir;
+use crate::git_workspace::{GitCommandFixture, fixture_git_command};
 
 const PROJECT_ID: &str = "project";
 const THREAD_ID: &str = "thread";
@@ -13,12 +12,15 @@ mod capture_reconcile;
 mod preview_open;
 
 struct Repo {
-    dir: TempDir,
+    dir: GitCommandFixture,
 }
 
 impl Repo {
     fn new() -> Self {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = GitCommandFixture::for_current_test(
+            include_str!("artifact-git-fixtures.json"),
+            "artifact fixture",
+        );
         git(dir.path(), &["init", "-q"]);
         git(dir.path(), &["config", "user.name", "Vega Test"]);
         git(
@@ -47,40 +49,13 @@ impl Repo {
 }
 
 fn git(root: &Path, args: &[&str]) {
-    let mut command = Command::new("/usr/bin/git");
-    command
-        .current_dir(root)
-        .args(args)
-        .env("GIT_DIR", root.join(".poison-git-dir"))
-        .env("GIT_WORK_TREE", root.join(".poison-work-tree"))
-        .env("GIT_INDEX_FILE", root.join(".poison-index"));
-    scrub_all_git_environment(&mut command);
-    let status = command.status().unwrap();
-    assert!(status.success(), "git {args:?}");
-    for poison in [".poison-git-dir", ".poison-work-tree", ".poison-index"] {
-        assert!(!root.join(poison).exists(), "poison target {poison}");
+    if let ["mv", from, to] = args {
+        fs::rename(root.join(from), root.join(to)).unwrap();
     }
-}
-
-fn scrub_all_git_environment(command: &mut Command) {
-    let explicit = command
-        .get_envs()
-        .filter(|(key, _)| key.as_bytes().starts_with(b"GIT_"))
-        .map(|(key, _)| key.to_owned())
-        .collect::<Vec<_>>();
-    for key in explicit {
-        command.env_remove(key);
-    }
-    for (key, _) in std::env::vars_os() {
-        if key.as_os_str().as_bytes().starts_with(b"GIT_") {
-            command.env_remove(key);
-        }
-    }
-    command
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C");
+    assert!(
+        fixture_git_command(root, args).status().unwrap().success(),
+        "git {args:?}"
+    );
 }
 
 fn write_call(call_id: &str, path: &str, bytes: u64) -> ToolCall {
@@ -237,83 +212,45 @@ async fn captured_artifact_at(
     (workspace, service, card)
 }
 
-fn launcher_script(root: &Path, body: &str) -> PathBuf {
-    let script = root.join("fake-open");
-    fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nif [ \"${{1-}}\" = '{FIXTURE_READINESS_ARG}' ]; then exit 0; fi\n{body}\n"
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-    run_fixture_readiness(&script);
-    script
+#[derive(Clone)]
+pub(crate) struct LaunchMock {
+    calls: Arc<Mutex<Vec<Vec<Vec<u8>>>>>,
+    outcome: Option<GitWorkspaceErrorCode>,
+    expected: bool,
 }
 
-const FIXTURE_READINESS_ARG: &str = "--vega-test-readiness";
-const FIXTURE_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
-
-fn run_fixture_readiness(script: &Path) {
-    let started = Instant::now();
-    let mut child = Command::new(script)
-        .arg(FIXTURE_READINESS_ARG)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .unwrap_or_else(|error| panic!("fixture readiness spawn failed: {error}"));
-    let pgid = child.id();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                assert!(
-                    status.success(),
-                    "fixture readiness exited with {:?}",
-                    status.code()
-                );
-                return;
-            }
-            Ok(None) if started.elapsed() < FIXTURE_READINESS_TIMEOUT => {
-                thread::sleep(Duration::from_millis(5));
-            }
-            Ok(None) => {
-                let cleanup_failed = terminate_group(&mut child, pgid).is_err();
-                panic!(
-                    "fixture readiness timed out after {:?}; cleanup_failed={cleanup_failed}",
-                    FIXTURE_READINESS_TIMEOUT
-                );
-            }
-            Err(error) => {
-                let cleanup_failed = terminate_group(&mut child, pgid).is_err();
-                panic!("fixture readiness wait failed: {error}; cleanup_failed={cleanup_failed}");
-            }
+impl LaunchMock {
+    fn new(outcome: Option<GitWorkspaceErrorCode>) -> Self {
+        Self {
+            calls: Arc::default(),
+            outcome,
+            expected: true,
         }
     }
-}
 
-fn raw_argv(path: &Path) -> Vec<Vec<u8>> {
-    let bytes = fs::read(path).unwrap();
-    let payload = bytes.strip_suffix(&[0]).unwrap_or(&bytes);
-    payload
-        .split(|byte| *byte == 0)
-        .map(<[u8]>::to_vec)
-        .collect()
-}
-
-fn pid_is_alive(pid: u32) -> bool {
-    for _ in 0..100 {
-        let alive = Command::new("/bin/kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
-        if !alive {
-            return false;
+    pub(super) fn unexpected() -> Self {
+        Self {
+            expected: false,
+            ..Self::new(None)
         }
-        thread::sleep(Duration::from_millis(5));
     }
-    true
+
+    pub(super) fn execute(&self, command: &Command) -> Option<Result<(), GitWorkspaceError>> {
+        assert!(self.expected, "unexpected external application launch");
+        assert_eq!(command.get_program(), "/usr/bin/open");
+        self.calls.lock().unwrap().push(
+            command
+                .get_args()
+                .map(|arg| arg.as_bytes().to_vec())
+                .collect(),
+        );
+        Some(
+            self.outcome
+                .map_or(Ok(()), |code| Err(workspace_error(code))),
+        )
+    }
+
+    fn last_args(&self) -> Vec<Vec<u8>> {
+        self.calls.lock().unwrap().last().unwrap().clone()
+    }
 }

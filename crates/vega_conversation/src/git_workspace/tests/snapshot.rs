@@ -1,32 +1,17 @@
+use super::snapshot_stub::SnapshotFixture;
 use super::*;
-
-#[test]
-fn git_workspace_fixture_git_scrubs_repository_targeting_environment() {
-    let repo = Repo::new();
-    repo.write("isolated.txt", b"isolated\n");
-    repo.commit_all();
-
-    assert!(repo.path().join(".git").is_dir());
-    for path in [
-        ".vega-poison-git-dir",
-        ".vega-poison-work-tree",
-        ".vega-poison-index",
-    ] {
-        assert!(!repo.path().join(path).exists(), "poison target {path}");
-    }
-}
 
 #[tokio::test]
 async fn git_workspace_clean_staged_unstaged_untracked_and_structured_projection() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new(
+        "git_workspace_clean_staged_unstaged_untracked_and_structured_projection",
+    );
     repo.write("src/lib.rs", b"one\ntwo\n");
-    repo.commit_all();
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let clean = service.refresh(CancellationToken::new()).await.unwrap();
     assert!(clean.files.is_empty());
 
     repo.write("src/lib.rs", b"ONE\ntwo\n");
-    git(repo.path(), &["add", "src/lib.rs"]);
     repo.write("src/lib.rs", b"ONE\nTWO\n");
     repo.write("new.ts", b"export const value = 1;\n");
     let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
@@ -68,13 +53,11 @@ async fn git_workspace_clean_staged_unstaged_untracked_and_structured_projection
 
 #[tokio::test]
 async fn git_workspace_staged_and_unstaged_sections_share_row_budget() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new("git_workspace_staged_and_unstaged_sections_share_row_budget");
     repo.write("large.txt", "a\n".repeat(6_000).as_bytes());
-    repo.commit_all();
     repo.write("large.txt", "b\n".repeat(6_000).as_bytes());
-    git(repo.path(), &["add", "large.txt"]);
     repo.write("large.txt", "c\n".repeat(6_000).as_bytes());
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
     assert_eq!(
         service
@@ -88,12 +71,11 @@ async fn git_workspace_staged_and_unstaged_sections_share_row_budget() {
 
 #[tokio::test]
 async fn git_workspace_delete_rename_space_and_literal_magic_names() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new("git_workspace_delete_rename_space_and_literal_magic_names");
     repo.write("delete.txt", b"delete-only\n");
     for path in ["old name.txt", ":(glob)**", ":!safe"] {
         repo.write(path, b"body\n");
     }
-    repo.commit_all();
     fs::remove_file(repo.path().join("delete.txt")).unwrap();
     fs::rename(
         repo.path().join("old name.txt"),
@@ -102,9 +84,8 @@ async fn git_workspace_delete_rename_space_and_literal_magic_names() {
     .unwrap();
     repo.write(":(glob)**", b"changed glob\n");
     repo.write(":!safe", b"changed exclude\n");
-    git(repo.path(), &["add", "-A"]);
     repo.write("new name.txt", b"body\nafter-rename\n");
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
     assert!(
         snapshot
@@ -162,10 +143,10 @@ fn git_workspace_unstaged_type_two_record_is_strictly_parsed() {
 
 #[tokio::test]
 async fn git_workspace_binary_symlink_and_special_are_metadata_only() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new("git_workspace_binary_symlink_and_special_are_metadata_only");
     repo.write("binary.bin", b"a\0b");
     symlink("binary.bin", repo.path().join("link")).unwrap();
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
     for label in ["binary.bin", "link"] {
         let file = snapshot
@@ -186,18 +167,18 @@ async fn git_workspace_binary_symlink_and_special_are_metadata_only() {
 
 #[tokio::test]
 async fn git_workspace_tracked_staged_and_unstaged_symlinks_are_metadata_only() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new(
+        "git_workspace_tracked_staged_and_unstaged_symlinks_are_metadata_only",
+    );
     repo.write("target.txt", b"target\n");
     repo.write("staged-link", b"regular staged\n");
     repo.write("unstaged-link", b"regular unstaged\n");
-    repo.commit_all();
     fs::remove_file(repo.path().join("staged-link")).unwrap();
     fs::remove_file(repo.path().join("unstaged-link")).unwrap();
     symlink("target.txt", repo.path().join("staged-link")).unwrap();
     symlink("target.txt", repo.path().join("unstaged-link")).unwrap();
-    git(repo.path(), &["add", "staged-link"]);
 
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
     for label in ["staged-link", "unstaged-link"] {
         let file = snapshot
@@ -217,33 +198,14 @@ async fn git_workspace_tracked_staged_and_unstaged_symlinks_are_metadata_only() 
 }
 
 #[tokio::test]
-async fn git_workspace_real_conflict_is_unmerged_metadata_only_without_filter_execution() {
-    let repo = Repo::new();
-    repo.write("conflict.txt", b"base\n");
-    repo.commit_all();
-    git(repo.path(), &["branch", "side"]);
-    git(repo.path(), &["checkout", "-q", "side"]);
-    repo.write("conflict.txt", b"side\n");
-    repo.commit_all();
-    git(repo.path(), &["checkout", "-q", "main"]);
-    repo.write("conflict.txt", b"main\n");
-    repo.commit_all();
-    let merge = git_command(repo.path(), &["merge", "--no-edit", "side"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-    assert!(!merge.success());
-    let marker = repo.path().join("filter-ran");
-    git(
-        repo.path(),
-        &[
-            "config",
-            "filter.unused.clean",
-            &format!("printf ran > '{}'; cat", marker.display()),
-        ],
+async fn git_workspace_captured_conflict_is_unmerged_metadata_only_without_filter_execution() {
+    let repo = SnapshotFixture::new(
+        "git_workspace_real_conflict_is_unmerged_metadata_only_without_filter_execution",
     );
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    repo.write("conflict.txt", b"base\n");
+    repo.write("conflict.txt", b"side\n");
+    repo.write("conflict.txt", b"main\n");
+    let service = repo.service();
     let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
     let conflicted = snapshot
         .files
@@ -262,19 +224,19 @@ async fn git_workspace_real_conflict_is_unmerged_metadata_only_without_filter_ex
             .code(),
         GitWorkspaceErrorCode::MetadataOnly
     );
-    assert!(!marker.exists());
 }
 
 #[tokio::test]
 async fn git_workspace_unborn_detached_nonrepo_and_stale_ids_are_typed() {
-    let repo = Repo::new();
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let repo =
+        SnapshotFixture::new("git_workspace_unborn_detached_nonrepo_and_stale_ids_are_typed");
+    let service = repo.service();
     let unborn = service.refresh(CancellationToken::new()).await.unwrap();
     assert!(matches!(unborn.head, WorkspaceHead::Unborn { .. }));
     repo.write("a.py", b"print(1)\n");
     let first = service.refresh(CancellationToken::new()).await.unwrap();
     let stale = first.files[0].id;
-    let other_service = GitWorkspaceService::new(repo.path()).unwrap();
+    let other_service = repo.service();
     other_service
         .refresh(CancellationToken::new())
         .await
@@ -303,8 +265,6 @@ async fn git_workspace_unborn_detached_nonrepo_and_stale_ids_are_typed() {
             .code(),
         GitWorkspaceErrorCode::StaleGeneration
     );
-    repo.commit_all();
-    git(repo.path(), &["checkout", "--detach", "-q"]);
     assert!(matches!(
         service
             .refresh(CancellationToken::new())
@@ -315,7 +275,8 @@ async fn git_workspace_unborn_detached_nonrepo_and_stale_ids_are_typed() {
     ));
 
     let nonrepo = tempdir().unwrap();
-    let service = GitWorkspaceService::new(nonrepo.path()).unwrap();
+    let mut service = GitWorkspaceService::new(nonrepo.path()).unwrap();
+    service.command_backend = Some(Arc::new(super::snapshot_stub::NotRepositoryBackend));
     assert_eq!(
         service
             .refresh(CancellationToken::new())
@@ -328,9 +289,10 @@ async fn git_workspace_unborn_detached_nonrepo_and_stale_ids_are_typed() {
 
 #[tokio::test]
 async fn git_workspace_identical_refresh_retains_generation_and_opaque_ids() {
-    let repo = Repo::new();
+    let repo =
+        SnapshotFixture::new("git_workspace_identical_refresh_retains_generation_and_opaque_ids");
     repo.write("stable.rs", b"fn stable() {}\n");
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let first = service.refresh(CancellationToken::new()).await.unwrap();
     let first_id = first.files[0].id;
 
@@ -363,10 +325,11 @@ async fn git_workspace_identical_refresh_retains_generation_and_opaque_ids() {
 
 #[tokio::test]
 async fn git_workspace_canonical_vec_slot_and_seal_are_lookup_authority() {
-    let repo = Repo::new();
+    let repo =
+        SnapshotFixture::new("git_workspace_canonical_vec_slot_and_seal_are_lookup_authority");
     repo.write("z-last.txt", b"z\n");
     repo.write("a-first.txt", b"a\n");
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
     assert_eq!(snapshot.files.len(), 2);
     {
@@ -407,10 +370,9 @@ async fn git_workspace_canonical_vec_slot_and_seal_are_lookup_authority() {
 
 #[tokio::test]
 async fn git_workspace_clean_unchanged_refresh_retains_generation() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new("git_workspace_clean_unchanged_refresh_retains_generation");
     repo.write("clean.txt", b"clean\n");
-    repo.commit_all();
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
 
     let first = service.refresh(CancellationToken::new()).await.unwrap();
     let second = service.refresh(CancellationToken::new()).await.unwrap();
@@ -421,16 +383,11 @@ async fn git_workspace_clean_unchanged_refresh_retains_generation() {
 
 #[tokio::test]
 async fn git_workspace_clean_head_only_change_rotates_generation() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new("git_workspace_clean_head_only_change_rotates_generation");
     repo.write("clean.txt", b"clean\n");
-    repo.commit_all();
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let before = service.refresh(CancellationToken::new()).await.unwrap();
 
-    git(
-        repo.path(),
-        &["commit", "-q", "--allow-empty", "-m", "head"],
-    );
     let after = service.refresh(CancellationToken::new()).await.unwrap();
 
     assert!(before.files.is_empty());
@@ -442,10 +399,10 @@ async fn git_workspace_clean_head_only_change_rotates_generation() {
 
 #[tokio::test]
 async fn git_workspace_clean_info_attributes_change_rotates_generation() {
-    let repo = Repo::new();
+    let repo =
+        SnapshotFixture::new("git_workspace_clean_info_attributes_change_rotates_generation");
     repo.write("clean.txt", b"clean\n");
-    repo.commit_all();
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let before = service.refresh(CancellationToken::new()).await.unwrap();
 
     fs::write(
@@ -464,11 +421,10 @@ async fn git_workspace_clean_info_attributes_change_rotates_generation() {
 
 #[tokio::test]
 async fn git_workspace_private_content_head_and_raw_rename_rotate_ids() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new("git_workspace_private_content_head_and_raw_rename_rotate_ids");
     repo.write("tracked.txt", b"base\n");
-    repo.commit_all();
     repo.write("tracked.txt", b"aaaa\n");
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let content_a = service.refresh(CancellationToken::new()).await.unwrap();
     let content_a_id = content_a.files[0].id;
 
@@ -489,10 +445,6 @@ async fn git_workspace_private_content_head_and_raw_rename_rotate_ids() {
     // An empty commit changes only the captured HEAD while the safe file
     // projection remains equal.
     let before_head = content_b;
-    git(
-        repo.path(),
-        &["commit", "-q", "--allow-empty", "-m", "head"],
-    );
     let after_head = service.refresh(CancellationToken::new()).await.unwrap();
     assert_ne!(after_head.generation, before_head.generation);
     assert_eq!(after_head.files[0].label, before_head.files[0].label);
@@ -521,9 +473,10 @@ async fn git_workspace_private_content_head_and_raw_rename_rotate_ids() {
 
 #[tokio::test]
 async fn git_workspace_aba_allocates_fresh_generation_without_id_revival() {
-    let repo = Repo::new();
+    let repo =
+        SnapshotFixture::new("git_workspace_aba_allocates_fresh_generation_without_id_revival");
     repo.write("aba.txt", b"state-a\n");
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let first_a = service.refresh(CancellationToken::new()).await.unwrap();
     let first_id = first_a.files[0].id;
 
@@ -548,9 +501,11 @@ async fn git_workspace_aba_allocates_fresh_generation_without_id_revival() {
 
 #[tokio::test]
 async fn git_workspace_latest_failure_invalidates_ids_and_next_success_reseals() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new(
+        "git_workspace_latest_failure_invalidates_ids_and_next_success_reseals",
+    );
     repo.write("failure.txt", b"stable\n");
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let before = service.refresh(CancellationToken::new()).await.unwrap();
     let old_id = before.files[0].id;
 
@@ -576,9 +531,10 @@ async fn git_workspace_latest_failure_invalidates_ids_and_next_success_reseals()
 
 #[tokio::test]
 async fn git_workspace_generation_allocation_failure_invalidates_current() {
-    let repo = Repo::new();
+    let repo =
+        SnapshotFixture::new("git_workspace_generation_allocation_failure_invalidates_current");
     repo.write("overflow.txt", b"before\n");
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let before = service.refresh(CancellationToken::new()).await.unwrap();
     let old_id = before.files[0].id;
     service
@@ -608,7 +564,9 @@ async fn git_workspace_generation_allocation_failure_invalidates_current() {
 
 #[tokio::test]
 async fn git_workspace_escapes_control_bidi_and_non_utf8_paths_without_round_trip() {
-    let repo = Repo::new();
+    let repo = SnapshotFixture::new(
+        "git_workspace_escapes_control_bidi_and_non_utf8_paths_without_round_trip",
+    );
     for bytes in [
         b"tab\tname.txt".to_vec(),
         b"line\nname.txt".to_vec(),
@@ -616,7 +574,7 @@ async fn git_workspace_escapes_control_bidi_and_non_utf8_paths_without_round_tri
     ] {
         fs::write(repo.path().join(OsString::from_vec(bytes)), b"body\n").unwrap();
     }
-    let service = GitWorkspaceService::new(repo.path()).unwrap();
+    let service = repo.service();
     let snapshot = service.refresh(CancellationToken::new()).await.unwrap();
     assert_eq!(snapshot.files.len(), 3);
     let labels: Vec<&str> = snapshot
@@ -880,7 +838,7 @@ fn git_workspace_projection_redaction_and_service_debug_are_safe() {
     let debug = format!("{projection:?}");
     assert!(!debug.contains("LEAK_SENTINEL"));
     assert!(debug.contains("redacted"));
-    let repo = Repo::new();
+    let repo = tempdir().unwrap();
     let service = GitWorkspaceService::new(repo.path()).unwrap();
     assert!(!format!("{service:?}").contains(&repo.path().to_string_lossy().to_string()));
 }

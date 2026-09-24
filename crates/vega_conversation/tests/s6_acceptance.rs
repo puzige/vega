@@ -1,10 +1,8 @@
 use std::collections::VecDeque;
 use std::error::Error;
-use std::ffi::OsString;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
@@ -56,29 +54,7 @@ impl PermissionHook for ScriptedPermissionHook {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Output, Box<dyn Error>> {
-    let mut command = Command::new("/usr/bin/git");
-    command.arg("-C").arg(repo).args(args);
-    let explicit_git_keys: Vec<OsString> = command
-        .get_envs()
-        .filter(|(key, _)| key.as_bytes().starts_with(b"GIT_"))
-        .map(|(key, _)| key.to_owned())
-        .collect();
-    for key in explicit_git_keys {
-        command.env_remove(key);
-    }
-    for (key, _) in std::env::vars_os() {
-        if key.as_os_str().as_bytes().starts_with(b"GIT_") {
-            command.env_remove(key);
-        }
-    }
-    let output = command
-        .env("LC_ALL", "C")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_PAGER", "cat")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()?;
+    let output = vega_conversation::fixture_git_command(repo, args).output()?;
     if !output.status.success() {
         return Err(std::io::Error::other("fixture git command failed").into());
     }
@@ -252,7 +228,11 @@ fn commit_error(code: vega_conversation::types::CommitErrorCode) -> std::io::Err
 #[tokio::test]
 async fn agent_diff_artifact_dirty_reject_and_two_stage_commit() -> Result<(), Box<dyn Error>> {
     let fixture = tempdir()?;
-    let repo = fixture.path().join("repo");
+    let git_fixture = vega_conversation::GitCommandFixture::for_current_test(
+        include_str!("s6-git-fixtures.json"),
+        "S6 Git command fixture",
+    );
+    let repo = git_fixture.path().to_path_buf();
     let state = fixture.path().join("state");
     fs::create_dir_all(&repo)?;
     fs::create_dir_all(&state)?;
@@ -284,7 +264,27 @@ async fn agent_diff_artifact_dirty_reject_and_two_stage_commit() -> Result<(), B
             updated_at: 1,
         },
     )?;
-    let tools = Tools::new(&repo)?;
+    let rename_root = repo.clone();
+    let tools = Tools::new(&repo)?.with_bash_test_executor(Arc::new(
+        move |command, full_access, cancel| {
+            assert_eq!(command, "mv -- src/original.rs src/renamed.rs");
+            assert!(!full_access);
+            assert!(!cancel.is_cancelled());
+            fs::rename(
+                rename_root.join("src/original.rs"),
+                rename_root.join("src/renamed.rs"),
+            )
+            .unwrap();
+            Box::pin(async {
+                Ok(vega_tools::BashOutput {
+                    text: String::new(),
+                    exit_code: 0,
+                    duration_ms: 0,
+                    truncated: false,
+                })
+            })
+        },
+    ));
     let workspace = Arc::new(GitWorkspaceService::new(&repo)?);
     let artifacts = ArtifactService::new(
         Arc::clone(&workspace),
@@ -522,8 +522,11 @@ async fn agent_diff_artifact_dirty_reject_and_two_stage_commit() -> Result<(), B
 
 #[tokio::test]
 async fn clean_fixture_branch_switches_authoritatively() -> Result<(), Box<dyn Error>> {
-    let fixture = tempdir()?;
-    let repo = fixture.path().join("repo");
+    let git_fixture = vega_conversation::GitCommandFixture::for_current_test(
+        include_str!("s6-git-fixtures.json"),
+        "S6 Git command fixture",
+    );
+    let repo = git_fixture.path().to_path_buf();
     fs::create_dir_all(&repo)?;
     init_repo(&repo)?;
     git(&repo, &["switch", "topic"])?;

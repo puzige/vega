@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------- 集成：请求/响应走本地 TCP ----------
-
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn happy_path_sends_openai_wire_format_and_streams_events() {
     let body = sse_response(
         &[
@@ -13,7 +11,7 @@ async fn happy_path_sends_openai_wire_format_and_streams_events() {
         ],
         true,
     );
-    let server = spawn_server(scripted_server(vec![body])).await;
+    let server = mock_transport(scripted_responses(vec![body])).await;
     let provider = provider_for(&server, fast_policy(25));
 
     let req = ChatRequest {
@@ -93,7 +91,7 @@ async fn happy_path_sends_openai_wire_format_and_streams_events() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn empty_name_stream_continuations_execute_one_real_read_and_observe() {
     let project = tempfile::tempdir().unwrap();
     std::fs::write(project.path().join("README.md"), "# Vega E2E\n").unwrap();
@@ -115,7 +113,7 @@ async fn empty_name_stream_continuations_execute_one_real_read_and_observe() {
         ],
         true,
     );
-    let server = spawn_server(scripted_server(vec![tool_round, answer_round])).await;
+    let server = mock_transport(scripted_responses(vec![tool_round, answer_round])).await;
     let provider = provider_for(&server, fast_policy(1));
     let tools = vega_tools::Tools::new(project.path()).unwrap();
     let outcome = crate::run_agent(
@@ -213,13 +211,13 @@ fn captured_request_debug_redacts_distinct_authorization_and_body_sentinels() {
     assert!(rendered.contains("[redacted]"));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retry_policy_zero_makes_exactly_one_local_http_attempt() {
     let success = sse_response(
         &[r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#],
         true,
     );
-    let server = spawn_server(scripted_server(vec![
+    let server = mock_transport(scripted_responses(vec![
         status_response("500 Internal Server Error", &[], "first failure"),
         success,
     ]))
@@ -243,17 +241,17 @@ async fn retry_policy_zero_makes_exactly_one_local_http_attempt() {
             ..
         })
     ));
-    assert_eq!(server.connection_count(), 1);
+    assert_eq!(server.attempt_count(), 1);
     assert_eq!(server.captured().len(), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn automatic_title_once_disables_retries_without_mutating_primary_policy() {
     let success = sse_response(
         &[r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#],
         true,
     );
-    let server = spawn_server(scripted_server(vec![
+    let server = mock_transport(scripted_responses(vec![
         status_response("500 Internal Server Error", &[], "first"),
         status_response("500 Internal Server Error", &[], "second"),
         success,
@@ -266,18 +264,18 @@ async fn automatic_title_once_disables_retries_without_mutating_primary_policy()
             .await
             .is_err()
     );
-    assert_eq!(server.connection_count(), 1);
+    assert_eq!(server.attempt_count(), 1);
     let stream = provider
         .chat_stream(request(), CancellationToken::new())
         .await
         .unwrap();
     let _ = collect_events(stream, 8).await;
-    assert_eq!(server.connection_count(), 3);
+    assert_eq!(server.attempt_count(), 3);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mismatched_reasoning_model_fails_before_loopback_http() {
-    let server = spawn_server(scripted_server(vec![])).await;
+    let server = mock_transport(scripted_responses(vec![])).await;
     let provider = provider_for(&server, fast_policy(1));
     let request = ChatRequest {
         model: MODEL.into(),
@@ -300,15 +298,15 @@ async fn mismatched_reasoning_model_fails_before_loopback_http() {
         result,
         Err(VegaError::ReasoningSelectionInvalid { .. })
     ));
-    assert_eq!(server.connection_count(), 0);
+    assert_eq!(server.attempt_count(), 0);
     assert!(server.captured().is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn missing_finish_reason_is_protocol_error_for_done_and_raw_eof() {
     let partial = r#"{"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}"#;
     for done in [false, true] {
-        let server = spawn_server(scripted_server(vec![sse_response(&[partial], done)])).await;
+        let server = mock_transport(scripted_responses(vec![sse_response(&[partial], done)])).await;
         let provider = provider_for(&server, fast_policy(25));
         let stream = provider
             .chat_stream(
@@ -329,7 +327,7 @@ async fn missing_finish_reason_is_protocol_error_for_done_and_raw_eof() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retries_5xx_with_backoff_then_succeeds() {
     let ok = sse_response(
         &[
@@ -338,13 +336,13 @@ async fn retries_5xx_with_backoff_then_succeeds() {
         ],
         true,
     );
-    let server = spawn_server(scripted_server(vec![
+    let server = mock_transport(scripted_responses(vec![
         status_response("500 Internal Server Error", &[], "boom"),
         status_response("500 Internal Server Error", &[], "boom"),
         ok,
     ]))
     .await;
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let provider = provider_for(&server, fast_policy(25));
     let stream = tokio::time::timeout(
         Duration::from_secs(10),
@@ -363,13 +361,12 @@ async fn retries_5xx_with_backoff_then_succeeds() {
             }),
         ],
     );
-    assert_eq!(server.connection_count(), 3, "2 failures + 1 success");
+    assert_eq!(server.attempt_count(), 3, "2 failures + 1 success");
     // 退避被调用：两次延迟 25ms + 50ms（下界校验，tokio sleep 不会提前触发）
     assert!(started.elapsed() >= Duration::from_millis(70));
 }
 
-#[tokio::test]
-#[ignore = "load-sensitive: asserts a wall-clock budget (<500ms), fails under parallel test load; run with --ignored"]
+#[tokio::test(start_paused = true)]
 async fn retry_429_honors_retry_after_header() {
     let ok = sse_response(
         &[
@@ -378,7 +375,7 @@ async fn retry_429_honors_retry_after_header() {
         ],
         true,
     );
-    let server = spawn_server(scripted_server(vec![
+    let server = mock_transport(scripted_responses(vec![
         status_response(
             "429 Too Many Requests",
             &[("Retry-After", "0")],
@@ -387,7 +384,7 @@ async fn retry_429_honors_retry_after_header() {
         ok,
     ]))
     .await;
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     // 指数退避会是 1s；尊重 Retry-After: 0 应几乎立即重试
     let provider = provider_for(&server, RetryPolicy::default());
     let stream = tokio::time::timeout(
@@ -403,10 +400,10 @@ async fn retry_429_honors_retry_after_header() {
         started.elapsed() < Duration::from_millis(500),
         "Retry-After: 0 must be honored over the 1s exponential schedule"
     );
-    assert_eq!(server.connection_count(), 2);
+    assert_eq!(server.attempt_count(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retry_429_without_retry_after_falls_back_to_backoff() {
     let ok = sse_response(
         &[
@@ -415,12 +412,12 @@ async fn retry_429_without_retry_after_falls_back_to_backoff() {
         ],
         true,
     );
-    let server = spawn_server(scripted_server(vec![
+    let server = mock_transport(scripted_responses(vec![
         status_response("429 Too Many Requests", &[], "slow down"),
         ok,
     ]))
     .await;
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let provider = provider_for(&server, fast_policy(25));
     let stream = tokio::time::timeout(
         Duration::from_secs(10),
@@ -430,11 +427,11 @@ async fn retry_429_without_retry_after_falls_back_to_backoff() {
     .expect("chat_stream stalled")
     .unwrap();
     collect_events(stream, 4).await;
-    assert_eq!(server.connection_count(), 2);
+    assert_eq!(server.attempt_count(), 2);
     assert!(started.elapsed() >= Duration::from_millis(20));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn guarded_429_retry_rechecks_and_preserves_normal_retry() {
     let ok = sse_response(
         &[
@@ -443,7 +440,7 @@ async fn guarded_429_retry_rechecks_and_preserves_normal_retry() {
         ],
         true,
     );
-    let server = spawn_server(scripted_server(vec![
+    let server = mock_transport(scripted_responses(vec![
         status_response("429 Too Many Requests", &[], "slow down"),
         ok,
     ]))
@@ -465,12 +462,12 @@ async fn guarded_429_retry_rechecks_and_preserves_normal_retry() {
             .any(|event| matches!(event, Ok(ProviderEvent::TextDelta(text)) if text == "safe"))
     );
     assert_eq!(inspections.load(Ordering::SeqCst), 2);
-    assert_eq!(server.connection_count(), 2);
+    assert_eq!(server.attempt_count(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retries_exhausted_returns_non_retryable_provider_error() {
-    let server = spawn_server(scripted_server(vec![
+    let server = mock_transport(scripted_responses(vec![
         status_response("500 Internal Server Error", &[], "boom"),
         status_response("500 Internal Server Error", &[], "boom"),
         status_response("500 Internal Server Error", &[], "boom"),
@@ -503,29 +500,24 @@ async fn retries_exhausted_returns_non_retryable_provider_error() {
         }
         other => panic!("expected exhausted provider error, got {other:?}"),
     }
-    assert_eq!(server.connection_count(), 4, "1 initial + 3 retries");
+    assert_eq!(server.attempt_count(), 4, "1 initial + 3 retries");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn network_error_is_retried_then_succeeds() {
-    // 连接 0：读完请求后直接断开（模拟网络错误）；连接 1：正常响应
-    let handler: Handler = Arc::new(move |idx: u64, mut stream: TcpStream| {
-        Box::pin(async move {
-            if idx == 1 {
-                let ok = sse_response(
-                    &[
-                        r#"{"choices":[{"delta":{"content":"Hi"}}]}"#,
-                        r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
-                    ],
-                    true,
-                );
-                let _ = stream.write_all(&ok).await;
-                let _ = stream.flush().await;
-            }
-            // idx == 0：直接 drop，客户端读到连接中断
-        }) as HandlerFuture
+    let handler: Handler = Arc::new(|index| {
+        if index == 0 {
+            return Err(simulated_transport_error());
+        }
+        Ok(fixture_response(sse_response(
+            &[
+                r#"{"choices":[{"delta":{"content":"Hi"}}]}"#,
+                r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            ],
+            true,
+        )))
     });
-    let server = spawn_server(handler).await;
+    let server = mock_transport(handler).await;
     let provider = provider_for(&server, fast_policy(5));
     let stream = tokio::time::timeout(
         Duration::from_secs(10),
@@ -544,12 +536,12 @@ async fn network_error_is_retried_then_succeeds() {
             }),
         ],
     );
-    assert_eq!(server.connection_count(), 2);
+    assert_eq!(server.attempt_count(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn non_retryable_4xx_fails_without_retry() {
-    let server = spawn_server(scripted_server(vec![status_response(
+    let server = mock_transport(scripted_responses(vec![status_response(
         "401 Unauthorized",
         &[],
         r#"{"error":{"message":"invalid credentials"}}"#,
@@ -580,16 +572,16 @@ async fn non_retryable_4xx_fails_without_retry() {
         }
         other => panic!("expected 401 provider error, got {other:?}"),
     }
-    assert_eq!(server.connection_count(), 1, "4xx must not be retried");
+    assert_eq!(server.attempt_count(), 1, "4xx must not be retried");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn issue85_strict_schema_rejection_fails_without_non_strict_fallback() {
     let success = sse_response(
         &[r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#],
         true,
     );
-    let server = spawn_server(scripted_server(vec![
+    let server = mock_transport(scripted_responses(vec![
         status_response(
             "400 Bad Request",
             &[],
@@ -617,7 +609,7 @@ async fn issue85_strict_schema_rejection_fails_without_non_strict_fallback() {
             ..
         })
     ));
-    assert_eq!(server.connection_count(), 1);
+    assert_eq!(server.attempt_count(), 1);
     let captured = server.captured();
     assert_eq!(captured.len(), 1);
     assert!(
@@ -627,9 +619,9 @@ async fn issue85_strict_schema_rejection_fails_without_non_strict_fallback() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn error_body_echoing_the_key_is_redacted() {
-    let server = spawn_server(scripted_server(vec![status_response(
+    let server = mock_transport(scripted_responses(vec![status_response(
         "400 Bad Request",
         &[],
         &format!(r#"{{"error":{{"message":"bad key: {KEY}"}}}}"#),
@@ -654,33 +646,31 @@ async fn error_body_echoing_the_key_is_redacted() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn already_cancelled_token_fails_fast_without_connecting() {
-    let server = spawn_server(scripted_server(vec![])).await;
+    let server = mock_transport(scripted_responses(vec![])).await;
     let provider = provider_for(&server, fast_policy(1));
     let cancel = CancellationToken::new();
     cancel.cancel();
     let result = provider.chat_stream(request(), cancel).await;
     assert!(matches!(result, Err(VegaError::Cancelled)));
     assert_eq!(
-        server.connection_count(),
+        server.attempt_count(),
         0,
         "cancelled request must not connect"
     );
 }
 
-#[tokio::test]
-#[ignore = "load-sensitive: asserts a wall-clock budget (<2000ms), fails under parallel test load; run with --ignored"]
+#[tokio::test(start_paused = true)]
 async fn cancel_during_backoff_aborts_without_another_request() {
-    // 永远 503；取消发生在第一次退避期间
-    let handler: Handler = Arc::new(|_idx: u64, mut stream: TcpStream| {
-        Box::pin(async move {
-            let resp = status_response("503 Service Unavailable", &[], "unavailable");
-            let _ = stream.write_all(&resp).await;
-            let _ = stream.flush().await;
-        }) as HandlerFuture
+    let handler: Handler = Arc::new(|_| {
+        Ok(fixture_response(status_response(
+            "503 Service Unavailable",
+            &[],
+            "unavailable",
+        )))
     });
-    let server = spawn_server(handler).await;
+    let server = mock_transport(handler).await;
     let provider = provider_for(
         &server,
         RetryPolicy {
@@ -690,38 +680,39 @@ async fn cancel_during_backoff_aborts_without_another_request() {
     );
     let cancel = CancellationToken::new();
     let request_cancel = cancel.clone();
-    let started = std::time::Instant::now();
     let task = tokio::spawn(async move { provider.chat_stream(request(), request_cancel).await });
     // 等第一个 503 处理完（进入 30s 退避），再取消
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    for _ in 0..100 {
+        if server.attempt_count() != 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(server.attempt_count(), 1, "first attempt must begin");
+    let cancelled_at = tokio::time::Instant::now();
     cancel.cancel();
     let result = tokio::time::timeout(Duration::from_secs(2), task)
         .await
         .expect("cancel during backoff must abort immediately")
         .unwrap();
     assert!(matches!(result, Err(VegaError::Cancelled)));
-    assert!(started.elapsed() < Duration::from_secs(2));
-    assert_eq!(
-        server.connection_count(),
-        1,
-        "no request after cancellation"
-    );
+    assert!(cancelled_at.elapsed() < Duration::from_secs(2));
+    assert_eq!(server.attempt_count(), 1, "no request after cancellation");
 }
 
-#[tokio::test]
-#[ignore = "load-sensitive: asserts a wall-clock budget (<1000ms), fails under parallel test load; run with --ignored"]
+#[tokio::test(start_paused = true)]
 async fn cancel_mid_stream_stops_immediately_with_no_further_events() {
-    // 服务器发出第一个事件后挂住连接不关闭
-    let handler: Handler = Arc::new(|_idx: u64, mut stream: TcpStream| {
-        Box::pin(async move {
-            let head = sse_response(&[r#"{"choices":[{"delta":{"content":"Hel"}}]}"#], false);
-            let _ = stream.write_all(&head).await;
-            let _ = stream.flush().await;
-            // 保持连接打开，客户端在流中取消
-            tokio::time::sleep(Duration::from_secs(30)).await;
-        }) as HandlerFuture
+    let handler: Handler = Arc::new(|_| {
+        let bytes = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n".to_vec();
+        let body = futures::stream::once(async move { Ok::<_, std::io::Error>(bytes) })
+            .chain(futures::stream::pending());
+        Ok(::http::Response::builder()
+            .status(200)
+            .body(reqwest::Body::wrap_stream(body))
+            .unwrap()
+            .into())
     });
-    let server = spawn_server(handler).await;
+    let server = mock_transport(handler).await;
     let provider = provider_for(&server, fast_policy(1));
     let cancel = CancellationToken::new();
     let mut stream = tokio::time::timeout(
@@ -736,16 +727,15 @@ async fn cancel_mid_stream_stops_immediately_with_no_further_events() {
         other => panic!("expected first text delta, got {other:?}"),
     }
     // 流中取消：立即断且不再产生任何事件
+    let cancelled_at = tokio::time::Instant::now();
     cancel.cancel();
-    let started = std::time::Instant::now();
-    let rest = collect_events(stream, 4).await;
+    let rest = tokio::time::timeout(Duration::from_secs(1), collect_events(stream, 4))
+        .await
+        .expect("stream cancellation must finish immediately");
+    assert!(cancelled_at.elapsed() < Duration::from_secs(1));
     assert!(
         rest.is_empty(),
         "no events after cancellation, got {rest:?}"
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "cancel must tear the stream down immediately"
     );
     drop(server);
 }

@@ -1200,6 +1200,22 @@ async fn production_agent_request_first_keeps_permission_until_proposal_ingress(
     });
     let (sender, receiver) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
     let worker_cancel = cancel.clone();
+    let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let recorded = executions.clone();
+    let start_probe =
+        AgentWorkerStartProbe::with_bash_executor(Arc::new(move |command, full_access, _| {
+            assert_eq!(command, "printf once >> permission-order-recorder");
+            assert!(!full_access);
+            recorded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Ok(vega_tools::BashOutput {
+                    text: String::new(),
+                    exit_code: 0,
+                    duration_ms: 1,
+                    truncated: false,
+                })
+            })
+        }));
     let worker_thread = std::thread::spawn({
         let project_path = repo.path().to_path_buf();
         let worker_thread = thread.clone();
@@ -1218,7 +1234,7 @@ async fn production_agent_request_first_keeps_permission_until_proposal_ingress(
                 None,
                 None,
                 Some(provider),
-                Arc::new(AgentWorkerStartProbe::default()),
+                Arc::new(start_probe),
             );
         }
     });
@@ -1261,7 +1277,7 @@ async fn production_agent_request_first_keeps_permission_until_proposal_ingress(
     ));
     cx.run_until_parked();
     assert!(stream.read_with(cx, |stream, _| stream.has_pending_permission()));
-    assert!(!repo.path().join("permission-order-recorder").exists());
+    assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 0);
 
     cx.simulate_keystrokes(window.into(), "enter");
     let mut terminal = false;
@@ -1293,11 +1309,7 @@ async fn production_agent_request_first_keeps_permission_until_proposal_ingress(
         terminal,
         "the approved worker must reach the fenced terminal"
     );
-    assert_eq!(
-        fs::read_to_string(repo.path().join("permission-order-recorder"))
-            .expect("approved command recorder"),
-        "once"
-    );
+    assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
 
 #[gpui_kit::test]

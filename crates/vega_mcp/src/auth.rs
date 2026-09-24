@@ -1,6 +1,7 @@
 //! Bounded MCP OAuth discovery and public-client code flow. No credential is
 //! persisted or logged here; the UI owns consent and owner-only storage.
 
+use crate::transport::SendRequest;
 use std::fs::File;
 use std::io::Read;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -61,7 +62,7 @@ impl ResourceAuthorization {
             .header("Mcp-Method", "server/discover")
             .json(&probe)
             .timeout(AUTH_TIMEOUT)
-            .send()
+            .send_mcp()
             .await
             .map_err(|_| McpError::Transport)?;
         if response.status().is_redirection() {
@@ -103,7 +104,7 @@ impl ResourceAuthorization {
             let response = client
                 .get(url.clone())
                 .timeout(AUTH_TIMEOUT)
-                .send()
+                .send_mcp()
                 .await
                 .map_err(|_| McpError::AuthDiscovery)?;
             if response.status() == StatusCode::NOT_FOUND {
@@ -189,7 +190,7 @@ impl ResourceAuthorization {
                 .client
                 .get(candidate)
                 .timeout(AUTH_TIMEOUT)
-                .send()
+                .send_mcp()
                 .await
                 .map_err(|_| McpError::AuthDiscovery)?;
             if response.status() == StatusCode::NOT_FOUND {
@@ -353,7 +354,7 @@ impl AuthorizationServer {
             .post(registration_endpoint.clone())
             .json(&request)
             .timeout(AUTH_TIMEOUT)
-            .send()
+            .send_mcp()
             .await
             .map_err(|_| McpError::Registration)?;
         if !matches!(response.status(), StatusCode::OK | StatusCode::CREATED) {
@@ -694,7 +695,7 @@ impl OAuthClient {
             .post(self.server.token_endpoint.clone())
             .form(form)
             .timeout(AUTH_TIMEOUT)
-            .send()
+            .send_mcp()
             .await
             .map_err(|_| McpError::AuthRequired)?;
         if response.status() != StatusCode::OK {

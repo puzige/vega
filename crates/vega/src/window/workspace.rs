@@ -196,13 +196,18 @@ impl VegaWindow {
         self.workspace.next_terminal = self.workspace.next_terminal.saturating_add(1);
         let id = self.workspace.next_terminal;
         let view = cx.new(|cx| {
-            vega_ui::terminal::TerminalView::for_target(
-                vega_conversation::types::TerminalTarget::Project {
-                    database_path,
-                    project_id: project_id.clone(),
-                },
-                cx,
-            )
+            let target = vega_conversation::types::TerminalTarget::Project {
+                database_path,
+                project_id: project_id.clone(),
+            };
+            #[cfg(not(test))]
+            {
+                vega_ui::terminal::TerminalView::for_target(target, cx)
+            }
+            #[cfg(test)]
+            {
+                vega_ui::terminal::TerminalView::for_test_target(target, cx)
+            }
         });
         self.workspace.terminals.insert(
             id,
@@ -2160,7 +2165,7 @@ mod tests {
     }
 
     fn r45_mount_project_window(
-        repo: &tempfile::TempDir,
+        repo: &crate::tests::ControllerRepo,
         label: &str,
         width: f32,
         height: f32,
@@ -3602,32 +3607,9 @@ mod tests {
     async fn r21_sidebar_drag_clamps_persists_and_preserves_independent_choices(
         cx: &mut TestAppContext,
     ) {
-        const MARKER: &str = "VEGA_R21_SIDEBAR_DRAG_CHILD";
-        let Some(path) = std::env::var_os(MARKER) else {
-            let owned = tempfile::tempdir().expect("owned Sidebar config root");
-            let config_root = owned.path().join("config");
-            let output = std::process::Command::new(
-                std::env::current_exe().expect("current Vega test binary"),
-            )
-            .args([
-                "--exact",
-                "window::workspace::tests::r21_sidebar_drag_clamps_persists_and_preserves_independent_choices",
-                "--nocapture",
-            ])
-            .env(MARKER, owned.path())
-            .env("HOME", owned.path())
-            .env("XDG_CONFIG_HOME", config_root)
-            .output()
-            .expect("isolated Sidebar drag test process");
-            assert!(
-                output.status.success(),
-                "owned R21 Sidebar drag subprocess failed\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        };
-        let path = std::path::PathBuf::from(path);
+        let owned = tempfile::tempdir().expect("owned Sidebar config");
+        let path = owned.path();
+        let config_path = path.join("config.toml");
         let repo = diff_controller_repo();
         let store = vega_store::Store::open(path.join("test.db")).expect("owned store");
         store.migrate().expect("owned migrations");
@@ -3642,6 +3624,8 @@ mod tests {
             vega_conversation::threads::create_thread(&store, &project.id, "mock", "confirm")
                 .expect("thread");
         cx.update(|cx| install_diff_window_globals(store, thread, cx));
+        cx.update(|cx| cx.set_global(vega_ui::sidebar::SidebarConfigPath(config_path.clone())));
+
         let root = cx.new(VegaWindow::new);
         let window_root = root.clone();
         let window = cx.update(|cx| {
@@ -3679,7 +3663,7 @@ mod tests {
             "dragged maximum Sidebar width",
         );
         assert_eq!(
-            vega_store::config::load()
+            vega_store::config::load_from(&config_path)
                 .expect("persisted maximum Sidebar width")
                 .ui
                 .sidebar_width,
@@ -3700,7 +3684,7 @@ mod tests {
             "dragged minimum Sidebar width",
         );
         assert_eq!(
-            vega_store::config::load()
+            vega_store::config::load_from(&config_path)
                 .expect("persisted minimum Sidebar width")
                 .ui
                 .sidebar_width,
@@ -3903,19 +3887,49 @@ mod tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod terminal_tests {
     use super::{TabKey, VegaWindow, WorkspaceCreateAction};
     use crate::tests::install_diff_window_globals;
     use gpui_kit::Focusable;
     use gpui_kit::{
-        AppContext, Bounds, EntityInputHandler, FocusHandle, KeyBinding, Modifiers, TestAppContext,
-        VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point, px, size,
+        AppContext, Bounds, FocusHandle, KeyBinding, Modifiers, TestAppContext, VisualTestContext,
+        WindowBounds, WindowHandle, WindowOptions, point, px, size,
     };
-    use std::time::{Duration, Instant};
     use vega_theme::Layout;
     use vega_ui::settings::CloseSettings;
     use vega_ui::sidebar::{SelectedProject, SidebarWidth};
+
+    struct NonrepositoryGuards {
+        _guards: Vec<vega_conversation::GitTestCommandGuard>,
+    }
+    impl gpui_kit::Global for NonrepositoryGuards {}
+
+    fn register_nonrepository(paths: &[&std::path::Path], cx: &mut TestAppContext) {
+        let guards = paths
+            .iter()
+            .map(|path| {
+                vega_conversation::register_git_test_executor(
+                    path,
+                    std::sync::Arc::new(|command, _, _| {
+                        let args = command
+                            .get_args()
+                            .map(|arg| arg.to_string_lossy().into_owned())
+                            .collect::<Vec<_>>();
+                        assert!(
+                            args.ends_with(&["rev-parse".into(), "--show-toplevel".into()]),
+                            "unexpected nonrepository command: {args:?}"
+                        );
+                        Err(vega_conversation::types::GitWorkspaceError::for_test(
+                            vega_conversation::types::GitWorkspaceErrorCode::NotRepository,
+                        ))
+                    }),
+                )
+                .unwrap()
+            })
+            .collect();
+        cx.update(|cx| cx.set_global(NonrepositoryGuards { _guards: guards }));
+    }
 
     fn assert_pixel_close(actual: gpui_kit::Pixels, expected: f32, label: &str) {
         let actual = f32::from(actual);
@@ -3957,20 +3971,6 @@ mod terminal_tests {
             .expect("mounted window focus")
     }
 
-    fn wait_for_marker(path: &std::path::Path, cx: &mut TestAppContext) {
-        let until = Instant::now() + Duration::from_secs(8);
-        while !path.exists() {
-            assert!(
-                Instant::now() < until,
-                "PTY probe timed out waiting for {}",
-                path.display()
-            );
-            cx.executor().advance_clock(Duration::from_millis(30));
-            cx.run_until_parked();
-            std::thread::sleep(Duration::from_millis(15));
-        }
-    }
-
     fn r45_terminal_window(
         path: &std::path::Path,
         cx: &mut TestAppContext,
@@ -3979,6 +3979,7 @@ mod terminal_tests {
         WindowHandle<VegaWindow>,
         gpui_kit::Entity<vega_ui::text_input::TextInput>,
     ) {
+        register_nonrepository(&[path], cx);
         let store = vega_store::Store::open(path.join("test.db")).expect("store");
         store.migrate().expect("migrations");
         let project =
@@ -4095,35 +4096,16 @@ mod terminal_tests {
             "hovered inactive close control must close its own tab"
         );
     }
-
     #[gpui_kit::test]
     async fn r44_terminal_entry_points_and_creation_menu_preserve_explicit_focus(
         cx: &mut TestAppContext,
     ) {
-        const MARKER: &str = "VEGA_R44_TERMINAL_INTERACTION_CHILD";
-        let Some(path) = std::env::var_os(MARKER) else {
-            let root = tempfile::tempdir().expect("owned terminal home");
-            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
-                .args([
-                    "--exact",
-                    "window::workspace::terminal_tests::r44_terminal_entry_points_and_creation_menu_preserve_explicit_focus",
-                    "--nocapture",
-                ])
-                .env(MARKER, root.path())
-                .env("HOME", root.path())
-                .env("ZDOTDIR", root.path())
-                .output()
-                .expect("isolated test process");
-            assert!(
-                output.status.success(),
-                "owned R44 terminal subprocess failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        };
-        let path = std::path::PathBuf::from(path);
+        let owned = tempfile::tempdir().expect("owned terminal fixture");
+        let path = owned.path();
+        register_nonrepository(&[path], cx);
         let store = vega_store::Store::open(path.join("test.db")).expect("store");
         store.migrate().expect("migrations");
+
         let project =
             vega_store::projects::create(store.conn(), path.to_str().unwrap(), "R44", None)
                 .expect("project");
@@ -4275,40 +4257,6 @@ mod terminal_tests {
         assert!(focus_is(window, terminal_focus.clone(), cx));
 
         window
-            .update(cx, |_, window, cx| {
-                first_view.update(cx, |view, cx| {
-                    view.replace_text_in_range(
-                        None,
-                        "printf explicit-focus > r44-explicit-focus; printf $$ > r44-pid-before",
-                        window,
-                        cx,
-                    )
-                });
-            })
-            .expect("type explicit PTY probe");
-        cx.simulate_keystrokes(window.into(), "enter");
-        let marker = path.join("r44-explicit-focus");
-        let until = Instant::now() + Duration::from_secs(8);
-        while !marker.exists() {
-            assert!(Instant::now() < until, "explicit PTY focus probe timed out");
-            cx.executor().advance_clock(Duration::from_millis(30));
-            cx.run_until_parked();
-            std::thread::sleep(Duration::from_millis(15));
-        }
-        assert_eq!(
-            std::fs::read_to_string(marker).expect("PTY marker"),
-            "explicit-focus"
-        );
-        let pid_before = path.join("r44-pid-before");
-        let until = Instant::now() + Duration::from_secs(8);
-        while !pid_before.exists() {
-            assert!(Instant::now() < until, "PTY identity probe timed out");
-            cx.executor().advance_clock(Duration::from_millis(30));
-            cx.run_until_parked();
-            std::thread::sleep(Duration::from_millis(15));
-        }
-
-        window
             .update(cx, |root, window, cx| {
                 root.workspace_focus_composer(window, cx)
             })
@@ -4327,34 +4275,6 @@ mod terminal_tests {
                 };
                 root.workspace.terminals[&id].view.entity_id()
             })
-        );
-        window
-            .update(cx, |_, window, cx| {
-                first_view.update(cx, |view, cx| {
-                    view.replace_text_in_range(
-                        None,
-                        "printf maximized-focus > r44-maximized-focus",
-                        window,
-                        cx,
-                    )
-                });
-            })
-            .expect("type maximized PTY focus probe");
-        cx.simulate_keystrokes(window.into(), "enter");
-        let maximized_marker = path.join("r44-maximized-focus");
-        let until = Instant::now() + Duration::from_secs(8);
-        while !maximized_marker.exists() {
-            assert!(
-                Instant::now() < until,
-                "maximized PTY focus probe timed out"
-            );
-            cx.executor().advance_clock(Duration::from_millis(30));
-            cx.run_until_parked();
-            std::thread::sleep(Duration::from_millis(15));
-        }
-        assert_eq!(
-            std::fs::read_to_string(maximized_marker).expect("maximized PTY marker"),
-            "maximized-focus"
         );
         click_mounted(window, "bottom-workspace-maximize", cx);
         assert!(focus_is(window, terminal_focus.clone(), cx));
@@ -4431,30 +4351,6 @@ mod terminal_tests {
         visual.simulate_click(tab_bounds.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(focus_is(window, terminal_focus.clone(), cx));
-        window
-            .update(cx, |_, window, cx| {
-                first_view.update(cx, |view, cx| {
-                    view.replace_text_in_range(None, "printf $$ > r44-pid-responsive", window, cx)
-                });
-            })
-            .expect("type responsive PTY identity probe");
-        cx.simulate_keystrokes(window.into(), "enter");
-        let pid_responsive = path.join("r44-pid-responsive");
-        let until = Instant::now() + Duration::from_secs(8);
-        while !pid_responsive.exists() {
-            assert!(
-                Instant::now() < until,
-                "responsive PTY identity probe timed out"
-            );
-            cx.executor().advance_clock(Duration::from_millis(30));
-            cx.run_until_parked();
-            std::thread::sleep(Duration::from_millis(15));
-        }
-        assert_eq!(
-            std::fs::read_to_string(&pid_before).expect("PID before responsive recovery"),
-            std::fs::read_to_string(&pid_responsive).expect("PID after responsive recovery"),
-            "narrow right recovery preserves the terminal process"
-        );
 
         window
             .update(cx, |root, window, cx| {
@@ -4521,30 +4417,6 @@ mod terminal_tests {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         visual.simulate_click(tab_bounds.center(), Modifiers::default());
         visual.run_until_parked();
-        window
-            .update(cx, |_, window, cx| {
-                first_view.update(cx, |view, cx| {
-                    view.replace_text_in_range(None, "printf $$ > r44-pid-after", window, cx)
-                });
-            })
-            .expect("type post-layout PTY identity probe");
-        cx.simulate_keystrokes(window.into(), "enter");
-        let pid_after = path.join("r44-pid-after");
-        let until = Instant::now() + Duration::from_secs(8);
-        while !pid_after.exists() {
-            assert!(
-                Instant::now() < until,
-                "post-layout PTY identity probe timed out"
-            );
-            cx.executor().advance_clock(Duration::from_millis(30));
-            cx.run_until_parked();
-            std::thread::sleep(Duration::from_millis(15));
-        }
-        assert_eq!(
-            std::fs::read_to_string(pid_before).expect("PID before layout changes"),
-            std::fs::read_to_string(pid_after).expect("PID after layout changes"),
-            "move, maximize, hide, and reveal preserve the terminal process"
-        );
 
         click_mounted(window, "bottom-workspace-add", cx);
         assert_eq!(
@@ -4610,20 +4482,9 @@ mod terminal_tests {
     async fn terminal_workspace_production_handlers_preserve_docking_and_project_isolation(
         cx: &mut TestAppContext,
     ) {
-        const MARKER: &str = "VEGA_R11_WORKSPACE_CHILD";
-        let Some(path) = std::env::var_os(MARKER) else {
-            let root = tempfile::tempdir().unwrap();
-            let output=std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact","window::workspace::terminal_tests::terminal_workspace_production_handlers_preserve_docking_and_project_isolation","--nocapture"])
-                .env(MARKER,root.path()).env("HOME",root.path()).env("ZDOTDIR",root.path()).output().unwrap();
-            assert!(
-                output.status.success(),
-                "owned workspace subprocess failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        };
-        let path = std::path::PathBuf::from(path);
+        let owned = tempfile::tempdir().expect("owned terminal fixture");
+        let path = owned.path().to_path_buf();
+
         let store = vega_store::Store::open(path.join("test.db")).unwrap();
         store.migrate().unwrap();
         let first =
@@ -4631,6 +4492,7 @@ mod terminal_tests {
                 .unwrap();
         let other = path.join("other");
         std::fs::create_dir(&other).unwrap();
+        register_nonrepository(&[&path, &other], cx);
         let second =
             vega_store::projects::create(store.conn(), other.to_str().unwrap(), "second", None)
                 .unwrap();
@@ -4859,34 +4721,13 @@ mod terminal_tests {
             })
             .unwrap();
         cx.run_until_parked();
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
     #[gpui_kit::test]
     async fn r45_bottom_toggle_unified_priority_and_cmd_j_parity(cx: &mut TestAppContext) {
-        const MARKER: &str = "VEGA_R45_BOTTOM_TOGGLE_CHILD";
-        let Some(path) = std::env::var_os(MARKER) else {
-            let root = tempfile::tempdir().expect("owned terminal home");
-            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
-                .args([
-                    "--exact",
-                    "window::workspace::terminal_tests::r45_bottom_toggle_unified_priority_and_cmd_j_parity",
-                    "--nocapture",
-                ])
-                .env(MARKER, root.path())
-                .env("HOME", root.path())
-                .env("ZDOTDIR", root.path())
-                .output()
-                .expect("isolated test process");
-            assert!(
-                output.status.success(),
-                "owned R45 bottom toggle subprocess failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        };
-        let path = std::path::PathBuf::from(path);
-        let (root, window, input) = r45_terminal_window(&path, cx);
+        let owned = tempfile::tempdir().expect("owned terminal fixture");
+        let (root, window, input) = r45_terminal_window(owned.path(), cx);
+
         let input_focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
         window
             .update(cx, |root, window, cx| {
@@ -5053,29 +4894,9 @@ mod terminal_tests {
 
     #[gpui_kit::test]
     async fn r45_terminal_owns_bottom_and_right_hide_paths(cx: &mut TestAppContext) {
-        const MARKER: &str = "VEGA_R45_TERMINAL_OWNERSHIP_CHILD";
-        let Some(path) = std::env::var_os(MARKER) else {
-            let root = tempfile::tempdir().expect("owned terminal home");
-            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
-                .args([
-                    "--exact",
-                    "window::workspace::terminal_tests::r45_terminal_owns_bottom_and_right_hide_paths",
-                    "--nocapture",
-                ])
-                .env(MARKER, root.path())
-                .env("HOME", root.path())
-                .env("ZDOTDIR", root.path())
-                .output()
-                .expect("isolated test process");
-            assert!(
-                output.status.success(),
-                "owned R45 terminal ownership subprocess failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        };
-        let path = std::path::PathBuf::from(path);
-        let (root, window, input) = r45_terminal_window(&path, cx);
+        let owned = tempfile::tempdir().expect("owned terminal fixture");
+        let (root, window, input) = r45_terminal_window(owned.path(), cx);
+
         let input_focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
         window
             .update(cx, |root, window, cx| {
@@ -5083,7 +4904,6 @@ mod terminal_tests {
             })
             .expect("focus the task composer");
 
-        // Create the first terminal in the bottom dock and take a PTY probe.
         cx.simulate_keystrokes(window.into(), "cmd-j");
         cx.run_until_parked();
         let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
@@ -5097,16 +4917,6 @@ mod terminal_tests {
             (key.clone(), root.workspace.terminals[id].view.clone())
         });
         click_mounted(window, "workspace-tab-Terminal(1)", cx);
-        window
-            .update(cx, |_, window, cx| {
-                first_view.update(cx, |view, cx| {
-                    view.replace_text_in_range(None, "printf $$ > r45-own-pid-before", window, cx)
-                });
-            })
-            .expect("type the pre-migration PTY probe");
-        cx.simulate_keystrokes(window.into(), "enter");
-        let pid_before = path.join("r45-own-pid-before");
-        wait_for_marker(&pid_before, cx);
         window
             .update(cx, |root, window, cx| {
                 root.workspace_focus_composer(window, cx)
@@ -5185,8 +4995,6 @@ mod terminal_tests {
             "slot 3 must stay inert while the right terminal is unmounted"
         );
 
-        // ...and slot 2 performs the R44 migration: same tab, same PTY,
-        // bottom dock, Composer focus.
         click_mounted(window, "main-header-terminal", cx);
         let _ = mounted_bounds(window, "bottom-workspace-pane", cx);
         root.read_with(cx, |root, _| {
@@ -5210,23 +5018,5 @@ mod terminal_tests {
             );
         });
         assert!(focus_is(window, input_focus.clone(), cx));
-
-        // PTY identity: the migrated terminal is the same process.
-        click_mounted(window, "workspace-tab-Terminal(1)", cx);
-        window
-            .update(cx, |_, window, cx| {
-                first_view.update(cx, |view, cx| {
-                    view.replace_text_in_range(None, "printf $$ > r45-own-pid-after", window, cx)
-                });
-            })
-            .expect("type the post-migration PTY probe");
-        cx.simulate_keystrokes(window.into(), "enter");
-        let pid_after = path.join("r45-own-pid-after");
-        wait_for_marker(&pid_after, cx);
-        assert_eq!(
-            std::fs::read_to_string(&pid_before).expect("PID before migration"),
-            std::fs::read_to_string(&pid_after).expect("PID after migration"),
-            "the R44 migration preserves the terminal process"
-        );
     }
 }

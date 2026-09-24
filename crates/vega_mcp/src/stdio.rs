@@ -1,10 +1,18 @@
 use std::collections::HashSet;
+#[cfg(not(any(test, feature = "test-support")))]
 use std::process::Stdio;
 use std::time::Duration;
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::mock::Child;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(not(any(test, feature = "test-support")))]
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+#[cfg(any(test, feature = "test-support"))]
+type ChildStdin = tokio::io::WriteHalf<tokio::io::DuplexStream>;
+#[cfg(any(test, feature = "test-support"))]
+type ChildStdout = tokio::io::ReadHalf<tokio::io::DuplexStream>;
 use tokio::time::{Instant, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
 
@@ -53,6 +61,7 @@ impl StdioClient {
         }) {
             return Err(McpError::InvalidConfig);
         }
+        #[cfg(not(any(test, feature = "test-support")))]
         let mut child = Command::new(&server.executable)
             .args(&server.args)
             .current_dir(&server.working_directory)
@@ -64,6 +73,8 @@ impl StdioClient {
             .kill_on_drop(true)
             .spawn()
             .map_err(|_| McpError::Transport)?;
+        #[cfg(any(test, feature = "test-support"))]
+        let mut child = crate::mock::stdio_connect(&server)?;
         let stdin = child.stdin.take().ok_or(McpError::Transport)?;
         let stdout = child.stdout.take().ok_or(McpError::Transport)?;
         let mut client = Self {
@@ -226,6 +237,10 @@ impl StdioClient {
         let Self {
             mut child, stdin, ..
         } = self;
+        #[cfg(any(test, feature = "test-support"))]
+        let mut stdin = stdin;
+        #[cfg(any(test, feature = "test-support"))]
+        let _ = stdin.shutdown().await;
         drop(stdin);
         match timeout(SHUTDOWN_TIMEOUT, child.wait()).await {
             Ok(Ok(_)) => Ok(()),

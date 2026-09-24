@@ -47,3 +47,9 @@ pub use mcp_settings::{McpRunReadiness, McpServerSettingsService, McpSettingsErr
 
 mod skill_settings;
 pub use skill_settings::{SkillSettingsError, SkillSettingsService};
+
+#[cfg(any(test, feature = "test-support"))]
+pub use git_workspace::{
+    FixtureGitCommand, GitCommandFixture, GitTestCommandExecutor, GitTestCommandGuard,
+    fixture_git_command, register_git_test_executor,
+};

@@ -1,8 +1,15 @@
 //! MCP Settings authority: DB metadata, explicit credential references, and
 //! revocable ready handles. UI code never reads SQLite or launches MCP itself.
+#[cfg(any(test, feature = "test-support"))]
+use callback_fixture::Listener as StdTcpListener;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
+#[cfg(not(any(test, feature = "test-support")))]
 use std::net::TcpListener as StdTcpListener;
+#[cfg(not(any(test, feature = "test-support")))]
+type OAuthCallbackStream = tokio::net::TcpStream;
+#[cfg(any(test, feature = "test-support"))]
+type OAuthCallbackStream = tokio::io::DuplexStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -1286,7 +1293,8 @@ fn map_oauth_error(error: vega_mcp::McpError) -> McpSettingsError {
 async fn receive_oauth_callback(
     listener: StdTcpListener,
     remaining: Duration,
-) -> Result<(String, tokio::net::TcpStream), McpSettingsError> {
+) -> Result<(String, OAuthCallbackStream), McpSettingsError> {
+    #[cfg(not(any(test, feature = "test-support")))]
     let listener = tokio::net::TcpListener::from_std(listener)
         .map_err(|_| McpSettingsError::AuthorizationFailed)?;
     let port = listener
@@ -1955,13 +1963,414 @@ async fn connect_row(
 }
 
 #[cfg(test)]
-#[path = "mcp_settings_oauth_tests.rs"]
-mod oauth_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+
+    #[tokio::test]
+    async fn issue73_settings_test_never_returns_secret_bearing_tool_name() {
+        const SECRET: &str = "fake-provider-key-name-73";
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        vega_store::keystore::set_key(config.path(), "provider-fixture", SECRET).unwrap();
+        let script = data.path().join("echo-provider-key-name.sh");
+        let _fixture = vega_mcp::mock::catalog_stdio(
+            &script,
+            serde_json::json!([{"name":SECRET,"inputSchema":{"type":"object"}}]),
+            String::new(),
+            Arc::new(|_| {}),
+        );
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().to_path_buf());
+        let saved = service
+            .create(McpServerForm {
+                display_name: "Owned catalog echo".into(),
+                transport: McpServerTransport::Local {
+                    executable: "/bin/sh".into(),
+                    args: vec![script.to_string_lossy().to_string()],
+                    working_directory: Some(data.path().to_path_buf()),
+                    environment: Vec::new(),
+                },
+            })
+            .unwrap();
+        let preview = service
+            .test_connection(&saved.id, saved.config_revision, true)
+            .await;
+        assert!(matches!(preview, Err(McpSettingsError::Connection)));
+    }
+
+    #[tokio::test]
+    async fn issue73_settings_save_is_inert_and_only_confirmed_test_or_enable_connects() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let script = data.path().join("owned-server.sh");
+        let marker = data.path().join("launched");
+        let _fixture = vega_mcp::mock::catalog_stdio(
+            &script,
+            serde_json::json!([{"name":"echo","inputSchema":{"type":"object"}}]),
+            String::new(),
+            Arc::new(|server| {
+                use std::io::Write;
+                writeln!(
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&server.args[1])
+                        .unwrap(),
+                    "started"
+                )
+                .unwrap();
+            }),
+        );
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().to_path_buf());
+        let saved = service
+            .create(McpServerForm {
+                display_name: "Owned local".into(),
+                transport: McpServerTransport::Local {
+                    executable: "/bin/sh".into(),
+                    args: vec![
+                        script.to_string_lossy().to_string(),
+                        marker.to_string_lossy().to_string(),
+                    ],
+                    working_directory: Some(data.path().to_path_buf()),
+                    environment: Vec::new(),
+                },
+            })
+            .unwrap();
+        assert!(!saved.enabled);
+        assert_eq!(saved.health, McpServerHealth::Disabled);
+        assert!(!marker.exists());
+        assert!(matches!(
+            service
+                .test_connection(&saved.id, saved.config_revision, false)
+                .await,
+            Err(McpSettingsError::ConfirmationRequired)
+        ));
+        assert!(!marker.exists());
+        let tested = service
+            .test_connection(&saved.id, saved.config_revision, true)
+            .await
+            .unwrap();
+        assert_eq!(tested.tool_names, ["echo"]);
+        assert_eq!(fs::read_to_string(&marker).unwrap().lines().count(), 1);
+        assert!(
+            service
+                .ready_for_run()
+                .await
+                .unwrap()
+                .ready_servers
+                .is_empty()
+        );
+        let enabled = service
+            .set_enabled(&saved.id, saved.config_revision, true, true)
+            .await
+            .unwrap();
+        assert!(enabled.enabled);
+        assert_eq!(enabled.health, McpServerHealth::Disconnected);
+        assert!(enabled.tool_names.is_empty());
+        assert!(
+            !service.lock().unwrap().leases.contains_key(&saved.id),
+            "Settings validation must not register an executable run lease"
+        );
+        let first_run_handle = service
+            .ready_for_run()
+            .await
+            .unwrap()
+            .ready_servers
+            .pop()
+            .unwrap();
+        let old_run_handle = service
+            .ready_for_run()
+            .await
+            .unwrap()
+            .ready_servers
+            .pop()
+            .unwrap();
+        assert!(!old_run_handle.is_revoked());
+        assert!(matches!(
+            service
+                .set_enabled(&saved.id, saved.config_revision, false, false)
+                .await,
+            Err(McpSettingsError::Conflict)
+        ));
+        assert!(old_run_handle.is_revoked());
+        assert!(first_run_handle.is_revoked());
+        let suspended = service.ready_for_run().await.unwrap();
+        assert!(suspended.ready_servers.is_empty());
+        assert_eq!(suspended.unavailable[0].code, "configuration_changed");
+        let reconnected = service
+            .set_enabled(&saved.id, enabled.config_revision, true, true)
+            .await
+            .unwrap();
+        assert_eq!(reconnected.health, McpServerHealth::Disconnected);
+        let disabled = service
+            .set_enabled(&saved.id, reconnected.config_revision, false, false)
+            .await
+            .unwrap();
+        assert_eq!(disabled.health, McpServerHealth::Disabled);
+        assert!(
+            service
+                .ready_for_run()
+                .await
+                .unwrap()
+                .ready_servers
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn issue73_replace_and_remove_revoke_each_run_owned_lease() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let script = data.path().join("owned-lease-server.sh");
+        let _fixture = vega_mcp::mock::catalog_stdio(
+            &script,
+            serde_json::json!([{"name":"echo","inputSchema":{"type":"object"}}]),
+            String::new(),
+            Arc::new(|_| {}),
+        );
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
+        let saved = service
+            .create(McpServerForm {
+                display_name: "lease-owner".into(),
+                transport: McpServerTransport::Local {
+                    executable: "/bin/sh".into(),
+                    args: vec![script.to_string_lossy().into_owned()],
+                    working_directory: Some(data.path().to_path_buf()),
+                    environment: Vec::new(),
+                },
+            })
+            .unwrap();
+        let enabled = service
+            .set_enabled(&saved.id, saved.config_revision, true, true)
+            .await
+            .unwrap();
+        let discarded = service
+            .ready_for_run()
+            .await
+            .unwrap()
+            .ready_servers
+            .pop()
+            .unwrap();
+        let discarded_lease = discarded.revocation_lease();
+        assert!(discarded_lease.is_live());
+        drop(discarded);
+        assert!(
+            !discarded_lease.is_live(),
+            "Settings must not retain a strong run transport after its task ends"
+        );
+        let first = service
+            .ready_for_run()
+            .await
+            .unwrap()
+            .ready_servers
+            .pop()
+            .unwrap();
+        let second = service
+            .ready_for_run()
+            .await
+            .unwrap()
+            .ready_servers
+            .pop()
+            .unwrap();
+        assert!(!first.is_revoked() && !second.is_revoked());
+        let changed = service
+            .replace(&saved.id, enabled.config_revision, enabled.form.clone())
+            .unwrap();
+        assert!(first.is_revoked() && second.is_revoked());
+        assert!(!changed.enabled);
+        let enabled_again = service
+            .set_enabled(&saved.id, changed.config_revision, true, true)
+            .await
+            .unwrap();
+        let third = service
+            .ready_for_run()
+            .await
+            .unwrap()
+            .ready_servers
+            .pop()
+            .unwrap();
+        assert!(!third.is_revoked());
+        service
+            .remove(&saved.id, enabled_again.config_revision, true)
+            .unwrap();
+        assert!(third.is_revoked());
+        assert!(service.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn issue73_enabled_servers_discover_concurrently_before_first_message() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let script = data.path().join("owned-barrier-server.sh");
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let _fixture = vega_mcp::mock::StdioFixture::new(
+            &script,
+            Arc::new(move |server, stream| {
+                let barrier = barrier.clone();
+                Box::pin(async move {
+                    std::fs::write(
+                        std::path::Path::new(&server.args[2])
+                            .join(format!("{}.started", server.args[1])),
+                        "started",
+                    )
+                    .unwrap();
+                    barrier.wait().await;
+                    vega_mcp::mock::serve_json(stream, |request| {
+                        std::future::ready(vega_mcp::mock::catalog_reply(
+                            &request,
+                            &serde_json::json!([{"name":"echo","inputSchema":{"type":"object"}}]),
+                            "",
+                        ))
+                    })
+                    .await;
+                })
+            }),
+        );
+        let path = data.path().join("vega.db");
+        let service = McpServerSettingsService::new(path.clone(), config.path().to_path_buf());
+        let mut saved = Vec::new();
+        for name in ["first", "second"] {
+            let row = service
+                .create(McpServerForm {
+                    display_name: name.into(),
+                    transport: McpServerTransport::Local {
+                        executable: "/bin/sh".into(),
+                        args: vec![
+                            script.to_string_lossy().to_string(),
+                            name.into(),
+                            data.path().to_string_lossy().to_string(),
+                        ],
+                        working_directory: Some(data.path().to_path_buf()),
+                        environment: Vec::new(),
+                    },
+                })
+                .unwrap();
+            saved.push(row);
+        }
+        let store = Store::open(&path).unwrap();
+        store.migrate().unwrap();
+        for row in &saved {
+            mcp_servers::set_enabled(store.conn(), &row.id, row.config_revision, true).unwrap();
+        }
+        let result = tokio::time::timeout(Duration::from_secs(3), service.ready_for_run())
+            .await
+            .expect("two owned servers must start together")
+            .unwrap();
+        assert_eq!(result.ready_servers.len(), 2);
+        assert!(result.unavailable.is_empty());
+        assert!(data.path().join("first.started").exists());
+        assert!(data.path().join("second.started").exists());
+    }
+
+    #[tokio::test]
+    async fn issue73_remove_cancels_concurrent_slow_connection_test() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let marker = data.path().join("slow-started");
+        let script = data.path().join("slow-server.sh");
+        let _fixture = vega_mcp::mock::StdioFixture::new(
+            &script,
+            Arc::new(|server, stream| {
+                std::fs::write(&server.args[1], "started").unwrap();
+                Box::pin(vega_mcp::mock::serve_json(stream, |_| {
+                    std::future::pending()
+                }))
+            }),
+        );
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().to_path_buf());
+        let saved = service
+            .create(McpServerForm {
+                display_name: "Slow owned local".into(),
+                transport: McpServerTransport::Local {
+                    executable: "/bin/sh".into(),
+                    args: vec![
+                        script.to_string_lossy().to_string(),
+                        marker.to_string_lossy().to_string(),
+                    ],
+                    working_directory: Some(data.path().to_path_buf()),
+                    environment: Vec::new(),
+                },
+            })
+            .unwrap();
+        let testing = service.clone();
+        let id = saved.id.clone();
+        let revision = saved.config_revision;
+        let attempt =
+            tokio::spawn(async move { testing.test_connection(&id, revision, true).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !marker.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        service
+            .remove(&saved.id, saved.config_revision, true)
+            .unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), attempt)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, Err(McpSettingsError::Conflict)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn issue73_connection_deadline_covers_probe_and_catalog_together() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let script = data.path().join("two-slow-phases.sh");
+        let probed = data.path().join("probe-completed");
+        let _fixture = vega_mcp::mock::StdioFixture::new(
+            &script,
+            Arc::new(|server, stream| {
+                Box::pin(vega_mcp::mock::serve_json(stream, move |request| {
+                    let marker = server.args[1].clone();
+                    async move {
+                        tokio::time::sleep(Duration::from_millis(180)).await;
+                        if request["method"] == "server/discover" {
+                            std::fs::write(marker, "yes").unwrap();
+                        }
+                        vega_mcp::mock::catalog_reply(
+                            &request,
+                            &serde_json::json!([{"name":"echo","inputSchema":{"type":"object"}}]),
+                            "",
+                        )
+                    }
+                }))
+            }),
+        );
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
+        let saved = service
+            .create(McpServerForm {
+                display_name: "Two slow phases".into(),
+                transport: McpServerTransport::Local {
+                    executable: "/bin/sh".into(),
+                    args: vec![
+                        script.to_string_lossy().into_owned(),
+                        probed.to_string_lossy().into_owned(),
+                    ],
+                    working_directory: Some(data.path().into()),
+                    environment: Vec::new(),
+                },
+            })
+            .unwrap();
+        let store = service.store().unwrap();
+        let row = mcp_servers::find(store.conn(), &saved.id).unwrap().unwrap();
+        let started = tokio::time::Instant::now();
+        let result =
+            connect_row_with_timeout(config.path(), &row, None, Duration::from_millis(280)).await;
+        assert!(matches!(result, Err(McpSettingsError::Connection)));
+        assert!(
+            probed.exists(),
+            "probe must finish before the shared deadline expires"
+        );
+        assert!(started.elapsed() < Duration::from_millis(700));
+    }
 
     #[test]
     fn issue73_owner_secret_sources_cover_local_bearer_and_both_oauth_tokens() {
@@ -2092,50 +2501,6 @@ mod tests {
         assert_eq!(known, vec![SECRET]);
     }
 
-    #[tokio::test]
-    async fn issue73_settings_test_never_returns_secret_bearing_tool_name() {
-        const SECRET: &str = "fake-provider-key-name-73";
-        let data = tempfile::tempdir().unwrap();
-        let config = tempfile::tempdir().unwrap();
-        vega_store::keystore::set_key(config.path(), "provider-fixture", SECRET).unwrap();
-        let script = data.path().join("echo-provider-key-name.sh");
-        fs::write(
-            &script,
-            format!(
-                r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"{SECRET}","inputSchema":{{"type":"object"}}}}]}}}}'
-      ;;
-  esac
-done
-"##
-            ),
-        )
-        .unwrap();
-        let service =
-            McpServerSettingsService::new(data.path().join("vega.db"), config.path().to_path_buf());
-        let saved = service
-            .create(McpServerForm {
-                display_name: "Owned catalog echo".into(),
-                transport: McpServerTransport::Local {
-                    executable: "/bin/sh".into(),
-                    args: vec![script.to_string_lossy().to_string()],
-                    working_directory: Some(data.path().to_path_buf()),
-                    environment: Vec::new(),
-                },
-            })
-            .unwrap();
-        let preview = service
-            .test_connection(&saved.id, saved.config_revision, true)
-            .await;
-        assert!(matches!(preview, Err(McpSettingsError::Connection)));
-    }
-
     #[test]
     fn issue73_oauth_install_revoke_preserves_own_callback_but_cancels_old_flows() {
         let mut state = RegistryState::default();
@@ -2234,375 +2599,6 @@ done
             directory.join("credentials.toml"),
         )
         .unwrap();
-    }
-
-    #[tokio::test]
-    async fn issue73_settings_save_is_inert_and_only_confirmed_test_or_enable_connects() {
-        let data = tempfile::tempdir().unwrap();
-        let config = tempfile::tempdir().unwrap();
-        let script = data.path().join("owned-server.sh");
-        let marker = data.path().join("launched");
-        fs::write(
-            &script,
-            r##"#!/bin/sh
-printf 'started\n' >> "$1"
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}' ;;
-    *tools/list*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}' ;;
-  esac
-done
-"##,
-        )
-        .unwrap();
-        let service =
-            McpServerSettingsService::new(data.path().join("vega.db"), config.path().to_path_buf());
-        let saved = service
-            .create(McpServerForm {
-                display_name: "Owned local".into(),
-                transport: McpServerTransport::Local {
-                    executable: "/bin/sh".into(),
-                    args: vec![
-                        script.to_string_lossy().to_string(),
-                        marker.to_string_lossy().to_string(),
-                    ],
-                    working_directory: Some(data.path().to_path_buf()),
-                    environment: Vec::new(),
-                },
-            })
-            .unwrap();
-        assert!(!saved.enabled);
-        assert_eq!(saved.health, McpServerHealth::Disabled);
-        assert!(!marker.exists());
-        assert!(matches!(
-            service
-                .test_connection(&saved.id, saved.config_revision, false)
-                .await,
-            Err(McpSettingsError::ConfirmationRequired)
-        ));
-        assert!(!marker.exists());
-        let tested = service
-            .test_connection(&saved.id, saved.config_revision, true)
-            .await
-            .unwrap();
-        assert_eq!(tested.tool_names, ["echo"]);
-        assert_eq!(fs::read_to_string(&marker).unwrap().lines().count(), 1);
-        assert!(
-            service
-                .ready_for_run()
-                .await
-                .unwrap()
-                .ready_servers
-                .is_empty()
-        );
-        let enabled = service
-            .set_enabled(&saved.id, saved.config_revision, true, true)
-            .await
-            .unwrap();
-        assert!(enabled.enabled);
-        assert_eq!(enabled.health, McpServerHealth::Disconnected);
-        assert!(enabled.tool_names.is_empty());
-        assert!(
-            !service.lock().unwrap().leases.contains_key(&saved.id),
-            "Settings validation must not register an executable run lease"
-        );
-        let first_run_handle = service
-            .ready_for_run()
-            .await
-            .unwrap()
-            .ready_servers
-            .pop()
-            .unwrap();
-        let old_run_handle = service
-            .ready_for_run()
-            .await
-            .unwrap()
-            .ready_servers
-            .pop()
-            .unwrap();
-        assert!(!old_run_handle.is_revoked());
-        assert!(matches!(
-            service
-                .set_enabled(&saved.id, saved.config_revision, false, false)
-                .await,
-            Err(McpSettingsError::Conflict)
-        ));
-        assert!(old_run_handle.is_revoked());
-        assert!(first_run_handle.is_revoked());
-        let suspended = service.ready_for_run().await.unwrap();
-        assert!(suspended.ready_servers.is_empty());
-        assert_eq!(suspended.unavailable[0].code, "configuration_changed");
-        let reconnected = service
-            .set_enabled(&saved.id, enabled.config_revision, true, true)
-            .await
-            .unwrap();
-        assert_eq!(reconnected.health, McpServerHealth::Disconnected);
-        let disabled = service
-            .set_enabled(&saved.id, reconnected.config_revision, false, false)
-            .await
-            .unwrap();
-        assert_eq!(disabled.health, McpServerHealth::Disabled);
-        assert!(
-            service
-                .ready_for_run()
-                .await
-                .unwrap()
-                .ready_servers
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn issue73_replace_and_remove_revoke_each_run_owned_lease() {
-        let data = tempfile::tempdir().unwrap();
-        let config = tempfile::tempdir().unwrap();
-        let script = data.path().join("owned-lease-server.sh");
-        fs::write(
-            &script,
-            r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}' ;;
-    *tools/list*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}' ;;
-  esac
-done
-"##,
-        )
-        .unwrap();
-        let service =
-            McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
-        let saved = service
-            .create(McpServerForm {
-                display_name: "lease-owner".into(),
-                transport: McpServerTransport::Local {
-                    executable: "/bin/sh".into(),
-                    args: vec![script.to_string_lossy().into_owned()],
-                    working_directory: Some(data.path().to_path_buf()),
-                    environment: Vec::new(),
-                },
-            })
-            .unwrap();
-        let enabled = service
-            .set_enabled(&saved.id, saved.config_revision, true, true)
-            .await
-            .unwrap();
-        let discarded = service
-            .ready_for_run()
-            .await
-            .unwrap()
-            .ready_servers
-            .pop()
-            .unwrap();
-        let discarded_lease = discarded.revocation_lease();
-        assert!(discarded_lease.is_live());
-        drop(discarded);
-        assert!(
-            !discarded_lease.is_live(),
-            "Settings must not retain a strong run transport after its task ends"
-        );
-        let first = service
-            .ready_for_run()
-            .await
-            .unwrap()
-            .ready_servers
-            .pop()
-            .unwrap();
-        let second = service
-            .ready_for_run()
-            .await
-            .unwrap()
-            .ready_servers
-            .pop()
-            .unwrap();
-        assert!(!first.is_revoked() && !second.is_revoked());
-        let changed = service
-            .replace(&saved.id, enabled.config_revision, enabled.form.clone())
-            .unwrap();
-        assert!(first.is_revoked() && second.is_revoked());
-        assert!(!changed.enabled);
-        let enabled_again = service
-            .set_enabled(&saved.id, changed.config_revision, true, true)
-            .await
-            .unwrap();
-        let third = service
-            .ready_for_run()
-            .await
-            .unwrap()
-            .ready_servers
-            .pop()
-            .unwrap();
-        assert!(!third.is_revoked());
-        service
-            .remove(&saved.id, enabled_again.config_revision, true)
-            .unwrap();
-        assert!(third.is_revoked());
-        assert!(service.list().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn issue73_enabled_servers_discover_concurrently_before_first_message() {
-        let data = tempfile::tempdir().unwrap();
-        let config = tempfile::tempdir().unwrap();
-        let script = data.path().join("owned-barrier-server.sh");
-        fs::write(
-            &script,
-            r##"#!/bin/sh
-printf 'started' > "$2/$1.started"
-while [ ! -f "$2/first.started" ] || [ ! -f "$2/second.started" ]; do
-  sleep 0.02
-done
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}' ;;
-    *tools/list*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}' ;;
-  esac
-done
-"##,
-        )
-        .unwrap();
-        let path = data.path().join("vega.db");
-        let service = McpServerSettingsService::new(path.clone(), config.path().to_path_buf());
-        let mut saved = Vec::new();
-        for name in ["first", "second"] {
-            let row = service
-                .create(McpServerForm {
-                    display_name: name.into(),
-                    transport: McpServerTransport::Local {
-                        executable: "/bin/sh".into(),
-                        args: vec![
-                            script.to_string_lossy().to_string(),
-                            name.into(),
-                            data.path().to_string_lossy().to_string(),
-                        ],
-                        working_directory: Some(data.path().to_path_buf()),
-                        environment: Vec::new(),
-                    },
-                })
-                .unwrap();
-            saved.push(row);
-        }
-        let store = Store::open(&path).unwrap();
-        store.migrate().unwrap();
-        for row in &saved {
-            mcp_servers::set_enabled(store.conn(), &row.id, row.config_revision, true).unwrap();
-        }
-        let result = tokio::time::timeout(Duration::from_secs(3), service.ready_for_run())
-            .await
-            .expect("two owned servers must start together")
-            .unwrap();
-        assert_eq!(result.ready_servers.len(), 2);
-        assert!(result.unavailable.is_empty());
-        assert!(data.path().join("first.started").exists());
-        assert!(data.path().join("second.started").exists());
-    }
-
-    #[tokio::test]
-    async fn issue73_remove_cancels_concurrent_slow_connection_test() {
-        let data = tempfile::tempdir().unwrap();
-        let config = tempfile::tempdir().unwrap();
-        let marker = data.path().join("slow-started");
-        let script = data.path().join("slow-server.sh");
-        fs::write(
-            &script,
-            r##"#!/bin/sh
-printf 'started' > "$1"
-while IFS= read -r request; do
-  :
-done
-"##,
-        )
-        .unwrap();
-        let service =
-            McpServerSettingsService::new(data.path().join("vega.db"), config.path().to_path_buf());
-        let saved = service
-            .create(McpServerForm {
-                display_name: "Slow owned local".into(),
-                transport: McpServerTransport::Local {
-                    executable: "/bin/sh".into(),
-                    args: vec![
-                        script.to_string_lossy().to_string(),
-                        marker.to_string_lossy().to_string(),
-                    ],
-                    working_directory: Some(data.path().to_path_buf()),
-                    environment: Vec::new(),
-                },
-            })
-            .unwrap();
-        let testing = service.clone();
-        let id = saved.id.clone();
-        let revision = saved.config_revision;
-        let attempt =
-            tokio::spawn(async move { testing.test_connection(&id, revision, true).await });
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !marker.exists() {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        service
-            .remove(&saved.id, saved.config_revision, true)
-            .unwrap();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), attempt)
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(result, Err(McpSettingsError::Conflict)));
-    }
-
-    #[tokio::test]
-    #[ignore = "load-sensitive: asserts a shared-deadline wall-clock budget (probe <280ms, total <700ms), fails under parallel test load; run with --ignored"]
-    async fn issue73_connection_deadline_covers_probe_and_catalog_together() {
-        let data = tempfile::tempdir().unwrap();
-        let config = tempfile::tempdir().unwrap();
-        let script = data.path().join("two-slow-phases.sh");
-        let probed = data.path().join("probe-completed");
-        fs::write(
-            &script,
-            r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      sleep 0.18
-      printf 'yes' > "$1"
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
-      ;;
-    *tools/list*)
-      sleep 0.18
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","inputSchema":{"type":"object"}}]}}'
-      ;;
-  esac
-done
-"##,
-        )
-        .unwrap();
-        let service =
-            McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
-        let saved = service
-            .create(McpServerForm {
-                display_name: "Two slow phases".into(),
-                transport: McpServerTransport::Local {
-                    executable: "/bin/sh".into(),
-                    args: vec![
-                        script.to_string_lossy().into_owned(),
-                        probed.to_string_lossy().into_owned(),
-                    ],
-                    working_directory: Some(data.path().into()),
-                    environment: Vec::new(),
-                },
-            })
-            .unwrap();
-        let store = service.store().unwrap();
-        let row = mcp_servers::find(store.conn(), &saved.id).unwrap().unwrap();
-        let started = Instant::now();
-        let result =
-            connect_row_with_timeout(config.path(), &row, None, Duration::from_millis(280)).await;
-        assert!(matches!(result, Err(McpSettingsError::Connection)));
-        assert!(
-            probed.exists(),
-            "probe must finish before the shared deadline expires"
-        );
-        assert!(started.elapsed() < Duration::from_millis(700));
     }
 
     #[test]
@@ -2985,3 +2981,87 @@ done
         );
     }
 }
+
+#[cfg(any(test, feature = "test-support"))]
+impl McpServerSettingsService {
+    pub fn test_oauth_callback_stream(redirect_uri: &str) -> tokio::io::DuplexStream {
+        callback_fixture::connect(redirect_uri)
+    }
+}
+#[cfg(any(test, feature = "test-support"))]
+mod callback_fixture {
+    use std::collections::HashMap;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::sync::atomic::{AtomicU16, Ordering};
+    use std::sync::{Mutex, OnceLock};
+    use tokio::io::DuplexStream;
+    use tokio::sync::mpsc;
+    type Sender = mpsc::UnboundedSender<DuplexStream>;
+    static CALLBACKS: OnceLock<Mutex<HashMap<u16, Sender>>> = OnceLock::new();
+    static PORT: AtomicU16 = AtomicU16::new(40000);
+    fn registry() -> &'static Mutex<HashMap<u16, Sender>> {
+        CALLBACKS.get_or_init(Mutex::default)
+    }
+    pub(super) struct Listener {
+        port: u16,
+        receiver: tokio::sync::Mutex<mpsc::UnboundedReceiver<DuplexStream>>,
+    }
+    impl Listener {
+        pub(super) fn bind(_: (&str, u16)) -> std::io::Result<Self> {
+            let port = PORT.fetch_add(1, Ordering::Relaxed);
+            let (sender, receiver) = mpsc::unbounded_channel();
+            registry()
+                .lock()
+                .expect("callback registry")
+                .insert(port, sender);
+            Ok(Self {
+                port,
+                receiver: tokio::sync::Mutex::new(receiver),
+            })
+        }
+        pub(super) fn set_nonblocking(&self, _: bool) -> std::io::Result<()> {
+            Ok(())
+        }
+        pub(super) fn local_addr(&self) -> std::io::Result<SocketAddr> {
+            Ok(SocketAddr::from((Ipv4Addr::LOCALHOST, self.port)))
+        }
+        pub(super) async fn accept(&self) -> std::io::Result<(DuplexStream, SocketAddr)> {
+            self.receiver
+                .lock()
+                .await
+                .recv()
+                .await
+                .map(|stream| (stream, SocketAddr::from((Ipv4Addr::LOCALHOST, 1))))
+                .ok_or_else(|| std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+    impl Drop for Listener {
+        fn drop(&mut self) {
+            registry()
+                .lock()
+                .expect("callback registry")
+                .remove(&self.port);
+        }
+    }
+    pub(super) fn connect(uri: &str) -> DuplexStream {
+        let port: u16 = uri
+            .strip_prefix("http://127.0.0.1:")
+            .and_then(|suffix| suffix.split('/').next())
+            .expect("callback URI")
+            .parse()
+            .expect("callback port");
+        let (browser, server) = tokio::io::duplex(16384);
+        registry()
+            .lock()
+            .expect("callback registry")
+            .get(&port)
+            .expect("live callback")
+            .send(server)
+            .expect("callback receiver");
+        browser
+    }
+}
+
+#[cfg(test)]
+#[path = "mcp_settings_oauth_tests.rs"]
+mod oauth_tests;

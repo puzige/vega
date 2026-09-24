@@ -1,47 +1,4 @@
-# cargo-nextest configuration (issue #123: faster cloud test gate).
-#
-# nextest runs every test in its own process with its own timeout, so the CI
-# Test step fails fast with a clear test name instead of stalling the job.
-# It is a drop-in runner: same test binaries, same assertions, no code changes.
-
 [profile.default]
-# NEVER enable retries. Auto-retrying a flake to green is explicitly forbidden
-# by this repo (AGENTS.md "不得为提速…自动重试到绿";
-# docs/vega-issue-123-pr-check-pipeline.md 非目标 "不因 CI 放宽、ignore 或自动
-# 重试既有 flaky 测试"). A flaky test must be quarantined via `#[ignore]` and
-# registered in R52, not masked by retries.
 retries = 0
-
-# Report every failure in one run (matches `cargo test` semantics) instead of
-# cancelling the rest of the suite at the first failure.
 fail-fast = false
-
-# Kill a genuinely hung test well before the 60-minute job timeout, while
-# leaving plenty of headroom for the slowest real tests. The slowest known test
-# is ~45s on a 10-core laptop; the 3-vCPU GitHub runner is ~5-6x slower, so
-# ~4min is the realistic worst case. 600s is safe and still catches a hang.
 slow-timeout = { period = "600s", terminate-after = 1 }
-
-# Leave the thread count at nextest's default (= number of CPUs). Do NOT
-# over-subscribe: at 32 threads on a 10-core box a timing test was observed to
-# flake, which is exactly the load-sensitivity R52 quarantines.
-
-# Reserve two scheduler slots for spawn-heavy trusted Git tests. This bounds
-# their concurrency without changing global CPU-default threads or assertions.
-[[profile.default.overrides]]
-filter = 'package(vega_conversation) & test(/^git_workspace::trusted_git::/)'
-threads-required = 2
-# Start the expensive Git work early so it does not leave a serial tail.
-priority = 100
-
-# This timing-sensitive test failed under shard contention. Reserve the whole
-# shard for this exact test without relaxing its assertions or timeout.
-[[profile.default.overrides]]
-filter = 'package(=vega) & test(=tests::pricing::pricing_settings_and_agent_preflight_production_e2e)'
-threads-required = "num-test-threads"
-
-# Reserve the shard for this real-PTY child-process test after its unchanged
-# UI polling deadline failed under contention. Keep the real PTY and timeout.
-[[profile.default.overrides]]
-filter = 'package(=vega_ui) & test(=terminal::tests::production_terminal_input_handler_and_keys_reach_real_pty)'
-threads-required = "num-test-threads"

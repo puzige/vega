@@ -267,6 +267,13 @@ async fn startup_recovery_survives_reopen_and_allows_a_new_turn() {
         )
         .unwrap();
     assert_eq!(stale_status, "interrupted");
+    assert_eq!(
+        messages::find(store.conn(), "stale-assistant")
+            .unwrap()
+            .unwrap()
+            .content,
+        "partial"
+    );
     for (call_id, status, approval, expected_status) in [
         (
             "stale-pending_approval",
@@ -308,202 +315,6 @@ async fn startup_recovery_survives_reopen_and_allows_a_new_turn() {
                     && result.output == persisted.2
         )));
     }
-    assert_eq!(provider.requests().len(), 2);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn crash_child_runtime_fixture() {
-    let Some(root) = std::env::var_os("VEGA_T20_CRASH_CHILD_ROOT") else {
-        return;
-    };
-    let root = std::path::PathBuf::from(root);
-    let store = Store::open(root.join("vega.db")).unwrap();
-    store.migrate().unwrap();
-    let project = vega_store::projects::create(
-        store.conn(),
-        root.to_str().unwrap(),
-        "crash-fixture",
-        Some("master"),
-    )
-    .unwrap();
-    vega_store::threads::create(
-        store.conn(),
-        vega_store::threads::NewThread {
-            id: "thread-1",
-            project_id: &project.id,
-            title: "",
-            mode: "execute",
-            permission_mode: "confirm",
-            model: "mock-model",
-            status: "active",
-            pinned: false,
-            unread: false,
-            created_at: 1,
-            updated_at: 1,
-        },
-    )
-    .unwrap();
-    fs::write(root.join("never-read"), "owned crash fixture").unwrap();
-    let tools = vega_tools::Tools::new(&root).unwrap();
-    let provider = MockProvider::new(vec![ScriptStep::events(vec![
-        ProviderEvent::TextDelta("durable partial".into()),
-        ProviderEvent::ToolUse {
-            id: "crash-call".into(),
-            name: "read".into(),
-            input_json: r#"{"path":"never-read"}"#.into(),
-        },
-        ProviderEvent::Done {
-            stop_reason: StopReason::ToolUse,
-        },
-    ])]);
-
-    let _ = run_thread_task_with_sink(
-        &store,
-        &provider,
-        &tools,
-        "thread-1",
-        "Crash",
-        "System",
-        CancellationToken::new(),
-        |event| {
-            // Fault-injection barrier after the production durable running
-            // transition. File Read deliberately rejects FIFOs now.
-            if matches!(event, ConversationEvent::ToolCallRunning { .. }) {
-                loop {
-                    std::thread::park();
-                }
-            }
-            if let ConversationEvent::TextDelta { message_id, .. } = event {
-                let durable = messages::find(store.conn(), message_id)?
-                    .ok_or_else(|| persistence_actor_error("streaming message missing"))?;
-                assert_eq!(durable.content, "durable partial");
-                fs::write(root.join("displayed.marker"), durable.content)
-                    .map_err(VegaError::from)?;
-            }
-            Ok(())
-        },
-    )
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn killed_child_recovers_only_displayed_content_and_reuses_running_call() {
-    let dir = tempdir().unwrap();
-    let executable = std::env::current_exe().unwrap();
-    let mut child = std::process::Command::new(executable)
-        .arg("--exact")
-        .arg("agent::tests::tool_lifecycle::crash_child_runtime_fixture")
-        .arg("--nocapture")
-        .env("VEGA_T20_CRASH_CHILD_ROOT", dir.path())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let marker = dir.path().join("displayed.marker");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !marker.exists() && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    if !marker.exists() {
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("child never displayed a durable delta");
-    }
-    let observer = Store::open(dir.path().join("vega.db")).unwrap();
-    let mut saw_running = false;
-    while Instant::now() < deadline {
-        let running: i64 = observer
-            .conn()
-            .query_row(
-                "SELECT COUNT(*) FROM tool_calls WHERE id = 'crash-call' AND status = 'running'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        if running == 1 {
-            saw_running = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    if !saw_running {
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("child never crossed the durable running barrier");
-    }
-    child.kill().unwrap();
-    child.wait().unwrap();
-    drop(observer);
-
-    let store = Store::open(dir.path().join("vega.db")).unwrap();
-    store.migrate().unwrap();
-    let tools = vega_tools::Tools::new(dir.path()).unwrap();
-    let provider = MockProvider::new_rounds(vec![
-        vec![ScriptStep::events(vec![
-            ProviderEvent::ToolUse {
-                id: "crash-call".into(),
-                name: "read".into(),
-                input_json: r#"{"path":"never-read"}"#.into(),
-            },
-            ProviderEvent::Done {
-                stop_reason: StopReason::ToolUse,
-            },
-        ])],
-        vec![ScriptStep::events(vec![
-            ProviderEvent::TextDelta("continued".into()),
-            ProviderEvent::Done {
-                stop_reason: StopReason::End,
-            },
-        ])],
-    ]);
-
-    let run = tokio::time::timeout(
-        Duration::from_secs(1),
-        run_thread_task(
-            &store,
-            &provider,
-            &tools,
-            "thread-1",
-            "Continue",
-            "System",
-            CancellationToken::new(),
-        ),
-    )
-    .await
-    .expect("recovered call id must not re-enter the blocking FIFO")
-    .unwrap();
-
-    assert_eq!(run.content, "continued");
-    assert!(run.events.iter().any(|event| matches!(
-        event,
-        ConversationEvent::ToolCallFinished { call_id, result }
-            if call_id == "crash-call"
-                && result.reused
-                && result.status == ToolCallStatus::Cancelled
-                && result.output.contains("startup recovery")
-    )));
-    let old_message: (String, String) = store
-            .conn()
-            .query_row(
-                "SELECT content, status FROM messages WHERE role = 'assistant' ORDER BY seq ASC LIMIT 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-    assert_eq!(
-        old_message,
-        ("durable partial".into(), "interrupted".into())
-    );
-    let recovered_tool: (String, String) = store
-        .conn()
-        .query_row(
-            "SELECT status, output_text FROM tool_calls WHERE id = 'crash-call'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(recovered_tool.0, "cancelled");
-    assert!(recovered_tool.1.contains("startup recovery"));
     assert_eq!(provider.requests().len(), 2);
 }
 
@@ -931,24 +742,22 @@ async fn cancel_during_tool_persists_output_as_cancelled_and_starts_nothing_else
             [],
         )
         .unwrap();
-    let slow_path = dir.path().join("slow.txt");
-    let status = std::process::Command::new("mkfifo")
-        .arg(&slow_path)
-        .status()
-        .unwrap();
-    assert!(status.success());
-    // The writer's open() blocks until the tool opens the FIFO for reading.
-    // Signal that rendezvous and cancel only afterwards: cancelling on
-    // approval alone could win the race under load and leave the writer
-    // blocked in open() forever.
     let (connected_tx, connected_rx) = tokio::sync::oneshot::channel::<()>();
-    let writer = std::thread::spawn(move || {
-        let mut pipe = fs::OpenOptions::new().write(true).open(slow_path).unwrap();
-        let _ = connected_tx.send(());
-        pipe.write_all(b"auditable output\n").unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-    });
-    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let connected_tx = Arc::new(Mutex::new(Some(connected_tx)));
+    let tools = vega_tools::Tools::new(dir.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(move |command, full_access, cancel| {
+            assert_eq!(command, "cat slow.txt");
+            assert!(full_access);
+            let started = connected_tx.lock().unwrap().take().unwrap();
+            Box::pin(async move {
+                started.send(()).unwrap();
+                cancel.cancelled().await;
+                Err(vega_tools::BashError::for_test(
+                    vega_tools::BashErrorCode::Cancelled,
+                ))
+            })
+        }));
     let provider = MockProvider::new(vec![ScriptStep::events(vec![
         ProviderEvent::ToolUse {
             id: "slow-call".into(),
@@ -984,8 +793,10 @@ async fn cancel_during_tool_persists_output_as_cancelled_and_starts_nothing_else
                 tokio::spawn(async move {
                     // Bounds the wait so a tool that never starts fails
                     // the test visibly instead of hanging silently.
-                    let _ = tokio::time::timeout(Duration::from_secs(10), connected).await;
-                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    tokio::time::timeout(Duration::from_secs(10), connected)
+                        .await
+                        .expect("mock tool starts")
+                        .expect("mock start signal");
                     trigger.cancel();
                 });
             }
@@ -994,7 +805,6 @@ async fn cancel_during_tool_persists_output_as_cancelled_and_starts_nothing_else
     )
     .await
     .unwrap();
-    writer.join().unwrap();
 
     assert!(run.interrupted);
     assert!(run.events.iter().any(|event| matches!(

@@ -33,23 +33,6 @@ pub use trusted_git::TrustedGitService;
 #[cfg(test)]
 const GIT: &str = "/usr/bin/git";
 
-/// Returns the same process-selected executable used by production runners,
-/// quoted for embedding in a test-only shell delegating script.
-#[cfg(test)]
-fn production_git_shell_quote() -> String {
-    let path = process_git_executable(&CancellationToken::new())
-        .expect("production Git executable")
-        .path()
-        .to_string_lossy()
-        .into_owned();
-    format!("'{}'", path.replace('\'', "'\\''"))
-}
-
-#[cfg(test)]
-fn production_git_script(script: String) -> String {
-    script.replace("/usr/bin/git", &production_git_shell_quote())
-}
-
 const KILL: &str = "/bin/kill";
 const IO_CHUNK: usize = 16 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -267,7 +250,7 @@ pub struct GitWorkspaceService {
     state: Arc<Mutex<ServiceState>>,
     #[cfg(test)]
     executable: Option<PathBuf>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     command_backend: Option<Arc<dyn GitCommandBackend>>,
 }
 
@@ -307,6 +290,8 @@ impl GitWorkspaceService {
                 value.checked_add(1)
             })
             .map_err(|_| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+        #[cfg(any(test, feature = "test-support"))]
+        let command_backend = test_support::backend_for_root(&root);
         Ok(Self {
             root,
             identity: RootIdentity {
@@ -317,8 +302,8 @@ impl GitWorkspaceService {
             state: Arc::new(Mutex::new(ServiceState::default())),
             #[cfg(test)]
             executable,
-            #[cfg(test)]
-            command_backend: None,
+            #[cfg(any(test, feature = "test-support"))]
+            command_backend,
         })
     }
 
@@ -347,7 +332,7 @@ impl GitWorkspaceService {
         let instance_nonce = self.instance_nonce;
         #[cfg(test)]
         let executable = self.executable.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
@@ -356,7 +341,7 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 command_backend,
             )?;
             build_snapshot(&runner, 0, instance_nonce, &cancel)
@@ -476,7 +461,7 @@ impl GitWorkspaceService {
         let instance_nonce = self.instance_nonce;
         #[cfg(test)]
         let executable = self.executable.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
@@ -485,7 +470,7 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 command_backend,
             )?;
             build_snapshot(&runner, 0, instance_nonce, &cancel)
@@ -615,7 +600,7 @@ impl GitWorkspaceService {
         let identity = self.identity;
         #[cfg(test)]
         let executable = self.executable.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
@@ -624,7 +609,7 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 command_backend,
             )?;
             build_projection(&runner, private, &cancel)
@@ -712,7 +697,7 @@ impl GitWorkspaceService {
         let identity = self.identity;
         #[cfg(test)]
         let executable = self.executable.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
@@ -721,7 +706,7 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 command_backend,
             )?;
             build_artifact_evidence(&runner, &file, &cancel)
@@ -743,7 +728,7 @@ impl GitWorkspaceService {
         let identity = self.identity;
         #[cfg(test)]
         let executable = self.executable.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
@@ -752,7 +737,7 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 command_backend,
             )?;
             read_artifact_file(&runner, &file, limit, &cancel)
@@ -780,7 +765,7 @@ impl GitWorkspaceService {
         let identity = self.identity;
         #[cfg(test)]
         let executable = self.executable.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let command_backend = self.command_backend.clone();
         let result = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
@@ -789,7 +774,7 @@ impl GitWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 command_backend,
             )?;
             let guard = build_artifact_open_guard(&runner, &file, &cancel)?;
@@ -821,7 +806,7 @@ impl GitWorkspaceService {
             cancel,
             #[cfg(test)]
             None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             self.command_backend.clone(),
         )
     }
@@ -840,11 +825,6 @@ impl GitWorkspaceService {
         }
         self.runner(cancel)
     }
-
-    #[cfg(test)]
-    fn new_for_test(root: &Path, executable: PathBuf) -> Result<Self, GitWorkspaceError> {
-        Self::new_inner(root, Some(executable))
-    }
 }
 
 #[allow(unused_variables)]
@@ -853,10 +833,11 @@ fn runner_for_parts(
     identity: RootIdentity,
     cancel: &CancellationToken,
     #[cfg(test)] executable: Option<PathBuf>,
-    #[cfg(test)] command_backend: Option<Arc<dyn GitCommandBackend>>,
+    #[cfg(any(test, feature = "test-support"))] command_backend: Option<Arc<dyn GitCommandBackend>>,
 ) -> Result<Runner, GitWorkspaceError> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Some(backend) = command_backend {
+        #[cfg(test)]
         if executable.is_some() {
             return Err(error(GitWorkspaceErrorCode::GitFailed));
         }
@@ -996,3 +977,11 @@ pub(crate) use identity::*;
 pub(crate) use projection::*;
 pub(crate) use runner::*;
 pub(crate) use snapshot::*;
+
+#[cfg(any(test, feature = "test-support"))]
+mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub use test_support::{
+    FixtureGitCommand, GitCommandFixture, GitTestCommandExecutor, GitTestCommandGuard,
+    fixture_git_command, register_git_test_executor,
+};

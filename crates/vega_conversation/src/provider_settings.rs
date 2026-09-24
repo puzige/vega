@@ -16,6 +16,8 @@ const PI_MODELS_MAX_BYTES: u64 = 1024 * 1024;
 #[derive(Clone, Debug)]
 pub struct ProviderSettingsService {
     config_path: PathBuf,
+    #[cfg(any(test, feature = "test-support"))]
+    test_transport: Option<provider_check::mock::Transport>,
     /// Only tests supply this override. Production resolves the current
     /// user's `$HOME/.pi/agent/models.json` at invocation time.
     #[cfg(any(test, feature = "test-support"))]
@@ -27,6 +29,8 @@ impl ProviderSettingsService {
     pub fn new(config_path: PathBuf) -> Self {
         Self {
             config_path,
+            #[cfg(any(test, feature = "test-support"))]
+            test_transport: None,
             #[cfg(any(test, feature = "test-support"))]
             pi_models_path: None,
         }
@@ -41,8 +45,16 @@ impl ProviderSettingsService {
     pub fn with_pi_models_path(config_path: PathBuf, pi_models_path: PathBuf) -> Self {
         Self {
             config_path,
+            #[cfg(any(test, feature = "test-support"))]
+            test_transport: None,
             pi_models_path: Some(pi_models_path),
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_test_transport(mut self, transport: provider_check::mock::Transport) -> Self {
+        self.test_transport = Some(transport);
+        self
     }
 
     /// Read current configuration on a background worker.
@@ -254,7 +266,14 @@ impl ProviderSettingsService {
         request: ProviderNetworkRequest,
         cancel: CancellationToken,
     ) -> ProviderNetworkResult {
-        let mut outcome = self.perform_network(&request, cancel.clone()).await;
+        let operation = self.perform_network(&request, cancel.clone());
+        #[cfg(any(test, feature = "test-support"))]
+        let mut outcome = match &self.test_transport {
+            Some(transport) => transport.scope(operation).await,
+            None => operation.await,
+        };
+        #[cfg(not(any(test, feature = "test-support")))]
+        let mut outcome = operation.await;
         if outcome.is_ok() {
             let service = self.clone();
             let provider = request.provider.clone();

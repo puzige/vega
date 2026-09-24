@@ -526,28 +526,11 @@ async fn issue73_mcp_dispatch_failures_are_typed_and_never_show_server_prose() {
     ] {
         let owned = tempdir().unwrap();
         let script = owned.path().join(format!("{case}.sh"));
-        fs::write(
+        let _fixture = duplex_mcp_fixture(
             &script,
-            format!(
-                r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}}]}}}}'
-      ;;
-    *tools/call*)
-      printf '%s\n' '{response}'
-      ;;
-  esac
-done
-"##,
-                response = response,
-            ),
-        )
-        .unwrap();
+            serde_json::json!([{"name":"echo","inputSchema":{"type":"object"}}]),
+            Some(response.clone()),
+        );
         let ready = McpReadyServer::connect_local(
             "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
             1,
@@ -619,22 +602,11 @@ done
 async fn issue73_catalog_reads_owner_credentials_once_for_multiple_tools() {
     let owned = tempdir().unwrap();
     let script = owned.path().join("two-tools.sh");
-    fs::write(
+    let _fixture = duplex_mcp_fixture(
         &script,
-        r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"alpha","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"beta","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}}]}}'
-      ;;
-  esac
-done
-"##,
-    )
-    .unwrap();
+        serde_json::json!([{"name":"alpha","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}},{"name":"beta","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}}]),
+        None,
+    );
     let reads = Arc::new(AtomicUsize::new(0));
     let observed = reads.clone();
     let ready = McpReadyServer::connect_local(
@@ -803,30 +775,17 @@ fn issue73_registry_rejects_duplicate_identity_and_non_object_schema() {
 }
 
 #[tokio::test]
-async fn issue73_mock_provider_calls_one_real_owned_stdio_mcp_server() {
+async fn issue73_mock_provider_calls_one_owned_duplex_mcp_server() {
     let owned = tempdir().unwrap();
     let script = owned.path().join("owned-mcp.sh");
     let calls_log = owned.path().join("calls.log");
-    fs::write(
+    let _fixture = duplex_mcp_fixture(
         &script,
-        r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{"name":"echo","description":"Owned echo fixture","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]}}'
-      ;;
-    *tools/call*)
-      printf '%s\n' "$request" >> "$1"
-      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":"server-says-ok"}],"isError":false}}'
-      ;;
-  esac
-done
-"##,
-    )
-    .unwrap();
+        serde_json::json!([{"name":"echo","description":"Owned echo fixture","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]),
+        Some(
+            serde_json::json!({"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":"server-says-ok"}],"isError":false}}),
+        ),
+    );
     let server_id = "01K5KK7PZ5J8V2GSBMQKS8W71A".to_string();
     let ready = McpReadyServer::connect_local(
         server_id.clone(),
@@ -897,24 +856,11 @@ async fn issue73_mcp_catalog_echoing_owner_secret_is_never_advertised() {
     const SECRET: &str = "fake-owner-only-catalog-credential-73";
     let owned = tempdir().unwrap();
     let script = owned.path().join("catalog-echo.sh");
-    fs::write(
+    let _fixture = duplex_mcp_fixture(
         &script,
-        format!(
-            r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","description":"{SECRET}","inputSchema":{{"type":"object","properties":{{"query":{{"type":"string"}}}}}}}}]}}}}'
-      ;;
-  esac
-done
-"##
-        ),
-    )
-    .unwrap();
+        serde_json::json!([{"name":"echo","description":SECRET,"inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}}]),
+        None,
+    );
     let ready = McpReadyServer::connect_local(
         "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
         1,
@@ -981,24 +927,11 @@ async fn issue73_mcp_schema_secret_with_json_escapes_is_never_advertised() {
         },
     })
     .to_string();
-    fs::write(
+    let _fixture = duplex_mcp_fixture(
         &script,
-        format!(
-            r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{catalog_response}'
-      ;;
-  esac
-done
-"##
-        ),
-    )
-    .unwrap();
+        serde_json::from_str::<Value>(&catalog_response).unwrap()["result"]["tools"].clone(),
+        None,
+    );
     let ready = McpReadyServer::connect_local(
         "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
         1,
@@ -1044,27 +977,13 @@ async fn issue73_mcp_success_result_echoing_owner_secret_is_never_published() {
     const SECRET: &str = "fake-owner-only-result-credential-73";
     let owned = tempdir().unwrap();
     let script = owned.path().join("result-echo.sh");
-    fs::write(
+    let _fixture = duplex_mcp_fixture(
         &script,
-        format!(
-            r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","description":"Owned fixture","inputSchema":{{"type":"object","properties":{{"query":{{"type":"string"}}}}}}}}]}}}}'
-      ;;
-    *tools/call*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"resultType":"complete","content":[{{"type":"text","text":"{SECRET}"}}],"isError":false}}}}'
-      ;;
-  esac
-done
-"##
+        serde_json::json!([{"name":"echo","description":"Owned fixture","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}}]),
+        Some(
+            serde_json::json!({"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":SECRET}],"isError":false}}),
         ),
-    )
-    .unwrap();
+    );
     let ready = McpReadyServer::connect_local(
         "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
         1,
@@ -1142,27 +1061,13 @@ async fn issue73_mcp_result_rechecks_owner_secret_after_concurrent_rotation() {
     const NEW: &str = "fake-oauth-access-after-refresh-73";
     let owned = tempdir().unwrap();
     let script = owned.path().join("rotated-result.sh");
-    fs::write(
+    let _fixture = duplex_mcp_fixture(
         &script,
-        format!(
-            r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}}]}}}}'
-      ;;
-    *tools/call*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"resultType":"complete","content":[{{"type":"text","text":"{NEW}"}}],"isError":false}}}}'
-      ;;
-  esac
-done
-"##
+        serde_json::json!([{"name":"echo","inputSchema":{"type":"object"}}]),
+        Some(
+            serde_json::json!({"jsonrpc":"2.0","id":3,"result":{"resultType":"complete","content":[{"type":"text","text":NEW}],"isError":false}}),
         ),
-    )
-    .unwrap();
+    );
     let current = Arc::new(Mutex::new(OLD.to_string()));
     let current_for_reader = current.clone();
     let ready = McpReadyServer::connect_local(
@@ -1247,27 +1152,11 @@ async fn issue73_mcp_structured_secret_with_json_escapes_is_rejected_for_both_er
             },
         })
         .to_string();
-        fs::write(
+        let _fixture = duplex_mcp_fixture(
             &script,
-            format!(
-                r##"#!/bin/sh
-while IFS= read -r request; do
-  case "$request" in
-    *server/discover*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","supportedVersions":["2026-07-28"],"capabilities":{{"tools":{{}}}}}}}}'
-      ;;
-    *tools/list*)
-      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}}]}}}}'
-      ;;
-    *tools/call*)
-      printf '%s\n' '{response}'
-      ;;
-  esac
-done
-"##
-            ),
-        )
-        .unwrap();
+            serde_json::json!([{"name":"echo","inputSchema":{"type":"object"}}]),
+            Some(serde_json::from_str(&response).unwrap()),
+        );
         let ready = McpReadyServer::connect_local(
             "01K5KK7PZ5J8V2GSBMQKS8W71A".into(),
             1,
@@ -1328,4 +1217,39 @@ done
                 .all(|message| !message.content.contains("fake-"))
         }));
     }
+}
+
+pub(super) fn duplex_mcp_fixture(
+    path: &std::path::Path,
+    tools: Value,
+    call_response: Option<Value>,
+) -> vega_mcp::mock::StdioFixture {
+    vega_mcp::mock::StdioFixture::new(
+        path,
+        Arc::new(move |server, stream| {
+            let tools = tools.clone();
+            let call_response = call_response.clone();
+            async move {
+                vega_mcp::mock::serve_json(stream, move |request| {
+                    let response = if request["method"] == "tools/call" {
+                        if let Some(log) = server.args.get(1) {
+                            use std::io::Write;
+                            let mut file = fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(log)
+                                .unwrap();
+                            writeln!(file, "{request}").unwrap();
+                        }
+                        Some(call_response.clone().expect("unexpected MCP tool call"))
+                    } else {
+                        vega_mcp::mock::catalog_reply(&request, &tools, "")
+                    };
+                    async move { response }
+                })
+                .await;
+            }
+            .boxed()
+        }),
+    )
 }

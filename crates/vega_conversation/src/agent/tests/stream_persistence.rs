@@ -399,19 +399,31 @@ async fn lone_text_delta_flushes_during_provider_stall_within_sixteen_ms() {
 #[tokio::test]
 async fn running_persistence_failure_prevents_tool_start_and_next_round() {
     let (store, dir, _project_id) = setup();
-    let fifo = dir.path().join("never-read");
-    let status = std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
+    store
+        .conn()
+        .execute(
+            "UPDATE threads SET permission_mode = 'full_access' WHERE id = 'thread-1'",
+            [],
+        )
         .unwrap();
-    assert!(status.success());
-    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let tools = vega_tools::Tools::new(dir.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(move |_, _, _| {
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                Err(vega_tools::BashError::for_test(
+                    vega_tools::BashErrorCode::SpawnFailed,
+                ))
+            })
+        }));
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
             ProviderEvent::ToolUse {
                 id: "blocked-call".into(),
-                name: "read".into(),
-                input_json: r#"{"path":"never-read"}"#.into(),
+                name: "bash".into(),
+                input_json: r#"{"cmd":"never-run"}"#.into(),
             },
             ProviderEvent::Done {
                 stop_reason: StopReason::ToolUse,
@@ -441,10 +453,11 @@ async fn running_persistence_failure_prevents_tool_start_and_next_round() {
         ),
     )
     .await
-    .expect("running barrier failure must not enter the blocking FIFO")
+    .expect("running barrier failure must stop before tool execution")
     .unwrap_err();
 
     assert!(result.to_string().contains("critical persistence failure"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(provider.requests().len(), 1);
     let status: String = store
         .conn()

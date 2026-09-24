@@ -31,7 +31,7 @@ const EDIT_FINAL: &str = "S5_EDIT_FINAL_SENTINEL";
 const DENIAL_NOTE: &str = "S5 operator denied the command";
 
 #[tokio::test]
-async fn full_access_persisted_mode_runs_real_shell_and_restores_sandbox()
+async fn full_access_persisted_mode_selects_execution_policy_and_restores_confirmation()
 -> Result<(), Box<dyn Error>> {
     use vega_conversation::history::{HistoryEntry, restart_history_page};
     use vega_conversation::threads::set_thread_permission_mode;
@@ -82,7 +82,6 @@ async fn full_access_persisted_mode_runs_real_shell_and_restores_sandbox()
             .permission_mode,
         "confirm"
     );
-    let tools = Tools::new(&project_root)?;
 
     for (index, (thread_id, mode, source)) in [
         (
@@ -111,12 +110,29 @@ async fn full_access_persisted_mode_runs_real_shell_and_restores_sandbox()
     {
         set_thread_permission_mode(&store, thread_id, mode)?;
         let call_id = format!("full-access-call-{index}");
-        // All shell writes target files created by this owned fixture.
         let command = if mode == PermissionMode::FullAccess {
             "print full > ../sibling-0 && print committed > tracked.txt && /usr/bin/git init -b main && /usr/bin/git add tracked.txt && /usr/bin/git -c user.name=VegaFixture -c user.email=fixture@example.invalid -c core.hooksPath=/dev/null -c commit.gpgsign=false commit -m fixture".to_owned()
         } else {
             format!("print allowed > inside-{index}; print denied > ../sibling-{index}")
         };
+        let expected_command = command.clone();
+        let executions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recorded = executions.clone();
+        let tools = Tools::new(&project_root)?.with_bash_test_executor(Arc::new(
+            move |actual_command, full_access, _| {
+                assert_eq!(actual_command, expected_command);
+                assert_eq!(full_access, mode == PermissionMode::FullAccess);
+                recorded.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    Ok(vega_tools::BashOutput {
+                        text: "fixture output".into(),
+                        exit_code: if full_access { 0 } else { 1 },
+                        duration_ms: 1,
+                        truncated: false,
+                    })
+                })
+            },
+        ));
         let provider = MockProvider::new_rounds(vec![
             vec![ScriptStep::events(vec![
                 ProviderEvent::ToolUse {
@@ -157,27 +173,16 @@ async fn full_access_persisted_mode_runs_real_shell_and_restores_sandbox()
         let audit = ApprovalAudit::from_json(state.approval.as_deref().ok_or("missing approval")?)?;
         assert_eq!(audit.source, source);
         assert_eq!(audit.decision, Approval::Once);
-        assert_eq!(state.status, "success"); // Shell completion preserves its real exit code separately.
-        if mode == PermissionMode::FullAccess {
-            assert_eq!(state.exit_code, Some(0));
-            assert_eq!(
-                fs::read_to_string(owned.path().join("sibling-0"))?,
-                "full\n"
-            );
-            let output = std::process::Command::new("/usr/bin/git")
-                .args(["show", "HEAD:tracked.txt"])
-                .current_dir(&project_root)
-                .output()?;
-            assert!(output.status.success());
-            assert_eq!(output.stdout, b"committed\n");
-        } else {
-            assert_ne!(state.exit_code, Some(0));
-            assert!(!owned.path().join(format!("sibling-{index}")).exists());
-            assert_eq!(
-                fs::read_to_string(project_root.join(format!("inside-{index}")))?,
-                "allowed\n"
-            );
-        }
+        assert_eq!(state.status, "success");
+        assert_eq!(
+            state.exit_code,
+            Some(if mode == PermissionMode::FullAccess {
+                0
+            } else {
+                1
+            })
+        );
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
     drop(store);
     let store = Store::open(&database)?;

@@ -1,13 +1,6 @@
 use super::branch_stub::BranchFixture;
 use super::*;
 
-// The dirty/detached/operation and marker policies run the real
-// `BranchWorkspaceService` over the finite in-process command boundary; the raw
-// status bytes are captured real Git output. The operation markers themselves
-// stay real filesystem facts under the stub's plain `metadata` directory. The
-// symlink and linked-worktree `--git-path` nofollow contract is retained as a
-// real Git/filesystem test below.
-
 #[tokio::test]
 async fn dirty_detached_and_operation_state_fail_closed() {
     let fixture = BranchFixture::new("dirty-tracked");
@@ -101,13 +94,14 @@ async fn unmerged_index_is_dirty_and_never_enumerated_as_switchable() {
 }
 
 #[tokio::test]
-async fn marker_symlink_and_linked_worktree_gitdir_are_rejected_nofollow() {
+async fn marker_symlink_and_external_metadata_are_checked_nofollow() {
     use std::os::unix::fs::symlink;
 
-    let repo = Repo::new();
+    let fixture = BranchFixture::new("main-clean");
     let outside = tempfile::NamedTempFile::new().expect("outside marker");
-    symlink(outside.path(), repo.path().join(".git/MERGE_HEAD")).expect("marker symlink");
-    let service = BranchWorkspaceService::new(repo.path()).expect("service");
+    let marker = fixture.path().join("metadata/MERGE_HEAD");
+    symlink(outside.path(), &marker).expect("marker symlink");
+    let service = fixture.service();
     assert_eq!(
         service
             .refresh(CancellationToken::new())
@@ -116,35 +110,15 @@ async fn marker_symlink_and_linked_worktree_gitdir_are_rejected_nofollow() {
             .code(),
         GitWorkspaceErrorCode::BranchOperationInProgress
     );
-    fs::remove_file(repo.path().join(".git/MERGE_HEAD")).expect("remove symlink");
-
-    let linked_parent = tempfile::Builder::new()
-        .prefix("vega-linked-worktree-")
-        .tempdir()
-        .expect("linked parent");
-    let linked = linked_parent.path().join("checkout");
-    let linked_text = linked.to_str().expect("fixture utf8 path");
-    git(
-        repo.path(),
-        &["worktree", "add", "-q", "-b", "linked", linked_text],
-    );
-    let linked_service = BranchWorkspaceService::new(&linked).expect("linked service");
+    fs::remove_file(&marker).expect("remove symlink");
+    let linked_metadata = tempfile::tempdir().unwrap();
+    fixture.set_raw("metadata", linked_metadata.path().to_str().unwrap());
+    let linked_service = fixture.service();
     linked_service
         .refresh(CancellationToken::new())
         .await
-        .expect("linked refresh");
-    let marker_output = git_output(&linked, &["rev-parse", "--git-path", "MERGE_HEAD"]);
-    let marker = PathBuf::from(OsString::from_vec(
-        exact_single_line(&marker_output)
-            .expect("marker line")
-            .to_vec(),
-    ));
-    let marker = if marker.is_absolute() {
-        marker
-    } else {
-        linked.join(marker)
-    };
-    fs::write(marker, "linked marker\n").expect("linked marker");
+        .expect("external metadata refresh");
+    fs::write(linked_metadata.path().join("MERGE_HEAD"), "linked marker\n").unwrap();
     assert_eq!(
         linked_service
             .refresh(CancellationToken::new())

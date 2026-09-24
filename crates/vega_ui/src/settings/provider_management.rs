@@ -11,6 +11,8 @@ use vega_store::context_compaction::{DEFAULT_MODEL_INPUT_LIMIT, DEFAULT_MODEL_OU
 
 #[derive(Default)]
 pub(crate) struct ProviderManagement {
+    #[cfg(test)]
+    transport: Option<vega_runtime::provider_check::mock::Transport>,
     pub(super) selected: Option<String>,
     generation: u64,
     operation: u64,
@@ -803,13 +805,21 @@ impl SettingsView {
         state.message = Some("正在连接…".into());
         let cancel = CancellationToken::new();
         state.cancel = Some(cancel.clone());
+        #[cfg(test)]
+        let transport = state.transport.clone();
         let worker = cx.background_executor().spawn(async move {
             match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
             {
                 Ok(runtime) => {
-                    runtime.block_on(ProviderSettingsService::new(path).network(request, cancel))
+                    let service = ProviderSettingsService::new(path);
+                    #[cfg(test)]
+                    let service = match transport {
+                        Some(transport) => service.with_test_transport(transport),
+                        None => service,
+                    };
+                    runtime.block_on(service.network(request, cancel))
                 }
                 Err(_) => vega_conversation::types::ProviderNetworkResult {
                     request,

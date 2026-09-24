@@ -16,5 +16,9 @@ vega_tools.workspace = true
 vega_ui.workspace = true
 
 [dev-dependencies]
+vega_tools = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+vega_conversation = { workspace = true, features = ["test-support"] }
+vega_ui = { workspace = true, features = ["test-support"] }
 gpui_kit = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

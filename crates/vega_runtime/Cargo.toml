@@ -3,7 +3,11 @@ name = "vega_runtime"
 version.workspace = true
 edition.workspace = true
 
+[features]
+test-support = ["dep:http"]
+
 [dependencies]
+http = { version = "=1.5.0", optional = true }
 image = { workspace = true }
 base64 = { workspace = true }
 # 网络组（exec-guide §5 白名单，S4-T19 首次激活）：OpenAI 兼容 SSE 流式 provider
@@ -31,6 +35,9 @@ serde = { workspace = true, features = ["derive"] }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
 
 [dev-dependencies]
+vega_mcp = { workspace = true, features = ["test-support"] }
+vega_tools = { workspace = true, features = ["test-support"] }
 # 多线程测试运行时（#[tokio::test]；macros/rt 已在主依赖启用）
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tempfile = { workspace = true }
+http = "=1.5.0"

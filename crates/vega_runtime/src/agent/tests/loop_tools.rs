@@ -7,7 +7,23 @@ async fn exact_same_turn_read_write_and_bash_calls_reuse_durable_results_once() 
     fs::write(project.path().join("source.txt"), "source").unwrap();
     let checkpoint = data.path().join("checkpoints");
     fs::create_dir(&checkpoint).unwrap();
-    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let recorded = executions.clone();
+    let tools = vega_tools::Tools::new(project.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(move |command, full_access, _| {
+            assert_eq!(command, "printf bash-ok");
+            assert!(!full_access);
+            recorded.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Ok(vega_tools::BashOutput {
+                    text: "bash-ok".into(),
+                    exit_code: 0,
+                    duration_ms: 1,
+                    truncated: false,
+                })
+            })
+        }));
     let read = || ProviderEvent::ToolUse {
         id: "read-1".into(),
         name: "read".into(),
@@ -60,6 +76,7 @@ async fn exact_same_turn_read_write_and_bash_calls_reuse_durable_results_once() 
     )
     .await
     .unwrap();
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(outcome.executed_tool_call_count, 3);
     assert_eq!(
