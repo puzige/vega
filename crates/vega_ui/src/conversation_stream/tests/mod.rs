@@ -35,6 +35,7 @@ mod model_markdown;
 mod model_picker_levels;
 mod permission_picker;
 mod permissions_cards;
+mod preparing_indicator;
 mod r64_popup_deferred;
 mod r68_popup_dismiss;
 mod scroll_follow;

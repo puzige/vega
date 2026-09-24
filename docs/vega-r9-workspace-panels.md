@@ -22,4 +22,8 @@ Deliver docs/vega-r9-workspace-panels-delivery.md with changed files, exact comm
 
 The main agent's single real-user Ask submission reached the production worker and waited inside macOS `SecKeychainFindGenericPassword` before any durable message or provider request. The composer showed only a disabled Send button. The correction must display a truthful pending/preparing indication and a conditional system-authorization hint while preserving the draft and existing durable-echo handshake. It must not claim that a system dialog exists, inspect credentials, automate SecurityAgent, or fabricate progress/completion.
 
+### Issue #174 revision — remove the pending row (2026-09-24)
+
+The visible `正在准备请求…` row added by the correction above is superseded by [Issue #174](vega-issue-174-preparing-indicator.md). Keep the internal submit-pending guard, single-flight behavior, provider preflight and durable-echo handshake, but do not render a preparation label or reserve layout space for one. Keep genuine controller errors, warnings and run status visible under their existing rules.
+
 Existing cancellation must be checked immediately after provider/credential construction returns, before either the ordinary-user or approved-plan durable/runtime entry. Synchronous Keychain waits cannot be forcibly interrupted by this UI; no misleading Cancel button is added. One bounded fault-injection regression at the existing test-only provider construction boundary must prove cancellation during deferred construction causes zero provider requests and zero new durable messages. Existing real-provider authorization and native acceptance remain owned by main/user; implementation uses only owned fixture config/DB and MockProvider.
