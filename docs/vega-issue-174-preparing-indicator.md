@@ -53,8 +53,9 @@ Focused passing runs after the change:
 | `cargo nextest run -p vega a7_first_submit_missing_credential_rejects_before_materialization` | `PASS [0.209s]`; 1 passed, 200 skipped | 0 |
 | `cargo nextest run -p vega a7_repeated_rejected_submit_creates_no_rows_or_run` | `PASS [0.255s]`; 1 passed, 200 skipped | 0 |
 | `cargo nextest run -p vega r11_composer_preparation_stop_preserves_draft_and_prevents_late_start` | `PASS [0.372s]`; 1 passed, 200 skipped | 0 |
+| `cargo fmt --all -- --check` | no output | 0 |
 | `git diff --check` | no output | 0 |
 
-Provider-path tests use owned fixtures and a mocked provider boundary. No workspace-wide tests, formatter, or lint checks were run locally; the PR cloud check remains authoritative. Real-provider and native UI acceptance remain with the user.
+Provider-path tests use owned fixtures and a mocked provider boundary. No workspace-wide tests or lint checks were run locally; the PR cloud check remains authoritative. Real-provider and native UI acceptance remain with the user.
 
 Spec deviation: none.

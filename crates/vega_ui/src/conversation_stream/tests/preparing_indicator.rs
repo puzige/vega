@@ -19,9 +19,9 @@ async fn issue174_pending_preflight_keeps_composer_wrapper_height_and_stop_proje
 ) {
     let (window, stream, _) = open_controller_stream(cx, "issue174-pending-preflight");
     stream.update(cx, |stream, cx| {
-        stream
-            .input
-            .update(cx, |input, cx| input.set_text("keep this preflight draft", cx));
+        stream.input.update(cx, |input, cx| {
+            input.set_text("keep this preflight draft", cx)
+        });
     });
 
     let idle_height = bounds_height(window, "composer-wrapper", cx);
