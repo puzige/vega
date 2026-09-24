@@ -2,7 +2,7 @@
 
 > 2026-09-22 [Issue #140](vega-issue-140-ci-test-throughput.md) supersedes the shadow selector and per-shard compilation topology: Python shadow reporting is removed; full-suite native nextest archives are built once and reused across workers. Existing safety assertions, resource weights and ignored inventory remain.
 
-> 2026-09-24 [Issue #175](vega-issue-175-single-pr-check.md) supersedes this document's PR-gate topology, including the C6-C9 cache, nextest, archive and shard implementation details below. The current PR gate is one `macos-latest` job named `check (fmt, clippy, test)`, running fmt, Clippy and the full Cargo workspace test command sequentially, without nextest, archive transport, sharding or PR cache. The earlier decisions, measurements and delivery evidence below remain historical records; master packaging and tag-driven release behavior remain unchanged.
+> 2026-09-24 [Issue #175](vega-issue-175-single-pr-check.md) supersedes this document's PR-gate topology, including the C6-C9 cache, nextest, archive and shard implementation details below. The current PR gate is one `macos-latest` job named `check (fmt, clippy, test)`, running fmt, Clippy and the full Cargo workspace test command sequentially, without nextest, archive transport or sharding. Its original no-cache choice and earlier evidence remain historical, superseded by [Issue #179](vega-issue-179-shared-pr-cicd-cache.md): PR checks now restore the master-owned `vega-master-build` cache without saving. The master packaging workflow is `.github/workflows/cicd.yml` (workflow name `master`); tag-driven release behavior remains unchanged.
 
 ## 背景与用户决策
 

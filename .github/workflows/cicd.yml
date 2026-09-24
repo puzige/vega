@@ -1,11 +1,8 @@
-# Master build pipeline for Vega (macOS arm64) — push to master only.
+# CICD packaging pipeline for Vega (macOS arm64) — push to master only.
 #
 # ── Design notes ─────────────────────────────────────────────────────────────
 # - This repo is PUBLIC: GitHub-hosted runners (including macos-latest) are
 #   free and do not consume the minute quota.
-# - Split out of the former single ci.yml (2026-09-22 owner decision): this
-#   pipeline packages the bundle after a PR merge. Its Cargo cache is private
-#   to this workflow; the PR gate does not restore or write a Cargo cache.
 # - master is protected (PR-only): this `push` trigger fires after a PR merge
 #   and produces the packaged bundle as a downloadable artifact. It does NOT
 #   publish a Release — releases stay tag-driven (release.yml) so not every
@@ -13,7 +10,7 @@
 # - Standard Cargo steps, no bespoke Python. `dtolnay/rust-toolchain` follows
 #   rust-toolchain.toml (1.98.0) so local and CI toolchains match.
 
-name: master-build
+name: master
 
 on:
   push:
@@ -43,7 +40,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: vega-master-build
-          # This workflow only runs on master and writes its own cache.
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Build the bundle (cargo xtask package)

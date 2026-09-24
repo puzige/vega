@@ -66,7 +66,7 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 ## 4. 提交前自查（只跑本卡功能点测试）
 
-- **本地不做全量测试**：不跑 `cargo test --workspace` 等全量门禁，把它留给云端 `pr-check`。PR gate 是 [Issue #175](../../../docs/vega-issue-175-single-pr-check.md) 规定的单个 required job `check (fmt, clippy, test)`，依次运行 fmt、Clippy 和 `cargo test --workspace --no-fail-fast -- --test-threads=1`；Cargo 测试覆盖单元、集成和文档测试，不分片、不重试。`.config/nextest.toml` 仅供本地定向 nextest 命令使用，PR workflow 不安装或读取它。push master 由 `.github/workflows/master-build.yml` 打包，master build 与 PR gate 各自维护缓存。
+- **本地不做全量测试**：不跑 `cargo test --workspace` 等全量门禁，把它留给云端 `pr-check`。PR gate 是 [Issue #175](../../../docs/vega-issue-175-single-pr-check.md) 规定的单个 required job `check (fmt, clippy, test)`，依次运行 fmt、Clippy 和 `cargo test --workspace --no-fail-fast -- --test-threads=1`；Cargo 测试覆盖单元、集成和文档测试，不分片、不重试。`.config/nextest.toml` 仅供本地定向 nextest 命令使用，PR workflow 不安装或读取它。PR 和 master CICD 都用 `Swatinem/rust-cache@v2` 与 `shared-key: vega-master-build`；PR 用 `save-if: ${{ github.ref == 'refs/heads/master' }}` 恢复缓存但不写入，master 是唯一缓存写入方。push master 由 `.github/workflows/cicd.yml`（workflow 名 `master`）打包。
 - **必须本地跑通本卡自己新增/修改的功能点测试**（定向命令，如 `cargo nextest run -p <crate> <filter>`），确认能检出并覆盖本卡行为；这是提交前的最低自查。只跑本卡相关的几个测试，不扩散到全量。
 - 测试设计仍遵循 E2E-first：本卡测试优先覆盖真实 production 入口/owned temp repo 的相关路径；安全不变量可用精确回归。不得为提速删测试、加 ignore、放宽断言或自动重试到绿；失败如实保留并修复。
 - **真实验收由用户在 master 上手动完成**。Agent 不把自行产出的全量 E2E/截图当作合并前门禁；需要真实模型/服务/UI 的路径由用户手测确认。
