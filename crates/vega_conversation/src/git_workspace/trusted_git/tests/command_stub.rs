@@ -7,6 +7,8 @@ use super::*;
 struct FixtureData {
     raw: BTreeMap<String, String>,
     files: BTreeMap<String, String>,
+    #[serde(default)]
+    symlinks: BTreeMap<String, String>,
     executable_files: Vec<String>,
     #[serde(default)]
     attrs_by_input: BTreeMap<String, String>,
@@ -52,6 +54,7 @@ struct StubState {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum GateTarget {
+    BeforeMutation,
     Mutation,
     Summary,
 }
@@ -164,32 +167,54 @@ impl PolicyFixture {
     }
 
     fn apply_files(root: &Path, before: &FixtureData, next: &FixtureData) {
-        for path in before.files.keys() {
-            if !next.files.contains_key(path) {
-                fs::remove_file(root.join(path)).expect("remove old fixture file");
+        let mut paths: BTreeSet<&str> = BTreeSet::new();
+        paths.extend(before.files.keys().map(String::as_str));
+        paths.extend(before.symlinks.keys().map(String::as_str));
+        paths.extend(next.files.keys().map(String::as_str));
+        paths.extend(next.symlinks.keys().map(String::as_str));
+        for path in paths {
+            let full = root.join(path);
+            if let Some(content) = next.files.get(path) {
+                let existing = fs::symlink_metadata(&full);
+                if existing
+                    .as_ref()
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                {
+                    fs::remove_file(&full).expect("remove stale symlink");
+                }
+                if fs::read(&full).ok().as_deref() != Some(content.as_bytes()) {
+                    fs::write(&full, content).expect("plain worktree file");
+                }
+                let mode = if next
+                    .executable_files
+                    .iter()
+                    .any(|name| path.ends_with(name))
+                {
+                    0o755
+                } else {
+                    0o644
+                };
+                let existing = fs::metadata(&full)
+                    .expect("fixture file metadata")
+                    .permissions();
+                if existing.mode() & 0o777 != mode {
+                    fs::set_permissions(&full, fs::Permissions::from_mode(mode))
+                        .expect("file mode");
+                }
+            } else if let Some(target) = next.symlinks.get(path) {
+                let current = fs::read_link(&full).ok();
+                if current.as_deref() != Some(Path::new(target)) {
+                    let _ = fs::remove_file(&full);
+                    std::os::unix::fs::symlink(target, &full).expect("fixture symlink");
+                }
+            } else if fs::symlink_metadata(&full).is_ok() {
+                fs::remove_file(&full).expect("remove old fixture path");
             }
         }
-        for (path, content) in &next.files {
-            let path = root.join(path);
-            if fs::read(&path).ok().as_deref() != Some(content.as_bytes()) {
-                fs::write(&path, content).expect("plain worktree file");
-            }
-            let mode = if next
-                .executable_files
-                .iter()
-                .any(|name| path.ends_with(name))
-            {
-                0o755
-            } else {
-                0o644
-            };
-            let existing = fs::metadata(&path)
-                .expect("fixture file metadata")
-                .permissions();
-            if existing.mode() & 0o777 != mode {
-                fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("file mode");
-            }
-        }
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        self.dir.path()
     }
 
     pub(super) fn operation_marker(&self) {
@@ -381,6 +406,15 @@ impl PolicyFixture {
             state.unexpected
         );
         assert!(
+            state.gate.is_none(),
+            "declared command gate was never served"
+        );
+        assert!(
+            state.mutations_expected.is_empty(),
+            "declared mutations were not served: {}",
+            state.mutations_expected.len()
+        );
+        assert!(
             state.selected_attrs_expected.is_empty(),
             "declared selected attrs were never requested: {:?}",
             state.selected_attrs_expected
@@ -436,6 +470,11 @@ impl PolicyFixture {
                     .any(|arg| matches!(arg.to_str(), Some("add" | "commit" | "switch")))
             }),
             "policy attempted mutation"
+        );
+        assert!(state.mutations.is_empty(), "policy attempted mutation");
+        assert!(
+            state.mutations_expected.is_empty(),
+            "unused mutation expectation"
         );
         assert!(
             !self.dir.path().join(".git").exists(),
@@ -505,12 +544,23 @@ impl GitCommandBackend for CommandStub {
             state.faults_served = state.faults_served.saturating_add(1);
             return Err(error(GitWorkspaceErrorCode::GitFailed));
         }
-        if valid_command
+        let expected_mutation_matches = valid_command
             && state
                 .mutations_expected
                 .front()
-                .is_some_and(|expected| expected.argv == args)
+                .is_some_and(|expected| expected.argv == args);
+        if expected_mutation_matches
+            && state
+                .gate
+                .as_ref()
+                .is_some_and(|gate| gate.target == GateTarget::BeforeMutation)
         {
+            let gate = state.gate.take().expect("armed pre-mutation gate");
+            drop(state);
+            Self::serve_gate(gate);
+            state = self.state.lock().expect("stub state");
+        }
+        if expected_mutation_matches {
             let expected = state
                 .mutations_expected
                 .pop_front()

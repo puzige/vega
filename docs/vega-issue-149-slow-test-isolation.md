@@ -281,6 +281,71 @@ the summary-drift test. No-exec: all three migrated tests pass under
 and pass normally. The now-dead shell gate helpers (`blocking_mutation`,
 `blocking_summary_reader`, `wait_for_path`) were removed.
 
+## Batch 14 — trusted_git selection topology
+
+This user-approved batch targets the remaining high-duration selection-topology
+cases. Keep the production `GitWorkspaceService` and `TrustedGitService` paths,
+including their parsing, selection, capability and authority decisions. Replace
+only repeated external Git setup and mutation execution with the existing finite
+`PolicyFixture` command boundary and raw states captured from owned Git repos.
+
+Migrate these cases when the real adapter contract below proves each fixture:
+
+- `trusted_git_empty_selection_commits_existing_staged_delta`
+- `trusted_git_selected_am_component_preserves_forced_add_topology`
+- `untracked_entry_is_optional_only_and_prepares_as_added`
+- `selected_delete_and_untracked_destination_may_canonicalize_to_staged_rename`
+- `trusted_git_selected_staged_rename_with_unstaged_edit_proves_structural_split`
+- `staged_rename_destination_mode_flip_is_rejected_after_one_add`
+- `staged_rename_destination_delete_claims_only_canonical_old_deletion`
+- `trusted_git_selected_regular_to_symlink_binds_type_change`
+- `trusted_git_selected_executable_add_binds_exact_worktree_mode`
+
+Preserve the exact typed outcome and existing selection assertions; assert exact
+mutation argv and stdin for every declared `add` or `commit`; reject unexpected
+commands and unused mutation expectations. The mode-flip case must hold the
+real service at the pre-mutation barrier, change the real fixture file mode and
+switch to the subsequent captured status, refresh through the production
+workspace service, then assert `ChangedDuringRead`, no prepared capability and
+exactly one add attempt. The captured Git status must retain index mode `100644`
+and report only worktree mode `100755`.
+
+`staged_rename_source_recreation_is_not_owned_by_destination_edit` remains a
+real-Git test: its behavior depends on recreating the source at a specific point
+in the read protocol, and the current finite command seam has no read barrier
+for that event. Keep the existing real owned-repository end-to-end commit
+contract. The executable-add policy case may use the fixture boundary only if a
+real-adapter comparison covers the captured `100755` index result. Add one
+real-adapter comparison for the new captured selection states; it must compare
+raw Git output from actual owned repos with the fixture bytes and must not
+emulate Git rename, symlink or mode behavior.
+
+The captured delete-plus-untracked transition uses both selected paths as the
+NUL-delimited `git add -A` input; real Git then reports the canonical staged
+rename. The adapter comparison covers this exact input, along with the rename
+split, mode-flip, destination-delete, symlink and executable states.
+
+Acceptance: `cargo nextest run -p vega_conversation --test-threads=1 -E
+'test(git_workspace::trusted_git::tests::selection_topology)'` passed all 16
+tests (16 passed, 531 filtered). Same-machine nextest test time for the 15
+pre-existing cases was **24.728s before → 5.461s after**; the added real-Git
+adapter comparison takes 2.292s, for 7.768s across all 16 tests. The comparison
+uses the original 15-test source from `HEAD` as its baseline, and test-runner
+durations exclude compilation.
+
+No-exec: Seatbelt denied `process-exec` for `/usr/bin/git`. All 13 fixture/policy
+cases passed (0.289s); the three retained real-Git contracts
+(`e2e_owned_repo_checklist_prepare_mock_draft_commit`,
+`staged_rename_source_recreation_is_not_owned_by_destination_edit`, and
+`selection_topology_captured_states_match_real_git`) failed at Git spawn with
+`PermissionDenied: Operation not permitted` (exit 100), as expected. They pass
+in the ordinary 16-test run.
+
+Negative control: changing the symlink checklist expectation from
+`TypeChanged` to `Modified` failed that case on the selection assertion (exit
+100). The source was restored byte-identically (`selection_topology.rs`
+SHA-256 `ef9834161674887d6cbce4e4607492e402e8f18529f2bdac7e33cf7e517d65cb`).
+
 ### Outstanding rows
 
 The remaining 127-item optimization is **not** complete. Still outstanding:
