@@ -1,4 +1,4 @@
-# Master build pipeline for Vega (macOS arm64) — push to master only.
+# CICD packaging pipeline for Vega (macOS arm64) — push to master only.
 #
 # ── Design notes ─────────────────────────────────────────────────────────────
 # - This repo is PUBLIC: GitHub-hosted runners (including macos-latest) are

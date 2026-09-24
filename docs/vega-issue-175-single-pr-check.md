@@ -2,7 +2,7 @@
 
 > 2026-09-24 [Issue #179](vega-issue-179-shared-pr-cicd-cache.md) supersedes this specification's no-PR-cache decision and `master-build.yml` path/name: PR Check now restores the master-owned `vega-master-build` Cargo cache without saving, while `.github/workflows/cicd.yml` (workflow name `master`) remains the sole cache writer and package workflow. The single unsharded PR job, required check context, command sequence, and test coverage specified below remain in force; the earlier cache decision and evidence are retained as historical context.
 
-Status: implementation specification; acceptance is pending the cloud PR check.
+Status: implementation merged via PR #177; its required cloud check passed. This record does not claim that user hand-testing passed.
 
 ## User goal
 
