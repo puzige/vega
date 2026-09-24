@@ -2,6 +2,8 @@
 
 > 2026-09-22 [Issue #140](vega-issue-140-ci-test-throughput.md) supersedes the shadow selector and per-shard compilation topology: Python shadow reporting is removed; full-suite native nextest archives are built once and reused across workers. Existing safety assertions, resource weights and ignored inventory remain.
 
+> 2026-09-24 [Issue #175](vega-issue-175-single-pr-check.md) supersedes this document's PR-gate topology, including the C6-C9 cache, nextest, archive and shard implementation details below. The current PR gate is one `macos-latest` job named `check (fmt, clippy, test)`, running fmt, Clippy and the full Cargo workspace test command sequentially, without nextest, archive transport, sharding or PR cache. The earlier decisions, measurements and delivery evidence below remain historical records; master packaging and tag-driven release behavior remain unchanged.
+
 ## 背景与用户决策
 
 现状：仓库唯一 workflow `release.yml` 只在 `v*` tag 与手动 dispatch 触发；所有门禁压在本地 pre-push 钩子（`scripts/verify.py`），PR 页面 `no checks reported`。本地门禁依赖本机性能，阻塞 commit/push。

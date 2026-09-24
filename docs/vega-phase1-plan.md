@@ -104,8 +104,9 @@ loop {
 `projects / threads / messages / tool_calls / token_usage / permissions` 六张表。token_usage 每 API 调用一行（thread_id, model, input, output, cache_read, cache_write, cost_microcents, ts）。
 
 ### 3.5 CI
-`macos-latest` runner；PR check：fmt → clippy(-D warnings) → test（含 headless runtime 测试）；push 到 master：release build 打包上传 artifact。`Swatinem/rust-cache`。
-> 2026-09-22 修订（Issue #123）：仓库为 public，macOS runner 免费。门禁**全部上云**到 `.github/workflows/`（PR check 与 master build 两条独立 workflow，共享 `shared-key: vega` 缓存）；本地 git hooks、`scripts/verify.py` 与 cargo-lock 调度器已删除，本地 commit/push 不再封锁。发布仍由 `v*` tag 触发。
+`macos-latest` runner；PR check：fmt → clippy(-D warnings) → Cargo workspace test（含 headless runtime 和 doc-tests）；push 到 master：release build 打包上传 artifact。
+> 2026-09-22 修订（Issue #123）：仓库为 public，macOS runner 免费。门禁**全部上云**到 `.github/workflows/`；本地 git hooks、`scripts/verify.py` 与 cargo-lock 调度器已删除，本地 commit/push 不再封锁。发布仍由 `v*` tag 触发。
+> 2026-09-24 修订（Issue #175）：PR gate 使用一个 macOS job，顺序运行 fmt、clippy 和无分片的 Cargo 全 workspace 测试；master build 保留独立打包与缓存。具体门禁命令见 [vega-exec-guide §7](vega-exec-guide.md#7-验收协议每个任务卡通用)。
 
 ---
 

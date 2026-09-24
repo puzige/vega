@@ -7,7 +7,7 @@
 
 1. **确认 master 可发**：合并的 PR 已通过云端 `check`（`cargo fmt --all --
    --check` / `cargo clippy --workspace --all-targets -- -D warnings` /
-   一次 nextest archive 构建 + 4 个归档复用分片（`--partition hash:<shard>/4`，见 [Issue #140](vega-issue-140-ci-test-throughput.md)） + `cargo test --workspace --doc`，见 [.github/workflows/pr-check.yml](../.github/workflows/pr-check.yml)）。
+   `cargo test --workspace --no-fail-fast -- --test-threads=1`（含单元、集成和文档测试，单 job、无分片），见 [.github/workflows/pr-check.yml](../.github/workflows/pr-check.yml)）。
 2. **打 tag 并推送**：
    ```sh
    git tag v0.1.0 && git push origin v0.1.0

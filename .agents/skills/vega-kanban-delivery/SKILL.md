@@ -66,7 +66,7 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 ## 4. 提交前自查（只跑本卡功能点测试）
 
-- **本地不做全量测试**：不跑 `cargo nextest run --workspace`、`cargo test --workspace` 等全量门禁，把它留给云端 `pr-check`。云端 PR 门禁为 fmt/clippy + 一次 `cargo nextest archive --workspace` 构建及 4 个归档复用分片（`--partition hash:<shard>/4`，见 Issue #140）/ `cargo test --workspace --doc`；push master 由 `.github/workflows/master-build.yml` 打包（两者共享 cargo 缓存 key）。
+- **本地不做全量测试**：不跑 `cargo test --workspace` 等全量门禁，把它留给云端 `pr-check`。PR gate 是 [Issue #175](../../../docs/vega-issue-175-single-pr-check.md) 规定的单个 required job `check (fmt, clippy, test)`，依次运行 fmt、Clippy 和 `cargo test --workspace --no-fail-fast -- --test-threads=1`；Cargo 测试覆盖单元、集成和文档测试，不分片、不重试。`.config/nextest.toml` 仅供本地定向 nextest 命令使用，PR workflow 不安装或读取它。push master 由 `.github/workflows/master-build.yml` 打包，master build 与 PR gate 各自维护缓存。
 - **必须本地跑通本卡自己新增/修改的功能点测试**（定向命令，如 `cargo nextest run -p <crate> <filter>`），确认能检出并覆盖本卡行为；这是提交前的最低自查。只跑本卡相关的几个测试，不扩散到全量。
 - 测试设计仍遵循 E2E-first：本卡测试优先覆盖真实 production 入口/owned temp repo 的相关路径；安全不变量可用精确回归。不得为提速删测试、加 ignore、放宽断言或自动重试到绿；失败如实保留并修复。
 - **真实验收由用户在 master 上手动完成**。Agent 不把自行产出的全量 E2E/截图当作合并前门禁；需要真实模型/服务/UI 的路径由用户手测确认。
@@ -85,7 +85,7 @@ Applications。`dist` 是构建产物，备份用 zip 加构建身份保存。�
 ## 5. 开 PR、云端 check 与合并 master
 
 1. 实现完成且本卡功能点测试通过后提交并开 PR，关联 Issue 与 spec，附本卡测试命令及原始输出、与 spec 的偏离说明（必须为无）。**此时卡片仍为 In progress。**
-2. 等云端 `pr-check`（fmt / clippy / nextest 4 分片 / doc-tests，汇总门禁 `check (fmt, clippy, test)`）通过。失败则在 PR 页面查看原始日志并修复，不得绕过、不得以本地结果替代。
+2. 等云端 `pr-check` 的 `check (fmt, clippy, test)` 单 job 通过。它顺序运行 fmt、Clippy 和无分片的 Cargo workspace 全量测试（含 doc-tests）；失败则在 PR 页面查看原始日志并修复，不得绕过、不得以本地结果替代。
 3. check 绿后由 Agent 主动合并 master（squash merge，合并后删除功能分支）；若分支保护或权限不允许，明确报告并请用户处理，不伪装成已合并。
 4. 合并完成后把卡片改为 **In review**，重新查询确认状态，然后**停下等待用户手测**，不再自行关闭或清理。
 5. 集成后若发现基线漂移或冲突解决影响结果，重新跑受影响的本卡测试；不得沿用旧结果。
