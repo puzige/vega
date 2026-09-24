@@ -3,12 +3,8 @@ use crate::provider::{
     ChatMessage, ChatRole, ChatToolCall, FrozenReasoning, ReasoningChoice, ReasoningDisabledWire,
     ReasoningProtocol, ToolDefinition,
 };
-use std::future::Future;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
 
 const KEY: &str = "vrg-test-key-123";
 const MODEL: &str = "test-model";
@@ -501,10 +497,12 @@ async fn sse_events_reassemble_across_chunk_boundaries() {
     );
 }
 
-// ---------- 本地 HTTP 服务器 ----------
-
-type HandlerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
-type Handler = Arc<dyn Fn(u64, TcpStream) -> HandlerFuture + Send + Sync>;
+type Handler = Arc<dyn Fn(u64) -> Result<reqwest::Response, reqwest::Error> + Send + Sync>;
+pub(super) type TestTransport = Arc<
+    dyn Fn(reqwest::Request) -> BoxFuture<'static, Result<reqwest::Response, reqwest::Error>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Clone)]
 struct CapturedRequest {
@@ -522,115 +520,73 @@ impl fmt::Debug for CapturedRequest {
     }
 }
 
-struct TestServer {
-    addr: SocketAddr,
+struct MockTransport {
     connections: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<CapturedRequest>>>,
+    transport: TestTransport,
 }
-
-impl TestServer {
-    fn connection_count(&self) -> usize {
+impl MockTransport {
+    fn attempt_count(&self) -> usize {
         self.connections.load(Ordering::SeqCst)
     }
-
     fn captured(&self) -> Vec<CapturedRequest> {
-        let requests = self.requests.lock().unwrap();
-        Vec::clone(&requests)
+        self.requests.lock().unwrap().clone()
     }
 }
-
-async fn read_request(stream: &mut TcpStream) -> std::io::Result<(String, Vec<u8>)> {
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let head_end;
-    loop {
-        let n = stream.read(&mut chunk).await?;
-        if n == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "client closed before request head completed",
-            ));
-        }
-        buf.extend_from_slice(&chunk[..n]);
-        if let Some(pos) = find(&buf, b"\r\n\r\n") {
-            head_end = pos;
-            break;
-        }
-    }
-    let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
-    let content_length: usize = head
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            if name.trim().eq_ignore_ascii_case("content-length") {
-                value.trim().parse().ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-    let body_start = head_end + 4;
-    while buf.len() < body_start + content_length {
-        let n = stream.read(&mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    }
-    let body = buf[body_start..(body_start + content_length).min(buf.len())].to_vec();
-    Ok((head, body))
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-async fn spawn_server(handler: Handler) -> TestServer {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+async fn mock_transport(handler: Handler) -> MockTransport {
     let connections = Arc::new(AtomicUsize::new(0));
-    let requests: Arc<Mutex<Vec<CapturedRequest>>> = Arc::new(Mutex::new(Vec::new()));
-    let t_connections = Arc::clone(&connections);
-    let t_requests = Arc::clone(&requests);
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                break;
-            };
-            let idx = t_connections.fetch_add(1, Ordering::SeqCst) as u64;
-            let handler = Arc::clone(&handler);
-            let requests = Arc::clone(&t_requests);
-            tokio::spawn(async move {
-                let Ok((head, body)) = read_request(&mut stream).await else {
-                    return;
-                };
-                let authorization = head
-                    .lines()
-                    .find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        if name.trim().eq_ignore_ascii_case("authorization") {
-                            Some(value.trim().to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-                let body = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-                requests.lock().unwrap().push(CapturedRequest {
-                    authorization,
-                    body,
-                });
-                handler(idx, stream).await;
-            });
-        }
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let count = connections.clone();
+    let captured = requests.clone();
+    let transport: TestTransport = Arc::new(move |request| {
+        let index = count.fetch_add(1, Ordering::SeqCst) as u64;
+        captured.lock().unwrap().push(CapturedRequest {
+            authorization: request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
+            body: serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap(),
+        });
+        let result = handler(index);
+        Box::pin(async move { result })
     });
-    TestServer {
-        addr,
+    MockTransport {
         connections,
         requests,
+        transport,
     }
 }
-
+fn fixture_response(bytes: Vec<u8>) -> reqwest::Response {
+    let split = bytes
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap();
+    let head = std::str::from_utf8(&bytes[..split]).unwrap();
+    let mut lines = head.lines();
+    let status: u16 = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut response = ::http::Response::builder().status(status);
+    for line in lines {
+        let (key, value) = line.split_once(':').unwrap();
+        response = response.header(key, value.trim());
+    }
+    response.body(bytes[split + 4..].to_vec()).unwrap().into()
+}
+fn simulated_transport_error() -> reqwest::Error {
+    reqwest::Client::new()
+        .get("invalid url")
+        .build()
+        .unwrap_err()
+}
 fn http_head(status: &str, extra: &[(&str, &str)]) -> Vec<u8> {
     let mut head = format!("HTTP/1.1 {status}\r\n");
     for (name, value) in extra {
@@ -658,20 +614,15 @@ fn status_response(status: &str, extra: &[(&str, &str)], body: &str) -> Vec<u8> 
     resp
 }
 
-/// Server that answers each connection with the next canned response
-/// (or closes silently once the script is exhausted).
-fn scripted_server(responses: Vec<Vec<u8>>) -> Handler {
-    Arc::new(move |idx: u64, mut stream: TcpStream| {
-        let response = responses.get(idx as usize).cloned();
-        Box::pin(async move {
-            if let Some(response) = response {
-                let _ = stream.write_all(&response).await;
-                let _ = stream.flush().await;
-            }
-        }) as HandlerFuture
+fn scripted_responses(responses: Vec<Vec<u8>>) -> Handler {
+    Arc::new(move |index| {
+        responses
+            .get(index as usize)
+            .cloned()
+            .map(fixture_response)
+            .ok_or_else(simulated_transport_error)
     })
 }
-
 fn fast_policy(base_ms: u64) -> RetryPolicy {
     RetryPolicy {
         base_delay: Duration::from_millis(base_ms),
@@ -679,10 +630,12 @@ fn fast_policy(base_ms: u64) -> RetryPolicy {
     }
 }
 
-fn provider_for(server: &TestServer, policy: RetryPolicy) -> OpenAiProvider {
-    OpenAiProvider::new(format!("http://{}", server.addr), KEY)
+fn provider_for(server: &MockTransport, policy: RetryPolicy) -> OpenAiProvider {
+    let mut provider = OpenAiProvider::new("http://fixture.invalid", KEY)
         .unwrap()
-        .with_retry_policy(policy)
+        .with_retry_policy(policy);
+    provider.test_transport = Some(server.transport.clone());
+    provider
 }
 
 fn request() -> ChatRequest {

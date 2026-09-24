@@ -1,7 +1,10 @@
 use super::*;
 
-pub(crate) fn artifact_controller_repo() -> TempDir {
-    let repo = tempfile::tempdir().expect("fresh artifact controller repo");
+pub(crate) fn artifact_controller_repo() -> ControllerRepo {
+    let repo = ControllerRepo::for_current_test(
+        include_str!("controller-git-fixtures.json"),
+        "fresh artifact controller repo",
+    );
     run_fixture_git(repo.path(), &["init", "-q"]);
     run_fixture_git(
         repo.path(),

@@ -1,11 +1,7 @@
 use super::*;
-use std::{
-    io::{Read, Write},
-    net::TcpListener,
-    path::Path,
-    thread,
-    time::{Duration, Instant},
-};
+use std::sync::{Arc, Mutex};
+use std::{path::Path, thread, time::Duration};
+use tokio::time::Instant;
 use vega_store::config::ProviderConfig;
 
 const KEY: &str = "synthetic-r14-loopback-only";
@@ -41,6 +37,11 @@ impl Fixture {
             provider,
         }
     }
+    fn with_transport(transport: provider_check::mock::Transport) -> Self {
+        let mut fixture = Self::new("http://fixture.invalid/v1".into());
+        fixture.service = fixture.service.with_test_transport(transport);
+        fixture
+    }
     fn request(&self, action: ProviderNetworkAction) -> ProviderNetworkRequest {
         ProviderNetworkRequest {
             operation_id: 42,
@@ -51,92 +52,60 @@ impl Fixture {
     }
 }
 
-/// Owned real HTTP boundary; no mock transport or override of service behavior.
+type Captured = Arc<Mutex<Vec<String>>>;
 fn server(
     status: u16,
     body: String,
     extra_headers: &str,
     delay: Duration,
-) -> (String, thread::JoinHandle<String>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}/v1", listener.local_addr().unwrap());
-    let response = if extra_headers.contains("Transfer-Encoding: chunked") {
-        format!(
-            "HTTP/1.1 {status} Fixture\r\nConnection: close\r\n{extra_headers}\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
-            body.len()
-        )
-    } else {
-        format!(
-            "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n{body}",
-            body.len()
-        )
-    };
-    listener.set_nonblocking(true).unwrap();
-    let handle = thread::spawn(move || {
-        let start = Instant::now();
-        let mut socket = loop {
-            match listener.accept() {
-                Ok((socket, _)) => break socket,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && start.elapsed() < Duration::from_secs(5) =>
-                {
-                    thread::sleep(Duration::from_millis(5))
-                }
-                Err(error) => panic!("owned loopback accept: {error}"),
-            }
-        };
-        socket.set_nonblocking(false).unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        socket
-            .set_write_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        let mut request = Vec::new();
-        loop {
-            let mut bytes = [0; 4096];
-            let count = socket.read(&mut bytes).unwrap();
-            if count == 0 {
-                break;
-            }
-            request.extend_from_slice(&bytes[..count]);
-            let text = std::str::from_utf8(&request).unwrap();
-            if let Some((headers, body)) = text.split_once("\r\n\r\n") {
-                let length = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.to_ascii_lowercase()
-                            .strip_prefix("content-length: ")
-                            .and_then(|length| length.parse::<usize>().ok())
-                    })
-                    .unwrap_or(0);
-                if body.len() >= length {
-                    break;
-                }
-            }
+) -> (provider_check::mock::Transport, Captured) {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let requests = captured.clone();
+    let headers = extra_headers.to_owned();
+    let transport = provider_check::mock::Transport(Arc::new(move |request| {
+        let mut encoded = format!("{} {} HTTP/1.1\r\n", request.method(), request.url().path());
+        for (name, value) in request.headers() {
+            encoded.push_str(&format!("{name}: {}\r\n", value.to_str().unwrap()));
         }
-        thread::sleep(delay);
-        let _ = socket.write_all(response.as_bytes());
-        drop(socket);
-        thread::sleep(Duration::from_millis(50));
-        assert!(
-            listener.accept().is_err(),
-            "check must make exactly one request"
+        encoded.push_str("\r\n");
+        encoded.push_str(
+            std::str::from_utf8(
+                request
+                    .body()
+                    .and_then(|body| body.as_bytes())
+                    .unwrap_or_default(),
+            )
+            .unwrap(),
         );
-        String::from_utf8(request).unwrap()
-    });
-    (base, handle)
+        requests.lock().unwrap().push(encoded);
+        let body = body.clone();
+        let headers = headers.clone();
+        Box::pin(async move {
+            tokio::time::sleep(delay).await;
+            Ok(provider_check::mock::response(
+                status,
+                &headers,
+                body.into_bytes(),
+            ))
+        })
+    }));
+    (transport, captured)
 }
-
-/// Let the Tokio connection driver finish while joining the bounded fixture thread.
-async fn finish_server(http: thread::JoinHandle<String>) -> String {
-    tokio::task::spawn_blocking(move || http.join())
-        .await
-        .unwrap()
-        .unwrap()
+async fn finish_server(captured: Captured) -> String {
+    let requests = captured.lock().unwrap();
+    assert_eq!(requests.len(), 1, "check must make exactly one request");
+    requests[0].clone()
 }
-
+async fn wait_for_request(captured: &Captured) {
+    let start = std::time::Instant::now();
+    while captured.lock().unwrap().is_empty() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "request must begin"
+        );
+        tokio::task::yield_now().await;
+    }
+}
 fn valid_stream() -> String {
     "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".into()
 }
@@ -399,7 +368,7 @@ fn production_pi_import_rolls_back_key_when_config_save_fails() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn production_discovery_explicit_import_probe_and_persistent_patch() {
     let (base, http) = server(
         200,
@@ -407,7 +376,7 @@ async fn production_discovery_explicit_import_probe_and_persistent_patch() {
         "",
         Duration::ZERO,
     );
-    let fixture = Fixture::new(base);
+    let fixture = Fixture::with_transport(base);
     let before = std::fs::read(&fixture.service.config_path).unwrap();
     let request = fixture.request(ProviderNetworkAction::DiscoverModels);
     let result = fixture
@@ -456,7 +425,7 @@ async fn production_discovery_explicit_import_probe_and_persistent_patch() {
         "Content-Type: text/event-stream\r\n",
         Duration::ZERO,
     );
-    let fixture = Fixture::new(base);
+    let fixture = Fixture::with_transport(base);
     let result = fixture
         .service
         .network(
@@ -485,7 +454,7 @@ async fn production_discovery_explicit_import_probe_and_persistent_patch() {
     assert!(!body.to_string().contains(KEY));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn production_failures_are_bounded_content_free_and_never_retry() {
     let cases = [
         (
@@ -518,7 +487,7 @@ async fn production_failures_are_bounded_content_free_and_never_retry() {
             "Location: http://127.0.0.1:1/forbidden\r\n",
             Duration::ZERO,
         );
-        let fixture = Fixture::new(base);
+        let fixture = Fixture::with_transport(base);
         let result = fixture
             .service
             .network(
@@ -534,7 +503,7 @@ async fn production_failures_are_bounded_content_free_and_never_retry() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn production_discovery_parser_limits_and_empty_catalog() {
     for (body, expected) in [
         (
@@ -559,7 +528,7 @@ async fn production_discovery_parser_limits_and_empty_catalog() {
         ),
     ] {
         let (base, http) = server(200, body, "", Duration::ZERO);
-        let fixture = Fixture::new(base);
+        let fixture = Fixture::with_transport(base);
         let result = fixture
             .service
             .network(
@@ -573,28 +542,23 @@ async fn production_discovery_parser_limits_and_empty_catalog() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn production_cancel_and_total_deadline() {
     let (base, http) = server(200, valid_stream(), "", Duration::from_millis(150));
-    let fixture = Fixture::new(base);
+    let fixture = Fixture::with_transport(base);
     let cancel = CancellationToken::new();
+    let service = fixture.service.clone();
+    let request = fixture.request(ProviderNetworkAction::DiscoverModels);
     let worker_cancel = cancel.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(75)).await;
-        worker_cancel.cancel();
-    });
-    let result = fixture
-        .service
-        .network(
-            fixture.request(ProviderNetworkAction::DiscoverModels),
-            cancel,
-        )
-        .await;
+    let worker = tokio::spawn(async move { service.network(request, worker_cancel).await });
+    wait_for_request(&http).await;
+    cancel.cancel();
+    let result = worker.await.unwrap();
     assert_eq!(result.outcome, Err(ProviderSettingsError::Cancelled));
     finish_server(http).await;
 
     let (base, http) = server(200, valid_stream(), "", Duration::from_millis(15_200));
-    let fixture = Fixture::new(base);
+    let fixture = Fixture::with_transport(base);
     let start = Instant::now();
     let result = fixture
         .service
@@ -604,11 +568,12 @@ async fn production_cancel_and_total_deadline() {
         )
         .await;
     assert_eq!(result.outcome, Err(ProviderSettingsError::Timeout));
+    assert!(start.elapsed() >= Duration::from_secs(15));
     assert!(start.elapsed() < Duration::from_secs(17));
     finish_server(http).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn production_rejects_missing_credentials_disabled_stale_and_unsafe_urls_before_network() {
     let fixture = Fixture::new("http://127.0.0.1:1".into());
     vega_store::keystore::delete_key(fixture.service.config_path.parent().unwrap(), "synthetic")
@@ -734,17 +699,17 @@ fn production_patch_preserves_other_fields_rejects_conflicts_and_persists_order(
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn production_completion_rechecks_external_provider_changes() {
     let (base, http) = server(200, valid_stream(), "", Duration::from_millis(350));
-    let fixture = Fixture::new(base);
+    let fixture = Fixture::with_transport(base);
     let service = fixture.service.clone();
     let request = fixture.request(ProviderNetworkAction::TestModel {
         model: "configured-model".into(),
     });
     let worker =
         tokio::spawn(async move { service.network(request, CancellationToken::new()).await });
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_request(&http).await;
     let mut config = fixture.service.load().unwrap();
     config.providers[0].enabled = false;
     config.save_to(&fixture.service.config_path).unwrap();
@@ -756,11 +721,11 @@ async fn production_completion_rechecks_external_provider_changes() {
     assert!(!fixture.service.load().unwrap().providers[0].enabled);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn production_probe_decodes_multiline_sse_and_completed_reasoning() {
     let body = "data: {\"choices\":\ndata: [{\"index\":0,\"delta\":{\"reasoning_content\":\"connected\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n";
     let (base, http) = server(200, body.into(), "", Duration::ZERO);
-    let fixture = Fixture::new(base);
+    let fixture = Fixture::with_transport(base);
     let result = fixture
         .service
         .network(
@@ -821,7 +786,7 @@ fn production_form_edits_share_patch_authority_and_rollback_credentials_on_confi
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn production_chunked_body_limit_without_content_length() {
     let (base, http) = server(
         200,
@@ -829,7 +794,7 @@ async fn production_chunked_body_limit_without_content_length() {
         "Transfer-Encoding: chunked\r\n",
         Duration::ZERO,
     );
-    let fixture = Fixture::new(base);
+    let fixture = Fixture::with_transport(base);
     let result = fixture
         .service
         .network(

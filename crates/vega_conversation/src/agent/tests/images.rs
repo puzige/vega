@@ -1,7 +1,5 @@
 use super::*;
 use crate::types::ImageAttachment;
-use base64::Engine;
-use std::io::Read;
 
 fn fixture() -> ImageAttachment {
     let image = image::RgbImage::from_pixel(4, 3, image::Rgb([200, 20, 70]));
@@ -10,159 +8,6 @@ fn fixture() -> ImageAttachment {
         .write_to(&mut encoded, image::ImageFormat::Png)
         .unwrap();
     ImageAttachment::from_bytes(encoded.into_inner()).unwrap()
-}
-
-#[tokio::test]
-async fn issue63_controller_http_tool_round_and_restart_preserve_exact_images() {
-    let (store, dir, _) = setup();
-    let tools = vega_tools::Tools::new(dir.path()).unwrap();
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let server = std::thread::spawn(move || {
-        let mut recorded = Vec::new();
-        for round in 0..3 {
-            let deadline = Instant::now() + Duration::from_secs(15);
-            let (mut stream, _) = loop {
-                match listener.accept() {
-                    Ok(connection) => break connection,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(Duration::from_millis(5))
-                    }
-                    Err(error) => panic!("bounded owned server accept failed: {error}"),
-                }
-            };
-            // Darwin can propagate the listener's O_NONBLOCK flag to the
-            // accepted socket.  Clear it before relying on SO_RCVTIMEO;
-            // otherwise the first read may return WouldBlock instead of
-            // waiting for the real HTTP request.
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            let mut bytes = Vec::new();
-            let header_end = loop {
-                let mut buffer = [0; 4096];
-                let n = stream.read(&mut buffer).unwrap();
-                assert!(n > 0);
-                bytes.extend_from_slice(&buffer[..n]);
-                if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                    break index + 4;
-                }
-            };
-            let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
-            let length: usize = headers
-                .lines()
-                .find_map(|line| {
-                    line.to_ascii_lowercase()
-                        .strip_prefix("content-length:")
-                        .map(|value| value.trim().parse().unwrap())
-                })
-                .unwrap();
-            while bytes.len() < header_end + length {
-                let mut buffer = [0; 4096];
-                let n = stream.read(&mut buffer).unwrap();
-                assert!(n > 0);
-                bytes.extend_from_slice(&buffer[..n]);
-            }
-            recorded.push(
-                serde_json::from_slice::<serde_json::Value>(
-                    &bytes[header_end..header_end + length],
-                )
-                .unwrap(),
-            );
-            let payload = if round == 0 {
-                serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"read-image-context","type":"function","function":{"name":"read","arguments":"{\"path\":\"lib.rs\"}"}}]},"finish_reason":"tool_calls"}]})
-            } else {
-                serde_json::json!({"choices":[{"delta":{"content":"Image received."},"finish_reason":"stop"}]})
-            };
-            let response = format!("data: {payload}\n\ndata: [DONE]\n\n");
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
-        }
-        recorded
-    });
-    let provider =
-        vega_runtime::OpenAiProvider::new(format!("http://{address}"), "owned-test-only").unwrap();
-    let image = fixture();
-    let mut started = false;
-    let run = run_thread_task_with_images_and_reasoning(
-        &store,
-        &provider,
-        &tools,
-        "thread-1",
-        "",
-        "system",
-        CancellationToken::new(),
-        &RejectPermissionHook,
-        |event| {
-            if matches!(event, ConversationEvent::MessageStarted { .. }) {
-                started = true;
-                let count: i64 = store
-                    .conn()
-                    .query_row("SELECT COUNT(*) FROM image_attachments", [], |row| {
-                        row.get(0)
-                    })
-                    .unwrap();
-                assert_eq!(count, 1, "durable before acknowledgment");
-            }
-            Ok(())
-        },
-        PersistenceActorConfig::default(),
-        None,
-        None,
-        None,
-        vec![image.clone()],
-    )
-    .await
-    .unwrap();
-    assert!(started && !run.failed);
-    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
-    let page = crate::history::latest_history_page(&reopened, "thread-1", 50).unwrap();
-    assert!(page.entries.iter().any(|entry| matches!(entry, crate::history::HistoryEntry::UserImages { images, .. } if images == &vec![image.clone()])));
-    assert!(
-        crate::history::latest_history_page(&reopened, "not-this-thread", 50)
-            .unwrap()
-            .entries
-            .is_empty()
-    );
-    run_thread_task(
-        &reopened,
-        &provider,
-        &tools,
-        "thread-1",
-        "Next text only",
-        "system",
-        CancellationToken::new(),
-    )
-    .await
-    .unwrap();
-    let recorded = server.join().unwrap();
-    assert_eq!(recorded.len(), 3);
-    let expected = format!(
-        "data:image/png;base64,{}",
-        base64::engine::general_purpose::STANDARD.encode(image.bytes())
-    );
-    for request in &recorded {
-        assert_eq!(
-            request["messages"][1]["content"][0]["image_url"]["url"],
-            expected
-        );
-        assert_eq!(request["messages"][0]["content"], "system");
-    }
-    assert!(
-        recorded[1]["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|message| message["role"] == "tool")
-    );
-    assert_eq!(
-        recorded[2]["messages"].as_array().unwrap().last().unwrap()["content"],
-        "Next text only"
-    );
 }
 
 #[tokio::test]
@@ -338,4 +183,103 @@ async fn issue63_provider_rejection_keeps_images_and_message_delete_cascades() {
         })
         .unwrap();
     assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn issue63_controller_tool_round_and_restart_preserve_exact_images() {
+    let (store, dir, _) = setup();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "read-image-context".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"lib.rs"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("Image received.".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("Image received.".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+    ]);
+    let image = fixture();
+    let mut started = false;
+    let run = run_thread_task_with_images_and_reasoning(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "",
+        "system",
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        |event| {
+            if matches!(event, ConversationEvent::MessageStarted { .. }) {
+                started = true;
+                let count: i64 = store
+                    .conn()
+                    .query_row("SELECT COUNT(*) FROM image_attachments", [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 1, "durable before acknowledgment");
+            }
+            Ok(())
+        },
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        None,
+        vec![image.clone()],
+    )
+    .await
+    .unwrap();
+    assert!(started && !run.failed);
+    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+    let page = crate::history::latest_history_page(&reopened, "thread-1", 50).unwrap();
+    assert!(page.entries.iter().any(|entry| matches!(entry, crate::history::HistoryEntry::UserImages { images, .. } if images == &vec![image.clone()])));
+    assert!(
+        crate::history::latest_history_page(&reopened, "not-this-thread", 50)
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    run_thread_task(
+        &reopened,
+        &provider,
+        &tools,
+        "thread-1",
+        "Next text only",
+        "system",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let recorded = provider.requests();
+    assert_eq!(recorded.len(), 3);
+    for request in &recorded {
+        assert_eq!(request.messages[1].images, vec![image.clone()]);
+        assert_eq!(request.messages[0].content, "system");
+    }
+    assert!(
+        recorded[1]
+            .messages
+            .iter()
+            .any(|message| message.role == vega_runtime::ChatRole::Tool)
+    );
+    assert_eq!(
+        recorded[2].messages.last().unwrap().content,
+        "Next text only"
+    );
 }

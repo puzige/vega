@@ -55,6 +55,8 @@ pub struct Tools {
     pub(crate) mutation: Option<MutationContext>,
     pub(crate) instance_id: u64,
     pub(crate) reads: ReadState,
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) bash_executor: Option<crate::bash::BashTestExecutor>,
 }
 
 impl Tools {
@@ -75,6 +77,8 @@ impl Tools {
         Ok(Self {
             root: canonical,
             mutation: None,
+            #[cfg(any(test, feature = "test-support"))]
+            bash_executor: None,
             reads: ReadState::default(),
             instance_id: TOOL_INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         })

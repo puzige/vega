@@ -1,16 +1,9 @@
 use super::*;
 use gpui_kit::TestAppContext;
 
-fn git(root: &Path, args: &[&str]) {
-    let output = std::process::Command::new("/usr/bin/git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "owned Git command failed");
+fn write_head(root: &Path, head: &str) {
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git/HEAD"), head).unwrap();
 }
 fn wait_for_suffix(
     view: &Entity<ProjectsBlock>,
@@ -39,25 +32,12 @@ fn wait_for_suffix(
     }
 }
 #[gpui_kit::test]
-async fn production_sidebar_refreshes_real_checkout_and_rejects_removed_results(
+async fn production_sidebar_refreshes_head_metadata_and_rejects_removed_results(
     cx: &mut TestAppContext,
 ) {
     let owned = tempfile::tempdir().unwrap();
     let root = owned.path().canonicalize().unwrap();
-    git(&root, &["init", "-b", "main"]);
-    git(
-        &root,
-        &[
-            "-c",
-            "user.name=Vega Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "initial",
-        ],
-    );
+    write_head(&root, "ref: refs/heads/main\n");
     let store = Store::open(root.join("owned.sqlite")).unwrap();
     store.migrate().unwrap();
     let project = projects::create(
@@ -92,13 +72,12 @@ async fn production_sidebar_refreshes_real_checkout_and_rejects_removed_results(
             .is_none()
     );
     wait_for_suffix(&view, &project.id, Some("main"), cx);
-    git(&root, &["checkout", "-b", "other"]);
-    // Periodic production poll discovers this actual external checkout, with no reload/label injection.
+    write_head(&root, "ref: refs/heads/other\n");
     wait_for_suffix(&view, &project.id, Some("other"), cx);
     view.update(cx, |view, cx| view.select_project(&project.id, cx));
     assert!(view.read_with(cx, |view, _| view.branch_suffix(&project).is_none()));
     wait_for_suffix(&view, &project.id, Some("other"), cx);
-    git(&root, &["checkout", "--detach"]);
+    write_head(&root, "1111111111111111111111111111111111111111\n");
     view.update(cx, |view, cx| view.reload(cx));
     wait_for_suffix(&view, &project.id, Some("detached"), cx);
     std::fs::write(root.join(".git/HEAD"), "invalid HEAD\n").unwrap();
@@ -118,7 +97,7 @@ async fn production_sidebar_refreshes_real_checkout_and_rejects_removed_results(
 async fn hidden_sidebar_cancels_pending_and_generation_path_guard(cx: &mut TestAppContext) {
     let owned = tempfile::tempdir().unwrap();
     let root = owned.path().canonicalize().unwrap();
-    git(&root, &["init", "-b", "main"]);
+    write_head(&root, "ref: refs/heads/main\n");
     let store = Store::open(root.join("owned.sqlite")).unwrap();
     store.migrate().unwrap();
     let project = projects::create(store.conn(), root.to_str().unwrap(), "owned", None).unwrap();

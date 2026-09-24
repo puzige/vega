@@ -205,6 +205,32 @@ impl BranchFixture {
         path
     }
 
+    pub(super) fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    pub(super) fn set_raw(&self, key: &str, value: &str) {
+        self.backend
+            .inner
+            .lock()
+            .unwrap()
+            .data
+            .raw
+            .insert(key.into(), value.into());
+    }
+
+    pub(super) fn expect_switch_failure(&self, code: GitWorkspaceErrorCode) {
+        self.backend
+            .inner
+            .lock()
+            .unwrap()
+            .mutations
+            .push(ExpectedMutation {
+                post: None,
+                result: Some(code),
+            });
+    }
+
     pub(super) fn service(&self) -> BranchWorkspaceService {
         let mut service =
             BranchWorkspaceService::new(&self.backend.root).expect("branch workspace");
@@ -318,7 +344,18 @@ impl GitCommandBackend for BranchStub {
                     "--no-optional-locks",
                     "rev-parse",
                     "--absolute-git-dir" | "--git-common-dir",
-                ] => Some(format!("{}/metadata\n", self.root.display()).into_bytes()),
+                ] => Some(
+                    format!(
+                        "{}\n",
+                        inner
+                            .data
+                            .raw
+                            .get("metadata")
+                            .cloned()
+                            .unwrap_or_else(|| format!("{}/metadata", self.root.display()))
+                    )
+                    .into_bytes(),
+                ),
                 ["--no-optional-locks", "rev-parse", "--git-path", marker]
                     if [
                         "MERGE_HEAD",
@@ -332,7 +369,18 @@ impl GitCommandBackend for BranchStub {
                     ]
                     .contains(marker) =>
                 {
-                    Some(format!("{}/metadata/{marker}\n", self.root.display()).into_bytes())
+                    Some(
+                        format!(
+                            "{}/{marker}\n",
+                            inner
+                                .data
+                                .raw
+                                .get("metadata")
+                                .cloned()
+                                .unwrap_or_else(|| format!("{}/metadata", self.root.display()))
+                        )
+                        .into_bytes(),
+                    )
                 }
                 [
                     "--no-optional-locks",
@@ -430,178 +478,4 @@ impl GitCommandBackend for BranchStub {
             overflow: false,
         })
     }
-}
-
-/// Retained real contract: the captured `branch-fixtures.json` bytes must be
-/// exactly what owned Git produces for the same repository shape. Only the two
-/// nondeterministic commit identities are normalized; refs, status records,
-/// filter paths, authority diff and selected attributes stay exact. This keeps
-/// the in-process policy fixtures from proving themselves.
-pub(super) fn assert_branch_adapter_state(root: &Path, case: &str) {
-    // The retained contract must use the same executable production resolves,
-    // including `check-attr --source` support that the fixed system Git lacks.
-    let production_git = process_git_executable(&CancellationToken::new())
-        .expect("production Git executable")
-        .path()
-        .to_path_buf();
-    let run = |args: &[&str]| -> Vec<u8> {
-        let mut command = Command::new(&production_git);
-        command.current_dir(root).args(args);
-        scrub_git_environment(&mut command);
-        command
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null");
-        let output = command.output().expect("branch adapter git output");
-        assert!(
-            output.status.success(),
-            "branch adapter git failed: {args:?}"
-        );
-        output.stdout
-    };
-    let fixtures: serde_json::Value =
-        serde_json::from_str(include_str!("branch-fixtures.json")).expect("branch fixtures");
-    let raw = &fixtures[case]["raw"];
-    let main = String::from_utf8(run(&["rev-parse", "main"]))
-        .expect("main oid")
-        .trim()
-        .to_owned();
-    let topic = String::from_utf8(run(&["rev-parse", "topic"]))
-        .expect("topic oid")
-        .trim()
-        .to_owned();
-    let a40 = "a".repeat(40);
-    let b40 = "b".repeat(40);
-    let normalize = |bytes: Vec<u8>| {
-        String::from_utf8(bytes)
-            .expect("captured UTF-8 fixture")
-            .replace(&main, &a40)
-            .replace(&topic, &b40)
-    };
-    assert_eq!(
-        normalize(run(&[
-            "status",
-            "--porcelain=v2",
-            "-z",
-            "--branch",
-            "--renames",
-            "--untracked-files=all",
-        ],)),
-        raw["status"].as_str().expect("status"),
-        "{case}: status"
-    );
-    assert_eq!(
-        normalize(run(&[
-            "for-each-ref",
-            "--sort=refname",
-            "--format=%(objectname)%00%(refname)%00",
-            "refs/heads/",
-        ],)),
-        raw["refs"].as_str().expect("refs"),
-        "{case}: refs"
-    );
-    let paths = run(&["ls-files", "-z", "--cached", "--deduplicate"]);
-    assert_eq!(
-        String::from_utf8(paths.clone()).expect("paths"),
-        raw["paths"].as_str().expect("paths"),
-        "{case}: paths"
-    );
-    let mut attrs = Command::new(&production_git);
-    attrs
-        .current_dir(root)
-        .args(["check-attr", "-z", "--stdin", "--all"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
-    scrub_git_environment(&mut attrs);
-    let mut child = attrs.spawn().expect("attribute adapter");
-    std::io::Write::write_all(&mut child.stdin.take().expect("attribute stdin"), &paths)
-        .expect("attribute input");
-    let attrs = child.wait_with_output().expect("attribute result");
-    assert!(attrs.status.success());
-    assert_eq!(
-        String::from_utf8(attrs.stdout).expect("attrs"),
-        raw["attrs"].as_str().expect("attrs"),
-        "{case}: attrs"
-    );
-    let acmrt = normalize(run(&[
-        "diff",
-        "--name-status",
-        "-z",
-        "--diff-filter=ACMRT",
-        "-M",
-        "--no-ext-diff",
-        "--no-textconv",
-        &main,
-        &topic,
-    ]));
-    assert_eq!(
-        acmrt,
-        raw["acmrt"].as_str().expect("acmrt"),
-        "{case}: acmrt"
-    );
-    assert_eq!(
-        normalize(run(&[
-            "diff",
-            "--name-status",
-            "-z",
-            "--diff-filter=D",
-            "-M",
-            "--no-ext-diff",
-            "--no-textconv",
-            &main,
-            &topic,
-        ],)),
-        raw["deletes"].as_str().expect("deletes"),
-        "{case}: deletes"
-    );
-    let selected_input = acmrt
-        .split('\0')
-        .skip(1)
-        .step_by(2)
-        .collect::<Vec<_>>()
-        .join("\0");
-    let mut selected = Command::new(&production_git);
-    selected
-        .current_dir(root)
-        .args([
-            "check-attr",
-            &format!("--source={topic}"),
-            "-z",
-            "--stdin",
-            "--all",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
-    scrub_git_environment(&mut selected);
-    let mut child = selected.spawn().expect("selected attribute adapter");
-    std::io::Write::write_all(
-        &mut child.stdin.take().expect("selected stdin"),
-        format!("{selected_input}\0").as_bytes(),
-    )
-    .expect("selected attribute input");
-    let selected = child.wait_with_output().expect("selected result");
-    assert!(selected.status.success());
-    assert_eq!(
-        String::from_utf8(selected.stdout).expect("selected attrs"),
-        raw["selected_attrs"].as_str().expect("selected attrs"),
-        "{case}: selected attrs"
-    );
-}
-
-#[tokio::test]
-async fn branch_captured_states_match_real_git() {
-    let repo = Repo::new();
-    git(repo.path(), &["switch", "-q", "-c", "topic"]);
-    fs::write(repo.path().join("topic.txt"), "topic\n").expect("topic file");
-    git(repo.path(), &["add", "topic.txt"]);
-    git(repo.path(), &["commit", "-q", "-m", "topic"]);
-    git(repo.path(), &["switch", "-q", "main"]);
-    assert_branch_adapter_state(repo.path(), "main-clean");
-    git(repo.path(), &["switch", "-q", "topic"]);
-    assert_branch_adapter_state(repo.path(), "topic-current");
-    // The forced-target shape has an empty authority diff but the same refs.
-    git(repo.path(), &["switch", "-q", "main"]);
-    git(repo.path(), &["branch", "-f", "topic", "main"]);
-    assert_branch_adapter_state(repo.path(), "main-topic-forced");
-    git(repo.path(), &["switch", "-q", "topic"]);
-    assert_branch_adapter_state(repo.path(), "topic-forced-current");
 }

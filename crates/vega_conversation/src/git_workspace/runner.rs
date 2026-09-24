@@ -10,12 +10,12 @@ pub(crate) enum RunnerExecutable {
     Production(Arc<GitExecutable>),
     #[cfg(test)]
     Test(Option<PathBuf>),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     InProcess(Arc<dyn GitCommandBackend>),
 }
 
 /// Test-local external command boundary. Real policy and raw-byte parsing stay above it.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) trait GitCommandBackend: Send + Sync {
     fn execute(
         &self,
@@ -64,7 +64,7 @@ impl Runner {
             // This non-executable marker is only used to build the Command.
             // execute_command dispatches in-process before any spawn, even for
             // explicit test executable overrides.
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             RunnerExecutable::InProcess(_) => Ok(Path::new("/dev/null")),
             #[cfg(test)]
             RunnerExecutable::Test(executable) => {
@@ -350,7 +350,7 @@ impl Runner {
         cancel: &CancellationToken,
     ) -> Result<Output, GitWorkspaceError> {
         let (stdout_limit, timeout, overflow_policy) = limits;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let RunnerExecutable::InProcess(backend) = &self.executable {
             return backend.execute(command, input.as_deref(), stdout_limit);
         }

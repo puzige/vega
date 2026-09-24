@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use vega_mcp::{BearerCredential, HttpClient, McpError, ProtocolVersion, ResourceAuthorization};
 
@@ -51,9 +49,6 @@ async fn on_new_runtime<T: Send + 'static>(
 async fn m06_dcr_token_and_refresh_survive_separate_destroyed_tokio_runtimes() {
     let (endpoint, issuer, mut requests) = fixture(Fixture::Dynamic).await;
     let redirect = "http://127.0.0.1:54321/callback";
-    // Settings intentionally runs each UI operation on a separate worker.
-    // The AS client must not retain a socket/reactor from discovery and then
-    // reuse it for DCR, code exchange or refresh after that runtime is gone.
     for _ in 0..8 {
         let discovery_endpoint = endpoint.clone();
         let discovery_issuer = issuer.clone();
@@ -110,7 +105,7 @@ async fn m06_preregistered_oauth_pkce_issuer_resource_and_authenticated_tool_cal
     let resource = ResourceAuthorization::discover(&endpoint, true)
         .await
         .expect("protected resource");
-    assert_eq!(resource.resource(), endpoint);
+    assert_eq!(resource.resource(), &*endpoint);
     assert_eq!(resource.authorization_servers(), [issuer.as_str()]);
     assert_eq!(resource.requested_scopes(), ["tools:read"]);
     let server = resource
@@ -126,7 +121,7 @@ async fn m06_preregistered_oauth_pkce_issuer_resource_and_authenticated_tool_cal
     let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
     assert_eq!(query["response_type"], "code");
     assert_eq!(query["client_id"], "owned-client");
-    assert_eq!(query["resource"], endpoint);
+    assert_eq!(query["resource"], &*endpoint);
     assert_eq!(query["scope"], "tools:read");
     assert_eq!(query["code_challenge_method"], "S256");
     assert_eq!(query["code_challenge"].len(), 43);
@@ -167,12 +162,12 @@ async fn m06_preregistered_oauth_pkce_issuer_resource_and_authenticated_tool_cal
         .collect();
     assert_eq!(token_requests.len(), 2);
     let exchange = form(&token_requests[0].body);
-    assert_eq!(exchange["resource"], endpoint);
+    assert_eq!(exchange["resource"], &*endpoint);
     assert_eq!(exchange["client_id"], "owned-client");
     assert_eq!(exchange["code"], "owned-code");
     assert!(exchange["code_verifier"].len() >= 43);
     let refresh = form(&token_requests[1].body);
-    assert_eq!(refresh["resource"], endpoint);
+    assert_eq!(refresh["resource"], &*endpoint);
     assert_eq!(refresh["refresh_token"], "owned-refresh");
 }
 
@@ -648,70 +643,38 @@ fn drain(receiver: &mut mpsc::UnboundedReceiver<Request>) -> Vec<Request> {
     requests
 }
 
-async fn fixture(scenario: Fixture) -> (String, String, mpsc::UnboundedReceiver<Request>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("owned listener");
-    let origin = format!("http://{}", listener.local_addr().expect("owned addr"));
-    let endpoint = format!("{origin}/mcp");
-    let issuer = format!("{origin}/issuer");
+async fn fixture(
+    scenario: Fixture,
+) -> (
+    vega_mcp::mock::Endpoint,
+    String,
+    mpsc::UnboundedReceiver<Request>,
+) {
     let (sender, receiver) = mpsc::unbounded_channel();
-    let origin_for_server = origin.clone();
-    tokio::spawn(async move {
-        loop {
-            let (stream, _) = listener.accept().await.expect("owned accept");
-            let (stream, request) = read_request(stream).await;
-            let reply = response(scenario, &origin_for_server, &request);
-            sender.send(request).expect("capture receiver");
-            write_response(stream, reply).await;
-        }
+    let endpoint = vega_mcp::mock::Endpoint::new("/mcp", |origin| {
+        let origin = origin.to_owned();
+        std::sync::Arc::new(move |request| {
+            let captured = Request {
+                method: request.method().to_string(),
+                path: request.url().path().to_string(),
+                headers: request
+                    .headers()
+                    .iter()
+                    .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_string()))
+                    .collect(),
+                body: request
+                    .body()
+                    .and_then(|body| body.as_bytes())
+                    .unwrap_or_default()
+                    .to_vec(),
+            };
+            let (status, kind, body, headers) = response(scenario, &origin, &captured);
+            sender.send(captured).expect("capture receiver");
+            Box::pin(async move { Ok(vega_mcp::mock::response(status, kind, body, headers)) })
+        })
     });
+    let issuer = format!("{}/issuer", endpoint.origin());
     (endpoint, issuer, receiver)
-}
-
-async fn read_request(mut stream: TcpStream) -> (TcpStream, Request) {
-    let mut bytes = Vec::new();
-    let header_end = loop {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).await.expect("read request");
-        assert!(count > 0, "request open");
-        bytes.extend_from_slice(&chunk[..count]);
-        assert!(bytes.len() < 1024 * 1024, "fixture bound");
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break index + 4;
-        }
-    };
-    let head = std::str::from_utf8(&bytes[..header_end]).expect("ASCII head");
-    let mut lines = head.split("\r\n");
-    let mut request_line = lines.next().expect("request line").split_whitespace();
-    let method = request_line.next().expect("method").to_owned();
-    let path = request_line.next().expect("path").to_owned();
-    let mut headers = HashMap::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
-        }
-    }
-    let length = headers
-        .get("content-length")
-        .map(|value| value.parse().expect("length"))
-        .unwrap_or(0);
-    while bytes.len() - header_end < length {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).await.expect("read body");
-        assert!(count > 0, "body complete");
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    let body = bytes[header_end..header_end + length].to_vec();
-    (
-        stream,
-        Request {
-            method,
-            path,
-            headers,
-            body,
-        },
-    )
 }
 
 fn response(
@@ -934,36 +897,4 @@ fn as_metadata(scenario: Fixture, origin: &str) -> Value {
         value["client_id_metadata_document_supported"] = json!(true);
     }
     value
-}
-
-async fn write_response(
-    mut stream: TcpStream,
-    response: (u16, &'static str, String, Vec<(&'static str, String)>),
-) {
-    let (status, kind, body, extra) = response;
-    let reason = match status {
-        200 => "OK",
-        201 => "Created",
-        302 => "Found",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        _ => "Error",
-    };
-    let mut head = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
-    );
-    for (name, value) in extra {
-        head.push_str(&format!("{name}: {value}\r\n"));
-    }
-    head.push_str("\r\n");
-    stream
-        .write_all(head.as_bytes())
-        .await
-        .expect("response head");
-    stream
-        .write_all(body.as_bytes())
-        .await
-        .expect("response body");
 }

@@ -7,7 +7,7 @@ mod context_compaction;
 
 struct Fixture {
     _data: TempDir,
-    repo: TempDir,
+    repo: ControllerRepo,
     store: Store,
     thread: Thread,
     root: Entity<VegaWindow>,

@@ -429,7 +429,7 @@ async fn issue63_standalone_first_image_submit_crosses_app_worker_and_persists(
 /// subject, so the fixture leaves `OpenedThread` empty (the draft is installed
 /// by the first frame).
 struct DraftFixture {
-    _repo: TempDir,
+    _repo: ControllerRepo,
     _config_root: TempDir,
     config_path: std::path::PathBuf,
     data_root: TempDir,
@@ -816,7 +816,7 @@ impl DraftFixture {
     fn open_with_repo(
         cx: &mut gpui_kit::TestAppContext,
         with_project: bool,
-        repo: TempDir,
+        repo: ControllerRepo,
     ) -> Self {
         Self::open_with_repo_and_model(cx, with_project, repo, None)
     }
@@ -824,7 +824,7 @@ impl DraftFixture {
     fn open_with_repo_and_model(
         cx: &mut gpui_kit::TestAppContext,
         with_project: bool,
-        repo: TempDir,
+        repo: ControllerRepo,
         unpriced_model: Option<&str>,
     ) -> Self {
         Self::open_with_registration(cx, with_project, with_project, repo, None, unpriced_model)
@@ -834,7 +834,7 @@ impl DraftFixture {
         cx: &mut gpui_kit::TestAppContext,
         register_project: bool,
         select_project: bool,
-        repo: TempDir,
+        repo: ControllerRepo,
         second_repo: Option<&std::path::Path>,
         unpriced_model: Option<&str>,
     ) -> Self {
@@ -947,7 +947,7 @@ impl DraftFixture {
     fn home_with_repo(
         cx: &mut gpui_kit::TestAppContext,
         with_project: bool,
-        repo: TempDir,
+        repo: ControllerRepo,
     ) -> Self {
         let fixture = Self::open_with_repo(cx, with_project, repo);
         pump_test_app(cx, |cx| {

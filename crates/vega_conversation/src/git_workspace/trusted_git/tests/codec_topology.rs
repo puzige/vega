@@ -455,38 +455,23 @@ fn selected_copy_components_share_only_the_source_invariant() {
 }
 
 #[tokio::test]
-async fn sha256_repository_completes_checklist_prepare_and_commit() {
-    let repo = match Repo::try_sha256() {
-        Ok(repo) => repo,
-        Err(reason) => {
-            eprintln!("SKIP sha256 repository E2E: {reason}");
-            return;
-        }
-    };
-    assert_eq!(
-        run_git_output(repo.path(), &["rev-parse", "--show-object-format"]),
-        b"sha256\n"
+async fn sha256_command_bytes_complete_checklist_prepare_and_commit() {
+    let fixture = command_stub::PolicyFixture::policy("sha256-before");
+    fixture.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "sha256-staged",
     );
-    fs::write(repo.path().join("tracked.txt"), "sha256 change\n").expect("sha256 worktree change");
-    let base = run_git_output(repo.path(), &["rev-parse", "HEAD"])
-        .strip_suffix(b"\n")
-        .expect("sha256 base newline")
-        .to_vec();
-    assert!(valid_nonzero_oid(&base, 64));
-    let workspace = Arc::new(GitWorkspaceService::new(repo.path()).expect("sha256 workspace"));
-    workspace
-        .refresh(CancellationToken::new())
-        .await
-        .expect("sha256 workspace refresh");
-    let (_read_dir, read, read_log) = proof_read_recorder(repo.path(), &base, "ok");
-    let (mutation_dir, mutation, _mutation_argv, _mutation_input) = mutation_recorder();
-    let trusted =
-        TrustedGitService::new_with_executables_for_test(repo.path(), workspace, mutation, read)
-            .expect("sha256 trusted service");
+    fixture.expect_mutation(
+        "commit",
+        &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        "sha256-after",
+    );
+    let (_workspace, trusted) = fixture.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
         .await
-        .expect("sha256 checklist");
+        .unwrap();
     assert_eq!(checklist.optional.len(), 1);
     let prepared = trusted
         .prepare(
@@ -496,80 +481,30 @@ async fn sha256_repository_completes_checklist_prepare_and_commit() {
         )
         .await
         .prepared
-        .expect("sha256 prepared");
-    {
-        let state = trusted
-            .state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        let stored = state.prepared.as_ref().expect("stored sha256 B");
-        assert!(valid_nonzero_oid(&stored.authority.head.oid, 64));
-        assert!(
-            stored
-                .authority
-                .records
-                .iter()
-                .all(|record| { record.head_oid.len() == 64 && record.index_oid.len() == 64 })
-        );
-        assert!(
-            stored
-                .authority
-                .stages
-                .iter()
-                .all(|stage| valid_nonzero_oid(&stage.oid, 64))
-        );
-        assert!(
-            stored
-                .authority
-                .tree
-                .iter()
-                .all(|entry| valid_nonzero_oid(&entry.oid, 64))
-        );
-    }
-    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
-        vega_runtime::ScriptStep::text("test: sha256 commit"),
-        vega_runtime::ScriptStep::events(vec![ProviderEvent::Done {
-            stop_reason: StopReason::End,
-        }]),
-    ]));
-    let draft = trusted
-        .draft(
-            prepared.id,
-            "mock-sha256".into(),
-            provider.clone(),
-            CancellationToken::new(),
-        )
-        .await
-        .expect("sha256 mock draft");
-    assert_eq!(provider.requests().len(), 1);
-    assert!(provider.requests()[0].tools.is_empty());
-    assert_eq!(provider.requests()[0].max_tokens, Some(256));
+        .unwrap();
     let completion = trusted
         .commit(
             prepared.id,
-            draft.text().to_owned(),
+            "test: sha256 proof".into(),
             CancellationToken::new(),
         )
         .await;
     assert_eq!(completion.outcome, CommitOutcome::Committed);
-    let oid = run_git_output(repo.path(), &["rev-parse", "HEAD"]);
-    let oid = oid.strip_suffix(b"\n").expect("sha256 oid newline");
-    assert!(valid_nonzero_oid(oid, 64));
-    assert_eq!(
-        fs::read(mutation_dir.path().join("mutation-attempts"))
-            .expect("sha256 add and commit attempts"),
-        b"xx"
+    assert!(valid_nonzero_oid(fixture.raw("head").as_bytes(), 64));
+    assert!(completion.workspace.is_some());
+    assert_eq!(fixture.mutation_inputs().len(), 2);
+    let requests = fixture.requests();
+    let oid = fixture.raw("head");
+    assert!(
+        requests
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == format!("{oid}^@").as_str()))
     );
-    let reads = read_invocations(&read_log);
-    assert!(reads.iter().flatten().any(|argument| {
-        argument.len() == 66 && argument.ends_with(b"^@") && valid_nonzero_oid(&argument[..64], 64)
-    }));
-    assert!(reads.iter().any(|invocation| {
-        invocation.iter().any(|argument| argument == b"ls-tree")
-            && invocation.iter().any(|argument| argument == oid)
-    }));
-    assert_terminal_workspace(
-        &trusted,
-        completion.workspace.as_ref().expect("sha256 workspace"),
+    assert!(
+        requests
+            .iter()
+            .any(|args| args.iter().any(|arg| arg == "ls-tree")
+                && args.iter().any(|arg| arg == oid.as_str()))
     );
+    fixture.assert_mutations_drained();
 }

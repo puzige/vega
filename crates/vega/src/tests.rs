@@ -53,10 +53,7 @@ use crate::thread_reload::*;
 use crate::trusted_action::*;
 use crate::window::*;
 
-use std::ffi::OsString;
 use std::fs;
-use std::os::unix::ffi::OsStrExt;
-use std::process::Command;
 use tempfile::TempDir;
 use vega_store::messages::*;
 
@@ -84,8 +81,7 @@ pub(crate) use artifact_terminal::{
     receive_artifact_terminal,
 };
 pub(crate) use diff::{
-    diff_controller_repo, fixture_git_command, install_diff_window_globals, receive_refresh,
-    run_fixture_git,
+    diff_controller_repo, install_diff_window_globals, receive_refresh, run_fixture_git,
 };
 pub(crate) use pricing::CommitPanelHarness;
 
@@ -283,3 +279,6 @@ fn pending_plan() -> (Store, String) {
     .expect("complete plan");
     (store, thread.id)
 }
+
+mod controller_git_fixture;
+pub(crate) use controller_git_fixture::{ControllerRepo, fixture_git_command};

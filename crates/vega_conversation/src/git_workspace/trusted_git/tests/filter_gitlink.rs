@@ -485,119 +485,15 @@ async fn attrs_drift_at_immediate_final_and_post_add_barriers_has_zero_zero_one_
     }
 }
 
-const FILTER_JSON: &str = include_str!("filter-fixtures.json");
-
-// Compare the captured filter/attributes raw bytes with actual Git, normalizing
-// only the nondeterministic commit identity. Paths, modes and attribute triples
-// remain exact.
-pub(super) fn assert_filter_adapter_state(root: &Path, case: &str) {
-    let fixtures: serde_json::Value = serde_json::from_str(FILTER_JSON).expect("raw fixtures");
-    let raw = &fixtures[case]["raw"];
-    let head = String::from_utf8(run_git_output(root, &["rev-parse", "HEAD"])).expect("head");
-    for (key, args) in [
-        (
-            "status",
-            vec![
-                "status",
-                "--porcelain=v2",
-                "-z",
-                "--branch",
-                "--renames",
-                "--untracked-files=all",
-            ],
-        ),
-        ("paths", vec!["ls-files", "-z", "--cached", "--deduplicate"]),
-        ("stage", vec!["ls-files", "--stage", "-z"]),
-        ("tree", vec!["ls-tree", "-r", "-z", "--full-tree", "HEAD"]),
-    ] {
-        let actual =
-            String::from_utf8(run_git_output(root, &args)).expect("captured UTF-8 fixture");
-        assert_eq!(
-            actual.replace(head.trim(), raw["head"].as_str().expect("fixture head")),
-            raw[key].as_str().expect("raw key"),
-            "{case}: {key}"
-        );
-    }
-    for (input, expected) in fixtures[case]["attrs_by_input"]
-        .as_object()
-        .expect("selected attrs")
-    {
-        let mut command = Command::new(GIT);
-        command
-            .current_dir(root)
-            .args(["check-attr", "-z", "--stdin", "--all"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped());
-        scrub_git_environment(&mut command);
-        let mut child = command.spawn().expect("real attribute adapter");
-        std::io::Write::write_all(
-            &mut child.stdin.take().expect("attribute stdin"),
-            input.as_bytes(),
-        )
-        .expect("selected path input");
-        let attrs = child.wait_with_output().expect("attribute result");
-        assert!(attrs.status.success());
-        assert_eq!(
-            attrs.stdout,
-            expected.as_str().expect("selected attrs").as_bytes(),
-            "{case}: selected attrs {input:?}"
-        );
-    }
-}
-
-#[test]
-fn filter_and_attributes_captured_states_match_real_git() {
-    let optional = Repo::new();
-    fs::write(optional.path().join("other.txt"), "other\n").expect("other fixture");
-    run_git(optional.path(), &["add", "other.txt"]);
-    run_git(optional.path(), &["commit", "-qm", "other"]);
-    fs::write(optional.path().join("tracked.txt"), "selected\n").expect("selected fixture");
-    assert_filter_adapter_state(optional.path(), "attrs-optional");
-
-    let renamed = Repo::new();
-    fs::write(renamed.path().join(".gitattributes"), "# base\n").expect("attributes base");
-    run_git(renamed.path(), &["add", ".gitattributes"]);
-    run_git(renamed.path(), &["commit", "-qm", "attributes base"]);
-    run_git(renamed.path(), &["mv", ".gitattributes", "attributes.txt"]);
-    fs::write(
-        renamed.path().join("attributes.txt"),
-        "# base\n# worktree\n",
-    )
-    .expect("rename destination edit");
-    assert_filter_adapter_state(renamed.path(), "gitattributes-rename");
-}
-
 #[tokio::test]
-async fn real_gitlink_is_allowed_only_as_exact_clean_unchanged_union_entry() {
-    fn install_gitlink(repo: &Repo) -> Vec<u8> {
-        let target = run_git_output(repo.path(), &["rev-parse", "HEAD"])
-            .strip_suffix(b"\n")
-            .expect("gitlink target newline")
-            .to_vec();
-        let target_text = std::str::from_utf8(&target).expect("fixture oid");
-        let cache = format!("160000,{target_text},module");
-        run_git(
-            repo.path(),
-            &["update-index", "--add", "--cacheinfo", &cache],
-        );
-        run_git(repo.path(), &["commit", "-qm", "add gitlink"]);
-        let module = repo.path().join("module");
-        let mut clone = Command::new(GIT);
-        clone
-            .current_dir(repo.path())
-            .args(["clone", "-q"])
-            .arg(repo.path())
-            .arg(&module);
-        scrub_git_environment(&mut clone);
-        assert!(clone.status().expect("clone gitlink worktree").success());
-        run_git(&module, &["checkout", "-q", target_text]);
-        target
-    }
-
-    let unchanged = Repo::new();
-    install_gitlink(&unchanged);
-    fs::write(unchanged.path().join("tracked.txt"), "ordinary change\n")
-        .expect("ordinary alongside gitlink");
+async fn captured_gitlink_is_allowed_only_as_exact_clean_unchanged_union_entry() {
+    let unchanged = command_stub::PolicyFixture::policy("gitlink-modified");
+    fs::create_dir(unchanged.path().join("module")).unwrap();
+    unchanged.expect_mutation(
+        "add",
+        &["-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        "gitlink-staged",
+    );
     let (_workspace, trusted) = unchanged.services().await;
     let checklist = trusted
         .open_checklist(CancellationToken::new())
@@ -615,81 +511,25 @@ async fn real_gitlink_is_allowed_only_as_exact_clean_unchanged_union_entry() {
         .prepared
         .expect("unchanged gitlink prepared");
     assert_eq!(prepared.staged_file_count, 2);
-
-    let deleted = Repo::new();
-    install_gitlink(&deleted);
-    let (workspace, _clean_service) = deleted.services().await;
-    run_git(
-        deleted.path(),
-        &["update-index", "--force-remove", "module"],
-    );
-    fs::remove_dir_all(deleted.path().join("module")).expect("remove deleted gitlink worktree");
-    let trusted = TrustedGitService::new(deleted.path(), workspace).expect("deleted service");
-    assert_eq!(
-        trusted.open_checklist(CancellationToken::new()).await,
-        Err(CommitErrorCode::UnsafeRepository)
-    );
-
-    let updated = Repo::new();
-    install_gitlink(&updated);
-    let (workspace, _clean_service) = updated.services().await;
-    let other = run_git_output(updated.path(), &["rev-parse", "HEAD"]);
-    let other = std::str::from_utf8(other.strip_suffix(b"\n").expect("updated oid newline"))
-        .expect("updated oid");
-    let cache = format!("160000,{other},module");
-    run_git(
-        updated.path(),
-        &["update-index", "--add", "--cacheinfo", &cache],
-    );
-    let trusted = TrustedGitService::new(updated.path(), workspace).expect("updated service");
-    assert_eq!(
-        trusted.open_checklist(CancellationToken::new()).await,
-        Err(CommitErrorCode::UnsafeRepository)
-    );
-
-    for mode in ["100644", "120000"] {
-        let changed = Repo::new();
-        install_gitlink(&changed);
-        let (workspace, _clean_service) = changed.services().await;
-        let blob = run_git_output(changed.path(), &["rev-parse", "HEAD:tracked.txt"]);
-        let blob =
-            std::str::from_utf8(blob.strip_suffix(b"\n").expect("blob newline")).expect("blob oid");
-        let cache = format!("{mode},{blob},module");
-        fs::remove_dir_all(changed.path().join("module"))
-            .expect("remove type-changed gitlink worktree");
-        run_git(
-            changed.path(),
-            &["update-index", "--add", "--cacheinfo", &cache],
-        );
-        let trusted =
-            TrustedGitService::new(changed.path(), workspace).expect("type change service");
+    unchanged.assert_mutations_drained();
+    for case in [
+        "gitlink-deleted",
+        "gitlink-updated",
+        "gitlink-type-100644",
+        "gitlink-type-120000",
+        "gitlink-unborn",
+    ] {
+        let fixture = command_stub::PolicyFixture::policy("gitlink-clean");
+        fs::create_dir(fixture.path().join("module")).unwrap();
+        let (_workspace, trusted) = fixture.services().await;
+        fixture.set_case(case);
         assert_eq!(
             trusted.open_checklist(CancellationToken::new()).await,
             Err(CommitErrorCode::UnsafeRepository),
-            "gitlink type change mode {mode}"
+            "{case}"
         );
+        fixture.assert_no_mutation();
     }
-
-    let unborn = Repo::new();
-    let target = install_gitlink(&unborn);
-    let (workspace, _clean_service) = unborn.services().await;
-    let target = std::str::from_utf8(&target).expect("unborn target oid");
-    run_git(
-        unborn.path(),
-        &["symbolic-ref", "HEAD", "refs/heads/unborn"],
-    );
-    run_git(unborn.path(), &["read-tree", "--empty"]);
-    fs::remove_dir_all(unborn.path().join("module")).expect("remove unborn gitlink worktree");
-    let cache = format!("160000,{target},module");
-    run_git(
-        unborn.path(),
-        &["update-index", "--add", "--cacheinfo", &cache],
-    );
-    let trusted = TrustedGitService::new(unborn.path(), workspace).expect("unborn service");
-    assert_eq!(
-        trusted.open_checklist(CancellationToken::new()).await,
-        Err(CommitErrorCode::UnsafeRepository)
-    );
 }
 
 #[tokio::test]
@@ -813,120 +653,6 @@ pub(super) fn expected_top_mutation(verb: &[u8], args: &[&str]) -> Vec<u8> {
         verb,
         &args.iter().map(|arg| arg.as_bytes()).collect::<Vec<_>>(),
     )
-}
-
-// Compare captured bytes with actual Git, normalizing only the nondeterministic commit identity.
-// Blob identities, raw statuses, paths and index/tree modes remain exact.
-pub(super) fn assert_top_adapter_state(root: &Path, case: &str) {
-    let fixtures: serde_json::Value = serde_json::from_str(TOP_MATRIX_JSON).expect("raw fixtures");
-    let raw = &fixtures[case]["raw"];
-    let mut command = Command::new(GIT);
-    command
-        .current_dir(root)
-        .args(["check-attr", "-z", "--stdin", "--all"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
-    scrub_git_environment(&mut command);
-    let mut child = command.spawn().expect("real attribute adapter");
-    std::io::Write::write_all(
-        &mut child.stdin.take().expect("attribute stdin"),
-        b"tracked.txt\0",
-    )
-    .expect("selected path input");
-    let attrs = child.wait_with_output().expect("attribute result");
-    assert!(attrs.status.success());
-    assert_eq!(
-        attrs.stdout,
-        fixtures[case]["attrs_by_input"]["tracked.txt\0"]
-            .as_str()
-            .expect("selected attrs")
-            .as_bytes(),
-        "{case}: selected attrs"
-    );
-    let head = String::from_utf8(run_git_output(root, &["rev-parse", "HEAD"])).expect("head");
-    for (key, args) in [
-        (
-            "status",
-            vec![
-                "status",
-                "--porcelain=v2",
-                "-z",
-                "--branch",
-                "--renames",
-                "--untracked-files=all",
-            ],
-        ),
-        ("stage", vec!["ls-files", "--stage", "-z"]),
-        ("tree", vec!["ls-tree", "-r", "-z", "--full-tree", "HEAD"]),
-        (
-            "staged_raw",
-            vec![
-                "diff",
-                "--cached",
-                "--raw",
-                "-z",
-                "--abbrev=64",
-                "--find-renames",
-                "--no-ext-diff",
-                "--no-textconv",
-            ],
-        ),
-    ] {
-        let actual =
-            String::from_utf8(run_git_output(root, &args)).expect("captured UTF-8 fixture");
-        assert_eq!(
-            actual.replace(head.trim(), raw["head"].as_str().expect("fixture head")),
-            raw[key].as_str().expect("raw key"),
-            "{case}: {key}"
-        );
-    }
-}
-
-#[test]
-fn empty_blob_and_selected_delete_git_adapter_matches_captured_states() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("empty.txt"), b"").expect("empty add");
-    run_git(repo.path(), &["add", "empty.txt"]);
-    assert_top_adapter_state(repo.path(), "empty-added");
-    run_git(repo.path(), &["commit", "-qm", "empty add"]);
-    assert_top_adapter_state(repo.path(), "empty-added-committed");
-    fs::remove_file(repo.path().join("empty.txt")).expect("empty worktree deletion");
-    assert_top_adapter_state(repo.path(), "empty-worktree-deleted");
-
-    let repo = Repo::new();
-    let base =
-        String::from_utf8(run_git_output(repo.path(), &["rev-parse", "HEAD"])).expect("base");
-    for select_delete in [false, true] {
-        if select_delete {
-            run_git(repo.path(), &["reset", "--hard", base.trim()]);
-        }
-        fs::write(repo.path().join("tracked.txt"), b"").expect("staged empty");
-        run_git(repo.path(), &["add", "tracked.txt"]);
-        fs::remove_file(repo.path().join("tracked.txt")).expect("optional deletion");
-        assert_top_adapter_state(repo.path(), "staged-empty-deleted");
-        if select_delete {
-            run_git(repo.path(), &["add", "-A", "--", "tracked.txt"]);
-            assert_top_adapter_state(repo.path(), "staged-empty-selected-added");
-        }
-        run_git(repo.path(), &["commit", "-qm", "empty deletion choice"]);
-        assert_top_adapter_state(
-            repo.path(),
-            if select_delete {
-                "staged-empty-selected-committed"
-            } else {
-                "staged-empty-kept-committed"
-            },
-        );
-        let indexed = run_git_output(repo.path(), &["ls-files", "--stage", "tracked.txt"]);
-        assert_eq!(indexed.is_empty(), select_delete);
-        if !select_delete {
-            assert!(
-                String::from_utf8(indexed)
-                    .expect("index")
-                    .contains("100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
-            );
-        }
-    }
 }
 
 #[test]

@@ -48,30 +48,6 @@ impl TrustedGitService {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn new_with_mutation_for_test(
-        root: impl AsRef<Path>,
-        workspace: Arc<GitWorkspaceService>,
-        executable: PathBuf,
-    ) -> Result<Self, CommitErrorCode> {
-        let mut service = Self::new(root, workspace)?;
-        service.mutation_executable = Some(executable);
-        Ok(service)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_with_executables_for_test(
-        root: impl AsRef<Path>,
-        workspace: Arc<GitWorkspaceService>,
-        mutation_executable: PathBuf,
-        read_executable: PathBuf,
-    ) -> Result<Self, CommitErrorCode> {
-        let mut service = Self::new(root, workspace)?;
-        service.mutation_executable = Some(mutation_executable);
-        service.read_executable = Some(read_executable);
-        Ok(service)
-    }
-
     /// Captures displayed A from three canonical Git truth sources.
     pub async fn open_checklist(
         &self,

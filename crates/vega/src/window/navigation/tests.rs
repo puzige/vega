@@ -549,18 +549,6 @@ async fn r14_real_root_sidebar_pointer_then_keyboard_preserves_toggle_and_editor
 async fn r14_current_head_loads_without_selector_click_and_refreshes_hidden_sidebar(
     cx: &mut TestAppContext,
 ) {
-    fn git(root: &std::path::Path, args: &[&str]) -> String {
-        let result = std::process::Command::new("/usr/bin/git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .output()
-            .unwrap();
-        assert!(result.status.success(), "owned Git setup/probe failed");
-        String::from_utf8(result.stdout).unwrap().trim().to_owned()
-    }
     let data = tempfile::tempdir().unwrap();
     let owned = data.path().canonicalize().unwrap();
     let normal = owned.join("normal");
@@ -569,30 +557,26 @@ async fn r14_current_head_loads_without_selector_click_and_refreshes_hidden_side
     for path in [&normal, &plain] {
         std::fs::create_dir(path).unwrap();
     }
-    git(&normal, &["init", "-b", "actual-current"]);
-    git(
-        &normal,
-        &[
-            "-c",
-            "user.name=Vega Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "owned",
-        ],
-    );
-    git(
-        &normal,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            "linked-current",
-            linked.to_str().unwrap(),
-        ],
-    );
+    std::fs::create_dir(normal.join(".git")).unwrap();
+    std::fs::write(normal.join(".git/HEAD"), "ref: refs/heads/actual-current\n").unwrap();
+    std::fs::create_dir(&linked).unwrap();
+    let linked_metadata = normal.join(".git/worktrees/linked");
+    std::fs::create_dir_all(&linked_metadata).unwrap();
+    std::fs::write(
+        linked.join(".git"),
+        format!("gitdir: {}\n", linked_metadata.display()),
+    )
+    .unwrap();
+    std::fs::write(
+        linked_metadata.join("gitdir"),
+        format!("{}\n", linked.join(".git").display()),
+    )
+    .unwrap();
+    std::fs::write(
+        linked_metadata.join("HEAD"),
+        "ref: refs/heads/linked-current\n",
+    )
+    .unwrap();
     let database = owned.join("branches.sqlite");
     let store = Store::open(&database).unwrap();
     store.migrate().unwrap();
@@ -654,10 +638,14 @@ async fn r14_current_head_loads_without_selector_click_and_refreshes_hidden_side
     };
     wait_label("actual-current", cx);
     assert_eq!(
-        git(&normal, &["branch", "--show-current"]),
-        "actual-current"
+        std::fs::read_to_string(normal.join(".git/HEAD")).unwrap(),
+        "ref: refs/heads/actual-current\n"
     );
-    git(&normal, &["checkout", "-b", "external-current"]);
+    std::fs::write(
+        normal.join(".git/HEAD"),
+        "ref: refs/heads/external-current\n",
+    )
+    .unwrap();
     wait_label("external-current", cx);
     assert!(cx.update(|cx| cx.global::<SidebarCollapsed>().0));
     let visit = |thread: &Thread, cx: &mut TestAppContext| {
@@ -670,16 +658,23 @@ async fn r14_current_head_loads_without_selector_click_and_refreshes_hidden_side
     visit(&routes[1], cx);
     wait_label("linked-current", cx);
     assert_eq!(
-        git(&normal, &["branch", "--show-current"]),
-        "external-current"
+        std::fs::read_to_string(normal.join(".git/HEAD")).unwrap(),
+        "ref: refs/heads/external-current\n"
     );
     assert_eq!(
-        git(&linked, &["branch", "--show-current"]),
-        "linked-current"
+        std::fs::read_to_string(linked_metadata.join("HEAD")).unwrap(),
+        "ref: refs/heads/linked-current\n"
     );
-    git(&linked, &["checkout", "--detach"]);
+    std::fs::write(
+        linked_metadata.join("HEAD"),
+        "1111111111111111111111111111111111111111\n",
+    )
+    .unwrap();
     wait_label("detached", cx);
-    assert!(git(&linked, &["branch", "--show-current"]).is_empty());
+    assert_eq!(
+        std::fs::read_to_string(linked_metadata.join("HEAD")).unwrap(),
+        "1111111111111111111111111111111111111111\n"
+    );
     visit(&routes[2], cx);
     pump(cx, |cx| {
         if !root.read_with(cx, |root, _| {
@@ -700,7 +695,7 @@ async fn r14_current_head_loads_without_selector_click_and_refreshes_hidden_side
     visit(&routes[0], cx);
     wait_label("external-current", cx);
     assert_eq!(
-        git(&normal, &["branch", "--show-current"]),
-        "external-current"
+        std::fs::read_to_string(normal.join(".git/HEAD")).unwrap(),
+        "ref: refs/heads/external-current\n"
     );
 }

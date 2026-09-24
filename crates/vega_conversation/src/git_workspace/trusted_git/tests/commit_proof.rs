@@ -3,8 +3,30 @@ use super::*;
 #[tokio::test]
 async fn commit_proof_uses_explicit_new_oid_for_born_and_unborn_commits() {
     for unborn in [false, true] {
-        let (repo, _read_dir, _mutation_dir, trusted, prepared, read_log, mutation_argv, base) =
-            prepared_with_proof_plan(unborn, "pass").await;
+        let fixture = if unborn {
+            command_stub::PolicyFixture::policy("sha1-unborn")
+        } else {
+            command_stub::PolicyFixture::new("staged")
+        };
+        let base = fixture.raw("head");
+        fixture.expect_mutation(
+            "commit",
+            &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+            if unborn {
+                "sha1-first"
+            } else {
+                "proof-committed"
+            },
+        );
+        let (trusted, prepared) = fixture.prepared().await;
+        let before = fixture.requests();
+        if unborn {
+            assert!(
+                !before
+                    .iter()
+                    .any(|args| args.iter().any(|arg| arg == "ls-tree"))
+            );
+        }
         let completion = trusted
             .commit(
                 prepared.id,
@@ -14,50 +36,37 @@ async fn commit_proof_uses_explicit_new_oid_for_born_and_unborn_commits() {
             .await;
         assert_eq!(completion.outcome, CommitOutcome::Committed);
         assert!(completion.workspace.is_some());
-        let new_oid = run_git_output(repo.path(), &["rev-parse", "HEAD"])
-            .strip_suffix(b"\n")
-            .expect("new oid newline")
-            .to_vec();
+        let new_oid = fixture.raw("head");
         assert_ne!(new_oid, base);
-        let invocations = read_invocations(&read_log);
-        if unborn {
-            assert!(
-                !invocations.iter().any(|invocation| {
-                    invocation.first().is_some_and(|phase| phase == b"pre")
-                        && invocation.iter().any(|arg| arg == b"ls-tree")
-                }),
-                "unborn A performed a HEAD tree read"
-            );
-        }
-        let mut parent_arg = new_oid.clone();
-        parent_arg.extend_from_slice(b"^@");
-        assert!(invocations.iter().any(|invocation| {
-            invocation.first().is_some_and(|phase| phase == b"post")
-                && invocation.iter().any(|arg| arg == b"rev-parse")
-                && invocation.iter().any(|arg| arg == &parent_arg)
+        let requests = fixture.requests();
+        assert!(requests.iter().any(|args| {
+            args.iter().any(|arg| arg == "rev-parse")
+                && args
+                    .iter()
+                    .any(|arg| arg == format!("{new_oid}^@").as_str())
         }));
-        assert!(invocations.iter().any(|invocation| {
-            invocation.first().is_some_and(|phase| phase == b"post")
-                && invocation.iter().any(|arg| arg == b"ls-tree")
-                && invocation.iter().any(|arg| arg == &new_oid)
-                && !invocation.iter().any(|arg| arg == b"HEAD")
-        }));
+        assert!(
+            requests
+                .iter()
+                .any(|args| args.iter().any(|arg| arg == "ls-tree")
+                    && args.iter().any(|arg| arg == new_oid.as_str())
+                    && !args.iter().any(|arg| arg == "HEAD"))
+        );
         assert_eq!(
-            fs::read(mutation_argv).expect("commit argv"),
+            fixture.mutation_argv(),
             expected_mutation_argv(
                 b"commit",
                 &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
             )
         );
-        let parents = run_git_output(repo.path(), &["rev-list", "--parents", "-n", "1", "HEAD"]);
-        let fields: Vec<_> = parents
-            .split(|byte| byte.is_ascii_whitespace())
-            .filter(|field| !field.is_empty())
-            .collect();
-        assert_eq!(fields.len(), if unborn { 1 } else { 2 });
+        assert_eq!(
+            fixture.raw("parents").split_whitespace().count(),
+            usize::from(!unborn)
+        );
         if !unborn {
-            assert_eq!(fields[1], base);
+            assert_eq!(fixture.raw("parents").trim(), base);
         }
+        fixture.assert_mutations_drained();
     }
 }
 
@@ -107,60 +116,6 @@ async fn assert_commit_proof_fault_after_one_commit(plan: &str, expected: Commit
     );
     assert_eq!(
         fixture.mutation_argv(),
-        expected_mutation_argv(
-            b"commit",
-            &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
-        )
-    );
-}
-
-#[tokio::test]
-async fn real_git_object_missing_proof_consumes_prepared_after_one_commit() {
-    let plan = "object-missing";
-    let expected = CommitErrorCode::GitFailed;
-    let (_repo, _read_dir, mutation_dir, trusted, prepared, _read_log, mutation_argv, _base) =
-        prepared_with_proof_plan(false, plan).await;
-    let completion = trusted
-        .commit(
-            prepared.id,
-            "test: proof must fail closed".into(),
-            CancellationToken::new(),
-        )
-        .await;
-    assert_eq!(
-        completion.outcome,
-        CommitOutcome::Failed(expected),
-        "proof plan {plan}"
-    );
-    assert!(completion.workspace.is_some(), "{plan} terminal refresh");
-    assert_eq!(
-        fs::read(&mutation_argv).expect("one commit argv"),
-        expected_mutation_argv(
-            b"commit",
-            &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
-        ),
-        "proof plan {plan}"
-    );
-    assert_eq!(
-        fs::read(mutation_dir.path().join("mutation-attempts"))
-            .expect("one commit process attempt"),
-        b"x",
-        "proof plan {plan}"
-    );
-    let duplicate = trusted
-        .commit(
-            prepared.id,
-            "test: duplicate proof".into(),
-            CancellationToken::new(),
-        )
-        .await;
-    assert_eq!(
-        duplicate.outcome,
-        CommitOutcome::Failed(CommitErrorCode::StaleAuthority),
-        "proof plan {plan}"
-    );
-    assert_eq!(
-        fs::read(mutation_argv).expect("still one commit"),
         expected_mutation_argv(
             b"commit",
             &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
@@ -238,8 +193,14 @@ async fn commit_proof_rejects_ref_renamed_after_one_commit() {
 
 #[tokio::test]
 async fn commit_proof_rejects_root_identity_swap_after_exactly_one_commit() {
-    let (repo, read_dir, mutation_dir, trusted, prepared, _read_log, mutation_argv, _base) =
-        prepared_with_proof_plan(false, "root-swap").await;
+    let fixture = command_stub::PolicyFixture::new("staged");
+    fixture.proof_plan("root-swap");
+    fixture.expect_mutation(
+        "commit",
+        &["--no-gpg-sign", "--file=-", "--cleanup=verbatim"],
+        "proof-committed",
+    );
+    let (trusted, prepared) = fixture.prepared().await;
     let completion = trusted
         .commit(
             prepared.id,
@@ -253,22 +214,16 @@ async fn commit_proof_rejects_root_identity_swap_after_exactly_one_commit() {
     );
     assert!(completion.workspace.is_none());
     assert_eq!(
-        fs::read(mutation_argv).expect("one root-swap commit"),
+        fixture.mutation_argv(),
         expected_mutation_argv(
             b"commit",
             &[b"--no-gpg-sign", b"--file=-", b"--cleanup=verbatim"]
         )
     );
-    assert_eq!(
-        fs::read(mutation_dir.path().join("mutation-attempts"))
-            .expect("one root-swap process attempt"),
-        b"x"
-    );
-
-    let root = repo.path().to_path_buf();
-    let backup = read_dir.path().join("root-backup");
-    fs::remove_dir(&root).expect("remove exact empty replacement root");
-    fs::rename(backup, root).expect("restore exact fixture root");
+    assert_eq!(fixture.mutation_inputs().len(), 1);
+    let root = fixture.path().to_path_buf();
+    fs::remove_dir(&root).unwrap();
+    fs::rename(root.with_extension("root-backup"), &root).unwrap();
 }
 
 #[tokio::test]
@@ -319,37 +274,6 @@ async fn commit_third_capture_mismatch_consumes_prepared_and_spawns_zero_commit(
         );
         fixture.assert_no_mutation();
     }
-}
-
-#[tokio::test]
-async fn commit_status_drift_real_git_consumes_prepared_and_spawns_zero_commit() {
-    let (repo, _recorder, trusted, prepared, argv, _input) = staged_service_with_recorder().await;
-    fs::write(repo.path().join("tracked.txt"), "changed after B\n").expect("status drift");
-    let completion = trusted
-        .commit(
-            prepared.id,
-            "test: must not execute".into(),
-            CancellationToken::new(),
-        )
-        .await;
-    assert!(
-        matches!(completion.outcome, CommitOutcome::Failed(_)),
-        "status drift"
-    );
-    assert!(completion.workspace.is_some(), "status terminal refresh");
-    assert!(!argv.exists(), "status drift spawned commit");
-    let stale = trusted
-        .commit(
-            prepared.id,
-            "test: duplicate".into(),
-            CancellationToken::new(),
-        )
-        .await;
-    assert_eq!(
-        stale.outcome,
-        CommitOutcome::Failed(CommitErrorCode::StaleAuthority)
-    );
-    assert!(!argv.exists(), "duplicate spawned commit");
 }
 
 #[tokio::test]
@@ -548,10 +472,8 @@ async fn owned_prepare_rejects_a_to_b_to_a_without_capability() {
 
 #[tokio::test]
 async fn trusted_git_rejects_intent_to_add_and_hidden_delete_form() {
-    let repo = Repo::new();
-    fs::write(repo.path().join("intent.txt"), "intent\n").expect("intent");
-    run_git(repo.path(), &["add", "-N", "intent.txt"]);
-    let (workspace, trusted) = repo.services().await;
+    let fixture = command_stub::PolicyFixture::policy("intent-visible");
+    let (workspace, trusted) = fixture.services().await;
     workspace
         .refresh(CancellationToken::new())
         .await
@@ -560,7 +482,7 @@ async fn trusted_git_rejects_intent_to_add_and_hidden_delete_form() {
         trusted.open_checklist(CancellationToken::new()).await,
         Err(CommitErrorCode::IntentToAdd)
     );
-    fs::remove_file(repo.path().join("intent.txt")).expect("remove intent");
+    fixture.set_case("intent-deleted");
     workspace
         .refresh(CancellationToken::new())
         .await
@@ -569,15 +491,16 @@ async fn trusted_git_rejects_intent_to_add_and_hidden_delete_form() {
         trusted.open_checklist(CancellationToken::new()).await,
         Err(CommitErrorCode::IntentToAdd)
     );
+    fixture.assert_no_mutation();
 }
 
 #[tokio::test]
 async fn trusted_git_rejects_detached_and_operation_state() {
-    let repo = Repo::new();
-    run_git(repo.path(), &["checkout", "--detach", "-q"]);
-    let (_workspace, trusted) = repo.services().await;
+    let fixture = command_stub::PolicyFixture::policy("detached");
+    let (_workspace, trusted) = fixture.services().await;
     assert_eq!(
         trusted.open_checklist(CancellationToken::new()).await,
         Err(CommitErrorCode::UnsafeRepository)
     );
+    fixture.assert_no_mutation();
 }

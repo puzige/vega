@@ -5,7 +5,6 @@ use crate::agent::{
 use crate::types::{McpCallIdentity, PermissionDecision, PermissionRequest};
 use futures::future::BoxFuture;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 use vega_runtime::{MockProvider, ProviderEvent, ScriptStep, StopReason, VegaError};
 
@@ -41,37 +40,34 @@ struct FixtureRequest {
     body: Vec<u8>,
 }
 
-async fn owned_oauth_fixture() -> (String, String, Arc<FixtureCounts>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("owned fixture");
-    let origin = format!(
-        "http://{}",
-        listener.local_addr().expect("listener address")
-    );
-    let endpoint = format!("{origin}/mcp");
-    let issuer = format!("{origin}/issuer");
+async fn owned_oauth_fixture() -> (vega_mcp::mock::Endpoint, String, Arc<FixtureCounts>) {
     let counts = Arc::new(FixtureCounts::default());
     let server_counts = counts.clone();
-    tokio::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                break;
+    let endpoint = vega_mcp::mock::Endpoint::new("/mcp", |origin| {
+        let origin = origin.to_owned();
+        Arc::new(move |request| {
+            let captured = FixtureRequest {
+                path: request.url().path().to_owned(),
+                auth: request.headers().get("authorization").is_some(),
+                body: request
+                    .body()
+                    .and_then(|body| body.as_bytes())
+                    .unwrap_or_default()
+                    .to_vec(),
             };
             let origin = origin.clone();
             let counts = server_counts.clone();
-            tokio::spawn(async move {
-                serve_one(stream, &origin, &counts).await;
-            });
-        }
+            Box::pin(async move { Ok(serve_one(captured, &origin, &counts).await) })
+        })
     });
+    let issuer = format!("{}/issuer", endpoint.origin());
     (endpoint, issuer, counts)
 }
-
-async fn serve_one(mut stream: TcpStream, origin: &str, counts: &FixtureCounts) {
-    let Some(request) = read_request(&mut stream).await else {
-        return;
-    };
+async fn serve_one(
+    request: FixtureRequest,
+    origin: &str,
+    counts: &FixtureCounts,
+) -> vega_mcp::mock::Response {
     let endpoint = format!("{origin}/mcp");
     let issuer = format!("{origin}/issuer");
     if request.path == "/mcp"
@@ -93,8 +89,7 @@ async fn serve_one(mut stream: TcpStream, origin: &str, counts: &FixtureCounts) 
         let response = format!(
             "HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"{challenge_scope}\", resource_metadata=\"{origin}/.well-known/oauth-protected-resource/mcp\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         );
-        let _ = stream.write_all(response.as_bytes()).await;
-        return;
+        return vega_mcp::mock::raw_response(response);
     }
     let (status, kind, body, extra) = if request.path == "/mcp" {
         if !request.auth {
@@ -129,7 +124,7 @@ async fn serve_one(mut stream: TcpStream, origin: &str, counts: &FixtureCounts) 
                     "resultType":"complete", "content":[{"type":"text", "text":"authorized"}],
                     "isError":false
                 }),
-                _ => return,
+                _ => return vega_mcp::mock::response(404, "text/plain", String::new(), Vec::new()),
             };
             (
                 200,
@@ -215,53 +210,7 @@ async fn serve_one(mut stream: TcpStream, origin: &str, counts: &FixtureCounts) 
         extra.unwrap_or_default(),
         body
     );
-    let _ = stream.write_all(response.as_bytes()).await;
-}
-
-async fn read_request(stream: &mut TcpStream) -> Option<FixtureRequest> {
-    let mut bytes = Vec::new();
-    let header_end = loop {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).await.ok()?;
-        if count == 0 || bytes.len() + count > 1024 * 1024 {
-            return None;
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-        if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-            break index + 4;
-        }
-    };
-    let head = std::str::from_utf8(&bytes[..header_end]).ok()?;
-    let mut lines = head.split("\r\n");
-    let path = lines.next()?.split_ascii_whitespace().nth(1)?.to_owned();
-    let mut length = 0usize;
-    let mut auth = false;
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("content-length") {
-                length = value.trim().parse().ok()?;
-            }
-            if name.eq_ignore_ascii_case("authorization") {
-                auth = value.trim() == "Bearer owned-access";
-            }
-        }
-    }
-    if length > 1024 * 1024 {
-        return None;
-    }
-    while bytes.len() - header_end < length {
-        let mut chunk = [0u8; 4096];
-        let count = stream.read(&mut chunk).await.ok()?;
-        if count == 0 {
-            return None;
-        }
-        bytes.extend_from_slice(&chunk[..count]);
-    }
-    Some(FixtureRequest {
-        path,
-        auth,
-        body: bytes[header_end..header_end + length].to_vec(),
-    })
+    vega_mcp::mock::raw_response(response)
 }
 
 fn oauth_form(endpoint: String, client_id: Option<&str>) -> McpServerForm {
@@ -283,9 +232,7 @@ async fn browser_callback(redirect_uri: &str, state: &str, issuer: &str) {
         .and_then(|url| url.split_once('/'))
         .map(|(host, _)| host)
         .expect("loopback redirect");
-    let mut stream = TcpStream::connect(host_port)
-        .await
-        .expect("callback connect");
+    let mut stream = McpServerSettingsService::test_oauth_callback_stream(redirect_uri);
     let request = format!(
         "GET /callback?code=owned-code&state={state}&iss={issuer} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n"
     );
@@ -308,7 +255,7 @@ async fn issue73_oauth_metadata_scope_matching_short_owner_secret_never_reaches_
     let config = tempfile::tempdir().expect("config");
     let service = McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
     let row = service
-        .create(oauth_form(endpoint, Some("owned-client")))
+        .create(oauth_form(endpoint.to_string(), Some("owned-client")))
         .expect("OAuth row");
     vega_store::keystore::set_key(config.path(), "provider-short-token", "q7")
         .expect("fake owner secret");
@@ -350,7 +297,7 @@ async fn issue73_oauth_start_rechecks_secrets_configured_after_preview() {
     let config = tempfile::tempdir().expect("config");
     let service = McpServerSettingsService::new(data.path().join("vega.db"), config.path().into());
     let row = service
-        .create(oauth_form(endpoint, Some("owned-client")))
+        .create(oauth_form(endpoint.to_string(), Some("owned-client")))
         .expect("OAuth row");
     let prepared = service
         .prepare_oauth(&row.id, row.config_revision, &issuer)
@@ -373,7 +320,7 @@ async fn issue73_settings_oauth_preregistered_callback_restart_and_authenticated
     let path = database.path().join("vega.db");
     let service = McpServerSettingsService::new(path.clone(), config.path().into());
     let created = service
-        .create(oauth_form(endpoint, Some("owned-client")))
+        .create(oauth_form(endpoint.to_string(), Some("owned-client")))
         .expect("disabled OAuth row");
     let discovery = service
         .discover_oauth(&created.id, created.config_revision, true)
@@ -439,7 +386,9 @@ async fn issue73_settings_dcr_requires_exact_preview_and_fresh_consent() {
     let config = tempfile::tempdir().expect("config");
     let service =
         McpServerSettingsService::new(database.path().join("vega.db"), config.path().into());
-    let row = service.create(oauth_form(endpoint, None)).expect("DCR row");
+    let row = service
+        .create(oauth_form(endpoint.to_string(), None))
+        .expect("DCR row");
     let prepared = service
         .prepare_oauth(&row.id, row.config_revision, &issuer)
         .await
@@ -479,7 +428,9 @@ async fn issue73_settings_slow_dcr_cancel_cannot_resurrect_flow_or_block_next_pr
     let config = tempfile::tempdir().expect("config");
     let service =
         McpServerSettingsService::new(database.path().join("vega.db"), config.path().into());
-    let row = service.create(oauth_form(endpoint, None)).expect("DCR row");
+    let row = service
+        .create(oauth_form(endpoint.to_string(), None))
+        .expect("DCR row");
     let prepared = service
         .prepare_oauth(&row.id, row.config_revision, &issuer)
         .await
@@ -552,7 +503,7 @@ async fn issue73_real_403_scope_challenge_reaches_settings_without_replaying_fai
     let path = database.path().join("vega.db");
     let service = McpServerSettingsService::new(path.clone(), config.path().into());
     let created = service
-        .create(oauth_form(endpoint, Some("owned-client")))
+        .create(oauth_form(endpoint.to_string(), Some("owned-client")))
         .expect("OAuth row");
     let prepared = service
         .prepare_oauth(&created.id, created.config_revision, &issuer)

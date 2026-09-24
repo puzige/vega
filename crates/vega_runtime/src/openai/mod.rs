@@ -50,6 +50,8 @@ type RequestAttemptGuard = Arc<dyn Fn(&ChatRequest) -> Result<(), VegaError> + S
 #[derive(Clone)]
 pub struct OpenAiProvider {
     http: reqwest::Client,
+    #[cfg(test)]
+    test_transport: Option<tests::TestTransport>,
     /// Endpoint root, e.g. `https://api.openai.com/v1` (trailing slash ok).
     base_url: String,
     /// API key; only ever serialized into the Authorization request header.
@@ -88,6 +90,8 @@ impl OpenAiProvider {
             })?;
         Ok(Self {
             http,
+            #[cfg(test)]
+            test_transport: None,
             base_url: base_url.into(),
             key: key.into(),
             retry: RetryPolicy::default(),
@@ -127,15 +131,32 @@ impl OpenAiProvider {
             "{}{CHAT_COMPLETIONS_PATH}",
             self.base_url.trim_end_matches('/')
         );
-        self.http
+        let request = self
+            .http
             .post(url)
             .header(
                 reqwest::header::AUTHORIZATION,
                 format!("{AUTH_SCHEME} {}", self.key),
             )
             .json(&build_request_body(req))
-            .send()
-            .await
+            .build()?;
+        #[cfg(test)]
+        {
+            let transport = self
+                .test_transport
+                .as_ref()
+                .expect("OpenAI test request requires a registered transport");
+            transport(request).await
+        }
+        #[cfg(all(not(test), feature = "test-support"))]
+        {
+            let _ = request;
+            panic!("OpenAI test request requires an in-process provider fixture");
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        {
+            self.http.execute(request).await
+        }
     }
 
     /// Sends the request (with retries) and returns the SSE event stream on

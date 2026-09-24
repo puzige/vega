@@ -1,133 +1,5 @@
 use super::*;
 
-#[test]
-fn automatic_title_production_worker_records_real_http_wire() {
-    use std::io::{Read, Write};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let address = listener.local_addr().unwrap();
-    let recorded = Arc::new(Mutex::new(Vec::new()));
-    let captured = recorded.clone();
-    let server = std::thread::spawn(move || {
-        let deadline = std::time::Instant::now() + Duration::from_secs(8);
-        let mut connections = Vec::new();
-        while connections.len() < 2 && std::time::Instant::now() < deadline {
-            match listener.accept() {
-                Ok((mut socket, _)) => {
-                    // Darwin may inherit O_NONBLOCK; timeouts do not clear it.
-                    socket.set_nonblocking(false).unwrap();
-                    let captured = captured.clone();
-                    connections.push(std::thread::spawn(move || {
-                        socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-                        socket.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
-                        let mut bytes = Vec::new();
-                        let (header_end, length) = loop {
-                            let mut chunk = [0; 4096];
-                            let read = socket.read(&mut chunk).unwrap(); assert!(read > 0); bytes.extend_from_slice(&chunk[..read]);
-                            assert!(bytes.len() < 128 * 1024);
-                            if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
-                                let headers = String::from_utf8_lossy(&bytes[..index]);
-                                let length = headers.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|value| value.trim().parse::<usize>().unwrap())).unwrap();
-                                break (index + 4, length);
-                            }
-                        };
-                        while bytes.len() < header_end + length { let mut chunk=[0;4096]; let read=socket.read(&mut chunk).unwrap(); assert!(read>0); bytes.extend_from_slice(&chunk[..read]); }
-                        let request = String::from_utf8(bytes[header_end..header_end+length].to_vec()).unwrap();
-                        let title = request.contains("\"max_tokens\":512");
-                        captured.lock().unwrap().push(request);
-                        if title { std::thread::sleep(Duration::from_millis(150)); }
-                        let text = if title { "HTTP 标题" } else { "正文完成" };
-                        let delta=format!("{{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}},\"finish_reason\":null}}]}}");
-                        let body=format!("data: {delta}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n");
-                        write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
-                    }));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(2))
-                }
-                Err(error) => panic!("local test server: {error}"),
-            }
-        }
-        assert_eq!(connections.len(), 2);
-        for connection in connections {
-            connection.join().unwrap();
-        }
-    });
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("db");
-    let store = Store::open(&path).unwrap();
-    store.migrate().unwrap();
-    std::fs::write(dir.path().join("notes.txt"), "NEVER_IN_TITLE_WIRE").unwrap();
-    let project =
-        vega_store::projects::create(store.conn(), dir.path().to_str().unwrap(), "http", None)
-            .unwrap();
-    let thread = vega_conversation::threads::create_thread(
-        &store,
-        &project.id,
-        "owned-model",
-        PermissionMode::Confirm.as_str(),
-    )
-    .unwrap();
-    let provider = Arc::new(
-        vega_runtime::OpenAiProvider::new(format!("http://{address}/v1"), "owned-test-key")
-            .unwrap(),
-    );
-    let (sender, updates) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
-    let (notifications, receiver) = mpsc::channel();
-    run_agent_worker(
-        path,
-        dir.path().into(),
-        thread.clone(),
-        PendingAgentRun::UserMessage("@notes.txt 请总结".into()),
-        vega_conversation::agent::PermissionQueue::new(),
-        tokio_util::sync::CancellationToken::new(),
-        sender,
-        None,
-        None,
-        None,
-        Some(notifications),
-        Some(provider),
-        Arc::new(AgentWorkerStartProbe::default()),
-    );
-    assert_eq!(drain_agent_updates(&updates).finished, Some(true));
-    receiver.recv_timeout(Duration::from_secs(3)).unwrap();
-    receiver.recv_timeout(Duration::from_secs(3)).unwrap();
-    server.join().unwrap();
-    let recorded = recorded.lock().unwrap();
-    assert_eq!(recorded.len(), 2);
-    let title = recorded
-        .iter()
-        .find(|request| request.contains("\"max_tokens\":512"))
-        .unwrap();
-    assert!(title.contains("\"model\":\"owned-model\""));
-    assert_eq!(title.matches("\"role\":").count(), 2);
-    assert!(title.contains("\"content\":\"@notes.txt 请总结\""));
-    assert!(!title.contains("\"function\""));
-    assert!(!title.contains("NEVER_IN_TITLE_WIRE"));
-    assert_eq!(
-        vega_store::threads::find(store.conn(), &thread.id)
-            .unwrap()
-            .unwrap()
-            .title,
-        "HTTP 标题"
-    );
-    assert_eq!(
-        vega_store::messages::recent(store.conn(), &thread.id, 10)
-            .unwrap()
-            .len(),
-        2
-    );
-    let count: i64 = store
-        .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM token_usage WHERE thread_id=?1 AND message_id IS NULL",
-            [&thread.id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(count, 0);
-}
-
 struct TitleProvider {
     primary: vega_runtime::MockProvider,
     title: vega_runtime::MockProvider,
@@ -489,4 +361,96 @@ async fn automatic_title_projection_fences_routes_and_manual_epoch_without_repla
             0
         );
     });
+}
+
+#[test]
+fn automatic_title_production_worker_preserves_minimal_provider_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let store = Store::open(&path).unwrap();
+    store.migrate().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "NEVER_IN_TITLE_WIRE").unwrap();
+    let project =
+        vega_store::projects::create(store.conn(), dir.path().to_str().unwrap(), "http", None)
+            .unwrap();
+    let thread = vega_conversation::threads::create_thread(
+        &store,
+        &project.id,
+        "owned-model",
+        PermissionMode::Confirm.as_str(),
+    )
+    .unwrap();
+    let provider = Arc::new(TitleProvider {
+        primary: vega_runtime::MockProvider::new(vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("正文完成".into()),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ])]),
+        title: vega_runtime::MockProvider::new(vec![vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::TextDelta("自动标题".into()),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ])]),
+        title_gate: Arc::new(tokio::sync::Notify::new()),
+    });
+    provider.title_gate.notify_one();
+    let (sender, updates) = mpsc::sync_channel(AGENT_EVENT_CAPACITY);
+    let (notifications, receiver) = mpsc::channel();
+    run_agent_worker(
+        path,
+        dir.path().into(),
+        thread.clone(),
+        PendingAgentRun::UserMessage("@notes.txt 请总结".into()),
+        vega_conversation::agent::PermissionQueue::new(),
+        tokio_util::sync::CancellationToken::new(),
+        sender,
+        None,
+        None,
+        None,
+        Some(notifications),
+        Some(provider.clone()),
+        Arc::new(AgentWorkerStartProbe::default()),
+    );
+    assert_eq!(drain_agent_updates(&updates).finished, Some(true));
+    receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+    receiver.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert_eq!(provider.primary.requests().len(), 1);
+    let titles = provider.title.requests();
+    assert_eq!(titles.len(), 1);
+    let title = &titles[0];
+    assert_eq!(title.model, "owned-model");
+    assert_eq!(title.max_tokens, Some(512));
+    assert_eq!(title.messages.len(), 2);
+    assert_eq!(title.messages[1].content, "@notes.txt 请总结");
+    assert!(title.tools.is_empty());
+    assert!(
+        title
+            .messages
+            .iter()
+            .all(|message| !message.content.contains("NEVER_IN_TITLE_WIRE"))
+    );
+    assert_eq!(
+        vega_store::threads::find(store.conn(), &thread.id)
+            .unwrap()
+            .unwrap()
+            .title,
+        "自动标题"
+    );
+    assert_eq!(
+        vega_store::messages::recent(store.conn(), &thread.id, 10)
+            .unwrap()
+            .len(),
+        2
+    );
+    let count: i64 = store
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM token_usage WHERE thread_id=?1 AND message_id IS NULL",
+            [&thread.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
 }

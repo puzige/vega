@@ -97,7 +97,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 
 本项目采用 **SDD（Spec-Driven Development）**：spec 先行，代码不允许先于 spec。
 参与开发前必读 [`AGENTS.md`](AGENTS.md) 和 [`docs/vega-exec-guide.md`](docs/vega-exec-guide.md)。
-验收统一采用 **E2E-first**：真实 production 入口为主证据，安全内核回归为辅；分级与留存规则见 [exec-guide §7](docs/vega-exec-guide.md#7-验收协议每个任务卡通用)。
+自动测试保留进程内业务、安全、存储与 UI 回归；按 [2026-09-25 用户裁决](docs/vega-issue-149-remove-real-e2e.md) 优先 mock 外部依赖并保留业务断言，纯真实系统契约改由用户手测。
 
 交付节奏（2026-09-23 用户裁决）：接卡置 `In progress` → 实现（**本地只跑本卡功能点测试，不跑全量**）→ 开 PR → 云端 `pr-check` 绿 → **Agent 主动合并 master** → 卡片改 `In review` → **停下等用户手测**；用户手测通过才回写/关 Issue/Done/清理，不通过退回 `In progress`。详见 [vega-kanban-delivery](.agents/skills/vega-kanban-delivery/SKILL.md)。
 

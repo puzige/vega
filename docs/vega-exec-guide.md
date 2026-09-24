@@ -1,5 +1,7 @@
 # ✦ Vega — 执行层开发总纲（Executor's Constitution）
 
+**2026-09-25 用户更新（Issue #149）**：按 [移除真实 E2E 规格](vega-issue-149-remove-real-e2e.md) 优先将真实外部进程/网络/应用依赖 mock 化并保留业务和安全断言；仅删除 mock 后失去意义的纯真实适配契约测试，保留进程内业务、安全、存储及 UI 测试。该决定取代下文及历史规格的 E2E-first、真实适配覆盖和禁止删除此类测试的要求；真实系统集成由用户手测。
+
 > **2026-09-22 Issue #140 用户更新：** [Git/Shell 测试依赖隔离](vega-issue-140-ci-test-throughput.md#user-directed-revision-isolate-external-execution-2026-09-22) 允许通过内部执行边界替身迁移业务分支测试，保留真实策略与安全断言，另用真实适配层集成测试验证 OS/Git 契约。该范围优先于 §7 的旧 E2E-first 限制；mockall 获批准用于本卡 dev-only 依赖（若需要），证据必须准确标注 mock/real。
 
 > **2026-09-22 Issue #112 supersession:** Read/Edit/Write paths, read-before-mutation, replacement matching and audit/checkpoint path support follow [the file edit parity contract](vega-issue-112-file-edit-parity.md). Its user-authorized absolute/external paths and resolved symlinks replace the earlier project-only/relative-only prohibition for those tools; glob/grep/bash boundaries are unchanged. Existing permission, Git/checkpoint protection and race checks remain.
@@ -107,10 +109,12 @@ UI: gpui, gpui_platform (git=https://github.com/zed-industries/zed, rev 锁定, 
 - **任务级**：任务卡附带的验收命令（如 `xtask bench` 指标、gre P 检查、手工走查步骤）
 - **架构级**：`cargo tree` 检查无红线依赖关系；新增公共类型在 `vega_conversation::types`
 - **报告**：贴验收命令原始输出，不许概述"通过了"
-- **E2E-first（2026-08-31 人类裁决）**：任务验收优先运行真实 production 入口的 owned temp-repo/headless 或 UI handler E2E。test-only seam/probe 只保留无法由 E2E 稳定证明的 parser、authority、process、codec 等安全不变量；禁止为了笛卡尔覆盖率扩大 production public API 或长期堆叠仅测试状态机。已经验证且仍保护安全边界的精确回归不得为缩短测试而删除。
+- **进程内自动回归（2026-09-25 用户裁决，取代 E2E-first）**：自动测试覆盖业务、安全策略、解析、存储及 GPUI 测试上下文行为。移除真实外部进程/网络/应用 E2E，不新增同类自动门禁；系统集成由用户手测。禁止为了测试扩大 production public API；保留范围内的断言不得放宽以变绿。
 - **证据留存**：每 Sprint 报告必须记录命令、UTC/本地时间、branch、测试时 tree/content hash、结果与 accepted residual；raw 日志可暂存 `/tmp`，仓库文档不得写入真实 key、raw workspace path/OID或伪造尚不存在的 commit/PR。
 
-### 7.1 E2E 证据分级与仓库模板
+### 7.1 历史 E2E 证据分级与仓库模板
+
+以下分级用于解释既有历史报告，不要求继续保留真实 E2E 自动测试。当前自动门禁范围以 #149 的 2026-09-25 修订为准。
 
 | 等级 | 允许的 seam | 可证明的范围 |
 |---|---|---|

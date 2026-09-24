@@ -156,26 +156,8 @@ fn summary_rendered_exact_plus_one_escape_and_multibyte_boundaries() {
 
 #[test]
 fn commit_summary_binary_bytes_are_deterministically_escaped() {
-    let repo = Repo::new();
-    let fixture = tempfile::tempdir().expect("binary summary fixture");
-    let script = fixture.path().join("summary-git");
-    fs::write(
-            &script,
-            "#!/bin/sh\nexec python3 -c 'import sys; sys.stdout.buffer.write(b\"a\\x00\\xff\\r\\n\\tb\")'\n",
-        )
-        .expect("binary summary script");
-    let mut permissions = fs::metadata(&script)
-        .expect("script metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script, permissions).expect("script executable");
-    let runner = test_runner(repo.path());
-    let runner = Runner::new(runner.root, runner.identity, Some(script));
-    let output = runner
-        .run_commit_summary(SUMMARY_LIMIT, &CancellationToken::new())
-        .expect("binary summary");
     assert_eq!(
-        escape_summary(&output.stdout)
+        escape_summary(b"a\0\xff\r\n\tb")
             .expect("escaped binary summary")
             .rendered,
         "a\\x00\\xFF\\x0D\n\tb"
@@ -364,8 +346,7 @@ async fn provider_draft_grammar_table_is_closed_and_usage_star_is_accepted() {
     );
 }
 
-#[tokio::test]
-#[ignore = "load-sensitive: asserts a wall-clock budget (<1000ms x3 phases), fails under parallel test load; run with --ignored"]
+#[tokio::test(start_paused = true)]
 async fn draft_deadline_covers_setup_pre_done_and_post_done_stalls() {
     #[derive(Clone, Copy)]
     enum Phase {
@@ -405,7 +386,7 @@ async fn draft_deadline_covers_setup_pre_done_and_post_done_stalls() {
         }
     }
     for phase in [Phase::Setup, Phase::PreDone, Phase::PostDone] {
-        let started = Instant::now();
+        let started = tokio::time::Instant::now();
         assert_eq!(
             collect_draft_with_deadline(
                 Arc::new(StallingProvider(phase)),

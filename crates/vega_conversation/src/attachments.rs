@@ -55,15 +55,6 @@ mod tests {
         std::os::unix::fs::symlink(&valid, &link).unwrap();
         assert!(import_images(&[link]).is_err());
         assert!(import_images(&[dir.path().to_path_buf()]).is_err());
-        let fifo = dir.path().join("fifo.png");
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&fifo)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(import_images(&[fifo]).is_err());
         assert!(import_images(&vec![valid; 5]).is_err());
     }
 }

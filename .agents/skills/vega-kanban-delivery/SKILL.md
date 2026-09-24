@@ -5,6 +5,8 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 # Vega 看板交付
 
+**2026-09-25 用户更新（Issue #149）**：按 [移除真实 E2E 规格](../../../docs/vega-issue-149-remove-real-e2e.md) 优先将真实外部进程/网络/应用依赖 mock 化并保留业务和安全断言；仅删除 mock 后失去意义的纯真实适配契约测试，保留进程内业务、安全、存储及 UI 测试。该决定取代下文及历史规格的 E2E-first、真实适配覆盖和禁止删除此类测试的要求；真实系统集成由用户手测。
+
 ## 入口与边界
 
 - 先完整读取仓库 `AGENTS.md`、`docs/vega-exec-guide.md`、`docs/vega-issue-workflow.md`，再读取本卡关联 spec。相对仓库路径均以 Vega 根目录为准。
@@ -53,7 +55,7 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 - 至少覆盖正常路径、错误/空态、状态切换、持久化恢复及本次相关回归；与需求无关的维度说明不适用，不机械堆用例。
 - 缺陷先复现并保留失败证据；可以自动化的回归先写失败测试。先证明测试能检出问题，再改实现。不能自动化的项写出真实 UI 操作和判断标准。
 - 测试用例是实现的输入，不是写完代码后反向编造的清单。
-- 然后写实现计划：涉及模块/文件、状态与接口变化、兼容/迁移、任务分工、执行顺序、验证命令、E2E 场景和回滚方式。轻量卡可用短计划，但不能省略测试与验收标准。
+- 然后写实现计划：涉及模块/文件、状态与接口变化、兼容/迁移、任务分工、执行顺序、验证命令、用户手测场景和回滚方式。轻量卡可用短计划，但不能省略测试与验收标准。
 
 ## 3. 隔离实现与并行调度
 
@@ -68,7 +70,7 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 - **本地不做全量测试**：不跑 `cargo test --workspace` 等全量门禁，把它留给云端 `pr-check`。PR gate 是 [Issue #175](../../../docs/vega-issue-175-single-pr-check.md) 规定的单个 required job `check (fmt, clippy, test)`，依次运行 fmt、Clippy 和 `cargo test --workspace --no-fail-fast -- --test-threads=1`；Cargo 测试覆盖单元、集成和文档测试，不分片、不重试。`.config/nextest.toml` 仅供本地定向 nextest 命令使用，PR workflow 不安装或读取它。PR 和 master CICD 都用 `Swatinem/rust-cache@v2` 与 `shared-key: vega-master-build`；PR 用 `save-if: ${{ github.ref == 'refs/heads/master' }}` 恢复缓存但不写入，master 是唯一缓存写入方。push master 由 `.github/workflows/cicd.yml`（workflow 名 `master`）打包。
 - **必须本地跑通本卡自己新增/修改的功能点测试**（定向命令，如 `cargo nextest run -p <crate> <filter>`），确认能检出并覆盖本卡行为；这是提交前的最低自查。只跑本卡相关的几个测试，不扩散到全量。
-- 测试设计仍遵循 E2E-first：本卡测试优先覆盖真实 production 入口/owned temp repo 的相关路径；安全不变量可用精确回归。不得为提速删测试、加 ignore、放宽断言或自动重试到绿；失败如实保留并修复。
+- 测试设计以进程内业务、安全、存储及 UI 回归为自动门禁；不新增真实外部进程/网络 E2E，系统集成由用户手测。#149 授权移除真实 E2E；保留范围内的测试不得靠删除、ignore、放宽断言或自动重试变绿。
 - **真实验收由用户在 master 上手动完成**。Agent 不把自行产出的全量 E2E/截图当作合并前门禁；需要真实模型/服务/UI 的路径由用户手测确认。
 - **代码不加任何注释**（exec-guide §3/§4，2026-09-23 用户裁决）：本卡新增/修改的代码不得含 `///`、`//!`、行内 `//`、`/* */`；需要注释才能读懂就改命名、拆函数、提类型。仅 `unsafe` 块的 `// SAFETY:` 一行例外。PR 前自查本卡 diff 无新增注释。
 - 记录本卡测试命令、退出码与结果，写入交付记录；云端全量结果以 PR check 页面为准。

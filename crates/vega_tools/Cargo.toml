@@ -3,6 +3,9 @@ name = "vega_tools"
 version.workspace = true
 edition.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 # R11 approved: nonblocking/no-follow descriptor open for read-only preview.
 libc = { workspace = true }

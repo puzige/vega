@@ -73,7 +73,25 @@ impl<'de> Deserialize<'de> for OptionalTimeout {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub type BashTestExecutor = std::sync::Arc<
+    dyn Fn(
+            String,
+            bool,
+            CancellationToken,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<BashOutput, BashError>> + Send>,
+        > + Send
+        + Sync,
+>;
+
 impl Tools {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_bash_test_executor(mut self, executor: BashTestExecutor) -> Self {
+        self.bash_executor = Some(executor);
+        self
+    }
+
     /// Strictly parse provider JSON without executing it. T26 must complete
     /// permission handling before passing the prepared value to execution.
     pub fn prepare_bash_json(&self, raw_input: &str) -> Result<PreparedBash, BashError> {
@@ -154,6 +172,17 @@ impl Tools {
             if let Err(error) = sandbox.preflight(temp_root, hooks) {
                 return BashAttempt::safe(Err(error));
             }
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        assert!(self.bash_executor.is_some(), "missing Bash test executor");
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(executor) = &self.bash_executor {
+            if cancel.is_cancelled() {
+                return BashAttempt::safe(Err(BashError::new(BashErrorCode::Cancelled)));
+            }
+            return BashAttempt::safe(executor(prepared.command, sandbox.is_none(), cancel).await);
+        }
+        if let Some(sandbox) = sandbox {
             let self_test = sandbox.self_test(temp_root, hooks).await;
             if let Err(error) = self_test.result {
                 return BashAttempt {

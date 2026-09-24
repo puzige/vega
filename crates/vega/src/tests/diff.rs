@@ -29,116 +29,18 @@ fn finish_injected_refresh(
     });
 }
 
-pub(crate) fn scrub_fixture_git_environment(command: &mut Command) {
-    let explicit_git_keys: Vec<OsString> = command
-        .get_envs()
-        .filter(|(key, _)| key.as_bytes().starts_with(b"GIT_"))
-        .map(|(key, _)| key.to_owned())
-        .collect();
-    for key in explicit_git_keys {
-        command.env_remove(key);
-    }
-    for (key, _) in std::env::vars_os() {
-        if key.as_os_str().as_bytes().starts_with(b"GIT_") {
-            command.env_remove(key);
-        }
-    }
-}
-
-pub(crate) fn configure_fixture_git_environment(command: &mut Command) {
-    scrub_fixture_git_environment(command);
-    command
-        .env("LC_ALL", "C")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_PAGER", "cat")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null");
-}
-
-pub(crate) fn fixture_git_command(root: &std::path::Path, args: &[&str]) -> Command {
-    let mut command = Command::new("/usr/bin/git");
-    command.arg("-C").arg(root).args(args);
-    configure_fixture_git_environment(&mut command);
-    command
-}
-
 pub(crate) fn run_fixture_git(root: &std::path::Path, args: &[&str]) {
-    let status = fixture_git_command(root, args)
-        .status()
-        .expect("fixture git spawn");
-    assert!(status.success(), "fixture git failed: {args:?}");
+    assert!(
+        fixture_git_command(root, args).status().unwrap().success(),
+        "fixture Git {args:?}"
+    );
 }
 
-#[test]
-fn diff_controller_fixture_scrubs_hook_git_environment() {
-    let sentinel = tempfile::tempdir().expect("fresh sentinel repo");
-    run_fixture_git(
-        sentinel.path(),
-        &["init", "-q", "--initial-branch=sentinel"],
+pub(crate) fn diff_controller_repo() -> ControllerRepo {
+    let repo = ControllerRepo::for_current_test(
+        include_str!("controller-git-fixtures.json"),
+        "fresh diff controller repo",
     );
-    run_fixture_git(
-        sentinel.path(),
-        &["config", "--local", "user.name", "Vega Sentinel"],
-    );
-    run_fixture_git(
-        sentinel.path(),
-        &[
-            "config",
-            "--local",
-            "user.email",
-            "sentinel@example.invalid",
-        ],
-    );
-    fs::write(sentinel.path().join("sentinel.txt"), "sentinel\n").expect("sentinel body");
-    run_fixture_git(sentinel.path(), &["add", "--", "sentinel.txt"]);
-    run_fixture_git(sentinel.path(), &["commit", "-q", "-m", "sentinel"]);
-
-    let sentinel_ref = sentinel.path().join(".git/refs/heads/sentinel");
-    let sentinel_index = sentinel.path().join(".git/index");
-    let ref_before = fs::read(&sentinel_ref).expect("sentinel ref before");
-    let index_before = fs::read(&sentinel_index).expect("sentinel index before");
-
-    let fixture = tempfile::tempdir().expect("fresh isolated fixture repo");
-    let run_poisoned = |args: &[&str]| {
-        let mut command = Command::new("/usr/bin/git");
-        command
-            .arg("-C")
-            .arg(fixture.path())
-            .args(args)
-            .env("GIT_DIR", sentinel.path().join(".git"))
-            .env("GIT_WORK_TREE", sentinel.path())
-            .env("GIT_INDEX_FILE", &sentinel_index);
-        configure_fixture_git_environment(&mut command);
-        let status = command.status().expect("poisoned fixture git spawn");
-        assert!(status.success(), "poisoned fixture git failed: {args:?}");
-    };
-
-    run_poisoned(&["init", "-q", "--initial-branch=fixture"]);
-    run_poisoned(&["config", "--local", "user.name", "Vega Fixture"]);
-    run_poisoned(&["config", "--local", "user.email", "fixture@example.invalid"]);
-    fs::write(fixture.path().join("fixture.txt"), "fixture\n").expect("fixture body");
-    run_poisoned(&["add", "--", "fixture.txt"]);
-    run_poisoned(&["commit", "-q", "-m", "fixture"]);
-
-    assert!(fixture.path().join(".git").is_dir());
-    assert!(fixture.path().join("fixture.txt").is_file());
-    assert_eq!(
-        fs::read(&sentinel_ref).expect("sentinel ref after"),
-        ref_before
-    );
-    assert_eq!(
-        fs::read(&sentinel_index).expect("sentinel index after"),
-        index_before
-    );
-    assert_eq!(
-        fs::read(sentinel.path().join("sentinel.txt")).expect("sentinel body after"),
-        b"sentinel\n"
-    );
-    assert!(!sentinel.path().join("fixture.txt").exists());
-}
-
-pub(crate) fn diff_controller_repo() -> TempDir {
-    let repo = tempfile::tempdir().expect("fresh diff controller repo");
     run_fixture_git(repo.path(), &["init", "-q"]);
     run_fixture_git(
         repo.path(),

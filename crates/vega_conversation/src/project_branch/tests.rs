@@ -3,37 +3,11 @@ use std::os::unix::fs::symlink;
 use tempfile::TempDir;
 use vega_store::{Store, projects};
 
-fn git(root: &Path, args: &[&str]) {
-    let output = std::process::Command::new("/usr/bin/git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "owned Git command failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
 fn repo() -> TempDir {
     let temp = tempfile::tempdir().unwrap();
-    git(temp.path(), &["init", "-b", "main"]);
-    git(
-        temp.path(),
-        &[
-            "-c",
-            "user.name=Vega Test",
-            "-c",
-            "user.email=test@example.invalid",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "initial",
-        ],
-    );
+    std::fs::create_dir(temp.path().join(".git")).unwrap();
+    std::fs::write(temp.path().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(temp.path().join(".git/config"), "").unwrap();
     temp
 }
 fn target(store: &Store, path: &Path) -> ProjectBranchTarget {
@@ -55,7 +29,7 @@ fn completion(service: &ProjectBranchService) -> ProjectBranchCompletion {
     }
 }
 #[test]
-fn production_worker_real_db_checkout_worktree_detached_and_missing() {
+fn production_worker_db_branch_metadata_worktree_detached_and_missing() {
     let repo = repo();
     let owned = tempfile::tempdir().unwrap();
     let store = Store::open(owned.path().join("db.sqlite")).unwrap();
@@ -64,26 +38,37 @@ fn production_worker_real_db_checkout_worktree_detached_and_missing() {
     let service = ProjectBranchService::new().unwrap();
     service.request(1, vec![primary.clone()]);
     assert_eq!(completion(&service).rows[0].state.suffix(), Some("main"));
-    git(repo.path(), &["checkout", "-b", "other"]);
+    std::fs::write(repo.path().join(".git/HEAD"), "ref: refs/heads/other\n").unwrap();
     service.request(2, vec![primary.clone()]);
     assert_eq!(completion(&service).rows[0].state.suffix(), Some("other"));
     let worktree = owned.path().join("linked");
-    git(
-        repo.path(),
-        &[
-            "worktree",
-            "add",
-            "-b",
-            "linked",
-            worktree.to_str().unwrap(),
-        ],
-    );
+    std::fs::create_dir(&worktree).unwrap();
+    let metadata = repo
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(".git/worktrees/linked");
+    std::fs::create_dir_all(&metadata).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!("gitdir: {}\n", metadata.display()),
+    )
+    .unwrap();
+    std::fs::write(
+        metadata.join("gitdir"),
+        format!(
+            "{}\n",
+            worktree.canonicalize().unwrap().join(".git").display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(metadata.join("HEAD"), "ref: refs/heads/linked\n").unwrap();
     let linked = target(&store, &worktree);
     // Owner registration is removed: reciprocal topology still authorizes linked HEAD.
     projects::remove(store.conn(), &primary.project_id).unwrap();
     service.request(3, vec![linked.clone()]);
     assert_eq!(completion(&service).rows[0].state.suffix(), Some("linked"));
-    git(&worktree, &["checkout", "--detach"]);
+    std::fs::write(metadata.join("HEAD"), format!("{}\n", "a".repeat(40))).unwrap();
     service.request(4, vec![linked.clone()]);
     assert_eq!(
         completion(&service).rows[0].state,

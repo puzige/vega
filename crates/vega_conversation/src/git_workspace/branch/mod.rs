@@ -100,7 +100,7 @@ pub struct BranchWorkspaceService {
     /// Test-only in-process external-command boundary. Production always
     /// spawns the verified Git executable; this field exists only under
     /// `cfg(test)` and is set directly by the branch policy fixtures.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     command_backend: Option<Arc<dyn GitCommandBackend>>,
 }
 
@@ -139,6 +139,8 @@ impl BranchWorkspaceService {
                 value.checked_add(1)
             })
             .map_err(|_| error(GitWorkspaceErrorCode::OutputTooLarge))?;
+        #[cfg(any(test, feature = "test-support"))]
+        let command_backend = super::test_support::backend_for_root(&root);
         Ok(Self {
             root,
             root_identity: RootIdentity {
@@ -151,8 +153,8 @@ impl BranchWorkspaceService {
             executable,
             #[cfg(test)]
             mutation_executable: None,
-            #[cfg(test)]
-            command_backend: None,
+            #[cfg(any(test, feature = "test-support"))]
+            command_backend,
         })
     }
 
@@ -231,7 +233,7 @@ impl BranchWorkspaceService {
         #[cfg(test)]
         let executable = self.executable.clone();
         let cancel_for_check = cancel.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let command_backend = self.command_backend.clone();
         let authority = tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
@@ -240,7 +242,7 @@ impl BranchWorkspaceService {
                 &cancel_for_check,
                 #[cfg(test)]
                 executable,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 command_backend,
             )?;
             validate_target_changes(
@@ -326,7 +328,7 @@ impl BranchWorkspaceService {
                     let executable = self.executable.clone();
                     #[cfg(test)]
                     let mutation_executable = self.mutation_executable.clone();
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     let command_backend = self.command_backend.clone();
                     let mutation_cancel = cancel.clone();
                     match current_oid {
@@ -338,7 +340,7 @@ impl BranchWorkspaceService {
                                 &mutation_cancel,
                                 #[cfg(test)]
                                 executable,
-                                #[cfg(test)]
+                                #[cfg(any(test, feature = "test-support"))]
                                 command_backend,
                             )?;
                             let authority = validate_target_changes(
@@ -463,7 +465,7 @@ impl BranchWorkspaceService {
         let identity = self.root_identity;
         #[cfg(test)]
         let executable = self.executable.clone();
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let command_backend = self.command_backend.clone();
         tokio::task::spawn_blocking(move || {
             let runner = runner_for_parts(
@@ -472,7 +474,7 @@ impl BranchWorkspaceService {
                 &cancel,
                 #[cfg(test)]
                 executable,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 command_backend,
             )?;
             build_branch_identity(&runner, &cancel)

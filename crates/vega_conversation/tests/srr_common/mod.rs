@@ -1,26 +1,6 @@
-//! T46 (A2-17/A3-10) Stop / startup repair / explicit Resume E2E.
-//!
-//! Contract authority: docs/vega-s8-sdd.md §6 (C5, frozen). Card:
-//! docs/vega-s8-tasks.md §T46. Evidence class: `E2E-REAL` (owned TempDir,
-//! MockProvider at the provider/network boundary only, real file-backed
-//! store, real `vega_store::recovery` path, real tools) — zero real keys,
-//! zero network.
-//!
-//! Production entry under test: `run_thread_task_with_permission_sink` (the
-//! exact chain the app worker drives: prepare_run with strict recovery →
-//! runtime loop → persistence actor → sink). Stop is the production
-//! ownership handle the app controller holds: one `CancellationToken`.
-//!
-//! p99 KPI measurement note (T46 vs T43): latency here is measured inside
-//! the test with `std::time::Instant` from Stop request to run convergence
-//! plus durable terminal rows. T43 instruments the production controller
-//! ingress receive-to-render path; the two numbers are intentionally not
-//! comparable and this suite does not depend on T43 instrumentation.
-
 pub use std::error::Error;
 pub use std::fs;
 pub use std::path::{Path, PathBuf};
-pub use std::process::{Command, Stdio};
 pub use std::sync::{Arc, Mutex};
 pub use std::time::{Duration, Instant};
 
@@ -211,18 +191,6 @@ pub fn assert_message_terminal(
     assert_eq!(rows[1].1, "assistant");
     assert_eq!(rows[1].2, assistant_content, "durable partial text");
     assert_eq!(rows[1].3, status);
-}
-
-#[allow(dead_code)]
-pub fn process_is_gone(pid: u32) -> bool {
-    !Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("kill -0 probe")
-        .success()
 }
 
 // ---------------------------------------------------------------------------

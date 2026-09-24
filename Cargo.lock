@@ -7907,6 +7907,7 @@ name = "vega"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -7937,6 +7938,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ulid",
+ "vega_conversation",
  "vega_mcp",
  "vega_runtime",
  "vega_store",
@@ -7965,6 +7967,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "futures",
+ "http",
  "reqwest",
  "serde_json",
  "sha2 0.10.9",
@@ -7981,6 +7984,7 @@ dependencies = [
  "base64",
  "eventsource-stream",
  "futures",
+ "http",
  "image",
  "libc",
  "reqwest",
@@ -8058,6 +8062,8 @@ dependencies = [
  "tracing",
  "vega_conversation",
  "vega_markdown",
+ "vega_mcp",
+ "vega_runtime",
  "vega_store",
  "vega_theme",
 ]
