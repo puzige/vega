@@ -229,3 +229,5 @@ mod tests;
 pub use helpers::all_models;
 pub(crate) use helpers::*;
 pub use state::SettingsView;
+
+mod updater;

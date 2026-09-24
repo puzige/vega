@@ -48,6 +48,9 @@ impl TrustedActionCoordinator {
         owner_epoch: u64,
         request_sequence: u64,
     ) -> Option<TrustedActionToken> {
+        if crate::updater::installing() {
+            return None;
+        }
         let mut state = self
             .state
             .lock()

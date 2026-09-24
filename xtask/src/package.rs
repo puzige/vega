@@ -144,9 +144,20 @@ pub fn run(args: &[String]) -> Result<()> {
     let zip = "Vega-macos-arm64.zip";
     run_tool(
         "zip",
-        &["-r", "-q", zip, APP_BUNDLE, "INSTALL.txt"],
+        &["-r", "-q", "-X", zip, APP_BUNDLE, "INSTALL.txt"],
         Some(dist.as_path()),
     )?;
+
+    let checksum = Command::new("shasum")
+        .args(["-a", "256", zip])
+        .current_dir(&dist)
+        .output()
+        .context("failed to calculate archive SHA-256")?;
+    if !checksum.status.success() {
+        bail!("archive SHA-256 calculation failed");
+    }
+    fs::write(dist.join(format!("{zip}.sha256")), checksum.stdout)
+        .context("failed to write archive SHA-256")?;
 
     println!("\nbundle structure:");
     print_tree(&app)?;
@@ -327,12 +338,12 @@ fn install_txt(version: &str) -> String {
          ============================\n\n\
          系统要求：macOS 11.0+，Apple Silicon（arm64）。\n\n\
          安装：\n\
-         1. 解压本 zip，将 Vega.app 拖入「应用程序」（/Applications）。\n\
-         2. 首次启动遇 Gatekeeper 拦截（「无法验证开发者」）任选其一：\n\
-         a. 在 /Applications 中右键点 Vega.app →「打开」→ 再点「打开」；\n\
-         b. 或在终端执行：xattr -cr /Applications/Vega.app\n\n\
-         本包为 ad-hoc 签名（未经 Apple 公证），因此其他 Mac 首次启动需要\n\
-         上述放行步骤；之后可正常双击启动。\n\n\
+         1. 确认旧 Vega 已无运行任务并退出。\n\
+         2. 解压本 zip，将 Vega.app 放到 ~/Documents/Vega/Vega.app。\n\
+         3. 从此固定路径打开；更新只替换应用，不删除配置或会话数据。\n\n\
+         正式 Release 配置 Developer ID 后经过签名、公证与 staple；\n\
+         本地包或未配置发布凭据的包仅为 ad-hoc 签名，不支持自动安装。\n\
+         若系统阻止启动，请核对发布来源与签名，不要移除安全属性。\n\n\
          Git 运行时要求：Vega 需要 Git 2.40 或更新版本，以支持安全的\n\
          check-attr --source 查询。Vega 只使用固定的 Homebrew 或系统 Git\n\
          canonical 来源，不读取 PATH、仓库配置或用户指定的 executable。\n\
@@ -342,8 +353,7 @@ fn install_txt(version: &str) -> String {
          - 配置：~/.config/vega/config.toml\n\
          - 数据：~/Library/Application Support/ai.vega（bundle id ai.vega，\n\
          与 Keychain 服务同名；版本 {version}）\n\n\
-         未公证说明：正式分发请走 Developer ID 签名 + 公证（见\n\
-         docs/vega-packaging.md 的 HUMAN PENDING 模板）。\n"
+         签名、公证与发布凭据配置见 docs/vega-release.md。\n"
     )
 }
 

@@ -92,6 +92,13 @@ impl Render for VegaWindow {
                     view.install_mcp_service(self.mcp_settings.clone(), cx)
                 });
                 crate::app_usage::bind(&settings, cx);
+                settings.update(cx, |view, cx| {
+                    view.apply_update_projection(self.updater.state.clone(), cx)
+                });
+                cx.subscribe(&settings, |this, _, request: &UpdateRequest, cx| {
+                    this.request_update(*request, cx);
+                })
+                .detach();
                 cx.subscribe(
                     &settings,
                     |this, view, request: &PricingMutationRequested, cx| {
@@ -802,6 +809,55 @@ impl VegaWindow {
                     .font_weight(Typography::HEADING_PAGE_WEIGHT)
                     .text_color(colors.text_primary)
                     .child(title),
+            )
+            .when(
+                !self.update_notice_dismissed
+                    && matches!(
+                        self.updater.state.phase,
+                        UpdatePhase::Ready | UpdatePhase::Available
+                    ),
+                |header| {
+                    header.child(
+                        div()
+                            .id("vega-update-notice")
+                            .focusable()
+                            .tab_stop(true)
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_size(px(Typography::BODY))
+                            .text_color(colors.brand_primary)
+                            .hover(move |style| style.bg(colors.bg_hover))
+                            .child(if self.updater.state.phase == UpdatePhase::Ready {
+                                "更新已就绪"
+                            } else {
+                                "发现新版本"
+                            })
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    cx.set_global(SettingsOpen(true));
+                                    cx.set_global(PricingSettingsRequested(false));
+                                    if let Some(view) = &this.settings_view {
+                                        view.update(cx, |view, cx| view.show_general(cx));
+                                    }
+                                    cx.notify();
+                                }),
+                            )
+                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    cx.set_global(SettingsOpen(true));
+                                    cx.set_global(PricingSettingsRequested(false));
+                                    if let Some(view) = &this.settings_view {
+                                        view.update(cx, |view, cx| view.show_general(cx));
+                                    }
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                },
             )
             .into_any_element()
     }
