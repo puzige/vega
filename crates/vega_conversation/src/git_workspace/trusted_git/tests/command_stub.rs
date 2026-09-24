@@ -406,15 +406,6 @@ impl PolicyFixture {
             state.unexpected
         );
         assert!(
-            state.gate.is_none(),
-            "declared command gate was never served"
-        );
-        assert!(
-            state.mutations_expected.is_empty(),
-            "declared mutations were not served: {}",
-            state.mutations_expected.len()
-        );
-        assert!(
             state.selected_attrs_expected.is_empty(),
             "declared selected attrs were never requested: {:?}",
             state.selected_attrs_expected
@@ -473,12 +464,21 @@ impl PolicyFixture {
         );
         assert!(state.mutations.is_empty(), "policy attempted mutation");
         assert!(
-            state.mutations_expected.is_empty(),
-            "unused mutation expectation"
-        );
-        assert!(
             !self.dir.path().join(".git").exists(),
             "policy test created a Git repository"
+        );
+    }
+
+    pub(super) fn assert_mutations_drained(&self) {
+        let state = self.backend.state.lock().expect("stub state");
+        assert!(
+            state.mutations_expected.is_empty(),
+            "declared mutations were not served: {}",
+            state.mutations_expected.len()
+        );
+        assert!(
+            state.gate.is_none(),
+            "declared command gate was never served"
         );
     }
 }

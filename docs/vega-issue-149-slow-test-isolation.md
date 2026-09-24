@@ -328,13 +328,13 @@ split, mode-flip, destination-delete, symlink and executable states.
 Acceptance: `cargo nextest run -p vega_conversation --test-threads=1 -E
 'test(git_workspace::trusted_git::tests::selection_topology)'` passed all 16
 tests (16 passed, 531 filtered). Same-machine nextest test time for the 15
-pre-existing cases was **24.728s before → 5.461s after**; the added real-Git
-adapter comparison takes 2.292s, for 7.768s across all 16 tests. The comparison
+pre-existing cases was **24.728s before → 5.402s after**; the added real-Git
+adapter comparison takes 2.280s, for 7.789s across all 16 tests. The comparison
 uses the original 15-test source from `HEAD` as its baseline, and test-runner
 durations exclude compilation.
 
 No-exec: Seatbelt denied `process-exec` for `/usr/bin/git`. All 13 fixture/policy
-cases passed (0.289s); the three retained real-Git contracts
+cases passed (0.263s); the three retained real-Git contracts
 (`e2e_owned_repo_checklist_prepare_mock_draft_commit`,
 `staged_rename_source_recreation_is_not_owned_by_destination_edit`, and
 `selection_topology_captured_states_match_real_git`) failed at Git spawn with
@@ -344,7 +344,7 @@ in the ordinary 16-test run.
 Negative control: changing the symlink checklist expectation from
 `TypeChanged` to `Modified` failed that case on the selection assertion (exit
 100). The source was restored byte-identically (`selection_topology.rs`
-SHA-256 `ef9834161674887d6cbce4e4607492e402e8f18529f2bdac7e33cf7e517d65cb`).
+SHA-256 `da3a415b2253b23152db3d166e785e1f219e81c5926c795b56cc16e47eb00621`).
 
 ### Outstanding rows
 

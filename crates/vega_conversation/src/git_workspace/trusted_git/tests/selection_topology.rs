@@ -314,6 +314,7 @@ async fn trusted_git_empty_selection_commits_existing_staged_delta() {
         fixture.mutation_inputs(),
         vec![b"test: staged only".to_vec()]
     );
+    fixture.assert_mutations_drained();
 }
 
 #[tokio::test]
@@ -557,6 +558,7 @@ async fn trusted_git_selected_am_component_preserves_forced_add_topology() {
             &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
         )
     );
+    fixture.assert_mutations_drained();
 }
 
 #[tokio::test]
@@ -593,6 +595,7 @@ async fn untracked_entry_is_optional_only_and_prepares_as_added() {
             &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
         )
     );
+    fixture.assert_mutations_drained();
 }
 #[tokio::test]
 async fn selected_delete_and_untracked_destination_may_canonicalize_to_staged_rename() {
@@ -644,6 +647,7 @@ async fn selected_delete_and_untracked_destination_may_canonicalize_to_staged_re
             &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
         )
     );
+    fixture.assert_mutations_drained();
 }
 #[test]
 fn delete_untracked_joint_rename_rejects_any_extra_touching_b_record() {
@@ -764,6 +768,7 @@ async fn trusted_git_selected_staged_rename_with_unstaged_edit_proves_structural
             &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
         )
     );
+    fixture.assert_mutations_drained();
 }
 
 #[tokio::test]
@@ -807,6 +812,7 @@ async fn staged_rename_destination_mode_flip_is_rejected_after_one_add() {
         )
     );
     assert_eq!(fixture.mutation_inputs(), vec![b"renamed.txt\0".to_vec()]);
+    fixture.assert_mutations_drained();
 }
 
 #[tokio::test]
@@ -930,6 +936,7 @@ async fn staged_rename_destination_delete_claims_only_canonical_old_deletion() {
             b"test: delete renamed file".to_vec()
         ]
     );
+    fixture.assert_mutations_drained();
 }
 #[tokio::test]
 async fn trusted_git_selected_regular_to_symlink_binds_type_change() {
@@ -966,6 +973,7 @@ async fn trusted_git_selected_regular_to_symlink_binds_type_change() {
             &[b"-A", b"--pathspec-from-file=-", b"--pathspec-file-nul"]
         )
     );
+    fixture.assert_mutations_drained();
 }
 #[tokio::test]
 async fn trusted_git_selected_executable_add_binds_exact_worktree_mode() {
@@ -1007,4 +1015,5 @@ async fn trusted_git_selected_executable_add_binds_exact_worktree_mode() {
             & 0o777,
         0o755
     );
+    fixture.assert_mutations_drained();
 }
