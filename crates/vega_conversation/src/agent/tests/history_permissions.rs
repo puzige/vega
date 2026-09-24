@@ -3087,7 +3087,26 @@ async fn danger_readonly_always_rejects_and_persists_rule_atomically() {
 async fn write_edit_and_bash_execute_serially_with_strict_db_results() {
     let (store, project_dir, data_dir, _project_id) = setup_external("auto");
     fs::write(project_dir.path().join("serial.txt"), "initial").unwrap();
-    let tools = vega_tools::Tools::new(project_dir.path()).unwrap();
+    let serial_path = project_dir.path().join("serial.txt");
+    let executions = Arc::new(AtomicUsize::new(0));
+    let recorded = executions.clone();
+    let tools = vega_tools::Tools::new(project_dir.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(move |command, full_access, _| {
+            assert_eq!(command, "cat serial.txt");
+            assert!(!full_access);
+            let text = fs::read_to_string(&serial_path).unwrap();
+            assert_eq!(text, "world");
+            recorded.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(vega_tools::BashOutput {
+                    text,
+                    exit_code: 0,
+                    duration_ms: 1,
+                    truncated: false,
+                })
+            })
+        }));
     tools.read("serial.txt", None, None).unwrap();
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
@@ -3135,6 +3154,7 @@ async fn write_edit_and_bash_execute_serially_with_strict_db_results() {
         fs::read_to_string(project_dir.path().join("serial.txt")).unwrap(),
         "world"
     );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
     let finished = run
         .events
         .iter()

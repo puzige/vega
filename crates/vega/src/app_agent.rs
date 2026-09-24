@@ -28,6 +28,7 @@ impl Global for AppMcpSettings {}
 #[derive(Default)]
 pub(crate) struct AgentWorkerStartProbe {
     starts: AtomicUsize,
+    bash_executor: Option<vega_tools::BashTestExecutor>,
     /// Test-only handshake at the existing MockProvider construction boundary.
     /// The sender releases the worker explicitly; dropping it also unblocks cleanup.
     pub(crate) provider_construction_gate:
@@ -36,6 +37,13 @@ pub(crate) struct AgentWorkerStartProbe {
 
 #[cfg(test)]
 impl AgentWorkerStartProbe {
+    pub(crate) fn with_bash_executor(executor: vega_tools::BashTestExecutor) -> Self {
+        Self {
+            bash_executor: Some(executor),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn load(&self) -> usize {
         self.starts.load(Ordering::SeqCst)
     }
@@ -702,6 +710,11 @@ pub(crate) fn run_agent_worker_with_mcp(
         let tools = vega_tools::Tools::new(&project_path)
             .map_err(|_| ())?
             .with_read_state(file_read_state);
+        #[cfg(test)]
+        let tools = match &worker_start_probe.bash_executor {
+            Some(executor) => tools.with_bash_test_executor(executor.clone()),
+            None => tools,
+        };
         let store = Store::open(database_path).map_err(|_| ())?;
         store.migrate().map_err(|_| ())?;
         // Resolve provider identity once, before constructing the provider and

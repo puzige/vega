@@ -1,6 +1,6 @@
 # Issue #149 测试迁移清单
 
-实施优先级：mock 外部边界并保留业务断言；纯 OS 契约改由手测。网络/Provider/OAuth/UI 93 项和 Artifact 11 项原测试函数迁移，零业务测试删除；Git、Shell、控制器按 [规格与结果](vega-issue-149-remove-real-e2e.md) 迁移。
+实施优先级：mock 外部边界并保留业务断言；纯 OS 契约改由手测。网络/Provider/OAuth/UI 93 项和 Artifact 11 项原测试函数迁移，零业务测试删除；第二轮另补 runtime MCP/skills 9 项，网络与 Artifact 合计 113 项。Git、Shell、控制器按 [规格与结果](vega-issue-149-remove-real-e2e.md) 迁移。
 
 ## 52 项实际删除
 

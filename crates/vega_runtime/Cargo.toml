@@ -35,6 +35,7 @@ serde = { workspace = true, features = ["derive"] }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
 
 [dev-dependencies]
+vega_mcp = { workspace = true, features = ["test-support"] }
 vega_tools = { workspace = true, features = ["test-support"] }
 # 多线程测试运行时（#[tokio::test]；macros/rt 已在主依赖启用）
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

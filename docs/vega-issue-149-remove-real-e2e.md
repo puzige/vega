@@ -62,7 +62,7 @@ test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 420 filtered out; f
 - 网络/Provider/OAuth/UI 93 项及 Artifact 11 项原测试迁移，共 104 项，业务测试函数零删除。HTTP 使用内存响应，MCP stdio/OAuth callback 使用双向内存管道；业务解析、协议大小上限、权限和恢复逻辑继续执行。
 - 控制器的 151 项定向测试通过；侧栏拖拽使用临时配置路径保留持久化断言；终端布局和复制内容迁移到固定 UI 状态。
 - Shell 的去重、取消落库、FullAccess 审计等使用执行 callback，保留原业务断言。硬链接预检、作用域和预取消仍验证真实进程启动前拒绝。
-- 52 个纯外部契约、夹具自测或已有 mock 等价覆盖的测试函数删除；完整处置清单见 [迁移清单](vega-issue-149-mock-test-inventory.md)。没有新增 ignore、CI 过滤或分片；4 个旧计时 ignore 改为虚拟时钟后激活。另 2 项未改动的既有忽略仍不作为通过证据。
+- 52 个纯外部契约、夹具自测或已有 mock 等价覆盖的测试函数删除；完整处置清单见 [迁移清单](vega-issue-149-mock-test-inventory.md)。没有新增 ignore、CI 过滤或分片；5 个旧计时 ignore 改为虚拟时钟后激活。全仓另有 5 项未改动的既有忽略（conversation 单元 2、conversation restart integration 2、runtime 1），均不作为通过证据。
 - 测试模式遗漏 Git/HTTP/Bash mock 会明确失败；默认生产配置继续使用原生执行路径。nextest 仅保留零重试、失败报告和挂起保护。
 
 | 定向命令/范围 | 结果 | 测试阶段耗时 |
@@ -98,3 +98,11 @@ MCP mock 缩小 stdio 分支后触发 `large_enum_variant`，主 agent 批准将
 ### 云端交付
 
 PR：[#182](https://github.com/puzige/vega/pull/182)。首轮 [required check](https://github.com/puzige/vega/actions/runs/36032245026) 在 Clippy 阶段发现 Bash 预检与 MCP mock 响应写入的两处 `collapsible_if`；fmt 通过，测试阶段未执行。修正写法后重新提交云端门禁，未绕过检查。最终 check 与合并身份以 PR/Issue 交付记录为准。
+
+第二轮云端 [check](https://github.com/puzige/vega/actions/runs/36032868414) 的 fmt/Clippy 通过，全量测试发现 15 项迁移遗漏：runtime MCP/skills 9、Bash 调用方 5、旧 ignore 名单冻结断言 1。前两类补进程内 mock 并保留原断言，最后一项同步本卡已迁移的名单；未通过删除或 ignore 失败项绕过。
+
+第二轮补齐：runtime MCP 8 项与 skills 1 项原真实 stdio 脚本迁移到 duplex mock，保留凭据轮换、防泄露、错误分类和预算/权限断言。定向 `agent::tests::mcp_registry::` 18 项（0.03s）与 `agent::tests::skills::` 12 项（0.15s）通过；相同编译产物在禁止 process-exec 的沙箱再次通过（0.02s / 0.14s）。网络/Artifact 迁移数在首批 104 项基础上再增加 9 项，共 113 项；不包含 Git 与 Bash 迁移数。
+
+旧 ignore 从 10 降至 5 的五项全部保留并激活：OpenAI retry/backoff cancel/midstream cancel、Git draft deadline、MCP probe+catalog shared deadline。扩展静态审计覆盖 shell 脚本夹具、客户端/PTY 构造器、Bash ToolUse 及共用 helper，未知 mock 继续明确失败。
+
+Bash 间接调用补齐 5 项原测试：runtime permission_flow 3、conversation history_permissions 1、app permission ingress 1。定向 permission_flow 15 项、history 1、app ingress 1、R52 freeze 1 通过；五个补齐用例均在禁止 process-exec 环境再次通过。六个修改包最终 Clippy `--all-targets -- -D warnings` 与格式检查通过，无新增 ignore 或失败用例删除。

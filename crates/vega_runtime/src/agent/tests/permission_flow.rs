@@ -115,12 +115,28 @@ fn issue85_read_and_grep_null_optionals_match_omission() {
 }
 
 #[tokio::test]
-async fn issue85_bash_null_timeout_reaches_approval_and_real_execution() {
+async fn issue85_bash_null_timeout_reaches_approval_and_execution_boundary() {
     let project = tempdir().unwrap();
     let data = tempdir().unwrap();
     let checkpoint = data.path().join("checkpoints");
     fs::create_dir(&checkpoint).unwrap();
-    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let recorded = executions.clone();
+    let tools = vega_tools::Tools::new(project.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(move |command, full_access, _| {
+            assert_eq!(command, "printf issue85-null-timeout");
+            assert!(!full_access);
+            recorded.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Ok(vega_tools::BashOutput {
+                    text: "issue85-null-timeout".into(),
+                    exit_code: 0,
+                    duration_ms: 1,
+                    truncated: false,
+                })
+            })
+        }));
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
             ProviderEvent::ToolUse {
@@ -157,6 +173,7 @@ async fn issue85_bash_null_timeout_reaches_approval_and_real_execution() {
     .await
     .unwrap();
 
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(outcome.executed_tool_call_count, 1);
     assert!(outcome.events.iter().any(|event| matches!(
@@ -815,12 +832,30 @@ async fn dangerous_cancel_after_proposal_keeps_nested_timeout_audit() {
 }
 
 #[tokio::test]
-async fn running_bash_cancellation_waits_for_process_reap() {
+async fn running_bash_cancellation_waits_for_executor_completion() {
     let project = tempdir().unwrap();
     let data = tempdir().unwrap();
     let checkpoint = data.path().join("checkpoints");
     fs::create_dir(&checkpoint).unwrap();
-    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let (entered, started_execution) = tokio::sync::oneshot::channel();
+    let entered = Arc::new(std::sync::Mutex::new(Some(entered)));
+    let completed = Arc::new(AtomicUsize::new(0));
+    let observed_completion = completed.clone();
+    let tools = vega_tools::Tools::new(project.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(move |command, full_access, cancel| {
+            assert_eq!(command, "sleep 30 & wait");
+            assert!(!full_access);
+            entered.lock().unwrap().take().unwrap().send(()).unwrap();
+            let completed = observed_completion.clone();
+            Box::pin(async move {
+                cancel.cancelled().await;
+                completed.fetch_add(1, Ordering::SeqCst);
+                Err(vega_tools::BashError::for_test(
+                    vega_tools::BashErrorCode::Cancelled,
+                ))
+            })
+        }));
     let provider = MockProvider::new(vec![ScriptStep::events(vec![
         ProviderEvent::ToolUse {
             id: "bash-cancel".into(),
@@ -839,6 +874,10 @@ async fn running_bash_cancellation_waits_for_process_reap() {
     );
     let cancel = CancellationToken::new();
     let sink_cancel = cancel.clone();
+    let canceller = tokio::spawn(async move {
+        started_execution.await.unwrap();
+        sink_cancel.cancel();
+    });
     let started = Instant::now();
     let outcome = run_agent_with_permission_sink(
         &provider,
@@ -849,19 +888,12 @@ async fn running_bash_cancellation_waits_for_process_reap() {
             calls: Arc::new(AtomicUsize::new(0)),
             decision: Some(RuntimeUserDecision::Once),
         },
-        move |event| {
-            if matches!(event, RuntimeEvent::ToolCallRunning { .. }) {
-                let delayed = sink_cancel.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    delayed.cancel();
-                });
-            }
-            async { Ok(()) }
-        },
+        |_| async { Ok(()) },
     )
     .await
     .unwrap();
+    canceller.await.unwrap();
+    assert_eq!(completed.load(Ordering::SeqCst), 1);
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(outcome.interrupted);
     assert_eq!(outcome.executed_tool_call_count, 1);

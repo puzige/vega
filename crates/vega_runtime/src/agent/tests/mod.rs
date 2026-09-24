@@ -699,7 +699,28 @@ async fn run_bash_permission_case(
     let data = tempdir().unwrap();
     let checkpoint = data.path().join("checkpoints");
     fs::create_dir(&checkpoint).unwrap();
-    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let expected_command = command.to_owned();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let recorded = executions.clone();
+    let tools = vega_tools::Tools::new(project.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(move |actual, full_access, _| {
+            assert_eq!(actual, expected_command);
+            assert_eq!(
+                full_access,
+                permission_mode == RuntimePermissionMode::FullAccess
+            );
+            recorded.fetch_add(1, Ordering::SeqCst);
+            let exit_code = if actual == "git push --force" { 1 } else { 0 };
+            Box::pin(async move {
+                Ok(vega_tools::BashOutput {
+                    text: "fixture output".into(),
+                    exit_code,
+                    duration_ms: 1,
+                    truncated: false,
+                })
+            })
+        }));
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
             ProviderEvent::ToolUse {
@@ -739,6 +760,8 @@ async fn run_bash_permission_case(
     )
     .await
     .unwrap();
+    let successful = outcome.events.iter().filter(|event| matches!(event, RuntimeEvent::ToolCallFinished(result) if result.status == RuntimeToolStatus::Success)).count();
+    assert_eq!(executions.load(Ordering::SeqCst), successful);
     (outcome, calls.load(Ordering::SeqCst))
 }
 
