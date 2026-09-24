@@ -1,40 +1,9 @@
-# PR check pipeline for Vega (macOS arm64) — full-suite PR gate and manual measurements.
-#
-# ── Design notes ─────────────────────────────────────────────────────────────
-# - This repo is PUBLIC: GitHub-hosted runners (including macos-latest) are
-#   free and do not consume the minute quota.
-# - Split out of the former single ci.yml (2026-09-22 owner decision): PR gating
-#   and the master build are now two independent pipelines so a master build
-#   never re-runs the fmt/clippy/test gate and a PR never queues behind a build.
-#   The two files deliberately share one cargo cache key (`shared-key: vega`) so
-#   a PR restores the dependency cache written by the master build — see below.
-# - Gate placement (2026-09-22 owner decision, issue #123): all verification
-#   lives here, in the cloud. Local git hooks and the Python verifier
-#   (scripts/verify.py, cargo-lock/cargo-coordinate) were removed so a
-#   developer's commit/push never blocks on machine performance.
-# - Build the full nextest archive once, then run it on independent macOS workers.
-#   All workers use the same checkout, platform and pinned nextest version.
-# - Required check name stays stable; every dependency must succeed.
-
 name: pr-check
 
 on:
   pull_request:
     branches: [master]
-  workflow_dispatch:
-    inputs:
-      shards:
-        description: Number of full-suite partitions for throughput measurements
-        type: choice
-        options: ['4', '5', '8']
-        default: '4'
-      partition:
-        description: Native partition method for throughput measurements
-        type: choice
-        options: ['hash', 'slice']
-        default: 'hash'
 
-# Cancel a superseded run for the same ref (e.g. rapid PR pushes).
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -43,8 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  quality:
-    name: Quality (fmt, clippy, doc-tests)
+  check:
+    name: check (fmt, clippy, test)
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -56,89 +25,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: vega
-          save-if: false
-
       - name: Format
         run: cargo fmt --all -- --check
 
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Doc-tests
-        # nextest does not run doc-tests; keep their coverage explicit.
-        run: cargo test --workspace --doc
-
-  build-tests:
-    name: Build test archive
-    runs-on: macos-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest@0.9.146
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: vega
-          save-if: false
-      - name: Build and archive the full suite
-        run: cargo nextest archive --workspace --archive-file tests.tar.zst
-      - name: Upload test archive
-        uses: actions/upload-artifact@v4
-        with:
-          name: nextest-${{ github.sha }}
-          path: tests.tar.zst
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
-
-  test:
-    name: Test shard ${{ matrix.shard }}/${{ inputs.shards || '4' }}
-    needs: build-tests
-    runs-on: macos-latest
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(inputs.shards == '8' && '[1,2,3,4,5,6,7,8]' || inputs.shards == '5' && '[1,2,3,4,5]' || '[1,2,3,4]') }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest@0.9.146
-      - name: Download test archive
-        uses: actions/download-artifact@v4
-        with:
-          name: nextest-${{ github.sha }}
-      - name: Test without rebuilding
-        # The archive carries all build metadata; no compiler/cache setup needed.
-        env:
-          SHARD_COUNT: ${{ inputs.shards || '4' }}
-          SHARD: ${{ matrix.shard }}
-          PARTITION_METHOD: ${{ inputs.partition || 'hash' }}
-        run: |
-          case "$SHARD_COUNT" in 4|5|8) ;; *) exit 1 ;; esac
-          case "$PARTITION_METHOD" in hash|slice) ;; *) exit 1 ;; esac
-          cargo-nextest nextest run --archive-file tests.tar.zst --workspace-remap "$GITHUB_WORKSPACE" --partition "$PARTITION_METHOD:$SHARD/$SHARD_COUNT"
-
-  check:
-    name: check (fmt, clippy, test)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    needs: [quality, build-tests, test]
-    if: ${{ always() }}
-    steps:
-      - name: Require every quality check and test shard to pass
-        env:
-          QUALITY_RESULT: ${{ needs.quality.result }}
-          BUILD_RESULT: ${{ needs.build-tests.result }}
-          TEST_RESULT: ${{ needs.test.result }}
-        run: |
-          test "$QUALITY_RESULT" = success
-          test "$BUILD_RESULT" = success
-          test "$TEST_RESULT" = success
+      - name: Test the workspace
+        run: cargo test --workspace --no-fail-fast -- --test-threads=1
