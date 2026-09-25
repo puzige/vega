@@ -66,12 +66,15 @@
 
 ## 基线与提交
 
-- 主干基线：`548db94865316ae57fd126191079bb87704f6eff`（含 #199/#202；本轮 rebase 基线）。
-- 冻结规格提交：`89fb03b`。
-- 实现提交：`c1b258d`；本轮定向验收代码 HEAD：`c1b258d`。
+- 主干基线：`f6a8c5a5f8d7eeb802cc5af28b24de2c2bae8617`（含 #204；本轮 rebase 基线）。
+- 冻结规格提交：`5d6ade1`。
+- 实现提交：`7281ad8`；本轮定向验收代码 HEAD：`7281ad8`。
 - 本轮更新旧测试是为了覆盖新增的运行状态 header / 分段活动行以及“不创建空 assistant 行”；混排顺序、权限边界、工具选择器和展开行为断言仍保留并通过。
+- Review follow-up：空 runtime failure 在终态事件前保持 `usize::MAX` active entry；`append_empty_terminal_segment` 创建仅含安全 failure reason 的 assistant entry 并更新 active index，渲染行保持可见。代码已符合规格，本轮补充 GPUI 可见性回归，无需 production 修复。
 
 ## 定向 Nextest
+
+本轮 rebase 到 `f6a8c5a` 后重跑了原始 #146 过滤命令；下方其余补充回归记录来自前一轮 `548db948` 基线验收。
 
 原始 #146 过滤命令：
 
@@ -82,18 +85,27 @@ cargo nextest run -p vega_store -p vega_conversation -p vega_ui -p vega -E 'test
 原始结果：
 
 ```text
-Nextest run ID 35f810a4-693d-4f92-9a41-9d5211373e69 with nextest profile: default
-Starting 8 tests across 15 binaries (1356 tests skipped)
-PASS [   0.020s] (1/8) vega_ui conversation_stream::tests::issue146_run_activity::issue146_duration_display_rounds_up_and_changes_units_at_thresholds
-PASS [   0.029s] (2/8) vega_conversation history::issue146_tests::issue146_history_attaches_duration_only_to_final_assistant_segment
-PASS [   0.039s] (3/8) vega_ui conversation_stream::tests::issue146_run_activity::issue146_text_only_run_has_no_empty_live_row_and_shows_total_duration
-PASS [   0.040s] (4/8) vega_store messages::tests::issue146_terminal_durations_are_persisted_and_projected_by_page
-PASS [   0.045s] (5/8) vega_ui conversation_stream::tests::issue146_run_activity::issue146_terminal_failure_cancel_and_hydration_restore_truthful_statuses
-PASS [   0.045s] (6/8) vega_ui conversation_stream::tests::issue146_run_activity::issue146_long_run_activity_is_bounded_and_keeps_its_scroll_position
-PASS [   0.047s] (7/8) vega_ui conversation_stream::tests::issue146_run_activity::issue146_live_activity_folds_once_and_keeps_final_answer_visible
-PASS [   0.146s] (8/8) vega_conversation agent::tests::stream_persistence::issue146_runtime_duration_includes_permission_wait_and_tool_continuation
-Summary [   0.147s] 8 tests run: 8 passed, 1356 skipped
+Nextest run ID 58cbbc1d-baba-4179-97b1-db34a9f88fdb with nextest profile: default
+Starting 9 tests across 15 binaries (1360 tests skipped)
+PASS [   0.020s] (1/9) vega_ui conversation_stream::tests::issue146_run_activity::issue146_duration_display_rounds_up_and_changes_units_at_thresholds
+PASS [   0.027s] (2/9) vega_conversation history::issue146_tests::issue146_history_attaches_duration_only_to_final_assistant_segment
+PASS [   0.041s] (3/9) vega_ui conversation_stream::tests::issue146_run_activity::issue146_empty_runtime_failure_keeps_reason_visible_without_assistant_text
+PASS [   0.042s] (4/9) vega_ui conversation_stream::tests::issue146_run_activity::issue146_text_only_run_has_no_empty_live_row_and_shows_total_duration
+PASS [   0.044s] (5/9) vega_store messages::tests::issue146_terminal_durations_are_persisted_and_projected_by_page
+PASS [   0.048s] (6/9) vega_ui conversation_stream::tests::issue146_run_activity::issue146_terminal_failure_cancel_and_hydration_restore_truthful_statuses
+PASS [   0.048s] (7/9) vega_ui conversation_stream::tests::issue146_run_activity::issue146_long_run_activity_is_bounded_and_keeps_its_scroll_position
+PASS [   0.051s] (8/9) vega_ui conversation_stream::tests::issue146_run_activity::issue146_live_activity_folds_once_and_keeps_final_answer_visible
+PASS [   0.145s] (9/9) vega_conversation agent::tests::stream_persistence::issue146_runtime_duration_includes_permission_wait_and_tool_continuation
+Summary [   0.147s] 9 tests run: 9 passed, 1360 skipped
 ```
+
+空 runtime failure 专项命令：
+
+```text
+cargo nextest run -p vega_ui -E 'test(issue146_empty_runtime_failure_keeps_reason_visible_without_assistant_text)'
+```
+
+原始结果：`Nextest run ID ba1c066c-9e90-48c3-8b03-f60735f41742`；`1 test run: 1 passed, 491 skipped`。测试证明 failure reason 使用安全本地文案、空 Markdown 仍占一条可见 failure row，且 sentinel active index 在终态后已替换。
 
 追加 UI 回归过滤命令：
 
@@ -111,6 +123,21 @@ cargo nextest run -p vega -E 'test(i61_newest_live_thinking_block_is_expanded_by
 
 原始结果：`Nextest run ID c89e621c-205d-4a42-8b05-b2581c984772`；`2 tests run: 2 passed, 209 skipped`。
 
+MessageStarted 不创建空 assistant 行的回归命令：
+
+```text
+cargo nextest run -p vega_ui -E 'test(durable_assistant_events_require_exact_active_message)'
+```
+
+原始结果：
+
+```text
+Nextest run ID 93e7d476-a08e-428d-8a93-5518ad2371c3 with nextest profile: default
+Starting 1 test across 1 binary (486 tests skipped)
+PASS [   0.032s] (1/1) vega_ui conversation_stream::tests::core_flow::durable_assistant_events_require_exact_active_message
+Summary [   0.033s] 1 test run: 1 passed, 486 skipped
+```
+
 递增 migration / 表计数回归命令：
 
 ```text
@@ -121,8 +148,8 @@ cargo nextest run -p vega_store -p vega_conversation -E 'test(migrate_creates_ex
 
 ## 其他检查
 
-- `cargo clippy -p vega_conversation -p vega_ui --all-targets -- -D warnings`：通过（退出码 0；仅有现有 `block v0.1.6` future-incompatibility 提示）。
-- `cargo fmt --all -- --check`：通过。
+- `cargo clippy -p vega_ui --all-targets -- -D warnings`：通过（退出码 0；仅有现有 `block v0.1.6` future-incompatibility 提示）。
+- `cargo fmt --all -- --check`：首次因 rebase 后 `tests/mod.rs` 模块声明顺序不符合 rustfmt 而失败；修正顺序后复跑通过（退出码 0）。
 - `git diff --check`：通过。
 - 未运行 workspace 全量 Nextest；未运行真实 provider 或桌面端端到端验收。
 
