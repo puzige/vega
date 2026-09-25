@@ -37,6 +37,7 @@ mechanism is also needed when a user explicitly activates the Diff tab.
 | F3 | Invoke global Review again while Composer is focused | Review stays open and focus remains with Composer |
 | F4 | Invoke global Review while Diff is explicitly focused | Review stays open and Diff remains focused |
 | F5 | Exercise Commit open/focus and close paths | Existing Commit focus contract and pending flag are unchanged |
+| F6 | With Composer focused, hide and restore Review through the main-header right-pane toggle | Composer keeps focus through hide and restore; only explicit Diff-tab activation transfers focus to Diff |
 
 Use `TestAppContext`/GPUI focus handles and production handlers. Synthetic
 keyboard or mouse input and screenshots are not evidence of focus ownership.
