@@ -58,6 +58,16 @@ impl ContextControl {
 }
 
 impl ConversationStream {
+    pub(crate) fn context_usage_source(&self) -> (Option<u64>, Option<u64>) {
+        (
+            self.context_control.estimate,
+            self.context_control
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.context_limit),
+        )
+    }
+
     pub(crate) fn reset_context_control(&mut self, cx: &mut Context<Self>) {
         // R7: model change invalidates all old settings, status and ACK owners.
         // Keep the counter monotonic so an ABA switch cannot accept an old ACK.
@@ -65,6 +75,8 @@ impl ConversationStream {
         self.context_control = ContextControl::new(cx);
         self.context_control.next_request = next;
         self.context_control.retired_through = next;
+        self.context_usage_trigger_hovered = false;
+        self.context_usage_tooltip_hovered = false;
     }
 
     /// Whether context preparation/save currently excludes a competing submit.
@@ -137,6 +149,10 @@ impl ConversationStream {
         self.context_control.settings = settings;
         if self.context_control.live_accounting.is_none() {
             self.context_control.estimate = estimated_tokens;
+        }
+        if self.context_control.estimate.is_none() {
+            self.context_usage_trigger_hovered = false;
+            self.context_usage_tooltip_hovered = false;
         }
         self.context_control.compactable = compactable;
         if self.context_control.error == Some(LOAD_ERROR) {
@@ -308,6 +324,8 @@ impl ConversationStream {
     pub(crate) fn clear_live_context_accounting(&mut self) {
         if self.context_control.live_accounting.take().is_some() {
             self.context_control.estimate = None;
+            self.context_usage_trigger_hovered = false;
+            self.context_usage_tooltip_hovered = false;
         }
     }
 

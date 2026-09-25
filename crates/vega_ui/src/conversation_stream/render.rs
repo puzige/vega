@@ -1,4 +1,6 @@
+use super::context_usage::ContextUsageDisplay;
 use super::*;
+use gpui_kit::{PathBuilder, canvas, point};
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
 use super::composer_actions::{
@@ -281,7 +283,7 @@ impl ConversationStream {
                             })
                             .child(self.render_permission_status(cx))
                             .child(div().flex_1())
-                            .child(self.render_model_selector(cx))
+                            .child(self.render_model_controls(window, cx))
                             .when(
                                 self.actions.running || self.composer_submit_pending,
                                 |row| row.child(self.render_composer_stop(cx)),
@@ -775,6 +777,188 @@ impl ConversationStream {
         .into_any_element()
     }
 
+    fn render_model_controls(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let (estimated_tokens, context_limit) = self.context_usage_source();
+        let display = ContextUsageDisplay::new(estimated_tokens, context_limit);
+        let colors = theme(cx).colors;
+        let focused = display
+            .as_ref()
+            .is_some_and(|_| self.context_usage_focus.contains_focused(window, cx));
+        let hovered = self.context_usage_trigger_hovered || self.context_usage_tooltip_hovered;
+        div()
+            .relative()
+            .flex()
+            .items_center()
+            .gap_1()
+            .children(
+                display
+                    .as_ref()
+                    .map(|display| self.render_context_usage_indicator(display, colors, cx)),
+            )
+            .child(self.render_model_selector(cx))
+            .children(display.filter(|_| focused || hovered).map(|display| {
+                let tooltip_hover = cx.listener(|this, hovered: &bool, _, cx| {
+                    this.context_usage_tooltip_hovered = *hovered;
+                    cx.notify();
+                });
+                gpui_kit::deferred(
+                    div()
+                        .id("context-usage-tooltip-popover")
+                        .debug_selector(|| "context-usage-tooltip-popover".into())
+                        .on_hover(tooltip_hover)
+                        .absolute()
+                        .bottom(gpui_kit::relative(1.0))
+                        .right_0()
+                        .child(Self::context_usage_tooltip_element(&display, colors)),
+                )
+                .with_priority(2)
+            }))
+            .into_any_element()
+    }
+
+    fn render_context_usage_indicator(
+        &self,
+        display: &ContextUsageDisplay,
+        colors: ThemeColors,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let accessible_label = display.accessibility_label();
+        let control = div()
+            .id("composer-context-usage-hover-target")
+            .debug_selector(|| "composer-context-usage-hover-target".into())
+            .flex_shrink_0()
+            .min_h(px(29.0))
+            .flex()
+            .items_center()
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                this.context_usage_trigger_hovered = *hovered;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("composer-context-usage")
+                    .debug_selector(|| "composer-context-usage".into())
+                    .aria_label(accessible_label)
+                    .focusable()
+                    .track_focus(&self.context_usage_focus)
+                    .tab_stop(true)
+                    .size(px(24.0))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .hover(move |style| style.bg(colors.bg_hover))
+                    .focus_visible(move |style| style.bg(colors.bg_hover))
+                    .child(
+                        div()
+                            .debug_selector(|| "composer-context-usage-ring".into())
+                            .size(px(16.0))
+                            .flex_shrink_0()
+                            .child(Self::context_usage_ring(display, colors)),
+                    ),
+            );
+        div().child(control).into_any_element()
+    }
+
+    fn context_usage_ring(display: &ContextUsageDisplay, colors: ThemeColors) -> AnyElement {
+        let fill_fraction = display.fill_fraction;
+        canvas(
+            |_, _, _| (),
+            move |bounds, _, window, _| {
+                let center = bounds.center();
+                let mut track = PathBuilder::stroke(px(2.0));
+                for step in 0..=64 {
+                    let angle =
+                        -std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU * step as f32 / 64.0;
+                    let position = center + point(px(angle.cos() * 6.0), px(angle.sin() * 6.0));
+                    if step == 0 {
+                        track.move_to(position);
+                    } else {
+                        track.line_to(position);
+                    }
+                }
+                if let Ok(path) = track.build() {
+                    window.paint_path(path, colors.border_subtle);
+                }
+                if fill_fraction <= 0.0 {
+                    return;
+                }
+                let mut progress = PathBuilder::stroke(px(2.0));
+                for step in 0..=64 {
+                    let angle = -std::f32::consts::FRAC_PI_2
+                        + std::f32::consts::TAU * fill_fraction * step as f32 / 64.0;
+                    let position = center + point(px(angle.cos() * 6.0), px(angle.sin() * 6.0));
+                    if step == 0 {
+                        progress.move_to(position);
+                    } else {
+                        progress.line_to(position);
+                    }
+                }
+                if let Ok(path) = progress.build() {
+                    window.paint_path(path, colors.accent);
+                }
+            },
+        )
+        .size(px(16.0))
+        .into_any_element()
+    }
+
+    fn context_usage_tooltip_element(
+        display: &ContextUsageDisplay,
+        colors: ThemeColors,
+    ) -> impl IntoElement {
+        let tooltip = div()
+            .id("context-usage-tooltip")
+            .debug_selector(|| "context-usage-tooltip".into())
+            .w(px(288.0))
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_elevated)
+            .shadow_sm()
+            .text_size(px(Typography::METADATA))
+            .text_color(colors.text_secondary)
+            .child(
+                div()
+                    .debug_selector(|| "context-usage-tooltip-title".into())
+                    .text_color(colors.text_primary)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("上下文窗口"),
+            );
+        let tooltip = if let Some(percentage) = display.percentage_label() {
+            tooltip.child(
+                div()
+                    .debug_selector(|| "context-usage-tooltip-percentage".into())
+                    .text_color(colors.accent)
+                    .child(percentage),
+            )
+        } else {
+            tooltip
+        };
+        tooltip
+            .child(
+                div()
+                    .debug_selector(|| "context-usage-tooltip-compact".into())
+                    .text_color(colors.text_primary)
+                    .child(display.compact_usage_label()),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "context-usage-tooltip-estimate".into())
+                    .child(display.estimate_label()),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "context-usage-tooltip-capacity".into())
+                    .child(display.capacity_label()),
+            )
+    }
+
     /// The model selector (A2-14): trigger shows the current selection;
     /// options are the priced catalog projection installed by the app layer
     /// (zero file IO). Keyboard: Enter/Space open, Up/Down move, Enter
@@ -1091,6 +1275,12 @@ impl ConversationStream {
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.context_usage_focus_subscriptions.is_none() {
+            let focus = self.context_usage_focus.clone();
+            let focus_in = cx.on_focus_in(&focus, window, |_, _, cx| cx.notify());
+            let focus_out = cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify());
+            self.context_usage_focus_subscriptions = Some((focus_in, focus_out));
+        }
         if !self.selection_view_initialized {
             gpui_kit::base::TextSelection::clear(window, cx);
             self.selection_view_initialized = true;

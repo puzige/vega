@@ -197,6 +197,11 @@ pub struct ConversationStream {
     /// the same `thread.permission_mode`, so the two can never disagree.
     pub(crate) permission_picker_open: bool,
     pub(crate) model_selector_highlight: usize,
+    pub(crate) context_usage_focus: FocusHandle,
+    pub(crate) context_usage_focus_subscriptions:
+        Option<(gpui_kit::Subscription, gpui_kit::Subscription)>,
+    pub(crate) context_usage_trigger_hovered: bool,
+    pub(crate) context_usage_tooltip_hovered: bool,
     /// Keyboard focus stop for the model selector trigger (A2-14).
     pub(crate) model_focus: FocusHandle,
     /// In-flight in-session model selection (R1): `Some((request_id, model))`
@@ -488,6 +493,10 @@ impl ConversationStream {
             utility_project_search,
             permission_picker_open: false,
             model_selector_highlight: 0,
+            context_usage_focus: cx.focus_handle().tab_index(15).tab_stop(true),
+            context_usage_focus_subscriptions: None,
+            context_usage_trigger_hovered: false,
+            context_usage_tooltip_hovered: false,
             model_focus: cx.focus_handle().tab_index(16).tab_stop(true),
             model_selection_pending: None,
             model_selection_save_owner: None,

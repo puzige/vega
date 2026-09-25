@@ -30,6 +30,7 @@ mod issue146_run_activity;
 mod issue147_markdown_selection;
 mod issue148_long_session_scroll;
 mod issue151_latest_activity;
+mod issue64_context_usage;
 mod issue70_tool_activity;
 mod issue72_message_anchor_navigation;
 mod issue78_message_bubbles;
