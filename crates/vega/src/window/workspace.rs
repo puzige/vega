@@ -2216,6 +2216,18 @@ mod tests {
         cx: &mut TestAppContext,
     ) -> (gpui_kit::Entity<VegaWindow>, WindowHandle<VegaWindow>) {
         let store = vega_store::Store::open(":memory:").expect("owned store");
+        r45_mount_project_window_with_store(repo, label, width, height, store, None, cx)
+    }
+
+    fn r45_mount_project_window_with_store(
+        repo: &crate::tests::ControllerRepo,
+        label: &str,
+        width: f32,
+        height: f32,
+        store: vega_store::Store,
+        config_path: Option<std::path::PathBuf>,
+        cx: &mut TestAppContext,
+    ) -> (gpui_kit::Entity<VegaWindow>, WindowHandle<VegaWindow>) {
         store.migrate().expect("owned migrations");
         let project = vega_store::projects::create(
             store.conn(),
@@ -2229,6 +2241,11 @@ mod tests {
                 .expect("thread");
         cx.update(|cx| install_diff_window_globals(store, thread, cx));
         let root = cx.new(VegaWindow::new);
+        if let Some(config_path) = config_path {
+            root.update(cx, |root, _| {
+                root.model_selection_config_override = Some(config_path)
+            });
+        }
         let window_root = root.clone();
         let window = cx.update(|cx| {
             cx.open_window(
@@ -3491,8 +3508,39 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let repo = diff_controller_repo();
-        let (root, window) = r45_mount_project_window(&repo, "R49 utility bar", 1403., 860., cx);
+        let database_path = repo.path().join("vega.db");
+        let config_path = repo.path().join("config.toml");
+        std::fs::write(&config_path, "").expect("fixture config");
+        let store = vega_store::Store::open(&database_path).expect("fixture store");
+        let (root, window) = r45_mount_project_window_with_store(
+            &repo,
+            "R49 utility bar",
+            1403.,
+            860.,
+            store,
+            Some(config_path),
+            cx,
+        );
+        let stream = root.read_with(cx, |root, _| {
+            root.stream_view.as_ref().expect("mounted stream").1.clone()
+        });
+        for _ in 0..400 {
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(4));
+            cx.run_until_parked();
+            if stream.read_with(cx, |stream, _| stream.composer_skill_pin_count().is_some()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_eq!(
+            stream.read_with(cx, |stream, _| stream.composer_skill_pin_count()),
+            Some(0),
+            "the fixture skill projection must complete without a controller error"
+        );
+        assert!(shell_absent(window, "conversation-controller-error", cx));
         shell_click(window, "main-header-environment", cx);
+        assert!(shell_absent(window, "conversation-controller-error", cx));
         let card = shell_bounds(window, "composer-shell", cx);
         let bar = shell_bounds(window, "composer-utility-bar", cx);
         assert_close(

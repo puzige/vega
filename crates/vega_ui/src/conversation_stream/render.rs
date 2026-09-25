@@ -166,6 +166,17 @@ impl ConversationStream {
             .when(self.utility_bar_visible(cx), |column| {
                 column.child(self.render_composer_utility_bar(window, cx))
             })
+            .children(self.controller_error.clone().map(|error| {
+                div()
+                    .debug_selector(|| "conversation-controller-error".to_string())
+                    .w_full()
+                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
+                    .mx_auto()
+                    .mt_1()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.danger)
+                    .child(error)
+            }))
             .child(
                 div()
                     .debug_selector(|| "composer-shell".into())
@@ -312,17 +323,6 @@ impl ConversationStream {
             )
             .child(self.render_active_skills(cx))
             .child(self.render_composer_run_status(cx))
-            .children(self.controller_error.clone().map(|error| {
-                div()
-                    .debug_selector(|| "conversation-controller-error".to_string())
-                    .w_full()
-                    .max_w(px(Layout::COMPOSER_MAX_WIDTH))
-                    .mx_auto()
-                    .mt_1()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.danger)
-                    .child(error)
-            }))
             .children(self.mcp_warning.clone().map(|warning| {
                 div()
                     .debug_selector(|| "conversation-mcp-warning".to_string())
