@@ -40,6 +40,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-74-skills.md](docs/vega-issue-74-skills.md) | #74 Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
 | [vega-issue-74-skills-delivery.md](docs/vega-issue-74-skills-delivery.md) | #74 测试先行验收矩阵（均未运行） |
 | [vega-issue-114-tool-call-limit.md](docs/vega-issue-114-tool-call-limit.md) | #114 把硬编码 tool call 上限改为可配的 agentic turn 上限（默认不限，对齐 Claude Code） |
+| [vega-issue-192-review-focus.md](docs/vega-issue-192-review-focus.md) | #192 全局打开 Review 保留 Composer 焦点，显式激活 tab 才聚焦内容 |
 | [vega-issue-123-pr-check-pipeline.md](docs/vega-issue-123-pr-check-pipeline.md) | #123 PR check + master build 云端流水线；门禁全部上云，删除本地 hooks/脚本 |
 | [vega-issues-58-59-61-delivery.md](docs/vega-issues-58-59-61-delivery.md) | #58/#59/#61 测试、原生模型回复与安装验收记录 |
 | [vega-feature-teardown.md](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
