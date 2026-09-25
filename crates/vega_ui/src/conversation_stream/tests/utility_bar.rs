@@ -117,8 +117,45 @@ async fn r49_session_page_with_a_message_renders_no_utility_bar(cx: &mut TestApp
 async fn issue191_persisted_project_conversation_opens_the_footer_branch_selector(
     cx: &mut TestAppContext,
 ) {
-    let (window, stream, _events) = open_controller_stream(cx, "issue191-branch-entry");
-    install_utility_globals(cx, &[], Some(PROJECT_BINDING));
+    let project_root = tempfile::tempdir().expect("issue191 project root");
+    let project_path = project_root
+        .path()
+        .canonicalize()
+        .expect("canonical issue191 project path");
+    let git_dir = project_path.join(".git");
+    std::fs::create_dir_all(&git_dir).expect("issue191 Git metadata directory");
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("issue191 initial HEAD");
+    let database_root = tempfile::tempdir().expect("issue191 database root");
+    let store = vega_store::Store::open(database_root.path().join("vega.sqlite"))
+        .expect("issue191 project store");
+    store.migrate().expect("issue191 project migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        project_path.to_str().expect("issue191 project path"),
+        "issue191",
+        None,
+    )
+    .expect("issue191 project row");
+    let project_id = project.id.clone();
+    let mut thread = permission_thread();
+    thread.id = "issue191-branch-entry".into();
+    thread.project_id = project_id.clone();
+    init_permission_test(cx);
+    cx.update(|cx| {
+        cx.set_global(crate::sidebar::VegaStore(Ok(store)));
+        cx.set_global(crate::sidebar::SelectedProject(Some(project_id.clone())));
+        cx.set_global(crate::sidebar::OpenedThread(Some(thread.clone())));
+    });
+    let stream = cx.new(|cx| ConversationStream::new(thread, cx));
+    let root_stream = stream.clone();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), move |_, cx| {
+            cx.new(|_| StreamHarness {
+                stream: root_stream,
+            })
+        })
+        .expect("issue191 conversation window")
+    });
     stream.update(cx, |stream, cx| {
         stream.composer_submit_pending = true;
         stream.accept_composer_submission("first message", cx);
@@ -161,14 +198,44 @@ async fn issue191_persisted_project_conversation_opens_the_footer_branch_selecto
             .as_slice(),
         &[crate::branch_selector::BranchListRequested {
             thread_id: "issue191-branch-entry".into(),
-            project_id: PROJECT_BINDING.into(),
+            project_id: project_id.clone(),
         }]
     );
 
     let snapshot = branch_snapshot(&["main", "feature"]);
+    assert_eq!(
+        snapshot
+            .branches
+            .iter()
+            .find(|branch| branch.current)
+            .map(|branch| branch.label.as_str()),
+        Some("main")
+    );
+    let feature_id = snapshot
+        .branches
+        .iter()
+        .find(|branch| branch.label == "feature")
+        .expect("issue191 feature branch")
+        .id;
     selector.update(cx, |selector, cx| {
         assert!(selector.apply_snapshot(snapshot, cx));
     });
+    let main_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        selector.update(cx, |selector, cx| selector.poll_current_head_for_test(cx));
+        cx.run_until_parked();
+        if VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("branch-current-main")
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < main_deadline,
+            "the production project-head resolver must display main before switching"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     bounds(window, "branch-selector-popup", cx);
     bounds(window, "branch-row-0", cx);
 
@@ -195,21 +262,53 @@ async fn issue191_persisted_project_conversation_opens_the_footer_branch_selecto
         .cloned()
         .expect("branch switch request");
     assert_eq!(request.thread_id, "issue191-branch-entry");
-    assert_eq!(request.project_id, PROJECT_BINDING);
+    assert_eq!(request.project_id, project_id);
+    assert_eq!(request.branch_id, feature_id);
     assert!(selector.read_with(cx, |selector, _| selector.is_pending()));
 
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature\n")
+        .expect("issue191 switched HEAD");
+    let switched_snapshot = branch_snapshot(&["feature", "main"]);
+    assert_eq!(
+        switched_snapshot
+            .branches
+            .iter()
+            .find(|branch| branch.current)
+            .map(|branch| branch.label.as_str()),
+        Some("feature")
+    );
     selector.update(cx, |selector, cx| {
         assert!(selector.finish_switch(
             request.operation_id,
             request.snapshot_generation,
             request.branch_id,
-            Some(branch_snapshot(&["feature", "main"])),
+            Some(switched_snapshot),
             None,
             cx,
         ));
     });
     assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
     assert!(!selector.read_with(cx, |selector, _| selector.is_open()));
+    let feature_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        selector.update(cx, |selector, cx| selector.poll_current_head_for_test(cx));
+        cx.run_until_parked();
+        if VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("branch-current-feature")
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < feature_deadline,
+            "the footer branch chip must display feature after the switch finishes"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("branch-current-main").is_none());
+    assert!(visual.debug_bounds("branch-current-feature").is_some());
+    assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
 }
 
 #[gpui_kit::test]
