@@ -60,7 +60,7 @@ pub mod bench;
 mod skills;
 use vega_conversation::types::ImageAttachment;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -332,6 +332,7 @@ pub use vega_conversation::types::{
 };
 mod core;
 mod file_reference;
+mod message_anchors;
 mod model;
 mod render;
 mod render_rows;

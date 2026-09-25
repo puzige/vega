@@ -320,9 +320,11 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
         top_while_detached.item_ix + 2,
         "the scroll-top item index follows the prepend"
     );
-    assert_eq!(
-        after_prepend.0.offset_in_item, top_while_detached.offset_in_item,
-        "page-boundary anchor: pixel offset preserved exactly (<1px drift)"
+    let offset_drift_px =
+        f32::from(after_prepend.0.offset_in_item - top_while_detached.offset_in_item).abs();
+    assert!(
+        offset_drift_px < 0.001,
+        "page-boundary anchor drifted {offset_drift_px}px; preserve the pixel offset within 0.001px"
     );
     assert_eq!(&after_prepend.1[..2], &["user", "assistant"]);
     assert_eq!(
