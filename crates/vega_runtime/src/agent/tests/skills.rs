@@ -232,6 +232,89 @@ async fn issue74_model_load_uses_directory_then_next_round_frozen_system_only() 
 }
 
 #[tokio::test]
+async fn issue74_s06_stale_frozen_skill_is_rejected_without_body_injection() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let (run, selection) = skill_run_with_body(project.path(), true, "FROZEN APPROVED BODY");
+    fs::write(
+        project.path().join(".agents/skills/reviewer/SKILL.md"),
+        "---\nname: reviewer\ndescription: Review code changes.\n---\nUNREVIEWED CHANGED BODY\n",
+    )
+    .unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "stale-load".into(),
+                name: "load_skill".into(),
+                input_json: r#"{"name":"reviewer"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "review this change")]);
+    req.tool_config = req.tool_config.with_skill_run(run, Vec::new());
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!outcome.failed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[0].messages[0]
+            .content
+            .contains("Review code changes.")
+    );
+    assert!(requests.iter().all(|provider_request| {
+        provider_request.messages.iter().all(|message| {
+            !message.content.contains("FROZEN APPROVED BODY")
+                && !message.content.contains("UNREVIEWED CHANGED BODY")
+        })
+    }));
+
+    let load_results = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ToolCallFinished(result) if result.call_id == "stale-load" => {
+                Some(result)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(load_results.len(), 1);
+    assert_eq!(load_results[0].status, RuntimeToolStatus::Failed);
+    assert_eq!(
+        load_results[0].output,
+        r#"{"name":"reviewer","status":"stale"}"#
+    );
+    assert!(!load_results[0].output.contains("FROZEN APPROVED BODY"));
+    assert!(!load_results[0].output.contains("UNREVIEWED CHANGED BODY"));
+
+    let audits = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::SkillActivation { audit, .. } => Some(audit),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].status, "stale");
+    assert_eq!(
+        audits[0].content_sha256.as_deref(),
+        Some(selection.sha256())
+    );
+    let audit_json = serde_json::to_string(&audits).unwrap();
+    assert!(!audit_json.contains("FROZEN APPROVED BODY"));
+    assert!(!audit_json.contains("UNREVIEWED CHANGED BODY"));
+}
+
+#[tokio::test]
 async fn issue74_s03_unimported_skill_directories_stay_out_of_catalog_provider_and_audit() {
     let project = tempdir().unwrap();
     let global_config = tempdir().unwrap();
