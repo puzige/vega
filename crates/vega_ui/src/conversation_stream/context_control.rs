@@ -58,6 +58,16 @@ impl ContextControl {
 }
 
 impl ConversationStream {
+    pub(crate) fn context_usage_source(&self) -> (Option<u64>, Option<u64>) {
+        (
+            self.context_control.estimate,
+            self.context_control
+                .settings
+                .as_ref()
+                .and_then(|settings| settings.context_limit),
+        )
+    }
+
     pub(crate) fn reset_context_control(&mut self, cx: &mut Context<Self>) {
         // R7: model change invalidates all old settings, status and ACK owners.
         // Keep the counter monotonic so an ABA switch cannot accept an old ACK.
