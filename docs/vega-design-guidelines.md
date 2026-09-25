@@ -256,6 +256,7 @@ Issue #103：展开的工具详情与 thinking 正文使用 240px 最大高度
 - 遵循系统 Reduce Motion。开启后关闭启动扫光、shimmer、循环 pulse 和非必要位移动画，保留即时状态切换。
 - 启动页首帧必须不依赖异步运行时才能显示 Logo；若未来加入品牌扫光，必须提供静态 reduced-motion 路径，并以独立任务验收。
 - 所有主要操作具备键盘路径和可见焦点；图标按钮有可访问名称与稳定 hitbox。
+- Workspace 的全局 Review 显示操作保留当前焦点；用户显式激活 Diff tab 才把焦点交给 Review 内容。两条路径必须走独立焦点意图，详见 [Issue #192](vega-issue-192-review-focus.md)。
 - 文本、图标与状态在 Light/Dark 下都必须可读；不能仅靠色相区分 success、warning、danger 或 selected。
 
 Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。没有自动化和真实 macOS 证据前，状态写“待验收”，不能写“已实现”。

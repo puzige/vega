@@ -50,6 +50,12 @@ pub(crate) enum DiffRefreshCompletion {
     Superseded(Option<u64>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiffFocusIntent {
+    PreserveCurrent,
+    ExplicitDiffTab,
+}
+
 pub(crate) struct ActiveDiffRoute {
     pub(crate) identity: DiffRouteIdentity,
     pub(crate) view: Entity<DiffView>,
@@ -69,7 +75,7 @@ pub(crate) struct ActiveDiffRoute {
     pub(crate) requested_file: Option<WorkspaceFileId>,
     pub(crate) projection_cancel: Option<tokio_util::sync::CancellationToken>,
     pub(crate) pending_projection: Option<PendingDiffProjection>,
-    pub(crate) focus_pending: bool,
+    pub(crate) focus_intent: DiffFocusIntent,
 }
 
 impl ActiveDiffRoute {
@@ -169,6 +175,7 @@ impl DiffController {
         thread_id: String,
         project_id: String,
         view: Entity<DiffView>,
+        focus_intent: DiffFocusIntent,
     ) -> Option<DiffRouteIdentity> {
         self.close();
         let epoch = self.next_route_epoch.checked_add(1)?;
@@ -193,7 +200,7 @@ impl DiffController {
             requested_file: None,
             projection_cancel: None,
             pending_projection: None,
-            focus_pending: true,
+            focus_intent,
         });
         Some(identity)
     }

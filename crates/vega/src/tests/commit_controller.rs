@@ -357,6 +357,7 @@ async fn commit_controller_same_id_entity_aba_is_stale_and_worker_recovers_autho
                     thread.id.clone(),
                     thread.project_id.clone(),
                     fresh_diff.clone(),
+                    DiffFocusIntent::PreserveCurrent,
                 )
                 .is_some()
         );

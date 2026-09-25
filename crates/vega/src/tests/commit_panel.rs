@@ -335,6 +335,7 @@ async fn commit_app_production_handlers_reconcile_before_release_across_close_an
                 thread_id: thread.id.clone(),
                 project_id: thread.project_id.clone(),
             },
+            DiffFocusIntent::PreserveCurrent,
             cx,
         );
         cx.subscribe(&panel, |this, panel, request, cx| {

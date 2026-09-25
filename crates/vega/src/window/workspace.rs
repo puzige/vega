@@ -612,6 +612,7 @@ impl VegaWindow {
                     thread_id: thread.id,
                     project_id: thread.project_id,
                 },
+                DiffFocusIntent::PreserveCurrent,
                 cx,
             );
         }
@@ -701,6 +702,23 @@ impl VegaWindow {
         }
     }
 
+    fn workspace_activate_tab(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus_intent = if self.workspace.selected[index] == Some(TabKey::Diff) {
+            DiffFocusIntent::ExplicitDiffTab
+        } else {
+            DiffFocusIntent::PreserveCurrent
+        };
+        if let Some(active) = self.diff_controller.active.as_mut() {
+            active.focus_intent = focus_intent;
+        }
+        self.workspace_focus(index, window, cx);
+    }
+
     /// Returns the selected project only when it is also the current task's
     /// durable project binding. This is the shell's route fence for every
     /// project-only header and Environment action.
@@ -771,7 +789,13 @@ impl VegaWindow {
         self.workspace.hidden[index] = false;
         self.workspace.reveal_tabs[index] = true;
         self.environment_overlay_open = false;
-        self.workspace_focus(index, window, cx);
+        if self.workspace.selected[index] == Some(TabKey::Diff) {
+            if let Some(active) = self.diff_controller.active.as_mut() {
+                active.focus_intent = DiffFocusIntent::PreserveCurrent;
+            }
+        } else {
+            self.workspace_focus(index, window, cx);
+        }
         cx.notify();
     }
 
@@ -1065,7 +1089,7 @@ impl VegaWindow {
                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                             this.workspace.open(keyboard_key.clone());
-                            this.workspace_focus(index, window, cx);
+                            this.workspace_activate_tab(index, window, cx);
                             cx.stop_propagation();
                             cx.notify();
                         }
@@ -1099,7 +1123,7 @@ impl VegaWindow {
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
                             this.workspace.open(key.clone());
-                            this.workspace_focus(index, window, cx);
+                            this.workspace_activate_tab(index, window, cx);
                             cx.notify();
                         }),
                     )
@@ -1231,10 +1255,10 @@ impl VegaWindow {
                 .and_then(|thread| self.diff_controller.visible_view(thread))
                 .map(|view| {
                     if let Some(active) = self.diff_controller.active.as_mut()
-                        && active.focus_pending
+                        && active.focus_intent == DiffFocusIntent::ExplicitDiffTab
                     {
                         window.focus(&view.read(cx).focus_handle(cx), cx);
-                        active.focus_pending = false;
+                        active.focus_intent = DiffFocusIntent::PreserveCurrent;
                     }
                     view.into_any_element()
                 }),
@@ -1662,8 +1686,9 @@ mod tests {
     use crate::tests::{diff_controller_repo, install_diff_window_globals};
     use gpui_kit::prelude::*;
     use gpui_kit::{
-        AppContext, Bounds, Focusable, KeyBinding, Modifiers, MouseButton, Pixels, TestAppContext,
-        VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point, px, size,
+        AppContext, Bounds, FocusHandle, Focusable, KeyBinding, Modifiers, MouseButton, Pixels,
+        TestAppContext, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point, px,
+        size,
     };
     use vega_theme::{Layout, Typography};
     use vega_ui::diff_view::DiffClosed;
@@ -1703,6 +1728,16 @@ mod tests {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         visual.simulate_click(bounds.center(), Modifiers::default());
         visual.run_until_parked();
+    }
+
+    fn focus_is(
+        window: WindowHandle<VegaWindow>,
+        focus: &FocusHandle,
+        cx: &mut TestAppContext,
+    ) -> bool {
+        window
+            .update(cx, |_, window, _| focus.is_focused(window))
+            .expect("workspace focus window")
     }
 
     fn assert_close(actual: Pixels, expected: f32, label: &str) {
@@ -3221,10 +3256,13 @@ mod tests {
                 .focus_handle(cx)
         });
         assert!(
-            window
-                .update(cx, |_, window, _| diff_focus.is_focused(window))
-                .expect("diff focus after restore"),
-            "generic restore activates the pane content"
+            focus_is(window, &input_focus, cx),
+            "restoring hidden Review preserves Composer focus"
+        );
+        shell_click(window, "workspace-tab-Diff", cx);
+        assert!(
+            focus_is(window, &diff_focus, cx),
+            "explicit Diff tab activation focuses the pane content"
         );
 
         // Branch c again: with the hidden tab closed, the slot opens Review.
@@ -3757,7 +3795,13 @@ mod tests {
         input.update(cx, |input, cx| {
             input.set_text("retained workspace draft", cx)
         });
-        root.update(cx, |root, cx| root.workspace_open_diff(cx));
+        let composer_focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("focus the Composer");
+        shell_click(window, "main-header-workspace-right", cx);
         let view = root.read_with(cx, |root, _| {
             root.diff_controller
                 .active
@@ -3786,6 +3830,60 @@ mod tests {
                 .is_some_and(|(_, entity)| *entity == stream)
                 && root.workspace.selected[0] == Some(TabKey::Diff)
         }));
+        let diff_focus = view.read_with(cx, |view, cx| view.focus_handle(cx));
+        assert!(
+            focus_is(window, &composer_focus, cx),
+            "global Review reveal keeps Composer focus"
+        );
+        shell_click(window, "workspace-tab-Diff", cx);
+        assert!(
+            focus_is(window, &diff_focus, cx),
+            "explicit Diff tab activation focuses Diff"
+        );
+        let diff_tab_focus = root.read_with(cx, |root, _| {
+            root.workspace
+                .tab_focuses
+                .get(&TabKey::Diff)
+                .cloned()
+                .expect("Diff tab focus handle")
+        });
+        window
+            .update(cx, |_, window, cx| window.focus(&diff_tab_focus, cx))
+            .expect("focus the Diff tab");
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        assert!(
+            focus_is(window, &diff_focus, cx),
+            "keyboard Diff tab activation focuses Diff"
+        );
+        window
+            .update(cx, |root, window, cx| {
+                root.workspace_focus_composer(window, cx)
+            })
+            .expect("refocus the Composer");
+        root.update(cx, |root, cx| root.workspace_open_diff(cx));
+        cx.run_until_parked();
+        assert!(
+            focus_is(window, &composer_focus, cx),
+            "repeated global Review reveal keeps Composer focus"
+        );
+        shell_click(window, "main-header-workspace-right", cx);
+        assert!(root.read_with(cx, |root, _| root.workspace.hidden[0]));
+        shell_click(window, "main-header-workspace-right", cx);
+        assert!(root.read_with(cx, |root, _| !root.workspace.hidden[0]
+            && root.workspace.selected[0] == Some(TabKey::Diff)));
+        assert!(
+            focus_is(window, &composer_focus, cx),
+            "global Review restore keeps Composer focus"
+        );
+        shell_click(window, "workspace-tab-Diff", cx);
+        assert!(focus_is(window, &diff_focus, cx));
+        root.update(cx, |root, cx| root.workspace_open_diff(cx));
+        cx.run_until_parked();
+        assert!(
+            focus_is(window, &diff_focus, cx),
+            "repeated global Review reveal preserves explicit Diff focus"
+        );
         window
             .update(cx, |root, window, cx| {
                 root.workspace_toggle_menu(false, window, cx)
