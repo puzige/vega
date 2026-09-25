@@ -66,15 +66,15 @@
 
 ## 基线与提交
 
-- 主干基线：`f6a8c5a5f8d7eeb802cc5af28b24de2c2bae8617`（含 #204；本轮 rebase 基线）。
-- 冻结规格提交：`5d6ade1`。
-- 实现提交：`7281ad8`；本轮定向验收代码 HEAD：`7281ad8`。
+- 当前主干基线：`1db00054e8813c9faf7cc06efba9cb071f408e04`（含 #208/#72；本轮集成验证基线）。
+- 冻结规格提交：`0006b76ffa8393424f496ce7d040fe746c311749`。
+- 实现提交：`8ca27bc3a5628d06eec595950c7892e7b840ff70`；兼容修复前交付记录提交：`cb50130dacef1b10979639f69d4b03c8f6605daf`。
 - 本轮更新旧测试是为了覆盖新增的运行状态 header / 分段活动行以及“不创建空 assistant 行”；混排顺序、权限边界、工具选择器和展开行为断言仍保留并通过。
 - Review follow-up：空 runtime failure 在终态事件前保持 `usize::MAX` active entry；`append_empty_terminal_segment` 创建仅含安全 failure reason 的 assistant entry 并更新 active index，渲染行保持可见。代码已符合规格，本轮补充 GPUI 可见性回归，无需 production 修复。
 
 ## 定向 Nextest
 
-本轮 rebase 到 `f6a8c5a` 后重跑了原始 #146 过滤命令；下方其余补充回归记录来自前一轮 `548db948` 基线验收。
+以下已有命令与输出是此前在 `f6a8c5a` / `548db948` 基线上的历史证据，不代表本次 `1db0005` 集成验证。最新基线结果和首轮编译失败证据见本报告末尾的“#208 集成兼容修复”。
 
 原始 #146 过滤命令：
 
@@ -145,6 +145,83 @@ cargo nextest run -p vega_store -p vega_conversation -E 'test(migrate_creates_ex
 ```
 
 原始结果：`Nextest run ID 7921dc73-2561-47e8-b71d-3e19c04819aa`；`6 tests run: 6 passed, 660 skipped`。
+
+## #208 集成兼容修复
+
+当前分支已以 `1db00054e8813c9faf7cc06efba9cb071f408e04`（#208/#72 合入后的 master）为基线。第一次在该基线上编译 #72 锚点过滤测试时，命令真实失败，报告了 3 个编译错误：
+
+```text
+$ cargo nextest run -p vega_ui issue72_
+exit code: 101
+error[E0599]: no variant named `Thinking` found for enum `conversation_stream::model::StreamEntry`
+   --> crates/vega_ui/src/conversation_stream/message_anchors.rs:95:32
+error[E0063]: missing field `execution_duration_ms` in initializer of `vega_conversation::history::HistoryEntry`
+  --> crates/vega_ui/src/conversation_stream/tests/issue72_message_anchor_navigation.rs:47:21
+error[E0063]: missing field `execution_duration_ms` in initializer of `vega_conversation::history::HistoryEntry`
+  --> crates/vega_ui/src/conversation_stream/tests/issue72_message_anchor_navigation.rs:17:17
+Some errors have detailed explanations: E0063, E0599.
+For more information about an error, try `rustc --explain E0063`.
+error: could not compile `vega_ui` (lib test) due to 3 previous errors
+error: command `/opt/homebrew/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --package vega_ui` exited with code 101
+```
+
+根因是 #146 将顶层 `Thinking` 项收敛为 `RunActivity` header 和 `RunActivitySegment`，而 #72 锚点投影仍按旧枚举排除 `Thinking`。两个新项是共享 assistant message ID 的运行过程展示行，不应抢占最终 assistant 消息的导航锚点；但它们仍留在列表条目序列中，`message_anchor_geometry` 继续为每个条目计算高度。修复只在投影匹配中跳过这两个 activity variant，没有从几何计算或列表移除它们。另将 #72 历史 fixture 的 `AssistantText` 初始化补为 `execution_duration_ms: None`。
+
+新增 `run_activity_entries_contribute_geometry_without_duplicating_message_anchors`，用带终态耗时的 assistant 回复、同轮工具、仅有运行过程的空完成轮次和普通回复构建真实 history projection；验证锚点落在 assistant 文本行、activity 行不生成重复/空锚点，且几何仍覆盖全部五个条目并具有正高度。
+
+本次最新基线定向验证：
+
+```text
+$ cargo nextest run -p vega_store -p vega_conversation -p vega_ui -p vega -E 'test(issue146_)'
+Starting 9 tests across 15 binaries (1373 tests skipped)
+PASS vega_conversation history::issue146_tests::issue146_history_attaches_duration_only_to_final_assistant_segment
+PASS vega_ui conversation_stream::tests::issue146_run_activity::issue146_duration_display_rounds_up_and_changes_units_at_thresholds
+PASS vega_store messages::tests::issue146_terminal_durations_are_persisted_and_projected_by_page
+PASS vega_ui conversation_stream::tests::issue146_run_activity::issue146_empty_runtime_failure_keeps_reason_visible_without_assistant_text
+PASS vega_ui conversation_stream::tests::issue146_run_activity::issue146_text_only_run_has_no_empty_live_row_and_shows_total_duration
+PASS vega_ui conversation_stream::tests::issue146_run_activity::issue146_terminal_failure_cancel_and_hydration_restore_truthful_statuses
+PASS vega_ui conversation_stream::tests::issue146_run_activity::issue146_long_run_activity_is_bounded_and_keeps_its_scroll_position
+PASS vega_ui conversation_stream::tests::issue146_run_activity::issue146_live_activity_folds_once_and_keeps_final_answer_visible
+PASS vega_conversation agent::tests::stream_persistence::issue146_runtime_duration_includes_permission_wait_and_tool_continuation
+Summary: 9 tests run: 9 passed, 1373 skipped
+
+$ cargo nextest run -p vega_ui issue72_
+Starting 9 tests across 1 binary (493 tests skipped)
+PASS preview_normalization_redacts_common_credentials_and_is_bounded
+PASS empty_thread_still_displays_recoverable_location_status
+PASS anchors_use_unique_durable_message_ids_and_safe_text_projections
+PASS run_activity_entries_contribute_geometry_without_duplicating_message_anchors
+PASS rail_is_hidden_for_short_content_and_shown_for_long_overflow
+PASS prepending_neighbor_history_page_keeps_existing_anchor_identity_and_order
+PASS mouse_and_keyboard_anchor_navigation_emit_real_message_ids
+PASS width_remeasure_preserves_anchor_identity_and_updates_rail_geometry
+PASS measured_entry_height_cache_stays_bounded_while_scrolling
+Summary: 9 tests run: 9 passed, 493 skipped
+
+$ cargo nextest run -p vega_ui issue148_long_session_scroll
+Starting 9 tests across 1 binary (493 tests skipped)
+PASS production_render_samples_remain_bounded
+PASS target_window_replacement_drops_old_cards_and_preserves_thread_state
+PASS durable_entry_identity_survives_prepend_and_rebuild
+PASS newer_page_appends_and_preserves_the_existing_anchor
+PASS newer_page_request_waits_until_the_list_reaches_the_bottom
+PASS scroll_anchor_snapshot_restores_message_identity_and_offset_after_rebuild
+PASS loaded_message_reveal_keeps_the_entry_model_and_scrolls_to_target
+PASS prepend_and_column_remeasure_restore_stable_pixel_anchor
+PASS mixed_fixtures_keep_entry_counts_and_render_callbacks_bounded
+Summary: 9 tests run: 9 passed, 493 skipped
+
+$ cargo nextest run -p vega_ui ten_k_mixed_items_trunk_e2e
+Starting 1 test across 1 binary (501 tests skipped)
+PASS ten_k_mixed_items_trunk_e2e
+Summary: 1 test run: 1 passed, 501 skipped
+
+$ cargo fmt --all -- --check
+(exit 0; no output)
+
+$ git diff --check
+(exit 0; no output)
+```
 
 ## 其他检查
 
