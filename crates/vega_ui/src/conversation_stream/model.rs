@@ -1,10 +1,58 @@
 use super::*;
+use std::collections::VecDeque;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HistoryHydration {
     pub(crate) older_cursor: Option<i64>,
     pub(crate) loading: bool,
     pub(crate) paused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StreamEntryIdentity {
+    pub(crate) key: String,
+    pub(crate) message_id: Option<String>,
+    pub(crate) sequence: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StreamAnchorSnapshot {
+    pub(crate) identity: Option<String>,
+    pub(crate) offset_in_item: Pixels,
+    pub(crate) following_tail: bool,
+}
+
+pub(crate) const STREAM_SAMPLE_CAPACITY: usize = 2048;
+
+#[derive(Default)]
+pub(crate) struct BoundedSamples {
+    values: Mutex<VecDeque<u128>>,
+}
+
+impl BoundedSamples {
+    pub(crate) fn push(&self, value: u128) {
+        if let Ok(mut values) = self.values.lock() {
+            if values.len() == STREAM_SAMPLE_CAPACITY {
+                values.pop_front();
+            }
+            values.push_back(value);
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Vec<u128> {
+        self.values
+            .lock()
+            .map(|values| values.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.values
+            .lock()
+            .map(|values| values.len())
+            .unwrap_or_default()
+    }
 }
 
 /// Monospace family for code rows (ui-spec §3 代码等宽档位；本机 macOS 以
@@ -461,9 +509,10 @@ pub(crate) struct StreamCounters {
     /// Render callbacks executed (fps numerator).
     pub frames: AtomicU64,
     /// Per-frame element-tree build times, ns (render 回调耗时，spike 口径).
-    pub render_ns: Mutex<Vec<u128>>,
+    pub render_ns: BoundedSamples,
     /// Per-frame visible-row build times, ns (变高 list 的 render_item 回调).
-    pub row_build_ns: Mutex<Vec<u128>>,
+    pub row_build_ns: BoundedSamples,
+    pub row_callbacks: AtomicU64,
     /// Committed blocks materialized for the first time.
     pub committed_materializations: AtomicU64,
     /// Already-cached committed blocks re-materialized (P3 指标：普通流式期间
@@ -478,9 +527,12 @@ impl StreamCounters {
     pub(crate) fn record_render(&self, started: Instant) {
         self.frames.fetch_add(1, Ordering::Relaxed);
         let elapsed = started.elapsed().as_nanos();
-        if let Ok(mut samples) = self.render_ns.lock() {
-            samples.push(elapsed);
-        }
+        self.render_ns.push(elapsed);
+    }
+
+    pub(crate) fn record_row_callback(&self, elapsed: u128) {
+        self.row_callbacks.fetch_add(1, Ordering::Relaxed);
+        self.row_build_ns.push(elapsed);
     }
 }
 

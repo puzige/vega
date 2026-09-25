@@ -50,6 +50,8 @@ pub struct ConversationStream {
     /// natural heights. The same state owns the scroll position and the P4
     /// tail-follow semantics (`FollowMode::Tail`).
     pub(crate) list: gpui_kit::ListState,
+    pub(crate) entry_identities: Vec<StreamEntryIdentity>,
+    pub(crate) next_local_entry_id: u64,
     /// Active demo injection (`None` = idle/finished).
     pub(crate) injecting: Option<InjectionState>,
     /// Composer 输入状态（独立 `TextInput` Entity，1–8 行自适应多行）。
@@ -85,6 +87,7 @@ pub struct ConversationStream {
     pub(crate) hydration: HistoryHydration,
     /// Exact active durable assistant id and its stream-entry index.
     pub(crate) active_agent_message: Option<(String, usize)>,
+    pub(crate) active_segment_ordinal: usize,
     /// Whether the current Markdown segment contains text; a tool boundary
     /// may leave the active run without a segment until the next text delta.
     pub(crate) active_segment_has_text: bool,
@@ -159,6 +162,7 @@ pub struct ConversationStream {
     /// and the highlighted row is kept in view during keyboard navigation.
     pub(crate) model_menu_scroll: ScrollHandle,
     pub(crate) compact_workspace: bool,
+    pub(crate) workspace_width: Option<f32>,
     pub(crate) project_label: String,
     /// Window-owned R69 draft route, never inferred from a durable `Thread`.
     pub(crate) draft_route: bool,
@@ -231,6 +235,17 @@ pub(crate) struct InjectionState {
 impl ConversationStream {
     /// Projects the host column width without rebuilding composer state.
     pub fn set_workspace_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        let width_changed = self
+            .workspace_width
+            .is_some_and(|previous| (previous - width).abs() > 0.5);
+        self.workspace_width = Some(width);
+        if width_changed && !self.entries.is_empty() {
+            self.ensure_entry_identities();
+            let top = self.list.logical_scroll_top();
+            let anchor = self.scroll_anchor_snapshot();
+            self.list.remeasure();
+            self.restore_scroll_anchor_at(&anchor, top.item_ix);
+        }
         let compact = width < 500.;
         if self.compact_workspace != compact {
             self.compact_workspace = compact;
@@ -376,6 +391,8 @@ impl ConversationStream {
             entries: Vec::new(),
             counters: Arc::new(StreamCounters::default()),
             list,
+            entry_identities: Vec::new(),
+            next_local_entry_id: 0,
             injecting: None,
             input,
             user_block_seq: USER_BLOCK_BASE,
@@ -391,6 +408,7 @@ impl ConversationStream {
             summary_cards: HashMap::new(),
             hydration: HistoryHydration::default(),
             active_agent_message: None,
+            active_segment_ordinal: 0,
             active_thinking: None,
             thinking_bytes: 0,
             thinking_blocks: 0,
@@ -433,6 +451,7 @@ impl ConversationStream {
             model_picker_level: ModelPickerLevel::Closed,
             model_menu_scroll: ScrollHandle::new(),
             compact_workspace: false,
+            workspace_width: None,
             project_label: String::new(),
             draft_route: false,
             utility_projects: Vec::new(),
@@ -461,15 +480,140 @@ impl ConversationStream {
     pub(crate) fn list_append(&mut self, previous_len: usize) {
         let count = self.entries.len();
         debug_assert!(count >= previous_len);
+        self.ensure_entry_identities();
         if count > previous_len {
             self.list
                 .splice(previous_len..previous_len, count - previous_len);
         }
     }
 
+    pub(crate) fn ensure_entry_identities(&mut self) {
+        while self.entry_identities.len() < self.entries.len() {
+            let identity = self.new_local_identity();
+            self.entry_identities.push(identity);
+        }
+        self.entry_identities.truncate(self.entries.len());
+    }
+
+    pub(crate) fn set_entry_identity(&mut self, index: usize, identity: StreamEntryIdentity) {
+        self.ensure_entry_identities();
+        if let Some(slot) = self.entry_identities.get_mut(index) {
+            *slot = identity;
+        }
+    }
+
+    fn new_local_identity(&mut self) -> StreamEntryIdentity {
+        let local_id = self.next_local_entry_id;
+        self.next_local_entry_id = self.next_local_entry_id.saturating_add(1);
+        let route_id = self.thread.id.as_str();
+        StreamEntryIdentity {
+            key: format!("route:{}:{}:local:{}", route_id.len(), route_id, local_id),
+            message_id: None,
+            sequence: None,
+        }
+    }
+
+    pub(crate) fn durable_entry_identity(
+        &self,
+        message_id: &str,
+        kind: &str,
+        sequence: Option<i64>,
+    ) -> StreamEntryIdentity {
+        let route_id = self.thread.id.as_str();
+        StreamEntryIdentity {
+            key: format!(
+                "route:{}:{}:message:{}:{}:kind:{}:{}",
+                route_id.len(),
+                route_id,
+                message_id.len(),
+                message_id,
+                kind.len(),
+                kind
+            ),
+            message_id: Some(message_id.to_string()),
+            sequence,
+        }
+    }
+
+    pub(crate) fn tool_call_identity(
+        &self,
+        call_id: &str,
+        message_id: Option<&str>,
+        sequence: Option<i64>,
+    ) -> StreamEntryIdentity {
+        let route_id = self.thread.id.as_str();
+        StreamEntryIdentity {
+            key: format!(
+                "route:{}:{}:tool-call:{}:{}",
+                route_id.len(),
+                route_id,
+                call_id.len(),
+                call_id
+            ),
+            message_id: message_id.map(str::to_string),
+            sequence,
+        }
+    }
+
+    pub(crate) fn entry_identity_at(&self, index: usize) -> Option<&str> {
+        self.entry_identities
+            .get(index)
+            .map(|identity| identity.key.as_str())
+    }
+
+    pub(crate) fn scroll_anchor_snapshot(&self) -> StreamAnchorSnapshot {
+        let top = self.list.logical_scroll_top();
+        let identity = self.entry_identities.get(top.item_ix);
+        StreamAnchorSnapshot {
+            identity: identity.map(|identity| identity.key.clone()),
+            offset_in_item: top.offset_in_item,
+            following_tail: self.list.is_following_tail(),
+        }
+    }
+
+    pub(crate) fn restore_scroll_anchor(&mut self, anchor: &StreamAnchorSnapshot) -> bool {
+        if anchor.following_tail {
+            self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
+            return true;
+        }
+        let Some(identity) = anchor.identity.as_deref() else {
+            return false;
+        };
+        let Some(item_ix) = self
+            .entry_identities
+            .iter()
+            .position(|candidate| candidate.key == identity)
+        else {
+            return false;
+        };
+        self.restore_scroll_anchor_at(anchor, item_ix)
+    }
+
+    fn restore_scroll_anchor_at(&mut self, anchor: &StreamAnchorSnapshot, item_ix: usize) -> bool {
+        if anchor.following_tail {
+            self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
+            return true;
+        }
+        if anchor.identity.as_deref() != self.entry_identity_at(item_ix) {
+            return false;
+        }
+        // `scroll_to` pauses an active Tail mode without dropping the mode.
+        // Keep that paused state so scrolling back to the bottom can resume.
+        self.list.scroll_to(gpui_kit::ListOffset {
+            item_ix,
+            offset_in_item: anchor.offset_in_item,
+        });
+        true
+    }
+
     /// Registers one item inserted at `index` (e.g. an inline artifact after
     /// its exact tool).
     pub(crate) fn list_insert(&mut self, index: usize) {
+        let identity = self.new_local_identity();
+        if index <= self.entry_identities.len() {
+            self.entry_identities.insert(index, identity);
+        }
+        self.ensure_entry_identities();
         self.list.splice(index..index, 1);
     }
 
@@ -479,12 +623,24 @@ impl ConversationStream {
     /// the page-boundary anchor is exact (drift <1px by construction).
     pub(crate) fn list_prepend(&mut self, count: usize) {
         if count > 0 {
+            let old_count = self.entries.len().saturating_sub(count);
+            if self.entry_identities.len() == old_count {
+                let mut identities = (0..count)
+                    .map(|_| self.new_local_identity())
+                    .collect::<Vec<_>>();
+                identities.append(&mut self.entry_identities);
+                self.entry_identities = identities;
+            }
+            self.ensure_entry_identities();
             self.list.splice(0..0, count);
         }
     }
 
     /// Registers the removal of the item at `index` (permission resolution).
     pub(crate) fn list_remove(&mut self, index: usize) {
+        if index < self.entry_identities.len() {
+            self.entry_identities.remove(index);
+        }
         self.list.splice(index..index + 1, 0);
     }
 
@@ -494,7 +650,10 @@ impl ConversationStream {
         if let Some(index) = index
             && index < self.list.item_count()
         {
+            let top = self.list.logical_scroll_top();
+            let anchor = self.scroll_anchor_snapshot();
             self.list.remeasure_items(index..index + 1);
+            self.restore_scroll_anchor_at(&anchor, top.item_ix);
         }
     }
 

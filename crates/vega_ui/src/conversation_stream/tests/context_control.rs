@@ -577,6 +577,7 @@ async fn issue117_restore_is_historical_idempotent_and_rejects_late_results(
                 HistoryPage {
                     entries: vec![HistoryEntry::UserText {
                         seq: 1,
+                        message_id: "history-1".into(),
                         content: "history".into(),
                     }],
                     older_cursor: None,

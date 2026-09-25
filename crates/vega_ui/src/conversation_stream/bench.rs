@@ -23,6 +23,7 @@
 //! (SDD §5: the P1 baseline follows the variable-height semantics).
 
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -35,7 +36,10 @@ use vega_conversation::types::{
 };
 use vega_markdown::{MarkdownStream, split_deltas};
 
-use super::{INJECT_TICK, MessageCopy, StreamCounters, StreamEntry, StreamModel, render_entry};
+use super::{
+    BoundedSamples, INJECT_TICK, MessageCopy, StreamCounters, StreamEntry, StreamModel,
+    render_entry,
+};
 
 use crate::plan_card::PlanCard;
 use crate::summary_card::SummaryCard;
@@ -60,7 +64,7 @@ const SCROLL_SPEED_PX_S: f32 = 720.0;
 const PARK_OFFSET_Y: f32 = 1000.0;
 /// C6 scenario size: 10k mixed semantic items (markdown/wrapped CJK/emoji/
 /// code/all card kinds), one GPUI `list` item per [`StreamEntry`].
-const ITEM_COUNT: usize = 10_000;
+const DEFAULT_ITEM_COUNT: usize = 10_000;
 /// Injection target rate during STREAM (δ/s，与演示注入同口径).
 const INJECT_RATE: usize = 500;
 
@@ -72,10 +76,26 @@ pub fn output_path_from_args() -> Option<PathBuf> {
     args.get(position + 1).map(PathBuf::from)
 }
 
+fn fixture_count_from_args() -> Option<usize> {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(position) = args.iter().position(|arg| arg == "--vega-bench-items") else {
+        return Some(DEFAULT_ITEM_COUNT);
+    };
+    let count = args.get(position + 1)?.parse::<usize>().ok()?;
+    matches!(count, 25 | 100 | 1_000 | 10_000).then_some(count)
+}
+
 /// Installs the probe in a running app: registers the theme, opens the probe
 /// window, and starts the phase drivers. Called by the `vega` binary (which
 /// owns the `application().run` boot) instead of the normal app startup.
 pub fn start(output: PathBuf, cx: &mut App) {
+    let Some(fixture_count) = fixture_count_from_args() else {
+        tracing::error!(
+            "vega --vega-bench-render: --vega-bench-items must be 25, 100, 1000, or 10000"
+        );
+        cx.quit();
+        return;
+    };
     // Bench 模式不经过主应用启动路径：单独注册 light 主题供 item 渲染取 token。
     cx.set_global(vega_theme::Theme::light());
     let bounds = Bounds::centered(None, gpui_kit::size(px(1200.0), px(800.0)), cx);
@@ -88,7 +108,7 @@ pub fn start(output: PathBuf, cx: &mut App) {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             ..Default::default()
         },
-        |_, cx| cx.new(|cx| BenchStreamView::new(output, cx)),
+        |_, cx| cx.new(|cx| BenchStreamView::new(output, fixture_count, cx)),
     );
     if window.is_err() {
         tracing::error!("vega --vega-bench-render: failed to open the probe window");
@@ -101,10 +121,11 @@ pub fn start(output: PathBuf, cx: &mut App) {
 /// Aggregated per-phase measurements (all percentiles over raw ns samples).
 #[derive(Default)]
 struct PhaseMeasurements {
-    render_ns: Vec<u128>,
-    item_ns: Vec<u128>,
+    frame_build_ns: BoundedSamples,
+    row_callback_ns: BoundedSamples,
     fps: Vec<u64>,
     frames: u64,
+    list_callbacks: u64,
 }
 
 /// Nearest-rank percentile over a raw ns sample list, reported in µs.
@@ -131,22 +152,74 @@ fn fps_median(samples: &[u64]) -> u64 {
 
 impl PhaseMeasurements {
     fn to_json(&self, seconds: u64) -> serde_json::Value {
+        let frame_build_ns = self.frame_build_ns.snapshot();
+        let row_callback_ns = self.row_callback_ns.snapshot();
         serde_json::json!({
             "seconds": seconds,
             "fps_median": fps_median(&self.fps),
             "frames": self.frames,
-            "frame_build_p50_us": percentile_us(&self.render_ns, 50),
-            "frame_build_p99_us": percentile_us(&self.render_ns, 99),
-            "item_build_p50_us": percentile_us(&self.item_ns, 50),
-            "item_build_p99_us": percentile_us(&self.item_ns, 99),
+            "list_callback_count": self.list_callbacks,
+            "frame_build_p50_us": percentile_us(&frame_build_ns, 50),
+            "frame_build_p99_us": percentile_us(&frame_build_ns, 99),
+            "row_callback_p50_us": percentile_us(&row_callback_ns, 50),
+            "row_callback_p99_us": percentile_us(&row_callback_ns, 99),
         })
     }
+}
+
+#[derive(Default)]
+struct FixtureFingerprint {
+    hash: u64,
+    source_text_bytes: usize,
+}
+
+impl FixtureFingerprint {
+    fn new(count: usize) -> Self {
+        let mut fingerprint = Self {
+            hash: 0xcbf29ce484222325,
+            source_text_bytes: 0,
+        };
+        fingerprint.write(b"vega-148-mixed-fixture-v1");
+        fingerprint.write(&(count as u64).to_le_bytes());
+        fingerprint
+    }
+
+    fn record(&mut self, index: usize, kind: &str, identity: &str, source: &str) {
+        self.write(&(index as u64).to_le_bytes());
+        self.write(kind.as_bytes());
+        self.write(identity.as_bytes());
+        self.write(source.as_bytes());
+        self.write(&[0xff]);
+        self.source_text_bytes += source.len();
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.hash ^= u64::from(*byte);
+            self.hash = self.hash.wrapping_mul(0x100000001b3);
+        }
+        self.hash ^= 0xff;
+        self.hash = self.hash.wrapping_mul(0x100000001b3);
+    }
+
+    fn hex(&self) -> String {
+        format!("{:016x}", self.hash)
+    }
+}
+
+struct FixtureStats {
+    entry_count: usize,
+    hash: String,
+    source_text_bytes: usize,
+    creation_duration_ms: f64,
+    markdown_materializations: u64,
 }
 
 /// The probe root view: the same entries/list/item machinery as
 /// [`super::ConversationStream`], driven by programmatic scroll + injection.
 struct BenchStreamView {
     entries: Vec<StreamEntry>,
+    fixture: FixtureStats,
     counters: Arc<StreamCounters>,
     list: gpui_kit::ListState,
     phase: Phase,
@@ -167,6 +240,7 @@ struct BenchStreamView {
     /// Per-second counter deltas for the report's `per_second` array.
     samples: Vec<serde_json::Value>,
     output: PathBuf,
+    viewport_px: (f32, f32),
 }
 
 /// One mixed markdown turn (paragraphs with CJK/emoji/inline styles, a list).
@@ -209,11 +283,11 @@ fn user_echo(index: usize) -> String {
     format!("帮我看看第 {index} 段的输出 ✅")
 }
 
-fn user_echo_entry(index: usize, seq: u64) -> StreamEntry {
+fn user_echo_entry(seq: u64, text: &str) -> StreamEntry {
     let block_id = u64::MAX - (1 << 32) + seq;
     StreamEntry::User {
-        copy: MessageCopy::new(&user_echo(index)),
-        lines: super::user_message_lines(block_id, &user_echo(index)),
+        copy: MessageCopy::new(text),
+        lines: super::user_message_lines(block_id, text),
     }
 }
 
@@ -235,22 +309,67 @@ fn finished_assistant(doc: &str, counters: &StreamCounters) -> StreamEntry {
 /// styles), code turns, table turns, wrapped-CJK turns, user echoes, tool
 /// cards, plan cards, and summary cards. Every assistant model syncs eagerly
 /// so the first frame renders full natural heights (S8-T45 hydration 同语义).
-fn build_mixed_entries(count: usize, cx: &mut Context<BenchStreamView>) -> Vec<StreamEntry> {
+fn build_mixed_entries(
+    count: usize,
+    cx: &mut Context<BenchStreamView>,
+) -> (Vec<StreamEntry>, FixtureStats) {
+    let started = Instant::now();
     let counters = StreamCounters::default();
+    let mut fingerprint = FixtureFingerprint::new(count);
     let mut entries: Vec<StreamEntry> = Vec::with_capacity(count + 1);
     let mut user_seq = 0u64;
     for index in 0..count {
         match index % 25 {
-            0..=8 => entries.push(finished_assistant(&markdown_turn(index), &counters)),
-            9..=11 => entries.push(finished_assistant(&code_turn(index), &counters)),
-            12..=14 => entries.push(finished_assistant(&table_turn(index), &counters)),
-            15..=17 => entries.push(finished_assistant(&wrapped_cjk_turn(index), &counters)),
+            0..=8 => {
+                let source = markdown_turn(index);
+                fingerprint.record(
+                    index,
+                    "assistant-markdown",
+                    &format!("assistant-{index}"),
+                    &source,
+                );
+                entries.push(finished_assistant(&source, &counters));
+            }
+            9..=11 => {
+                let source = code_turn(index);
+                fingerprint.record(
+                    index,
+                    "assistant-code",
+                    &format!("assistant-{index}"),
+                    &source,
+                );
+                entries.push(finished_assistant(&source, &counters));
+            }
+            12..=14 => {
+                let source = table_turn(index);
+                fingerprint.record(
+                    index,
+                    "assistant-table",
+                    &format!("assistant-{index}"),
+                    &source,
+                );
+                entries.push(finished_assistant(&source, &counters));
+            }
+            15..=17 => {
+                let source = wrapped_cjk_turn(index);
+                fingerprint.record(
+                    index,
+                    "assistant-cjk",
+                    &format!("assistant-{index}"),
+                    &source,
+                );
+                entries.push(finished_assistant(&source, &counters));
+            }
             18..=19 => {
-                entries.push(user_echo_entry(index, user_seq));
+                let source = user_echo(index);
+                fingerprint.record(index, "user", &format!("user-{index}"), &source);
+                entries.push(user_echo_entry(user_seq, &source));
                 user_seq += 1;
             }
             // Tool card: terminal read-only projection with bounded output.
             20 => {
+                let source = format!("tool output {index}\nline two ✅\nline three");
+                fingerprint.record(index, "tool", &format!("tool-{index}"), &source);
                 let card = cx.new(|_| {
                     ToolCard::hydrated(
                         Some(ToolCardInputProjection::ReadOnly {
@@ -261,7 +380,7 @@ fn build_mixed_entries(count: usize, cx: &mut Context<BenchStreamView>) -> Vec<S
                         None,
                         Some(ToolCardResultProjection::ReadOnly {
                             status: ToolCallStatus::Success,
-                            output: format!("tool output {index}\nline two ✅\nline three"),
+                            output: source,
                             reused: false,
                         }),
                     )
@@ -270,12 +389,15 @@ fn build_mixed_entries(count: usize, cx: &mut Context<BenchStreamView>) -> Vec<S
             }
             // Plan card every 100 items; user echo otherwise.
             21 if index % 100 == 21 => {
+                let id = format!("bench-plan-{index}");
+                let content = markdown_turn(index);
+                fingerprint.record(index, "plan", &id, &content);
                 let card = cx.new(|cx| {
                     PlanCard::new(
                         Plan {
-                            id: format!("bench-plan-{index}"),
+                            id,
                             thread_id: "bench".into(),
-                            content: markdown_turn(index),
+                            content,
                             status: PlanStatus::Approved,
                             review_note: None,
                             reviewed_at: Some(1),
@@ -286,14 +408,18 @@ fn build_mixed_entries(count: usize, cx: &mut Context<BenchStreamView>) -> Vec<S
                 entries.push(StreamEntry::Plan { card });
             }
             21 => {
-                entries.push(user_echo_entry(index, user_seq));
+                let source = user_echo(index);
+                fingerprint.record(index, "user", &format!("user-{index}"), &source);
+                entries.push(user_echo_entry(user_seq, &source));
                 user_seq += 1;
             }
             // Summary card every 100 items; user echo otherwise.
             22 if index % 100 == 22 => {
+                let message_id = format!("bench-summary-{index}");
+                fingerprint.record(index, "summary", &message_id, "");
                 let card = cx.new(|_| {
                     SummaryCard::new(TaskCostSummary {
-                        message_id: format!("bench-summary-{index}"),
+                        message_id,
                         outcome: TaskSummaryOutcome::Completed,
                         usage: None,
                         cost: SummaryCost::Unavailable,
@@ -305,26 +431,44 @@ fn build_mixed_entries(count: usize, cx: &mut Context<BenchStreamView>) -> Vec<S
                 entries.push(StreamEntry::Summary { card });
             }
             22 => {
-                entries.push(user_echo_entry(index, user_seq));
+                let source = user_echo(index);
+                fingerprint.record(index, "user", &format!("user-{index}"), &source);
+                entries.push(user_echo_entry(user_seq, &source));
                 user_seq += 1;
             }
-            _ => entries.push(finished_assistant(&wrapped_cjk_turn(index), &counters)),
+            _ => {
+                let source = wrapped_cjk_turn(index);
+                fingerprint.record(
+                    index,
+                    "assistant-cjk",
+                    &format!("assistant-{index}"),
+                    &source,
+                );
+                entries.push(finished_assistant(&source, &counters));
+            }
         }
     }
-    entries
+    let fixture = FixtureStats {
+        entry_count: count,
+        hash: fingerprint.hex(),
+        source_text_bytes: fingerprint.source_text_bytes,
+        creation_duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+        markdown_materializations: counters.committed_materializations.load(Ordering::Relaxed),
+    };
+    (entries, fixture)
 }
 
 impl BenchStreamView {
-    fn new(output: PathBuf, cx: &mut Context<Self>) -> Self {
+    fn new(output: PathBuf, fixture_count: usize, cx: &mut Context<Self>) -> Self {
         // 预构建 10k 混合语义项：每项经真实 MarkdownStream + StreamModel
         // 管线物化（C6 场景：markdown/wrapped CJK/emoji/代码/全卡型）。
         // 末尾再追加一条专门的 streaming tail assistant turn。
-        let mut entries = build_mixed_entries(ITEM_COUNT, cx);
+        let (mut entries, fixture) = build_mixed_entries(fixture_count, cx);
         entries.push(finished_assistant(
-            &markdown_turn(ITEM_COUNT),
+            &markdown_turn(fixture_count),
             &StreamCounters::default(),
         ));
-        let deltas = split_deltas(&markdown_turn(ITEM_COUNT + 1), 0x5EED);
+        let deltas = split_deltas(&markdown_turn(fixture_count + 1), 0x5EED);
 
         let list = gpui_kit::ListState::new(entries.len(), gpui_kit::ListAlignment::Top, px(600.0))
             .with_uniform_item_height(px(48.0));
@@ -334,6 +478,7 @@ impl BenchStreamView {
 
         let mut view = Self {
             entries,
+            fixture,
             counters: Arc::new(StreamCounters::default()),
             list,
             phase: Phase::Scroll,
@@ -349,6 +494,7 @@ impl BenchStreamView {
             stream_stats: PhaseMeasurements::default(),
             samples: Vec::new(),
             output,
+            viewport_px: (0., 0.),
         };
         view.deltas.shrink_to_fit();
 
@@ -519,13 +665,27 @@ impl BenchStreamView {
 
     fn write_report(&self, cx: &App) {
         let subrow_count: usize = self.entries.iter().map(|entry| entry.row_count(cx)).sum();
+        let process_rss_kib = process_rss_kib();
         let report = serde_json::json!({
             "timestamp": unix_ms(),
             "mode": "probe_binary",
             "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
             "vsync_capped": true,
-            "row_count": self.entries.len(),
-            "item_count": self.entries.len(),
+            "fixture_entry_count": self.fixture.entry_count,
+            "fixture_hash": self.fixture.hash,
+            "window_requested_px": {"width": 1200, "height": 800},
+            "viewport_px": {
+                "width": self.viewport_px.0,
+                "height": self.viewport_px.1
+            },
+            "list_overdraw_px": 600,
+            "fixture_creation_duration_ms": self.fixture.creation_duration_ms,
+            "fixture_source_text_bytes": self.fixture.source_text_bytes,
+            "fixture_markdown_materializations": self.fixture.markdown_materializations,
+            "rendered_list_entry_count": self.entries.len(),
+            "list_callback_count": self.scroll_stats.list_callbacks
+                + self.stream_stats.list_callbacks,
+            "process_rss_kib": process_rss_kib,
             "subrow_count": subrow_count,
             "committed_blocks": self.committed_blocks(),
             "deltas_injected": self.deltas_injected.load(Ordering::Relaxed),
@@ -570,8 +730,13 @@ impl BenchStreamView {
 }
 
 impl Render for BenchStreamView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_t0 = Instant::now();
+        let viewport_size = window.viewport_size();
+        self.viewport_px = (
+            f32::from(viewport_size.width),
+            f32::from(viewport_size.height),
+        );
         let colors = vega_theme::theme(cx).colors;
 
         // 差量同步：仅在收到新 delta 时执行（SCROLL 阶段保持零分配帧）；
@@ -595,12 +760,10 @@ impl Render for BenchStreamView {
                                 move |this: &mut BenchStreamView, index: usize, window, cx| {
                                     let item_t0 = Instant::now();
                                     let item = match this.entries.get(index) {
-                                        Some(entry) => {
-                                            render_entry(entry, &this.counters, window, cx)
-                                        }
+                                        Some(entry) => render_entry(entry, window, cx),
                                         None => div().into_any_element(),
                                     };
-                                    this.record_item_build(item_t0);
+                                    this.record_row_callback(item_t0);
                                     item
                                 },
                             ),
@@ -618,13 +781,13 @@ impl Render for BenchStreamView {
             Phase::Scroll => {
                 self.scroll_stats.frames += 1;
                 self.scroll_stats
-                    .render_ns
+                    .frame_build_ns
                     .push(render_t0.elapsed().as_nanos());
             }
             Phase::Stream => {
                 self.stream_stats.frames += 1;
                 self.stream_stats
-                    .render_ns
+                    .frame_build_ns
                     .push(render_t0.elapsed().as_nanos());
             }
             Phase::Done => {}
@@ -634,11 +797,17 @@ impl Render for BenchStreamView {
 }
 
 impl BenchStreamView {
-    fn record_item_build(&mut self, started: Instant) {
+    fn record_row_callback(&mut self, started: Instant) {
         let elapsed = started.elapsed().as_nanos();
         match self.phase {
-            Phase::Scroll => self.scroll_stats.item_ns.push(elapsed),
-            Phase::Stream => self.stream_stats.item_ns.push(elapsed),
+            Phase::Scroll => {
+                self.scroll_stats.list_callbacks += 1;
+                self.scroll_stats.row_callback_ns.push(elapsed);
+            }
+            Phase::Stream => {
+                self.stream_stats.list_callbacks += 1;
+                self.stream_stats.row_callback_ns.push(elapsed);
+            }
             Phase::Done => {}
         }
     }
@@ -657,4 +826,12 @@ fn unix_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or_default()
+}
+
+fn process_rss_kib() -> Option<u64> {
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }

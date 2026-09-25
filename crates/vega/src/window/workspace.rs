@@ -3539,6 +3539,7 @@ mod tests {
                 vega_conversation::history::HistoryPage {
                     entries: vec![vega_conversation::history::HistoryEntry::UserText {
                         seq: 1,
+                        message_id: "first-message".into(),
                         content: "first message".into(),
                     }],
                     older_cursor: None,
