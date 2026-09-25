@@ -38,12 +38,12 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - 合并方式：squash merge，合并后删除功能分支（2026-08-29 决策）
 - **合并由 Agent 主动完成**：云端 `check` 绿后由 Agent 合并 master，合并完成后才把卡片改为 `In review` 等待用户手测（2026-09-23 用户裁决）
 
-## 验证门禁与云端 CI（2026-09-25 用户裁决，Issue #175、#179、#183）
+## 验证门禁与云端 CI（2026-09-25 用户裁决，Issue #175、#179、#183、#188）
 
-**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 当前 PR gate 见 [Issue #183 规格](docs/vega-issue-183-nextest-ci.md)（更新 [Issue #175](docs/vega-issue-175-single-pr-check.md) 的测试运行器）；云端门禁拆分的历史背景见 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md)。
+**门禁全部在云端。本地 commit/push 不做任何强制检查、不排队、不锁 target。** 当前 PR gate 见 [Issue #188 规格](docs/vega-issue-188-parallel-ci-checks.md)（在 [Issue #183](docs/vega-issue-183-nextest-ci.md) 测试运行器基础上并行 Clippy 与 nextest）；云端门禁拆分的历史背景见 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md)。
 
 - **Master 只允许 PR merge，不允许直接 push。** PR 必须通过云端 `check`（fmt / clippy / test）才能合并；分支保护由 admin 在 GitHub Settings → Branches 开启并勾选 required check。
-- `.github/workflows/pr-check.yml`：仅在 `pull_request`（base `master`）运行一个 `macos-latest` job，required check 名固定为 `check (fmt, clippy, test)`。使用 Rust 1.98.0 和 `rustfmt` / `clippy`，在同一 job 顺序运行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo nextest run --workspace`。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。任何失败都使 required check 失败。保留 `contents: read`、60 分钟超时和同 ref 并发取消；使用 `Swatinem/rust-cache@v2` 恢复 master CICD 的 `vega-master-build` 缓存，但 PR 不写缓存；不使用归档、分片、额外 build 或手动 dispatch。
+- `.github/workflows/pr-check.yml`：仅在 `pull_request`（base `master`）运行两个无相互依赖的 `macos-latest` job：Clippy job 顺序运行 `cargo fmt --all -- --check` 和 `cargo clippy --workspace --all-targets -- -D warnings`，Nextest job 运行 `cargo nextest run --workspace`。两者使用 Rust 1.98.0；Clippy job 安装 `rustfmt` / `clippy`。轻量汇总 job 的 required check 名固定为 `check (fmt, clippy, test)`，依赖两个执行 job，以 `always()` 运行；仅两者结果均为 `success` 才通过，失败、取消或跳过均使汇总失败。通过 `taiki-e/install-action@v2` 安装固定 `nextest@0.9.146`，使用默认测试并发。CI 覆盖单元和集成测试；nextest 不支持 doctests，按用户只使用 nextest 的要求不另跑 `cargo test --doc`。任何失败都使 required check 失败。保留 `contents: read`、执行 job 的 60 分钟超时和同 ref 并发取消；使用 `Swatinem/rust-cache@v2` 在两个执行 job 中恢复 master CICD 的 `vega-master-build` 缓存，但 PR 不写缓存；不使用归档、分片、额外 build 或手动 dispatch。
 - `.github/workflows/cicd.yml`（GitHub Actions 名称 `master`）：push 到 master（PR merge 后）直接调用 `release.yml` 共用发布流程，固定事件 SHA 自动分配 patch 版本、打包并发布 Release；与 PR check 使用相同 `shared-key: vega-master-build`，仅自动 master 发布写缓存。rust-cache 的实际缓存还依赖 runner 平台、工具链和 Cargo 输入，因此只有兼容的缓存条目会命中。
 - 2026-09-25 用户裁决（Issue #181）：每次合入 master 自动 patch 发布；保留人工 stable tag 与手动重跑，共用发布串行队列 `queue: max`，不取消正在运行的发布。先 draft，资产完整才 publish；同 SHA 幂等、正式资产不可覆盖，拒绝逆序发布。见 [发版指南](docs/vega-release.md)。
 - 历史 [Issue #123](docs/vega-issue-123-pr-check-pipeline.md) 与 [Issue #140](docs/vega-issue-140-ci-test-throughput.md) 的 PR gate 拓扑已由 [Issue #175 规格](docs/vega-issue-175-single-pr-check.md) 取代；旧的运行数据与测试证据保留为历史记录。
