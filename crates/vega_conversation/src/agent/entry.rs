@@ -724,9 +724,9 @@ where
         shared: permission_hook,
     };
     let runtime_started_at = std::time::Instant::now();
-    let diagnostics = Arc::new(super::diagnostics::DiagnosticsWriter::start(
-        prepared.database_path.clone(),
-    ));
+    let diagnostics = Arc::new(
+        super::diagnostics::DiagnosticsWriter::for_persistence_actor(actor.sender.clone()),
+    );
     let root_attempt_id = ulid::Ulid::generate().to_string();
     diagnostics.root_event(
         thread_id,
@@ -811,23 +811,6 @@ where
     }
     let outcome = match (processor_result, runtime_result) {
         (Ok(()), Ok(outcome)) => {
-            if let Err(error) = actor.close().await {
-                diagnostics.root_event(
-                    thread_id,
-                    &prepared.assistant_message_id,
-                    &root_attempt_id,
-                    vega_store::run_diagnostics::DiagnosticState::Failed,
-                    Some(vega_store::run_diagnostics::DiagnosticFailureCode::UnknownSafeFailure),
-                    runtime_started_at,
-                );
-                let error = Arc::new(error);
-                forward_pipeline_error(
-                    &mut event_sink,
-                    Some(prepared.assistant_message_id.clone()),
-                    error.clone(),
-                );
-                return Err(ConversationError::Runtime(error));
-            }
             let (state, failure_code) = if outcome.interrupted {
                 (
                     vega_store::run_diagnostics::DiagnosticState::Cancelled,
@@ -852,6 +835,16 @@ where
                 failure_code,
                 runtime_started_at,
             );
+            diagnostics.close().await;
+            if let Err(error) = actor.close().await {
+                let error = Arc::new(error);
+                forward_pipeline_error(
+                    &mut event_sink,
+                    Some(prepared.assistant_message_id.clone()),
+                    error.clone(),
+                );
+                return Err(ConversationError::Runtime(error));
+            }
             outcome
         }
         (processor, runtime) => {
@@ -864,17 +857,6 @@ where
             } else {
                 vega_store::run_diagnostics::DiagnosticState::Failed
             };
-            diagnostics.root_event(
-                thread_id,
-                &prepared.assistant_message_id,
-                &root_attempt_id,
-                diagnostic_state,
-                (diagnostic_state == vega_store::run_diagnostics::DiagnosticState::Failed)
-                    .then_some(
-                        vega_store::run_diagnostics::DiagnosticFailureCode::UnknownSafeFailure,
-                    ),
-                runtime_started_at,
-            );
             let error = Arc::new(error);
             let failure_event = RuntimeEvent::Error(error.clone());
             let execution_duration_ms =
@@ -886,6 +868,18 @@ where
                     Some(i64::try_from(execution_duration_ms).unwrap_or(i64::MAX)),
                 )
                 .await;
+            diagnostics.root_event(
+                thread_id,
+                &prepared.assistant_message_id,
+                &root_attempt_id,
+                diagnostic_state,
+                (diagnostic_state == vega_store::run_diagnostics::DiagnosticState::Failed)
+                    .then_some(
+                        vega_store::run_diagnostics::DiagnosticFailureCode::UnknownSafeFailure,
+                    ),
+                runtime_started_at,
+            );
+            diagnostics.close().await;
             forward_pipeline_error_with_duration(
                 &mut event_sink,
                 Some(prepared.assistant_message_id.clone()),

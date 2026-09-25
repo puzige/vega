@@ -355,9 +355,7 @@ pub async fn compact_thread_manually(
     let run_id = ulid::Ulid::generate().to_string();
     let root_attempt_id = ulid::Ulid::generate().to_string();
     let run_started_at = std::time::Instant::now();
-    let diagnostics = std::sync::Arc::new(super::diagnostics::DiagnosticsWriter::start(
-        database_path.clone(),
-    ));
+    let diagnostics = std::sync::Arc::new(super::diagnostics::DiagnosticsWriter::buffered());
     diagnostics.root_event(
         thread_id,
         &run_id,
@@ -420,6 +418,7 @@ pub async fn compact_thread_manually(
         failure_code,
         run_started_at,
     );
+    diagnostics.flush_to(store);
     result
 }
 
@@ -2262,15 +2261,12 @@ mod tests {
             result.as_ref().err().map(|failure| &failure.error)
         );
         assert!(provider.requests().is_empty());
-        let mut events = Vec::new();
-        for _ in 0..100 {
-            events = vega_store::run_diagnostics::read_by_thread(store.conn(), "preflight-thread")
-                .unwrap();
-            if events.len() >= 4 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        let events =
+            vega_store::run_diagnostics::read_by_thread(store.conn(), "preflight-thread").unwrap();
+        assert!(events.iter().any(|event| {
+            event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::Run
+                && event.event.state == vega_store::run_diagnostics::DiagnosticState::Failed
+        }));
         let summary_failure = events
             .iter()
             .find(|event| {

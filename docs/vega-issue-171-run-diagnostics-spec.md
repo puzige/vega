@@ -68,7 +68,7 @@ Usage 仅记录 provider 已报告的 token 数；未报告时为 NULL。`visibl
 ### 写入、读取、导出与职责
 
 1. Runtime 在 provider/summary attempt 边界发出 content-free typed lifecycle metadata；conversation 层给事件补齐 `thread_id`、`run_id` 和 parent attempt，并从现有 tool lifecycle event 映射工具终态。Runtime 不依赖 `vega_store` 或 UI。
-2. Diagnostics 经 conversation/store 单独的 bounded best-effort writer 写入 SQLite。`try_send` 队列已满、worker 关闭、SQLite 错误、数值转换错误或诊断任务 panic 只导致该条诊断丢失；不得等待诊断 ack、取消 token、改写正常结果、panic 或使必需的 transcript/tool/usage 写入降级。建议与现有必需写入 actor 分离，避免诊断磁盘故障或队列阻塞拖住任务主结果。
+2. Diagnostics 经 conversation/store bounded best-effort writer 写入 SQLite。普通 agent run 将诊断命令送入现有 `PersistenceActor` 的有界队列，并由 actor 使用同一 Store 连接串行插入；手动 compaction 将诊断事件收集到有界内存队列，结束时通过调用方传入的 Store 连接逐条顺序插入。两条生产路径都不为诊断新建并发 SQLite writer。队列已满、actor 关闭、SQLite 错误、数值转换错误或诊断任务 panic 只导致该条诊断丢失；不得等待单条诊断 ack、取消 token、改写正常结果或使必需的 transcript/tool/usage 写入降级。run 终态入队后先关闭诊断 sender，再关闭 actor；actor 关闭时排空已入队命令。手动 compaction 在终态后关闭内存 sink 并 best-effort flush 已收集事件。
 3. SQLite 是重启后本机查询的 canonical timeline；tracing 只给开发者即时观察，字段限于随机/opaque ID、phase/state/failure code、duration、usage/byte counts、status、校验后的 request ID 和 retry count。任务面向用户的错误文案保持简短，不展示 raw provider/tool error message。
 4. Reader 可按 thread 或 run 读取自增序号排序的事件，并把只有 start 的 attempt 表示为 incomplete。不得从启动时猜测准确 crash 原因。
 5. 显式导出只序列化 `run_diagnostic_events` allowlist projection 和 schema version；不得 join/export `messages.content`、`tool_calls.input_json/output_text/output_full_path`、prompt、response、reasoning、凭据、任意 headers、endpoint 或原始日志。没有显式用户动作不得写文件、复制到剪贴板或发送网络。
@@ -107,9 +107,11 @@ Usage 仅记录 provider 已报告的 token 数；未报告时为 NULL。`visibl
 1. 本卡只提供本机 typed read API 与显式调用的 allowlist export API，不增加查看器 UI，也不自动导出。
 2. 删除 thread 时 FK cascade 删除对应诊断事件。
 3. Request ID 只接受 `x-request-id`、`request-id`、`openai-request-id` 三个 response header；值仅接受 1..=128 ASCII `[A-Za-z0-9._:-]`，其余为 NULL。
-4. 诊断 writer 独立于现有必需 PersistenceActor；队列满、SQLite 错误、worker 关闭或转换错误均可丢弃单条诊断，绝不能改变任务结果或阻断必需写入。
+4. 普通 agent run 的诊断写入通过现有 PersistenceActor 的同连接 bounded queue 串行化；诊断命令无 ack，队列满、SQLite 错误、actor 关闭或转换错误均可丢弃单条诊断，绝不能改变任务结果或必需事件的 ack/error 契约。run 终态先入队，随后关闭 diagnostic sender 并 await actor drain。手动压缩使用 bounded in-memory sink，终态后通过调用方现有 Store 连接顺序 best-effort 插入；不得开独立 SQLite writer。
 5. 只使用 MockProvider、临时数据库、fake credentials 与 canary 文本；不读写用户数据库、不读取真实凭据、不请求真实 provider。
 
 ## 实施变更记录
 
 - 2026-09-26：父任务裁决并冻结以上默认边界；以 discovery draft 为基础落入当前实现分支。阶段验收与原始命令输出记录于 [交付记录](vega-issue-171-run-diagnostics-delivery.md)。
+- 2026-09-26：CI 全量 Nextest 在 `issue74_imported_global_auto_respects_ui_switches_without_ambient_scan` 上复现 `DatabaseBusy`；#171 PR 包级测试 529/530 失败，而基线 `db97c5d` 的同包 520/520 通过。定向复现确认独立诊断连接可在既有 deferred `set_global_settings` 事务读取后提交，从而使其写入遇到 WAL stale snapshot。两条生产路径均改为避免诊断专用 SQLite 连接：普通 run 经现有 PersistenceActor 同连接有界队列串行插入；手动压缩先用 bounded in-memory sink 收集，在结束时通过传入 Store 同连接顺序 best-effort 插入。两者保持无诊断 ack、错误吞掉、队列满丢弃和结果隔离。
+- 运行根 attempt terminal 在 actor close 前入队。若 actor 在终态命令之后、完成 drain 之前发生 panic，调用方仍报告 actor join failure；已成功插入的 root terminal 表示 runtime/processor outcome，诊断事件仍可能因突然的 actor panic 未能完整 drain。actor 仅会在该 join/panic 异常时于运行结果成功之后失败，日常必需持久化错误均通过原 ack 路径在 terminal 入队前传播。

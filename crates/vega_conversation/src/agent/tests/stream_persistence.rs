@@ -102,7 +102,12 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     assert_eq!(usage_count, 2);
     assert_eq!(nonzero_cost_count, 0);
 
-    let diagnostic_events = wait_for_diagnostics(&store, &run.assistant_message_id, 8).await;
+    let diagnostic_events = vega_store::run_diagnostics::read_by_run(
+        store.conn(),
+        "thread-1",
+        &run.assistant_message_id,
+    )
+    .unwrap();
     assert_eq!(diagnostic_events.len(), 8);
     let root = diagnostic_events
         .iter()
@@ -209,22 +214,6 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     );
 }
 
-async fn wait_for_diagnostics(
-    store: &Store,
-    run_id: &str,
-    minimum_count: usize,
-) -> Vec<vega_store::run_diagnostics::DiagnosticEvent> {
-    for _ in 0..100 {
-        let events =
-            vega_store::run_diagnostics::read_by_run(store.conn(), "thread-1", run_id).unwrap();
-        if events.len() >= minimum_count {
-            return events;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    vega_store::run_diagnostics::read_by_run(store.conn(), "thread-1", run_id).unwrap()
-}
-
 #[tokio::test]
 async fn diagnostics_keep_tool_success_before_later_provider_failure() {
     const FAILURE_CANARY: &str = "VEGA_PROVIDER_FAILURE_CANARY";
@@ -267,7 +256,12 @@ async fn diagnostics_keep_tool_success_before_later_provider_failure() {
     .unwrap();
     assert!(run.failed);
 
-    let events = wait_for_diagnostics(&store, &run.assistant_message_id, 8).await;
+    let events = vega_store::run_diagnostics::read_by_run(
+        store.conn(),
+        "thread-1",
+        &run.assistant_message_id,
+    )
+    .unwrap();
     assert_eq!(events.len(), 8);
     let tool_terminal_index = events
         .iter()
