@@ -3,10 +3,10 @@
 ## Freeze
 
 - Contract: [bounded disclosures](vega-issue-103-scroll-window.md), frozen 2026-09-22.
-- Branch: `feat/issue-103-scroll-window`; baseline: `d2422179`.
-- Verified date: 2026-09-22 UTC / Asia-Shanghai; Darwin arm64.
+- Branch: `feat/issue-103-scroll-window`; baseline after rebase: `ae0b4a1`.
+- Verified date: 2026-09-25 UTC / Asia-Shanghai; Darwin arm64.
 - Rust: `1.98.0 (88d9e12ae 2026-08-18)`; Cargo: `1.98.0 (797e8a9bc 2026-08-05)`.
-- Source patch SHA-256 (`git diff --binary -- crates/vega_ui crates/vega_theme`): `066cbb264c018f443ee9a77b94866663174a8cec18c68f08ee70e6fbdd2aecee`.
+- Source patch SHA-256 (`git diff --binary origin/master...HEAD -- crates/vega_ui crates/vega_theme`): `94bbdd57cfa20d0da9a7ad33a5f166d6b7b9599c33d123c4b30b528bd2a46665`.
 - Persistent local evidence set: `issue-103/implementation-manifest.json`.
   The local manifest records absolute raw-log paths; public documentation uses
   evidence-set-relative names only.
@@ -90,10 +90,10 @@ empty output file. Cloud workspace CI remains the merge gate.
 - Native acceptance remains **NOT RUN**: Issue #117 currently owns installation/native acceptance of the same app; exclusive access is unavailable. This blocks A1–A3
   wheel/trackpad interaction, A6 restart/hydrated geometry and A7 theme/window
   matrix until main-agent exclusive access to the actual app is available.
-- Main-agent package evidence: `package-final.log`; binary SHA-256
-  `03b18e51b712e86f0e6d97b1d4e9ff12b3b9d90a09bd7b910b74ae5ca85e7e68`.
-  Main reported `codesign --verify --deep --strict dist/Vega.app` exit 0.
-  Packaging/signing does not establish native interaction acceptance.
+- The earlier `package-final.log` and codesign result were collected before the
+  2026-09-25 rebase, so they do not verify the current branch tip and are not
+  used as current binary evidence. Packaging/signing does not establish native
+  interaction acceptance.
 - The movement listener relies on the pinned GPUI built-in/custom listener
   ordering. Dispatched wheel regressions cover inner movement, exact boundaries,
   short content and nested groups; rerun them when upgrading GPUI.
@@ -124,6 +124,14 @@ collapse/reopen, scroll-boundary, nested-scroll and offset-preservation checks.
 | `cargo test -p vega_theme issue103 -- --nocapture` | `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s`; exit 0 |
 | `cargo fmt --all -- --check` | exit 0; no output |
 | `cargo clippy -p vega_ui -p vega_theme --all-targets -- -D warnings` | exit 0; finished in 7.91s |
+
+Main-agent confirmation with the repository-required local runner:
+
+| Exact command | Result |
+|---|---|
+| `cargo nextest run -p vega_ui issue103_` | 6 passed; exit 0 |
+| `cargo nextest run -p vega_ui issue70_t70_6_hydration_matches_live_and_reopen_resets_expansion` | 1 passed; exit 0 |
+| `cargo nextest run -p vega_theme issue103` | 1 passed; exit 0 |
 
 Native wheel/trackpad, visual and restart acceptance remains pending for the
 main agent and user; the GPUI tests do not substitute for those checks.
