@@ -47,6 +47,7 @@ pub enum Icon {
     Split,
     Terminal,
     Warning,
+    Help,
     Document,
     Summary,
     /// Selection marker for menu rows (R62 R8/R10).
@@ -76,6 +77,8 @@ const FOLDER_PLUS_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewB
 /// surface at 16px and reuse the same 24px, round-corner grammar as the
 /// embedded icon set.
 const SUMMARY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h.01"/><path d="M8 6h13"/><path d="M3 12h.01"/><path d="M8 12h13"/><path d="M3 18h.01"/><path d="M8 18h13"/></svg>"#;
+
+const HELP_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>"#;
 
 /// Vega's pane-move glyph (R47 §2.2) is kept inline because the bundled icon
 /// set only offers the shell-slot dock shapes (panel + bottom/right bar), and
@@ -143,6 +146,7 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Pin
         | Icon::Summary
         | Icon::DockMove
+        | Icon::Help
         | Icon::Hand
         | Icon::Shield
         | Icon::TextSelect => {
@@ -179,6 +183,7 @@ pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
         Icon::Shield => inline_icon(SHIELD_SVG, color),
         Icon::GitBranch => inline_icon(GIT_BRANCH_SVG, color),
         Icon::TextSelect => inline_icon(TEXT_SELECT_SVG, color),
+        Icon::Help => inline_icon(HELP_SVG, color),
         _ => kit_icon(kind, color),
     }
 }

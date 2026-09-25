@@ -24,6 +24,7 @@ pub struct SettingsView {
     pub(crate) key_input: Entity<TextInput>,
     pub(crate) provider_save_focus: FocusHandle,
     pub(crate) provider_edit_focuses: Vec<(String, FocusHandle)>,
+    pub(crate) provider_test_help_focuses: Vec<FocusHandle>,
     pub(crate) mode_open: bool,
     pub(crate) model_open: bool,
     /// Inline error message (ui-spec §4.6: no modals); empty until an IO or
@@ -174,6 +175,7 @@ impl SettingsView {
             key_input,
             provider_save_focus: cx.focus_handle().tab_stop(true),
             provider_edit_focuses: Vec::new(),
+            provider_test_help_focuses: Vec::new(),
             mode_open: false,
             model_open: false,
             error,
