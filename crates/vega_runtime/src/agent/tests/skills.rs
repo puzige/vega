@@ -1181,6 +1181,125 @@ async fn issue74_s14_binary_asset_path_is_rejected_without_text_injection() {
 }
 
 #[tokio::test]
+async fn issue74_s16_allowed_tools_frontmatter_does_not_override_readonly_mode() {
+    let project = tempdir().unwrap();
+    let skill_root = project.path().join(".agents/skills/reviewer");
+    fs::create_dir_all(&skill_root).unwrap();
+    fs::write(
+        skill_root.join("SKILL.md"),
+        "---\nname: reviewer\ndescription: Run the owned sentinel script.\nallowed-tools: Bash(*)\n---\nUse bash to run `sh ./s16-sentinel.sh`.\n",
+    )
+    .unwrap();
+    let source = SkillSource::project_approved(project.path())
+        .unwrap()
+        .unwrap();
+    let candidate = source.discover().unwrap().candidates.remove(0);
+    let approval = SkillApproval::reviewed(&candidate, "project-approved", true, true).unwrap();
+    let run = SkillRun::new(
+        SkillCatalog::freeze(vec![candidate], &[approval], true).unwrap(),
+        true,
+    );
+
+    fs::write(
+        project.path().join("s16-sentinel.sh"),
+        "#!/bin/sh\nprintf 'sentinel-ran' > s16-sentinel-result.txt\n",
+    )
+    .unwrap();
+    let sentinel_result = project.path().join("s16-sentinel-result.txt");
+    let dispatches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let recorded_dispatches = dispatches.clone();
+    let observed_result = sentinel_result.clone();
+    let tools = vega_tools::Tools::new(project.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(move |command, full_access, _| {
+            assert_eq!(command, "sh ./s16-sentinel.sh");
+            assert!(!full_access);
+            recorded_dispatches.fetch_add(1, Ordering::SeqCst);
+            fs::write(&observed_result, "sentinel-ran").expect("owned sentinel effect");
+            Box::pin(async {
+                Ok(vega_tools::BashOutput {
+                    text: "sentinel-ran".into(),
+                    exit_code: 0,
+                    duration_ms: 1,
+                    truncated: false,
+                })
+            })
+        }));
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "s16-load".into(),
+                name: "load_skill".into(),
+                input_json: r#"{"name":"reviewer"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "s16-bash".into(),
+                name: "bash".into(),
+                input_json: r#"{"cmd":"sh ./s16-sentinel.sh"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let prompts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook = FixedHook {
+        calls: prompts.clone(),
+        decision: Some(RuntimeUserDecision::Once),
+    };
+    let mut req = request(vec![ChatMessage::new(
+        ChatRole::User,
+        "Follow the approved Skill and run the sentinel script.",
+    )]);
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::ReadOnly,
+        project.path().join("checkpoints"),
+    )
+    .with_skill_run(run, Vec::new());
+    let outcome = run_agent_with_permission_sink(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        &hook,
+        |_| async { Ok(()) },
+    )
+    .await
+    .unwrap();
+
+    assert!(!outcome.failed);
+    assert_eq!(provider.requests().len(), 3);
+    assert!(
+        provider.requests()[1]
+            .tools
+            .iter()
+            .any(|definition| definition.name == "bash")
+    );
+    assert_eq!(prompts.load(Ordering::SeqCst), 0);
+    assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+    assert!(!sentinel_result.exists());
+    assert!(project.path().join("s16-sentinel.sh").is_file());
+    assert!(outcome.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::ToolCallFinished(result)
+            if result.call_id == "s16-bash"
+                && result.status == RuntimeToolStatus::Rejected
+                && result.approval.as_ref().is_some_and(|approval| {
+                    approval.source == RuntimeApprovalSource::ReadOnly
+                })
+    )));
+}
+
+#[tokio::test]
 async fn issue74_revocation_fence_blocks_cached_reference_tool_before_dispatch() {
     let project = tempdir().unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
