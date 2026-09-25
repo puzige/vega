@@ -100,12 +100,67 @@ impl ConversationStream {
     /// the pixel adjustment exact), and in-flight entry indices shift so a
     /// streaming run keeps writing into its own turn.
     pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        let was_empty = self.entries.is_empty();
         self.ensure_entry_identities();
         let anchor = self.scroll_anchor_snapshot();
+        let (mut hydrated, mut hydrated_identities) =
+            self.hydrate_history_entries(page.entries, cx);
+        let prepended_entries = hydrated.len();
+        hydrated.append(&mut self.entries);
+        self.entries = hydrated;
+        hydrated_identities.append(&mut self.entry_identities);
+        self.entry_identities = hydrated_identities;
+        self.list_prepend(prepended_entries);
+        if prepended_entries > 0 {
+            if let Some((_, index)) = &mut self.active_agent_message
+                && *index != usize::MAX
+            {
+                *index += prepended_entries;
+            }
+            if let Some((_, index)) = &mut self.last_finished_agent_message {
+                *index += prepended_entries;
+            }
+            self.restore_scroll_anchor(&anchor);
+        }
+        self.hydration.older_cursor = page.older_cursor;
+        if was_empty {
+            self.hydration.newer_cursor = page.newer_cursor;
+        }
+        self.hydration.loading = false;
+        self.hydration.paused = false;
+        self.hydration.paused_direction = None;
+        cx.notify();
+    }
+
+    pub fn apply_newer_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        self.ensure_entry_identities();
+        let anchor = self.scroll_anchor_snapshot();
+        let previous_len = self.entries.len();
+        let (mut hydrated, mut hydrated_identities) =
+            self.hydrate_history_entries(page.entries, cx);
+        let appended_entries = hydrated.len();
+        self.entries.append(&mut hydrated);
+        self.entry_identities.append(&mut hydrated_identities);
+        self.list_append(previous_len);
+        self.hydration.newer_cursor = page.newer_cursor;
+        self.hydration.loading = false;
+        self.hydration.paused = false;
+        self.hydration.paused_direction = None;
+        if appended_entries > 0 && !anchor.following_tail {
+            self.restore_scroll_anchor(&anchor);
+        }
+        cx.notify();
+    }
+
+    fn hydrate_history_entries(
+        &mut self,
+        history_entries: Vec<HistoryEntry>,
+        cx: &mut Context<Self>,
+    ) -> (Vec<StreamEntry>, Vec<StreamEntryIdentity>) {
         let mut hydrated: Vec<StreamEntry> = Vec::new();
         let mut hydrated_identities: Vec<StreamEntryIdentity> = Vec::new();
         let mut assistant_segments: HashMap<String, usize> = HashMap::new();
-        for entry in page.entries {
+        for entry in history_entries {
             match entry {
                 HistoryEntry::UserImages {
                     seq,
@@ -147,11 +202,6 @@ impl ConversationStream {
                     let segment = assistant_segments.entry(message_id.clone()).or_default();
                     let segment_ordinal = *segment;
                     *segment += 1;
-                    // Durable markdown is complete; one append + finish is the
-                    // whole turn. Empty (killed-before-first-delta) turns
-                    // materialize zero content, like an empty live stream. The
-                    // model syncs immediately so the prepended item renders
-                    // its full natural height on the first frame.
                     let mut stream = MarkdownStream::new();
                     stream.append(&content);
                     stream.finish();
@@ -161,9 +211,6 @@ impl ConversationStream {
                         copy: MessageCopy::new(&content),
                         stream: Box::new(stream),
                         model,
-                        // The original provider body is intentionally not
-                        // durable. A failed row still needs a visible,
-                        // truthful fallback after route reopen/restart.
                         failure: (status == vega_conversation::history::AssistantStatus::Failed)
                             .then_some(RunFailureKind::Persisted),
                     });
@@ -174,8 +221,6 @@ impl ConversationStream {
                     ));
                 }
                 HistoryEntry::Plan { seq, plan } => {
-                    // Same foreign-thread fence as the live `apply_plan` path;
-                    // duplicate durable plans reconcile first-wins.
                     if plan.thread_id != self.thread.id || self.plan_cards.contains_key(&plan.id) {
                         continue;
                     }
@@ -254,34 +299,113 @@ impl ConversationStream {
                 }
             }
         }
-        let prepended_entries = hydrated.len();
-        let mut entries = hydrated;
-        entries.append(&mut self.entries);
-        self.entries = entries;
-        hydrated_identities.append(&mut self.entry_identities);
-        self.entry_identities = hydrated_identities;
-        self.list_prepend(prepended_entries);
-        if prepended_entries > 0 {
-            // Entry indices booked before the prepend must follow their turns.
-            if let Some((_, index)) = &mut self.active_agent_message
-                && *index != usize::MAX
-            {
-                *index += prepended_entries;
-            }
-            if let Some((_, index)) = &mut self.last_finished_agent_message {
-                *index += prepended_entries;
-            }
-            self.restore_scroll_anchor(&anchor);
-        }
-        self.hydration.older_cursor = page.older_cursor;
-        self.hydration.loading = false;
-        self.hydration.paused = false;
-        // Page-boundary anchor: the `splice` inside `list_prepend` shifts the
-        // logical scroll top by the prepended count while keeping the pixel
-        // offset into the scroll-top item, so while detached the content the
-        // user was reading stays put (<1px by construction). While pinned to
-        // the tail, native Tail follow keeps the viewport at the bottom.
+        (hydrated, hydrated_identities)
+    }
+
+    pub fn request_message_location(&mut self, message_id: &str, cx: &mut Context<Self>) {
+        self.request_message_location_with_anchor(message_id, None, cx);
+    }
+
+    pub fn request_message_location_with_anchor(
+        &mut self,
+        message_id: &str,
+        restore_anchor: Option<ThreadScrollAnchor>,
+        cx: &mut Context<Self>,
+    ) {
+        self.message_location_status = Some(MessageLocationStatus::Searching);
+        cx.emit(MessageLocationRequested {
+            thread_id: self.thread.id.clone(),
+            message_id: message_id.to_string(),
+            restore_anchor,
+        });
         cx.notify();
+    }
+
+    pub fn reveal_loaded_message(&mut self, message_id: &str, cx: &mut Context<Self>) -> bool {
+        self.ensure_entry_identities();
+        let Some(index) = self
+            .entry_identities
+            .iter()
+            .position(|identity| identity.message_id.as_deref() == Some(message_id))
+        else {
+            return false;
+        };
+        self.list.scroll_to_reveal_item(index);
+        self.message_location_status = Some(MessageLocationStatus::Located);
+        cx.notify();
+        true
+    }
+
+    pub fn replace_history_window(
+        &mut self,
+        page: HistoryPage,
+        message_id: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.replace_history_window_with_anchor(page, message_id, None, cx)
+    }
+
+    pub fn replace_history_window_with_anchor(
+        &mut self,
+        page: HistoryPage,
+        message_id: &str,
+        restore_anchor: Option<&ThreadScrollAnchor>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let contains_target = page.entries.iter().any(|entry| match entry {
+            HistoryEntry::UserText { message_id: id, .. }
+            | HistoryEntry::UserImages { message_id: id, .. }
+            | HistoryEntry::AssistantText { message_id: id, .. }
+            | HistoryEntry::Tool { message_id: id, .. } => id == message_id,
+            HistoryEntry::Plan { plan, .. } => plan.id == message_id,
+            HistoryEntry::Summary { summary, .. } => summary.message_id == message_id,
+            HistoryEntry::SkillActivation { .. } => false,
+        });
+        if !contains_target {
+            self.message_location_status = Some(MessageLocationStatus::NotFound);
+            cx.notify();
+            return false;
+        }
+        self.entries.clear();
+        self.entry_identities.clear();
+        self.list.reset(0);
+        self.tool_cards.clear();
+        self.artifact_cards.clear();
+        self.plan_cards.clear();
+        self.summary_cards.clear();
+        self.active_agent_message = None;
+        self.active_segment_ordinal = 0;
+        self.active_segment_has_text = false;
+        self.active_thinking = None;
+        self.thinking_bytes = 0;
+        self.thinking_blocks = 0;
+        self.last_finished_agent_message = None;
+        self.active_permission = None;
+        self.active_permission_call_id = None;
+        self.deferred_permission = None;
+        self.hydration = HistoryHydration::default();
+        self.apply_history_page(page, cx);
+        if let Some(anchor) = restore_anchor
+            && self.restore_scroll_anchor(anchor)
+        {
+            self.message_location_status = Some(MessageLocationStatus::Located);
+            cx.notify();
+            return true;
+        }
+        self.reveal_loaded_message(message_id, cx)
+    }
+
+    pub fn apply_message_location_status(
+        &mut self,
+        status: MessageLocationStatus,
+        cx: &mut Context<Self>,
+    ) {
+        self.message_location_status = Some(status);
+        cx.notify();
+    }
+
+    pub fn message_location_status(&self) -> Option<MessageLocationStatus> {
+        self.message_location_status
     }
 
     /// Releases the in-flight page slot after a failed load. Auto-retry waits
@@ -290,6 +414,14 @@ impl ConversationStream {
     pub fn apply_history_load_failed(&mut self, cx: &mut Context<Self>) {
         self.hydration.loading = false;
         self.hydration.paused = true;
+        self.hydration.paused_direction = Some(HistoryPageDirection::Older);
+        cx.notify();
+    }
+
+    pub fn apply_newer_history_load_failed(&mut self, cx: &mut Context<Self>) {
+        self.hydration.loading = false;
+        self.hydration.paused = true;
+        self.hydration.paused_direction = Some(HistoryPageDirection::Newer);
         cx.notify();
     }
 
@@ -298,6 +430,21 @@ impl ConversationStream {
     /// paused failure, or the viewport away from the top edge.
     pub(crate) fn history_page_request(&self, at_top: bool) -> Option<i64> {
         hydration_request(self.hydration, at_top)
+    }
+
+    pub(crate) fn newer_history_page_request(&self, at_bottom: bool) -> Option<i64> {
+        if !at_bottom || self.hydration.loading || self.hydration.paused {
+            return None;
+        }
+        self.hydration.newer_cursor
+    }
+
+    pub fn newer_history_cursor(&self) -> Option<i64> {
+        self.hydration.newer_cursor
+    }
+
+    pub(crate) fn scroll_at_bottom(&self) -> bool {
+        self.list.is_following_tail() || self.list.is_scrolled_to_end() == Some(true)
     }
 
     /// Whether the list is scrolled to (within epsilon of) its top edge
@@ -309,8 +456,12 @@ impl ConversationStream {
 
     /// Whether the failure pause is still armed; leaving the top edge
     /// re-arms scroll-up hydration.
-    pub(crate) fn hydration_pause_is_stale(&self, at_top: bool) -> bool {
-        self.hydration.paused && !at_top
+    pub(crate) fn hydration_pause_is_stale(&self, at_top: bool, at_bottom: bool) -> bool {
+        self.hydration.paused
+            && match self.hydration.paused_direction.unwrap_or_default() {
+                HistoryPageDirection::Older => !at_top,
+                HistoryPageDirection::Newer => !at_bottom,
+            }
     }
 
     /// Hook passed to the conversation runner for this visible stream.

@@ -5,6 +5,95 @@ use super::*;
 const AGENT_PREFLIGHT_POLL: std::time::Duration = std::time::Duration::from_millis(4);
 
 impl VegaWindow {
+    pub(crate) fn update_message_location_route(&mut self, thread_id: Option<&str>) {
+        if self.message_location_route_thread_id.as_deref() == thread_id {
+            return;
+        }
+        self.message_location_route_thread_id = thread_id.map(str::to_owned);
+        self.message_location_route_generation =
+            self.message_location_route_generation.saturating_add(1);
+        self.deferred_message_location = None;
+    }
+
+    fn owns_message_location_request(
+        &self,
+        stream: &Entity<ConversationStream>,
+        request: &MessageLocationWorkerRequest,
+        cx: &App,
+    ) -> bool {
+        self.owns_stream_request(stream, &request.thread_id, cx)
+            && self.message_location_route_thread_id.as_deref() == Some(&request.thread_id)
+            && self.message_location_route_generation == request.route_generation
+            && self.message_location_request_generation == request.request_generation
+    }
+
+    fn message_location_run_is_active(
+        &self,
+        stream: &Entity<ConversationStream>,
+        thread_id: &str,
+    ) -> bool {
+        self.agent_controller
+            .active
+            .get(thread_id)
+            .is_some_and(|active| active.stream == *stream)
+    }
+
+    pub(crate) fn request_message_location(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &MessageLocationRequested,
+        cx: &mut Context<Self>,
+    ) {
+        let route_thread_id = cx
+            .global::<OpenedThread>()
+            .0
+            .as_ref()
+            .map(|thread| thread.id.clone());
+        self.update_message_location_route(route_thread_id.as_deref());
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        let Some(request_generation) = self.message_location_request_generation.checked_add(1)
+        else {
+            stream.update(cx, |stream, cx| {
+                stream.apply_message_location_status(MessageLocationStatus::Failed, cx)
+            });
+            return;
+        };
+        self.message_location_request_generation = request_generation;
+        self.deferred_message_location = None;
+        let worker_request = MessageLocationWorkerRequest {
+            thread_id: request.thread_id.clone(),
+            message_id: request.message_id.clone(),
+            route_generation: self.message_location_route_generation,
+            request_generation,
+            restore_anchor: request.restore_anchor.clone(),
+        };
+        if stream.update(cx, |stream, cx| {
+            if let Some(anchor) = request.restore_anchor.as_ref()
+                && stream.restore_scroll_anchor(anchor)
+            {
+                stream.apply_message_location_status(MessageLocationStatus::Located, cx);
+                true
+            } else {
+                stream.reveal_loaded_message(&request.message_id, cx)
+            }
+        }) {
+            return;
+        }
+        if self.message_location_run_is_active(&stream, &request.thread_id) {
+            self.deferred_message_location = Some(DeferredMessageLocation {
+                stream: stream.clone(),
+                request: worker_request,
+            });
+            stream.update(cx, |stream, cx| {
+                stream.apply_message_location_status(MessageLocationStatus::Deferred, cx)
+            });
+            return;
+        }
+        self.start_message_location_worker(stream, worker_request, cx);
+    }
+
     /// #65 R6: independent of primary Finished/generation/route polling.
     pub(crate) fn watch_automatic_titles(
         &mut self,
@@ -155,6 +244,7 @@ impl VegaWindow {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
             return;
         }
+        let route_generation = self.message_location_route_generation;
         let database_path = match &cx.global::<VegaStore>().0 {
             Ok(store) => match store.database_path() {
                 Some(path) => path.to_path_buf(),
@@ -182,12 +272,185 @@ impl VegaWindow {
                     }
                 };
                 let _ = this.update(cx, |this, cx| {
-                    this.finish_history_page(stream.clone(), outcome, cx)
+                    this.finish_history_page(stream.clone(), route_generation, outcome, cx)
                 });
                 break;
             }
         })
         .detach();
+    }
+
+    pub(crate) fn request_newer_history_page(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &NewerHistoryPageRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx) {
+            return;
+        }
+        let route_generation = self.message_location_route_generation;
+        let database_path = match &cx.global::<VegaStore>().0 {
+            Ok(store) => match store.database_path() {
+                Some(path) => path.to_path_buf(),
+                None => return,
+            },
+            Err(_) => return,
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker_request = request.clone();
+        let fallback_request = request.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-newer-history-page".into())
+            .spawn(move || run_newer_history_page_worker(database_path, worker_request, sender));
+        if worker.is_err() {
+            stream.update(cx, ConversationStream::apply_newer_history_load_failed);
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let result = match receiver.try_recv() {
+                    Ok((request, outcome)) => (request, outcome),
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => (
+                        fallback_request,
+                        Err(HistoryPageFailure::Store("history page worker lost".into())),
+                    ),
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.finish_newer_history_page(
+                        stream.clone(),
+                        route_generation,
+                        result.0,
+                        result.1,
+                        cx,
+                    )
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn start_message_location_worker(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: MessageLocationWorkerRequest,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_message_location_request(&stream, &request, cx) {
+            return;
+        }
+        let database_path = match &cx.global::<VegaStore>().0 {
+            Ok(store) => match store.database_path() {
+                Some(path) => path.to_path_buf(),
+                None => {
+                    stream.update(cx, |stream, cx| {
+                        stream.apply_message_location_status(MessageLocationStatus::Failed, cx)
+                    });
+                    return;
+                }
+            },
+            Err(_) => {
+                stream.update(cx, |stream, cx| {
+                    stream.apply_message_location_status(MessageLocationStatus::Failed, cx)
+                });
+                return;
+            }
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let worker_request = request.clone();
+        let fallback_request = request.clone();
+        let worker = std::thread::Builder::new()
+            .name("vega-message-location".into())
+            .spawn(move || run_message_location_worker(database_path, worker_request, sender));
+        if worker.is_err() {
+            stream.update(cx, |stream, cx| {
+                stream.apply_message_location_status(MessageLocationStatus::Failed, cx)
+            });
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DIFF_RESULT_POLL).await;
+                let result = match receiver.try_recv() {
+                    Ok((request, outcome)) => (request, outcome),
+                    Err(mpsc::TryRecvError::Empty) => continue,
+                    Err(mpsc::TryRecvError::Disconnected) => (
+                        fallback_request,
+                        Err(HistoryPageFailure::Store(
+                            "message location worker lost".into(),
+                        )),
+                    ),
+                };
+                let _ = this.update(cx, |this, cx| {
+                    this.finish_message_location_worker(stream.clone(), result.0, result.1, cx)
+                });
+                break;
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn finish_message_location_worker(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: MessageLocationWorkerRequest,
+        outcome: MessageLocationOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_message_location_request(&stream, &request, cx) {
+            return;
+        }
+        if self.message_location_run_is_active(&stream, &request.thread_id) {
+            self.deferred_message_location = Some(DeferredMessageLocation {
+                stream: stream.clone(),
+                request,
+            });
+            stream.update(cx, |stream, cx| {
+                stream.apply_message_location_status(MessageLocationStatus::Deferred, cx)
+            });
+            return;
+        }
+        match outcome {
+            Ok(Some(page)) => {
+                stream.update(cx, |stream, cx| {
+                    stream.replace_history_window_with_anchor(
+                        page,
+                        &request.message_id,
+                        request.restore_anchor.as_ref(),
+                        cx,
+                    );
+                });
+            }
+            Ok(None) => stream.update(cx, |stream, cx| {
+                stream.apply_message_location_status(MessageLocationStatus::NotFound, cx)
+            }),
+            Err(_) => stream.update(cx, |stream, cx| {
+                stream.apply_message_location_status(MessageLocationStatus::Failed, cx)
+            }),
+        }
+    }
+
+    pub(crate) fn resume_deferred_message_location(
+        &mut self,
+        thread_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(deferred) = self.deferred_message_location.take() else {
+            return;
+        };
+        if deferred.request.thread_id != thread_id
+            || !self.owns_message_location_request(&deferred.stream, &deferred.request, cx)
+        {
+            return;
+        }
+        if self.message_location_run_is_active(&deferred.stream, thread_id) {
+            self.deferred_message_location = Some(deferred);
+            return;
+        }
+        self.start_message_location_worker(deferred.stream, deferred.request, cx);
     }
 
     /// Applies a finished hydration page to its requesting stream, gated by
@@ -196,18 +459,41 @@ impl VegaWindow {
     pub(crate) fn finish_history_page(
         &mut self,
         stream: Entity<ConversationStream>,
+        route_generation: u64,
         outcome: HistoryPageOutcome,
         cx: &mut Context<Self>,
     ) {
         let Some(opened) = cx.global::<OpenedThread>().0.clone() else {
             return;
         };
-        if !self.owns_stream_request(&stream, &opened.id, cx) {
+        if !self.owns_stream_request(&stream, &opened.id, cx)
+            || self.message_location_route_generation != route_generation
+        {
             return;
         }
         stream.update(cx, |stream, cx| match outcome {
             Ok(page) => stream.apply_history_page(page, cx),
             Err(_) => stream.apply_history_load_failed(cx),
+        });
+    }
+
+    pub(crate) fn finish_newer_history_page(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        route_generation: u64,
+        request: NewerHistoryPageRequested,
+        outcome: HistoryPageOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.owns_stream_request(&stream, &request.thread_id, cx)
+            || self.message_location_route_generation != route_generation
+            || stream.read(cx).newer_history_cursor() != Some(request.after)
+        {
+            return;
+        }
+        stream.update(cx, |stream, cx| match outcome {
+            Ok(page) => stream.apply_newer_history_page(page, cx),
+            Err(_) => stream.apply_newer_history_load_failed(cx),
         });
     }
 
@@ -691,6 +977,7 @@ impl VegaWindow {
                         if let Some(pending) = pending_review {
                             this.finish_owned_plan_review(pending.stream, &pending.request, cx);
                         }
+                        this.resume_deferred_message_location(&thread_id, cx);
                         false
                     })
                     .unwrap_or(false);

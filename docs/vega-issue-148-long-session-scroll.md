@@ -46,10 +46,20 @@ counts as mounted or painted rows.
   visible anchor when it still exists. Tail following and the existing Resume
   tail behavior remain unchanged.
 - A message-ID location request either scrolls to the matching loaded entry or
-  loads a history page containing that durable message before scrolling. A
-  target that does not belong to the thread returns an explicit not-found
-  result; it must not silently scroll to an index or the top of the list.
-  Superseded requests are fenced when the active thread changes.
+  directly loads the containing history page before scrolling. While idle, the
+  target page becomes the current bounded window; older pages prepend at its
+  older boundary and newer pages append at its newer boundary. The stream never
+  combines non-adjacent pages or scans intermediate pages to reach the newest
+  window. A target that does not belong to the thread returns an explicit
+  not-found result; it must not silently scroll to an index or the top of the
+  list.
+- During an active run, a loaded target may be revealed without changing the
+  entry model. An unloaded target request remains pending until the run's
+  terminal event; only then may it replace the idle history window, and only
+  while the request's route generation remains current. The pending request
+  must not reorder, clear, or replace live entries, identities, or indices.
+  Superseded requests are fenced when the active thread changes, including an
+  A→B→A route cycle.
 - Route changes keep only a lightweight LRU state for the 64 most recently
   visited threads: stable anchor identity, in-item pixel offset, and tail-follow
   mode. An evicted or previously unseen thread opens at the current newest-page
@@ -72,7 +82,7 @@ counts as mounted or painted rows.
 | V2 | Run the real-window probe before and after implementation | Reproducible JSON includes fixture hash, viewport, callback/frame distributions, RSS, and separate fixture-build timing; no unsupported universal FPS claim |
 | V3 | Prepend older pages while detached from tail | The same stable entry remains at the same pixel offset; page sequence and list count remain correct |
 | V4 | Expand/collapse a tool or thinking row, stream content, and resize the conversation column | The same stable anchor remains visible; changed row geometry is remeasured, including previously measured offscreen rows |
-| V5 | Request a loaded and an unloaded durable message ID | Loaded target is revealed; unloaded target loads the containing page and is revealed; unknown/foreign target returns not-found; thread changes fence stale results |
+| V5 | Request loaded and unloaded durable message IDs, including during an active run | Loaded target is revealed; an idle unloaded target installs its containing page as the current window and is revealed; older prepend/newer append stay contiguous; unknown/foreign target returns not-found; active-run unloaded target waits without mutating live entries and installs after terminal only if its route generation is current; thread changes fence stale results |
 | V6 | Switch A→B→A so both `ConversationStream` routes are rebuilt; scroll a row out and back into the viewport | Bounded 64-thread LRU restores A's stable anchor without retaining its old entry/card tree; copy text, selection/focus, nested scroll state, and disclosure state remain coherent while an entry is virtualized in one route |
 | V7 | Open a thread after app restart | Startup keeps the existing newest-page policy; an older target remains locatable by message ID |
 

@@ -134,3 +134,52 @@ pub(crate) fn run_history_page_worker(
     })();
     let _ = sender.send((request, outcome));
 }
+
+pub(crate) fn run_newer_history_page_worker(
+    database_path: std::path::PathBuf,
+    request: NewerHistoryPageRequested,
+    sender: std::sync::mpsc::SyncSender<(NewerHistoryPageRequested, HistoryPageOutcome)>,
+) {
+    let outcome = (|| {
+        let store = Store::open(&database_path)
+            .map_err(|error| HistoryPageFailure::Store(error.to_string()))?;
+        vega_conversation::history::history_page_after(
+            &store,
+            &request.thread_id,
+            request.after,
+            vega_store::messages::PAGE_LIMIT,
+        )
+        .map_err(HistoryPageFailure::from)
+    })();
+    let _ = sender.send((request, outcome));
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MessageLocationWorkerRequest {
+    pub(crate) thread_id: String,
+    pub(crate) message_id: String,
+    pub(crate) route_generation: u64,
+    pub(crate) request_generation: u64,
+    pub(crate) restore_anchor: Option<ThreadScrollAnchor>,
+}
+
+pub(crate) type MessageLocationOutcome = Result<Option<HistoryPage>, HistoryPageFailure>;
+
+pub(crate) fn run_message_location_worker(
+    database_path: std::path::PathBuf,
+    request: MessageLocationWorkerRequest,
+    sender: std::sync::mpsc::SyncSender<(MessageLocationWorkerRequest, MessageLocationOutcome)>,
+) {
+    let outcome = (|| {
+        let store = Store::open(&database_path)
+            .map_err(|error| HistoryPageFailure::Store(error.to_string()))?;
+        vega_conversation::history::history_page_containing_message(
+            &store,
+            &request.thread_id,
+            &request.message_id,
+            vega_store::messages::PAGE_LIMIT,
+        )
+        .map_err(HistoryPageFailure::from)
+    })();
+    let _ = sender.send((request, outcome));
+}

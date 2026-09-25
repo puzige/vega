@@ -29,6 +29,7 @@ pub(crate) mod navigation;
 mod pricing;
 mod reasoning;
 mod render;
+mod scroll_state;
 mod session;
 mod skills;
 mod updater;
@@ -45,6 +46,12 @@ use crate::diff_controller::*;
 use crate::pricing_controller::*;
 use crate::thread_reload::*;
 use crate::trusted_action::*;
+
+#[derive(Clone)]
+pub(crate) struct DeferredMessageLocation {
+    pub(crate) stream: Entity<ConversationStream>,
+    pub(crate) request: MessageLocationWorkerRequest,
+}
 
 /// The model-only portion of a completed in-session selection. Acknowledged
 /// model saves must not carry a stale `Thread` snapshot into a later route or
@@ -112,6 +119,11 @@ pub(crate) struct VegaWindow {
     /// built lazily on first render of an opened thread; rebuilt when another
     /// thread is opened. The stream itself is memory-only (no persistence).
     pub(crate) stream_view: Option<(String, Entity<ConversationStream>)>,
+    thread_scroll_states: scroll_state::ThreadScrollStateLru,
+    pub(crate) message_location_route_thread_id: Option<String>,
+    pub(crate) message_location_route_generation: u64,
+    pub(crate) message_location_request_generation: u64,
+    pub(crate) deferred_message_location: Option<DeferredMessageLocation>,
     /// R69 R1/R4: the window's at-most-one unpersisted home-route draft.
     ///
     /// The draft is a real [`Thread`] carrying its final client-side ulid, so
@@ -236,6 +248,12 @@ impl VegaWindow {
         })
         .detach();
         cx.observe_global::<OpenedThread>(|this, cx| {
+            let route_thread_id = cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .map(|thread| thread.id.clone());
+            this.update_message_location_route(route_thread_id.as_deref());
             this.cancel_context_if_route_stale(cx);
             this.cancel_file_index_if_route_stale(cx);
             this.close_diff_if_route_stale(cx);
@@ -298,6 +316,11 @@ impl VegaWindow {
                 .and_then(|settings| settings.0.clone()),
             pricing_controller: PricingController::new(pricing_service),
             stream_view: None,
+            thread_scroll_states: scroll_state::ThreadScrollStateLru::default(),
+            message_location_route_thread_id: None,
+            message_location_route_generation: 0,
+            message_location_request_generation: 0,
+            deferred_message_location: None,
             draft: None,
             agent_controller: AppAgentController::default(),
             context_controller: context::ContextController::default(),

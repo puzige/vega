@@ -313,6 +313,7 @@ pub struct MessagePage {
     /// [`PageCursor::Before`] to continue. `None` marks the oldest end of the
     /// thread, so another request cannot produce new rows.
     pub older_cursor: Option<i64>,
+    pub newer_cursor: Option<i64>,
     /// Tool-call audit rows for this page's messages, ascending call seq.
     pub tool_calls: Vec<PageToolCall>,
 }
@@ -371,6 +372,10 @@ pub fn page_before(
     } else {
         None
     };
+    let newer_cursor = match cursor {
+        PageCursor::Head => None,
+        PageCursor::Before(_) => rows.last().map(|row| row.seq),
+    };
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     drop(stmt);
@@ -379,6 +384,143 @@ pub fn page_before(
         images,
         rows,
         older_cursor,
+        newer_cursor,
+        tool_calls,
+    })
+}
+
+pub fn page_containing_message(
+    conn: &Connection,
+    thread_id: &str,
+    message_id: &str,
+    limit: usize,
+) -> Result<Option<MessagePage>, PageRequestError> {
+    if limit == 0 || limit > PAGE_LIMIT {
+        return Err(PageRequestError::InvalidPageSize(limit));
+    }
+    let tx = conn.unchecked_transaction()?;
+    let target_seq: Option<i64> = tx
+        .query_row(
+            "SELECT seq FROM messages WHERE id = ?1 AND thread_id = ?2 \
+             AND status != 'streaming'",
+            params![message_id, thread_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(target_seq) = target_seq else {
+        tx.commit()?;
+        return Ok(None);
+    };
+    let before_limit = limit.div_ceil(2);
+    let mut rows = {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT {COLUMNS} FROM (SELECT {COLUMNS} FROM messages \
+             WHERE thread_id = ?1 AND status != 'streaming' AND seq <= ?2 \
+             ORDER BY seq DESC LIMIT ?3) ORDER BY seq ASC"
+        ))?;
+        stmt.query_map(
+            params![thread_id, target_seq, before_limit as i64],
+            row_from_query,
+        )?
+        .collect::<Result<Vec<_>, _>>()?
+    };
+    let after_limit = limit - rows.len();
+    if after_limit > 0 {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT {COLUMNS} FROM messages \
+             WHERE thread_id = ?1 AND status != 'streaming' AND seq > ?2 \
+             ORDER BY seq ASC LIMIT ?3"
+        ))?;
+        rows.extend(
+            stmt.query_map(
+                params![thread_id, target_seq, after_limit as i64],
+                row_from_query,
+            )?
+            .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    if !rows.iter().any(|row| row.id == message_id) {
+        return Err(PageRequestError::Store(
+            rusqlite::Error::QueryReturnedNoRows,
+        ));
+    }
+    let older_cursor = if let Some(first) = rows.first() {
+        let has_older: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id = ?1 \
+             AND status != 'streaming' AND seq < ?2)",
+            params![thread_id, first.seq],
+            |row| row.get(0),
+        )?;
+        has_older.then_some(first.seq)
+    } else {
+        None
+    };
+    let newer_cursor = if let Some(last) = rows.last() {
+        let has_newer: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id = ?1 \
+             AND status != 'streaming' AND seq > ?2)",
+            params![thread_id, last.seq],
+            |row| row.get(0),
+        )?;
+        has_newer.then_some(last.seq)
+    } else {
+        None
+    };
+    let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
+    let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
+    tx.commit()?;
+    Ok(Some(MessagePage {
+        images,
+        rows,
+        older_cursor,
+        newer_cursor,
+        tool_calls,
+    }))
+}
+
+pub fn page_after(
+    conn: &Connection,
+    thread_id: &str,
+    cursor: i64,
+    limit: usize,
+) -> Result<MessagePage, PageRequestError> {
+    if limit == 0 || limit > PAGE_LIMIT {
+        return Err(PageRequestError::InvalidPageSize(limit));
+    }
+    let tx = conn.unchecked_transaction()?;
+    let mut stmt = tx.prepare(&format!(
+        "SELECT {COLUMNS} FROM messages \
+         WHERE thread_id = ?1 AND status != 'streaming' AND seq > ?2 \
+         ORDER BY seq ASC LIMIT ?3"
+    ))?;
+    let rows: Vec<MessageRow> = stmt
+        .query_map(params![thread_id, cursor, limit as i64], row_from_query)?
+        .collect::<Result<_, _>>()?;
+    let older_cursor = if let Some(first) = rows.first() {
+        let has_older: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE thread_id = ?1 \
+             AND status != 'streaming' AND seq < ?2)",
+            params![thread_id, first.seq],
+            |row| row.get(0),
+        )?;
+        has_older.then_some(first.seq)
+    } else {
+        None
+    };
+    let newer_cursor = if rows.len() == limit {
+        rows.last().map(|row| row.seq)
+    } else {
+        None
+    };
+    let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
+    let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
+    drop(stmt);
+    tx.commit()?;
+    Ok(MessagePage {
+        images,
+        rows,
+        older_cursor,
+        newer_cursor,
         tool_calls,
     })
 }

@@ -3543,6 +3543,7 @@ mod tests {
                         content: "first message".into(),
                     }],
                     older_cursor: None,
+                    newer_cursor: None,
                     newest_seq: Some(1),
                 },
                 cx,

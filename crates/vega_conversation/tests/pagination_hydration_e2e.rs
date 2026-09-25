@@ -16,6 +16,7 @@ use vega_store::{Store, messages as store_messages, projects, threads};
 use vega_token::{ModelPricingSpec, PricingCatalog, RateSpec};
 
 const THREAD: &str = "hydration-e2e-thread";
+const OTHER_THREAD: &str = "hydration-e2e-other-thread";
 const MODEL: &str = "priced-model";
 const SECRET_BODY: &str = "TOP-SECRET-FILE-BODY-9f31c";
 
@@ -133,6 +134,30 @@ fn durable_entries(page: &history::HistoryPage) -> Vec<&HistoryEntry> {
         .iter()
         .filter(|entry| !matches!(entry, HistoryEntry::Summary { .. }))
         .collect()
+}
+
+fn history_seqs(page: &history::HistoryPage) -> Vec<i64> {
+    durable_entries(page)
+        .into_iter()
+        .map(|entry| match entry {
+            HistoryEntry::UserText { seq, .. }
+            | HistoryEntry::UserImages { seq, .. }
+            | HistoryEntry::AssistantText { seq, .. }
+            | HistoryEntry::Plan { seq, .. }
+            | HistoryEntry::Summary { seq, .. }
+            | HistoryEntry::Tool { seq, .. }
+            | HistoryEntry::SkillActivation { seq, .. } => *seq,
+        })
+        .collect()
+}
+
+fn contains_message_id(page: &history::HistoryPage, target: &str) -> bool {
+    page.entries.iter().any(|entry| match entry {
+        HistoryEntry::UserText { message_id, .. }
+        | HistoryEntry::AssistantText { message_id, .. }
+        | HistoryEntry::Tool { message_id, .. } => message_id == target,
+        _ => false,
+    })
 }
 #[tokio::test]
 async fn empty_thread_hydrates_to_an_empty_exhausted_page() -> Result<(), Box<dyn Error>> {
@@ -289,6 +314,88 @@ async fn mid_run_inserts_stay_monotonic_above_every_loaded_cursor() -> Result<()
 }
 
 #[tokio::test]
+async fn message_id_history_page_and_bidirectional_pages_stay_contiguous()
+-> Result<(), Box<dyn Error>> {
+    let (store, _dir) = open_store()?;
+    seed_exchanges(&store, 300, 1)?;
+    let target = history::history_page_containing_message(&store, THREAD, "seed-user-152", 100)?
+        .expect("target belongs to the requested thread");
+    assert!(history_seqs(&target).iter().copied().eq(254..=353));
+    assert!(contains_message_id(&target, "seed-user-152"));
+    assert_eq!(target.older_cursor, Some(254));
+    assert_eq!(target.newer_cursor, Some(353));
+
+    let older = history::history_page_before(
+        &store,
+        THREAD,
+        PageCursor::Before(target.older_cursor.unwrap()),
+        100,
+    )?;
+    assert!(history_seqs(&older).iter().copied().eq(154..=253));
+
+    let second = history::history_page_after(&store, THREAD, target.newer_cursor.unwrap(), 100)?;
+    let third = history::history_page_after(&store, THREAD, second.newer_cursor.unwrap(), 100)?;
+    let fourth = history::history_page_after(&store, THREAD, third.newer_cursor.unwrap(), 100)?;
+    assert!(history_seqs(&second).iter().copied().eq(354..=453));
+    assert!(history_seqs(&third).iter().copied().eq(454..=553));
+    assert!(history_seqs(&fourth).iter().copied().eq(554..=600));
+    assert_eq!(fourth.newer_cursor, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn message_id_history_page_returns_not_found_for_unknown_or_foreign_id()
+-> Result<(), Box<dyn Error>> {
+    let (store, _dir) = open_store()?;
+    let project_id: String =
+        store
+            .conn()
+            .query_row("SELECT id FROM projects LIMIT 1", [], |row| row.get(0))?;
+    threads::create(
+        store.conn(),
+        threads::NewThread {
+            id: OTHER_THREAD,
+            project_id: &project_id,
+            title: "Other thread",
+            mode: "execute",
+            permission_mode: "auto",
+            model: MODEL,
+            status: "active",
+            pinned: false,
+            unread: false,
+            created_at: 1,
+            updated_at: 1,
+        },
+    )?;
+    store_messages::insert(
+        store.conn(),
+        &store_messages::MessageRow {
+            id: "foreign-message".into(),
+            thread_id: OTHER_THREAD.into(),
+            seq: 1,
+            role: "user".into(),
+            kind: "text".into(),
+            content: "外部线程内容".into(),
+            status: "done".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )?;
+    assert!(history::history_page_containing_message(&store, THREAD, "missing", 100)?.is_none());
+    assert!(
+        history::history_page_containing_message(&store, THREAD, "foreign-message", 100,)?
+            .is_none()
+    );
+    let foreign =
+        history::history_page_containing_message(&store, OTHER_THREAD, "foreign-message", 100)?
+            .expect("target belongs to the foreign thread");
+    assert!(contains_message_id(&foreign, "foreign-message"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn reopen_resets_cursor_to_the_newest_page() -> Result<(), Box<dyn Error>> {
     let (store, dir) = open_store()?;
     seed_exchanges(&store, 250, 1)?;
@@ -301,6 +408,11 @@ async fn reopen_resets_cursor_to_the_newest_page() -> Result<(), Box<dyn Error>>
     let page = restart_history_page(&reopened, THREAD, 200)?;
     assert_eq!(page, before_restart);
     assert_eq!(page.older_cursor, Some(301));
+    let old_target = store_messages::find(reopened.conn(), "seed-user-1")?
+        .expect("old durable message remains addressable after restart");
+    assert_eq!(old_target.content, "问 1");
+    assert!(!user_contents(&page).contains(&"问 1"));
+    assert!(user_contents(&page).contains(&"问 250"));
     Ok(())
 }
 
