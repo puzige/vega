@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::MouseMoveEvent;
 use gpui_kit::component::{IconName, spinner::Spinner};
 use vega_conversation::types::ThreadUpdate;
 mod organization;
@@ -42,6 +43,7 @@ pub struct ThreadsBlock {
     pub(crate) loaded_project: Option<String>,
     /// Thread id currently under the mouse; drives the row hover background.
     pub(crate) hovered: Option<String>,
+    hover_suppressed_until_move: bool,
     /// Project id currently under the mouse; reveals fixed project-row actions.
     pub(crate) hovered_project: Option<String>,
     /// Section header currently under the pointer; its fixed action rail is
@@ -106,6 +108,7 @@ impl ThreadsBlock {
             archived: Vec::new(),
             loaded_project: None,
             hovered: None,
+            hover_suppressed_until_move: false,
             hovered_project: None,
             hovered_section: None,
             projects_header_focus: cx.focus_handle(),
@@ -320,6 +323,10 @@ impl ThreadsBlock {
         crate::navigation::begin_task_mutation(cx);
         let result = with_store(cx, operation);
         crate::navigation::finish_task_mutation(cx);
+        if result.is_ok() {
+            self.hovered = None;
+            self.hover_suppressed_until_move = true;
+        }
         self.reload(cx);
         if let Err(message) = result {
             self.error = Some(message);
@@ -429,6 +436,9 @@ impl ThreadsBlock {
     /// Hover bookkeeping for one row; only real changes notify.
     fn set_hovered(&mut self, thread_id: &str, hovered: bool, cx: &mut Context<Self>) {
         let changed = if hovered {
+            if self.hover_suppressed_until_move {
+                return;
+            }
             if self.hovered.as_deref() != Some(thread_id) {
                 self.hovered = Some(thread_id.to_string());
                 true
@@ -444,6 +454,11 @@ impl ThreadsBlock {
         if changed {
             cx.notify();
         }
+    }
+
+    fn on_thread_mouse_move(&mut self, thread_id: &str, cx: &mut Context<Self>) {
+        self.hover_suppressed_until_move = false;
+        self.set_hovered(thread_id, true, cx);
     }
 
     /// Hover bookkeeping for project rows; action hitboxes stay mounted while
@@ -1126,6 +1141,8 @@ impl ThreadsBlock {
             || self.actions_open.as_deref() == Some(thread.id.as_str())
             || self.focused_thread_action.as_deref() == Some(thread.id.as_str());
         let thread_id = thread.id.clone();
+        let hover_thread_id = thread_id.clone();
+        let mouse_move_thread_id = thread_id.clone();
         let row_thread = thread.clone();
         let mut row = div()
             .id(ElementId::Name(
@@ -1144,7 +1161,10 @@ impl ThreadsBlock {
             .overflow_hidden()
             .text_size(px(Typography::SIDEBAR))
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.set_hovered(&thread_id, *hovered, cx);
+                this.set_hovered(&hover_thread_id, *hovered, cx);
+            }))
+            .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
+                this.on_thread_mouse_move(&mouse_move_thread_id, cx);
             }))
             .on_mouse_up(
                 MouseButton::Right,
