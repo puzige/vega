@@ -79,7 +79,7 @@ exit_code=0
 
 ## 静止指针 hover 回归修复
 
-- 基线：`origin/master` `90d7eba`；分支：`feat/157-hover-refresh`。
+- 初始开发基线：`origin/master` `90d7eba`；原 PR head：`198fe93`；分支：`feat/157-hover-refresh`。
 - 在冻结规格中新增 Pin/unpin 分区重排、Archive/restore 移除与恢复时静止指针的验收条款。
 - 成功的 pin/status 持久化操作会立即清除任务行 hover，并抑制列表重排后 GPUI 因旧指针命中区重新激活 hover；真实鼠标移动到任务行后恢复正常 hover。失败的持久化操作不更改 hover 状态。
 - 两个 GPUI 测试走快捷按钮、SQLite 写入和组织列表刷新路径。覆盖 pin/unpin、archive/restore、静止指针下快捷按钮和 row state 的清除，并检查打开任务、选中项目、未读投影、菜单状态和焦点状态保持不变。
@@ -148,3 +148,33 @@ Summary: 10 tests run: 10 passed, 479 skipped
 - 与本次补充的冻结规格偏离：无。
 - 尚待用户安装集成版本后，用 Computer Use 在桌面窗口复验静止指针 Pin/Archive 操作；GPUI 测试已覆盖自动交互路径。
 - 其他未解决风险：无。
+
+### PR #211 重基后验证
+
+#### 冻结
+
+- verified_at_utc: 2026-09-25 16:14 UTC
+- verified_at_local: 2026-09-26 00:14 CST
+- branch: `feat/157-hover-refresh`
+- base: `origin/master` `e7328e0`（v0.1.18，包含 #146）
+- git_head: `cae6888`
+- os_arch: macOS arm64
+- rustc: `rustc 1.98.0 (88d9e12ae 2026-08-18) (Homebrew)`
+- cargo: `cargo 1.98.0 (797e8a9bc 2026-08-05) (Homebrew)`
+- git: `git version 2.55.0`
+
+#### 结果
+
+| 项目 | 精确命令 | 结果 |
+|---|---|---|
+| #157 定向 GPUI 回归 | `cargo nextest run -p vega_ui -E 'test(/r157_|right_click_during_rename_keeps_editor_and_menu_closed|r33_production_task_rows_are_quiet_and_keep_stable_actions|r26_sidebar_projects_each_task_once_and_reveals_contextual_actions|task_menu_keyboard_reaches_unread_and_escape|issue150_row_indicator_does_not_displace_the_row_or_trigger|issue150_running_row_shows_no_resting_timestamp/)'` | exit 0；10 passed，494 skipped；run `61a21070-dffd-46d4-99c3-f91a5d3e5e52`；Nextest 用时 0.579s，编译用时 22.85s |
+| 格式检查 | `cargo fmt --all -- --check` | exit 0，用时 2.1s |
+| 空白检查 | `git diff --check` | exit 0 |
+| `vega_ui` Clippy | `cargo clippy -p vega_ui --all-targets -- -D warnings` | exit 0，用时 7.41s |
+
+Nextest 摘要：`10 tests run: 10 passed, 494 skipped`。Clippy 输出既有 `block v0.1.6` future-incompatibility 提示；未运行 workspace 全量测试。
+
+#### 残余
+
+- 本次重基没有冲突；已在重基后的 #157 diff 上复跑上述命令。
+- 更新后的 PR 云端检查需在推送后重新运行；PR 未合并，Issue #157 仍待集成版本的桌面验收。
