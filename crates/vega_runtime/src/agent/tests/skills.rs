@@ -232,6 +232,155 @@ async fn issue74_model_load_uses_directory_then_next_round_frozen_system_only() 
 }
 
 #[tokio::test]
+async fn issue74_s03_unimported_skill_directories_stay_out_of_catalog_provider_and_audit() {
+    let project = tempdir().unwrap();
+    let global_config = tempdir().unwrap();
+    let unimported_home = tempdir().unwrap();
+    let fixtures = [
+        (
+            project.path().join(".agents/skills"),
+            "project-approved",
+            "PRIVATE PROJECT APPROVED BODY",
+        ),
+        (
+            global_config.path().join("skills"),
+            "global-approved",
+            "PRIVATE GLOBAL APPROVED BODY",
+        ),
+        (
+            unimported_home.path().join(".pi/agent/skills"),
+            "pi-agent-decoy",
+            "PRIVATE PI DECOY BODY",
+        ),
+        (
+            unimported_home.path().join(".codex/skills"),
+            "codex-decoy",
+            "PRIVATE CODEX DECOY BODY",
+        ),
+        (
+            unimported_home.path().join("miscellaneous/agent-skills"),
+            "ordinary-home-decoy",
+            "PRIVATE ORDINARY DECOY BODY",
+        ),
+    ];
+    for (root, name, body) in fixtures {
+        let skill_root = root.join(name);
+        fs::create_dir_all(&skill_root).unwrap();
+        fs::write(
+            skill_root.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Fixture guide for {name}.\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+    let project_source = SkillSource::project_approved(project.path())
+        .unwrap()
+        .unwrap();
+    let global_source = SkillSource::vega_global(global_config.path())
+        .unwrap()
+        .unwrap();
+    let project_candidates = project_source.discover().unwrap().candidates;
+    let global_candidates = global_source.discover().unwrap().candidates;
+    let approvals = project_candidates
+        .iter()
+        .map(|candidate| SkillApproval::reviewed(candidate, "project-one", true, true).unwrap())
+        .chain(global_candidates.iter().map(|candidate| {
+            SkillApproval::reviewed(candidate, "vega-global", true, true).unwrap()
+        }))
+        .collect::<Vec<_>>();
+    let candidates = project_candidates
+        .into_iter()
+        .chain(global_candidates)
+        .collect::<Vec<_>>();
+    let run = SkillRun::new(
+        SkillCatalog::freeze(candidates, &approvals, true).unwrap(),
+        true,
+    );
+    let catalog = run.model_catalog().to_string();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "load-approved".into(),
+                name: "load_skill".into(),
+                input_json: r#"{"name":"project-approved"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let mut req = request(vec![ChatMessage::new(
+        ChatRole::User,
+        "use project guidance",
+    )]);
+    req.tool_config = req.tool_config.with_skill_run(run, Vec::new());
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!outcome.failed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(catalog.contains("project-approved"));
+    assert!(catalog.contains("global-approved"));
+    assert!(requests[0].messages[0].content.contains("project-approved"));
+    assert!(requests[0].messages[0].content.contains("global-approved"));
+    assert!(
+        !requests[0].messages[0]
+            .content
+            .contains("PRIVATE PROJECT APPROVED BODY")
+    );
+    assert!(
+        !requests[0].messages[0]
+            .content
+            .contains("PRIVATE GLOBAL APPROVED BODY")
+    );
+    assert_eq!(
+        requests[1].messages[0]
+            .content
+            .matches("PRIVATE PROJECT APPROVED BODY")
+            .count(),
+        1
+    );
+    assert!(
+        !requests[1].messages[0]
+            .content
+            .contains("PRIVATE GLOBAL APPROVED BODY")
+    );
+    let decoys = [
+        ("pi-agent-decoy", "PRIVATE PI DECOY BODY"),
+        ("codex-decoy", "PRIVATE CODEX DECOY BODY"),
+        ("ordinary-home-decoy", "PRIVATE ORDINARY DECOY BODY"),
+    ];
+    for (name, body) in decoys {
+        assert!(!catalog.contains(name));
+        assert!(!catalog.contains(body));
+        for provider_request in &requests {
+            assert!(provider_request.messages.iter().all(|message| {
+                !message.content.contains(name) && !message.content.contains(body)
+            }));
+        }
+    }
+    let audits = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::SkillActivation { audit, .. } => Some(audit),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].name, "project-approved");
+    let audit_json = serde_json::to_string(&audits).unwrap();
+    for (name, body) in decoys {
+        assert!(!audit_json.contains(name));
+        assert!(!audit_json.contains(body));
+    }
+}
+
+#[tokio::test]
 async fn issue74_s10_no_model_selection_continues_without_activation() {
     let project = tempdir().unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
