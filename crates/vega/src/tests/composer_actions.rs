@@ -152,7 +152,7 @@ fn assert_terminal(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
             .read_with(cx, |stream, _| stream.controller_error_message().is_none())
     );
     let mut visual = VisualTestContext::from_window(f.window.into(), cx);
-    assert!(visual.debug_bounds("composer-stopped").is_some());
+    assert!(visual.debug_bounds("composer-stopped").is_none());
     assert!(visual.debug_bounds("composer-stop").is_none());
 }
 
@@ -313,6 +313,12 @@ async fn r11_composer_preparation_stop_preserves_draft_and_prevents_late_start(
         messages, 0,
         "no late durable ack/commit after cancelled preparation"
     );
+    assert!(
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("run-activity-status")
+            .is_none(),
+        "preparation cancellation has no durable activity to label"
+    );
     assert_eq!(probe.load(), 1);
 }
 
@@ -355,6 +361,12 @@ async fn r11_composer_stream_stop_retains_partial_and_next_draft(
     assert_composer_control_size(&f, "composer-stop", cx);
     click(&f, "composer-stop", cx);
     assert_terminal(&f, cx);
+    assert!(
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("run-activity-status")
+            .is_some(),
+        "a cancelled durable run keeps its terminal status in RunActivity"
+    );
     assert_eq!(draft(&f, cx), "unsent next draft");
     let (status, content): (String, String) = f
         .store

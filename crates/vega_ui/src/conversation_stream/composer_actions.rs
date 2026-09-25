@@ -181,7 +181,6 @@ pub(crate) struct ComposerActions {
     pub(crate) pending_mode: Option<(ThreadMode, String, String)>,
     pub(crate) running: bool,
     stopping: bool,
-    stopped: bool,
     pub(crate) restore_focus: bool,
     terminal_cancelled: Option<bool>,
 }
@@ -260,7 +259,6 @@ impl ConversationStream {
         self.clear_live_context_accounting();
         self.actions.running = true;
         self.actions.stopping = false;
-        self.actions.stopped = false;
         self.actions.terminal_cancelled = None;
         self.actions.menu = false;
         self.actions.slash = None;
@@ -281,9 +279,9 @@ impl ConversationStream {
         self.actions.running = false;
         self.actions.restore_focus = self.actions.stopping;
         self.actions.stopping = false;
-        self.actions.stopped = self.actions.terminal_cancelled.unwrap_or(cancelled);
+        let stopped = self.actions.terminal_cancelled.unwrap_or(cancelled);
         cx.notify();
-        self.actions.stopped
+        stopped
     }
 
     pub(crate) fn record_composer_terminal(&mut self, message_id: &str, cancelled: bool) {
@@ -706,19 +704,6 @@ impl ConversationStream {
                 crate::icons::Icon::Close,
                 colors.brand_on_accent,
             ))
-            .into_any_element()
-    }
-
-    pub(crate) fn render_composer_run_status(&self, cx: &mut Context<Self>) -> AnyElement {
-        let colors = theme(cx).colors;
-        div()
-            .when(self.actions.stopped, |status| {
-                status
-                    .debug_selector(|| "composer-stopped".into())
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child("已停止")
-            })
             .into_any_element()
     }
 }
