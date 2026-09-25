@@ -232,6 +232,260 @@ async fn issue74_model_load_uses_directory_then_next_round_frozen_system_only() 
 }
 
 #[tokio::test]
+async fn issue74_s10_no_model_selection_continues_without_activation() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let (run, _) = skill_run(project.path(), true);
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    }])]);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "unrelated question")]);
+    req.tool_config = req.tool_config.with_skill_run(run, Vec::new());
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!outcome.failed);
+    assert!(!outcome.interrupted);
+    assert!(
+        outcome
+            .events
+            .iter()
+            .all(|event| !matches!(event, RuntimeEvent::SkillActivation { .. }))
+    );
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].messages[0]
+            .content
+            .contains("Review code changes.")
+    );
+    assert!(
+        !requests[0].messages[0]
+            .content
+            .contains("PRIVATE REVIEW RULE")
+    );
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "load_skill")
+    );
+}
+
+#[tokio::test]
+async fn issue74_s10_unknown_name_is_stably_rejected_without_body_read() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let (run, _) = skill_run(project.path(), true);
+    fs::remove_file(project.path().join(".agents/skills/reviewer/SKILL.md")).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "unknown-1".into(),
+                name: "load_skill".into(),
+                input_json: r#"{"name":"missing"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "unknown-2".into(),
+                name: "load_skill".into(),
+                input_json: r#"{"name":"missing"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "review this")]);
+    req.tool_config = req.tool_config.with_skill_run(run, Vec::new());
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!outcome.failed);
+    assert_eq!(provider.requests().len(), 3);
+    let results = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ToolCallFinished(result)
+                if result.call_id == "unknown-1" || result.call_id == "unknown-2" =>
+            {
+                Some(result)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].status, RuntimeToolStatus::Failed);
+    assert_eq!(
+        results[0].output,
+        r#"{"name":"missing","status":"unavailable"}"#
+    );
+    assert_eq!(results[1].output, results[0].output);
+    let audits = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::SkillActivation { audit, .. } => Some(audit),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(audits.len(), 2);
+    assert!(audits.iter().all(|audit| {
+        audit.name == "missing"
+            && audit.status == "unavailable"
+            && audit.source_label.is_none()
+            && audit.content_sha256.is_none()
+    }));
+    assert!(
+        provider
+            .requests()
+            .iter()
+            .all(|request| { !request.messages[0].content.contains("PRIVATE REVIEW RULE") })
+    );
+}
+
+#[tokio::test]
+async fn issue74_s10_repeated_name_is_deduplicated_and_activation_cap_is_enforced() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let skill_root = project.path().join(".agents/skills");
+    for (name, body) in [
+        ("one", "PRIVATE S10 BODY ONE"),
+        ("two", "PRIVATE S10 BODY TWO"),
+        ("three", "PRIVATE S10 BODY THREE"),
+        ("four", "PRIVATE S10 BODY FOUR"),
+    ] {
+        let root = skill_root.join(name);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Guide for {name}.\n---\n{body}\n"),
+        )
+        .unwrap();
+    }
+    let source = SkillSource::project_approved(project.path())
+        .unwrap()
+        .unwrap();
+    let candidates = source.discover().unwrap().candidates;
+    let approvals = candidates
+        .iter()
+        .map(|candidate| SkillApproval::reviewed(candidate, "project-one", true, true).unwrap())
+        .collect::<Vec<_>>();
+    let catalog = SkillCatalog::freeze(candidates, &approvals, true).unwrap();
+    let run = SkillRun::new(catalog, true);
+    let load_round = |id: &str, name: &str| {
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: id.into(),
+                name: "load_skill".into(),
+                input_json: serde_json::json!({"name": name}).to_string(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])]
+    };
+    let provider = MockProvider::new_rounds(vec![
+        load_round("one-first", "one"),
+        load_round("one-repeat", "one"),
+        load_round("two-load", "two"),
+        load_round("three-load", "three"),
+        load_round("four-load", "four"),
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(vec![ChatMessage::new(
+        ChatRole::User,
+        "use relevant guidance",
+    )]);
+    req.context_budget = Some(ContextBudget::new(100_000, 1_000, false).unwrap());
+    req.tool_config = req.tool_config.with_skill_run(run, Vec::new());
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!outcome.failed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 6);
+    let bodies = [
+        "PRIVATE S10 BODY ONE",
+        "PRIVATE S10 BODY TWO",
+        "PRIVATE S10 BODY THREE",
+    ];
+    assert!(!requests[0].messages[0].content.contains(bodies[0]));
+    assert_eq!(
+        requests[1].messages[0].content.matches(bodies[0]).count(),
+        1
+    );
+    assert_eq!(
+        requests[2].messages[0].content.matches(bodies[0]).count(),
+        1
+    );
+    for (request, loaded_count) in requests.iter().zip([0, 1, 1, 2, 3, 3]) {
+        for (index, body) in bodies.iter().enumerate() {
+            let expected_count = if index < loaded_count { 1 } else { 0 };
+            assert_eq!(
+                request.messages[0].content.matches(*body).count(),
+                expected_count
+            );
+        }
+        assert!(
+            !request.messages[0]
+                .content
+                .contains("PRIVATE S10 BODY FOUR")
+        );
+    }
+    let audits = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::SkillActivation { audit, .. } => Some(audit),
+            _ => None,
+        })
+        .map(|audit| audit.status)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        audits,
+        [
+            "loaded",
+            "already_loaded",
+            "loaded",
+            "loaded",
+            "activation_limit"
+        ]
+    );
+    let decisions = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == ContextAccountingStage::PrimaryPreflight =>
+            {
+                Some(decision)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(decisions.len(), requests.len());
+    for (decision, request) in decisions.iter().zip(&requests) {
+        assert_eq!(
+            decision.predicted_input,
+            crate::estimate_wire_context(&request.messages, &request.tools)
+                .unwrap()
+                .input_tokens
+        );
+    }
+}
+
+#[tokio::test]
 async fn issue74_hostile_mcp_result_cannot_reopen_direct_user_activation() {
     let project = tempdir().unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
