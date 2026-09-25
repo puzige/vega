@@ -349,6 +349,14 @@ pub(super) fn private_dir(path: &Path) -> UpdateResult<()> {
     Ok(())
 }
 
+pub(super) fn private_tempdir_in(parent: &Path, prefix: &str) -> UpdateResult<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix(prefix)
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(parent)
+        .map_err(Into::into)
+}
+
 pub(super) fn write_new(path: &Path, bytes: &[u8]) -> UpdateResult<()> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -359,4 +367,27 @@ pub(super) fn write_new(path: &Path, bytes: &[u8]) -> UpdateResult<()> {
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn updater_private_tempdir_owner_only() {
+        let parent = tempfile::tempdir().unwrap();
+        let directory = private_tempdir_in(parent.path(), ".vega-update-").unwrap();
+        let metadata = std::fs::metadata(directory.path()).unwrap();
+        assert_eq!(metadata.mode() & 0o777, 0o700);
+        assert!(private_dir(directory.path()).is_ok());
+    }
+
+    #[test]
+    fn updater_private_tempdir_rejects_group_and_world_permissions() {
+        let parent = tempfile::tempdir().unwrap();
+        let directory = private_tempdir_in(parent.path(), ".vega-update-").unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = private_dir(directory.path()).unwrap_err();
+        assert_eq!(error.to_string(), "更新暂存目录权限无效");
+    }
 }
