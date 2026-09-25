@@ -44,6 +44,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-feature-teardown.md](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
 | [vega-features.md](docs/vega-features.md) | 功能点全表（Phase 1 P0 ×38） |
 | [vega-issue-178-auto-update.md](docs/vega-issue-178-auto-update.md) | 自动更新调研方案（实现契约由 #181 冻结） |
+| [vega-issue-181-independent-update-signing.md](docs/vega-issue-181-independent-update-signing.md) | 独立 Ed25519 更新签名、Applications 原位安装与旧版迁移 |
 | [vega-issue-181-auto-update.md](docs/vega-issue-181-auto-update.md) | macOS 自动更新：设置、签名门禁、显式重启安装 |
 | [vega-issue-181-delivery.md](docs/vega-issue-181-delivery.md) | 自动更新交付状态、手测步骤与恢复方式 |
 | [vega-design-guidelines.md](docs/vega-design-guidelines.md) | Vega 原生设计守则：视觉语言、语义 token、状态与 UI 变更检查表 |
@@ -87,8 +88,8 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-s8-tasks.md](docs/vega-s8-tasks.md) | S8 任务卡 T42-T50（性能调优、硬件实测与 Phase 1 收口，SDD 已冻结） |
 | [vega-s8-sdd.md](docs/vega-s8-sdd.md) | S8 验收 SDD（C1-C8 冻结契约、七状态词表与证据基线） |
 | [vega-s8-report.md](docs/vega-s8-report.md) | S8 验收报告（T43 冻结性能基线、逐卡 DoD、carryforward 核销与期末优化批偏离） |
-| [vega-packaging.md](docs/vega-packaging.md) | macOS 打包与分发（`cargo xtask package`、.app 结构、其他 Mac 安装与 Gatekeeper、公证 HUMAN 模板） |
-| [vega-release.md](docs/vega-release.md) | 发版指南（tag → GitHub Actions 自动出 Release、成本提示、签名公证 HUMAN 前置、失败补救） |
+| [vega-packaging.md](docs/vega-packaging.md) | macOS 打包与分发（`cargo xtask package`、.app 结构、受支持安装路径、独立更新签名与可选 Apple 公证） |
+| [vega-release.md](docs/vega-release.md) | 发版指南（master 自动 patch、Ed25519 manifest、可选 Apple 公证、失败恢复） |
 
 ## 关键决策（详见 PRD）
 

@@ -339,11 +339,12 @@ fn install_txt(version: &str) -> String {
          系统要求：macOS 11.0+，Apple Silicon（arm64）。\n\n\
          安装：\n\
          1. 确认旧 Vega 已无运行任务并退出。\n\
-         2. 解压本 zip，将 Vega.app 放到 ~/Documents/Vega/Vega.app。\n\
-         3. 从此固定路径打开；更新只替换应用，不删除配置或会话数据。\n\n\
+         2. 解压本 zip，将 Vega.app 放到 /Applications/Vega.app。\n\
+         3. 也支持 ~/Applications/Vega.app 与既有 ~/Documents/Vega/Vega.app。\n\
+         从明确路径打开；更新只替换运行副本，不删除配置或会话数据。\n\n\
          正式 Release 配置 Developer ID 后经过签名、公证与 staple；\n\
-         本地包或未配置发布凭据的包仅为 ad-hoc 签名，不支持自动安装。\n\
-         若系统阻止启动，请核对发布来源与签名，不要移除安全属性。\n\n\
+         ad-hoc 包也可通过内置公钥验证独立更新签名；旧版首次迁移须人工安装。\n\
+         独立签名不替代首次系统验证；若启动被阻止，请核对来源与签名，勿移除安全属性。\n\n\
          Git 运行时要求：Vega 需要 Git 2.40 或更新版本，以支持安全的\n\
          check-attr --source 查询。Vega 只使用固定的 Homebrew 或系统 Git\n\
          canonical 来源，不读取 PATH、仓库配置或用户指定的 executable。\n\

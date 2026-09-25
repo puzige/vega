@@ -16,6 +16,7 @@ mod protocol;
 mod provenance;
 mod render;
 mod report;
+mod sign_update;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -50,13 +51,14 @@ fn dispatch(args: &[String]) -> Result<()> {
         Some("bench-p7") => bench_c1c2_only(),
         Some("bench-p2") => bench_p2_only(),
         Some("package") => package::run(&args[1..]),
+        Some("sign-update") => sign_update::run(&args[1..]),
         Some("package-icon") => package::run_icon(&args[1..]),
         other => {
             if let Some(other) = other {
                 eprintln!("unknown subcommand: {other}");
             }
             eprintln!(
-                "usage: cargo xtask bench [or bench-p7 | bench-p2 | package | package-icon <output.icns>]"
+                "usage: cargo xtask bench [or bench-p7 | bench-p2 | package | package-icon <output.icns> | sign-update --version <version>]"
             );
             std::process::exit(2);
         }

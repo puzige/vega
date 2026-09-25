@@ -77,9 +77,9 @@ description: "Vega 看板驱动的软件交付闭环。用于从 GitHub Project 
 
 ### 固定安装位置
 
-需要应用交付时遵守仓库 `AGENTS.md` 的 Documents 入口约定：只更新
-`~/Documents/Vega/Vega.app`（`ai.vega`），从该明确路径启动，不再安装到
-Applications。`dist` 是构建产物，备份用 zip 加构建身份保存。不主动
+需要应用交付时遵守仓库 `AGENTS.md` 的入口约定：支持 `/Applications/Vega.app`、
+`~/Applications/Vega.app` 与兼容的 `~/Documents/Vega/Vega.app`（`ai.vega`），只原位更新
+实际运行的 canonical app，权限不足不提权，从明确路径启动。`dist` 是构建产物，备份用 zip 加构建身份保存。不主动
 注册 Launchpad、刷新 Dock 或重建系统应用数据库；不承诺系统不会自动
 索引 Documents 中的应用。报告分别列出代码合并身份和实际安装身份；
 纯文档任务不打包/安装，明确要求迁移现有应用时验证前后哈希一致。

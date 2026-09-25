@@ -51,10 +51,10 @@ Cross-agent instructions for Vega — a native AI agent desktop (Rust + GPUI).
 - `.config/nextest.toml` 用于 PR gate 和本地定向 nextest 测试：`retries=0`、`fail-fast=false`、600 秒挂起保护；不覆盖默认并发。
 - **本地只跑本卡功能点测试，不跑 workspace 全量**（2026-09-23 用户裁决）：`cargo nextest run -p <crate> <filter>` 等定向命令，确保本卡自己新增/修改的测试通过；全量 fmt/clippy/workspace 测试交给云端 `pr-check`。任务级 production-root 回归与测试矩阵仍须覆盖，只是不再在本地重复全量门禁。保留既有安全断言、失败输出及任务验收矩阵；除 #149 明确授权删除的真实 E2E 外，不得为提速删除保留范围内的测试、加 ignore、放宽断言或自动重试到绿。
 
-## 固定应用安装入口（2026-09-21 用户更新约定）
+## 应用安装入口（2026-09-25 用户更新约定）
 
-- 用户日常应用固定为 `~/Documents/Vega/Vega.app`，当前机器绝对路径为 `/Users/puzige/Documents/Vega/Vega.app`，bundle ID 保持 `ai.vega`。此约定取代此前 `/Applications/Vega.app` 约定；不再向系统或用户 Applications 目录安装。
-- 新版本只替换固定位置；不要创建带版本号的安装名、指向 worktree 的符号链接或从 `dist` 启动日常应用。用户直接从 Documents 中打开，后续启动使用明确的应用路径，不按名称或 bundle ID 选择副本。
+- 用户明确批准 `/Applications/Vega.app`、`~/Applications/Vega.app`，兼容 `~/Documents/Vega/Vega.app`；bundle ID 保持 `ai.vega`。只更新实际运行的 canonical app；不得迁移或修改其他副本。独立更新签名与路径规则见 [规格](docs/vega-issue-181-independent-update-signing.md)。
+- 新版本原位替换当前运行的受支持 app；不要创建带版本号的安装名、指向 worktree 的符号链接或从 `dist` 启动日常应用。启动使用明确路径，不按名称或 bundle ID 选择副本。权限不足时提示人工安装，不提权、不移除安全属性。
 - `dist/Vega.app` 仅是打包产物。备份优先保存为 zip，附原二进制哈希和构建 commit；不要长期散落可被系统索引的 `.app` 备份。既有验收证据不得擅自删除。
 - 安装须独占，先检查正在运行的任务；未经确认空闲不得强退。候选构建签名/哈希验证完成后再替换固定位置，并核对安装后二进制身份。
 - 不主动执行 `lsregister -f`、刷新 Dock/Launchpad 或重建系统应用数据库。macOS 仍可能自动发现 Documents 中的应用；目录约定不是禁止系统索引的机制，不承诺 Launchpad 永不显示。

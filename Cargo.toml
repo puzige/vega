@@ -26,6 +26,7 @@ tokio = "=1.53.1"
 serde = "=1.0.229"
 serde_json = "=1.0.151"
 sha2 = "=0.10.9"
+ring = "=0.17.14"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 serde-saphyr = { version = "=0.0.29", default-features = false } # Issue #74: exact direct dependency approved by user 2026-09-20
 thiserror = "=2.0.20"

@@ -7912,10 +7912,12 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 name = "vega"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures",
  "gpui-kit",
  "libc",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -9388,9 +9390,12 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "gpui-kit",
+ "ring",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "vega_conversation",
  "vega_store",
  "vega_theme",
