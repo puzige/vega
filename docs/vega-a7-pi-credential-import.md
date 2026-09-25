@@ -1,6 +1,10 @@
 # A7-02 · Explicit Pi Agent credential import
 
-Status: SPEC FROZEN · 2026-09-17 · Owner: primary agent
+Status: HISTORICAL CONTRACT · superseded for current product behavior by [Issue #81](vega-issue-81-remove-pi-agent.md).
+
+This document records the original A7-02 contract. The Pi Agent import action
+and source-reading flow have been removed. Use Issue #81 for current acceptance;
+the historical implementation and native acceptance evidence remain unchanged.
 
 ## Why
 

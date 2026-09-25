@@ -82,11 +82,10 @@ single-materialization, and no-stream-rebuild contracts.
   `./scripts/cargo-lock.sh test --workspace`, `cargo fmt --all -- --check`,
   and strict workspace clippy through `cargo-lock.sh`.
 - Package a candidate, verify it in the native UI with the currently disabled
-  provider: explicit guidance and no new row. The user has explicitly
-  authorized sourcing the CPA credential from local Pi Agent; the primary
-  agent may read that source without displaying the secret and save it through
-  Vega Settings UI. Then verify a real response and one safe test-project tool
-  action; record live network evidence separately from mock tests.
+  provider: explicit guidance and no new row. Enter a credential through Vega
+  Settings → Providers without displaying it elsewhere. Then verify a real
+  response and one safe test-project tool action; record live network evidence
+  separately from mock tests.
 - A mounted production-window regression covers an enabled provider and
   credential with an unpriced exact draft model: submit → Pricing route →
   UI Settings mutation → Back to app → retained text/project/model/id → retry.
