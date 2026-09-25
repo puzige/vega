@@ -8,14 +8,14 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::platform::{self, Bundle};
-use super::{UpdateResult, failure};
+use super::{UpdateResult, failure, signature};
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Manifest {
     target: PathBuf,
     old_version: String,
     new_version: String,
-    team: String,
     old_hash: String,
     new_hash: String,
     device: u64,
@@ -24,20 +24,20 @@ struct Manifest {
 }
 
 pub(super) fn prepare(bundle: &Bundle, staging: &Path, version: &str) -> UpdateResult<()> {
-    let team = bundle
-        .team
-        .as_ref()
-        .ok_or_else(|| failure("当前应用未通过正式签名验证"))?;
-    platform::verify_identity(&bundle.path, &bundle.version, Some(team))?;
-    platform::verify_identity(&staging.join("Vega.app"), version, Some(team))?;
+    platform::validate_target_path(&bundle.path)?;
+    let team = platform::verified_team(&bundle.path, &bundle.version)?;
+    if team != bundle.team {
+        return Err(failure("当前应用签名身份已变化，请重新启动后检查更新"));
+    }
+    let authenticated = signature::load(staging, version, &bundle.version)?;
+    signature::archive_bytes(staging, &authenticated)?;
     let metadata = std::fs::symlink_metadata(&bundle.path)?;
     let manifest = Manifest {
         target: bundle.path.clone(),
         old_version: bundle.version.clone(),
         new_version: version.into(),
-        team: team.clone(),
         old_hash: platform::hash(&bundle.path.join("Contents/MacOS/vega"))?,
-        new_hash: platform::hash(&staging.join("Vega.app/Contents/MacOS/vega"))?,
+        new_hash: String::new(),
         device: metadata.dev(),
         inode: metadata.ino(),
         parent_pid: std::process::id(),
@@ -90,8 +90,8 @@ fn load(staging: &Path) -> UpdateResult<Manifest> {
 }
 
 fn validate_layout(staging: &Path, manifest: &Manifest) -> UpdateResult<()> {
-    if platform::installed_path().as_ref() != Some(&manifest.target)
-        || staging.canonicalize()? != staging
+    platform::validate_target_path(&manifest.target)?;
+    if staging.canonicalize()? != staging
         || staging.parent() != manifest.target.parent()
         || !staging
             .file_name()
@@ -110,18 +110,10 @@ fn validate_layout(staging: &Path, manifest: &Manifest) -> UpdateResult<()> {
     if new <= old {
         return Err(failure("安装版本必须较新"));
     }
-    let parent = manifest
-        .target
-        .parent()
-        .ok_or_else(|| failure("安装路径无效"))?;
-    let metadata = std::fs::metadata(parent)?;
-    if metadata.mode() & 0o022 != 0 || metadata.uid() != std::fs::metadata(staging)?.uid() {
-        return Err(failure("安装目录必须由当前用户独占写入"));
-    }
     Ok(())
 }
 
-fn validate_old(manifest: &Manifest) -> UpdateResult<()> {
+fn validate_old(manifest: &Manifest) -> UpdateResult<Option<String>> {
     let metadata = std::fs::symlink_metadata(&manifest.target)?;
     if !metadata.is_dir()
         || metadata.dev() != manifest.device
@@ -131,12 +123,7 @@ fn validate_old(manifest: &Manifest) -> UpdateResult<()> {
     {
         return Err(failure("原应用已变化，取消更新"));
     }
-    platform::verify_identity(
-        &manifest.target,
-        &manifest.old_version,
-        Some(&manifest.team),
-    )?;
-    Ok(())
+    platform::verified_team(&manifest.target, &manifest.old_version)
 }
 
 fn validate_parent(manifest: &Manifest) -> UpdateResult<()> {
@@ -174,18 +161,15 @@ fn validate_parent(manifest: &Manifest) -> UpdateResult<()> {
 }
 
 fn helper(staging: &Path) -> UpdateResult<()> {
-    let manifest = load(staging)?;
+    let mut manifest = load(staging)?;
     validate_parent(&manifest)?;
     validate_layout(staging, &manifest)?;
     if std::env::current_exe()?.canonicalize()? != manifest.target.join("Contents/MacOS/vega") {
         return Err(failure("安装程序不属于原应用"));
     }
-    validate_old(&manifest)?;
-    let candidate = staging.join("Vega.app");
-    platform::verify_identity(&candidate, &manifest.new_version, Some(&manifest.team))?;
-    if platform::hash(&candidate.join("Contents/MacOS/vega"))? != manifest.new_hash {
-        return Err(failure("候选应用已变化"));
-    }
+    let team = validate_old(&manifest)?;
+    let authenticated = signature::load(staging, &manifest.new_version, &manifest.old_version)?;
+    signature::archive_bytes(staging, &authenticated)?;
     let previous = staging.join("previous.app");
     if previous.exists() || staging.join("startup-ok").exists() {
         return Err(failure("安装记录已被使用"));
@@ -206,7 +190,7 @@ fn helper(staging: &Path) -> UpdateResult<()> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let result = replace_and_launch(staging, &manifest);
+    let result = replace_and_launch(staging, &mut manifest, team.as_deref());
     if result.is_err() {
         let _ = platform::write_new(&staging.join("install-failed.txt"), b"Update did not complete. Keep this directory for recovery. If previous.app exists, quit Vega before manually restoring it. User data is unchanged.");
         if validate_old(&manifest).is_ok() {
@@ -216,11 +200,32 @@ fn helper(staging: &Path) -> UpdateResult<()> {
     result
 }
 
-fn replace_and_launch(staging: &Path, manifest: &Manifest) -> UpdateResult<()> {
-    let candidate = staging.join("Vega.app");
+fn replace_and_launch(
+    staging: &Path,
+    manifest: &mut Manifest,
+    team: Option<&str>,
+) -> UpdateResult<()> {
+    if validate_old(manifest)?.as_deref() != team {
+        return Err(failure("原应用签名身份已变化"));
+    }
+    let authenticated = signature::load(staging, &manifest.new_version, &manifest.old_version)?;
+    let archive = signature::archive_bytes(staging, &authenticated)?;
+    let candidate_root = tempfile::Builder::new()
+        .prefix("authenticated-")
+        .tempdir_in(staging)?;
+    let candidate = platform::extract(archive, candidate_root.path())?;
+    platform::verify_candidate(&candidate, &authenticated.version, team)?;
+    manifest.new_hash = platform::hash(&candidate.join("Contents/MacOS/vega"))?;
+    let bytes = serde_json::to_vec(manifest).map_err(|_| failure("无法保存安装身份"))?;
+    let mut install_record = tempfile::NamedTempFile::new_in(staging)?;
+    use std::io::Write;
+    install_record.write_all(&bytes)?;
+    install_record.as_file().sync_all()?;
+    install_record
+        .persist(staging.join("install.json"))
+        .map_err(|_| failure("无法保存安装身份"))?;
     let previous = staging.join("previous.app");
     validate_old(manifest)?;
-    platform::verify_identity(&candidate, &manifest.new_version, Some(&manifest.team))?;
     std::fs::rename(&manifest.target, &previous)?;
     if std::fs::rename(&candidate, &manifest.target).is_err() {
         std::fs::rename(&previous, &manifest.target)?;
@@ -229,7 +234,7 @@ fn replace_and_launch(staging: &Path, manifest: &Manifest) -> UpdateResult<()> {
     let mut child = match launch(&manifest.target, Some(staging), false) {
         Ok(child) => child,
         Err(error) => {
-            rollback(staging, manifest)?;
+            rollback(staging, manifest, team)?;
             return Err(error);
         }
     };
@@ -237,13 +242,18 @@ fn replace_and_launch(staging: &Path, manifest: &Manifest) -> UpdateResult<()> {
     loop {
         if staging.join("startup-ok").is_file() {
             if platform::hash(&manifest.target.join("Contents/MacOS/vega"))? == manifest.new_hash {
-                std::fs::remove_dir_all(&previous)?;
-                std::fs::remove_dir_all(staging)?;
+                if std::fs::remove_dir_all(&previous).is_err() {
+                    let _ = platform::write_new(&staging.join("cleanup-required.txt"), b"Update succeeded and the new application confirmed startup. The previous application could not be removed with current user permissions. Keep or manually remove this backup when convenient; no rollback is required.");
+                    return Ok(());
+                }
+                if std::fs::remove_dir_all(staging).is_err() {
+                    let _ = platform::write_new(&staging.join("cleanup-required.txt"), b"Update succeeded. Temporary update files could not be completely removed with current user permissions. They may be manually cleaned up; no rollback is required.");
+                }
             }
             return Ok(());
         }
         if child.try_wait()?.is_some() {
-            rollback(staging, manifest)?;
+            rollback(staging, manifest, team)?;
             return Err(failure("新版本未正常启动，已恢复原应用"));
         }
         if start.elapsed() > Duration::from_secs(90) {
@@ -273,10 +283,13 @@ fn launch(
         .spawn()?)
 }
 
-fn rollback(staging: &Path, manifest: &Manifest) -> UpdateResult<()> {
+fn rollback(staging: &Path, manifest: &Manifest, team: Option<&str>) -> UpdateResult<()> {
     let failed = staging.join("failed.app");
     let previous = staging.join("previous.app");
-    platform::verify_identity(&previous, &manifest.old_version, Some(&manifest.team))?;
+    platform::verify_candidate(&previous, &manifest.old_version, team)?;
+    if platform::hash(&previous.join("Contents/MacOS/vega"))? != manifest.old_hash {
+        return Err(failure("备份应用身份已变化，保留恢复记录"));
+    }
     std::fs::rename(&manifest.target, &failed)?;
     if let Err(error) = std::fs::rename(&previous, &manifest.target) {
         let _ = std::fs::rename(&failed, &manifest.target);

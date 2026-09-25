@@ -62,7 +62,7 @@ jobs:
           done
           if [[ "$configured" == 0 ]]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Signing credentials absent: publishing ad-hoc package; automatic installation disabled."
+            echo "Apple credentials absent: publishing ad-hoc package with independent update signature."
           elif [[ "$configured" == 6 ]]; then
             [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "Invalid signing Team ID"; exit 1; }
             echo "enabled=true" >> "$GITHUB_OUTPUT"
@@ -158,6 +158,13 @@ jobs:
           spctl --assess --type execute "$signing_dir/unpacked/Vega.app"
           (cd dist && shasum -a 256 Vega-macos-arm64.zip > Vega-macos-arm64.zip.sha256)
 
+      - name: Sign update manifest
+        if: steps.plan.outputs.complete != 'true'
+        env:
+          VEGA_UPDATE_PRIVATE_KEY: ${{ secrets.VEGA_UPDATE_PRIVATE_KEY }}
+          RELEASE_VERSION: ${{ steps.plan.outputs.tag }}
+        run: cargo xtask sign-update --version "${RELEASE_VERSION#v}"
+
       - name: Attach the artifact
         if: steps.plan.outputs.complete != 'true'
         uses: actions/upload-artifact@v4
@@ -166,6 +173,8 @@ jobs:
           path: |
             dist/Vega-macos-arm64.zip
             dist/Vega-macos-arm64.zip.sha256
+            dist/Vega-update.json
+            dist/Vega-update.json.sig
           if-no-files-found: error
 
       - name: Publish complete draft

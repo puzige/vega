@@ -1,6 +1,7 @@
 mod install;
 mod network;
 mod platform;
+mod signature;
 
 use std::path::PathBuf;
 use std::sync::{
@@ -157,13 +158,14 @@ impl Worker {
             .map(|bundle| bundle.version.clone())
             .unwrap_or_else(|| "开发版本".into());
         worker.state.phase = UpdatePhase::Idle;
-        if worker.state.message.is_empty()
-            && worker
-                .bundle
-                .as_ref()
-                .is_none_or(|bundle| bundle.team.is_none())
-        {
-            worker.state.message = "当前构建仅支持检查更新；请从官方发布页手动安装".into();
+        if worker.state.message.is_empty() {
+            worker.state.message = match &worker.bundle {
+                Some(bundle) => bundle
+                    .installation_error
+                    .clone()
+                    .unwrap_or_else(|| "更新包将通过内置公钥验证；安装前需要确认重启".into()),
+                None => "开发版本仅支持检查更新，请安装正式发布的应用包".into(),
+            };
         }
         if std::env::args_os().any(|arg| arg == "--vega-update-failed") {
             worker.state.message = "新版本未正常启动，已恢复旧版本；请查看官方发布页".into();
@@ -281,12 +283,18 @@ impl Worker {
             runtime.block_on(self.check_release())
         });
         if let Err(error) = result {
-            self.state.phase = if manual {
+            let update_available = matches!(
+                self.state.phase,
+                UpdatePhase::Available | UpdatePhase::Downloading { .. }
+            );
+            self.state.phase = if update_available {
+                UpdatePhase::Available
+            } else if manual {
                 UpdatePhase::Error
             } else {
                 UpdatePhase::Idle
             };
-            self.state.message = if manual {
+            self.state.message = if manual || update_available {
                 error.to_string()
             } else {
                 "自动检查未完成，将在下次检查时重试".into()
@@ -326,40 +334,50 @@ impl Worker {
             return Ok(());
         }
         self.state.phase = UpdatePhase::Available;
-        self.state.message = "发现新版本；当前构建请从官方发布页手动安装".into();
+        self.state.message = "发现新版本，正在验证更新资格…".into();
         self.publish();
-        let Some(bundle) = self
-            .bundle
-            .as_ref()
-            .filter(|bundle| bundle.team.is_some())
-            .cloned()
-        else {
+        let Some(bundle) = self.bundle.clone() else {
+            self.state.message = "开发版本不可原位更新，请安装正式发布的应用包".into();
+            self.publish();
             return Ok(());
         };
+        if let Some(error) = &bundle.installation_error {
+            return Err(failure(error));
+        }
+        platform::validate_target_path(&bundle.path)?;
         let parent = bundle
             .path
             .parent()
             .ok_or_else(|| failure("应用安装目录不可用"))?;
         let staging = tempfile::Builder::new()
             .prefix(".vega-update-")
-            .tempdir_in(parent)?;
+            .tempdir_in(parent)
+            .map_err(|_| failure("应用安装目录不可写或已只读，请从官方发布页手动安装"))?;
         platform::private_dir(staging.path())?;
-        let archive = staging.path().join(network::ASSET);
         self.state.phase = UpdatePhase::Downloading {
             received: 0,
             total: 0,
         };
-        self.state.message = "正在下载更新…".into();
+        self.state.message = "正在验证独立签名并下载更新…".into();
         self.publish();
-        network::download(&client, &release, &archive, |received, total| {
-            self.state.phase = UpdatePhase::Downloading { received, total };
-            self.publish();
-        })
+        network::download(
+            &client,
+            &release,
+            staging.path(),
+            &version,
+            &bundle.version,
+            |received, total| {
+                self.state.phase = UpdatePhase::Downloading { received, total };
+                self.publish();
+            },
+        )
         .await?;
-        self.state.message = "正在验证更新签名与公证…".into();
+        self.state.message = "正在校验签名、压缩包与应用完整性…".into();
         self.publish();
-        let candidate = platform::extract(&archive, staging.path())?;
-        platform::verify_identity(&candidate, &version, bundle.team.as_deref())?;
+        let manifest = signature::load(staging.path(), &version, &bundle.version)?;
+        let archive = signature::archive_bytes(staging.path(), &manifest)?;
+        let candidate = platform::extract(archive, staging.path())?;
+        platform::verify_candidate(&candidate, &version, bundle.team.as_deref())?;
         self.staging = Some(staging);
         self.state.phase = UpdatePhase::Ready;
         self.state.message = "更新已准备好；重启安装前请结束所有运行任务".into();

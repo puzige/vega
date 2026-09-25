@@ -82,14 +82,16 @@ Homebrew Git，例如执行 `brew install git`，然后重启 Vega。Vega 不会
 macOS 11.0+ Apple Silicon。摘要仅验证完整性，不替代发布者签名验证。
 
 1. 确认旧 Vega 中没有运行任务并正常退出；
-2. 解压，将 `Vega.app` 放到 `~/Documents/Vega/Vega.app`；
+2. 解压，将 `Vega.app` 放到 `/Applications/Vega.app` 或 `~/Applications/Vega.app`；
+   兼容既有 `~/Documents/Vega/Vega.app`，更新仅原位替换实际运行副本；
 3. 从该明确路径打开。更新只替换 app，保留 `ai.vega` 数据根与配置。
 
-`dist/Vega.app` 仅是打包产物，不作为日常入口；不安装到 Applications，
+`dist/Vega.app` 仅是打包产物，不作为日常入口；权限不足时人工安装，不提权，
 不主动注册 Launchpad 或刷新 Dock。需要备份时用 zip 保存构建身份，避免散落 app 副本。
 
-本地包与缺少全部发布凭据的 Release 为 ad-hoc 签名，禁止自动替换自身。
-首次从 ad-hoc 升级到 Developer ID 正式签名包必须人工安装；之后才可使用自动安装。
+ad-hoc 包可通过内置 Ed25519 公钥验证发布 manifest 后原位更新。旧 0.1.1/0.1.2
+需要先手动安装含公钥的新版本。独立更新签名不替代 macOS 首次启动验证，
+不关闭 Gatekeeper、不移除 quarantine；已有 Developer ID 的 app 保留同团队公证要求。
 正式签名包应正常通过系统验证；如被阻止，应核对来源与签名，不移除安全属性。
 zip 内附相同安装入口说明的 `INSTALL.txt`。
 
@@ -104,3 +106,11 @@ hardened runtime + timestamp 签名、公证 Accepted 检查、staple、Gatekeep
 归档保持普通 zip 的 `Vega.app/` 与 `INSTALL.txt` 布局，没有 `__MACOSX`
 资源叉条目。staple 必须在最终压缩之前完成；发布流水线验证压缩后的 ticket。
 不手动重签或修改已发布包；需要变更时发布新版本。
+
+## 5. 更新 manifest
+
+最终 ZIP 完成（可选 Apple 签名、公证、staple、重新打包均在前）后，CI 从环境 secret
+调用 `cargo xtask sign-update --version <canonical version>`。该命令核对仓库公钥，
+生成 Ed25519 认证的 `Vega-update.json` 与 `Vega-update.json.sig`；与 ZIP 和 SHA-256
+sidecar 一同发布。任何后续 ZIP 修改都会使 manifest 摘要失效，必须重新签名。
+本地 `cargo xtask package` 仅生成 app/ZIP/摘要，不读取更新私钥。

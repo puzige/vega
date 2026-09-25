@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::OpenOptions;
+use std::io::{Cursor, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,19 +18,60 @@ pub(super) struct Bundle {
     pub path: PathBuf,
     pub version: String,
     pub team: Option<String>,
+    pub installation_error: Option<String>,
 }
 
-pub(super) fn installed_path() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join("Documents/Vega/Vega.app"))
+pub(super) fn validate_target_path(target: &Path) -> UpdateResult<()> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let allowed_user = home.as_ref().is_some_and(|home| {
+        target == home.join("Applications/Vega.app")
+            || target == home.join("Documents/Vega/Vega.app")
+    });
+    if target != Path::new("/Applications/Vega.app") && !allowed_user {
+        return Err(failure(
+            "请将 Vega 安装到 Applications 或 Documents/Vega 后使用应用内更新",
+        ));
+    }
+    let mut checked = PathBuf::new();
+    for component in target.components() {
+        checked.push(component.as_os_str());
+        if std::fs::symlink_metadata(&checked)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(failure("安装路径含符号链接，请使用真实应用目录"));
+        }
+    }
+    if target.canonicalize()? != target {
+        return Err(failure("安装路径不是规范路径"));
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| failure("应用安装目录不可用"))?;
+    let metadata = std::fs::metadata(parent)?;
+    // SAFETY: geteuid reads the current effective user identity without pointer arguments.
+    let owner = unsafe { libc::geteuid() };
+    let trusted = if parent == Path::new("/Applications") {
+        metadata.uid() == 0
+            && metadata.mode() & 0o002 == 0
+            && (metadata.mode() & 0o020 == 0 || metadata.gid() == 80)
+    } else {
+        metadata.uid() == owner && metadata.mode() & 0o022 == 0
+    };
+    if !metadata.is_dir() || !trusted {
+        return Err(failure("应用安装目录权限不安全，请手动安装"));
+    }
+    Ok(())
 }
 
 pub(super) fn discover() -> UpdateResult<Bundle> {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         return Err(failure("自动安装仅支持 macOS Apple Silicon"));
     }
-    let executable = std::env::current_exe()?.canonicalize()?;
+    let executable = std::env::current_exe()?;
+    if executable.canonicalize()? != executable {
+        return Err(failure("应用程序路径包含链接"));
+    }
     let path = executable
         .parent()
         .and_then(Path::parent)
@@ -45,15 +86,16 @@ pub(super) fn discover() -> UpdateResult<Bundle> {
     }
     let version = plist(&path, "CFBundleShortVersionString")?;
     Version::parse(&version)?;
-    let team = if installed_path().as_ref() == Some(&path) {
-        verify_identity(&path, &version, None).ok()
-    } else {
-        None
-    };
+    let (team, installation_error) =
+        match validate_target_path(&path).and_then(|_| verified_team(&path, &version)) {
+            Ok(team) => (team, None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     Ok(Bundle {
         path,
         version,
         team,
+        installation_error,
     })
 }
 
@@ -101,11 +143,7 @@ fn plist(bundle: &Path, key: &str) -> UpdateResult<String> {
     Ok(value.trim().to_string())
 }
 
-pub(super) fn verify_identity(
-    bundle: &Path,
-    version: &str,
-    expected_team: Option<&str>,
-) -> UpdateResult<String> {
+pub(super) fn verify_integrity(bundle: &Path, version: &str) -> UpdateResult<()> {
     Version::parse(version)?;
     let architectures = command(
         Command::new("/usr/bin/lipo")
@@ -125,6 +163,41 @@ pub(super) fn verify_identity(
             .args(["--verify", "--deep", "--strict"])
             .arg(bundle),
     )?;
+    Ok(())
+}
+
+pub(super) fn verified_team(bundle: &Path, version: &str) -> UpdateResult<Option<String>> {
+    verify_integrity(bundle, version)?;
+    let signature = command(
+        Command::new("/usr/bin/codesign")
+            .args(["-d", "--verbose=4"])
+            .arg(bundle),
+    )?;
+    if signature.lines().any(|line| line == "Signature=adhoc") {
+        return Ok(None);
+    }
+    verify_identity(bundle, version, None).map(Some)
+}
+
+pub(super) fn verify_candidate(
+    bundle: &Path,
+    version: &str,
+    expected_team: Option<&str>,
+) -> UpdateResult<()> {
+    if let Some(team) = expected_team {
+        verify_identity(bundle, version, Some(team))?;
+    } else {
+        verify_integrity(bundle, version)?;
+    }
+    Ok(())
+}
+
+fn verify_identity(
+    bundle: &Path,
+    version: &str,
+    expected_team: Option<&str>,
+) -> UpdateResult<String> {
+    verify_integrity(bundle, version)?;
     let signature = command(
         Command::new("/usr/bin/codesign")
             .args(["-d", "--verbose=4"])
@@ -169,9 +242,9 @@ pub(super) fn verify_identity(
     Ok(team.to_string())
 }
 
-pub(super) fn extract(archive: &Path, staging: &Path) -> UpdateResult<PathBuf> {
+pub(super) fn extract(archive: Vec<u8>, staging: &Path) -> UpdateResult<PathBuf> {
     let mut archive =
-        zip::ZipArchive::new(File::open(archive)?).map_err(|_| failure("更新压缩包无效"))?;
+        zip::ZipArchive::new(Cursor::new(archive)).map_err(|_| failure("更新压缩包无效"))?;
     if archive.len() > 20_000 {
         return Err(failure("更新压缩包条目过多"));
     }

@@ -8,7 +8,8 @@ import tomllib
 
 REPO = os.environ['GITHUB_REPOSITORY']
 MAXIMUM = 18446744073709551615
-ASSETS = ('Vega-macos-arm64.zip', 'Vega-macos-arm64.zip.sha256')
+LEGACY_ASSETS = ('Vega-macos-arm64.zip', 'Vega-macos-arm64.zip.sha256')
+ASSETS = (*LEGACY_ASSETS, 'Vega-update.json', 'Vega-update.json.sig')
 
 
 def run(*args):
@@ -76,11 +77,15 @@ def matching_release(tag, items):
     return matches[0] if matches else None
 
 
-def complete(release):
+def complete(release, allow_legacy=False):
     assets = {asset['name']: asset for asset in release['assets']}
+    historical = allow_legacy and not run(
+        'git', 'ls-tree', '--name-only', f"refs/tags/{release['tag_name']}",
+        '--', 'assets/update-public-key.hex')
+    required = LEGACY_ASSETS if historical else ASSETS
     return not release['prerelease'] and all(
         name in assets and assets[name]['state'] == 'uploaded' and assets[name]['size'] > 0
-        for name in ASSETS)
+        for name in required)
 
 
 def prepare():
@@ -111,7 +116,7 @@ def prepare():
     items = releases()
     release = matching_release(tag, items)
     if release and not release['draft']:
-        if tag not in stable or commit(tag) != sha or not complete(release):
+        if tag not in stable or commit(tag) != sha or not complete(release, allow_legacy=True):
             raise RuntimeError('Published release is incomplete or mismatched; assets are immutable')
         done = True
     else:
@@ -135,7 +140,7 @@ def publish():
     items = releases()
     release = matching_release(tag, items)
     if release and not release['draft']:
-        if not complete(release):
+        if not complete(release, allow_legacy=True):
             raise RuntimeError('Published assets cannot be repaired by overwriting')
         return
     validate_publication(tag, sha, items)

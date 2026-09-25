@@ -160,30 +160,49 @@ async fn bounded_bytes(client: &Client, url: &str, limit: u64) -> UpdateResult<V
 pub(super) async fn download(
     client: &Client,
     release: &Release,
-    path: &Path,
+    staging: &Path,
+    version: &str,
+    current_version: &str,
     mut progress: impl FnMut(u64, u64),
 ) -> UpdateResult<()> {
+    use super::signature;
     let archive = asset(release, ASSET, DOWNLOAD_LIMIT)?;
-    let checksum = asset(release, &format!("{ASSET}.sha256"), 4096)?;
-    let checksum_bytes = bounded_bytes(client, &checksum.browser_download_url, 4096).await?;
-    if checksum_bytes.len() as u64 != checksum.size {
-        return Err(failure("摘要下载不完整"));
-    }
-    let checksum_text =
-        std::str::from_utf8(&checksum_bytes).map_err(|_| failure("摘要格式无效"))?;
-    let fields: Vec<_> = checksum_text.split_whitespace().collect();
-    if fields.len() != 2
-        || fields[0].len() != 64
-        || !fields[0].bytes().all(|b| b.is_ascii_hexdigit())
-        || fields[1].trim_start_matches('*') != ASSET
+    let manifest_asset = asset(release, signature::MANIFEST_NAME, signature::MANIFEST_LIMIT)
+        .map_err(|_| failure("此发布缺少独立更新签名，请从官方发布页手动安装"))?;
+    let signature_asset = asset(
+        release,
+        signature::SIGNATURE_NAME,
+        signature::SIGNATURE_LIMIT,
+    )
+    .map_err(|_| failure("此发布缺少独立更新签名，请从官方发布页手动安装"))?;
+    let manifest_bytes = bounded_bytes(
+        client,
+        &manifest_asset.browser_download_url,
+        signature::MANIFEST_LIMIT,
+    )
+    .await?;
+    let signature_bytes = bounded_bytes(
+        client,
+        &signature_asset.browser_download_url,
+        signature::SIGNATURE_LIMIT,
+    )
+    .await?;
+    if manifest_bytes.len() as u64 != manifest_asset.size
+        || signature_bytes.len() as u64 != signature_asset.size
     {
-        return Err(failure("摘要格式无效"));
+        return Err(failure("更新签名下载不完整"));
     }
-    let mut response = response(client, &archive.browser_download_url, archive.size).await?;
+    let manifest = signature::verify(&manifest_bytes, &signature_bytes, version, current_version)?;
+    if archive.size != manifest.size {
+        return Err(failure("发布资产大小与签名不匹配"));
+    }
+    super::platform::write_new(&staging.join(signature::MANIFEST_NAME), &manifest_bytes)?;
+    super::platform::write_new(&staging.join(signature::SIGNATURE_NAME), &signature_bytes)?;
+    let mut response = response(client, &archive.browser_download_url, manifest.size).await?;
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)?;
+        .open(staging.join(ASSET))?;
     let mut hash = Sha256::new();
     let mut received = 0_u64;
     let mut last_progress = std::time::Instant::now();
@@ -193,22 +212,20 @@ pub(super) async fn download(
         .map_err(|_| failure("更新下载中断"))?
     {
         received += chunk.len() as u64;
-        if received > archive.size {
+        if received > manifest.size {
             return Err(failure("更新下载超出大小限制"));
         }
         file.write_all(&chunk)?;
         hash.update(&chunk);
         if last_progress.elapsed() >= Duration::from_millis(250) {
-            progress(received, archive.size);
+            progress(received, manifest.size);
             last_progress = std::time::Instant::now();
         }
     }
     file.sync_all()?;
-    if received != archive.size
-        || format!("{:x}", hash.finalize()) != fields[0].to_ascii_lowercase()
-    {
-        return Err(failure("更新下载不完整或摘要不匹配"));
+    if received != manifest.size || format!("{:x}", hash.finalize()) != manifest.sha256 {
+        return Err(failure("更新下载不完整或签名摘要不匹配"));
     }
-    progress(received, archive.size);
+    progress(received, manifest.size);
     Ok(())
 }
