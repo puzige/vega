@@ -36,3 +36,58 @@
 
 - 与父规格无偏离。新增显式 `0o700` 是使现有 owner-only 校验与目录创建契约一致。
 - 失败时仍按原路径返回错误并 fail closed；不继续下载或触及已安装 app。代码恢复可通过回退此 follow-up commit 完成。
+
+## 实现交付与验证证据
+
+- verified_at_utc：2026-09-25 13:41 UTC。
+- 分支：`feat/181-updater-staging-permissions`；已先 fetch/rebase 到当时最新 `origin/master`。
+- OS/架构：Darwin 24.6.0 arm64；Cargo 1.98.0；rustc 1.98.0。
+- 受影响 production 文件相对 `origin/master` 的二进制 diff SHA-256：`ac4411608070c5b5e066beab5b8085d223db7989e6b38afe05bb4e2cec1805f7`。
+- 根因复现：给 helper 暂时使用未配置权限的 Builder 后，helper 按原样调用 `private_dir`，与桌面错误一致地拒绝了默认目录。该初次失败输出保留如下。
+
+```text
+        FAIL [   0.014s] (1/2) vega::bin/vega updater::platform::tests::updater_private_tempdir_rejects_group_and_world_permissions
+  stdout ───
+    running 1 test
+    test updater::platform::tests::updater_private_tempdir_rejects_group_and_world_permissions ... FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 210 filtered out; finished in 0.00s
+  stderr ───
+    thread 'updater::platform::tests::updater_private_tempdir_rejects_group_and_world_permissions' (78210333) panicked at crates/vega/src/updater/platform.rs:388:76:
+    called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "更新暂存目录权限无效" }
+        FAIL [   0.014s] (2/2) vega::bin/vega updater::platform::tests::updater_private_tempdir_owner_only
+  stdout ───
+    running 1 test
+    test updater::platform::tests::updater_private_tempdir_owner_only ... FAILED
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 210 filtered out; finished in 0.00s
+  stderr ───
+    thread 'updater::platform::tests::updater_private_tempdir_owner_only' (78210334) panicked at crates/vega/src/updater/platform.rs:379:76:
+    called `Result::unwrap()` on an `Err` value: Custom { kind: Other, error: "更新暂存目录权限无效" }
+────────────
+     Summary [   0.017s] 2 tests run: 0 passed, 2 failed, 209 skipped
+error: test run failed
+```
+
+以上为原始失败输出的测试结果摘录；命令退出状态为 100。
+
+- 修复：`private_tempdir_in` 显式调用 Builder `.permissions(Permissions::from_mode(0o700))`；下载和认证解包目录都使用该 helper，创建后仍走现有 `private_dir` 校验。
+- 定向验收命令：`cargo nextest run -p vega -E 'test(updater_private_tempdir_)'`。
+- 修复后原始输出（已在最新基线 rebase 后重跑）：
+
+```text
+   Compiling vega_ui v0.1.0
+   Compiling vega v0.1.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.82s
+────────────
+ Nextest run ID 03a0958b-065c-4803-b1f3-069b268bd981 with nextest profile: default
+    Starting 2 tests across 2 binaries (209 tests skipped)
+        PASS [   0.012s] (1/2) vega::bin/vega updater::platform::tests::updater_private_tempdir_owner_only
+        PASS [   0.012s] (2/2) vega::bin/vega updater::platform::tests::updater_private_tempdir_rejects_group_and_world_permissions
+────────────
+     Summary [   0.013s] 2 tests run: 2 passed, 209 skipped
+```
+
+退出状态：0。
+
+- `git diff --check`：exit 0，无输出。
+- 本地未运行全量测试、fmt 或 clippy；这些留给 PR 云端门禁。真实桌面更新尚未重试，等待修复合并并发布后由 Computer Use 验收。
+- 与规格偏离：无。

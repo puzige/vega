@@ -349,9 +349,7 @@ impl Worker {
             .path
             .parent()
             .ok_or_else(|| failure("应用安装目录不可用"))?;
-        let staging = tempfile::Builder::new()
-            .prefix(".vega-update-")
-            .tempdir_in(parent)
+        let staging = platform::private_tempdir_in(parent, ".vega-update-")
             .map_err(|_| failure("应用安装目录不可写或已只读，请从官方发布页手动安装"))?;
         platform::private_dir(staging.path())?;
         self.state.phase = UpdatePhase::Downloading {

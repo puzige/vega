@@ -210,9 +210,8 @@ fn replace_and_launch(
     }
     let authenticated = signature::load(staging, &manifest.new_version, &manifest.old_version)?;
     let archive = signature::archive_bytes(staging, &authenticated)?;
-    let candidate_root = tempfile::Builder::new()
-        .prefix("authenticated-")
-        .tempdir_in(staging)?;
+    let candidate_root = platform::private_tempdir_in(staging, "authenticated-")?;
+    platform::private_dir(candidate_root.path())?;
     let candidate = platform::extract(archive, candidate_root.path())?;
     platform::verify_candidate(&candidate, &authenticated.version, team)?;
     manifest.new_hash = platform::hash(&candidate.join("Contents/MacOS/vega"))?;
