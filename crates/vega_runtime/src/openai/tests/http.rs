@@ -1,5 +1,61 @@
 use super::*;
 
+#[test]
+fn response_request_id_accepts_only_allowlisted_valid_values() {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "x-request-id",
+        reqwest::header::HeaderValue::from_static("req_abc-123.X:y"),
+    );
+    assert_eq!(
+        request_id_from_headers(&headers).as_deref(),
+        Some("req_abc-123.X:y")
+    );
+
+    let mut unsupported = reqwest::header::HeaderMap::new();
+    unsupported.insert(
+        "x-secret-token",
+        reqwest::header::HeaderValue::from_static("not-allowed"),
+    );
+    assert_eq!(request_id_from_headers(&unsupported), None);
+
+    let mut invalid = reqwest::header::HeaderMap::new();
+    invalid.insert(
+        "request-id",
+        reqwest::header::HeaderValue::from_static("Bearer secret"),
+    );
+    assert_eq!(request_id_from_headers(&invalid), None);
+    invalid.remove("request-id");
+    invalid.insert(
+        "openai-request-id",
+        reqwest::header::HeaderValue::from_bytes(&[b'x'; 129]).unwrap(),
+    );
+    assert_eq!(request_id_from_headers(&invalid), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn typed_chat_call_returns_response_metadata_and_retry_count() {
+    let mut response = http_head(
+        "200 OK",
+        &[
+            ("Content-Type", "text/event-stream"),
+            ("openai-request-id", "request-171"),
+        ],
+    );
+    response.extend_from_slice(
+        b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+    );
+    let server = mock_transport(scripted_responses(vec![response])).await;
+    let provider = provider_for(&server, fast_policy(1));
+    let call = provider
+        .chat_stream_with_metadata(request(), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(call.metadata.http_status, Some(200));
+    assert_eq!(call.metadata.request_id.as_deref(), Some("request-171"));
+    assert_eq!(call.metadata.retry_count, Some(0));
+}
+
 #[tokio::test(start_paused = true)]
 async fn happy_path_sends_openai_wire_format_and_streams_events() {
     let body = sse_response(
@@ -235,7 +291,7 @@ async fn retry_policy_zero_makes_exactly_one_local_http_attempt() {
         .await;
     assert!(matches!(
         result,
-        Err(VegaError::Provider {
+        Err(VegaError::ProviderDiagnostic {
             status: Some(500),
             retryable: false,
             ..
@@ -321,7 +377,7 @@ async fn missing_finish_reason_is_protocol_error_for_done_and_raw_eof() {
         let events = collect_events(stream, 4).await;
         assert!(matches!(
             events.as_slice(),
-            [Ok(ProviderEvent::TextDelta(text)), Err(VegaError::Provider { retryable: false, .. })]
+            [Ok(ProviderEvent::TextDelta(text)), Err(VegaError::ProviderDiagnostic { retryable: false, .. })]
                 if text == "partial"
         ));
     }
@@ -485,10 +541,11 @@ async fn retries_exhausted_returns_non_retryable_provider_error() {
         panic!("expected exhausted provider error, got a successful stream");
     };
     match err {
-        VegaError::Provider {
+        VegaError::ProviderDiagnostic {
             status,
             message,
             retryable,
+            ..
         } => {
             assert_eq!(status, Some(500));
             assert!(
@@ -558,10 +615,11 @@ async fn non_retryable_4xx_fails_without_retry() {
         panic!("expected 401 provider error, got a successful stream");
     };
     match err {
-        VegaError::Provider {
+        VegaError::ProviderDiagnostic {
             status,
             message,
             retryable,
+            ..
         } => {
             assert_eq!(status, Some(401));
             assert!(!retryable);
@@ -603,7 +661,7 @@ async fn issue85_strict_schema_rejection_fails_without_non_strict_fallback() {
         .await;
     assert!(matches!(
         result,
-        Err(VegaError::Provider {
+        Err(VegaError::ProviderDiagnostic {
             status: Some(400),
             retryable: false,
             ..
@@ -638,7 +696,7 @@ async fn error_body_echoing_the_key_is_redacted() {
         panic!("expected provider error, got a successful stream");
     };
     match err {
-        VegaError::Provider { message, .. } => {
+        VegaError::ProviderDiagnostic { message, .. } => {
             assert!(!message.contains(KEY), "provider message leaked key");
             assert!(message.contains("<redacted>"), "redaction marker missing");
         }

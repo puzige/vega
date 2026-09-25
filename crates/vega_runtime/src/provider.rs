@@ -246,6 +246,46 @@ pub enum ReasoningBudgetScope {
 /// providers hand out the same type (tech-spec §4.1 `EventStream`).
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<ProviderEvent, VegaError>> + Send>>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderFailureKind {
+    Http,
+    Transport,
+    Protocol,
+    Rejected,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ProviderResponseMetadata {
+    pub http_status: Option<u16>,
+    pub request_id: Option<String>,
+    pub retry_count: Option<u32>,
+}
+
+impl std::fmt::Debug for ProviderResponseMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderResponseMetadata")
+            .field("http_status", &self.http_status)
+            .field("has_request_id", &self.request_id.is_some())
+            .field("retry_count", &self.retry_count)
+            .finish()
+    }
+}
+
+pub struct ProviderStream {
+    pub events: EventStream,
+    pub metadata: ProviderResponseMetadata,
+}
+
+impl std::fmt::Debug for ProviderStream {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderStream")
+            .field("metadata", &self.metadata)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Chat role of a message, using the OpenAI-compatible wire vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRole {
@@ -547,6 +587,19 @@ pub trait Provider: Send + Sync {
     ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
         self.chat_stream(req, cancel)
     }
+    fn chat_stream_once_with_metadata(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<ProviderStream, VegaError>> {
+        let future = self.chat_stream_once(req, cancel);
+        Box::pin(async move {
+            future.await.map(|events| ProviderStream {
+                events,
+                metadata: ProviderResponseMetadata::default(),
+            })
+        })
+    }
     /// Starts a streaming chat completion for `req`; `cancel` aborts the
     /// attempt (and later the stream) as soon as it fires.
     fn chat_stream(
@@ -554,6 +607,20 @@ pub trait Provider: Send + Sync {
         req: ChatRequest,
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<EventStream, VegaError>>;
+
+    fn chat_stream_with_metadata(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<ProviderStream, VegaError>> {
+        let future = self.chat_stream(req, cancel);
+        Box::pin(async move {
+            future.await.map(|events| ProviderStream {
+                events,
+                metadata: ProviderResponseMetadata::default(),
+            })
+        })
+    }
 }
 
 #[cfg(test)]
@@ -583,6 +650,20 @@ mod tests {
         assert!(req.messages.is_empty());
         assert!(req.tools.is_empty());
         assert_eq!(req.max_tokens, None);
+    }
+
+    #[test]
+    fn response_metadata_debug_hides_request_id_value() {
+        const REQUEST_ID_SENTINEL: &str = "VEGA_REQUEST_ID_CANARY";
+        let metadata = ProviderResponseMetadata {
+            http_status: Some(200),
+            request_id: Some(REQUEST_ID_SENTINEL.to_string()),
+            retry_count: Some(1),
+        };
+        let rendered = format!("{metadata:?}");
+        assert!(rendered.contains("200"));
+        assert!(rendered.contains("retry_count"));
+        assert!(!rendered.contains(REQUEST_ID_SENTINEL));
     }
 
     #[test]

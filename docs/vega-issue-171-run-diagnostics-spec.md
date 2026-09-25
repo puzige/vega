@@ -59,6 +59,8 @@
 
 Summary 的详细诊断需拆分为：`summary_timeout`、`summary_truncated`、`summary_empty`、`summary_format_invalid`、`summary_projection_invalid`、`summary_source_changed`；Provider 错误保留 `provider_http`、`provider_transport_or_stream`、`provider_protocol` 及 provider rejection 的闭合类别。普通 run 可另有 `cancelled`、`interrupted`、`context_over_limit`、`reasoning_limit`、`tool_failed`、`tool_rejected`、`unknown_safe_failure`。
 
+实现审查补充（2026-09-26）：摘要输入/结果预算超限映射为 `context_over_limit`；结构投影和系统消息错误映射为 `summary_projection_invalid`。已有的摘要前置状态也保留闭合安全分类：`summary_source_too_large`、`summary_aggregate_too_large`、`summary_images_unsupported`、`summary_no_compactable_prefix`、`summary_already_attempted`。`SummaryInputOverLimit` 在调用 provider 之前发生时，仍须产生摘要阶段的 start/terminal 诊断，并证明 provider 未被调用；未知内部错误继续使用 `unknown_safe_failure`。
+
 目前 `VegaError::Provider` 无法在不解析 raw message 的情况下区分 transport 和 SSE/protocol failure。应添加闭合来源枚举（例如 Http/Transport/Protocol），provider 分类只根据枚举与 HTTP status 决定；不得从 message 文本正则猜测。Summary collector 中 empty 与格式 framing 错误需由不同 typed `ContextRuntimeError` 表达。现有 compaction UI/status 可继续映射到 `invalid_summary`，新诊断事件保存细分类。
 
 Usage 仅记录 provider 已报告的 token 数；未报告时为 NULL。`visible_output_bytes` 只累计模型可见文本，不能累计 thinking。Request ID 的输入仅来自 `x-request-id` / `request-id` / `openai-request-id` 三个 response header；值限制为 1..=128 ASCII `[A-Za-z0-9._:-]`，不符合就置 NULL。Tool call ID 限制 1..=128 ASCII `[A-Za-z0-9_-]`，不符合就置 NULL。

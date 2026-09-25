@@ -28,8 +28,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::VegaError;
 use crate::provider::{
-    ChatRequest, EventStream, FrozenReasoning, Provider, ProviderEvent, ReasoningChoice,
-    ReasoningDisabledWire, ReasoningProtocol, StopReason,
+    ChatRequest, EventStream, FrozenReasoning, Provider, ProviderEvent, ProviderFailureKind,
+    ProviderResponseMetadata, ProviderStream, ReasoningChoice, ReasoningDisabledWire,
+    ReasoningProtocol, StopReason,
 };
 use crate::retry::{RetryPolicy, parse_retry_after};
 
@@ -165,7 +166,7 @@ impl OpenAiProvider {
         self,
         req: ChatRequest,
         cancel: CancellationToken,
-    ) -> Result<EventStream, VegaError> {
+    ) -> Result<ProviderStream, VegaError> {
         if cancel.is_cancelled() {
             return Err(VegaError::Cancelled);
         }
@@ -191,30 +192,45 @@ impl OpenAiProvider {
             };
             match outcome {
                 Ok(resp) if resp.status().is_success() => {
-                    return Ok(event_stream(resp, cancel));
+                    let metadata = ProviderResponseMetadata {
+                        http_status: Some(resp.status().as_u16()),
+                        request_id: request_id_from_headers(resp.headers()),
+                        retry_count: Some(attempt),
+                    };
+                    return Ok(ProviderStream {
+                        events: event_stream(resp, cancel),
+                        metadata,
+                    });
                 }
                 Ok(resp) => {
                     let status = resp.status().as_u16();
+                    let request_id = request_id_from_headers(resp.headers());
                     let retry_after = retry_after_of(&resp);
                     let snippet = self.redact_key(&error_snippet(resp, &cancel).await);
                     let message =
                         format!("chat/completions request failed (HTTP {status}): {snippet}");
                     if !is_retryable_status(status) {
                         // 4xx（除 429）：重试无意义，立即失败
-                        return Err(VegaError::Provider {
+                        return Err(VegaError::ProviderDiagnostic {
+                            kind: ProviderFailureKind::Rejected,
                             status: Some(status),
                             message,
                             retryable: false,
+                            retry_count: Some(attempt),
+                            request_id,
                         });
                     }
                     if attempt >= self.retry.max_retries {
-                        return Err(VegaError::Provider {
+                        return Err(VegaError::ProviderDiagnostic {
+                            kind: ProviderFailureKind::Http,
                             status: Some(status),
                             message: format!(
                                 "chat/completions request failed after {} retries (HTTP {status}): {snippet}",
                                 self.retry.max_retries
                             ),
                             retryable: false,
+                            retry_count: Some(attempt),
+                            request_id,
                         });
                     }
                     sleep_cancellable(self.retry.delay_for(attempt, retry_after), &cancel).await?;
@@ -227,10 +243,13 @@ impl OpenAiProvider {
                             "chat/completions request failed after {} retries: {err}",
                             self.retry.max_retries
                         ));
-                        return Err(VegaError::Provider {
+                        return Err(VegaError::ProviderDiagnostic {
+                            kind: ProviderFailureKind::Transport,
                             status: None,
                             message,
                             retryable: false,
+                            retry_count: Some(attempt),
+                            request_id: None,
                         });
                     }
                     sleep_cancellable(self.retry.backoff(attempt), &cancel).await?;
@@ -249,7 +268,11 @@ impl Provider for OpenAiProvider {
     ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
         let mut this = self.clone();
         this.retry.max_retries = 0;
-        Box::pin(async move { this.stream_response(req, cancel).await })
+        Box::pin(async move {
+            this.stream_response(req, cancel)
+                .await
+                .map(|call| call.events)
+        })
     }
     fn chat_stream(
         &self,
@@ -257,8 +280,46 @@ impl Provider for OpenAiProvider {
         cancel: CancellationToken,
     ) -> BoxFuture<'static, Result<EventStream, VegaError>> {
         let this = self.clone();
+        Box::pin(async move {
+            this.stream_response(req, cancel)
+                .await
+                .map(|call| call.events)
+        })
+    }
+
+    fn chat_stream_once_with_metadata(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<ProviderStream, VegaError>> {
+        let mut this = self.clone();
+        this.retry.max_retries = 0;
         Box::pin(async move { this.stream_response(req, cancel).await })
     }
+
+    fn chat_stream_with_metadata(
+        &self,
+        req: ChatRequest,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<ProviderStream, VegaError>> {
+        let this = self.clone();
+        Box::pin(async move { this.stream_response(req, cancel).await })
+    }
+}
+
+fn request_id_from_headers(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    ["x-request-id", "request-id", "openai-request-id"]
+        .into_iter()
+        .filter_map(|name| headers.get(name))
+        .filter_map(|value| value.to_str().ok())
+        .find(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+        })
+        .map(str::to_owned)
 }
 
 /// Serializes a [`ChatRequest`] into the OpenAI chat-completion body:

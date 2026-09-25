@@ -298,5 +298,6 @@ pub(crate) fn runtime_event_requires_ack(event: &RuntimeEvent) -> bool {
         RuntimeEvent::TextDelta(_)
             | RuntimeEvent::ThinkingDelta(_)
             | RuntimeEvent::ToolCallOutput { .. }
+            | RuntimeEvent::DiagnosticAttempt(_)
     )
 }

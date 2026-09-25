@@ -23,6 +23,15 @@ pub enum VegaError {
         message: String,
         retryable: bool,
     },
+    #[error("provider error (status={status:?}, retryable={retryable})")]
+    ProviderDiagnostic {
+        kind: crate::provider::ProviderFailureKind,
+        status: Option<u16>,
+        message: String,
+        retryable: bool,
+        retry_count: Option<u32>,
+        request_id: Option<String>,
+    },
     /// Filesystem / local IO failure.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -72,6 +81,22 @@ impl fmt::Debug for VegaError {
                 .field("status", status)
                 .field("message_bytes", &message.len())
                 .field("retryable", retryable)
+                .finish(),
+            Self::ProviderDiagnostic {
+                kind,
+                status,
+                message,
+                retryable,
+                retry_count,
+                request_id,
+            } => formatter
+                .debug_struct("ProviderDiagnostic")
+                .field("kind", kind)
+                .field("status", status)
+                .field("message_bytes", &message.len())
+                .field("retryable", retryable)
+                .field("retry_count", retry_count)
+                .field("has_request_id", &request_id.is_some())
                 .finish(),
             Self::Io(error) => formatter
                 .debug_struct("Io")
@@ -146,6 +171,26 @@ mod tests {
             "typed provider message changed"
         );
         assert!(retryable);
+    }
+
+    #[test]
+    fn provider_diagnostic_debug_and_display_hide_body_and_request_id() {
+        const MESSAGE_SENTINEL: &str = "VEGA_PROVIDER_BODY_CANARY";
+        const REQUEST_ID_SENTINEL: &str = "VEGA_REQUEST_ID_CANARY";
+        let err = VegaError::ProviderDiagnostic {
+            kind: crate::provider::ProviderFailureKind::Rejected,
+            status: Some(429),
+            message: MESSAGE_SENTINEL.to_string(),
+            retryable: false,
+            retry_count: Some(2),
+            request_id: Some(REQUEST_ID_SENTINEL.to_string()),
+        };
+        for rendered in [format!("{err:?}"), err.to_string()] {
+            assert!(rendered.contains("429"));
+            assert!(rendered.contains("retryable"));
+            assert!(!rendered.contains(MESSAGE_SENTINEL));
+            assert!(!rendered.contains(REQUEST_ID_SENTINEL));
+        }
     }
 
     #[test]

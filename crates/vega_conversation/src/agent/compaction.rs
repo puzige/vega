@@ -62,6 +62,7 @@ pub struct ConversationCompactionHook<'a> {
     model: String,
     reasoning: Option<FrozenReasoning>,
     pricing_catalog: Option<vega_token::PricingCatalog>,
+    diagnostics: Option<super::diagnostics::DiagnosticsContext>,
 }
 
 impl<'a> ConversationCompactionHook<'a> {
@@ -81,7 +82,16 @@ impl<'a> ConversationCompactionHook<'a> {
             model: model.into(),
             reasoning,
             pricing_catalog,
+            diagnostics: None,
         }
+    }
+
+    pub(crate) fn with_diagnostics(
+        mut self,
+        diagnostics: super::diagnostics::DiagnosticsContext,
+    ) -> Self {
+        self.diagnostics = Some(diagnostics);
+        self
     }
 }
 
@@ -342,6 +352,26 @@ pub async fn compact_thread_manually(
     let target_tokens = budget
         .target_tokens()
         .map_err(|error| failure(VegaError::Context(error.into()), None))?;
+    let run_id = ulid::Ulid::generate().to_string();
+    let root_attempt_id = ulid::Ulid::generate().to_string();
+    let run_started_at = std::time::Instant::now();
+    let diagnostics = std::sync::Arc::new(super::diagnostics::DiagnosticsWriter::start(
+        database_path.clone(),
+    ));
+    diagnostics.root_event(
+        thread_id,
+        &run_id,
+        &root_attempt_id,
+        vega_store::run_diagnostics::DiagnosticState::Started,
+        None,
+        run_started_at,
+    );
+    let diagnostics_context = super::diagnostics::DiagnosticsContext {
+        writer: diagnostics.clone(),
+        thread_id: thread_id_owned.clone(),
+        run_id: run_id.clone(),
+        root_attempt_id: root_attempt_id.clone(),
+    };
     let hook = ConversationCompactionHook::new(
         provider,
         database_path,
@@ -349,23 +379,48 @@ pub async fn compact_thread_manually(
         model,
         reasoning,
         pricing_catalog,
-    );
-    hook.compact(
-        ContextCompactionRequest {
-            system_prompt: system_prompt.to_string(),
-            messages: history,
-            tools,
-            budget,
-            estimate,
-            target_tokens,
-            source_version: source.source_version,
-            source_fingerprint: Some(source.fingerprint),
-            require_source_fence: true,
-            source_owner_id: None,
-        },
-        cancel,
     )
-    .await
+    .with_diagnostics(diagnostics_context);
+    let result = hook
+        .compact(
+            ContextCompactionRequest {
+                system_prompt: system_prompt.to_string(),
+                messages: history,
+                tools,
+                budget,
+                estimate,
+                target_tokens,
+                source_version: source.source_version,
+                source_fingerprint: Some(source.fingerprint),
+                require_source_fence: true,
+                source_owner_id: None,
+            },
+            cancel,
+        )
+        .await;
+    let (state, failure_code) = match &result {
+        Ok(_) => (
+            vega_store::run_diagnostics::DiagnosticState::Succeeded,
+            None,
+        ),
+        Err(failure) if matches!(failure.error.as_ref(), VegaError::Cancelled) => (
+            vega_store::run_diagnostics::DiagnosticState::Cancelled,
+            None,
+        ),
+        Err(failure) => (
+            vega_store::run_diagnostics::DiagnosticState::Failed,
+            summary_diagnostic_failure(failure.error.as_ref()),
+        ),
+    };
+    diagnostics.root_event(
+        thread_id,
+        &run_id,
+        &root_attempt_id,
+        state,
+        failure_code,
+        run_started_at,
+    );
+    result
 }
 
 /// Runs a manual compaction through the conversation service boundary used by
@@ -715,6 +770,19 @@ impl ContextCompactionHook for ConversationCompactionHook<'_> {
     ) -> futures::future::BoxFuture<'a, Result<ContextCompactionResult, ContextCompactionFailure>>
     {
         Box::pin(async move {
+            let operation_attempt_id = ulid::Ulid::generate().to_string();
+            let operation_started_at = std::time::Instant::now();
+            let empty_metrics = SummaryDiagnosticMetrics::default();
+            if let Some(diagnostics) = &self.diagnostics {
+                diagnostics.stage_event(
+                    &operation_attempt_id,
+                    vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                    vega_store::run_diagnostics::DiagnosticState::Started,
+                    None,
+                    operation_started_at,
+                    summary_store_metrics(&empty_metrics),
+                );
+            }
             let mut source_guard = None;
             let mut result = self
                 .compact_impl(request, cancel.clone(), &mut source_guard)
@@ -728,6 +796,30 @@ impl ContextCompactionHook for ConversationCompactionHook<'_> {
                 && let Err(error) = self.check_failed_source(guard).await
             {
                 *failure.error = error;
+            }
+            if let Some(diagnostics) = &self.diagnostics {
+                let (state, failure_code) = match &result {
+                    Ok(_) => (
+                        vega_store::run_diagnostics::DiagnosticState::Succeeded,
+                        None,
+                    ),
+                    Err(failure) if matches!(failure.error.as_ref(), VegaError::Cancelled) => (
+                        vega_store::run_diagnostics::DiagnosticState::Cancelled,
+                        None,
+                    ),
+                    Err(failure) => (
+                        vega_store::run_diagnostics::DiagnosticState::Failed,
+                        summary_diagnostic_failure(failure.error.as_ref()),
+                    ),
+                };
+                diagnostics.stage_event(
+                    &operation_attempt_id,
+                    vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                    state,
+                    failure_code,
+                    operation_started_at,
+                    summary_store_metrics(&empty_metrics),
+                );
             }
             result
         })
@@ -787,7 +879,30 @@ impl ConversationCompactionHook<'_> {
         cancel: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<String, ContextCompactionFailure> {
+        let attempt_id = ulid::Ulid::generate().to_string();
+        let started_at = std::time::Instant::now();
+        let empty_metrics = SummaryDiagnosticMetrics::default();
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.stage_event(
+                &attempt_id,
+                vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                vega_store::run_diagnostics::DiagnosticState::Started,
+                None,
+                started_at,
+                summary_store_metrics(&empty_metrics),
+            );
+        }
         if cancel.is_cancelled() {
+            if let Some(diagnostics) = &self.diagnostics {
+                diagnostics.stage_event(
+                    &attempt_id,
+                    vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                    vega_store::run_diagnostics::DiagnosticState::Cancelled,
+                    None,
+                    started_at,
+                    summary_store_metrics(&empty_metrics),
+                );
+            }
             return Err(failure_with_usages(
                 VegaError::Cancelled,
                 usages,
@@ -796,13 +911,23 @@ impl ConversationCompactionHook<'_> {
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
+            if let Some(diagnostics) = &self.diagnostics {
+                diagnostics.stage_event(
+                    &attempt_id,
+                    vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                    vega_store::run_diagnostics::DiagnosticState::Failed,
+                    Some(vega_store::run_diagnostics::DiagnosticFailureCode::SummaryTimeout),
+                    started_at,
+                    summary_store_metrics(&empty_metrics),
+                );
+            }
             return Err(failure_with_usages(
                 context_error(ContextRuntimeError::SummaryTimedOut),
                 usages,
                 *usage_complete,
             ));
         }
-        match collect_summary_with_timeout(
+        match collect_summary_with_timeout_diagnostics(
             self.provider,
             summary_request,
             self.pricing_catalog.as_ref(),
@@ -811,19 +936,45 @@ impl ConversationCompactionHook<'_> {
         )
         .await
         {
-            Ok((summary, usage)) => {
-                if let Some(usage) = usage {
+            Ok(collection) => {
+                if let Some(usage) = collection.metrics.usage.clone() {
                     usages.push(usage);
                 } else {
                     *usage_complete = false;
                 }
-                Ok(summary)
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.stage_event(
+                        &attempt_id,
+                        vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                        vega_store::run_diagnostics::DiagnosticState::Succeeded,
+                        None,
+                        started_at,
+                        summary_store_metrics(&collection.metrics),
+                    );
+                }
+                Ok(collection.summary)
             }
             Err(stage_failure) => {
-                *usage_complete &= stage_failure.usage_complete;
-                usages.extend(stage_failure.usages);
+                *usage_complete &= stage_failure.failure.usage_complete;
+                usages.extend(stage_failure.failure.usages.clone());
+                let state = if matches!(stage_failure.failure.error.as_ref(), VegaError::Cancelled)
+                {
+                    vega_store::run_diagnostics::DiagnosticState::Cancelled
+                } else {
+                    vega_store::run_diagnostics::DiagnosticState::Failed
+                };
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.stage_event(
+                        &attempt_id,
+                        vega_store::run_diagnostics::DiagnosticPhase::ContextSummary,
+                        state,
+                        summary_diagnostic_failure(stage_failure.failure.error.as_ref()),
+                        started_at,
+                        summary_store_metrics(&stage_failure.metrics),
+                    );
+                }
                 Err(failure_with_usages(
-                    *stage_failure.error,
+                    *stage_failure.failure.error,
                     usages,
                     *usage_complete,
                 ))
@@ -1087,20 +1238,27 @@ impl ConversationCompactionHook<'_> {
             }
         };
         let projected = project(&aggregate);
-        let projected_estimate = estimate_projection(&projected)
-            .map_err(|error| failure_with_usages(error, &usages, usage_complete))?;
+        let projected_estimate = estimate_projection(&projected).map_err(|_| {
+            failure_with_usages(
+                context_error(ContextRuntimeError::SummaryProjectionInvalid),
+                &usages,
+                usage_complete,
+            )
+        })?;
         if projected_estimate.input_tokens > request.target_tokens {
             return Err(failure_with_usages(
-                context_error(ContextRuntimeError::ResultOverLimit {
-                    estimated_tokens: projected_estimate.input_tokens,
-                    target_tokens: request.target_tokens,
-                }),
+                context_error(ContextRuntimeError::SummaryProjectionInvalid),
                 &usages,
                 usage_complete,
             ));
         }
-        validate_complete_projection(&projected)
-            .map_err(|error| failure_with_usages(*error.error, &usages, usage_complete))?;
+        validate_complete_projection(&projected).map_err(|_| {
+            failure_with_usages(
+                context_error(ContextRuntimeError::SummaryProjectionInvalid),
+                &usages,
+                usage_complete,
+            )
+        })?;
         if cancel.is_cancelled() {
             return Err(failure_with_usages(
                 VegaError::Cancelled,
@@ -1149,10 +1307,10 @@ impl ConversationCompactionHook<'_> {
                         context_error(ContextRuntimeError::SourceChanged)
                     }
                     vega_store::context_compaction::ContextCheckpointError::IncompleteCoverage => {
-                        context_error(ContextRuntimeError::InvalidProjection)
+                        context_error(ContextRuntimeError::SummaryProjectionInvalid)
                     }
                     vega_store::context_compaction::ContextCheckpointError::Invalid => {
-                        context_error(ContextRuntimeError::InvalidProjection)
+                        context_error(ContextRuntimeError::SummaryProjectionInvalid)
                     }
                     vega_store::context_compaction::ContextCheckpointError::Cancelled => {
                         if install_cancel.is_cancelled() {
@@ -1277,22 +1435,24 @@ struct SummaryInputOverflow {
 /// Only explicit input-context errors qualify. Never interpret Length, generic
 /// HTTP failures, or diagnostic text from an unrelated status as input overflow.
 fn classify_summary_input_overflow(error: &VegaError) -> Option<SummaryInputOverflow> {
-    let VegaError::Provider {
-        status: Some(400 | 413),
-        message,
-        ..
-    } = error
-    else {
-        return None;
+    let (status, message) = match error {
+        VegaError::Provider {
+            status: Some(status @ (400 | 413)),
+            message,
+            ..
+        }
+        | VegaError::ProviderDiagnostic {
+            status: Some(status @ (400 | 413)),
+            message,
+            ..
+        } => (*status, message),
+        _ => return None,
     };
     if message.len() > 4_096 {
         return None;
     }
-    let body = message
-        .strip_prefix("chat/completions request failed (HTTP 400): ")
-        .or_else(|| message.strip_prefix("chat/completions request failed (HTTP 413): "))
-        .unwrap_or(message)
-        .trim();
+    let prefix = format!("chat/completions request failed (HTTP {status}): ");
+    let body = message.strip_prefix(&prefix).unwrap_or(message).trim();
     let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
     let details = parsed
         .as_ref()
@@ -1435,6 +1595,41 @@ fn validate_complete_projection(messages: &[ChatMessage]) -> Result<(), ContextC
     Ok(())
 }
 
+#[derive(Clone, Default)]
+struct SummaryDiagnosticMetrics {
+    provider: vega_runtime::ProviderResponseMetadata,
+    stop_reason: Option<StopReason>,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    cache_read_tokens: Option<u64>,
+    cache_write_tokens: Option<u64>,
+    visible_output_bytes: Option<u64>,
+    thinking_bytes: u64,
+    usage: Option<ContextCompactionUsage>,
+}
+
+struct SummaryCollection {
+    summary: String,
+    metrics: SummaryDiagnosticMetrics,
+}
+
+struct SummaryCollectionFailure {
+    failure: Box<ContextCompactionFailure>,
+    metrics: Box<SummaryDiagnosticMetrics>,
+}
+
+fn summary_collection_failure(
+    error: VegaError,
+    metrics: SummaryDiagnosticMetrics,
+) -> SummaryCollectionFailure {
+    let failure = ContextCompactionFailure::new(error, metrics.usage.clone());
+    SummaryCollectionFailure {
+        failure: Box::new(failure),
+        metrics: Box::new(metrics),
+    }
+}
+
+#[cfg(test)]
 async fn collect_summary_with_timeout(
     provider: &dyn Provider,
     request: ChatRequest,
@@ -1442,33 +1637,65 @@ async fn collect_summary_with_timeout(
     cancel: CancellationToken,
     timeout: Duration,
 ) -> Result<(String, Option<ContextCompactionUsage>), ContextCompactionFailure> {
+    match collect_summary_with_timeout_diagnostics(
+        provider,
+        request,
+        pricing_catalog,
+        cancel,
+        timeout,
+    )
+    .await
+    {
+        Ok(collection) => Ok((collection.summary, collection.metrics.usage)),
+        Err(failure) => Err(*failure.failure),
+    }
+}
+
+async fn collect_summary_with_timeout_diagnostics(
+    provider: &dyn Provider,
+    request: ChatRequest,
+    pricing_catalog: Option<&vega_token::PricingCatalog>,
+    cancel: CancellationToken,
+    timeout: Duration,
+) -> Result<SummaryCollection, SummaryCollectionFailure> {
     let child = cancel.child_token();
     let _cancel_abandoned = child.clone().drop_guard();
     let started = unix_seconds();
     let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
-    let mut stream = tokio::select! {
+    let call = tokio::select! {
         biased;
-        _ = cancel.cancelled() => return Err(failure(VegaError::Cancelled, None)),
+        _ = cancel.cancelled() => return Err(summary_collection_failure(VegaError::Cancelled, SummaryDiagnosticMetrics::default())),
         _ = &mut deadline => {
-            return Err(failure(context_error(ContextRuntimeError::SummaryTimedOut), None));
+            return Err(summary_collection_failure(context_error(ContextRuntimeError::SummaryTimedOut), SummaryDiagnosticMetrics::default()));
         }
-        result = provider.chat_stream(request.clone(), child) => {
-            result.map_err(|error| failure(error, None))?
+        result = provider.chat_stream_with_metadata(request.clone(), child) => {
+            match result {
+                Ok(call) => call,
+                Err(error) => {
+                    let mut metrics = SummaryDiagnosticMetrics::default();
+                    set_summary_provider_error(&mut metrics, &error);
+                    return Err(summary_collection_failure(error, metrics));
+                }
+            }
         }
     };
+    let mut metrics = SummaryDiagnosticMetrics {
+        provider: call.metadata,
+        visible_output_bytes: Some(0),
+        ..SummaryDiagnosticMetrics::default()
+    };
+    let mut stream = call.events;
     let mut text = String::new();
-    let mut thinking_bytes = 0usize;
-    let mut usage = None;
     let mut done = None;
     loop {
         let next = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
-                return Err(failure(VegaError::Cancelled, usage));
+                return Err(summary_collection_failure(VegaError::Cancelled, metrics));
             }
             _ = &mut deadline => {
-                return Err(failure(context_error(ContextRuntimeError::SummaryTimedOut), usage));
+                return Err(summary_collection_failure(context_error(ContextRuntimeError::SummaryTimedOut), metrics));
             }
             next = stream.next() => next,
         };
@@ -1476,27 +1703,33 @@ async fn collect_summary_with_timeout(
         match item {
             Ok(ProviderEvent::TextDelta(delta)) => {
                 if done.is_some() {
-                    return Err(failure(
-                        context_error(ContextRuntimeError::InvalidSummary),
-                        usage,
+                    return Err(summary_collection_failure(
+                        context_error(ContextRuntimeError::SummaryFormatInvalid),
+                        metrics,
                     ));
                 }
                 if text.len().saturating_add(delta.len()) > SUMMARY_OUTPUT_LIMIT {
-                    return Err(failure(
-                        context_error(ContextRuntimeError::InvalidSummary),
-                        usage,
+                    return Err(summary_collection_failure(
+                        context_error(ContextRuntimeError::SummaryOutputTruncated {
+                            visible_bytes: text.len().saturating_add(delta.len()),
+                            thinking_bytes: usize::try_from(metrics.thinking_bytes)
+                                .unwrap_or(usize::MAX),
+                            output_tokens: metrics.output_tokens,
+                        }),
+                        metrics,
                     ));
                 }
                 text.push_str(&delta);
+                metrics.visible_output_bytes = Some(text.len() as u64);
             }
             Ok(ProviderEvent::ThinkingDelta(delta)) => {
                 if done.is_some() {
-                    return Err(failure(
-                        context_error(ContextRuntimeError::InvalidSummary),
-                        usage,
+                    return Err(summary_collection_failure(
+                        context_error(ContextRuntimeError::SummaryFormatInvalid),
+                        metrics,
                     ));
                 }
-                thinking_bytes = thinking_bytes.saturating_add(delta.len());
+                metrics.thinking_bytes = metrics.thinking_bytes.saturating_add(delta.len() as u64);
             }
             Ok(ProviderEvent::Usage {
                 input,
@@ -1504,10 +1737,10 @@ async fn collect_summary_with_timeout(
                 cache_read,
                 cache_write,
             }) => {
-                if usage.is_some() || done.is_some() {
-                    return Err(failure(
-                        context_error(ContextRuntimeError::InvalidSummary),
-                        usage,
+                if metrics.usage.is_some() || done.is_some() {
+                    return Err(summary_collection_failure(
+                        context_error(ContextRuntimeError::SummaryFormatInvalid),
+                        metrics,
                     ));
                 }
                 let raw = RuntimeTokenUsage {
@@ -1530,7 +1763,11 @@ async fn collect_summary_with_timeout(
                         )
                         .ok()
                 });
-                usage = Some(ContextCompactionUsage {
+                metrics.input_tokens = Some(input);
+                metrics.output_tokens = Some(output);
+                metrics.cache_read_tokens = Some(cache_read);
+                metrics.cache_write_tokens = Some(cache_write);
+                metrics.usage = Some(ContextCompactionUsage {
                     usage: raw,
                     cost_microcents: priced.as_ref().map_or(0, |quote| quote.cost_microcents),
                     pricing: priced.map(|quote| RuntimeUsagePricing {
@@ -1547,49 +1784,170 @@ async fn collect_summary_with_timeout(
             }
             Ok(ProviderEvent::Done { stop_reason }) => {
                 if done.is_some() {
-                    return Err(failure(
-                        context_error(ContextRuntimeError::InvalidSummary),
-                        usage,
+                    return Err(summary_collection_failure(
+                        context_error(ContextRuntimeError::SummaryFormatInvalid),
+                        metrics,
                     ));
                 }
                 done = Some(stop_reason);
+                metrics.stop_reason = Some(stop_reason);
             }
             Ok(ProviderEvent::ToolUse { .. }) => {
-                return Err(failure(
-                    context_error(ContextRuntimeError::InvalidSummary),
-                    usage,
+                return Err(summary_collection_failure(
+                    context_error(ContextRuntimeError::SummaryFormatInvalid),
+                    metrics,
                 ));
             }
-            Err(error) => return Err(failure(error, usage)),
+            Err(error) => {
+                set_summary_provider_error(&mut metrics, &error);
+                return Err(summary_collection_failure(error, metrics));
+            }
         }
     }
     tracing::info!(
         target: "vega::context_compaction",
         stop_reason = ?done,
         visible_bytes = text.len(),
-        thinking_bytes,
-        usage_output_tokens = usage.as_ref().map(|record: &ContextCompactionUsage| record.usage.output),
+        thinking_bytes = metrics.thinking_bytes,
+        usage_output_tokens = metrics.output_tokens,
         "summary stage stream completed"
     );
     if matches!(done, Some(StopReason::Length)) {
-        return Err(failure(
+        return Err(summary_collection_failure(
             context_error(ContextRuntimeError::SummaryOutputTruncated {
                 visible_bytes: text.len(),
-                thinking_bytes,
-                output_tokens: usage.as_ref().map(|record| record.usage.output),
+                thinking_bytes: usize::try_from(metrics.thinking_bytes).unwrap_or(usize::MAX),
+                output_tokens: metrics.output_tokens,
             }),
-            usage,
+            metrics,
         ));
     }
-    if !matches!(done, Some(StopReason::End)) || text.trim().is_empty() {
-        return Err(failure(
-            context_error(ContextRuntimeError::InvalidSummary),
-            usage,
+    if !matches!(done, Some(StopReason::End)) {
+        return Err(summary_collection_failure(
+            context_error(ContextRuntimeError::SummaryFormatInvalid),
+            metrics,
         ));
     }
-    let normalized =
-        normalize_summary(&text).map_err(|error| failure(context_error(error), usage.clone()))?;
-    Ok((normalized, usage))
+    if text.trim().is_empty() {
+        return Err(summary_collection_failure(
+            context_error(ContextRuntimeError::SummaryEmpty),
+            metrics,
+        ));
+    }
+    let normalized = normalize_summary(&text).map_err(|_| {
+        summary_collection_failure(
+            context_error(ContextRuntimeError::SummaryFormatInvalid),
+            metrics.clone(),
+        )
+    })?;
+    Ok(SummaryCollection {
+        summary: normalized,
+        metrics,
+    })
+}
+
+fn set_summary_provider_error(metrics: &mut SummaryDiagnosticMetrics, error: &VegaError) {
+    match error {
+        VegaError::ProviderDiagnostic {
+            status,
+            retry_count,
+            request_id,
+            ..
+        } => {
+            if status.is_some() {
+                metrics.provider.http_status = *status;
+            }
+            if retry_count.is_some() {
+                metrics.provider.retry_count = *retry_count;
+            }
+            if request_id.is_some() {
+                metrics.provider.request_id = request_id.clone();
+            }
+        }
+        VegaError::Provider {
+            status: Some(status),
+            ..
+        } => metrics.provider.http_status = Some(*status),
+        _ => {}
+    }
+}
+
+fn summary_store_metrics(
+    metrics: &SummaryDiagnosticMetrics,
+) -> vega_store::run_diagnostics::DiagnosticMetrics {
+    vega_store::run_diagnostics::DiagnosticMetrics {
+        stop_reason: metrics.stop_reason.map(|reason| match reason {
+            StopReason::End => vega_store::run_diagnostics::DiagnosticStopReason::End,
+            StopReason::ToolUse => vega_store::run_diagnostics::DiagnosticStopReason::ToolUse,
+            StopReason::Length => vega_store::run_diagnostics::DiagnosticStopReason::Length,
+        }),
+        input_tokens: metrics.input_tokens,
+        output_tokens: metrics.output_tokens,
+        cache_read_tokens: metrics.cache_read_tokens,
+        cache_write_tokens: metrics.cache_write_tokens,
+        visible_output_bytes: metrics.visible_output_bytes,
+        http_status: metrics.provider.http_status,
+        request_id: metrics.provider.request_id.clone(),
+        retry_count: metrics.provider.retry_count,
+        ..vega_store::run_diagnostics::DiagnosticMetrics::default()
+    }
+}
+
+fn summary_diagnostic_failure(
+    error: &VegaError,
+) -> Option<vega_store::run_diagnostics::DiagnosticFailureCode> {
+    use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
+    match error {
+        VegaError::Cancelled => None,
+        VegaError::ProviderDiagnostic { kind, .. } => Some(match kind {
+            vega_runtime::ProviderFailureKind::Http => Code::ProviderHttp,
+            vega_runtime::ProviderFailureKind::Transport => Code::ProviderTransportOrStream,
+            vega_runtime::ProviderFailureKind::Protocol => Code::ProviderProtocol,
+            vega_runtime::ProviderFailureKind::Rejected => Code::ProviderRejected,
+        }),
+        VegaError::Provider {
+            status: Some(_), ..
+        } => Some(Code::ProviderHttp),
+        VegaError::Context(ContextRuntimeError::SummaryTimedOut) => Some(Code::SummaryTimeout),
+        VegaError::Context(ContextRuntimeError::SummaryOutputTruncated { .. }) => {
+            Some(Code::SummaryTruncated)
+        }
+        VegaError::Context(ContextRuntimeError::SummaryEmpty) => Some(Code::SummaryEmpty),
+        VegaError::Context(ContextRuntimeError::SummaryFormatInvalid)
+        | VegaError::Context(ContextRuntimeError::InvalidSummary) => {
+            Some(Code::SummaryFormatInvalid)
+        }
+        VegaError::Context(
+            ContextRuntimeError::SummaryProjectionInvalid
+            | ContextRuntimeError::InvalidProjection
+            | ContextRuntimeError::SystemMessageInResult,
+        ) => Some(Code::SummaryProjectionInvalid),
+        VegaError::Context(ContextRuntimeError::SourceChanged) => Some(Code::SummarySourceChanged),
+        VegaError::Context(
+            ContextRuntimeError::OverLimit { .. }
+            | ContextRuntimeError::SummaryInputOverLimit { .. }
+            | ContextRuntimeError::ResultOverLimit { .. },
+        ) => Some(Code::ContextOverLimit),
+        VegaError::Context(ContextRuntimeError::NoCompactablePrefix) => {
+            Some(Code::SummaryNoCompactablePrefix)
+        }
+        VegaError::Context(ContextRuntimeError::SourceTooLarge) => {
+            Some(Code::SummarySourceTooLarge)
+        }
+        VegaError::Context(ContextRuntimeError::AggregateTooLarge) => {
+            Some(Code::SummaryAggregateTooLarge)
+        }
+        VegaError::Context(ContextRuntimeError::ImagesUnsupported) => {
+            Some(Code::SummaryImagesUnsupported)
+        }
+        VegaError::Context(ContextRuntimeError::AlreadyAttempted) => {
+            Some(Code::SummaryAlreadyAttempted)
+        }
+        VegaError::Context(ContextRuntimeError::Estimate(
+            vega_runtime::ContextEstimateError::InputTooLarge,
+        )) => Some(Code::ContextOverLimit),
+        _ => Some(Code::UnknownSafeFailure),
+    }
 }
 
 fn normalize_summary(text: &str) -> Result<String, ContextRuntimeError> {
@@ -1628,6 +1986,468 @@ mod tests {
     use super::*;
     use futures::future::pending;
     use vega_runtime::{MockProvider, ScriptStep};
+
+    #[tokio::test]
+    async fn summary_stage_persists_typed_failure_without_summary_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("vega.db");
+        let store = Store::open(&database_path).unwrap();
+        store.migrate().unwrap();
+        vega_store::threads::create_standalone(
+            store.conn(),
+            vega_store::threads::NewThread {
+                id: "summary-thread",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock-model",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let writer = std::sync::Arc::new(super::super::diagnostics::DiagnosticsWriter::start(
+            database_path.clone(),
+        ));
+        let diagnostics = super::super::diagnostics::DiagnosticsContext {
+            writer,
+            thread_id: "summary-thread".into(),
+            run_id: "summary-run".into(),
+            root_attempt_id: "root-attempt".into(),
+        };
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("SUMMARY_BODY_CANARY".into()),
+            ProviderEvent::Usage {
+                input: 7,
+                output: 4,
+                cache_read: 1,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::Length,
+            },
+        ])]);
+        let hook = ConversationCompactionHook::new(
+            &provider,
+            database_path,
+            "summary-thread",
+            "mock-model",
+            None,
+            None,
+        )
+        .with_diagnostics(diagnostics);
+        let mut usages = Vec::new();
+        let mut usage_complete = true;
+        let result = hook
+            .run_summary_stage(
+                ChatRequest::default(),
+                1,
+                &mut usages,
+                &mut usage_complete,
+                &CancellationToken::new(),
+                tokio::time::Instant::now() + SUMMARY_TIMEOUT,
+            )
+            .await;
+        assert!(matches!(
+            &result,
+            Err(failure)
+                if matches!(failure.error.as_ref(), VegaError::Context(ContextRuntimeError::SummaryOutputTruncated { .. }))
+        ));
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            events = vega_store::run_diagnostics::read_by_run(
+                store.conn(),
+                "summary-thread",
+                "summary-run",
+            )
+            .unwrap();
+            if events.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let events = events;
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].event.state,
+            vega_store::run_diagnostics::DiagnosticState::Started
+        );
+        assert_eq!(
+            events[1].event.state,
+            vega_store::run_diagnostics::DiagnosticState::Failed
+        );
+        assert_eq!(
+            events[1].event.failure_code,
+            Some(vega_store::run_diagnostics::DiagnosticFailureCode::SummaryTruncated)
+        );
+        assert_eq!(
+            events[1].event.metrics.visible_output_bytes,
+            Some("SUMMARY_BODY_CANARY".len() as u64)
+        );
+        assert_eq!(events[1].event.metrics.output_tokens, Some(4));
+        let export =
+            vega_store::run_diagnostics::export_run(store.conn(), "summary-thread", "summary-run")
+                .unwrap();
+        assert!(!export.contains("SUMMARY_BODY_CANARY"));
+    }
+
+    #[tokio::test]
+    async fn summary_stage_persists_timeout_before_provider_call() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("vega.db");
+        let store = Store::open(&database_path).unwrap();
+        store.migrate().unwrap();
+        vega_store::threads::create_standalone(
+            store.conn(),
+            vega_store::threads::NewThread {
+                id: "timeout-thread",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock-model",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let diagnostics = super::super::diagnostics::DiagnosticsContext {
+            writer: std::sync::Arc::new(super::super::diagnostics::DiagnosticsWriter::start(
+                database_path.clone(),
+            )),
+            thread_id: "timeout-thread".into(),
+            run_id: "timeout-run".into(),
+            root_attempt_id: "timeout-root".into(),
+        };
+        let provider = MockProvider::new(Vec::<ScriptStep>::new());
+        let hook = ConversationCompactionHook::new(
+            &provider,
+            database_path,
+            "timeout-thread",
+            "mock-model",
+            None,
+            None,
+        )
+        .with_diagnostics(diagnostics);
+        let mut usages = Vec::new();
+        let mut usage_complete = true;
+        let result = hook
+            .run_summary_stage(
+                ChatRequest::default(),
+                1,
+                &mut usages,
+                &mut usage_complete,
+                &CancellationToken::new(),
+                tokio::time::Instant::now(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(ref failure)
+                if matches!(failure.error.as_ref(), VegaError::Context(ContextRuntimeError::SummaryTimedOut))
+        ));
+        assert!(provider.requests().is_empty());
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            events = vega_store::run_diagnostics::read_by_run(
+                store.conn(),
+                "timeout-thread",
+                "timeout-run",
+            )
+            .unwrap();
+            if events.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[1].event.failure_code,
+            Some(vega_store::run_diagnostics::DiagnosticFailureCode::SummaryTimeout)
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_input_preflight_failure_is_classified_before_provider_call() {
+        const SOURCE_CANARY: &str = "SUMMARY_PREFLIGHT_SOURCE_CANARY";
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("vega.db");
+        let store = Store::open(&database_path).unwrap();
+        store.migrate().unwrap();
+        vega_store::threads::create_standalone(
+            store.conn(),
+            vega_store::threads::NewThread {
+                id: "preflight-thread",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock-model",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        for (id, seq, role, content) in [
+            ("old-user", 1, "user", "old question".to_string()),
+            (
+                "old-assistant",
+                2,
+                "assistant",
+                format!("{SOURCE_CANARY} {}", "x".repeat(12_000)),
+            ),
+            ("new-user", 3, "user", "latest question".to_string()),
+        ] {
+            vega_store::messages::insert(
+                store.conn(),
+                &vega_store::messages::MessageRow {
+                    id: id.into(),
+                    thread_id: "preflight-thread".into(),
+                    seq,
+                    role: role.into(),
+                    kind: "text".into(),
+                    content,
+                    status: "done".into(),
+                    created_at: seq,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .unwrap();
+        }
+        let provider = MockProvider::new(Vec::<ScriptStep>::new());
+        let result = compact_thread_manually(
+            &store,
+            &provider,
+            "preflight-thread",
+            "mock-model",
+            "system",
+            Vec::new(),
+            ContextBudget::new(2_000, 100, false).unwrap(),
+            CancellationToken::new(),
+            None,
+            None,
+        )
+        .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(ref failure)
+                    if matches!(failure.error.as_ref(), VegaError::Context(ContextRuntimeError::SummaryInputOverLimit { .. }))
+            ),
+            "unexpected result: {:?}",
+            result.as_ref().err().map(|failure| &failure.error)
+        );
+        assert!(provider.requests().is_empty());
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            events = vega_store::run_diagnostics::read_by_thread(store.conn(), "preflight-thread")
+                .unwrap();
+            if events.len() >= 4 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let summary_failure = events
+            .iter()
+            .find(|event| {
+                event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::ContextSummary
+                    && event.event.state == vega_store::run_diagnostics::DiagnosticState::Failed
+            })
+            .expect("pre-provider summary failure should be persisted");
+        assert_eq!(
+            summary_failure.event.failure_code,
+            Some(vega_store::run_diagnostics::DiagnosticFailureCode::ContextOverLimit)
+        );
+        let export = vega_store::run_diagnostics::export_run(
+            store.conn(),
+            "preflight-thread",
+            &summary_failure.event.run_id,
+        )
+        .unwrap();
+        assert!(!export.contains(SOURCE_CANARY));
+    }
+
+    #[tokio::test]
+    async fn summary_empty_and_malformed_framing_have_distinct_failures() {
+        let cases = [
+            (
+                vec![
+                    ProviderEvent::TextDelta("  \n".into()),
+                    ProviderEvent::Done {
+                        stop_reason: StopReason::End,
+                    },
+                ],
+                ContextRuntimeError::SummaryEmpty,
+            ),
+            (
+                vec![
+                    ProviderEvent::TextDelta("<summary>unfinished".into()),
+                    ProviderEvent::Done {
+                        stop_reason: StopReason::End,
+                    },
+                ],
+                ContextRuntimeError::SummaryFormatInvalid,
+            ),
+        ];
+        for (events, expected) in cases {
+            let provider = MockProvider::new(vec![ScriptStep::events(events)]);
+            let result = collect_summary_with_timeout(
+                &provider,
+                ChatRequest::default(),
+                None,
+                CancellationToken::new(),
+                SUMMARY_TIMEOUT,
+            )
+            .await;
+            assert!(matches!(
+                result,
+                Err(ref failure) if matches!(failure.error.as_ref(), VegaError::Context(error) if *error == expected)
+            ));
+        }
+    }
+
+    #[test]
+    fn summary_preflight_errors_keep_their_safe_diagnostic_classes() {
+        use vega_store::run_diagnostics::DiagnosticFailureCode as Code;
+
+        let cases = [
+            (ContextRuntimeError::SummaryTimedOut, Code::SummaryTimeout),
+            (
+                ContextRuntimeError::SummaryOutputTruncated {
+                    visible_bytes: 9,
+                    thinking_bytes: 2,
+                    output_tokens: Some(5),
+                },
+                Code::SummaryTruncated,
+            ),
+            (ContextRuntimeError::SummaryEmpty, Code::SummaryEmpty),
+            (
+                ContextRuntimeError::SummaryFormatInvalid,
+                Code::SummaryFormatInvalid,
+            ),
+            (
+                ContextRuntimeError::SummaryProjectionInvalid,
+                Code::SummaryProjectionInvalid,
+            ),
+            (
+                ContextRuntimeError::SourceChanged,
+                Code::SummarySourceChanged,
+            ),
+            (
+                ContextRuntimeError::SummaryInputOverLimit {
+                    estimated_tokens: 901,
+                    input_budget: 900,
+                },
+                Code::ContextOverLimit,
+            ),
+            (
+                ContextRuntimeError::ResultOverLimit {
+                    estimated_tokens: 901,
+                    target_tokens: 540,
+                },
+                Code::ContextOverLimit,
+            ),
+            (
+                ContextRuntimeError::InvalidProjection,
+                Code::SummaryProjectionInvalid,
+            ),
+            (
+                ContextRuntimeError::SystemMessageInResult,
+                Code::SummaryProjectionInvalid,
+            ),
+            (
+                ContextRuntimeError::SourceTooLarge,
+                Code::SummarySourceTooLarge,
+            ),
+            (
+                ContextRuntimeError::AggregateTooLarge,
+                Code::SummaryAggregateTooLarge,
+            ),
+            (
+                ContextRuntimeError::ImagesUnsupported,
+                Code::SummaryImagesUnsupported,
+            ),
+            (
+                ContextRuntimeError::NoCompactablePrefix,
+                Code::SummaryNoCompactablePrefix,
+            ),
+            (
+                ContextRuntimeError::AlreadyAttempted,
+                Code::SummaryAlreadyAttempted,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(
+                summary_diagnostic_failure(&VegaError::Context(error)),
+                Some(expected)
+            );
+        }
+        for (kind, expected) in [
+            (vega_runtime::ProviderFailureKind::Http, Code::ProviderHttp),
+            (
+                vega_runtime::ProviderFailureKind::Transport,
+                Code::ProviderTransportOrStream,
+            ),
+            (
+                vega_runtime::ProviderFailureKind::Protocol,
+                Code::ProviderProtocol,
+            ),
+            (
+                vega_runtime::ProviderFailureKind::Rejected,
+                Code::ProviderRejected,
+            ),
+        ] {
+            let error = VegaError::ProviderDiagnostic {
+                kind,
+                status: None,
+                message: "diagnostic classification canary".into(),
+                retryable: false,
+                retry_count: None,
+                request_id: None,
+            };
+            assert_eq!(summary_diagnostic_failure(&error), Some(expected));
+        }
+    }
+
+    #[test]
+    fn summary_stream_error_keeps_prior_response_metadata() {
+        let mut metrics = SummaryDiagnosticMetrics {
+            provider: vega_runtime::ProviderResponseMetadata {
+                http_status: Some(200),
+                request_id: Some("summary-resp-opaque".into()),
+                retry_count: Some(1),
+            },
+            ..SummaryDiagnosticMetrics::default()
+        };
+        let error = VegaError::ProviderDiagnostic {
+            kind: vega_runtime::ProviderFailureKind::Protocol,
+            status: None,
+            message: "summary parser canary".into(),
+            retryable: false,
+            retry_count: None,
+            request_id: None,
+        };
+        set_summary_provider_error(&mut metrics, &error);
+        assert_eq!(metrics.provider.http_status, Some(200));
+        assert_eq!(
+            metrics.provider.request_id.as_deref(),
+            Some("summary-resp-opaque")
+        );
+        assert_eq!(metrics.provider.retry_count, Some(1));
+    }
 
     #[tokio::test]
     async fn issue88_structured_stream_excludes_checklist_but_retains_full_usage() {
@@ -1937,7 +2757,7 @@ mod tests {
             Err(ref failure)
                 if matches!(
                     failure.error.as_ref(),
-                    VegaError::Context(ContextRuntimeError::InvalidSummary)
+                    VegaError::Context(ContextRuntimeError::SummaryFormatInvalid)
                 ) && matches!(
                     failure.usages.first(),
                     Some(usage) if usage.usage.input == 7 && usage.usage.output == 3
@@ -1975,7 +2795,7 @@ mod tests {
             Err(ref failure)
                 if matches!(
                     failure.error.as_ref(),
-                    VegaError::Context(ContextRuntimeError::InvalidSummary)
+                    VegaError::Context(ContextRuntimeError::SummaryOutputTruncated { .. })
                 ) && matches!(
                     failure.usages.first(),
                     Some(usage) if usage.usage.input == 7 && usage.usage.output == 1_025

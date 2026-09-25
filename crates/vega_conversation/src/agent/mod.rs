@@ -47,6 +47,7 @@ pub trait PermissionHook: Send + Sync {
 
 mod compaction;
 mod credential_guard;
+mod diagnostics;
 mod entry;
 mod events;
 mod permission_queue;

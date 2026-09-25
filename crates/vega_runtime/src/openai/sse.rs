@@ -93,10 +93,13 @@ pub(crate) fn event_stream(resp: reqwest::Response, cancel: CancellationToken) -
 }
 
 pub(crate) fn map_sse_error(err: EventStreamError<reqwest::Error>) -> VegaError {
-    VegaError::Provider {
+    VegaError::ProviderDiagnostic {
+        kind: ProviderFailureKind::Transport,
         status: None,
         message: format!("SSE stream error: {err}"),
         retryable: false,
+        retry_count: None,
+        request_id: None,
     }
 }
 
@@ -152,10 +155,13 @@ impl SseAssembler {
     /// sentinel is handled by the caller). Returns that chunk's events.
     pub(crate) fn absorb(&mut self, data: &str) -> Result<Vec<ProviderEvent>, VegaError> {
         let chunk: serde_json::Value =
-            serde_json::from_str(data).map_err(|e| VegaError::Provider {
+            serde_json::from_str(data).map_err(|e| VegaError::ProviderDiagnostic {
+                kind: ProviderFailureKind::Protocol,
                 status: None,
                 message: format!("invalid SSE chunk JSON: {e}"),
                 retryable: false,
+                retry_count: None,
+                request_id: None,
             })?;
         let mut events = Vec::new();
         // usage：stream_options.include_usage 的最终 chunk（choices 为空数组）
@@ -218,11 +224,16 @@ impl SseAssembler {
 
     /// Emits terminal events only after an explicit wire finish reason.
     pub(crate) fn finalize(&mut self) -> Result<Vec<ProviderEvent>, VegaError> {
-        let finish_reason = self.finish_reason.ok_or_else(|| VegaError::Provider {
-            status: None,
-            message: String::from("SSE stream ended without finish_reason"),
-            retryable: false,
-        })?;
+        let finish_reason = self
+            .finish_reason
+            .ok_or_else(|| VegaError::ProviderDiagnostic {
+                kind: ProviderFailureKind::Protocol,
+                status: None,
+                message: String::from("SSE stream ended without finish_reason"),
+                retryable: false,
+                retry_count: None,
+                request_id: None,
+            })?;
         let mut events = self.flush_tools()?;
         events.push(ProviderEvent::Done {
             stop_reason: finish_reason,
@@ -239,10 +250,13 @@ impl SseAssembler {
             .any(|fragment| fragment.id.is_empty() || fragment.name.is_empty())
         {
             self.tools.clear();
-            return Err(VegaError::Provider {
+            return Err(VegaError::ProviderDiagnostic {
+                kind: ProviderFailureKind::Protocol,
                 status: None,
                 message: "SSE tool call missing id or function name".to_string(),
                 retryable: false,
+                retry_count: None,
+                request_id: None,
             });
         }
         let tools = std::mem::take(&mut self.tools);

@@ -74,10 +74,12 @@ pub use agent::{
     CANCELLED_BEFORE_EXECUTION_OUTPUT, CompletedToolCall, ContextAccountingDecision,
     ContextAccountingSource, ContextAccountingStage, InvalidBashAudit,
     LEGACY_BASH_INVALID_INPUT_OUTPUT, McpReadyServer, McpRevocationLease, PERMISSION_TIMEOUT,
-    REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES, REASONING_TURN_MAX_BYTES, RuntimeEvent,
-    RuntimeExactRule, RuntimeFinishReason, RuntimePermissionHook, RuntimeTokenUsage,
-    RuntimeToolCall, RuntimeToolConfig, RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing,
-    run_agent, run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,
+    REASONING_DELTA_MAX_BYTES, REASONING_RUN_MAX_BYTES, REASONING_TURN_MAX_BYTES,
+    RuntimeDiagnosticAttempt, RuntimeDiagnosticFailure, RuntimeDiagnosticMetrics,
+    RuntimeDiagnosticPhase, RuntimeDiagnosticState, RuntimeEvent, RuntimeExactRule,
+    RuntimeFinishReason, RuntimePermissionHook, RuntimeTokenUsage, RuntimeToolCall,
+    RuntimeToolConfig, RuntimeToolResult, RuntimeToolStatus, RuntimeUsagePricing, run_agent,
+    run_agent_with_permission_sink, run_agent_with_permission_sink_and_context,
     run_agent_with_sink, tool_definitions,
 };
 pub use context::{
@@ -102,8 +104,9 @@ pub use permission::{
 };
 pub use provider::{
     ChatMessage, ChatRequest, ChatRole, ChatToolCall, EventStream, FrozenReasoning, Provider,
-    ProviderEvent, ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol,
-    StopReason, ToolDefinition,
+    ProviderEvent, ProviderFailureKind, ProviderResponseMetadata, ProviderStream,
+    ReasoningBudgetScope, ReasoningChoice, ReasoningDisabledWire, ReasoningProtocol, StopReason,
+    ToolDefinition,
 };
 pub use retry::RetryPolicy;
 
