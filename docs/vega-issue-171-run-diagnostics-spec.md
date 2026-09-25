@@ -23,7 +23,7 @@
 | Summary/compaction | `crates/vega_conversation/src/agent/compaction.rs`、`crates/vega_runtime/src/context.rs` | 已有独立的 summary provider 请求、timeout、output truncation、source/projection 校验与 usage；但空 summary 和格式错误都归为 `InvalidSummary`。`ContextCompactionStatusFailure::from_error` 又把 timeout/truncation/format/projection 合并为 `InvalidSummary`，持久化状态表也只有该粗粒度码。 |
 | Summary 持久化 | `crates/vega_store/migrations/0009_context_compaction.sql`、`0010_context_compaction_status.sql`、`crates/vega_store/src/context_compaction.rs` | `context_compaction_status` 已是 content-free 的追加生命周期记录，但没有普通 run/attempt 关联；保持现有 UI 状态兼容，新细节放独立诊断记录，不重写历史表/行。 |
 | Tool 记录 | `crates/vega_runtime/src/agent/loop_.rs`、`crates/vega_conversation/src/agent/events.rs`、`crates/vega_store/src/tool_calls.rs` | Runtime 事件可识别工具启动和终态；现有 `tool_calls` 表已有 call ID/status/exit code/duration，且另存展示输出。诊断仅引用校验过的 call ID 和安全终态字段，不复制输入、输出或 MCP 工具自定义名称。 |
-| SQLite 迁移 | `crates/vega_store/src/lib.rs`、`crates/vega_store/migrations/` | 迁移以 `PRAGMA user_version` 递增、SQL 编译期嵌入、逐 migration 事务执行。新增表必须新增 0014 迁移并注册于 `MIGRATIONS`，不能改旧 migration。Store 本身是同步单连接 API；异步工作者需在 blocking 线程使用连接。 |
+| SQLite 迁移 | `crates/vega_store/src/lib.rs`、`crates/vega_store/migrations/` | 当前版本已有 #146 的 `0014_execution_duration.sql`（assistant run 总时长）；诊断 schema 必须新增 `0015_run_diagnostics.sql` 并注册于 `MIGRATIONS`，不能改旧 migration。迁移以 `PRAGMA user_version` 递增、SQL 编译期嵌入、逐 migration 事务执行。Store 本身是同步单连接 API；异步工作者需在 blocking 线程使用连接。 |
 | Application tracing | `crates/vega/src/main.rs`、`crates/vega_conversation/src/agent/compaction.rs` | 源码已有少量 `tracing` 调用及 `tracing-subscriber` 依赖，但 `main.rs` 未发现 subscriber 初始化。Tracing 不是可靠持久化源。新的日志字段必须是安全 allowlist 元数据，不得把错误/请求/响应正文写进去。 |
 
 ## 建议的数据契约

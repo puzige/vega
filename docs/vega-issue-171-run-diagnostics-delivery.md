@@ -19,7 +19,7 @@
 
 | ID | Requirement / risk | Test setup and operation | Observable result | Evidence | Status |
 |---|---|---|---|---|---|
-| D171-01 | Schema migration and constrained event writes | Temporary SQLite; migrate v13→v14; append valid and invalid lifecycle events | Valid closed-vocabulary rows persist; bad enum/identity/count rejected; old migrations unchanged | Pending | NOT RUN |
+| D171-01 | Schema migration and constrained event writes | Temporary SQLite; migrate v14→v15; append valid and invalid lifecycle events | Valid closed-vocabulary rows persist; bad enum/identity/count rejected; old migrations unchanged | Pending | NOT RUN |
 | D171-02 | Ordered reads and restart recovery | Append start/terminal and an incomplete start; close and reopen temp DB | Same events returned by thread/run in append order; unfinished attempt is explicitly incomplete | Pending | NOT RUN |
 | D171-03 | Provider metadata and retry count | MockProvider/in-process metadata fixture returns safe status, request ID and retries | Typed metadata recorded; invalid header/value becomes NULL; unknown retry count remains NULL | Pending | NOT RUN |
 | D171-04 | Provider failure classification | Inject HTTP, transport and malformed-stream typed errors | Closed categories differ without inspecting raw error text | Pending | NOT RUN |
