@@ -381,6 +381,152 @@ async fn issue74_s03_unimported_skill_directories_stay_out_of_catalog_provider_a
 }
 
 #[tokio::test]
+async fn issue74_s08_large_unselected_skills_stay_catalog_only_and_are_budgeted() {
+    let project = tempdir().unwrap();
+    let fixtures = [
+        (
+            "catalog-large-one",
+            "PRIVATE S08 BODY MARKER ONE",
+            "PRIVATE S08 REFERENCE MARKER ONE",
+        ),
+        (
+            "catalog-large-two",
+            "PRIVATE S08 BODY MARKER TWO",
+            "PRIVATE S08 REFERENCE MARKER TWO",
+        ),
+        (
+            "catalog-large-three",
+            "PRIVATE S08 BODY MARKER THREE",
+            "PRIVATE S08 REFERENCE MARKER THREE",
+        ),
+    ];
+    let mut expected = Vec::new();
+    for (name, body_marker, reference_marker) in fixtures {
+        let skill_root = project.path().join(".agents/skills").join(name);
+        fs::create_dir_all(skill_root.join("references")).unwrap();
+        let description_prefix = format!("{name} catalog guidance ");
+        let description = format!(
+            "{description_prefix}{}",
+            "d".repeat(1024 - description_prefix.len())
+        );
+        assert_eq!(description.chars().count(), 1024);
+        let body = format!(
+            "{body_marker}\n{}",
+            "large unselected body material ".repeat(300)
+        );
+        assert!(body.len() > 8192);
+        fs::write(
+            skill_root.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n{body}"),
+        )
+        .unwrap();
+        fs::write(
+            skill_root.join("references/notes.md"),
+            format!(
+                "{reference_marker}\n{}",
+                "unselected reference material ".repeat(160)
+            ),
+        )
+        .unwrap();
+        expected.push((
+            name.to_string(),
+            description,
+            body_marker.to_string(),
+            reference_marker.to_string(),
+        ));
+    }
+
+    let source = SkillSource::project_approved(project.path())
+        .unwrap()
+        .unwrap();
+    let candidates = source.discover().unwrap().candidates;
+    assert_eq!(candidates.len(), fixtures.len());
+    let approvals = candidates
+        .iter()
+        .map(|candidate| {
+            SkillApproval::reviewed(candidate, "project-approved", true, true).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let run = SkillRun::new(
+        SkillCatalog::freeze(candidates, &approvals, true).unwrap(),
+        true,
+    );
+    let catalog = run.model_catalog().to_string();
+    for (name, description, body_marker, reference_marker) in &expected {
+        assert!(catalog.contains(name));
+        assert!(catalog.contains(description));
+        assert!(!catalog.contains(body_marker));
+        assert!(!catalog.contains(reference_marker));
+    }
+
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    }])]);
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "What is 2 + 2?")]);
+    req.context_budget = Some(ContextBudget::new(300_000, 128_000, true).unwrap());
+    req.tool_config = req.tool_config.with_skill_run(run, Vec::new());
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!outcome.failed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "load_skill")
+    );
+    let first_system = &requests[0].messages[0];
+    assert_eq!(first_system.role, ChatRole::System);
+    assert_eq!(first_system.content, format!("Be precise.\n\n{catalog}"));
+    for (_, description, body_marker, reference_marker) in &expected {
+        assert!(first_system.content.contains(description));
+        assert!(requests[0].messages.iter().all(|message| {
+            !message.content.contains(body_marker) && !message.content.contains(reference_marker)
+        }));
+    }
+    let audits = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::SkillActivation { audit, .. } => Some(audit),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(audits.is_empty());
+
+    let preflights = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == ContextAccountingStage::PrimaryPreflight =>
+            {
+                Some(decision)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(preflights.len(), 1);
+    let wire_estimate =
+        crate::estimate_wire_context(&requests[0].messages, &requests[0].tools).unwrap();
+    assert_eq!(preflights[0].predicted_input, wire_estimate.input_tokens);
+
+    let catalog_suffix = format!("\n\n{catalog}");
+    let base_system = first_system
+        .content
+        .strip_suffix(&catalog_suffix)
+        .expect("provider request appends the catalog to the base system prompt");
+    assert_eq!(base_system, "Be precise.");
+    let mut base_messages = requests[0].messages.clone();
+    base_messages[0] = ChatMessage::new(ChatRole::System, base_system);
+    let base_estimate = crate::estimate_wire_context(&base_messages, &requests[0].tools).unwrap();
+    assert!(wire_estimate.input_tokens > base_estimate.input_tokens);
+}
+
+#[tokio::test]
 async fn issue74_s10_no_model_selection_continues_without_activation() {
     let project = tempdir().unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
