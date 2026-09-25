@@ -46,6 +46,8 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-70-tool-activity-delivery.md](docs/vega-issue-70-tool-activity-delivery.md) | #70 测试先行矩阵、门禁与原生验收记录 |
 | [vega-issue-74-skills.md](docs/vega-issue-74-skills.md) | #74 Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
 | [vega-issue-74-skills-delivery.md](docs/vega-issue-74-skills-delivery.md) | #74 测试先行验收矩阵（均未运行） |
+| [vega-issue-81-remove-pi-agent.md](docs/vega-issue-81-remove-pi-agent.md) | #81 移除 Pi Agent 凭据导入并保留 Provider 设置与通用 Skills 导入 |
+| [vega-issue-81-remove-pi-agent-delivery.md](docs/vega-issue-81-remove-pi-agent-delivery.md) | #81 定向验收、规格更新和未完成门禁记录 |
 | [vega-issue-114-tool-call-limit.md](docs/vega-issue-114-tool-call-limit.md) | #114 把硬编码 tool call 上限改为可配的 agentic turn 上限（默认不限，对齐 Claude Code） |
 | [vega-issue-192-review-focus.md](docs/vega-issue-192-review-focus.md) | #192 全局打开 Review 保留 Composer 焦点，显式激活 tab 才聚焦内容 |
 | [vega-issue-123-pr-check-pipeline.md](docs/vega-issue-123-pr-check-pipeline.md) | #123 PR check + master build 云端流水线；门禁全部上云，删除本地 hooks/脚本 |

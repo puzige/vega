@@ -128,6 +128,4 @@ pub enum ProviderSettingsError {
     Malformed,
     #[error("供应商返回内容超过限制")]
     Limit,
-    #[error("Pi Agent 配置无法安全读取")]
-    PiSource,
 }

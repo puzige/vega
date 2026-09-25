@@ -82,7 +82,6 @@ enum Command {
     Down,
     Discover,
     Test(String),
-    ImportPiCredential,
     Cancel,
     Import,
     Candidate(String),
@@ -250,7 +249,6 @@ impl SettingsView {
             Command::Test(model) => {
                 self.provider_network(ProviderNetworkAction::TestModel { model }, cx)
             }
-            Command::ImportPiCredential => self.import_pi_credential_background(cx),
             Command::Cancel => {
                 self.cancel_provider_operation(cx);
                 self.provider_management.model_editor = None;
@@ -778,70 +776,6 @@ impl SettingsView {
         .detach();
     }
 
-    fn provider_service(&self, path: std::path::PathBuf) -> ProviderSettingsService {
-        #[cfg(test)]
-        if let Some(source) = self.pi_models_path.clone() {
-            return ProviderSettingsService::with_pi_models_path(path, source);
-        }
-        ProviderSettingsService::new(path)
-    }
-
-    fn import_pi_credential_background(&mut self, cx: &mut Context<Self>) {
-        let (Some(path), Some(provider)) = (self.config_path.clone(), self.selected_provider())
-        else {
-            return;
-        };
-        if self.provider_management.saving {
-            return;
-        }
-        self.cancel_provider_operation(cx);
-        self.provider_management.saving = true;
-        self.provider_management.message = Some("正在从 Pi Agent 导入凭据…".into());
-        let generation = self.provider_management.generation;
-        let name = provider.name.clone();
-        let refs_path = path.clone();
-        let service = self.provider_service(path);
-        let worker = cx.background_executor().spawn(async move {
-            let config = service.import_pi_credential(provider)?;
-            let refs = refs_path
-                .parent()
-                .and_then(|root| keystore::available_refs(root).ok())
-                .unwrap_or_default();
-            Ok::<_, vega_conversation::types::ProviderSettingsError>((config, refs))
-        });
-        cx.spawn(async move |this, cx| {
-            let result = worker.await;
-            let _ = this.update(cx, |this, cx| {
-                this.provider_management.saving = false;
-                match result {
-                    Ok((config, refs)) => {
-                        this.config = config;
-                        this.available_key_refs = refs;
-                        cx.emit(SettingsSaved);
-                        if generation != this.provider_management.generation {
-                            cx.notify();
-                            return;
-                        }
-                        this.provider_management.selected = Some(name.clone());
-                        this.provider_management.message =
-                            Some("已从 Pi Agent 导入凭据；供应商已启用".into());
-                        this.provider_management.statuses.clear();
-                        this.error = None;
-                    }
-                    Err(error) => {
-                        if generation != this.provider_management.generation {
-                            cx.notify();
-                            return;
-                        }
-                        this.provider_management.message =
-                            Some(format!("从 Pi Agent 导入凭据失败：{error}"));
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
     fn provider_network(&mut self, action: ProviderNetworkAction, cx: &mut Context<Self>) {
         let (Some(path), Some(provider)) = (self.config_path.clone(), self.selected_provider())
         else {
@@ -1143,13 +1077,6 @@ impl SettingsView {
                             Command::Edit,
                             !busy,
                             cx,
-                        ))
-                        .child(self.provider_button(
-                            "provider-import-pi".into(),
-                            "从 Pi Agent 导入凭据",
-                            Command::ImportPiCredential,
-                            !busy,
-                            cx,
                         )),
                 )
                 .child(div().text_color(colors.text_secondary).child("Base URL"))
@@ -1429,14 +1356,9 @@ impl SettingsView {
             }
         }
         if let Some(message) = &self.provider_management.message {
-            let selector = if message.contains("Pi Agent") {
-                "provider-import-status"
-            } else {
-                "provider-network-message"
-            };
             detail = detail.child(
                 div()
-                    .debug_selector(move || selector.into())
+                    .debug_selector(|| "provider-network-message".into())
                     .text_color(colors.text_secondary)
                     .child(message.clone()),
             );
