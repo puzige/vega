@@ -1,13 +1,14 @@
 # Issue #171 — Run diagnostics delivery record
 
-**Status:** implementation, local verification, cloud checks and main-agent review complete; Issue remains OPEN for desktop acceptance
+**Status:** implementation, local verification, cloud checks, main-agent review and squash merge complete; Issue remains OPEN for desktop acceptance
 **Branch:** `feat/171-run-diagnostics-implementation`
 **Base:** `db97c5d` (`origin/master`, includes #146 and #64)
 **Spec:** [Run diagnostics implementation contract](vega-issue-171-run-diagnostics-spec.md)
 **Implementation commits:** `d136bc7 feat(#171): persist safe run diagnostics`; `fix(#171): serialize diagnostic writes`
-**Pull request:** [#217](https://github.com/puzige/vega/pull/217) — OPEN, not merged
+**Pull request:** [#217](https://github.com/puzige/vega/pull/217) — MERGED by squash
 **PR base:** `master` (`db97c5d2d5961c33a52df276f157be4836c2c9f9`)
-**PR head:** `414bc94d0c3edb7cd61505137552b9e36e26a351` (`fix(#171): serialize diagnostic writes`)
+**PR head:** `9a2f15cce460d020474370a14d6f50933bf140eb` (delivery evidence update; implementation code head `414bc94d0c3edb7cd61505137552b9e36e26a351`)
+**Squash merge:** `b21ee4be7df0fdcbc3fcadd90aed4cc438a65756`
 **Local verification:** targeted conversation Nextest filters (7/7 regression/failure-isolation cases and 19/19 compaction cases), affected-crate Clippy with `-D warnings`, `cargo check`, fmt, and `git diff --check` passed after the serialization follow-up.
 
 ## Scope
@@ -71,6 +72,7 @@
 | GitHub PR Clippy (run `36170726674`, head `458afdac8b6c51de6bfac1a9794f9a5290d41fef`) | PASS | Clippy passed; Nextest reported 1880 passed, 9 failed, 5 skipped. Eight failures were stale assertions for #171's schema, internal events, and precise summary error type; all eight now pass in the targeted reruns above. |
 | GitHub PR Nextest skills case (`36173109636`, prior head `f40872a`) | FAIL — #171 regression | It was the only failed case (1888/1889 passed). A local conversation suite also reproduced it (529/530); base `db97c5d` passed 520/520. |
 | GitHub PR checks for serialization fix | [PASS](https://github.com/puzige/vega/actions/runs/36177941984) | At head `414bc94d0c3edb7cd61505137552b9e36e26a351`: Clippy, Nextest and required `check (fmt, clippy, test)` all passed. |
+| Latest full GitHub PR checks | [PASS](https://github.com/puzige/vega/actions/runs/36179505067) | At PR head `9a2f15cce460d020474370a14d6f50933bf140eb`: Clippy, Nextest and required `check (fmt, clippy, test)` all passed. |
 
 ## PR CI regression review
 
@@ -78,7 +80,7 @@ Run `36170726674` on head `458afdac8b6c51de6bfac1a9794f9a5290d41fef` had eight s
 
 The failure came from a separate diagnostics SQLite connection committing while the existing settings code held a deferred read snapshot; WAL rejected the later read-to-write upgrade. Ordinary run diagnostics now use the existing PersistenceActor Store connection and bounded channel. Manual compaction uses a bounded in-memory event buffer and the supplied Store connection for sequential best-effort inserts at completion. The focused reproducer now passes and asserts terminal visibility before the immediate settings update. This removes diagnostics-only SQLite writers from production paths while preserving no-ack/drop-on-full/error-swallow behavior.
 
-The actor worker returns an operational error after successful startup only through an unexpected task panic/join failure; required event write errors still use the existing acknowledgements and reach the run before terminal recording. If the actor panics during final drain, the run call reports the join failure, while any root terminal already persisted reflects the runtime/processor outcome; queued diagnostics can be missing. Fresh cloud checks for the serialization fix passed in [run 36177941984](https://github.com/puzige/vega/actions/runs/36177941984).
+The actor worker returns an operational error after successful startup only through an unexpected task panic/join failure; required event write errors still use the existing acknowledgements and reach the run before terminal recording. If the actor panics during final drain, the run call reports the join failure, while any root terminal already persisted reflects the runtime/processor outcome; queued diagnostics can be missing. Fresh cloud checks for the serialization fix passed in [run 36177941984](https://github.com/puzige/vega/actions/runs/36177941984), and the latest full PR checks also passed in [run 36179505067](https://github.com/puzige/vega/actions/runs/36179505067).
 
 ## Privacy boundary and residuals
 
