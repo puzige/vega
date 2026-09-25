@@ -149,6 +149,11 @@ fn absent(f: &Fixture, cx: &mut gpui_kit::TestAppContext, selector: impl Into<St
         .is_none()
 }
 
+fn persisted_thread(f: &Fixture, thread_id: &str) -> Thread {
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    conversation::open_thread(&store, thread_id).unwrap()
+}
+
 fn snapshot(f: &Fixture) -> SidebarOrganizationSnapshot {
     service::snapshot(&Store::open(f.dir.path().join("organization.db")).unwrap()).unwrap()
 }
@@ -872,7 +877,6 @@ async fn r33_production_task_rows_are_quiet_and_keep_stable_actions(
     let row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
     let title_rest = bounds(&f, cx, format!("standalone-thread-row-title-{}", recent.id));
     let tail_rest = bounds(&f, cx, format!("thread-actions-state-{}-rest", recent.id));
-    let trigger_rest = bounds(&f, cx, format!("standalone-thread-actions-{}", recent.id));
     assert_eq!(
         f32::from(tail_rest.size.width),
         Layout::SIDEBAR_ACTIONS_WIDTH
@@ -886,23 +890,242 @@ async fn r33_production_task_rows_are_quiet_and_keep_stable_actions(
         cx,
         format!("thread-actions-state-{}-visible", recent.id),
     );
-    let trigger_hover = bounds(&f, cx, format!("standalone-thread-actions-{}", recent.id));
+    let pin_hover = bounds(&f, cx, format!("standalone-thread-pin-{}", recent.id));
+    let archive_hover = bounds(&f, cx, format!("standalone-thread-archive-{}", recent.id));
     assert_eq!(title_rest.origin, title_hover.origin);
     assert_eq!(tail_rest, tail_hover);
-    assert_eq!(trigger_rest, trigger_hover);
+    assert_eq!(f32::from(pin_hover.size.width), 24.);
+    assert_eq!(f32::from(archive_hover.size.width), 24.);
     assert!(absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
 
     drop(visual);
-    click(&f, cx, format!("standalone-thread-actions-{}", recent.id));
+    let row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_down(
+        row.center(),
+        gpui_kit::MouseButton::Right,
+        Default::default(),
+    );
+    visual.simulate_mouse_up(
+        row.center(),
+        gpui_kit::MouseButton::Right,
+        Default::default(),
+    );
+    cx.run_until_parked();
     assert_eq!(
         sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
         Some(recent.id.clone())
     );
-    assert_eq!(
-        bounds(&f, cx, format!("standalone-thread-actions-{}", recent.id)),
-        trigger_rest
-    );
+    drop(visual);
     assert!(absent(&f, cx, format!("thread-timestamp-{}", recent.id)));
+}
+
+#[gpui_kit::test]
+async fn r157_task_hover_shortcuts_keep_geometry_and_persist_without_navigation(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let recent = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let project_row = bounds(&f, cx, format!("project-thread-row-{}", f.first.id));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(project_row.center(), None, gpui_kit::Modifiers::default());
+    assert!(!absent(
+        &f,
+        cx,
+        format!("project-thread-pin-{}", f.first.id)
+    ));
+    assert!(!absent(
+        &f,
+        cx,
+        format!("project-thread-archive-{}", f.first.id)
+    ));
+    visual.simulate_mouse_move(
+        gpui_kit::point(gpui_kit::px(900.), gpui_kit::px(700.)),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+
+    let row_selector = format!("standalone-thread-row-{}", recent.id);
+    let title_selector = format!("standalone-thread-row-title-{}", recent.id);
+    let tail_rest_selector = format!("thread-actions-state-{}-rest", recent.id);
+    let tail_visible_selector = format!("thread-actions-state-{}-visible", recent.id);
+    let menu_selector = format!("standalone-thread-actions-{}", recent.id);
+    let pin_selector = format!("standalone-thread-pin-{}", recent.id);
+    let archive_selector = format!("standalone-thread-archive-{}", recent.id);
+    visual.simulate_mouse_move(
+        gpui_kit::point(gpui_kit::px(900.), gpui_kit::px(700.)),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    assert!(absent(&f, cx, &pin_selector));
+    assert!(absent(&f, cx, &archive_selector));
+    let row = bounds(&f, cx, &row_selector);
+    let title_rest = bounds(&f, cx, &title_selector);
+    let tail_state_selector = if absent(&f, cx, &tail_rest_selector) {
+        &tail_visible_selector
+    } else {
+        &tail_rest_selector
+    };
+    let tail_rest = bounds(&f, cx, tail_state_selector);
+    let menu_rest = bounds(&f, cx, &menu_selector);
+    visual.simulate_mouse_move(row.center(), None, gpui_kit::Modifiers::default());
+    let pin = bounds(&f, cx, &pin_selector);
+    let archive = bounds(&f, cx, &archive_selector);
+    assert_eq!(f32::from(pin.size.width), 24.);
+    assert_eq!(f32::from(pin.size.height), 24.);
+    assert_eq!(f32::from(archive.size.width), 24.);
+    assert_eq!(f32::from(archive.size.height), 24.);
+    assert_eq!(bounds(&f, cx, &title_selector).origin, title_rest.origin);
+    assert_eq!(bounds(&f, cx, &tail_visible_selector), tail_rest);
+    assert!(bounds(&f, cx, &menu_selector).size.width < menu_rest.size.width);
+    assert!(!absent(&f, cx, &menu_selector));
+
+    drop(visual);
+    click(&f, cx, &pin_selector);
+    assert!(persisted_thread(&f, &recent.id).pinned);
+    cx.update(|cx| {
+        assert_eq!(
+            cx.global::<OpenedThread>().0.as_ref().unwrap().id,
+            f.first.id
+        )
+    });
+    assert!(sessions(&f, cx).read_with(cx, |block, _| block.actions_open.is_none()));
+    assert!(!absent(&f, cx, format!("pinned-thread-row-{}", recent.id)));
+
+    let pinned_row = bounds(&f, cx, format!("pinned-thread-row-{}", recent.id));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(pinned_row.center(), None, gpui_kit::Modifiers::default());
+    assert!(!absent(&f, cx, format!("pinned-thread-pin-{}", recent.id)));
+    drop(visual);
+    click(&f, cx, format!("pinned-thread-pin-{}", recent.id));
+    assert!(!persisted_thread(&f, &recent.id).pinned);
+
+    let active_row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(active_row.center(), None, gpui_kit::Modifiers::default());
+    drop(visual);
+    click(&f, cx, format!("standalone-thread-archive-{}", recent.id));
+    assert_eq!(
+        persisted_thread(&f, &recent.id).status,
+        ThreadStatus::Archived
+    );
+    sessions(&f, cx).update(cx, |block, cx| {
+        block.organization.as_mut().unwrap().archive = true;
+        block.refresh_organization(cx);
+    });
+    cx.run_until_parked();
+    let archived_row = bounds(&f, cx, format!("standalone-thread-row-{}", recent.id));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(archived_row.center(), None, gpui_kit::Modifiers::default());
+    assert!(!absent(
+        &f,
+        cx,
+        format!("standalone-thread-archive-{}", recent.id)
+    ));
+    drop(visual);
+    click(&f, cx, format!("standalone-thread-archive-{}", recent.id));
+    assert_eq!(
+        persisted_thread(&f, &recent.id).status,
+        ThreadStatus::Active
+    );
+    cx.update(|cx| {
+        assert_eq!(
+            cx.global::<OpenedThread>().0.as_ref().unwrap().id,
+            f.first.id
+        )
+    });
+}
+
+#[gpui_kit::test]
+async fn r157_task_right_click_reuses_full_menu_and_keyboard_actions(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::MouseButton;
+
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let target = f.first.id.clone();
+    let row = bounds(&f, cx, format!("project-thread-row-{target}"));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    let pin_selector = format!("project-thread-pin-{target}");
+    let trigger_selector = format!("project-thread-actions-{target}");
+    visual.simulate_mouse_move(row.center(), None, gpui_kit::Modifiers::default());
+    assert!(!absent(&f, cx, &pin_selector));
+    assert_eq!(
+        bounds(&f, cx, &trigger_selector).size.width,
+        gpui_kit::px(0.)
+    );
+    let action_focus = sessions(&f, cx).read_with(cx, |block, _| {
+        block.thread_action_focuses.get(&target).unwrap().clone()
+    });
+    drop(visual);
+    f.window
+        .update(cx, |_, window, cx| action_focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(absent(&f, cx, &pin_selector));
+    assert_eq!(
+        bounds(&f, cx, &trigger_selector).size.width,
+        gpui_kit::px(28.)
+    );
+    cx.simulate_keystrokes(f.window.into(), "enter");
+    cx.run_until_parked();
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
+        Some(target.clone())
+    );
+    cx.simulate_keystrokes(f.window.into(), "escape");
+    cx.run_until_parked();
+    assert!(sessions(&f, cx).read_with(cx, |block, _| block.actions_open.is_none()));
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_down(row.center(), MouseButton::Right, Default::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Right, Default::default());
+    cx.run_until_parked();
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
+        Some(target.clone())
+    );
+    assert!(!absent(&f, cx, format!("project-thread-actions-{target}")));
+    cx.update(|cx| assert_eq!(cx.global::<OpenedThread>().0.as_ref().unwrap().id, target));
+
+    visual.simulate_mouse_down(row.center(), MouseButton::Right, Default::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Right, Default::default());
+    cx.run_until_parked();
+    assert!(sessions(&f, cx).read_with(cx, |block, _| block.actions_open.is_none()));
+
+    visual.simulate_mouse_down(row.center(), MouseButton::Right, Default::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Right, Default::default());
+    cx.run_until_parked();
+    drop(visual);
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_click(
+        gpui_kit::point(gpui_kit::px(900.), gpui_kit::px(700.)),
+        Default::default(),
+    );
+    cx.run_until_parked();
+    assert!(sessions(&f, cx).read_with(cx, |block, _| block.actions_open.is_none()));
+
+    let row = bounds(&f, cx, format!("project-thread-row-{target}"));
+    visual.simulate_mouse_down(row.center(), MouseButton::Right, Default::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Right, Default::default());
+    cx.run_until_parked();
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
+        Some(target.clone())
+    );
+    drop(visual);
+    cx.simulate_keystrokes(f.window.into(), "down down enter");
+    cx.run_until_parked();
+    assert_eq!(
+        conversation::open_thread(&store, &target).unwrap().status,
+        ThreadStatus::Archived
+    );
+    cx.update(|cx| assert_eq!(cx.global::<OpenedThread>().0.as_ref().unwrap().id, target));
 }
 
 #[gpui_kit::test]

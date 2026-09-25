@@ -1146,6 +1146,27 @@ impl ThreadsBlock {
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.set_hovered(&thread_id, *hovered, cx);
             }))
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener({
+                    let thread_id = thread.id.clone();
+                    move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        if this
+                            .editing
+                            .as_ref()
+                            .is_some_and(|session| session.thread_id == thread_id)
+                            || cx.has_active_drag()
+                        {
+                            return;
+                        }
+                        this.toggle_actions(&thread_id, window, cx);
+                        if let Some(focus) = this.thread_action_focuses.get(&thread_id) {
+                            focus.focus(window, cx);
+                        }
+                    }
+                }),
+            )
             .when(
                 selected || (actions_visible && !editing_this_row),
                 move |row| {
@@ -1250,10 +1271,6 @@ impl ThreadsBlock {
         row.into_any_element()
     }
 
-    /// The fixed-width row tail. Production organization rows are quiet at
-    /// rest; hover (or keyboard focus) reveals one compact action trigger. The
-    /// actual operations are rendered in a deferred anchored menu so the row
-    /// and sidebar scroll masks cannot clip the popup.
     fn render_row_actions(
         &self,
         thread: &Thread,
@@ -1272,6 +1289,9 @@ impl ThreadsBlock {
         // never inferred from unread/updated_at/selection.
         let running = thread_is_running(&thread.id, cx);
         let menu_open = self.actions_open.as_deref() == Some(thread.id.as_str());
+        let keyboard_focused = self.focused_thread_action.as_deref() == Some(thread.id.as_str());
+        let quick_actions_visible =
+            self.hovered.as_deref() == Some(thread.id.as_str()) && !menu_open && !keyboard_focused;
         let mut trigger = div()
             .id(ElementId::Name(
                 format!("{action_prefix}thread-actions-{thread_id}").into(),
@@ -1356,9 +1376,6 @@ impl ThreadsBlock {
             .flex()
             .items_center()
             .justify_center()
-            // A mouse click focuses the trigger automatically. When the menu
-            // is already open, consume a second click on the trigger so the
-            // outside-dismiss listener cannot reopen it in the bubble phase.
             .capture_any_mouse_up(cx.listener({
                 let thread_id = thread.id.clone();
                 move |this, event: &MouseUpEvent, _, cx| {
@@ -1388,6 +1405,12 @@ impl ThreadsBlock {
         if let Some(menu) = menu {
             trigger = trigger.child(menu);
         }
+        if !menu_open && !keyboard_focused {
+            trigger = trigger.opacity(0.);
+        }
+        if quick_actions_visible {
+            trigger = trigger.size(px(0.));
+        }
 
         let mut group = div()
             .debug_selector({
@@ -1397,6 +1420,7 @@ impl ThreadsBlock {
             })
             .relative()
             .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
+            .h(px(28.))
             .flex()
             .items_center()
             .justify_end()
@@ -1420,40 +1444,137 @@ impl ThreadsBlock {
                     .child(relative_time(thread.updated_at)),
             );
         }
-        // R9/R10: a running thread shows a rotating indicator in the row tail
-        // slot. It is inserted to the *left* of the action trigger inside the
-        // right-aligned group, so the trigger keeps its column and the row
-        // never shifts when the indicator appears or disappears. The slot is
-        // empty at rest for production rows, which is exactly where Codex puts
-        // it; the trigger stays mounted (opacity 0) as before.
-        if running {
-            group = group.child(
-                div()
-                    .debug_selector({
-                        let id = thread.id.clone();
-                        let action_prefix = action_prefix.to_owned();
-                        move || format!("{action_prefix}thread-running-{id}")
-                    })
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        // Spinner animates via `AnimationExt::with_animation`,
-                        // which GPUI automatically freezes under reduce-motion.
-                        Spinner::new()
-                            .with_size(px(16.))
-                            .icon(IconName::LoaderCircle)
-                            .color(colors.text_secondary.into()),
-                    ),
-            );
-        }
-        // Keep the trigger mounted even at rest so Tab can reach every row's
-        // action entry. It is visually quiet until hover/focus/open.
-        if !actions_visible {
-            trigger = trigger.opacity(0.);
+        let running_selector_id = thread_id.clone();
+        let running_selector_prefix = action_prefix.to_owned();
+        let running_indicator = || {
+            div()
+                .debug_selector({
+                    let id = running_selector_id.clone();
+                    let action_prefix = running_selector_prefix.clone();
+                    move || format!("{action_prefix}thread-running-{id}")
+                })
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Spinner::new()
+                        .with_size(px(16.))
+                        .icon(IconName::LoaderCircle)
+                        .color(colors.text_secondary.into()),
+                )
+        };
+        if running && !quick_actions_visible {
+            group = group.child(running_indicator());
         }
         group = group.child(trigger);
+        if quick_actions_visible {
+            let pinned = thread.pinned;
+            let pin_label = if pinned { "取消置顶" } else { "置顶" };
+            let pin_thread_id = thread.id.clone();
+            let pin_button = div()
+                .id(ElementId::Name(
+                    format!("{action_prefix}thread-pin-{thread_id}").into(),
+                ))
+                .debug_selector({
+                    let id = thread_id.clone();
+                    let action_prefix = action_prefix.to_owned();
+                    move || format!("{action_prefix}thread-pin-{id}")
+                })
+                .aria_label(pin_label)
+                .tooltip(move |_, cx| crate::icons::tooltip(pin_label, cx))
+                .size(px(24.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .cursor_pointer()
+                .hover(move |style| style.bg(colors.bg_hover))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_pin(&pin_thread_id, pinned, cx);
+                    }),
+                )
+                .child(crate::icons::icon(
+                    crate::icons::Icon::Pin,
+                    if pinned {
+                        colors.accent
+                    } else {
+                        colors.text_secondary
+                    },
+                ));
+            let archive_button = div()
+                .id(ElementId::Name(
+                    format!("{action_prefix}thread-archive-{thread_id}").into(),
+                ))
+                .debug_selector({
+                    let id = thread_id.clone();
+                    let action_prefix = action_prefix.to_owned();
+                    move || format!("{action_prefix}thread-archive-{id}")
+                })
+                .aria_label(if archived {
+                    "恢复任务"
+                } else {
+                    "归档任务"
+                })
+                .tooltip(move |_, cx| {
+                    crate::icons::tooltip(
+                        if archived {
+                            "恢复任务"
+                        } else {
+                            "归档任务"
+                        },
+                        cx,
+                    )
+                })
+                .size(px(24.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .cursor_pointer()
+                .hover(move |style| style.bg(colors.bg_hover))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.set_thread_status(
+                            &thread_id,
+                            if archived {
+                                ThreadStatus::Active
+                            } else {
+                                ThreadStatus::Archived
+                            },
+                            cx,
+                        );
+                    }),
+                )
+                .child(
+                    gpui_kit::component::Icon::new(if archived {
+                        IconName::Undo2
+                    } else {
+                        IconName::Inbox
+                    })
+                    .with_size(px(16.))
+                    .text_color(colors.text_secondary)
+                    .flex_shrink_0(),
+                );
+            let mut quick_actions = div()
+                .absolute()
+                .top_0()
+                .right(px(4.))
+                .h_full()
+                .flex()
+                .items_center();
+            if running {
+                quick_actions = quick_actions.child(running_indicator());
+            }
+            group = group.child(quick_actions.child(pin_button).child(archive_button));
+        }
         group.into_any_element()
     }
 
@@ -1784,6 +1905,62 @@ mod task_action_tests {
             assert!(block.actions_open.is_some());
             assert_ne!(block.actions_open.as_deref(), Some(target.as_str()));
         });
+    }
+
+    #[gpui_kit::test]
+    async fn right_click_during_rename_keeps_editor_and_menu_closed(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::MouseButton;
+
+        let (_dir, block, first, target) = fixture(cx);
+        let input = block.update(cx, |_, cx| cx.new(|cx| TextInput::new(cx, "title", false)));
+        input.update(cx, |input, cx| input.set_text("unsaved title", cx));
+        block.update(cx, |block, _| {
+            block.editing = Some(RenameSession {
+                thread_id: target.id.clone(),
+                input: input.clone(),
+            });
+        });
+        cx.update(|cx| {
+            cx.set_global(vega_theme::Theme::light());
+            cx.set_global(SessionsCollapsed(false));
+        });
+        let root = block.clone();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), move |_, _| root)
+                .unwrap()
+        });
+        cx.run_until_parked();
+
+        let selector: &'static str =
+            Box::leak(format!("thread-row-{}", target.id).into_boxed_str());
+        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let row = visual.debug_bounds(selector).unwrap();
+        visual.simulate_mouse_down(row.center(), MouseButton::Right, Default::default());
+        visual.simulate_mouse_up(row.center(), MouseButton::Right, Default::default());
+        cx.run_until_parked();
+        for action in ["pin", "archive"] {
+            let selector: &'static str =
+                Box::leak(format!("thread-{action}-{}", target.id).into_boxed_str());
+            assert!(visual.debug_bounds(selector).is_none());
+        }
+
+        block.read_with(cx, |block, cx| {
+            assert_eq!(
+                block
+                    .editing
+                    .as_ref()
+                    .map(|session| session.thread_id.as_str()),
+                Some(target.id.as_str())
+            );
+            assert_eq!(
+                block.editing.as_ref().unwrap().input.read(cx).text(),
+                "unsaved title"
+            );
+            assert!(block.actions_open.is_none());
+        });
+        cx.update(|cx| assert_eq!(cx.global::<OpenedThread>().0.as_ref().unwrap().id, first.id));
     }
 
     #[gpui_kit::test]
