@@ -205,6 +205,7 @@ pub enum ConversationEvent {
         message_id: MessageId,
         /// Convergence reason.
         stop_reason: ConversationStopReason,
+        execution_duration_ms: Option<u64>,
     },
     /// Runtime/provider error.
     Error {
@@ -212,11 +213,13 @@ pub enum ConversationEvent {
         message_id: Option<MessageId>,
         /// Safe display error.
         error: Arc<vega_runtime::VegaError>,
+        execution_duration_ms: Option<u64>,
     },
     /// Cancellation was observed.
     Interrupted {
         /// Interrupted assistant message id.
         message_id: MessageId,
+        execution_duration_ms: Option<u64>,
     },
 }
 
@@ -302,21 +305,29 @@ impl std::fmt::Debug for ConversationEvent {
             Self::MessageFinished {
                 message_id,
                 stop_reason,
+                execution_duration_ms,
             } => formatter
                 .debug_struct("MessageFinished")
                 .field("message_id_bytes", &message_id.len())
                 .field("stop_reason", stop_reason)
+                .field("execution_duration_ms", execution_duration_ms)
                 .finish(),
             Self::Error {
                 message_id,
                 error: _,
+                execution_duration_ms,
             } => formatter
                 .debug_struct("Error")
                 .field("message_id_bytes", &message_id.as_ref().map(String::len))
+                .field("execution_duration_ms", execution_duration_ms)
                 .finish(),
-            Self::Interrupted { message_id } => formatter
+            Self::Interrupted {
+                message_id,
+                execution_duration_ms,
+            } => formatter
                 .debug_struct("Interrupted")
                 .field("message_id_bytes", &message_id.len())
+                .field("execution_duration_ms", execution_duration_ms)
                 .finish(),
         }
     }
@@ -553,6 +564,7 @@ pub(crate) fn from_runtime_event(
         }
         RuntimeEvent::Finished(reason) => Some(ConversationEvent::MessageFinished {
             message_id: message_id.to_string(),
+            execution_duration_ms: None,
             stop_reason: match reason {
                 RuntimeFinishReason::End => ConversationStopReason::End,
                 RuntimeFinishReason::Length => ConversationStopReason::Length,
@@ -561,10 +573,12 @@ pub(crate) fn from_runtime_event(
         }),
         RuntimeEvent::Interrupted => Some(ConversationEvent::Interrupted {
             message_id: message_id.to_string(),
+            execution_duration_ms: None,
         }),
         RuntimeEvent::Error(error) => Some(ConversationEvent::Error {
             message_id: Some(message_id.to_string()),
             error: error.clone(),
+            execution_duration_ms: None,
         }),
     }
 }

@@ -252,6 +252,7 @@ fn pending_plan() -> (Store, String) {
         "plan",
         "1. inspect\n2. execute",
         2,
+        None,
     )
     .expect("complete plan");
     (store, thread.id)

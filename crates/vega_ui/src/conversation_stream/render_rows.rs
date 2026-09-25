@@ -82,6 +82,10 @@ fn render_entry_internal(
 ) -> AnyElement {
     let colors = theme(cx).colors;
     match entry {
+        StreamEntry::RunActivity { group } => RunActivityGroup::render(group.clone(), window, cx),
+        StreamEntry::RunActivitySegment { group, segment } => {
+            RunActivityGroup::render_segment(group.clone(), *segment, window, cx)
+        }
         StreamEntry::ContextCompaction {
             record, restored, ..
         } => {
@@ -120,7 +124,6 @@ fn render_entry_internal(
                 )
                 .into_any_element()
         }
-        StreamEntry::Thinking { card } => div().child(card.clone()).into_any_element(),
         StreamEntry::User { lines, copy } => {
             if let Some(focus) = focus {
                 selectable_user_message(lines, copy, focus, &colors, window, cx)
@@ -245,7 +248,10 @@ fn render_entry_internal(
 
 /// One card entry as one natural-height item: the card's compact subrows
 /// (24px, C4 rule 1) stacked vertically inside a single list item.
-fn card_rows_item(row_count: usize, mut render_row: impl FnMut(usize) -> AnyElement) -> AnyElement {
+pub(crate) fn card_rows_item(
+    row_count: usize,
+    mut render_row: impl FnMut(usize) -> AnyElement,
+) -> AnyElement {
     let mut rows = Vec::with_capacity(row_count);
     for row in 0..row_count {
         rows.push(render_row(row));

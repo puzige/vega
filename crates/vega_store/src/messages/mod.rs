@@ -111,11 +111,25 @@ pub fn finish_streaming(
     id: &str,
     content: &str,
     status: &str,
+    execution_duration_ms: Option<i64>,
 ) -> Result<usize, rusqlite::Error> {
-    conn.execute(
+    validate_terminal_duration(status, execution_duration_ms)?;
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let updated = tx.execute(
         "UPDATE messages SET content = ?1, status = ?2 WHERE id = ?3 AND status = 'streaming'",
         params![content, status, id],
-    )
+    )?;
+    if updated == 1
+        && let Some(duration) = execution_duration_ms
+    {
+        tx.execute(
+            "INSERT INTO assistant_run_durations (message_id, execution_duration_ms) \
+             VALUES (?1, ?2)",
+            params![id, duration],
+        )?;
+    }
+    tx.commit()?;
+    Ok(updated)
 }
 
 /// Completes a Plan and supersedes all older pending plans under one
@@ -126,6 +140,7 @@ pub fn complete_plan(
     message_id: &str,
     content: &str,
     now: i64,
+    execution_duration_ms: Option<i64>,
 ) -> Result<(), PlanTransitionError> {
     let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let mode: Option<String> = tx
@@ -159,6 +174,14 @@ pub fn complete_plan(
     )?;
     if completed != 1 {
         return Err(PlanTransitionError::CorruptState);
+    }
+    if let Some(duration) = execution_duration_ms {
+        validate_terminal_duration("done", Some(duration))?;
+        tx.execute(
+            "INSERT INTO assistant_run_durations (message_id, execution_duration_ms) \
+             VALUES (?1, ?2)",
+            params![message_id, duration],
+        )?;
     }
     let touched = tx.execute(
         "UPDATE threads SET updated_at = ?1 WHERE id = ?2 AND mode = 'plan'",
@@ -309,6 +332,7 @@ pub struct MessagePage {
     /// Terminal rows in ascending `seq` order (streaming excluded, like
     /// [`recent`]; `interrupted`/`failed` rows are durable and included).
     pub rows: Vec<MessageRow>,
+    pub execution_durations_ms: std::collections::HashMap<String, i64>,
     /// `Some(oldest_seq)` when older rows may exist — pass
     /// [`PageCursor::Before`] to continue. `None` marks the oldest end of the
     /// thread, so another request cannot produce new rows.
@@ -378,11 +402,13 @@ pub fn page_before(
     };
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
+    let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
     Ok(MessagePage {
         images,
         rows,
+        execution_durations_ms,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -468,10 +494,12 @@ pub fn page_containing_message(
     };
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
+    let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     tx.commit()?;
     Ok(Some(MessagePage {
         images,
         rows,
+        execution_durations_ms,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -514,11 +542,13 @@ pub fn page_after(
     };
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
+    let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
     Ok(MessagePage {
         images,
         rows,
+        execution_durations_ms,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -558,6 +588,31 @@ fn page_tool_calls(
         })?
         .collect::<Result<_, _>>()?;
     Ok(calls)
+}
+
+fn page_execution_durations(
+    tx: &Transaction<'_>,
+    thread_id: &str,
+    rows: &[MessageRow],
+) -> Result<std::collections::HashMap<String, i64>, rusqlite::Error> {
+    let (Some(oldest), Some(newest)) = (rows.first(), rows.last()) else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let mut stmt = tx.prepare(
+        "SELECT d.message_id, d.execution_duration_ms \
+         FROM assistant_run_durations d JOIN messages m ON m.id = d.message_id \
+         WHERE m.thread_id = ?1 AND m.seq >= ?2 AND m.seq <= ?3 \
+         AND m.status != 'streaming' ORDER BY m.seq",
+    )?;
+    stmt.query_map(params![thread_id, oldest.seq, newest.seq], |row| {
+        let message_id = row.get::<_, String>(0)?;
+        let duration = row.get::<_, i64>(1)?;
+        if duration < 0 {
+            return Err(corrupt_row_error("negative execution duration"));
+        }
+        Ok((message_id, duration))
+    })?
+    .collect()
 }
 
 pub fn find(conn: &Connection, id: &str) -> Result<Option<MessageRow>, rusqlite::Error> {
@@ -629,6 +684,18 @@ fn row_from_query(row: &rusqlite::Row<'_>) -> Result<MessageRow, rusqlite::Error
     };
     validate_message(&message)?;
     Ok(message)
+}
+
+fn validate_terminal_duration(
+    status: &str,
+    execution_duration_ms: Option<i64>,
+) -> Result<(), rusqlite::Error> {
+    if execution_duration_ms.is_some_and(|duration| {
+        duration < 0 || !matches!(status, "done" | "interrupted" | "failed")
+    }) {
+        return Err(corrupt_row_error("invalid execution duration"));
+    }
+    Ok(())
 }
 
 fn validate_message(message: &MessageRow) -> Result<(), rusqlite::Error> {

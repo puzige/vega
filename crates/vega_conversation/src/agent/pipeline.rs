@@ -1467,7 +1467,7 @@ pub(crate) async fn finish_prepared_failure(
 ) -> Result<(), VegaError> {
     tokio::task::spawn_blocking(move || {
         let store = Store::open(database_path).map_err(VegaError::Store)?;
-        messages::finish_streaming(store.conn(), &assistant_message_id, "", "failed")
+        messages::finish_streaming(store.conn(), &assistant_message_id, "", "failed", None)
             .map_err(VegaError::Store)
             .and_then(|updated| ensure_message_updated(updated, &assistant_message_id))
     })
@@ -1482,5 +1482,20 @@ pub(crate) fn forward_pipeline_error<F>(
 ) where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
-    let _ = event_sink(&ConversationEvent::Error { message_id, error });
+    forward_pipeline_error_with_duration(event_sink, message_id, error, None);
+}
+
+pub(crate) fn forward_pipeline_error_with_duration<F>(
+    event_sink: &mut F,
+    message_id: Option<String>,
+    error: Arc<VegaError>,
+    execution_duration_ms: Option<u64>,
+) where
+    F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
+{
+    let _ = event_sink(&ConversationEvent::Error {
+        message_id,
+        error,
+        execution_duration_ms,
+    });
 }

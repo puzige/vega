@@ -154,6 +154,7 @@ async fn issue78_hover_copy_new_user_keeps_trailing_newlines_and_empty_failure_h
                     message_id: "empty-failure".into(),
                     content: String::new(),
                     status: vega_conversation::history::AssistantStatus::Failed,
+                    execution_duration_ms: None,
                 }],
                 None,
             ),

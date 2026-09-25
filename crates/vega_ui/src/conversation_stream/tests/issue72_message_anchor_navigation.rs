@@ -22,6 +22,7 @@ fn issue72_page_range(start_index: usize, count: usize, content_repetitions: usi
                         "不同长度的消息文本。".repeat((index % 7 + 1) * content_repetitions)
                     ),
                     status: vega_conversation::history::AssistantStatus::Done,
+                    execution_duration_ms: None,
                 }
             })
             .collect(),
@@ -49,6 +50,7 @@ async fn anchors_use_unique_durable_message_ids_and_safe_text_projections(cx: &m
                         message_id: "assistant-message-id".into(),
                         content: "## **已解析** `文本`".into(),
                         status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: None,
                     },
                     HistoryEntry::Tool {
                         seq: 3,
@@ -96,6 +98,90 @@ async fn anchors_use_unique_durable_message_ids_and_safe_text_projections(cx: &m
     assert!(!anchors[1].preview.contains('`'));
     assert_eq!(anchors[2].preview, "工具活动");
     assert!(!anchors[2].preview.contains("private"));
+}
+
+#[gpui_kit::test]
+async fn run_activity_entries_contribute_geometry_without_duplicating_message_anchors(
+    cx: &mut TestAppContext,
+) {
+    let (_window, stream, _) = open_controller_stream(cx, "issue72-run-activity-anchors");
+    stream.update(cx, |stream, cx| {
+        stream.apply_history_page(
+            HistoryPage {
+                entries: vec![
+                    HistoryEntry::AssistantText {
+                        seq: 1,
+                        message_id: "run-with-answer".into(),
+                        content: "answer after tool work".into(),
+                        status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: Some(3_000),
+                    },
+                    HistoryEntry::Tool {
+                        seq: 2,
+                        message_id: "run-with-answer".into(),
+                        call_id: "run-tool".into(),
+                        status: ToolCallStatus::Success,
+                        approval: None,
+                        input: None,
+                        result: None,
+                    },
+                    HistoryEntry::AssistantText {
+                        seq: 3,
+                        message_id: "activity-only".into(),
+                        content: String::new(),
+                        status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: Some(2_000),
+                    },
+                    HistoryEntry::AssistantText {
+                        seq: 4,
+                        message_id: "standalone-answer".into(),
+                        content: "another answer".into(),
+                        status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: None,
+                    },
+                ],
+                older_cursor: None,
+                newer_cursor: None,
+                newest_seq: Some(4),
+            },
+            cx,
+        );
+    });
+
+    let (anchors, activity_indices, entry_heights) = stream.read_with(cx, |stream, cx| {
+        let geometry = stream.message_anchor_geometry(cx, 800.0);
+        (
+            stream
+                .message_anchor_projections()
+                .into_iter()
+                .map(|anchor| (anchor.entry_index, anchor.message_id))
+                .collect::<Vec<_>>(),
+            stream
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| {
+                    matches!(
+                        entry,
+                        StreamEntry::RunActivity { .. } | StreamEntry::RunActivitySegment { .. }
+                    )
+                    .then_some(index)
+                })
+                .collect::<Vec<_>>(),
+            geometry.entry_heights,
+        )
+    });
+
+    assert_eq!(
+        anchors,
+        [
+            (1, "run-with-answer".to_string()),
+            (4, "standalone-answer".to_string()),
+        ]
+    );
+    assert_eq!(activity_indices, [0, 2, 3]);
+    assert_eq!(entry_heights.len(), 5);
+    assert!(entry_heights.iter().all(|height| *height > 0.0));
 }
 
 #[test]

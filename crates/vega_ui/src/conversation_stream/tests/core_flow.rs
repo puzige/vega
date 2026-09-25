@@ -902,14 +902,16 @@ async fn durable_assistant_events_require_exact_active_message(cx: &mut TestAppC
         );
     });
     let foreign_ignored = stream.read_with(cx, |stream, _| {
-        let (_, index) = stream
+        let (message_id, index) = stream
             .active_agent_message
             .as_ref()
             .expect("active message");
-        match &stream.entries[*index] {
-            StreamEntry::Assistant { stream, .. } => stream.snapshot().pending.is_none(),
-            _ => false,
-        }
+        message_id == "assistant"
+            && *index == usize::MAX
+            && !stream
+                .entries
+                .iter()
+                .any(|entry| matches!(entry, StreamEntry::Assistant { .. }))
     });
     assert!(foreign_ignored);
 
@@ -925,16 +927,21 @@ async fn durable_assistant_events_require_exact_active_message(cx: &mut TestAppC
             ConversationEvent::MessageFinished {
                 message_id: "foreign".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );
     });
-    assert!(stream.read_with(cx, |stream, _| stream.active_agent_message.is_some()));
+    assert!(stream.read_with(cx, |stream, _| matches!(
+        stream.active_agent_message.as_ref(),
+        Some((message_id, index)) if message_id == "assistant" && *index != usize::MAX
+    )));
     stream.update(cx, |stream, cx| {
         stream.apply_event(
             ConversationEvent::MessageFinished {
                 message_id: "assistant".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );
@@ -966,6 +973,7 @@ async fn completed_plan_replaces_streaming_assistant_after_older_plan_refresh(
             ConversationEvent::MessageFinished {
                 message_id: "plan-message".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );
@@ -1005,7 +1013,13 @@ async fn completed_plan_replaces_streaming_assistant_after_older_plan_refresh(
             .count();
         (plans, assistants, stream.entries.len())
     });
-    assert_eq!((plans, assistants, entries), (2, 0, 2));
+    assert_eq!((plans, assistants, entries), (2, 0, 3));
+    assert!(stream.read_with(cx, |stream, _| {
+        stream
+            .entries
+            .iter()
+            .any(|entry| matches!(entry, StreamEntry::RunActivity { .. }))
+    }));
 }
 
 #[gpui_kit::test]
@@ -1124,6 +1138,7 @@ async fn batch_finished_flush_materializes_the_final_committed_tail(cx: &mut Tes
             ConversationEvent::MessageFinished {
                 message_id: "assistant".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );

@@ -1929,6 +1929,7 @@ async fn stop_resume_fences_drop_every_late_callback_per_c5_fence_class(
         &stream,
         &ConversationEvent::Interrupted {
             message_id: "late-message".into(),
+            execution_duration_ms: None,
         },
     );
     assert!(
@@ -1985,6 +1986,7 @@ async fn stop_resume_fences_drop_every_late_callback_per_c5_fence_class(
         &stream,
         &ConversationEvent::Interrupted {
             message_id: "terminal-message".into(),
+            execution_duration_ms: None,
         },
     );
     assert_eq!(

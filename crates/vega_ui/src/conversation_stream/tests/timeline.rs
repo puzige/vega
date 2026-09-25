@@ -11,9 +11,26 @@ fn timeline(stream: &ConversationStream, cx: &App) -> Vec<String> {
     stream
         .entries
         .iter()
-        .map(|entry| match entry {
-            StreamEntry::UserImages { .. } => "user-images".into(),
-            StreamEntry::Thinking { .. } => "thinking".into(),
+        .flat_map(|entry| match entry {
+            StreamEntry::RunActivity { .. } => Vec::new(),
+            StreamEntry::RunActivitySegment { group, segment } => group
+                .read(cx)
+                .segment_children(*segment)
+                .into_iter()
+                .map(|child| match child {
+                    RunActivityChild::Thinking(_) => "thinking".to_string(),
+                    RunActivityChild::Tool(card) => tool_id(&card),
+                    RunActivityChild::ToolGroup(group) => group
+                        .read(cx)
+                        .children()
+                        .iter()
+                        .map(&tool_id)
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    RunActivityChild::Artifact(_) => "artifact".to_string(),
+                })
+                .collect::<Vec<_>>(),
+            StreamEntry::UserImages { .. } => vec!["user-images".into()],
             StreamEntry::Assistant { model, failure, .. } => {
                 let text: String = model
                     .committed_lines
@@ -23,26 +40,28 @@ fn timeline(stream: &ConversationStream, cx: &App) -> Vec<String> {
                     .map(|span| span.text.as_str())
                     .collect();
                 if failure.is_some() {
-                    format!("failed:{text}")
+                    vec![format!("failed:{text}")]
                 } else {
-                    text
+                    vec![text]
                 }
             }
-            StreamEntry::Tool { card } => tool_id(card),
-            StreamEntry::ToolGroup { group } => group
-                .read(cx)
-                .children()
-                .iter()
-                .map(&tool_id)
-                .collect::<Vec<_>>()
-                .join("+"),
-            StreamEntry::User { .. } => "user".into(),
-            StreamEntry::Summary { .. } => "summary".into(),
-            StreamEntry::Plan { .. } => "plan".into(),
-            StreamEntry::Artifact { .. } => "artifact".into(),
-            StreamEntry::Permission { .. } => "permission".into(),
-            StreamEntry::ContextCompaction { .. } => "compaction".into(),
-            StreamEntry::SkillActivation { .. } => "skill-activation".into(),
+            StreamEntry::Tool { card } => vec![tool_id(card)],
+            StreamEntry::ToolGroup { group } => vec![
+                group
+                    .read(cx)
+                    .children()
+                    .iter()
+                    .map(&tool_id)
+                    .collect::<Vec<_>>()
+                    .join("+"),
+            ],
+            StreamEntry::User { .. } => vec!["user".into()],
+            StreamEntry::Summary { .. } => vec!["summary".into()],
+            StreamEntry::Plan { .. } => vec!["plan".into()],
+            StreamEntry::Artifact { .. } => vec!["artifact".into()],
+            StreamEntry::Permission { .. } => vec!["permission".into()],
+            StreamEntry::ContextCompaction { .. } => vec!["compaction".into()],
+            StreamEntry::SkillActivation { .. } => vec!["skill-activation".into()],
         })
         .collect()
 }
@@ -131,6 +150,7 @@ async fn r70_live_mounted_text_and_tools_keep_proposal_order(cx: &mut TestAppCon
             ConversationEvent::MessageFinished {
                 message_id: "m".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );
@@ -181,6 +201,7 @@ async fn r70_terminal_only_tool_stays_after_text(cx: &mut TestAppContext) {
             ConversationEvent::MessageFinished {
                 message_id: "m".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );
@@ -218,6 +239,7 @@ async fn r70_tool_before_first_text_has_no_empty_assistant_segment(cx: &mut Test
             ConversationEvent::MessageFinished {
                 message_id: "m".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );
@@ -247,6 +269,7 @@ async fn r70_hydrated_page_preserves_segments_and_summary(cx: &mut TestAppContex
                         message_id: "m".into(),
                         content: "甲".into(),
                         status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: None,
                     },
                     tool(1, "a"),
                     HistoryEntry::AssistantText {
@@ -254,6 +277,7 @@ async fn r70_hydrated_page_preserves_segments_and_summary(cx: &mut TestAppContex
                         message_id: "m".into(),
                         content: "乙".into(),
                         status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: None,
                     },
                     tool(2, "b"),
                     tool(3, "c"),
@@ -262,6 +286,7 @@ async fn r70_hydrated_page_preserves_segments_and_summary(cx: &mut TestAppContex
                         message_id: "m".into(),
                         content: "丙".into(),
                         status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: None,
                     },
                     hydration_summary("m"),
                 ],
@@ -289,6 +314,7 @@ async fn r70_hydrated_failure_after_last_tool_is_at_tail(cx: &mut TestAppContext
                         message_id: "m".into(),
                         content: "甲".into(),
                         status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: None,
                     },
                     HistoryEntry::Tool {
                         seq: 1,
@@ -304,6 +330,7 @@ async fn r70_hydrated_failure_after_last_tool_is_at_tail(cx: &mut TestAppContext
                         message_id: "m".into(),
                         content: String::new(),
                         status: vega_conversation::history::AssistantStatus::Failed,
+                        execution_duration_ms: None,
                     },
                 ],
                 None,
@@ -359,6 +386,7 @@ async fn r70_page_prepend_during_tool_gap_keeps_followup_text(cx: &mut TestAppCo
             ConversationEvent::MessageFinished {
                 message_id: "live".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );

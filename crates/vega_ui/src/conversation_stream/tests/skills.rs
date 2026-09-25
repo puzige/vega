@@ -129,6 +129,7 @@ async fn issue74_loaded_skill_indicator_is_current_run_only_and_stop_is_real(
         stream.apply_event(
             ConversationEvent::Interrupted {
                 message_id: "run-one".into(),
+                execution_duration_ms: None,
             },
             cx,
         );

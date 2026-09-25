@@ -696,7 +696,7 @@ where
     if let Err(error) = event_sink(&started) {
         let error = Arc::new(error);
         let _ = actor
-            .event(RuntimeEvent::Error(error.clone()), String::new())
+            .event(RuntimeEvent::Error(error.clone()), String::new(), None)
             .await;
         forward_pipeline_error(
             &mut event_sink,
@@ -737,6 +737,7 @@ where
         .as_ref()
         .map(|hook| hook as &dyn vega_runtime::ContextCompactionHook);
     let runtime_request = prepared.request.clone();
+    let runtime_started_at = std::time::Instant::now();
     let runtime_future = run_agent_with_permission_sink_and_context(
         provider,
         tools,
@@ -771,11 +772,14 @@ where
     let processor_future = process_runtime_events(
         runtime_receiver,
         &actor,
-        &prepared.assistant_message_id,
-        &mut streamed_content,
-        &mut events,
-        &mut event_sink,
-        processor_cancel,
+        RuntimeEventContext {
+            message_id: &prepared.assistant_message_id,
+            streamed_content: &mut streamed_content,
+            events: &mut events,
+            event_sink: &mut event_sink,
+            cancel: processor_cancel,
+            run_started_at: runtime_started_at,
+        },
     );
     let (runtime_result, processor_result) = tokio::join!(runtime_future, processor_future);
     skill_watch_stop.cancel();
@@ -802,11 +806,20 @@ where
                 .unwrap_or_else(|| persistence_actor_error("agent event pipeline stopped"));
             let error = Arc::new(error);
             let failure_event = RuntimeEvent::Error(error.clone());
-            let _ = actor.event(failure_event, streamed_content.clone()).await;
-            forward_pipeline_error(
+            let execution_duration_ms =
+                u64::try_from(runtime_started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let _ = actor
+                .event(
+                    failure_event,
+                    streamed_content.clone(),
+                    Some(i64::try_from(execution_duration_ms).unwrap_or(i64::MAX)),
+                )
+                .await;
+            forward_pipeline_error_with_duration(
                 &mut event_sink,
                 Some(prepared.assistant_message_id.clone()),
                 error.clone(),
+                Some(execution_duration_ms),
             );
             let _ = actor.close().await;
             return Err(ConversationError::Runtime(error));

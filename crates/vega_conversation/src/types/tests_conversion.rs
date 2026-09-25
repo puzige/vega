@@ -459,7 +459,11 @@ fn issue114_finish_reasons_map_end_length_and_turn_limit() {
         let event = vega_runtime::RuntimeEvent::Finished(runtime);
         assert!(matches!(
             from_runtime_event("assistant-1", &event),
-            Some(ConversationEvent::MessageFinished { message_id, stop_reason })
+            Some(ConversationEvent::MessageFinished {
+                message_id,
+                stop_reason,
+                ..
+            })
                 if message_id == "assistant-1" && stop_reason == expected
         ));
     }

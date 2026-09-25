@@ -67,6 +67,7 @@ pub struct ConversationStream {
     pub(crate) user_block_seq: u64,
     /// Opaque provider call ids are retained only as non-rendered map keys.
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
+    pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
     /// Exact call id to its sole inline artifact card.
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
     /// Route-owned safe branch selector; Git authority remains in the app controller.
@@ -95,6 +96,9 @@ pub struct ConversationStream {
     pub(crate) message_location_status: Option<MessageLocationStatus>,
     /// Exact active durable assistant id and its stream-entry index.
     pub(crate) active_agent_message: Option<(String, usize)>,
+    pub(crate) active_run_activity: Option<(String, Entity<RunActivityGroup>)>,
+    pub(crate) active_run_activity_segment: Option<usize>,
+    pub(crate) active_agent_sequence: Option<i64>,
     pub(crate) active_segment_ordinal: usize,
     /// Whether the current Markdown segment contains text; a tool boundary
     /// may leave the active run without a segment until the next text delta.
@@ -416,6 +420,7 @@ impl ConversationStream {
             selection_view_initialized: false,
             user_block_seq: USER_BLOCK_BASE,
             tool_cards: HashMap::new(),
+            run_activity_groups: HashMap::new(),
             artifact_cards: HashMap::new(),
             branch_selector,
             commit_panel,
@@ -428,6 +433,9 @@ impl ConversationStream {
             hydration: HistoryHydration::default(),
             message_location_status: None,
             active_agent_message: None,
+            active_run_activity: None,
+            active_run_activity_segment: None,
+            active_agent_sequence: None,
             active_segment_ordinal: 0,
             active_thinking: None,
             thinking_bytes: 0,
@@ -1457,7 +1465,7 @@ impl ConversationStream {
                 .as_ref()
                 .is_some_and(|(active_id, _)| active_id == message_id),
             ConversationEvent::MessageFinished { message_id, .. }
-            | ConversationEvent::Interrupted { message_id } => self
+            | ConversationEvent::Interrupted { message_id, .. } => self
                 .active_agent_message
                 .as_ref()
                 .is_some_and(|(active_id, _)| active_id == message_id),

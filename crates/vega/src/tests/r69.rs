@@ -327,6 +327,7 @@ async fn issue60_unpriced_approved_plan_executes(cx: &mut gpui_kit::TestAppConte
         "issue60-plan-message",
         "Return an acknowledgement without editing files",
         2,
+        None,
     )
     .unwrap();
     let thread = vega_conversation::threads::open_thread(&store, &draft.id).unwrap();
@@ -2474,6 +2475,7 @@ async fn a7_foreign_runtime_error_cannot_mark_current_turn(cx: &mut gpui_kit::Te
                     message: "PRIVATE_PROVIDER_BODY_SENTINEL".into(),
                     retryable: false,
                 }),
+                execution_duration_ms: None,
             },
             cx,
         );
@@ -2492,6 +2494,7 @@ async fn a7_foreign_runtime_error_cannot_mark_current_turn(cx: &mut gpui_kit::Te
                 error: Arc::new(vega_runtime::VegaError::Io(std::io::Error::other(
                     "PRIVATE_RUNTIME_SENTINEL",
                 ))),
+                execution_duration_ms: None,
             },
             cx,
         );

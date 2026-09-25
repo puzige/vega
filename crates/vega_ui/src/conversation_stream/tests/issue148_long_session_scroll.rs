@@ -114,7 +114,7 @@ async fn durable_entry_identity_survives_prepend_and_rebuild(cx: &mut TestAppCon
     });
     let live_identity = stream.read_with(cx, |stream, _| {
         stream
-            .entry_identity_at(3)
+            .entry_identity_at(4)
             .expect("live assistant identity")
             .to_string()
     });
@@ -131,6 +131,7 @@ async fn durable_entry_identity_survives_prepend_and_rebuild(cx: &mut TestAppCon
                         message_id: "live-assistant-10".into(),
                         content: "live answer".into(),
                         status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: None,
                     },
                 ],
                 None,
@@ -432,6 +433,7 @@ async fn target_window_replacement_drops_old_cards_and_preserves_thread_state(
                     review_note: None,
                     reviewed_at: Some(1),
                 },
+                execution_duration_ms: None,
             },
         ],
         older_cursor: Some(1),

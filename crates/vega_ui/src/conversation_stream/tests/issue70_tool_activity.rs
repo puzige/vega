@@ -49,12 +49,21 @@ fn finish(
     );
 }
 
-fn group(stream: &ConversationStream) -> Entity<ToolActivityGroup> {
+fn group(stream: &ConversationStream, cx: &App) -> Entity<ToolActivityGroup> {
     stream
         .entries
         .iter()
+        .rev()
         .find_map(|entry| match entry {
             StreamEntry::ToolGroup { group } => Some(group.clone()),
+            StreamEntry::RunActivitySegment { group, segment } => group
+                .read(cx)
+                .segment_children(*segment)
+                .into_iter()
+                .find_map(|child| match child {
+                    RunActivityChild::ToolGroup(group) => Some(group),
+                    _ => None,
+                }),
             _ => None,
         })
         .expect("tool activity group")
@@ -64,19 +73,34 @@ fn entry_shapes(stream: &ConversationStream, cx: &App) -> Vec<String> {
     stream
         .entries
         .iter()
-        .map(|entry| match entry {
-            StreamEntry::Assistant { .. } => "assistant".to_string(),
-            StreamEntry::Tool { .. } => "tool:1".to_string(),
-            StreamEntry::ToolGroup { group } => format!("group:{}", group.read(cx).len()),
-            StreamEntry::Artifact { .. } => "artifact".to_string(),
-            StreamEntry::Permission { .. } => "permission".to_string(),
-            StreamEntry::Plan { .. } => "plan".to_string(),
-            StreamEntry::Summary { .. } => "summary".to_string(),
-            StreamEntry::ContextCompaction { .. } => "compaction".to_string(),
-            StreamEntry::SkillActivation { .. } => "skill".to_string(),
-            StreamEntry::Thinking { .. } => "thinking".to_string(),
-            StreamEntry::User { .. } => "user".to_string(),
-            StreamEntry::UserImages { .. } => "user-images".to_string(),
+        .flat_map(|entry| match entry {
+            StreamEntry::RunActivity { .. } => Vec::new(),
+            StreamEntry::RunActivitySegment { group, segment } => group
+                .read(cx)
+                .segment_children(*segment)
+                .into_iter()
+                .map(|child| match child {
+                    RunActivityChild::Thinking(_) => "thinking".to_string(),
+                    RunActivityChild::Tool(_) => "tool:1".to_string(),
+                    RunActivityChild::ToolGroup(group) => {
+                        format!("group:{}", group.read(cx).len())
+                    }
+                    RunActivityChild::Artifact(_) => "artifact".to_string(),
+                })
+                .collect::<Vec<_>>(),
+            StreamEntry::Assistant { .. } => vec!["assistant".to_string()],
+            StreamEntry::Tool { .. } => vec!["tool:1".to_string()],
+            StreamEntry::ToolGroup { group } => {
+                vec![format!("group:{}", group.read(cx).len())]
+            }
+            StreamEntry::Artifact { .. } => vec!["artifact".to_string()],
+            StreamEntry::Permission { .. } => vec!["permission".to_string()],
+            StreamEntry::Plan { .. } => vec!["plan".to_string()],
+            StreamEntry::Summary { .. } => vec!["summary".to_string()],
+            StreamEntry::ContextCompaction { .. } => vec!["compaction".to_string()],
+            StreamEntry::SkillActivation { .. } => vec!["skill".to_string()],
+            StreamEntry::User { .. } => vec!["user".to_string()],
+            StreamEntry::UserImages { .. } => vec!["user-images".to_string()],
         })
         .collect()
 }
@@ -88,6 +112,20 @@ fn activity_texts(stream: &ConversationStream, cx: &App) -> Vec<String> {
         .filter_map(|entry| match entry {
             StreamEntry::Tool { card } => Some(card.read(cx).visible_text()),
             StreamEntry::ToolGroup { group } => Some(group.read(cx).visible_text(cx)),
+            StreamEntry::RunActivity { .. } => None,
+            StreamEntry::RunActivitySegment { group, segment } => Some(
+                group
+                    .read(cx)
+                    .segment_children(*segment)
+                    .into_iter()
+                    .filter_map(|child| match child {
+                        RunActivityChild::Tool(card) => Some(card.read(cx).visible_text()),
+                        RunActivityChild::ToolGroup(group) => Some(group.read(cx).visible_text(cx)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
             _ => None,
         })
         .collect()
@@ -341,7 +379,7 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
     cx.run_until_parked();
 
     stream.read_with(cx, |stream, cx| {
-        let group = group(stream);
+        let group = group(stream, cx);
         let aggregate = group.read(cx).aggregate_summary(cx);
         assert_eq!(aggregate, "正在处理：运行命令、读取文件");
         assert!(
@@ -357,7 +395,7 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
         assert_eq!(group.read(cx).row_count(cx), 4);
     });
 
-    let expanded = stream.read_with(cx, |stream, cx| group(stream).read(cx).visible_text(cx));
+    let expanded = stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).visible_text(cx));
     assert!(expanded.contains("正在运行命令 · 5 秒"), "{expanded}");
     assert!(expanded.contains("正在运行命令 · 3 秒"), "{expanded}");
     assert!(expanded.contains("正在读取文件"), "{expanded}");
@@ -368,7 +406,7 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
     );
     stream.read_with(cx, |stream, cx| {
         let colors = theme(cx).colors;
-        let group = group(stream);
+        let group = group(stream, cx);
         assert!(matches!(group.read(cx).leading_icon(cx), Icon::Terminal));
         assert_eq!(
             group.read(cx).leading_icon_color(cx, &colors),
@@ -442,7 +480,7 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
     cx.run_until_parked();
 
     stream.read_with(cx, |stream, cx| {
-        let aggregate = group(stream).read(cx).aggregate_summary(cx);
+        let aggregate = group(stream, cx).read(cx).aggregate_summary(cx);
         assert_eq!(aggregate, "正在处理：运行命令、读取文件");
         assert!(
             !aggregate.contains('秒') && !aggregate.contains("分钟") && !aggregate.contains("毫秒"),
@@ -521,7 +559,7 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
             stream.tool_cards["long-running"].read(cx).visible_text(),
             "已运行命令 · 1.2 秒"
         );
-        let aggregate = group(stream).read(cx).aggregate_summary(cx);
+        let aggregate = group(stream, cx).read(cx).aggregate_summary(cx);
         assert!(
             !aggregate.contains('秒') && !aggregate.contains("分钟") && !aggregate.contains("毫秒"),
             "terminal child duration must not enter aggregate copy: {aggregate}"
@@ -735,7 +773,7 @@ async fn issue70_t70_2_adjacent_mixed_tools_share_one_collapsed_item(cx: &mut Te
 
     stream.read_with(cx, |stream, cx| {
         assert_eq!(stream.entries.len(), 1);
-        let group = group(stream);
+        let group = group(stream, cx);
         let group = group.read(cx);
         assert_eq!(group.len(), 3);
         // #151 R151-3: the group is the newest activity unit, so it opens by
@@ -923,7 +961,7 @@ async fn issue70_t70_3_permission_merge_preserves_right_group_disclosure(cx: &mu
     stream.read_with(cx, |stream, cx| {
         assert_eq!(entry_shapes(stream, cx), ["group:5"]);
         assert!(
-            group(stream).read(cx).expanded(),
+            group(stream, cx).read(cx).expanded(),
             "merging into an existing left group preserves the expanded side's disclosure state"
         );
     });
@@ -957,7 +995,7 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
     cx.run_until_parked();
     // #151 R151-3: this group is the newest activity unit, so it starts
     // expanded. Collapsing and re-expanding below still prove the toggle works.
-    let expanded_rows = stream.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx));
+    let expanded_rows = stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx));
     assert_eq!(expanded_rows, 4, "aggregate plus three compact children");
     for selector in [
         "tool-activity-child-0",
@@ -975,7 +1013,7 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
 
     click(window, "tool-activity-group-toggle", cx);
     assert_eq!(
-        stream.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)),
+        stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx)),
         1,
         "collapsing the group leaves the aggregate-only row count"
     );
@@ -988,7 +1026,7 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
     );
     click(window, "tool-activity-group-toggle", cx);
     assert_eq!(
-        stream.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)),
+        stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx)),
         expanded_rows,
         "re-expanding restores the child-list row count"
     );
@@ -1012,7 +1050,7 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
     let detail_height = f32::from(bounds(window, "tool-activity-group", cx).size.height);
     assert!(detail_height > children_height);
     assert!(
-        stream.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)) > expanded_rows,
+        stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx)) > expanded_rows,
         "opening one child adds only its bounded detail rows"
     );
     let (shell_text, footer_state) = stream.read_with(cx, |stream, cx| {
@@ -1042,7 +1080,7 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
 
     click(window, "tool-activity-child-2", cx);
     assert_eq!(
-        stream.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)),
+        stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx)),
         expanded_rows,
         "closing the child restores the child-list row count"
     );
@@ -1052,7 +1090,7 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
     );
     click(window, "tool-activity-group-toggle", cx);
     assert_eq!(
-        stream.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)),
+        stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx)),
         1,
         "closing the group restores the aggregate-only row count"
     );
@@ -1078,7 +1116,7 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
         }
     });
     let before = stream.read_with(cx, |stream, cx| {
-        let group = group(stream);
+        let group = group(stream, cx);
         assert!(
             group
                 .read(cx)
@@ -1107,7 +1145,7 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
         );
     });
     assert!(stream.read_with(cx, |stream, cx| {
-        group(stream)
+        group(stream, cx)
             .read(cx)
             .aggregate_summary(cx)
             .starts_with("正在处理：")
@@ -1130,7 +1168,7 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
         );
     });
     stream.read_with(cx, |stream, cx| {
-        let group = group(stream);
+        let group = group(stream, cx);
         assert_eq!(group.read(cx).children(), before);
         assert!(
             group
@@ -1336,7 +1374,7 @@ async fn issue70_t70_6_hydration_matches_live_and_reopen_resets_expansion(cx: &m
         "live and hydrated activity copy preserves boundaries, categories, and terminal state"
     );
     assert_eq!(
-        hydrated.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)),
+        hydrated.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx)),
         1
     );
     assert!(hydrated.read_with(cx, |stream, _| {
@@ -1344,13 +1382,13 @@ async fn issue70_t70_6_hydration_matches_live_and_reopen_resets_expansion(cx: &m
     }));
 
     click(hydrated_window, "tool-activity-group-toggle", cx);
-    assert!(hydrated.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)) > 1);
+    assert!(hydrated.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx)) > 1);
     let (_reopen_window, reopened, _) = open_controller_stream(cx, "issue70-hydrated-reopen");
     reopened.update(cx, |stream, cx| {
         stream.apply_history_page(hydration_page(parity_history(), None), cx)
     });
     assert_eq!(
-        reopened.read_with(cx, |stream, cx| group(stream).read(cx).row_count(cx)),
+        reopened.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx)),
         1,
         "route reopen starts collapsed and does not persist UI expansion"
     );
@@ -1495,7 +1533,7 @@ async fn issue70_t70_7_grouping_preserves_redaction_and_fail_closed_visibility(
     // are mounted without a disclosure click. Child detail stays manual (#70
     // §3.2), so only the child needs one click to disclose its bounded rows.
     click(window, "tool-activity-child-0", cx);
-    let visible = stream.read_with(cx, |stream, cx| group(stream).read(cx).visible_text(cx));
+    let visible = stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).visible_text(cx));
     for safe in [
         "SAFE_BOUNDED_OUTPUT",
         "src/lib.rs · 3 bytes",
@@ -1566,6 +1604,7 @@ fn issue103_prefix(stream: &mut ConversationStream, cx: &mut Context<Conversatio
         ConversationEvent::MessageFinished {
             message_id: "prefix".into(),
             stop_reason: vega_conversation::types::ConversationStopReason::End,
+            execution_duration_ms: None,
         },
         cx,
     );
@@ -1714,7 +1753,7 @@ async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
         }
     });
     cx.run_until_parked();
-    assert!(stream.read_with(cx, |stream, cx| group(stream).read(cx).expanded()));
+    assert!(stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).expanded()));
     let body = bounds(window, "tool-activity-group", cx);
     assert!(
         body.size.height <= px(320. + ROW_HEIGHT),
@@ -1726,7 +1765,7 @@ async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
     assert!(detail.size.height <= px(240.));
     let (group_scroll, child_scroll, other_scroll) = stream.read_with(cx, |stream, cx| {
         (
-            group(stream).read(cx).scroll_handle(),
+            group(stream, cx).read(cx).scroll_handle(),
             stream.tool_cards["call-0"].read(cx).scroll_handle(),
             stream.tool_cards["call-1"].read(cx).scroll_handle(),
         )

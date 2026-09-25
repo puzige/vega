@@ -104,6 +104,7 @@ pub(crate) enum PersistenceCommand {
     Event {
         event: Box<RuntimeEvent>,
         content: String,
+        execution_duration_ms: Option<i64>,
         ack: oneshot::Sender<Result<(), VegaError>>,
     },
 }
@@ -177,6 +178,7 @@ impl PersistenceActor {
                     PersistenceCommand::Event {
                         event,
                         content,
+                        execution_duration_ms,
                         ack,
                     } => {
                         config.delay_command();
@@ -191,6 +193,7 @@ impl PersistenceActor {
                                 &content,
                                 &mut next_tool_seq,
                                 &event,
+                                execution_duration_ms,
                             )
                         });
                         let _ = ack.send(result);
@@ -240,12 +243,14 @@ impl PersistenceActor {
         &self,
         event: RuntimeEvent,
         content: String,
+        execution_duration_ms: Option<i64>,
     ) -> Result<(), VegaError> {
         let (ack, received) = oneshot::channel();
         self.sender
             .send(PersistenceCommand::Event {
                 event: Box::new(event),
                 content,
+                execution_duration_ms,
                 ack,
             })
             .await

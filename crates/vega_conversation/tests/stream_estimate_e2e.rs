@@ -399,6 +399,7 @@ fn late_events_after_terminal_cannot_move_the_counter() {
     meter.apply(&ConversationEvent::MessageFinished {
         message_id: "m1".into(),
         stop_reason: vega_conversation::types::ConversationStopReason::End,
+        execution_duration_ms: None,
     });
     let settled = meter.snapshot();
     assert_reading(settled, 110, Some(120), false, "settled");
@@ -427,10 +428,12 @@ fn late_events_after_terminal_cannot_move_the_counter() {
     }));
     assert!(!meter.apply(&ConversationEvent::Interrupted {
         message_id: "m1".into(),
+        execution_duration_ms: None
     }));
     assert!(!meter.apply(&ConversationEvent::Error {
         message_id: Some("m1".into()),
         error: Arc::new(VegaError::Io(std::io::Error::other("late error"))),
+        execution_duration_ms: None
     }));
     assert_reading(meter.snapshot(), 110, Some(120), false, "after late events");
 

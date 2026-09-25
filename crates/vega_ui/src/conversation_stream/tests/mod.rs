@@ -26,6 +26,7 @@ mod core_flow;
 mod e2e_variable_height;
 mod hover_copy;
 mod hydration;
+mod issue146_run_activity;
 mod issue147_markdown_selection;
 mod issue148_long_session_scroll;
 mod issue151_latest_activity;
@@ -232,6 +233,7 @@ fn hydration_assistant(seq: i64, content: &str) -> HistoryEntry {
         message_id: format!("assistant-{seq}"),
         content: content.into(),
         status: vega_conversation::history::AssistantStatus::Done,
+        execution_duration_ms: None,
     }
 }
 
@@ -265,7 +267,8 @@ fn hydrated_entry_kinds(stream: &ConversationStream) -> Vec<&'static str> {
         .iter()
         .map(|entry| match entry {
             StreamEntry::UserImages { .. } => "user-images",
-            StreamEntry::Thinking { .. } => "thinking",
+            StreamEntry::RunActivity { .. } => "run-activity",
+            StreamEntry::RunActivitySegment { .. } => "run-activity-segment",
             StreamEntry::User { .. } => "user",
             StreamEntry::Assistant { .. } => "assistant",
             StreamEntry::Tool { .. } => "tool",

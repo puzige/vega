@@ -169,7 +169,8 @@ fn completion_first_makes_deferred_old_review_stale() {
         },
     )
     .expect("new streaming plan");
-    complete_plan(store.conn(), &thread_id, "new-plan", "new", 4).expect("new completion wins");
+    complete_plan(store.conn(), &thread_id, "new-plan", "new", 4, None)
+        .expect("new completion wins");
     let request = PlanReviewRequested {
         thread_id,
         plan_id: "plan".into(),

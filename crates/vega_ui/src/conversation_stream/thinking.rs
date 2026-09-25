@@ -48,6 +48,10 @@ impl ThinkingBlock {
         }
     }
 
+    pub(crate) fn row_count(&self) -> usize {
+        1 + usize::from(self.expanded) + usize::from(self.truncated)
+    }
+
     pub(crate) fn append(&mut self, delta: &str, remaining: usize) -> usize {
         let end = accepted_prefix_len(
             delta,
@@ -164,10 +168,19 @@ impl ConversationStream {
             ) == 0
                 || self.thinking_blocks >= THINKING_VIEW_BLOCKS
             {
-                if let Some(card) = self.entries.iter().rev().find_map(|entry| match entry {
-                    StreamEntry::Thinking { card } => Some(card.clone()),
-                    _ => None,
-                }) {
+                if let Some((active_id, group)) = self.active_run_activity.clone()
+                    && active_id == message_id
+                    && let Some(card) =
+                        group
+                            .read(cx)
+                            .children()
+                            .into_iter()
+                            .rev()
+                            .find_map(|child| match child {
+                                RunActivityChild::Thinking(card) => Some(card),
+                                _ => None,
+                            })
+                {
                     card.update(cx, |card, cx| {
                         if !card.truncated {
                             card.truncated = true;
@@ -178,20 +191,14 @@ impl ConversationStream {
                 return;
             }
             self.close_active_segment_before_tool();
-            // #151 R151-1/R151-2: this new block is the newest activity unit,
-            // so the previous current unit steps down before it opens. The
-            // scan happens once per block creation, never per delta.
-            self.collapse_current_activity(cx);
+            let Some((group, segment)) = self.ensure_live_run_activity_segment(message_id, cx)
+            else {
+                return;
+            };
             let card = cx.new(ThinkingBlock::new);
-            cx.observe(&card, |this, card, cx| {
-                let index = this.entry_index_where(|entry| matches!(entry, StreamEntry::Thinking { card: owned } if owned == &card));
-                this.invalidate_item(index);
-                cx.notify();
-            }).detach();
-            let index = self.entries.len();
-            self.entries
-                .push(StreamEntry::Thinking { card: card.clone() });
-            self.list_append(index);
+            group.update(cx, |group, cx| {
+                group.append_thinking(segment, card.clone(), cx)
+            });
             self.thinking_blocks += 1;
             card.update(cx, |card, cx| card.set_expanded(true, cx));
             self.active_thinking = Some(card);

@@ -92,7 +92,8 @@ impl ConversationStream {
                 StreamEntry::Plan { .. } => (MessageAnchorKind::Plan, "计划消息".to_string()),
                 StreamEntry::Summary { .. } => (MessageAnchorKind::Summary, "任务结果".to_string()),
                 StreamEntry::ContextCompaction { .. }
-                | StreamEntry::Thinking { .. }
+                | StreamEntry::RunActivity { .. }
+                | StreamEntry::RunActivitySegment { .. }
                 | StreamEntry::Permission { .. }
                 | StreamEntry::SkillActivation { .. } => continue,
             };

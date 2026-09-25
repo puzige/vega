@@ -25,6 +25,21 @@ impl ConversationStream {
         let Some(tool) = self.tool_cards.get(call_id) else {
             return false;
         };
+        if let Some(group) = self
+            .run_activity_groups
+            .values()
+            .find(|group| group.read(cx).contains_tool(tool, cx))
+            .cloned()
+        {
+            if group.update(cx, |group, cx| {
+                group.insert_after_tool(tool, card.clone(), cx)
+            }) {
+                self.artifact_cards.insert(call_id.to_owned(), card);
+                cx.notify();
+                return true;
+            }
+            return false;
+        }
         let Some(index) = self
             .entries
             .iter()
@@ -39,9 +54,14 @@ impl ConversationStream {
             return false;
         }
         cx.observe(&card, |this, card, cx| {
-            let index = this.entry_index_where(
-                |entry| matches!(entry, StreamEntry::Artifact { card: owned } if owned == &card),
-            );
+            let index = this.entry_index_where(|entry| match entry {
+                StreamEntry::Artifact { card: owned } => owned == &card,
+                StreamEntry::RunActivity { .. } => false,
+                StreamEntry::RunActivitySegment { group, .. } => {
+                    group.read(cx).contains_artifact(&card)
+                }
+                _ => false,
+            });
             this.invalidate_item(index);
             cx.notify();
         })
@@ -67,7 +87,10 @@ impl ConversationStream {
         self.entries.windows(2).any(|entries| {
             Self::tool_entry_contains(&entries[0], tool, cx)
                 && matches!(&entries[1], StreamEntry::Artifact { card } if card == artifact)
-        })
+        }) || self
+            .run_activity_groups
+            .values()
+            .any(|group| group.read(cx).artifact_follows_tool(tool, artifact, cx))
     }
 
     /// Content-free virtual-row count for integration tests of dynamic cards.
