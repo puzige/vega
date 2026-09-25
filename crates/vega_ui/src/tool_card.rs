@@ -993,9 +993,6 @@ fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> 
     output.lines().map(str::to_string).collect()
 }
 
-// GPUI applies its built-in scroll delta before custom bubble listeners, but
-// does not stop bubbling when the viewport moves. Consume only actual movement;
-// at an edge (including a short body) retain the normal parent scroll policy.
 pub(crate) fn contain_disclosure_scroll(
     scroll: &ScrollHandle,
 ) -> impl Fn(&gpui_kit::ScrollWheelEvent, &mut gpui_kit::Window, &mut App) + 'static {

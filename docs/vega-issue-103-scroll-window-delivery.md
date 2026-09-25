@@ -102,3 +102,28 @@ empty output file. Cloud workspace CI remains the merge gate.
 - Scoped local clippy passed. Workspace cloud checks and native acceptance remain owned by the
   main agent. No merge, installation or external issue-state change was made by
   the implementation agent. Rollback is a revert; stored conversation data is unchanged.
+
+## Rebase follow-up (2026-09-25)
+
+The implementation branch was rebased onto the latest `origin/master`; the
+rebase had no textual conflicts. Issue #151 now defines live latest activity as
+expanded by default while hydrated history stays collapsed. The #103 spec and
+test setup were aligned to that existing behavior without changing product
+expansion behavior. Nested tool detail remains explicitly opened in the tests.
+
+The first post-rebase run of
+`cargo test -p vega_ui issue103_ -- --nocapture` failed all six tests because
+the old test setup unconditionally clicked disclosures that #151 had already
+expanded. The tests now assert the live default and retain their manual
+collapse/reopen, scroll-boundary, nested-scroll and offset-preservation checks.
+
+| Exact command | Result |
+|---|---|
+| `cargo test -p vega_ui issue103_ -- --nocapture` | `test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 458 filtered out; finished in 0.11s`; exit 0 |
+| `cargo test -p vega_ui issue70_t70_6_hydration_matches_live_and_reopen_resets_expansion -- --nocapture` | `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 463 filtered out; finished in 0.02s`; exit 0 |
+| `cargo test -p vega_theme issue103 -- --nocapture` | `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s`; exit 0 |
+| `cargo fmt --all -- --check` | exit 0; no output |
+| `cargo clippy -p vega_ui -p vega_theme --all-targets -- -D warnings` | exit 0; finished in 7.91s |
+
+Native wheel/trackpad, visual and restart acceptance remains pending for the
+main agent and user; the GPUI tests do not substitute for those checks.

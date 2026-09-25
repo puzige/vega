@@ -279,10 +279,8 @@ async fn issue103_thinking_body_is_bounded(cx: &mut TestAppContext) {
         stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
     });
     cx.run_until_parked();
+    assert!(stream.read_with(cx, |stream, cx| cards(stream)[0].read(cx).expanded));
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let toggle = visual.debug_bounds("thinking-toggle").expect("header");
-    visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
     let body = visual.debug_bounds("thinking-content").expect("body");
     assert!(
         body.size.height <= px(240.),
@@ -300,11 +298,10 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     });
     cx.run_until_parked();
     let block = stream.read_with(cx, |stream, _| cards(stream)[0].clone());
+    assert!(block.read_with(cx, |block, _| block.expanded));
     let scroll = block.read_with(cx, |block, _| block.scroll_handle());
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let toggle = visual.debug_bounds("thinking-toggle").expect("header");
-    visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
     let body = visual.debug_bounds("thinking-content").expect("body");
     assert!(
         scroll.max_offset().y > px(1000.),
@@ -337,8 +334,6 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
     visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     assert_eq!(scroll.offset().y, px(-100.), "reopen retains offset");
-    // Reasoning is append-only in normal operation. Exercise the layout's
-    // shrink clamp on the real mounted entity without changing production APIs.
     block.update(&mut visual, |block, cx| {
         block.text = "short".into();
         cx.notify();

@@ -311,9 +311,7 @@ impl Typography {
 pub struct Layout;
 
 impl Layout {
-    /// Maximum body height for expanded tool details and live reasoning.
     pub const DISCLOSURE_CONTENT_MAX_HEIGHT: f32 = 240.0;
-    /// Maximum child-list height for an expanded adjacent tool group.
     pub const TOOL_GROUP_MAX_HEIGHT: f32 = 320.0;
     /// Minimum readable Markdown table column: eight message ems.
     pub const MARKDOWN_TABLE_COLUMN_MIN_WIDTH: f32 = 8.0 * Typography::MESSAGE;

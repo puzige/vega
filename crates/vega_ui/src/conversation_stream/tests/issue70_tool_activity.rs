@@ -1536,7 +1536,6 @@ async fn issue70_t70_7_grouping_preserves_redaction_and_fail_closed_visibility(
     );
 }
 
-// Dispatch real wheel events through the production nested hitboxes.
 fn issue103_wheel(
     window: WindowHandle<StreamHarness>,
     position: gpui_kit::Point<Pixels>,
@@ -1599,7 +1598,9 @@ async fn issue103_tool_detail_is_bounded(cx: &mut TestAppContext) {
         );
     });
     cx.run_until_parked();
-    click(window, "tool-activity-single-row", cx);
+    assert!(stream.read_with(cx, |stream, cx| {
+        stream.tool_cards["long"].read(cx).is_expanded()
+    }));
     let body = bounds(window, "tool-activity-single-row-detail", cx);
     assert!(
         body.size.height <= px(240.),
@@ -1643,8 +1644,6 @@ async fn issue103_tool_detail_is_bounded(cx: &mut TestAppContext) {
         -scroll.max_offset().y,
         "footer remains reachable"
     );
-    // Landing exactly on the upper edge is consumed by the inner viewport;
-    // the next wheel event at that edge chains to the outer conversation.
     issue103_wheel(window, body.center(), 10000., cx);
     assert_eq!(scroll.offset().y, px(0.));
     assert_eq!(
@@ -1663,7 +1662,6 @@ async fn issue103_tool_detail_is_bounded(cx: &mut TestAppContext) {
         chained_outer, outer,
         "upper boundary chains to conversation"
     );
-    // Return to the inner lower edge, with outer room below it after chaining.
     let moved_body = bounds(window, "tool-activity-single-row-detail", cx);
     issue103_wheel(window, moved_body.center(), -10000., cx);
     assert_eq!(scroll.offset().y, -scroll.max_offset().y);
@@ -1721,7 +1719,7 @@ async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
         }
     });
     cx.run_until_parked();
-    click(window, "tool-activity-group-toggle", cx);
+    assert!(stream.read_with(cx, |stream, cx| group(stream).read(cx).expanded()));
     let body = bounds(window, "tool-activity-group", cx);
     assert!(
         body.size.height <= px(320. + ROW_HEIGHT),
@@ -1804,7 +1802,9 @@ async fn issue103_short_empty_error_body_keeps_natural_height_and_chains(cx: &mu
         );
     });
     cx.run_until_parked();
-    click(window, "tool-activity-single-row", cx);
+    assert!(stream.read_with(cx, |stream, cx| {
+        stream.tool_cards["short"].read(cx).is_expanded()
+    }));
     let body = bounds(window, "tool-activity-single-row-detail", cx);
     assert!(body.size.height > px(0.) && body.size.height < px(240.));
     let scroll = stream.read_with(cx, |stream, cx| {
@@ -1842,7 +1842,9 @@ async fn issue103_tool_status_update_preserves_reading_offset(cx: &mut TestAppCo
         approve_and_run(stream, "status", cx);
     });
     cx.run_until_parked();
-    click(window, "tool-activity-single-row", cx);
+    assert!(stream.read_with(cx, |stream, cx| {
+        stream.tool_cards["status"].read(cx).is_expanded()
+    }));
     let body = bounds(window, "tool-activity-single-row-detail", cx);
     let scroll = stream.read_with(cx, |stream, cx| {
         stream.tool_cards["status"].read(cx).scroll_handle()

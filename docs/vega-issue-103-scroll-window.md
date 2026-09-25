@@ -14,7 +14,14 @@ dimensions below are Vega design choices, not measurements of another app.
 ## Contract
 
 - Keep each existing disclosure header outside its scrolling body, so it can
-  always be collapsed. Preserve collapsed defaults, order and status summaries.
+  always be collapsed. Preserve ordering, status summaries and the current
+  expansion contract defined by Issue #151 and Issue #70.
+- Live latest activity follows Issue #151: the newest thinking/tool activity is
+  expanded, a newer activity or assistant text collapses the previous latest
+  activity, and a tool group remains expanded without auto-expanding child
+  details. Historical hydration and reopened routes remain collapsed; manual
+  expansion state is not persisted. This scroll-window task must not change
+  those defaults.
 - Tool detail and thinking bodies use `Layout::DISCLOSURE_CONTENT_MAX_HEIGHT`
   (240 logical px). Expanded tool-group children use
   `Layout::TOOL_GROUP_MAX_HEIGHT` (320 logical px). Short bodies retain natural
@@ -41,12 +48,12 @@ dimensions below are Vega design choices, not measurements of another app.
 
 | ID | Scenario and operation | Observable expected result | Layer / initial status |
 |---|---|---|---|
-| A1 | Expand long standalone shell output; wheel within it | body ≤240px; later lines reachable; outer offset unchanged until boundary | production GPUI + native / pending |
-| A2 | Expand long thinking; scroll then append reasoning | body ≤240px; reading offset retained; header available | production GPUI + native / pending |
-| A3 | Expand many adjacent calls and a nested long shell detail | group ≤320px; nested detail ≤240px; final child reachable; independent scrolling | production GPUI + native / pending |
+| A1 | Render a live latest standalone shell activity; wheel within its already expanded detail | body ≤240px; later lines reachable; outer offset unchanged until boundary | production GPUI + native / pending |
+| A2 | Render live latest thinking, scroll, then append reasoning | body ≤240px; reading offset retained; header available; latest activity remains expanded until newer content or manual collapse | production GPUI + native / pending |
+| A3 | Render many adjacent calls and explicitly expand one nested long shell detail | live group follows #151's expanded default; group ≤320px; nested detail ≤240px; final child reachable; independent scrolling | production GPUI + native / pending |
 | A4 | Short/empty body, error and truncation states | no unnecessary blank height; safe status and truncation copy retained | production GPUI / pending |
-| A5 | Collapse/reopen and rerender each body | collapse works; reopened reading position retained; other bodies unaffected | production GPUI / pending |
-| A6 | Hydrate existing tool history / restart UI | same bounded geometry and chronological order; thinking remains transient | existing hydration regression + native / pending |
+| A5 | Manually collapse and reopen each body, then rerender | manual action works; reopened reading position retained; other bodies unaffected; no same-item automatic re-expansion | production GPUI / pending |
+| A6 | Hydrate existing tool history / restart UI, then explicitly expand a historical detail | historical activities remain collapsed on hydration per #151; expanded details use the same bounds and chronological order; thinking remains transient | existing hydration regression + native / pending |
 | A7 | Light/Dark, 1403×860, 1200×760, 960×600; 1229/1230 width | readable unclipped headers; body and outer scroll still usable | native / pending |
 
 Failure evidence must be captured before the geometry fix. Native evidence must
@@ -66,3 +73,11 @@ GPUI tests do not substitute for native screenshot/interaction acceptance.
    acceptance remains explicitly pending; do not close the issue prematurely.
 
 Rollback: revert this UI-only change; stored conversation data is unaffected.
+
+## Contract alignment (2026-09-25)
+
+The original draft said to preserve collapsed defaults. Issue #151 was merged
+later and supersedes that default for the newest live thinking/tool activity.
+This revision keeps #151's live and historical expansion behavior unchanged;
+the #103 scroll tests exercise the current live default and explicitly expand
+nested child details where #151 requires a manual action.
