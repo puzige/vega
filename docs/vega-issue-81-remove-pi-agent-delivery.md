@@ -4,6 +4,8 @@
 
 - verified_at_utc: 2026-09-25 22:30 UTC / verified_at_local: 2026-09-26 06:30 CST
 - branch: `feat/81-remove-pi-agent`
+- implementation_commit: `f31bbe5`
+- pull_request: [#223](https://github.com/puzige/vega/pull/223)
 - task_contract: [Issue #81 规格](vega-issue-81-remove-pi-agent.md)
 - scope: remove explicit Pi credential import while preserving manual Provider setup, stored credentials, user-controlled enabled state, and exact-root Skills import
 - spec deviation: none
@@ -52,4 +54,4 @@ Final targeted nextest output:
 
 - `NOT RUN`: workspace-wide nextest and strict Clippy; cloud `pr-check` owns those gates.
 - `NOT RUN`: installed-app Computer Use/native acceptance. This worktree was not installed over the running app; acceptance remains for the user after the PR is integrated.
-- `PENDING`: pull request and cloud check.
+- `PENDING`: PR #223 cloud `pr-check`; the live status is authoritative.
