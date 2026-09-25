@@ -1895,6 +1895,205 @@ async fn issue74_model_load_compacts_before_rejecting_a_fitting_skill() {
 }
 
 #[tokio::test]
+async fn issue74_s18_model_load_compacts_near_configured_context_budget() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let body = "PRIVATE S18 MODEL-ACTIVATED COMPACTION RULE\n".repeat(96);
+    let (mut probe, _) = skill_run_with_body(project.path(), true, &body);
+    let catalog = probe.model_catalog().to_string();
+    assert_eq!(
+        probe.load_model("reviewer", |_| true).receipt.status,
+        "loaded"
+    );
+    let envelope = probe.render_skill_envelope().unwrap();
+    let definitions = RunCapabilitySnapshot::freeze(
+        RuntimeRunMode::Ask,
+        RuntimePermissionMode::ReadOnly,
+        Vec::new(),
+    )
+    .unwrap()
+    .with_skills(true, true)
+    .unwrap()
+    .definitions()
+    .to_vec();
+    let budget = ContextBudget::new(428_000, 128_000, true).unwrap();
+    assert_eq!(budget.input_budget(), 300_000);
+    assert_eq!(budget.trigger_tokens().unwrap(), 240_000);
+    assert_eq!(budget.target_tokens().unwrap(), 180_000);
+    let task = "Load reviewer and summarize its guidance.";
+    let history_for = |archive_len: usize| {
+        vec![
+            ChatMessage::new(ChatRole::User, "Archived task"),
+            ChatMessage::new(
+                ChatRole::Assistant,
+                format!("Archived conversation: {}", "x".repeat(archive_len)),
+            ),
+            ChatMessage::new(ChatRole::User, task),
+        ]
+    };
+    let estimate_projection = |archive_len: usize, activated: bool| {
+        let system = if activated {
+            format!("Be precise.\n\n{catalog}\n\n{envelope}")
+        } else {
+            format!("Be precise.\n\n{catalog}")
+        };
+        let mut messages = std::iter::once(ChatMessage::new(ChatRole::System, system))
+            .chain(history_for(archive_len))
+            .collect::<Vec<_>>();
+        if activated {
+            messages.push(ChatMessage::assistant_with_tools(
+                String::new(),
+                vec![ChatToolCall {
+                    id: "s18-load".into(),
+                    name: "load_skill".into(),
+                    input_json: r#"{"name":"reviewer"}"#.into(),
+                }],
+            ));
+            messages.push(ChatMessage::tool_result(
+                "s18-load",
+                r#"{"name":"reviewer","status":"loaded"}"#,
+            ));
+        }
+        crate::estimate_wire_context(&messages, &definitions)
+            .unwrap()
+            .input_tokens
+    };
+    let mut lower = 0usize;
+    let mut upper = 1_000_000usize;
+    assert!(estimate_projection(upper, false) >= budget.trigger_tokens().unwrap());
+    while lower < upper {
+        let midpoint = lower + (upper - lower) / 2;
+        if estimate_projection(midpoint, false) < budget.trigger_tokens().unwrap() {
+            lower = midpoint + 1;
+        } else {
+            upper = midpoint;
+        }
+    }
+    assert!(lower > 0);
+    let archive_len = lower - 1;
+    let history = history_for(archive_len);
+    let original_history = history.clone();
+    let initial_estimate = estimate_projection(archive_len, false);
+    let activation_estimate = estimate_projection(archive_len, true);
+    assert!(initial_estimate < budget.trigger_tokens().unwrap());
+    assert!(budget.trigger_tokens().unwrap() - initial_estimate <= 2);
+    assert!(activation_estimate >= budget.trigger_tokens().unwrap());
+    assert!(activation_estimate <= budget.input_budget());
+
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "s18-load".into(),
+                name: "load_skill".into(),
+                input_json: r#"{"name":"reviewer"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let compaction_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let hook = TailPreservingCompactionHook {
+        calls: compaction_calls.clone(),
+        observed: observed.clone(),
+    };
+    let mut req = request(history.clone());
+    req.context_budget = Some(budget);
+    req.context_source_version = Some(1);
+    req.tool_config = req.tool_config.with_skill_run(
+        skill_run_with_body(project.path(), true, &body).0,
+        Vec::new(),
+    );
+    let outcome = run_agent_with_permission_sink_and_context(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        &RejectPermissionHook,
+        Some(&hook),
+        |_| async { Ok(()) },
+    )
+    .await
+    .unwrap();
+
+    assert!(!outcome.failed);
+    assert_eq!(compaction_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(history, original_history);
+    let observed = observed.lock().unwrap();
+    assert!(observed.len() >= history.len());
+    assert_eq!(&observed[..history.len()], history.as_slice());
+    drop(observed);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        crate::estimate_wire_context(&requests[0].messages, &requests[0].tools)
+            .unwrap()
+            .input_tokens,
+        initial_estimate
+    );
+    assert!(
+        !requests[0].messages[0]
+            .content
+            .contains("PRIVATE S18 MODEL-ACTIVATED COMPACTION RULE")
+    );
+    assert!(
+        requests[1].messages[0]
+            .content
+            .contains("PRIVATE S18 MODEL-ACTIVATED COMPACTION RULE")
+    );
+    let compacted_wire =
+        crate::estimate_wire_context(&requests[1].messages, &requests[1].tools).unwrap();
+    assert!(compacted_wire.input_tokens <= budget.input_budget());
+    assert!(compacted_wire.input_tokens <= budget.target_tokens().unwrap());
+    assert!(
+        requests[1]
+            .messages
+            .iter()
+            .any(|message| message.content == "summary")
+    );
+
+    let preflights = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == ContextAccountingStage::PrimaryPreflight =>
+            {
+                Some(decision)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(preflights.len(), 2);
+    assert_eq!(preflights[0].predicted_input, initial_estimate);
+    assert_eq!(preflights[1].predicted_input, activation_estimate);
+    let post_summary = outcome
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == ContextAccountingStage::PostSummaryTarget =>
+            {
+                Some(decision)
+            }
+            _ => None,
+        })
+        .expect("post-compaction wire estimate");
+    assert_eq!(post_summary.predicted_input, compacted_wire.input_tokens);
+    assert!(outcome.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::ContextCompactionStatusUpdated { status }
+            if status.phase == crate::ContextCompactionPhase::Succeeded
+                && status.input_budget == budget.input_budget()
+                && status.target_tokens == budget.target_tokens().unwrap()
+    )));
+}
+
+#[tokio::test]
 async fn issue74_skill_still_over_budget_after_compaction_is_rejected() {
     let project = tempdir().unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
