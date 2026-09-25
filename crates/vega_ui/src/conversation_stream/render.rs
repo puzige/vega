@@ -63,6 +63,18 @@ impl ConversationStream {
         self.emit_open_diff(cx);
     }
 
+    fn copy_selected_text(&mut self, _: &CopySelectedText, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(copy) = self.entries.iter().find_map(|entry| {
+            let copy = match entry {
+                StreamEntry::User { copy, .. } | StreamEntry::Assistant { copy, .. } => copy,
+                _ => return None,
+            };
+            copy.has_selected_text().then_some(copy)
+        }) {
+            copy.copy_selected_text(cx);
+        }
+    }
+
     fn on_resume_tail(&mut self, _: &ResumeTail, _: &mut Window, cx: &mut Context<Self>) {
         self.resume_tail(cx);
     }
@@ -1050,6 +1062,10 @@ impl ConversationStream {
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.selection_view_initialized {
+            gpui_kit::base::TextSelection::clear(window, cx);
+            self.selection_view_initialized = true;
+        }
         if self.actions.restore_focus {
             self.actions.restore_focus = false;
             self.focus_composer(window, cx);
@@ -1129,7 +1145,12 @@ impl Render for ConversationStream {
                                 let row_t0 = Instant::now();
                                 let entry = this.entries.get(index);
                                 let item = match entry {
-                                    Some(entry) => render_entry(entry, window, cx),
+                                    Some(entry) => render_entry_with_selection(
+                                        entry,
+                                        window,
+                                        cx,
+                                        &this.selection_focus,
+                                    ),
                                     None => div().into_any_element(),
                                 };
                                 this.counters
@@ -1155,6 +1176,7 @@ impl Render for ConversationStream {
             .bg(colors.bg_base)
             .text_color(colors.text_primary)
             .key_context("ConversationStream")
+            .track_focus(&self.selection_focus)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
@@ -1169,6 +1191,7 @@ impl Render for ConversationStream {
                 }),
             )
             .on_action(cx.listener(Self::open_diff_action))
+            .on_action(cx.listener(Self::copy_selected_text))
             .child(
                 div()
                     .w_full()

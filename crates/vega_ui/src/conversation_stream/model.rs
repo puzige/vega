@@ -695,6 +695,12 @@ impl StreamModel {
 pub(crate) struct MessageCopy {
     pub(super) id: u64,
     text: std::rc::Rc<std::cell::RefCell<String>>,
+    selection_scope: gpui_kit::base::TextSelectionScopeId,
+    selection_handle: std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
+    selection_generation: std::rc::Rc<std::cell::Cell<u64>>,
+    selected_text: std::rc::Rc<std::cell::RefCell<Option<(u64, String)>>>,
+    visible_text: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    selection_subscriptions: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Subscription>>>,
 }
 
 impl MessageCopy {
@@ -703,11 +709,110 @@ impl MessageCopy {
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             text: std::rc::Rc::new(std::cell::RefCell::new(text.to_owned())),
+            selection_scope: gpui_kit::base::TextSelectionScopeId::new(),
+            selection_handle: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            selection_generation: std::rc::Rc::new(std::cell::Cell::new(0)),
+            selected_text: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            visible_text: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            selection_subscriptions: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         }
     }
 
     pub(crate) fn append(&self, delta: &str) {
         self.text.borrow_mut().push_str(delta);
+        self.invalidate_selection();
+    }
+
+    pub(crate) fn selection_scope(&self) -> gpui_kit::base::TextSelectionScopeId {
+        self.selection_scope
+    }
+
+    pub(crate) fn selection_generation(&self) -> u64 {
+        self.selection_generation.get()
+    }
+
+    pub(crate) fn ensure_selection_handle(
+        &self,
+        focus: &gpui_kit::FocusHandle,
+        window: &Window,
+        cx: &mut App,
+    ) -> gpui_kit::base::TextSelectionHandle {
+        if let Some(handle) = self.selection_handle.borrow().as_ref() {
+            return handle.clone();
+        }
+        let handle = gpui_kit::base::TextSelectionHandle::new("", cx);
+        let selected = self.selected_text.clone();
+        let generation = self.selection_generation.clone();
+        handle.copy_with(
+            move |_| {
+                selected
+                    .borrow()
+                    .as_ref()
+                    .filter(|(current, _)| *current == generation.get())
+                    .map(|(_, text)| text.clone())
+                    .unwrap_or_default()
+            },
+            cx,
+        );
+        let focus = focus.clone();
+        handle.focus_with(move |window, cx| focus.focus(window, cx), cx);
+        let selected = self.selected_text.clone();
+        let generation = self.selection_generation.clone();
+        let subscription = handle.subscribe(
+            move |event, _| {
+                if matches!(
+                    event,
+                    gpui_kit::base::TextSelectionEvent::SelectionChanged(_)
+                        | gpui_kit::base::TextSelectionEvent::Cleared
+                ) {
+                    *selected.borrow_mut() = None;
+                    generation.set(generation.get().wrapping_add(1));
+                }
+            },
+            cx,
+        );
+        self.selection_subscriptions.borrow_mut().push(subscription);
+        self.selection_subscriptions
+            .borrow_mut()
+            .push(handle.refresh_window_on_change(window, cx));
+        *self.selection_handle.borrow_mut() = Some(handle.clone());
+        handle
+    }
+
+    pub(crate) fn visible_text(&self) -> Option<String> {
+        self.visible_text.borrow().clone()
+    }
+
+    pub(crate) fn set_visible_text(&self, text: String) {
+        *self.visible_text.borrow_mut() = Some(text);
+    }
+
+    pub(crate) fn set_selected_text(&self, generation: u64, text: String) {
+        *self.selected_text.borrow_mut() = (!text.is_empty()).then_some((generation, text));
+    }
+
+    pub(crate) fn invalidate_selection(&self) {
+        self.selection_generation
+            .set(self.selection_generation.get().wrapping_add(1));
+        *self.selected_text.borrow_mut() = None;
+    }
+
+    pub(crate) fn has_selected_text(&self) -> bool {
+        self.selected_text
+            .borrow()
+            .as_ref()
+            .is_some_and(|(generation, text)| {
+                *generation == self.selection_generation.get() && !text.is_empty()
+            })
+    }
+
+    pub(crate) fn copy_selected_text(&self, cx: &mut App) {
+        if let Some((generation, text)) = self.selected_text.borrow().as_ref()
+            && *generation == self.selection_generation.get()
+            && !text.is_empty()
+        {
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.clone()));
+        }
     }
 
     pub(super) fn has_text(&self) -> bool {

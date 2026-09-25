@@ -26,6 +26,7 @@ mod core_flow;
 mod e2e_variable_height;
 mod hover_copy;
 mod hydration;
+mod issue147_markdown_selection;
 mod issue148_long_session_scroll;
 mod issue151_latest_activity;
 mod issue70_tool_activity;
