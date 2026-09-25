@@ -248,8 +248,25 @@ async fn issue64_context_usage_hover_and_focus_tips_fit_narrow_window_without_co
     let tooltip = visual
         .debug_bounds("context-usage-tooltip")
         .expect("hover context usage tooltip");
-    visual.simulate_mouse_move(tooltip.center(), None, Modifiers::default());
-    visual.run_until_parked();
+    let hover_target = visual
+        .debug_bounds("composer-context-usage-hover-target")
+        .expect("context usage hover target");
+    assert!(
+        (f32::from(tooltip.bottom()) - f32::from(hover_target.top())).abs() <= 1.0,
+        "popover and trigger must meet without a hover gap: tooltip={tooltip:?} trigger={hover_target:?}"
+    );
+    let indicator_x = indicator.center().x;
+    let mut y = f32::from(indicator.center().y);
+    let tooltip_center_y = f32::from(tooltip.center().y);
+    while y > tooltip_center_y {
+        visual.simulate_mouse_move(point(indicator_x, px(y)), None, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("context-usage-tooltip").is_some(),
+            "popover must remain mounted while the pointer crosses from trigger into tooltip at y={y}"
+        );
+        y = (y - 2.0).max(tooltip_center_y);
+    }
     assert_narrow_tooltip_fits_and_clears_controls(&mut visual, viewport);
 
     visual.simulate_mouse_move(point(px(1.0), px(1.0)), None, Modifiers::default());

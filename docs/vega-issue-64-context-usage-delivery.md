@@ -38,6 +38,6 @@
 - 格式：`cargo fmt --all -- --check` — PASS。
 - Clippy：`cargo clippy -p vega_ui --all-targets -- -D warnings` — PASS。
 - Diff：`git diff --check` — PASS。
-- 窄布局：360px GPUI 测试覆盖 hover 和键盘 focus；hover 提示允许鼠标移入，移入后保持可见，移开后关闭。两条路径都确认提示在视口内，且不与模型选择、发送、Composer 分支入口相交。
+- 窄布局：360px GPUI 测试覆盖 hover 和键盘 focus；触发器与提示框无间距，测试以 2px 步进穿过原间隙区域并确认提示始终挂载，移入提示后保持可见，移开后关闭。两条路径都确认提示在视口内，且不与模型选择、发送、Composer 分支入口相交。
 - Spec 偏离：无。
 - 用户桌面验收：NOT RUN；需在合并后的版本确认 hover/focus、已知/未知容量、会话切换和主题。

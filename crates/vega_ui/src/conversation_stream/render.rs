@@ -808,7 +808,6 @@ impl ConversationStream {
                         .on_hover(tooltip_hover)
                         .absolute()
                         .bottom(gpui_kit::relative(1.0))
-                        .mb(px(4.0))
                         .right_0()
                         .child(Self::context_usage_tooltip_element(&display, colors)),
                 )
