@@ -56,6 +56,8 @@ pub struct ConversationStream {
     pub(crate) injecting: Option<InjectionState>,
     /// Composer 输入状态（独立 `TextInput` Entity，1–8 行自适应多行）。
     pub(crate) input: Entity<TextInput>,
+    pub(crate) selection_focus: FocusHandle,
+    pub(crate) selection_view_initialized: bool,
     /// Synthetic block-id counter for user echo rows (diagnostics only).
     pub(crate) user_block_seq: u64,
     /// Opaque provider call ids are retained only as non-rendered map keys.
@@ -398,6 +400,8 @@ impl ConversationStream {
             next_local_entry_id: 0,
             injecting: None,
             input,
+            selection_focus: cx.focus_handle(),
+            selection_view_initialized: false,
             user_block_seq: USER_BLOCK_BASE,
             tool_cards: HashMap::new(),
             artifact_cards: HashMap::new(),

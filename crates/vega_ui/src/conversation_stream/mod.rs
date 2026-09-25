@@ -124,7 +124,8 @@ actions!(
         CloseComposerActions,
         StopComposer,
         NextComposerControl,
-        PreviousComposerControl
+        PreviousComposerControl,
+        CopySelectedText
     ]
 );
 
@@ -334,6 +335,7 @@ mod file_reference;
 mod model;
 mod render;
 mod render_rows;
+mod selection;
 mod thinking;
 mod thinking_slider;
 use thinking::ThinkingBlock;

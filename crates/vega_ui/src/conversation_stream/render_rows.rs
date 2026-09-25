@@ -1,3 +1,4 @@
+use super::selection::SelectionDocumentBuilder;
 use super::*;
 use crate::icons::{Icon, icon};
 
@@ -61,6 +62,24 @@ pub(crate) fn context_compaction_label(
 /// summary item 的自然高度). Per-frame: clone-only element assembly from
 /// cached materialization — no markdown re-materialization here (P3).
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
+    render_entry_internal(entry, window, cx, None)
+}
+
+pub(crate) fn render_entry_with_selection(
+    entry: &StreamEntry,
+    window: &mut Window,
+    cx: &mut App,
+    focus: &FocusHandle,
+) -> AnyElement {
+    render_entry_internal(entry, window, cx, Some(focus))
+}
+
+fn render_entry_internal(
+    entry: &StreamEntry,
+    window: &mut Window,
+    cx: &mut App,
+    focus: Option<&FocusHandle>,
+) -> AnyElement {
     let colors = theme(cx).colors;
     match entry {
         StreamEntry::ContextCompaction {
@@ -103,7 +122,11 @@ pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut Ap
         }
         StreamEntry::Thinking { card } => div().child(card.clone()).into_any_element(),
         StreamEntry::User { lines, copy } => {
-            message_with_copy(user_message_item(lines, &colors), copy, true, colors)
+            if let Some(focus) = focus {
+                selectable_user_message(lines, copy, focus, &colors, window, cx)
+            } else {
+                message_with_copy(user_message_item(lines, &colors), copy, true, colors)
+            }
         }
         StreamEntry::UserImages { images } => attachments::render_user_images(images),
         StreamEntry::Assistant {
@@ -111,7 +134,13 @@ pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut Ap
             failure,
             copy,
             ..
-        } => message_with_copy(markdown_item(model, *failure, &colors), copy, false, colors),
+        } => {
+            if let Some(focus) = focus {
+                selectable_markdown_message(model, *failure, copy, focus, &colors, window, cx)
+            } else {
+                message_with_copy(markdown_item(model, *failure, &colors), copy, false, colors)
+            }
+        }
         StreamEntry::Tool { card } => {
             let card = card.clone();
             div()
@@ -322,6 +351,356 @@ pub(crate) fn user_message_item(lines: &[StreamLine], colors: &ThemeColors) -> A
 /// One blank user-message line's natural box: exactly one body line height.
 fn user_line_height() -> Pixels {
     px(Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT)
+}
+
+fn selectable_user_message(
+    lines: &[StreamLine],
+    copy: &MessageCopy,
+    focus: &FocusHandle,
+    colors: &ThemeColors,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
+    let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
+    let mut body = div()
+        .debug_selector(|| "user-message-bubble".into())
+        .max_w(gpui_kit::relative(Layout::USER_MESSAGE_MAX_WIDTH_RATIO))
+        .bg(colors.brand_soft)
+        .rounded(px(Layout::USER_MESSAGE_RADIUS))
+        .text_size(px(Typography::MESSAGE))
+        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
+        .px_3()
+        .py_2()
+        .text_color(colors.text_primary)
+        .flex()
+        .flex_col();
+    let mut visible_line = false;
+    for line in lines {
+        if !matches!(line.kind, LineKind::UserLine { .. }) {
+            continue;
+        }
+        if visible_line {
+            document.append_literal("\n");
+        }
+        visible_line = true;
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.text.as_str())
+            .collect::<String>();
+        if text.is_empty() {
+            body = body.child(div().h(user_line_height()));
+        } else {
+            let styled = block_text(&line.spans, user_body_style(colors), colors);
+            let selected = document.append_styled(&text, styled, "user-body");
+            body = body.child(selected);
+        }
+    }
+    let body = div()
+        .w_full()
+        .flex_shrink_0()
+        .pt(px(8.0))
+        .pb(px(8.0))
+        .flex()
+        .flex_col()
+        .items_end()
+        .child(body)
+        .into_any_element();
+    selection_context_menu(document.wrap(body, window, cx), copy)
+}
+
+fn selectable_markdown_message(
+    model: &StreamModel,
+    failure: Option<RunFailureKind>,
+    copy: &MessageCopy,
+    focus: &FocusHandle,
+    colors: &ThemeColors,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let selection_color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
+    let mut document = SelectionDocumentBuilder::new(copy.clone(), focus.clone(), selection_color);
+    let mut body = div()
+        .debug_selector(|| "assistant-message".into())
+        .w_full()
+        .flex_shrink_0()
+        .pt(px(4.0))
+        .pb(px(8.0))
+        .flex()
+        .flex_col();
+    let mut previous: Option<(u64, LineKind)> = None;
+    for line in model
+        .committed_lines
+        .iter()
+        .chain(model.pending_lines.iter())
+    {
+        if !matches!(line.kind, LineKind::Rule)
+            && let Some((previous_block, previous_kind)) = previous
+        {
+            let same_multiline_block = previous_block == line.block_id
+                && ((matches!(previous_kind, LineKind::Code)
+                    && matches!(line.kind, LineKind::Code))
+                    || (matches!(previous_kind, LineKind::ListItem)
+                        && matches!(line.kind, LineKind::ListItem)));
+            document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
+        }
+        body = body.child(render_line_selectable(line, colors, &mut document));
+        if !matches!(line.kind, LineKind::Rule) {
+            previous = Some((line.block_id, line.kind));
+        }
+    }
+    body = body.children(failure.map(|reason| {
+        div()
+            .debug_selector(|| "assistant-run-failure".to_string())
+            .py_1()
+            .text_size(px(Typography::METADATA))
+            .text_color(colors.danger)
+            .child(reason.message())
+    }));
+    selection_context_menu(document.wrap(body.into_any_element(), window, cx), copy)
+}
+
+fn selection_context_menu(body: AnyElement, copy: &MessageCopy) -> AnyElement {
+    use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+
+    let copy_for_menu = copy.clone();
+    div()
+        .id(("message-selection-context-menu", copy.id))
+        .child(body)
+        .context_menu(move |menu, _, _| {
+            let selected = copy_for_menu.clone();
+            menu.item(
+                PopupMenuItem::new("复制")
+                    .disabled(!copy_for_menu.has_selected_text())
+                    .on_click(move |_, _, cx| selected.copy_selected_text(cx)),
+            )
+        })
+        .into_any_element()
+}
+
+fn render_line_selectable(
+    line: &StreamLine,
+    colors: &ThemeColors,
+    document: &mut SelectionDocumentBuilder,
+) -> AnyElement {
+    if let Some(table) = &line.table {
+        return render_table_selectable(line.block_id, table, colors, document);
+    }
+    let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
+    let item = div()
+        .w_full()
+        .flex_shrink_0()
+        .text_size(px(Typography::MESSAGE))
+        .text_color(colors.text_primary);
+    match line.kind {
+        LineKind::Spacer => item.py(px(6.0)).into_any_element(),
+        LineKind::UserLabel => item
+            .pt(px(4.0))
+            .pb(px(2.0))
+            .text_size(px(Typography::SIDEBAR))
+            .text_color(colors.text_secondary)
+            .child(div().px_2().child("你"))
+            .into_any_element(),
+        LineKind::UserLine { .. } => {
+            let selected = document.append_styled(
+                &text,
+                block_text(&line.spans, user_body_style(colors), colors),
+                "assistant-user-line",
+            );
+            item.child(div().px_2().py(px(1.0)).child(selected))
+                .into_any_element()
+        }
+        LineKind::Code => {
+            let selected = document.append_styled(
+                &text,
+                block_text(&line.spans, code_run_style(colors.text_primary), colors),
+                "assistant-code",
+            );
+            let code = div()
+                .w_full()
+                .bg(colors.code_bg)
+                .px_2()
+                .py(px(1.0))
+                .text_color(colors.text_primary)
+                .child(selected);
+            let code = if text.is_empty() {
+                code.h(px(Typography::CODE * Typography::BODY_LINE_HEIGHT))
+            } else {
+                code
+            };
+            item.child(code).into_any_element()
+        }
+        LineKind::Quote => {
+            let selected = document.append_styled(
+                &text,
+                block_text(
+                    &line.spans,
+                    message_run_style(colors.text_secondary),
+                    colors,
+                ),
+                "assistant-quote",
+            );
+            item.text_color(colors.text_secondary)
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .child(
+                            div()
+                                .w(px(2.0))
+                                .mr_2()
+                                .flex_shrink_0()
+                                .bg(colors.border_subtle),
+                        )
+                        .child(selected),
+                )
+                .into_any_element()
+        }
+        LineKind::Rule => item
+            .py(px(4.0))
+            .child(div().w_full().h(px(1.0)).bg(colors.border_subtle))
+            .into_any_element(),
+        LineKind::Heading(level) => {
+            let (size, weight) = heading_style(level);
+            let selected = document.append_styled(
+                &text,
+                block_text(&line.spans, message_run_style(colors.text_primary), colors),
+                "assistant-heading",
+            );
+            item.text_size(px(size))
+                .font_weight(weight)
+                .pt(px(8.0))
+                .pb(px(2.0))
+                .child(selected)
+                .into_any_element()
+        }
+        LineKind::Table => item.into_any_element(),
+        LineKind::ListItem => {
+            let indent = "  ".repeat(line.depth);
+            let marker = format!("{indent}{} ", line.marker);
+            let mut row = div().flex().flex_row();
+            let marker_text = document.append_styled(
+                &marker,
+                StyledText::new(marker.clone()),
+                "assistant-list-marker",
+            );
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(colors.text_secondary)
+                    .child(marker_text),
+            );
+            if let Some(checked) = line.checked {
+                let checkbox = if checked { "[x]" } else { "[ ]" };
+                let checkbox_text = document.append_styled(
+                    checkbox,
+                    StyledText::new(checkbox),
+                    "assistant-list-checkbox",
+                );
+                row = row.child(
+                    div()
+                        .flex_shrink_0()
+                        .mr_1()
+                        .text_color(if checked {
+                            colors.success
+                        } else {
+                            colors.text_tertiary
+                        })
+                        .child(checkbox_text),
+                );
+                document.append_literal(" ");
+            }
+            let content = document.append_styled(
+                &text,
+                block_text(&line.spans, message_run_style(colors.text_primary), colors),
+                "assistant-list-content",
+            );
+            row = row.child(div().flex_1().min_w_0().child(content));
+            item.child(row).into_any_element()
+        }
+        LineKind::Paragraph => {
+            let selected = document.append_styled(
+                &text,
+                block_text(&line.spans, message_run_style(colors.text_primary), colors),
+                "assistant-paragraph",
+            );
+            item.child(selected).into_any_element()
+        }
+    }
+}
+
+fn render_table_selectable(
+    block_id: u64,
+    table: &StreamTable,
+    colors: &ThemeColors,
+    document: &mut SelectionDocumentBuilder,
+) -> AnyElement {
+    let ordinal = table.ordinal;
+    let columns = table.alignments.len();
+    let mut body = div()
+        .w_full()
+        .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
+        .flex_shrink_0()
+        .flex()
+        .flex_col();
+    for (row_index, cells) in table.rows.iter().enumerate() {
+        if row_index > 0 {
+            document.append_literal("\n");
+        }
+        let mut row = div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(colors.border_subtle)
+            .when(row_index == 0, |row| row.bg(colors.bg_hover));
+        for (column, spans) in cells.iter().enumerate() {
+            if column > 0 {
+                document.append_literal("\t");
+            }
+            let mut style = message_run_style(colors.text_primary);
+            if row_index == 0 {
+                style.font_weight = Typography::HEADING_CARD_WEIGHT;
+            }
+            let alignment = match table.alignments[column] {
+                TableAlignment::Center => gpui_kit::TextAlign::Center,
+                TableAlignment::Right => gpui_kit::TextAlign::Right,
+                _ => gpui_kit::TextAlign::Left,
+            };
+            let cell_text: String = spans.iter().map(|span| span.text.as_str()).collect();
+            let selected = document.append_styled(
+                &cell_text,
+                block_text(spans, style, colors),
+                &format!("table-{block_id}-{ordinal}-{row_index}-{column}"),
+            );
+            row = row.child(
+                div()
+                    .debug_selector(move || {
+                        format!("markdown-table-{block_id}-{ordinal}-{row_index}-{column}")
+                    })
+                    .flex_1()
+                    .min_w_0()
+                    .px_2()
+                    .py_1()
+                    .text_align(alignment)
+                    .child(selected),
+            );
+        }
+        body = body.child(row);
+    }
+    div()
+        .id(gpui_kit::SharedString::from(format!(
+            "markdown-table-{block_id}-{ordinal}"
+        )))
+        .debug_selector(move || format!("markdown-table-{block_id}-{ordinal}"))
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .overflow_x_scroll()
+        .child(body)
+        .into_any_element()
 }
 
 // ─── text runs (block-level styled text, S8-T44) ─────────────────────────────

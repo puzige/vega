@@ -616,6 +616,7 @@ impl Render for VegaWindow {
             .relative()
             .bg(colors.bg_base)
             .text_color(colors.text_primary)
+            .child(gpui_kit::base::TextSelectionLayer)
             .when(sidebar_visible && !cx.global::<SettingsOpen>().0, |row| {
                 row.child(self.sidebar.clone())
                     .child(self.render_sidebar_resizer(colors, cx))
