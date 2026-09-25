@@ -33,6 +33,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-68-model-picker.md](docs/vega-issue-68-model-picker.md) | #68 无思考档位模型的菜单入口规格与测试矩阵 |
 | [vega-issue-68-model-picker-delivery.md](docs/vega-issue-68-model-picker-delivery.md) | #68 测试先行、门禁与原生验收记录 |
 | [vega-issue-70-tool-activity.md](docs/vega-issue-70-tool-activity.md) | #70 紧凑工具活动分组、渐进展开与安全显示规格 |
+| [vega-issue-191-branch-entry.md](docs/vega-issue-191-branch-entry.md) | #191 已有对话中的分支切换入口与 R49 页面状态约束 |
 | [vega-issue-100-composer-width.md](docs/vega-issue-100-composer-width.md) | #100 Composer 与正文列统一为 768px（参考实现共用同一宽度 token） |
 | [vega-issue-98-scroll-to-bottom.md](docs/vega-issue-98-scroll-to-bottom.md) | #98 「回到底部」改为悬浮圆形向下箭头按钮（参考 Codex 实测 32px / 居中 / 悬浮 composer 上方） |
 | [vega-issue-70-tool-activity-delivery.md](docs/vega-issue-70-tool-activity-delivery.md) | #70 测试先行矩阵、门禁与原生验收记录 |
