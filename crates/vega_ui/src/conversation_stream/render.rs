@@ -336,7 +336,6 @@ impl ConversationStream {
                     ),
             )
             .child(self.render_active_skills(cx))
-            .child(self.render_composer_run_status(cx))
             .children(self.mcp_warning.clone().map(|warning| {
                 div()
                     .debug_selector(|| "conversation-mcp-warning".to_string())
