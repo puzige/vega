@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-test-support = []
+test-support = ["vega_conversation/test-support"]
 
 [dependencies]
 gpui_kit.workspace = true

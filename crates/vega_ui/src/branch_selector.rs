@@ -529,7 +529,7 @@ impl BranchSelector {
         })
         .detach();
         Self {
-            current_head: CurrentHead::new(),
+            current_head: CurrentHead::new(cx.background_executor().clone()),
             thread_id,
             project_id,
             model: BranchSelectorModel::default(),

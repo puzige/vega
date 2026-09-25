@@ -1,5 +1,6 @@
 use super::*;
 use gpui_kit::{Modifiers, VisualTestContext};
+use tokio_util::sync::CancellationToken;
 
 #[test]
 fn commit_provider_policy_disables_retries() {
@@ -161,6 +162,81 @@ async fn issue67_concurrent_settings_fails_closed_for_both_permissions(
     issue67_concurrent_scenario(cx, 6).await;
 }
 
+struct ConcurrentProvider {
+    inner: Arc<vega_runtime::MockProvider>,
+    entered: std::sync::Mutex<Option<mpsc::SyncSender<()>>>,
+    release: CancellationToken,
+}
+
+impl ConcurrentProvider {
+    fn new(inner: Arc<vega_runtime::MockProvider>) -> (Arc<Self>, mpsc::Receiver<()>) {
+        let (entered, receiver) = mpsc::sync_channel(1);
+        (
+            Arc::new(Self {
+                inner,
+                entered: std::sync::Mutex::new(Some(entered)),
+                release: CancellationToken::new(),
+            }),
+            receiver,
+        )
+    }
+}
+
+impl vega_runtime::Provider for ConcurrentProvider {
+    fn chat_stream(
+        &self,
+        request: vega_runtime::ChatRequest,
+        cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<vega_runtime::EventStream, vega_runtime::VegaError>,
+    > {
+        use futures::StreamExt;
+        let future =
+            vega_runtime::Provider::chat_stream(self.inner.as_ref(), request, cancel.clone());
+        let entered = self.entered.lock().expect("concurrent stream gate").take();
+        let release = self.release.clone();
+        Box::pin(async move {
+            let stream = future.await?;
+            let Some(entered) = entered else {
+                return Ok(stream);
+            };
+            let gated = futures::stream::unfold(
+                (stream, Some(entered), false),
+                move |(mut stream, mut entered, first_delivered)| {
+                    let cancel = cancel.clone();
+                    let release = release.clone();
+                    async move {
+                        if first_delivered && let Some(entered) = entered.take() {
+                            entered.send(()).expect("concurrent stream entered");
+                            let released = tokio::time::timeout(Duration::from_secs(5), async {
+                                tokio::select! {
+                                    biased;
+                                    _ = cancel.cancelled() => false,
+                                    _ = release.cancelled() => true,
+                                }
+                            })
+                            .await
+                            .expect("concurrent stream gate deadline");
+                            if !released {
+                                return Some((
+                                    Err(vega_runtime::VegaError::Cancelled),
+                                    (stream, None, true),
+                                ));
+                            }
+                        }
+                        stream
+                            .next()
+                            .await
+                            .map(|event| (event, (stream, entered, true)))
+                    }
+                },
+            );
+            Ok(Box::pin(gated) as vega_runtime::EventStream)
+        })
+    }
+}
+
 async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8) {
     cx.executor().allow_parking();
     let data = tempfile::tempdir().expect("issue67 data root");
@@ -206,11 +282,10 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
         "owned concurrent fixture",
     )
     .expect("read fixture");
-    let make_provider = |label: &str, delay: u64, usage: u64| {
+    let make_provider = |label: &str, usage: u64| {
         Arc::new(vega_runtime::MockProvider::new_rounds(vec![
             vec![
                 vega_runtime::ScriptStep::text(format!("{label} first ")),
-                vega_runtime::ScriptStep::delay(Duration::from_millis(delay)),
                 vega_runtime::ScriptStep::events(vec![
                     vega_runtime::ProviderEvent::ToolUse {
                         id: format!("{label}-read"),
@@ -243,12 +318,14 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
             ])],
         ]))
     };
-    let provider = make_provider("origin", 600, 31);
-    let provider_b = make_provider("destination", 1200, 59);
+    let provider = make_provider("origin", 31);
+    let provider_b = make_provider("destination", 59);
+    let (controlled_a, stream_entered_a) = ConcurrentProvider::new(provider.clone());
+    let (controlled_b, stream_entered_b) = ConcurrentProvider::new(provider_b.clone());
     let root = cx.new(VegaWindow::new);
     root.update(cx, |root, _| {
         root.model_selection_config_override = Some(config_path.clone());
-        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(controlled_a.clone()));
     });
     let window_root = root.clone();
     let window = cx
@@ -359,7 +436,7 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
         "gpt-5.6-luna"
     );
     root.update(cx, |root, _| {
-        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider_b.clone()))
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(controlled_b.clone()))
     });
     let draft_input = draft_stream.read_with(cx, |stream, _| stream.composer_input());
     draft_input.update(cx, |input, cx| {
@@ -407,14 +484,7 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| !root.trusted_actions.is_busy())
     });
-    for _ in 0..200 {
-        cx.executor().advance_clock(DIFF_RESULT_POLL);
-        cx.run_until_parked();
-        if probe.load() == expected_starts {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    pump_test_app(cx, |_| probe.load() == expected_starts);
     assert_eq!(
         probe.load(),
         expected_starts,
@@ -585,6 +655,12 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
     pump_test_app(cx, |_| {
         !provider.requests().is_empty() && !provider_b.requests().is_empty()
     });
+    stream_entered_a
+        .recv_timeout(Duration::from_secs(5))
+        .expect("A first stream event delivered and gate entered");
+    stream_entered_b
+        .recv_timeout(Duration::from_secs(5))
+        .expect("B first stream event delivered and gate entered");
     assert_eq!(provider.requests()[0].model, "gpt-5.6-terra");
     assert_eq!(provider_b.requests()[0].model, "gpt-5.6-luna");
     assert!(root.read_with(cx, |root, _| root.agent_controller.active.len() == 2));
@@ -632,9 +708,12 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
             let count: i64 = store.conn().query_row("SELECT COUNT(*) FROM messages WHERE role = 'assistant' AND status = 'interrupted'", [], |row| row.get(0)).expect("interrupted count");
             count == 2
         });
+        assert!(!controlled_a.release.is_cancelled() && !controlled_b.release.is_cancelled());
         return;
     }
     if mode == 6 {
+        controlled_a.release.cancel();
+        controlled_b.release.cancel();
         pump_test_app(cx, |cx| {
             origin_stream.read_with(cx, |stream, _| stream.has_pending_permission())
                 && draft_stream.read_with(cx, |stream, _| stream.has_pending_permission())
@@ -714,7 +793,19 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
                 root.agent_controller.preparation_stream = None;
             });
         }
+        pump_test_app(cx, |cx| {
+            root.read_with(cx, |root, _| {
+                !root.agent_controller.active.contains_key(&target.id)
+            })
+        });
+        assert!(!controlled_a.release.is_cancelled() && !controlled_b.release.is_cancelled());
+        if mode == 1 {
+            controlled_a.release.cancel();
+        } else {
+            controlled_b.release.cancel();
+        }
     } else {
+        controlled_a.release.cancel();
         pump_test_app(cx, |cx| {
             root.read_with(cx, |root, _| {
                 !root.agent_controller.active.contains_key(&origin.id)
@@ -746,6 +837,7 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
                     .expect("B focus preserved")
             );
         }
+        controlled_b.release.cancel();
     }
     pump_test_app(cx, |cx| {
         root.read_with(cx, |root, _| root.agent_controller.active.is_empty())
