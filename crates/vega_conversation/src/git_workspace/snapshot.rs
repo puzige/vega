@@ -237,6 +237,14 @@ pub(crate) fn capture_filter_identity(
 }
 
 pub(crate) fn parse_nul_paths(bytes: &[u8]) -> Result<Vec<Vec<u8>>, GitWorkspaceError> {
+    parse_nul_paths_with_limit(bytes, PATH_LIMIT, GitWorkspaceErrorCode::OutputTooLarge)
+}
+
+pub(crate) fn parse_nul_paths_with_limit(
+    bytes: &[u8],
+    path_limit: usize,
+    limit_error: GitWorkspaceErrorCode,
+) -> Result<Vec<Vec<u8>>, GitWorkspaceError> {
     if !bytes.is_empty() && !bytes.ends_with(&[0]) {
         return Err(error(GitWorkspaceErrorCode::MalformedOutput));
     }
@@ -254,8 +262,8 @@ pub(crate) fn parse_nul_paths(bytes: &[u8]) -> Result<Vec<Vec<u8>>, GitWorkspace
             return Err(error(GitWorkspaceErrorCode::MalformedOutput));
         }
         validate_relative_path(path)?;
-        if paths.len() == PATH_LIMIT {
-            return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+        if paths.len() == path_limit {
+            return Err(error(limit_error));
         }
         if !seen.insert(path.to_vec()) {
             return Err(error(GitWorkspaceErrorCode::MalformedOutput));

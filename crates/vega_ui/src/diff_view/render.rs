@@ -771,7 +771,9 @@ pub(crate) fn error_label(code: GitWorkspaceErrorCode) -> &'static str {
         | GitWorkspaceErrorCode::BranchDetached
         | GitWorkspaceErrorCode::BranchUnborn
         | GitWorkspaceErrorCode::BranchUnsafeFilter
-        | GitWorkspaceErrorCode::BranchAlreadyCurrent => "Git diff could not be loaded safely.",
+        | GitWorkspaceErrorCode::BranchAlreadyCurrent
+        | GitWorkspaceErrorCode::BranchPathLimit
+        | GitWorkspaceErrorCode::BranchCountLimit => "Git diff could not be loaded safely.",
     }
 }
 

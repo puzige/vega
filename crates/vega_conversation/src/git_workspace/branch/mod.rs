@@ -10,6 +10,7 @@ use crate::types::{
 };
 
 const BRANCH_LIMIT: usize = 10_000;
+const BRANCH_PATH_LIMIT: usize = 25_000;
 const BRANCH_RETAINED_LIMIT: usize = 8 * 1024 * 1024;
 const OPERATION_MARKERS: &[&str] = &[
     "MERGE_HEAD",
