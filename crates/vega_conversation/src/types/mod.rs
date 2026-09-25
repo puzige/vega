@@ -17,6 +17,7 @@ mod artifact;
 mod context;
 mod events;
 mod mcp;
+mod message_location;
 mod meter;
 mod permission;
 mod pricing;
@@ -37,6 +38,7 @@ pub use artifact::*;
 pub use context::*;
 pub use events::*;
 pub use mcp::*;
+pub use message_location::*;
 pub use meter::*;
 pub use permission::*;
 pub use pricing::*;
@@ -69,6 +71,9 @@ pub use project_worker::*;
 
 mod running_threads;
 pub use running_threads::*;
+
+mod scroll;
+pub use scroll::*;
 
 mod updater;
 pub use updater::*;

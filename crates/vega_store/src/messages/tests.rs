@@ -503,6 +503,117 @@ fn cursor_walk_covers_every_seq_exactly_once() {
 }
 
 #[test]
+fn message_id_page_is_thread_scoped_bounded_and_opens_newer_cursor() {
+    let (store, _dir) = seed_page_thread(300);
+    let page = page_containing_message(store.conn(), "t", "user-152", 100)
+        .unwrap()
+        .unwrap();
+    let seqs: Vec<i64> = page.rows.iter().map(|row| row.seq).collect();
+    assert_eq!(seqs.len(), 100);
+    assert!(seqs.iter().copied().eq(256..=355));
+    assert_eq!(page.rows[49].id, "user-152");
+    assert_eq!(page.older_cursor, Some(256));
+    assert_eq!(page.newer_cursor, Some(355));
+    assert!(page.tool_calls.is_empty());
+    assert!(page.images.is_empty());
+}
+
+#[test]
+fn message_id_page_returns_none_for_unknown_or_foreign_id() {
+    let (store, _dir) = seed_page_thread(10);
+    store
+        .conn()
+        .execute_batch(
+            "INSERT INTO threads (id,project_id,mode,model,created_at,updated_at) \
+             VALUES ('other','p','plan','mock',0,0);",
+        )
+        .unwrap();
+    insert(
+        store.conn(),
+        &MessageRow {
+            id: "foreign-message".into(),
+            thread_id: "other".into(),
+            seq: 1,
+            role: "user".into(),
+            kind: "text".into(),
+            content: "外部线程内容".into(),
+            status: "done".into(),
+            created_at: 1,
+            plan_status: None,
+            plan_review_note: None,
+            plan_reviewed_at: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        page_containing_message(store.conn(), "t", "missing", 100)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        page_containing_message(store.conn(), "t", "foreign-message", 100)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        page_containing_message(store.conn(), "other", "foreign-message", 100)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn newer_pages_continue_without_gaps_or_duplicates() {
+    let (store, _dir) = seed_page_thread(300);
+    let first = page_containing_message(store.conn(), "t", "user-152", 100)
+        .unwrap()
+        .unwrap();
+    let older = page_before(
+        store.conn(),
+        "t",
+        PageCursor::Before(first.older_cursor.unwrap()),
+        100,
+    )
+    .unwrap();
+    let second = page_after(store.conn(), "t", first.newer_cursor.unwrap(), 100).unwrap();
+    let third = page_after(store.conn(), "t", second.newer_cursor.unwrap(), 100).unwrap();
+    let fourth = page_after(store.conn(), "t", third.newer_cursor.unwrap(), 100).unwrap();
+    let seqs: Vec<i64> = older.rows.iter().map(|row| row.seq).collect();
+    assert!(seqs.iter().copied().eq(156..=255));
+    let seqs: Vec<i64> = first
+        .rows
+        .iter()
+        .chain(&second.rows)
+        .chain(&third.rows)
+        .chain(&fourth.rows)
+        .map(|row| row.seq)
+        .collect();
+    assert!(seqs.iter().copied().eq(256..=600));
+    assert_eq!(fourth.rows.len(), 45);
+    assert_eq!(fourth.newer_cursor, None);
+}
+
+#[test]
+fn page_after_rejects_sizes_outside_the_contract() {
+    let (store, _dir) = seed_page_thread(3);
+    for rejected in [0usize, PAGE_LIMIT + 1, 5000] {
+        let error = page_after(store.conn(), "t", 0, rejected).unwrap_err();
+        assert!(matches!(error, PageRequestError::InvalidPageSize(size) if size == rejected));
+    }
+}
+
+#[test]
+fn page_after_older_cursor_marks_the_durable_oldest_boundary() {
+    let (store, _dir) = seed_page_thread(3);
+    let first = page_after(store.conn(), "t", 0, 3).unwrap();
+    assert!(first.rows.iter().map(|row| row.seq).eq(1..=3));
+    assert_eq!(first.older_cursor, None);
+    let second = page_after(store.conn(), "t", 3, 3).unwrap();
+    assert!(second.rows.iter().map(|row| row.seq).eq(4..=6));
+    assert_eq!(second.older_cursor, Some(4));
+}
+
+#[test]
 fn interrupted_and_failed_rows_are_durable_streaming_is_not() {
     let (store, _dir) = setup();
     for (id, seq, status) in [

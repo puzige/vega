@@ -178,6 +178,7 @@ impl Render for VegaWindow {
             // everywhere downstream while the draft stays a home route in the
             // navigation history (`Projection::route`).
             let thread = self.resolve_route_thread(cx);
+            self.update_message_location_route(Some(&thread.id));
             let draft_route = self.is_draft_route(&thread.id);
             {
                 {
@@ -197,14 +198,21 @@ impl Render for VegaWindow {
                             if self.stream_view.as_ref().is_none_or(|(thread_id, cached)| {
                                 thread_id != &thread.id || cached != &view
                             }) {
-                                if let Some((previous_id, previous)) = self.stream_view.take()
-                                    && self
+                                if let Some((previous_id, previous)) = self.stream_view.take() {
+                                    if previous_id != thread.id {
+                                        let anchor = previous.read(cx).scroll_anchor_snapshot();
+                                        self.thread_scroll_states
+                                            .remember(previous_id.clone(), anchor);
+                                    }
+                                    if self
                                         .agent_controller
                                         .active_stream_for_thread(&previous_id)
                                         .as_ref()
                                         != Some(&previous)
-                                {
-                                    previous.update(cx, |stream, cx| stream.timeout_permission(cx));
+                                    {
+                                        previous
+                                            .update(cx, |stream, cx| stream.timeout_permission(cx));
+                                    }
                                 }
                                 self.stream_view = Some((thread.id.clone(), view.clone()));
                             }
@@ -232,14 +240,20 @@ impl Render for VegaWindow {
                             view
                         }
                         None => {
-                            if let Some((previous_id, previous)) = self.stream_view.take()
-                                && self
+                            if let Some((previous_id, previous)) = self.stream_view.take() {
+                                if previous_id != thread.id {
+                                    let anchor = previous.read(cx).scroll_anchor_snapshot();
+                                    self.thread_scroll_states
+                                        .remember(previous_id.clone(), anchor);
+                                }
+                                if self
                                     .agent_controller
                                     .active_stream_for_thread(&previous_id)
                                     .as_ref()
                                     != Some(&previous)
-                            {
-                                previous.update(cx, |stream, cx| stream.timeout_permission(cx));
+                                {
+                                    previous.update(cx, |stream, cx| stream.timeout_permission(cx));
+                                }
                             }
                             let view = cx.new(|cx| ConversationStream::new(thread.clone(), cx));
                             let label = self
@@ -374,6 +388,20 @@ impl Render for VegaWindow {
                                 this.request_history_page(stream.clone(), request, cx);
                             })
                             .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &NewerHistoryPageRequested, cx| {
+                                    this.request_newer_history_page(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &MessageLocationRequested, cx| {
+                                    this.request_message_location(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
                             let branch_selector = view.read(cx).branch_selector();
                             cx.subscribe(&branch_selector, |this, selector, request, cx| {
                                 this.request_branch_list(selector.clone(), request, cx);
@@ -483,8 +511,21 @@ impl Render for VegaWindow {
                                     Err(_) => stream.apply_controller_error(cx),
                                 });
                             }
-                            self.restore_navigation_draft(&thread.id, &view, cx);
                             self.stream_view = Some((thread.id.clone(), view.clone()));
+                            if let Some(anchor) = self.thread_scroll_states.get(&thread.id) {
+                                view.update(cx, |stream, cx| {
+                                    if !stream.restore_scroll_anchor(&anchor)
+                                        && let Some(message_id) = anchor.message_id.as_deref()
+                                    {
+                                        stream.request_message_location_with_anchor(
+                                            message_id,
+                                            Some(anchor.clone()),
+                                            cx,
+                                        );
+                                    }
+                                });
+                            }
+                            self.restore_navigation_draft(&thread.id, &view, cx);
                             self.sync_navigation(cx);
                             self.start_model_catalog_load(cx);
                             view

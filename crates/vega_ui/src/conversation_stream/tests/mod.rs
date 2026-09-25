@@ -208,8 +208,10 @@ fn has_active_permission(
 fn hydration_state(older_cursor: Option<i64>, loading: bool, paused: bool) -> HistoryHydration {
     HistoryHydration {
         older_cursor,
+        newer_cursor: None,
         loading,
         paused,
+        paused_direction: None,
     }
 }
 
@@ -249,6 +251,7 @@ fn hydration_page(entries: Vec<HistoryEntry>, older_cursor: Option<i64>) -> Hist
     HistoryPage {
         entries,
         older_cursor,
+        newer_cursor: None,
         newest_seq: None,
     }
 }

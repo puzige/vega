@@ -4,8 +4,17 @@ use std::collections::VecDeque;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HistoryHydration {
     pub(crate) older_cursor: Option<i64>,
+    pub(crate) newer_cursor: Option<i64>,
     pub(crate) loading: bool,
     pub(crate) paused: bool,
+    pub(crate) paused_direction: Option<HistoryPageDirection>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HistoryPageDirection {
+    #[default]
+    Older,
+    Newer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,13 +22,6 @@ pub(crate) struct StreamEntryIdentity {
     pub(crate) key: String,
     pub(crate) message_id: Option<String>,
     pub(crate) sequence: Option<i64>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct StreamAnchorSnapshot {
-    pub(crate) identity: Option<String>,
-    pub(crate) offset_in_item: Pixels,
-    pub(crate) following_tail: bool,
 }
 
 pub(crate) const STREAM_SAMPLE_CAPACITY: usize = 2048;

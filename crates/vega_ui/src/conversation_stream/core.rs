@@ -85,6 +85,7 @@ pub struct ConversationStream {
     /// loaded page, in-flight flag, and the failure pause. The stream itself
     /// never queries SQLite — pages arrive as typed projections.
     pub(crate) hydration: HistoryHydration,
+    pub(crate) message_location_status: Option<MessageLocationStatus>,
     /// Exact active durable assistant id and its stream-entry index.
     pub(crate) active_agent_message: Option<(String, usize)>,
     pub(crate) active_segment_ordinal: usize,
@@ -218,6 +219,8 @@ impl EventEmitter<OpenWorkspaceDiffRequested> for ConversationStream {}
 impl EventEmitter<OpenCommitPanelRequested> for ConversationStream {}
 impl EventEmitter<WorkspaceToolTerminal> for ConversationStream {}
 impl EventEmitter<HistoryPageRequested> for ConversationStream {}
+impl EventEmitter<NewerHistoryPageRequested> for ConversationStream {}
+impl EventEmitter<MessageLocationRequested> for ConversationStream {}
 impl EventEmitter<FileIndexRequested> for ConversationStream {}
 impl EventEmitter<FileIndexCancelled> for ConversationStream {}
 impl EventEmitter<ComposerStopRequested> for ConversationStream {}
@@ -407,6 +410,7 @@ impl ConversationStream {
             plan_cards: HashMap::new(),
             summary_cards: HashMap::new(),
             hydration: HistoryHydration::default(),
+            message_location_status: None,
             active_agent_message: None,
             active_segment_ordinal: 0,
             active_thinking: None,
@@ -561,17 +565,18 @@ impl ConversationStream {
             .map(|identity| identity.key.as_str())
     }
 
-    pub(crate) fn scroll_anchor_snapshot(&self) -> StreamAnchorSnapshot {
+    pub fn scroll_anchor_snapshot(&self) -> ThreadScrollAnchor {
         let top = self.list.logical_scroll_top();
         let identity = self.entry_identities.get(top.item_ix);
-        StreamAnchorSnapshot {
+        ThreadScrollAnchor {
             identity: identity.map(|identity| identity.key.clone()),
-            offset_in_item: top.offset_in_item,
+            message_id: identity.and_then(|identity| identity.message_id.clone()),
+            offset_in_item_px: f32::from(top.offset_in_item),
             following_tail: self.list.is_following_tail(),
         }
     }
 
-    pub(crate) fn restore_scroll_anchor(&mut self, anchor: &StreamAnchorSnapshot) -> bool {
+    pub fn restore_scroll_anchor(&mut self, anchor: &ThreadScrollAnchor) -> bool {
         if anchor.following_tail {
             self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
             return true;
@@ -589,7 +594,7 @@ impl ConversationStream {
         self.restore_scroll_anchor_at(anchor, item_ix)
     }
 
-    fn restore_scroll_anchor_at(&mut self, anchor: &StreamAnchorSnapshot, item_ix: usize) -> bool {
+    fn restore_scroll_anchor_at(&mut self, anchor: &ThreadScrollAnchor, item_ix: usize) -> bool {
         if anchor.following_tail {
             self.list.set_follow_mode(gpui_kit::FollowMode::Tail);
             return true;
@@ -601,7 +606,7 @@ impl ConversationStream {
         // Keep that paused state so scrolling back to the bottom can resume.
         self.list.scroll_to(gpui_kit::ListOffset {
             item_ix,
-            offset_in_item: anchor.offset_in_item,
+            offset_in_item: px(anchor.offset_in_item_px),
         });
         true
     }

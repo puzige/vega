@@ -581,6 +581,7 @@ async fn issue117_restore_is_historical_idempotent_and_rejects_late_results(
                         content: "history".into(),
                     }],
                     older_cursor: None,
+                    newer_cursor: None,
                     newest_seq: Some(1),
                 },
                 cx,

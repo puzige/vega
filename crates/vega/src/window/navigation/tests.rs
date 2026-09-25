@@ -4,7 +4,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Bounds, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, size};
 use gpui_kit::{Entity, EntityInputHandler, Focusable, Modifiers, TestAppContext, px};
 use std::time::Duration;
-use vega_conversation::types::{Thread, ThreadStatus};
+use vega_conversation::history;
+use vega_conversation::types::{Thread, ThreadScrollAnchor, ThreadStatus};
 use vega_store::Store;
 use vega_ui::navigation::NavigationState;
 use vega_ui::settings::{CloseSettings, SettingsOpen};
@@ -128,6 +129,125 @@ fn settled(f: &Fixture, id: &str, cx: &mut TestAppContext) {
         })
     });
 }
+
+#[gpui_kit::test]
+async fn route_rebuild_restores_thread_anchor_from_value_only_cache(cx: &mut TestAppContext) {
+    let f = fixture(cx);
+    let message_id = "anchor-message-42";
+    for seq in 1..=260 {
+        vega_store::messages::insert(
+            f.store.conn(),
+            &vega_store::messages::MessageRow {
+                id: format!("anchor-message-{seq}"),
+                thread_id: f.first.id.clone(),
+                seq,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: format!("durable anchor content {seq} ").repeat(24),
+                status: "done".into(),
+                created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+    }
+    let page = history::history_page_containing_message(
+        &f.store,
+        &f.first.id,
+        message_id,
+        vega_store::messages::PAGE_LIMIT,
+    )
+    .unwrap()
+    .unwrap();
+    let original = f
+        .root
+        .read_with(cx, |root, _| root.stream_view.as_ref().unwrap().1.clone());
+    original.update(cx, |stream, cx| stream.apply_history_page(page, cx));
+    let kind = "assistant-text-0";
+    let identity = format!(
+        "route:{}:{}:message:{}:{}:kind:{}:{}",
+        f.first.id.len(),
+        f.first.id,
+        message_id.len(),
+        message_id,
+        kind.len(),
+        kind
+    );
+    let anchor = ThreadScrollAnchor {
+        identity: Some(identity.clone()),
+        message_id: Some(message_id.into()),
+        offset_in_item_px: 13.,
+        following_tail: false,
+    };
+    original.update(cx, |stream, cx| {
+        assert!(stream.restore_scroll_anchor(&anchor));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    assert!(visual.debug_bounds("conversation-column").is_some());
+    let old_snapshot = original.read_with(cx, |stream, _| stream.scroll_anchor_snapshot());
+    assert_eq!(old_snapshot.identity.as_deref(), Some(identity.as_str()));
+    assert_eq!(old_snapshot.message_id.as_deref(), Some(message_id));
+    assert!((old_snapshot.offset_in_item_px - 13.).abs() < 1.0);
+    assert!(
+        !old_snapshot.following_tail,
+        "old snapshot: {old_snapshot:?}"
+    );
+
+    cx.update(|cx| {
+        cx.set_global(SelectedProject(Some(f.second.project_id.clone())));
+        cx.set_global(OpenedThread(Some(f.second.clone())));
+        cx.refresh_windows();
+    });
+    settled(&f, &f.second.id, cx);
+    let second_stream = f
+        .root
+        .read_with(cx, |root, _| root.stream_view.as_ref().unwrap().1.clone());
+    assert_ne!(second_stream, original);
+    let cached_anchor = f
+        .root
+        .update(cx, |root, _| root.thread_scroll_states.get(&f.first.id))
+        .expect("departing thread anchor should be cached");
+    assert_eq!(cached_anchor.identity.as_deref(), Some(identity.as_str()));
+    assert_eq!(cached_anchor.message_id.as_deref(), Some(message_id));
+    assert!((cached_anchor.offset_in_item_px - 13.).abs() < 1.0);
+    assert!(!cached_anchor.following_tail);
+
+    cx.update(|cx| {
+        cx.set_global(SelectedProject(Some(f.first.project_id.clone())));
+        cx.set_global(OpenedThread(Some(f.first.clone())));
+        cx.refresh_windows();
+    });
+    settled(&f, &f.first.id, cx);
+    pump(cx, |cx| {
+        f.root.read_with(cx, |root, cx| {
+            root.stream_view
+                .as_ref()
+                .is_some_and(|(thread_id, stream)| {
+                    thread_id == &f.first.id
+                        && stream.read(cx).message_location_status()
+                            == Some(vega_ui::conversation_stream::MessageLocationStatus::Located)
+                })
+        })
+    });
+    assert!(visual.debug_bounds("conversation-column").is_some());
+    let rebuilt = f
+        .root
+        .read_with(cx, |root, _| root.stream_view.as_ref().unwrap().1.clone());
+    assert_ne!(rebuilt, original);
+    let restored = rebuilt.read_with(cx, |stream, _| stream.scroll_anchor_snapshot());
+    assert_eq!(restored.identity.as_deref(), Some(identity.as_str()));
+    assert_eq!(restored.message_id.as_deref(), Some(message_id));
+    assert_eq!(
+        restored.following_tail, old_snapshot.following_tail,
+        "restored: {restored:?}"
+    );
+    assert!((restored.offset_in_item_px - 13.).abs() < 1.0);
+}
+
 fn palette_second(f: &Fixture, cx: &mut TestAppContext) {
     focus_editor(f, cx);
     cx.simulate_keystrokes(f.window.into(), "cmd-k d e s t i n a t i o n");

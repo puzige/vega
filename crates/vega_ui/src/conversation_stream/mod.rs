@@ -284,6 +284,19 @@ pub struct HistoryPageRequested {
     pub before: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewerHistoryPageRequested {
+    pub thread_id: String,
+    pub after: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageLocationRequested {
+    pub thread_id: String,
+    pub message_id: String,
+    pub restore_anchor: Option<ThreadScrollAnchor>,
+}
+
 /// Composer `@file` suggestion dropdown open/close/bookkeeping is UI-local;
 /// only the accepted completion flows out of the selector model.
 ///
@@ -314,6 +327,7 @@ mod content;
 mod context_control;
 pub use vega_conversation::types::{
     ContextCompactionCancelRequested, ContextCompactionRequested, ContextSettingsRequested,
+    MessageLocationStatus,
 };
 mod core;
 mod file_reference;
@@ -337,6 +351,7 @@ pub use thinking_slider::{
     OFF_CHOICE_NAME, OFF_LABEL, PROVIDER_DEFAULT_LABEL, ThinkingSlider, ThinkingSliderModel,
     ThinkingSliderTitleActivated, ThinkingTierSelected, resolve_tier, track_fill_style,
 };
+pub use vega_conversation::types::ThreadScrollAnchor;
 
 /// Explicit stop for the currently owned worker; the app keeps its generation until terminal.
 pub struct ComposerStopRequested {

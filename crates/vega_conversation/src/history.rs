@@ -167,6 +167,7 @@ pub struct HistoryPage {
     /// [`PageCursor::Before`] into [`history_page_before`]. `None` marks the
     /// durable beginning of the thread.
     pub older_cursor: Option<i64>,
+    pub newer_cursor: Option<i64>,
     /// Highest durable `seq` seen on the newest page (`None` for an empty
     /// thread); the UI fences late pages against it after route switches.
     pub newest_seq: Option<i64>,
@@ -240,6 +241,31 @@ pub fn history_page_before(
 ) -> Result<HistoryPage, ConversationError> {
     let page = page_read(store, thread_id, cursor, limit)?;
     assemble(store, thread_id, page, limit, false)
+}
+
+pub fn history_page_containing_message(
+    store: &Store,
+    thread_id: &str,
+    message_id: &str,
+    limit: usize,
+) -> Result<Option<HistoryPage>, ConversationError> {
+    let page = messages::page_containing_message(store.conn(), thread_id, message_id, limit)
+        .map_err(page_failure)?;
+    let Some(page) = page else {
+        return Ok(None);
+    };
+    assemble(store, thread_id, page, limit, true).map(Some)
+}
+
+pub fn history_page_after(
+    store: &Store,
+    thread_id: &str,
+    cursor: i64,
+    limit: usize,
+) -> Result<HistoryPage, ConversationError> {
+    let page =
+        messages::page_after(store.conn(), thread_id, cursor, limit).map_err(page_failure)?;
+    assemble(store, thread_id, page, limit, true)
 }
 
 fn assemble(
@@ -323,6 +349,7 @@ fn assemble(
     Ok(HistoryPage {
         entries,
         older_cursor: page.older_cursor,
+        newer_cursor: page.newer_cursor,
         newest_seq,
     })
 }

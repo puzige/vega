@@ -1074,14 +1074,22 @@ impl Render for ConversationStream {
         //    向 app 层请求上一页（typed 投影返回后 splice 前插，页边界保
         //    anchor）。本 crate 零 SQLite；一页在飞，失败暂停直到离开顶部。
         let at_top = self.scroll_at_top();
-        if self.hydration_pause_is_stale(at_top) {
+        let at_bottom = self.scroll_at_bottom();
+        if self.hydration_pause_is_stale(at_top, at_bottom) {
             self.hydration.paused = false;
+            self.hydration.paused_direction = None;
         }
         if let Some(before) = self.history_page_request(at_top) {
             self.hydration.loading = true;
             cx.emit(HistoryPageRequested {
                 thread_id: self.thread.id.clone(),
                 before,
+            });
+        } else if let Some(after) = self.newer_history_page_request(at_bottom) {
+            self.hydration.loading = true;
+            cx.emit(NewerHistoryPageRequested {
+                thread_id: self.thread.id.clone(),
+                after,
             });
         }
 
