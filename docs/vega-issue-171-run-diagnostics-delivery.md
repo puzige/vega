@@ -60,8 +60,8 @@
 | `cargo fmt --all -- --check` | 0 | No output |
 | `git diff --check` | 0 | No output |
 | Implementation diff SHA-256 (excluding this delivery record) | — | `e41516cf0d72d87ed420d2b5b752a7d30a892613c108b79e20eb3331994d4c2b` |
-| GitHub PR Clippy | SUCCESS | PR #217 check completed successfully before this documentation-only follow-up |
-| GitHub PR Nextest | IN PROGRESS | PR #217 check was still running when this record was updated; rerun status after pushing this follow-up |
+| GitHub PR Clippy | IN PROGRESS | Check is running for the pushed PR revision; this documentation-only revision also needs its PR workflow checks to finish |
+| GitHub PR Nextest | IN PROGRESS | Check is running for the pushed PR revision; this documentation-only revision also needs its PR workflow checks to finish |
 
 ## Privacy boundary and residuals
 
