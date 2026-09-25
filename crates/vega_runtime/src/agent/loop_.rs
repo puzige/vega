@@ -1632,10 +1632,6 @@ where
                     cache_read,
                     cache_write,
                 }) => {
-                    diagnostic_metrics.input_tokens = Some(input);
-                    diagnostic_metrics.output_tokens = Some(output);
-                    diagnostic_metrics.cache_read_tokens = Some(cache_read);
-                    diagnostic_metrics.cache_write_tokens = Some(cache_write);
                     // C3: exactly one terminal usage per provider call;
                     // duplicates and usage-after-terminal fail closed.
                     if stop_reason.is_some() {
@@ -1696,6 +1692,10 @@ where
                             true,
                         ));
                     }
+                    diagnostic_metrics.input_tokens = Some(input);
+                    diagnostic_metrics.output_tokens = Some(output);
+                    diagnostic_metrics.cache_read_tokens = Some(cache_read);
+                    diagnostic_metrics.cache_write_tokens = Some(cache_write);
                     usage_seen = true;
                     valid_primary_input =
                         (input > 0 && cache_read <= input && cache_write <= input).then_some(input);

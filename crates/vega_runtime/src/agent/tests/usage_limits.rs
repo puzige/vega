@@ -62,10 +62,10 @@ async fn duplicate_usage_fails_closed() {
             cache_write: 0,
         },
         ProviderEvent::Usage {
-            input: 10,
-            output: 2,
+            input: 900,
+            output: 90,
             cache_read: 0,
-            cache_write: 0,
+            cache_write: 9,
         },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
@@ -86,6 +86,27 @@ async fn duplicate_usage_fails_closed() {
             .iter()
             .any(|event| matches!(event, RuntimeEvent::Error(_)))
     );
+    let failed_attempt = outcome.events.iter().find_map(|event| match event {
+        RuntimeEvent::DiagnosticAttempt(attempt)
+            if attempt.state == RuntimeDiagnosticState::Failed =>
+        {
+            Some(attempt)
+        }
+        _ => None,
+    });
+    let failed_attempt = failed_attempt.expect("failed primary attempt diagnostic");
+    assert_eq!(failed_attempt.metrics.input_tokens, Some(10));
+    assert_eq!(failed_attempt.metrics.output_tokens, Some(2));
+    assert_eq!(failed_attempt.metrics.cache_write_tokens, Some(0));
+    assert_eq!(
+        outcome
+            .events
+            .iter()
+            .filter(|event| matches!(event, RuntimeEvent::UsageUpdated { .. }))
+            .count(),
+        1,
+        "rejected duplicate usage must not change accepted usage events"
+    );
 }
 
 #[tokio::test]
@@ -94,14 +115,20 @@ async fn usage_after_terminal_fails_closed() {
     fs::write(dir.path().join("lib.rs"), "fn main() {}\n").unwrap();
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new_rounds(vec![vec![ScriptStep::events(vec![
+        ProviderEvent::Usage {
+            input: 12,
+            output: 3,
+            cache_read: 2,
+            cache_write: 1,
+        },
         ProviderEvent::Done {
             stop_reason: StopReason::End,
         },
         ProviderEvent::Usage {
-            input: 10,
-            output: 2,
-            cache_read: 0,
-            cache_write: 0,
+            input: 900,
+            output: 90,
+            cache_read: 800,
+            cache_write: 700,
         },
     ])]]);
     let outcome = run_agent(
@@ -113,6 +140,28 @@ async fn usage_after_terminal_fails_closed() {
     .await
     .unwrap();
     assert!(outcome.failed);
+    let failed_attempt = outcome.events.iter().find_map(|event| match event {
+        RuntimeEvent::DiagnosticAttempt(attempt)
+            if attempt.state == RuntimeDiagnosticState::Failed =>
+        {
+            Some(attempt)
+        }
+        _ => None,
+    });
+    let failed_attempt = failed_attempt.expect("failed primary attempt diagnostic");
+    assert_eq!(failed_attempt.metrics.input_tokens, Some(12));
+    assert_eq!(failed_attempt.metrics.output_tokens, Some(3));
+    assert_eq!(failed_attempt.metrics.cache_read_tokens, Some(2));
+    assert_eq!(failed_attempt.metrics.cache_write_tokens, Some(1));
+    assert_eq!(
+        outcome
+            .events
+            .iter()
+            .filter(|event| matches!(event, RuntimeEvent::UsageUpdated { .. }))
+            .count(),
+        1,
+        "usage after terminal must not change accepted usage events"
+    );
 }
 
 #[tokio::test]

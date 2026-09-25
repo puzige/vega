@@ -1708,10 +1708,13 @@ async fn collect_summary_with_timeout_diagnostics(
                         metrics,
                     ));
                 }
-                if text.len().saturating_add(delta.len()) > SUMMARY_OUTPUT_LIMIT {
+                let visible_bytes = text.len().saturating_add(delta.len());
+                if visible_bytes > SUMMARY_OUTPUT_LIMIT {
+                    metrics.visible_output_bytes =
+                        Some(u64::try_from(visible_bytes).unwrap_or(u64::MAX));
                     return Err(summary_collection_failure(
                         context_error(ContextRuntimeError::SummaryOutputTruncated {
-                            visible_bytes: text.len().saturating_add(delta.len()),
+                            visible_bytes,
                             thinking_bytes: usize::try_from(metrics.thinking_bytes)
                                 .unwrap_or(usize::MAX),
                             output_tokens: metrics.output_tokens,
@@ -1988,7 +1991,7 @@ mod tests {
     use vega_runtime::{MockProvider, ScriptStep};
 
     #[tokio::test]
-    async fn summary_stage_persists_typed_failure_without_summary_text() {
+    async fn summary_stage_records_overflow_bytes_without_persisting_summary_text() {
         let directory = tempfile::tempdir().unwrap();
         let database_path = directory.path().join("vega.db");
         let store = Store::open(&database_path).unwrap();
@@ -2019,14 +2022,21 @@ mod tests {
             run_id: "summary-run".into(),
             root_attempt_id: "root-attempt".into(),
         };
+        let accepted_text = "SUMMARY_ACCEPTED_BODY_CANARY";
+        let overflow_text = format!(
+            "SUMMARY_OVERFLOW_BODY_CANARY{}",
+            "x".repeat(SUMMARY_OUTPUT_LIMIT)
+        );
+        let observed_visible_bytes = accepted_text.len() + overflow_text.len();
         let provider = MockProvider::new(vec![ScriptStep::events(vec![
-            ProviderEvent::TextDelta("SUMMARY_BODY_CANARY".into()),
             ProviderEvent::Usage {
                 input: 7,
                 output: 4,
                 cache_read: 1,
                 cache_write: 0,
             },
+            ProviderEvent::TextDelta(accepted_text.into()),
+            ProviderEvent::TextDelta(overflow_text),
             ProviderEvent::Done {
                 stop_reason: StopReason::Length,
             },
@@ -2086,13 +2096,14 @@ mod tests {
         );
         assert_eq!(
             events[1].event.metrics.visible_output_bytes,
-            Some("SUMMARY_BODY_CANARY".len() as u64)
+            Some(observed_visible_bytes as u64)
         );
         assert_eq!(events[1].event.metrics.output_tokens, Some(4));
         let export =
             vega_store::run_diagnostics::export_run(store.conn(), "summary-thread", "summary-run")
                 .unwrap();
-        assert!(!export.contains("SUMMARY_BODY_CANARY"));
+        assert!(!export.contains(accepted_text));
+        assert!(!export.contains("SUMMARY_OVERFLOW_BODY_CANARY"));
     }
 
     #[tokio::test]
