@@ -1,5 +1,20 @@
 use super::*;
 
+struct DelayedIssue146Permission;
+
+impl PermissionHook for DelayedIssue146Permission {
+    fn request(
+        &self,
+        _request: PermissionRequest,
+        _cancel: CancellationToken,
+    ) -> BoxFuture<'static, Result<PermissionDecision, VegaError>> {
+        Box::pin(async {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            Ok(PermissionDecision::Once)
+        })
+    }
+}
+
 #[tokio::test]
 async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     let (store, dir, _project_id) = setup();
@@ -109,6 +124,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     assert_eq!(
         tables,
         vec![
+            "assistant_run_durations",
             "context_checkpoints",
             "context_compaction_status",
             "context_settings",
@@ -135,6 +151,90 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "tool_calls"
         ]
     );
+}
+
+#[tokio::test]
+async fn issue146_runtime_duration_includes_permission_wait_and_tool_continuation() {
+    let (store, dir, _project_id) = setup();
+    let tools = vega_tools::Tools::new(dir.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(|command, _, _| {
+            assert_eq!(command, "printf issue146-ok");
+            Box::pin(async {
+                Ok(vega_tools::BashOutput {
+                    text: "issue146-ok".into(),
+                    exit_code: 0,
+                    duration_ms: 1,
+                    truncated: false,
+                })
+            })
+        }));
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "issue146-permission-tool".into(),
+                name: "bash".into(),
+                input_json: r#"{"cmd":"printf issue146-ok"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("continued answer".into()),
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+    ]);
+    let run = run_thread_task_with_permission_sink(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Run approved tool",
+        "System",
+        CancellationToken::new(),
+        &DelayedIssue146Permission,
+        |_| Ok(()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(run.content, "continued answer");
+    assert!(run.events.iter().any(|event| matches!(
+        event,
+        ConversationEvent::ToolCallApproved { call_id, .. }
+            if call_id == "issue146-permission-tool"
+    )));
+    let duration_ms = run
+        .events
+        .iter()
+        .find_map(|event| match event {
+            ConversationEvent::MessageFinished {
+                execution_duration_ms,
+                ..
+            } => *execution_duration_ms,
+            _ => None,
+        })
+        .expect("terminal event carries run duration");
+    assert!(duration_ms >= 50, "duration_ms={duration_ms}");
+
+    let page =
+        messages::page_before(store.conn(), "thread-1", messages::PageCursor::Head, 20).unwrap();
+    assert_eq!(
+        page.execution_durations_ms.get(&run.assistant_message_id),
+        Some(&(duration_ms as i64))
+    );
+    let history = crate::history::latest_history_page(&store, "thread-1", 20).unwrap();
+    assert!(history.entries.iter().any(|entry| matches!(
+        entry,
+        crate::history::HistoryEntry::AssistantText {
+            message_id,
+            execution_duration_ms: Some(duration),
+            ..
+        } if message_id == &run.assistant_message_id && *duration == duration_ms
+    )));
 }
 
 #[tokio::test]

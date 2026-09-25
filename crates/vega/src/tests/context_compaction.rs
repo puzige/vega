@@ -806,6 +806,7 @@ async fn issue67_queued_background_plan_continuation_preserves_peer_and_artifact
         "concurrent-plan",
         "Inspect the owned repository",
         2,
+        None,
     )
     .expect("ready plan");
     f.stream.update(cx, |stream, cx| {

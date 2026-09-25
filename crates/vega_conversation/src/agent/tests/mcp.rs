@@ -170,6 +170,7 @@ fn issue73_external_call_persists_all_critical_transitions_and_safe_card() {
             "",
             sequence,
             &event,
+            None,
         )
     };
     persist(RuntimeEvent::ToolCallProposed(call.clone()), &mut sequence).unwrap();
@@ -223,7 +224,7 @@ fn issue73_external_call_persists_all_critical_transitions_and_safe_card() {
     assert_eq!(sequence, 2);
     assert!(!state.input_json.contains("SECRET_ARGUMENT_VALUE"));
     assert_eq!(
-        messages::finish_streaming(store.conn(), "assistant-mcp", "", "done").unwrap(),
+        messages::finish_streaming(store.conn(), "assistant-mcp", "", "done", None).unwrap(),
         1
     );
     let history = crate::history::latest_history_page(&store, "thread-1", 32).unwrap();
@@ -321,10 +322,12 @@ async fn issue73_rotated_provider_secret_in_historical_mcp_result_is_blocked_aft
             "",
             &mut sequence,
             &event,
+            None,
         )
         .unwrap();
     }
-    messages::finish_streaming(store.conn(), "assistant-before-rotation", "", "done").unwrap();
+    messages::finish_streaming(store.conn(), "assistant-before-rotation", "", "done", None)
+        .unwrap();
     drop(store);
 
     vega_store::keystore::set_key(&config_root, "provider-rotated", SECRET).unwrap();
@@ -439,6 +442,7 @@ fn issue73_unapproved_external_call_replays_as_rejected_mcp_card() {
             "",
             sequence,
             &event,
+            None,
         )
     };
     persist(RuntimeEvent::ToolCallProposed(call.clone()), &mut sequence).unwrap();
@@ -463,7 +467,7 @@ fn issue73_unapproved_external_call_replays_as_rejected_mcp_card() {
     )
     .unwrap();
     assert_eq!(
-        messages::finish_streaming(store.conn(), "assistant-mcp-denied", "", "done").unwrap(),
+        messages::finish_streaming(store.conn(), "assistant-mcp-denied", "", "done", None).unwrap(),
         1
     );
     let history = crate::history::latest_history_page(&store, "thread-1", 32).unwrap();
@@ -545,6 +549,7 @@ fn issue73_unknown_external_outcome_remains_explicit_after_store_restart() {
             "",
             &mut sequence,
             &event,
+            None,
         )
         .unwrap();
     }
@@ -676,6 +681,7 @@ fn issue73_typed_mcp_failures_validate_and_restart_without_accepting_server_pros
             "",
             &mut sequence,
             &event,
+            None,
         )
         .unwrap();
     }

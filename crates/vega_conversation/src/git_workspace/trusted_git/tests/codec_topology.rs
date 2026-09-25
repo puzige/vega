@@ -115,6 +115,7 @@ fn commit_redaction_all_public_provider_carriers_hide_sentinels() {
             message: SENTINEL.into(),
             retryable: false,
         }),
+        execution_duration_ms: None,
     };
     let conversation_run = crate::agent::ConversationRun {
         user_message_id: SENTINEL.into(),

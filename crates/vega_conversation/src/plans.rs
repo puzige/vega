@@ -196,9 +196,9 @@ mod tests {
     fn newest_completion_supersedes_and_restart_loads_exact_state() {
         let (store, dir, thread_id) = setup();
         streaming_plan(&store, &thread_id, "a", 1);
-        complete_plan(store.conn(), &thread_id, "a", "first", 10).unwrap();
+        complete_plan(store.conn(), &thread_id, "a", "first", 10, None).unwrap();
         streaming_plan(&store, &thread_id, "b", 2);
-        complete_plan(store.conn(), &thread_id, "b", "second", 20).unwrap();
+        complete_plan(store.conn(), &thread_id, "b", "second", 20, None).unwrap();
         drop(store);
         let reopened = Store::open(dir.path().join("vega.db")).unwrap();
         reopened.migrate().unwrap();
@@ -214,7 +214,7 @@ mod tests {
     fn approval_is_single_winner_and_persists_execute_plus_instruction() {
         let (store, _dir, thread_id) = setup();
         streaming_plan(&store, &thread_id, "plan", 1);
-        complete_plan(store.conn(), &thread_id, "plan", "steps", 10).unwrap();
+        complete_plan(store.conn(), &thread_id, "plan", "steps", 10, None).unwrap();
         let first = review_plan(&store, &thread_id, "plan", PlanReviewAction::Approve).unwrap();
         let instruction_id = match first {
             PlanReviewOutcome::Applied {
@@ -277,7 +277,7 @@ mod tests {
         ] {
             let (store, _dir, thread_id) = setup();
             streaming_plan(&store, &thread_id, "plan", 1);
-            complete_plan(store.conn(), &thread_id, "plan", "steps", 10).unwrap();
+            complete_plan(store.conn(), &thread_id, "plan", "steps", 10, None).unwrap();
             assert!(matches!(
                 review_plan(&store, &thread_id, "plan", action).unwrap(),
                 PlanReviewOutcome::Applied {

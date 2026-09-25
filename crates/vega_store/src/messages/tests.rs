@@ -38,9 +38,9 @@ fn streaming(id: &str, seq: i64) -> MessageRow {
 fn completion_promotes_text_and_supersedes_exact_old_pending() {
     let (store, _dir) = setup();
     insert(store.conn(), &streaming("one", 1)).unwrap();
-    complete_plan(store.conn(), "t", "one", "first", 10).unwrap();
+    complete_plan(store.conn(), "t", "one", "first", 10, None).unwrap();
     insert(store.conn(), &streaming("two", 2)).unwrap();
-    complete_plan(store.conn(), "t", "two", "second", 20).unwrap();
+    complete_plan(store.conn(), "t", "two", "second", 20, None).unwrap();
     let plans = plans_for_thread(store.conn(), "t").unwrap();
     assert_eq!(plans.len(), 2);
     assert_eq!(plans[0].plan_status.as_deref(), Some("abandoned"));
@@ -54,8 +54,8 @@ fn completion_promotes_text_and_supersedes_exact_old_pending() {
 fn failed_current_promotion_rolls_back_supersede() {
     let (store, _dir) = setup();
     insert(store.conn(), &streaming("old", 1)).unwrap();
-    complete_plan(store.conn(), "t", "old", "first", 10).unwrap();
-    let error = complete_plan(store.conn(), "t", "missing", "second", 20).unwrap_err();
+    complete_plan(store.conn(), "t", "old", "first", 10, None).unwrap();
+    let error = complete_plan(store.conn(), "t", "missing", "second", 20, None).unwrap_err();
     assert!(matches!(error, PlanTransitionError::CorruptState));
     let old = find(store.conn(), "old").unwrap().unwrap();
     assert_eq!(old.plan_status.as_deref(), Some("pending"));
@@ -76,7 +76,7 @@ fn corrupt_metadata_fails_every_read_and_blocks_completion() {
     assert!(find(store.conn(), "bad").is_err());
     assert!(recent(store.conn(), "t", 10).is_err());
     assert!(plans_for_thread(store.conn(), "t").is_err());
-    assert!(complete_plan(store.conn(), "t", "new", "new", 2).is_err());
+    assert!(complete_plan(store.conn(), "t", "new", "new", 2, None).is_err());
     let new = find(store.conn(), "new").unwrap().unwrap();
     assert_eq!(new.status, "streaming");
 }
@@ -116,7 +116,7 @@ fn approved_plan_with_review_note_fails_all_reads() {
 fn approved_transition_with_note_is_rejected_without_mutation() {
     let (store, _dir) = setup();
     insert(store.conn(), &streaming("plan", 1)).unwrap();
-    complete_plan(store.conn(), "t", "plan", "steps", 1).unwrap();
+    complete_plan(store.conn(), "t", "plan", "steps", 1, None).unwrap();
     let result = review_plan(
         store.conn(),
         PlanReview {
@@ -152,14 +152,14 @@ fn obsolete_streaming_plan_shape_is_corrupt_everywhere() {
     insert(store.conn(), &streaming("new", 2)).unwrap();
     assert!(find(store.conn(), "bad").is_err());
     assert!(plans_for_thread(store.conn(), "t").is_err());
-    assert!(complete_plan(store.conn(), "t", "new", "new", 3).is_err());
+    assert!(complete_plan(store.conn(), "t", "new", "new", 3, None).is_err());
 }
 
 #[test]
 fn review_distinguishes_terminal_stale_from_corrupt_pending() {
     let (store, _dir) = setup();
     insert(store.conn(), &streaming("plan", 1)).unwrap();
-    complete_plan(store.conn(), "t", "plan", "steps", 10).unwrap();
+    complete_plan(store.conn(), "t", "plan", "steps", 10, None).unwrap();
     let applied = review_plan(
         store.conn(),
         PlanReview {
@@ -213,7 +213,7 @@ fn review_distinguishes_terminal_stale_from_corrupt_pending() {
 fn separate_connections_serialize_review_to_one_winner() {
     let (store, dir) = setup();
     insert(store.conn(), &streaming("plan", 1)).unwrap();
-    complete_plan(store.conn(), "t", "plan", "steps", 10).unwrap();
+    complete_plan(store.conn(), "t", "plan", "steps", 10, None).unwrap();
     drop(store);
     let barrier = Arc::new(Barrier::new(3));
     let mut workers = Vec::new();
@@ -270,9 +270,9 @@ fn separate_connections_serialize_review_to_one_winner() {
 fn completion_and_old_approval_obey_both_commit_orders() {
     let (store, _dir) = setup();
     insert(store.conn(), &streaming("old", 1)).unwrap();
-    complete_plan(store.conn(), "t", "old", "old", 10).unwrap();
+    complete_plan(store.conn(), "t", "old", "old", 10, None).unwrap();
     insert(store.conn(), &streaming("new", 2)).unwrap();
-    complete_plan(store.conn(), "t", "new", "new", 20).unwrap();
+    complete_plan(store.conn(), "t", "new", "new", 20, None).unwrap();
     let stale = review_plan(
         store.conn(),
         PlanReview {
@@ -293,7 +293,7 @@ fn completion_and_old_approval_obey_both_commit_orders() {
 
     let (store, _dir) = setup();
     insert(store.conn(), &streaming("old", 1)).unwrap();
-    complete_plan(store.conn(), "t", "old", "old", 10).unwrap();
+    complete_plan(store.conn(), "t", "old", "old", 10, None).unwrap();
     insert(store.conn(), &streaming("new", 2)).unwrap();
     assert_eq!(
         review_plan(
@@ -314,7 +314,7 @@ fn completion_and_old_approval_obey_both_commit_orders() {
         .unwrap(),
         PlanReviewResult::Applied
     );
-    assert!(complete_plan(store.conn(), "t", "new", "new", 21).is_err());
+    assert!(complete_plan(store.conn(), "t", "new", "new", 21, None).is_err());
     let current = find(store.conn(), "new").unwrap().unwrap();
     assert_eq!(current.status, "streaming");
     assert_eq!(current.kind, "text");
@@ -337,7 +337,7 @@ fn separate_connections_serialize_completions_to_one_pending() {
                 .busy_timeout(std::time::Duration::from_secs(5))
                 .unwrap();
             barrier.wait();
-            complete_plan(&connection, "t", id, id, now).unwrap();
+            complete_plan(&connection, "t", id, id, now, None).unwrap();
         }));
     }
     barrier.wait();
@@ -361,6 +361,50 @@ fn separate_connections_serialize_completions_to_one_pending() {
                 && plan.plan_review_note.as_deref() == Some("superseded"))
             .count(),
         1
+    );
+}
+
+#[test]
+fn issue146_terminal_durations_are_persisted_and_projected_by_page() {
+    let (store, _dir) = setup();
+    for (id, status, duration) in [
+        ("done", "done", 10_005),
+        ("failed", "failed", 1_201),
+        ("stopped", "interrupted", 15),
+    ] {
+        let seq = next_seq(store.conn(), "t").unwrap();
+        insert(store.conn(), &streaming(id, seq)).unwrap();
+        assert_eq!(
+            finish_streaming(store.conn(), id, "answer", status, Some(duration)).unwrap(),
+            1
+        );
+    }
+    let seq = next_seq(store.conn(), "t").unwrap();
+    insert(store.conn(), &streaming("legacy", seq)).unwrap();
+    finish_streaming(store.conn(), "legacy", "old", "done", None).unwrap();
+    let seq = next_seq(store.conn(), "t").unwrap();
+    insert(store.conn(), &streaming("plan", seq)).unwrap();
+    complete_plan(store.conn(), "t", "plan", "steps", 100, Some(62_001)).unwrap();
+
+    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
+    assert_eq!(page.execution_durations_ms.len(), 4);
+    assert_eq!(page.execution_durations_ms.get("done"), Some(&10_005));
+    assert_eq!(page.execution_durations_ms.get("failed"), Some(&1_201));
+    assert_eq!(page.execution_durations_ms.get("stopped"), Some(&15));
+    assert_eq!(page.execution_durations_ms.get("plan"), Some(&62_001));
+    assert!(!page.execution_durations_ms.contains_key("legacy"));
+
+    let seq = next_seq(store.conn(), "t").unwrap();
+    insert(store.conn(), &streaming("invalid", seq)).unwrap();
+    assert!(finish_streaming(store.conn(), "invalid", "partial", "streaming", Some(9)).is_err());
+    assert_eq!(
+        find(store.conn(), "invalid").unwrap().unwrap().status,
+        "streaming"
+    );
+    assert!(finish_streaming(store.conn(), "invalid", "partial", "failed", Some(-1)).is_err());
+    assert_eq!(
+        find(store.conn(), "invalid").unwrap().unwrap().status,
+        "streaming"
     );
 }
 

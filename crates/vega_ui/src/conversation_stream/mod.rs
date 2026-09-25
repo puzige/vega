@@ -336,6 +336,8 @@ mod message_anchors;
 mod model;
 mod render;
 mod render_rows;
+mod run_activity;
+use run_activity::{RunActivityChild, RunActivityGroup, RunActivityStatus};
 mod selection;
 mod thinking;
 mod thinking_slider;

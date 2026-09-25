@@ -21,16 +21,25 @@ fn finish(id: &str) -> ConversationEvent {
     ConversationEvent::MessageFinished {
         message_id: id.into(),
         stop_reason: vega_conversation::types::ConversationStopReason::End,
+        execution_duration_ms: None,
     }
 }
 
-fn cards(stream: &ConversationStream) -> Vec<Entity<ThinkingBlock>> {
+fn cards(stream: &ConversationStream, cx: &App) -> Vec<Entity<ThinkingBlock>> {
     stream
         .entries
         .iter()
-        .filter_map(|entry| match entry {
-            StreamEntry::Thinking { card } => Some(card.clone()),
-            _ => None,
+        .flat_map(|entry| match entry {
+            StreamEntry::RunActivitySegment { group, segment } => group
+                .read(cx)
+                .segment_children(*segment)
+                .into_iter()
+                .filter_map(|child| match child {
+                    RunActivityChild::Thinking(card) => Some(card),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
         })
         .collect()
 }
@@ -66,21 +75,85 @@ async fn i61_thinking_blocks_follow_real_event_order_and_expand(cx: &mut TestApp
             .entries
             .iter()
             .map(|entry| match entry {
-                StreamEntry::Thinking { .. } => "thinking",
+                StreamEntry::RunActivity { .. } => "run-activity",
+                StreamEntry::RunActivitySegment { .. } => "run-activity-segment",
                 StreamEntry::Assistant { .. } => "text",
-                StreamEntry::Tool { .. } => "tool",
-                StreamEntry::ToolGroup { .. } => "tool-group",
                 _ => "unexpected",
             })
             .collect();
-        assert_eq!(kinds, ["thinking", "text", "tool", "thinking", "text"]);
-        let cards = cards(stream);
+        assert_eq!(
+            kinds,
+            [
+                "run-activity",
+                "run-activity-segment",
+                "text",
+                "run-activity-segment",
+                "text"
+            ]
+        );
+        let proposal_order = stream
+            .entries
+            .iter()
+            .flat_map(|entry| match entry {
+                StreamEntry::RunActivity { .. } => Vec::new(),
+                StreamEntry::RunActivitySegment { group, segment } => group
+                    .read(cx)
+                    .segment_children(*segment)
+                    .into_iter()
+                    .map(|child| match child {
+                        RunActivityChild::Thinking(_) => "thinking".to_string(),
+                        RunActivityChild::Tool(_) | RunActivityChild::ToolGroup(_) => {
+                            "tool".to_string()
+                        }
+                        RunActivityChild::Artifact(_) => "artifact".to_string(),
+                    })
+                    .collect(),
+                StreamEntry::Assistant { model, .. } => vec![
+                    model
+                        .committed_lines
+                        .iter()
+                        .chain(model.pending_lines.iter())
+                        .flat_map(|line| line.spans.iter())
+                        .map(|span| span.text.as_str())
+                        .collect::<String>(),
+                ],
+                _ => Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            proposal_order,
+            ["thinking", "开始执行", "tool", "thinking", "回答"]
+        );
+        let activity_kinds = stream
+            .run_activity_groups
+            .get("m")
+            .expect("run activity group")
+            .read(cx)
+            .children()
+            .into_iter()
+            .map(|child| match child {
+                RunActivityChild::Thinking(_) => "thinking",
+                RunActivityChild::Tool(_) => "tool",
+                RunActivityChild::ToolGroup(_) => "tool-group",
+                RunActivityChild::Artifact(_) => "artifact",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(activity_kinds, ["thinking", "tool", "thinking"]);
+        let cards = cards(stream, cx);
         assert_eq!(cards[0].read(cx).text, "先检查条件");
         assert_eq!(cards[1].read(cx).text, "再验证结果");
         assert!(stream.active_thinking.is_none());
         cards
     });
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("run-activity-content").is_none());
+    assert!(visual.debug_bounds("thinking-block").is_none());
+    let run_toggle = visual
+        .debug_bounds("run-activity-toggle")
+        .expect("terminal run header");
+    visual.simulate_click(run_toggle.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("run-activity-content").is_some());
     assert!(visual.debug_bounds("thinking-block").is_some());
     assert!(visual.debug_bounds("thinking-content").is_none());
     let toggle = visual
@@ -125,14 +198,14 @@ async fn i61_thinking_acceptance_fences_and_terminal_cleanup(cx: &mut TestAppCon
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("foreign", "wrong message"), cx);
         stream.apply_event(thinking("m", ""), cx);
-        assert!(cards(stream).is_empty());
+        assert!(cards(stream, cx).is_empty());
         stream.apply_event(thinking("m", "only reasoning"), cx);
         stream.apply_event(finish("foreign"), cx);
         assert!(stream.active_thinking.is_some());
         stream.apply_event(finish("m"), cx);
         stream.apply_event(finish("m"), cx);
         stream.apply_event(thinking("m", "late"), cx);
-        assert_eq!(cards(stream)[0].read(cx).text, "only reasoning");
+        assert_eq!(cards(stream, cx)[0].read(cx).text, "only reasoning");
         assert!(stream.active_thinking.is_none());
         assert!(stream.active_agent_message.is_none());
         stream.apply_event(start("next"), cx);
@@ -141,11 +214,12 @@ async fn i61_thinking_acceptance_fences_and_terminal_cleanup(cx: &mut TestAppCon
         stream.apply_event(
             ConversationEvent::Interrupted {
                 message_id: "next".into(),
+                execution_duration_ms: None,
             },
             cx,
         );
         stream.apply_event(thinking("next", "after cancel"), cx);
-        assert_eq!(cards(stream)[1].read(cx).text, "cancelled reasoning");
+        assert_eq!(cards(stream, cx)[1].read(cx).text, "cancelled reasoning");
         assert!(stream.active_thinking.is_none());
         stream.apply_event(start("plain"), cx);
         stream.apply_event(
@@ -156,23 +230,24 @@ async fn i61_thinking_acceptance_fences_and_terminal_cleanup(cx: &mut TestAppCon
             cx,
         );
         stream.apply_event(finish("plain"), cx);
-        assert_eq!(cards(stream).len(), 2);
+        assert_eq!(cards(stream, cx).len(), 2);
         stream.apply_event(start("failed"), cx);
         stream.apply_event(thinking("failed", "retained before error"), cx);
         stream.apply_event(
             ConversationEvent::Error {
                 message_id: Some("failed".into()),
                 error: Arc::new(std::io::Error::other("owned thinking test failure").into()),
+                execution_duration_ms: None,
             },
             cx,
         );
         stream.apply_event(thinking("failed", "after error"), cx);
-        assert_eq!(cards(stream)[2].read(cx).text, "retained before error");
+        assert_eq!(cards(stream, cx)[2].read(cx).text, "retained before error");
         assert!(stream.active_thinking.is_none());
     });
     // A separate route has no access to the first route's live-only blocks.
     let (_, other, _) = open_controller_stream(cx, "thinking-other-thread");
-    assert!(other.read_with(cx, |stream, _| cards(stream).is_empty()));
+    assert!(other.read_with(cx, |stream, cx| cards(stream, cx).is_empty()));
 }
 
 #[gpui_kit::test]
@@ -199,14 +274,14 @@ async fn i61_utf8_near_view_limit_does_not_create_empty_thinking_block(cx: &mut 
         }
         assert_eq!(stream.thinking_bytes, THINKING_VIEW_BYTES - 1);
         stream.apply_event(thinking("m", "界"), cx);
-        assert_eq!(cards(stream).len(), 4);
+        assert_eq!(cards(stream, cx).len(), 4);
         assert!(
-            cards(stream)
+            cards(stream, cx)
                 .iter()
                 .all(|card| !card.read(cx).text.is_empty())
         );
         assert!(
-            cards(stream)
+            cards(stream, cx)
                 .last()
                 .expect("retained block")
                 .read(cx)
@@ -222,7 +297,7 @@ async fn i61_thinking_bounds_are_utf8_safe_and_cumulative(cx: &mut TestAppContex
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("m", &"界".repeat(THINKING_DELTA_BYTES)), cx);
-        let card = cards(stream)[0].clone();
+        let card = cards(stream, cx)[0].clone();
         assert!(card.read(cx).text.len() <= THINKING_DELTA_BYTES);
         assert!(card.read(cx).truncated);
         for _ in 0..8 {
@@ -240,7 +315,7 @@ async fn i61_thinking_bounds_are_utf8_safe_and_cumulative(cx: &mut TestAppContex
         }
         assert_eq!(stream.thinking_bytes, THINKING_VIEW_BYTES);
         assert_eq!(
-            cards(stream)
+            cards(stream, cx)
                 .iter()
                 .map(|card| card.read(cx).text.len())
                 .sum::<usize>(),
@@ -260,9 +335,9 @@ async fn i61_thinking_bounds_are_utf8_safe_and_cumulative(cx: &mut TestAppContex
                 cx,
             );
         }
-        assert_eq!(cards(stream).len(), THINKING_VIEW_BLOCKS);
+        assert_eq!(cards(stream, cx).len(), THINKING_VIEW_BLOCKS);
         assert!(
-            cards(stream)
+            cards(stream, cx)
                 .last()
                 .expect("last bounded block")
                 .read(cx)
@@ -279,7 +354,7 @@ async fn issue103_thinking_body_is_bounded(cx: &mut TestAppContext) {
         stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
     });
     cx.run_until_parked();
-    assert!(stream.read_with(cx, |stream, cx| cards(stream)[0].read(cx).expanded));
+    assert!(stream.read_with(cx, |stream, cx| cards(stream, cx)[0].read(cx).expanded));
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     let body = visual.debug_bounds("thinking-content").expect("body");
     assert!(
@@ -297,7 +372,7 @@ async fn issue103_thinking_scroll_survives_streaming_and_reopen(cx: &mut TestApp
         stream.apply_event(thinking("m", &"reasoning line\n".repeat(80)), cx);
     });
     cx.run_until_parked();
-    let block = stream.read_with(cx, |stream, _| cards(stream)[0].clone());
+    let block = stream.read_with(cx, |stream, cx| cards(stream, cx)[0].clone());
     assert!(block.read_with(cx, |block, _| block.expanded));
     let scroll = block.read_with(cx, |block, _| block.scroll_handle());
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);

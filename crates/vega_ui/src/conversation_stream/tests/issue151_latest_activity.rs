@@ -30,6 +30,7 @@ fn finish_message(id: &str) -> ConversationEvent {
     ConversationEvent::MessageFinished {
         message_id: id.into(),
         stop_reason: vega_conversation::types::ConversationStopReason::End,
+        execution_duration_ms: None,
     }
 }
 
@@ -41,12 +42,21 @@ fn read_call(id: &str, tool: &str, raw_input: &str) -> ToolCall {
     }
 }
 
-fn group(stream: &ConversationStream) -> Entity<ToolActivityGroup> {
+fn group(stream: &ConversationStream, cx: &App) -> Entity<ToolActivityGroup> {
     stream
         .entries
         .iter()
+        .rev()
         .find_map(|entry| match entry {
             StreamEntry::ToolGroup { group } => Some(group.clone()),
+            StreamEntry::RunActivitySegment { group, segment } => group
+                .read(cx)
+                .segment_children(*segment)
+                .into_iter()
+                .find_map(|child| match child {
+                    RunActivityChild::ToolGroup(group) => Some(group),
+                    _ => None,
+                }),
             _ => None,
         })
         .expect("tool activity group")
@@ -58,11 +68,21 @@ fn activity_expansion(stream: &ConversationStream, cx: &App) -> Vec<bool> {
     stream
         .entries
         .iter()
-        .filter_map(|entry| match entry {
-            StreamEntry::Thinking { card } => Some(card.read(cx).expanded),
-            StreamEntry::Tool { card } => Some(card.read(cx).is_expanded()),
-            StreamEntry::ToolGroup { group } => Some(group.read(cx).expanded()),
-            _ => None,
+        .flat_map(|entry| match entry {
+            StreamEntry::RunActivitySegment { group, segment } => group
+                .read(cx)
+                .segment_children(*segment)
+                .into_iter()
+                .filter_map(|child| match child {
+                    RunActivityChild::Thinking(card) => Some(card.read(cx).expanded),
+                    RunActivityChild::Tool(card) => Some(card.read(cx).is_expanded()),
+                    RunActivityChild::ToolGroup(group) => Some(group.read(cx).expanded()),
+                    RunActivityChild::Artifact(_) => None,
+                })
+                .collect::<Vec<_>>(),
+            StreamEntry::Tool { card } => vec![card.read(cx).is_expanded()],
+            StreamEntry::ToolGroup { group } => vec![group.read(cx).expanded()],
+            _ => Vec::new(),
         })
         .collect()
 }
@@ -209,7 +229,7 @@ async fn issue151_manual_expansion_of_an_older_unit_survives_newer_content(
     );
     assert!(
         stream.read_with(cx, |stream, cx| {
-            let group = group(stream);
+            let group = group(stream, cx);
             let group = group.read(cx);
             !group
                 .children()
@@ -238,7 +258,7 @@ async fn issue151_group_join_keeps_the_group_expanded_with_compact_children(
         }
     });
     stream.read_with(cx, |stream, cx| {
-        let group = group(stream);
+        let group = group(stream, cx);
         let group = group.read(cx);
         assert!(group.expanded(), "the current group opens by default");
         assert_eq!(group.len(), 2);
@@ -265,7 +285,7 @@ async fn issue151_group_join_keeps_the_group_expanded_with_compact_children(
         );
     });
     stream.read_with(cx, |stream, cx| {
-        let group = group(stream);
+        let group = group(stream, cx);
         let group = group.read(cx);
         assert!(group.expanded(), "the group is still the newest unit");
         assert_eq!(group.len(), 3);
@@ -376,8 +396,8 @@ async fn issue151_hydration_and_reopen_stay_collapsed(cx: &mut TestAppContext) {
         }
     });
     live.read_with(cx, |stream, cx| {
-        assert!(group(stream).read(cx).expanded());
-        assert_eq!(group(stream).read(cx).row_count(cx), 3);
+        assert!(group(stream, cx).read(cx).expanded());
+        assert_eq!(group(stream, cx).read(cx).row_count(cx), 3);
     });
 
     for thread_id in ["issue151-hydrated", "issue151-reopened"] {
@@ -385,10 +405,10 @@ async fn issue151_hydration_and_reopen_stay_collapsed(cx: &mut TestAppContext) {
         hydrated.update(cx, |stream, cx| stream.apply_history_page(page(), cx));
         hydrated.read_with(cx, |stream, cx| {
             assert!(
-                !group(stream).read(cx).expanded(),
+                !group(stream, cx).read(cx).expanded(),
                 "R151-6: a hydrated group is not the current activity unit"
             );
-            assert_eq!(group(stream).read(cx).row_count(cx), 1);
+            assert_eq!(group(stream, cx).read(cx).row_count(cx), 1);
         });
     }
 }

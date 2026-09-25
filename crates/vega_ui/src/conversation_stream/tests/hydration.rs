@@ -60,12 +60,14 @@ async fn failed_empty_assistant_hydrates_a_visible_safe_reason(cx: &mut TestAppC
                         message_id: "failed-answer".into(),
                         content: String::new(),
                         status: vega_conversation::history::AssistantStatus::Failed,
+                        execution_duration_ms: None,
                     },
                     HistoryEntry::AssistantText {
                         seq: 3,
                         message_id: "completed-answer".into(),
                         content: "done".into(),
                         status: vega_conversation::history::AssistantStatus::Done,
+                        execution_duration_ms: None,
                     },
                 ],
                 None,
@@ -204,7 +206,7 @@ async fn scroll_up_page_prepends_and_keeps_streaming_turn_on_target(cx: &mut Tes
     });
     assert_eq!(
         kinds,
-        vec!["user", "assistant", "assistant"],
+        vec!["user", "assistant", "run-activity", "assistant"],
         "the page prepends above the live turn"
     );
     assert!(live_text > 0, "the live turn still materializes rows");

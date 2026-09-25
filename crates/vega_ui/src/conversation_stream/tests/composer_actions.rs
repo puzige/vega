@@ -218,6 +218,7 @@ async fn r11_composer_mode_ack_preserves_later_edits_and_terminal_precedence(
             ConversationEvent::MessageFinished {
                 message_id: "finished-before-click".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );

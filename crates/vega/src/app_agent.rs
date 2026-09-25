@@ -462,8 +462,10 @@ impl AppAgentController {
     ) {
         let (message_id, failure) = match event {
             ConversationEvent::MessageFinished { message_id, .. }
-            | ConversationEvent::Interrupted { message_id } => (Some(message_id), None),
-            ConversationEvent::Error { message_id, error } => (
+            | ConversationEvent::Interrupted { message_id, .. } => (Some(message_id), None),
+            ConversationEvent::Error {
+                message_id, error, ..
+            } => (
                 message_id.as_ref(),
                 Some(RunFailureKind::from_runtime(error)),
             ),

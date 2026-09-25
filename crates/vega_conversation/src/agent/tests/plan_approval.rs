@@ -106,7 +106,7 @@ async fn approved_instruction_starts_execute_turn_without_duplicate_user_row() {
         },
     )
     .unwrap();
-    messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 3).unwrap();
+    messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 3, None).unwrap();
     let outcome = crate::plans::review_plan(
         &store,
         "thread-1",
@@ -221,7 +221,7 @@ async fn forged_or_tampered_user_rows_cannot_start_approved_turn() {
         },
     )
     .unwrap();
-    messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 12).unwrap();
+    messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 12, None).unwrap();
     let outcome = crate::plans::review_plan(
         &store,
         "thread-1",
@@ -281,7 +281,7 @@ async fn approval_winner_executes_after_late_plan_completion_loses() {
         )
         .unwrap();
         if id == "old" {
-            messages::complete_plan(store.conn(), "thread-1", id, "old plan", 3).unwrap();
+            messages::complete_plan(store.conn(), "thread-1", id, "old plan", 3, None).unwrap();
         }
     }
     let outcome = crate::plans::review_plan(
@@ -297,7 +297,9 @@ async fn approval_winner_executes_after_late_plan_completion_loses() {
     else {
         panic!("approval must create instruction")
     };
-    assert!(messages::complete_plan(store.conn(), "thread-1", "late", "late plan", 4).is_err());
+    assert!(
+        messages::complete_plan(store.conn(), "thread-1", "late", "late plan", 4, None).is_err()
+    );
     let tools = vega_tools::Tools::new(dir.path()).unwrap();
     let provider = MockProvider::new(vec![ScriptStep::events(vec![ProviderEvent::Done {
         stop_reason: StopReason::End,
@@ -351,7 +353,7 @@ async fn concurrent_approved_instruction_claim_starts_provider_once() {
         },
     )
     .unwrap();
-    messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 3).unwrap();
+    messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 3, None).unwrap();
     let outcome = crate::plans::review_plan(
         &store,
         "thread-1",
@@ -435,7 +437,7 @@ async fn ambiguous_same_timestamp_approved_plans_reject_instruction() {
         },
     )
     .unwrap();
-    messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 3).unwrap();
+    messages::complete_plan(store.conn(), "thread-1", "plan", "steps", 3, None).unwrap();
     let outcome = crate::plans::review_plan(
         &store,
         "thread-1",

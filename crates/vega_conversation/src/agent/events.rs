@@ -1,17 +1,30 @@
 use super::*;
 
-pub(crate) async fn process_runtime_events<F>(
+pub(super) struct RuntimeEventContext<'a, F> {
+    pub(super) message_id: &'a str,
+    pub(super) streamed_content: &'a mut String,
+    pub(super) events: &'a mut Vec<ConversationEvent>,
+    pub(super) event_sink: &'a mut F,
+    pub(super) cancel: CancellationToken,
+    pub(super) run_started_at: std::time::Instant,
+}
+
+pub(super) async fn process_runtime_events<F>(
     mut receiver: mpsc::Receiver<RuntimeEnvelope>,
     actor: &PersistenceActor,
-    message_id: &str,
-    streamed_content: &mut String,
-    events: &mut Vec<ConversationEvent>,
-    event_sink: &mut F,
-    cancel: CancellationToken,
+    context: RuntimeEventContext<'_, F>,
 ) -> Result<(), VegaError>
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
 {
+    let RuntimeEventContext {
+        message_id,
+        streamed_content,
+        events,
+        event_sink,
+        cancel,
+        run_started_at,
+    } = context;
     let mut pending_text = Vec::new();
     let mut pending_text_bytes = 0usize;
     let mut batch_deadline = None;
@@ -96,31 +109,46 @@ where
             pending_text_bytes = 0;
             match flushed {
                 Ok(()) if matches!(event, RuntimeEvent::ToolCallOutput { .. }) => Ok(()),
-                Ok(()) => match actor.event(event.clone(), streamed_content.clone()).await {
-                    Ok(()) => {
-                        let terminal_output = match &event {
-                            RuntimeEvent::ToolCallFinished(result)
-                            | RuntimeEvent::ToolCallValidationRejected { result, .. }
-                            | RuntimeEvent::ToolCallConflict { result, .. } => {
-                                Some(ConversationEvent::ToolCallOutput {
-                                    call_id: result.call_id.clone(),
-                                    chunk: crate::types::ToolOutputChunk(result.output.clone()),
-                                })
+                Ok(()) => {
+                    let execution_duration_ms = terminal_execution_duration(&event, run_started_at);
+                    match actor
+                        .event(
+                            event.clone(),
+                            streamed_content.clone(),
+                            execution_duration_ms
+                                .map(|duration| i64::try_from(duration).unwrap_or(i64::MAX)),
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            let terminal_output = match &event {
+                                RuntimeEvent::ToolCallFinished(result)
+                                | RuntimeEvent::ToolCallValidationRejected { result, .. }
+                                | RuntimeEvent::ToolCallConflict { result, .. } => {
+                                    Some(ConversationEvent::ToolCallOutput {
+                                        call_id: result.call_id.clone(),
+                                        chunk: crate::types::ToolOutputChunk(result.output.clone()),
+                                    })
+                                }
+                                _ => None,
+                            };
+                            if let Some(output) = terminal_output {
+                                event_sink(&output)?;
+                                events.push(output);
                             }
-                            _ => None,
-                        };
-                        if let Some(output) = terminal_output {
-                            event_sink(&output)?;
-                            events.push(output);
+                            if let Some(converted) = from_runtime_event(message_id, &event) {
+                                let converted = with_terminal_execution_duration(
+                                    converted,
+                                    execution_duration_ms,
+                                );
+                                event_sink(&converted)?;
+                                events.push(converted);
+                            }
+                            Ok(())
                         }
-                        if let Some(converted) = from_runtime_event(message_id, &event) {
-                            event_sink(&converted)?;
-                            events.push(converted);
-                        }
-                        Ok(())
+                        Err(error) => Err(error),
                     }
-                    Err(error) => Err(error),
-                },
+                }
                 Err(error) => Err(error),
             }
         };
@@ -163,6 +191,46 @@ where
     Ok(())
 }
 
+fn terminal_execution_duration(
+    event: &RuntimeEvent,
+    run_started_at: std::time::Instant,
+) -> Option<u64> {
+    matches!(
+        event,
+        RuntimeEvent::Finished(_) | RuntimeEvent::Interrupted | RuntimeEvent::Error(_)
+    )
+    .then(|| u64::try_from(run_started_at.elapsed().as_millis()).unwrap_or(u64::MAX))
+}
+
+fn with_terminal_execution_duration(
+    event: ConversationEvent,
+    execution_duration_ms: Option<u64>,
+) -> ConversationEvent {
+    match event {
+        ConversationEvent::MessageFinished {
+            message_id,
+            stop_reason,
+            ..
+        } => ConversationEvent::MessageFinished {
+            message_id,
+            stop_reason,
+            execution_duration_ms,
+        },
+        ConversationEvent::Interrupted { message_id, .. } => ConversationEvent::Interrupted {
+            message_id,
+            execution_duration_ms,
+        },
+        ConversationEvent::Error {
+            message_id, error, ..
+        } => ConversationEvent::Error {
+            message_id,
+            error,
+            execution_duration_ms,
+        },
+        other => other,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn persist_runtime_event(
     store: &Store,
@@ -174,6 +242,7 @@ pub(crate) fn persist_runtime_event(
     streamed_content: &str,
     next_tool_seq: &mut i64,
     event: &RuntimeEvent,
+    execution_duration_ms: Option<i64>,
 ) -> Result<(), VegaError> {
     match event {
         RuntimeEvent::SkillSnapshot { binding, snapshot } => {
@@ -533,6 +602,7 @@ pub(crate) fn persist_runtime_event(
                     message_id,
                     streamed_content,
                     now_ms(),
+                    execution_duration_ms,
                 )
                 .map_err(|error| VegaError::Tool {
                     tool: "plan".to_string(),
@@ -540,7 +610,13 @@ pub(crate) fn persist_runtime_event(
                 })?;
             } else {
                 ensure_message_updated(
-                    messages::finish_streaming(store.conn(), message_id, streamed_content, "done")?,
+                    messages::finish_streaming(
+                        store.conn(),
+                        message_id,
+                        streamed_content,
+                        "done",
+                        execution_duration_ms,
+                    )?,
                     message_id,
                 )?;
                 vega_store::threads::open_thread(store.conn(), thread_id, now_ms())?;
@@ -553,6 +629,7 @@ pub(crate) fn persist_runtime_event(
                     message_id,
                     streamed_content,
                     "interrupted",
+                    execution_duration_ms,
                 )?,
                 message_id,
             )?;
@@ -560,7 +637,13 @@ pub(crate) fn persist_runtime_event(
         }
         RuntimeEvent::Error(_) => {
             ensure_message_updated(
-                messages::finish_streaming(store.conn(), message_id, streamed_content, "failed")?,
+                messages::finish_streaming(
+                    store.conn(),
+                    message_id,
+                    streamed_content,
+                    "failed",
+                    execution_duration_ms,
+                )?,
                 message_id,
             )?;
             vega_store::threads::open_thread(store.conn(), thread_id, now_ms())?;

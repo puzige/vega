@@ -272,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_twenty_four_tables_at_current_user_version() {
+    fn schema_has_twenty_five_tables_at_current_user_version() {
         let store = store();
         let user_version: i64 = store
             .conn()
@@ -287,9 +287,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        // Issues 76, 73 and 74 append model-policy, MCP and Skills tables
-        // while preserving permission and raw transcript tables.
-        assert_eq!(user_version, 13);
-        assert_eq!(table_count, 24);
+        assert_eq!(user_version, 14);
+        assert_eq!(table_count, 25);
     }
 }

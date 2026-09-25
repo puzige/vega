@@ -839,14 +839,19 @@ impl Default for MessageCopy {
 /// 外侧」实现 —— 不进入 MarkdownStream，T15 管线零侵入；每段 assistant 流
 /// 拥有独立的 final 终结语义（回放结束 `finish()`，tech-spec §5.4）。
 pub(crate) enum StreamEntry {
+    RunActivity {
+        group: Entity<RunActivityGroup>,
+    },
+    RunActivitySegment {
+        group: Entity<RunActivityGroup>,
+        segment: usize,
+    },
     /// Content-free compaction activity at its original live stream boundary.
     ContextCompaction {
         model: String,
         record: vega_conversation::types::ContextCompactionStatusRecord,
         restored: bool,
     },
-    /// Live reasoning is deliberately separate from persisted answer text.
-    Thinking { card: Entity<ThinkingBlock> },
     /// Local user echo (Composer send): static rows, materialized once.
     User {
         lines: Vec<StreamLine>,
@@ -864,18 +869,30 @@ pub(crate) enum StreamEntry {
         failure: Option<RunFailureKind>,
     },
     /// One audited tool call rendered directly as a compact activity row.
-    Tool { card: Entity<ToolCard> },
+    Tool {
+        card: Entity<ToolCard>,
+    },
     /// Two or more adjacent audited calls rendered as one activity item.
-    ToolGroup { group: Entity<ToolActivityGroup> },
+    ToolGroup {
+        group: Entity<ToolActivityGroup>,
+    },
     /// One route-owned artifact, placed immediately after its exact tool.
-    Artifact { card: Entity<ArtifactCard> },
+    Artifact {
+        card: Entity<ArtifactCard>,
+    },
     /// Sole active permission request/response handoff card.
-    Permission { card: Entity<PermissionCard> },
+    Permission {
+        card: Entity<PermissionCard>,
+    },
     /// One durable Plan review card.
-    Plan { card: Entity<PlanCard> },
+    Plan {
+        card: Entity<PlanCard>,
+    },
     /// One read-only per-task cost summary card (S7-T40), projected by
     /// `vega_conversation::summary` and applied by the app layer.
-    Summary { card: Entity<SummaryCard> },
+    Summary {
+        card: Entity<SummaryCard>,
+    },
     /// Content-free historical Skill provenance; never a live capability.
     SkillActivation {
         activation: vega_conversation::history::SkillHistoryActivation,
@@ -885,7 +902,10 @@ pub(crate) enum StreamEntry {
 impl StreamEntry {
     pub(crate) fn row_count(&self, cx: &App) -> usize {
         match self {
-            StreamEntry::Thinking { card } => 1 + usize::from(card.read(cx).expanded),
+            StreamEntry::RunActivity { .. } => 1,
+            StreamEntry::RunActivitySegment { group, segment } => {
+                group.read(cx).segment_row_count(*segment, cx)
+            }
             StreamEntry::User { lines, .. } => lines.len(),
             StreamEntry::UserImages { .. } => 1,
             StreamEntry::Assistant { model, failure, .. } => {

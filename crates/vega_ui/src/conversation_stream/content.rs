@@ -1,5 +1,13 @@
 use super::*;
 
+fn run_activity_status(status: vega_conversation::history::AssistantStatus) -> RunActivityStatus {
+    match status {
+        vega_conversation::history::AssistantStatus::Done => RunActivityStatus::Completed,
+        vega_conversation::history::AssistantStatus::Failed => RunActivityStatus::Failed,
+        vega_conversation::history::AssistantStatus::Interrupted => RunActivityStatus::Interrupted,
+    }
+}
+
 impl ConversationStream {
     /// Shows a restart-safe, non-executing projection for a durable approved
     /// instruction. Merely opening a thread must never read Keychain or start
@@ -160,6 +168,18 @@ impl ConversationStream {
         let mut hydrated: Vec<StreamEntry> = Vec::new();
         let mut hydrated_identities: Vec<StreamEntryIdentity> = Vec::new();
         let mut assistant_segments: HashMap<String, usize> = HashMap::new();
+        let terminal_runs: HashMap<_, _> = history_entries
+            .iter()
+            .filter_map(|entry| match entry {
+                HistoryEntry::AssistantText {
+                    message_id,
+                    status,
+                    execution_duration_ms: Some(duration),
+                    ..
+                } => Some((message_id.clone(), (*status, *duration))),
+                _ => None,
+            })
+            .collect();
         for entry in history_entries {
             match entry {
                 HistoryEntry::UserImages {
@@ -198,7 +218,24 @@ impl ConversationStream {
                     message_id,
                     content,
                     status,
+                    execution_duration_ms,
                 } => {
+                    if let Some((terminal_status, duration)) = terminal_runs.get(&message_id) {
+                        self.ensure_hydrated_run_activity_group(
+                            &message_id,
+                            run_activity_status(*terminal_status),
+                            Some(*duration),
+                            &mut hydrated,
+                            &mut hydrated_identities,
+                            cx,
+                        );
+                    }
+                    if status == vega_conversation::history::AssistantStatus::Done
+                        && content.is_empty()
+                        && execution_duration_ms.is_some()
+                    {
+                        continue;
+                    }
                     let segment = assistant_segments.entry(message_id.clone()).or_default();
                     let segment_ordinal = *segment;
                     *segment += 1;
@@ -220,11 +257,25 @@ impl ConversationStream {
                         Some(seq),
                     ));
                 }
-                HistoryEntry::Plan { seq, plan } => {
+                HistoryEntry::Plan {
+                    seq,
+                    plan,
+                    execution_duration_ms,
+                } => {
                     if plan.thread_id != self.thread.id || self.plan_cards.contains_key(&plan.id) {
                         continue;
                     }
                     let id = plan.id.clone();
+                    if let Some(duration) = execution_duration_ms {
+                        self.ensure_hydrated_run_activity_group(
+                            &id,
+                            RunActivityStatus::Completed,
+                            Some(duration),
+                            &mut hydrated,
+                            &mut hydrated_identities,
+                            cx,
+                        );
+                    }
                     let card = cx.new(|cx| PlanCard::new(plan, cx));
                     cx.subscribe(&card, |_, _, event: &PlanReviewRequested, cx| {
                         cx.emit(event.clone());
@@ -271,6 +322,48 @@ impl ConversationStream {
                     let card = cx.new(|_| ToolCard::hydrated(input, status, approval, result));
                     self.observe_tool_card(&card, cx);
                     self.tool_cards.insert(call_id.clone(), card.clone());
+                    let run_details =
+                        self.run_activity_groups
+                            .get(&message_id)
+                            .cloned()
+                            .or_else(|| {
+                                terminal_runs.get(&message_id).map(|(status, duration)| {
+                                    self.ensure_hydrated_run_activity_group(
+                                        &message_id,
+                                        run_activity_status(*status),
+                                        Some(*duration),
+                                        &mut hydrated,
+                                        &mut hydrated_identities,
+                                        cx,
+                                    )
+                                })
+                            });
+                    if let Some(group) = run_details {
+                        let segment = hydrated.last().and_then(|entry| match entry {
+                            StreamEntry::RunActivitySegment {
+                                group: previous,
+                                segment,
+                            } if previous == &group => Some(*segment),
+                            _ => None,
+                        });
+                        let segment = segment.unwrap_or_else(|| {
+                            let segment = group.update(cx, RunActivityGroup::start_segment);
+                            hydrated.push(StreamEntry::RunActivitySegment {
+                                group: group.clone(),
+                                segment,
+                            });
+                            hydrated_identities.push(self.durable_entry_identity(
+                                &message_id,
+                                &format!("run-activity-segment-{segment}"),
+                                Some(seq),
+                            ));
+                            segment
+                        });
+                        group.update(cx, |group, cx| {
+                            group.append_hydrated_tool(segment, card, cx)
+                        });
+                        continue;
+                    }
                     let previous_len = hydrated.len();
                     self.append_hydrated_tool(&mut hydrated, card, cx);
                     if hydrated.len() > previous_len {
@@ -300,6 +393,105 @@ impl ConversationStream {
             }
         }
         (hydrated, hydrated_identities)
+    }
+
+    fn ensure_hydrated_run_activity_group(
+        &mut self,
+        message_id: &str,
+        status: RunActivityStatus,
+        execution_duration_ms: Option<u64>,
+        entries: &mut Vec<StreamEntry>,
+        identities: &mut Vec<StreamEntryIdentity>,
+        cx: &mut Context<Self>,
+    ) -> Entity<RunActivityGroup> {
+        if let Some(group) = self.run_activity_groups.get(message_id) {
+            return group.clone();
+        }
+        let group = cx.new(|_| RunActivityGroup::new(status, execution_duration_ms, false));
+        self.observe_run_activity_group(&group, cx);
+        entries.push(StreamEntry::RunActivity {
+            group: group.clone(),
+        });
+        identities.push(self.durable_entry_identity(message_id, "run-activity", None));
+        self.run_activity_groups
+            .insert(message_id.to_string(), group.clone());
+        group
+    }
+
+    fn ensure_live_run_activity_header(
+        &mut self,
+        message_id: &str,
+        group: &Entity<RunActivityGroup>,
+        sequence: Option<i64>,
+        before_assistant: bool,
+    ) {
+        if self.entries.iter().any(
+            |entry| matches!(entry, StreamEntry::RunActivity { group: owned } if owned == group),
+        ) {
+            return;
+        }
+        let index = if before_assistant {
+            self.entry_identities.iter().position(|identity| {
+                identity.message_id.as_deref() == Some(message_id)
+                    && identity
+                        .key
+                        .rsplit_once(":kind:")
+                        .is_some_and(|(_, kind)| kind.starts_with("assistant-text-"))
+            })
+        } else {
+            None
+        }
+        .unwrap_or(self.entries.len());
+        self.entries.insert(
+            index,
+            StreamEntry::RunActivity {
+                group: group.clone(),
+            },
+        );
+        self.list_insert(index);
+        let identity = self.durable_entry_identity(message_id, "run-activity", sequence);
+        self.set_entry_identity(index, identity);
+        if let Some((_, active_index)) = &mut self.active_agent_message
+            && *active_index != usize::MAX
+            && index <= *active_index
+        {
+            *active_index += 1;
+        }
+        if let Some((_, finished_index)) = &mut self.last_finished_agent_message
+            && index <= *finished_index
+        {
+            *finished_index += 1;
+        }
+    }
+
+    pub(crate) fn ensure_live_run_activity_segment(
+        &mut self,
+        message_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<RunActivityGroup>, usize)> {
+        let (active_id, group) = self.active_run_activity.clone()?;
+        if active_id != message_id {
+            return None;
+        }
+        if let Some(segment) = self.active_run_activity_segment {
+            return Some((group, segment));
+        }
+        self.ensure_live_run_activity_header(message_id, &group, self.active_agent_sequence, false);
+        let segment = group.update(cx, |group, cx| group.start_segment(cx));
+        let index = self.entries.len();
+        self.entries.push(StreamEntry::RunActivitySegment {
+            group: group.clone(),
+            segment,
+        });
+        self.list_append(index);
+        let identity = self.durable_entry_identity(
+            message_id,
+            &format!("run-activity-segment-{segment}"),
+            self.active_agent_sequence,
+        );
+        self.set_entry_identity(index, identity);
+        self.active_run_activity_segment = Some(segment);
+        Some((group, segment))
     }
 
     pub fn request_message_location(&mut self, message_id: &str, cx: &mut Context<Self>) {
@@ -373,10 +565,14 @@ impl ConversationStream {
         self.message_anchor_keyboard_id = None;
         self.list.reset(0);
         self.tool_cards.clear();
+        self.run_activity_groups.clear();
         self.artifact_cards.clear();
         self.plan_cards.clear();
         self.summary_cards.clear();
         self.active_agent_message = None;
+        self.active_agent_sequence = None;
+        self.active_run_activity = None;
+        self.active_run_activity_segment = None;
         self.active_segment_ordinal = 0;
         self.active_segment_has_text = false;
         self.active_thinking = None;
@@ -733,6 +929,60 @@ impl ConversationStream {
         self.entries.iter().map(|entry| entry.row_count(cx)).sum()
     }
 
+    fn observe_run_activity_group(
+        &mut self,
+        group: &Entity<RunActivityGroup>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.observe(group, |this, group, cx| {
+            let indexes = this
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| match entry {
+                    StreamEntry::RunActivity { group: owned }
+                    | StreamEntry::RunActivitySegment { group: owned, .. }
+                        if owned == &group =>
+                    {
+                        Some(index)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            for index in indexes {
+                this.invalidate_item(Some(index));
+            }
+            cx.notify();
+        })
+        .detach();
+    }
+
+    fn finish_run_activity(
+        &mut self,
+        message_id: &str,
+        status: RunActivityStatus,
+        execution_duration_ms: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(group) = self.run_activity_groups.get(message_id).cloned() {
+            if self
+                .active_agent_message
+                .as_ref()
+                .is_some_and(|(active, _)| active == message_id)
+            {
+                self.ensure_live_run_activity_header(
+                    message_id,
+                    &group,
+                    self.active_agent_sequence,
+                    true,
+                );
+            }
+            group.update(cx, |group, cx| {
+                group.complete(status, execution_duration_ms, cx)
+            });
+        }
+    }
+
     /// Applies an already-durable shared lifecycle event. The UI never reads
     /// SQLite and never consumes runtime-local events.
     pub fn apply_event(&mut self, event: ConversationEvent, cx: &mut Context<Self>) {
@@ -748,22 +998,22 @@ impl ConversationStream {
                 self.last_finished_agent_message = None;
                 self.active_thinking = None;
                 self.active_skills.clear();
-                let entry_index = self.entries.len();
-                self.entries.push(StreamEntry::Assistant {
-                    copy: MessageCopy::default(),
-                    stream: Box::new(MarkdownStream::new()),
-                    model: StreamModel::default(),
-                    failure: None,
-                });
-                self.list_append(entry_index);
+                let group =
+                    cx.new(|_| RunActivityGroup::new(RunActivityStatus::Running, None, true));
+                self.observe_run_activity_group(&group, cx);
+                self.run_activity_groups
+                    .insert(message_id.clone(), group.clone());
+                self.active_run_activity = Some((message_id.clone(), group.clone()));
                 self.active_segment_ordinal = 0;
-                let identity = self.durable_entry_identity(
+                self.active_agent_sequence = i64::try_from(seq).ok();
+                self.active_run_activity_segment = None;
+                self.ensure_live_run_activity_header(
                     &message_id,
-                    "assistant-text-0",
-                    i64::try_from(seq).ok(),
+                    &group,
+                    self.active_agent_sequence,
+                    false,
                 );
-                self.set_entry_identity(entry_index, identity);
-                self.active_agent_message = Some((message_id, entry_index));
+                self.active_agent_message = Some((message_id, usize::MAX));
                 self.active_segment_has_text = false;
                 cx.notify();
             }
@@ -783,6 +1033,7 @@ impl ConversationStream {
                 // per-token path.
                 if !self.active_segment_has_text {
                     self.collapse_current_activity(cx);
+                    self.active_run_activity_segment = None;
                 }
                 self.active_thinking = None;
                 let entry_index = if entry_index == usize::MAX {
@@ -797,7 +1048,11 @@ impl ConversationStream {
                     let identity = self.durable_entry_identity(
                         &message_id,
                         &format!("assistant-text-{}", self.active_segment_ordinal),
-                        None,
+                        if self.active_segment_ordinal == 0 {
+                            self.active_agent_sequence
+                        } else {
+                            None
+                        },
                     );
                     self.set_entry_identity(index, identity);
                     if let Some((_, active_index)) = &mut self.active_agent_message {
@@ -849,20 +1104,9 @@ impl ConversationStream {
                 }
                 self.close_active_segment_before_tool();
                 let call_id = call.id.clone();
-                let message_id = self
-                    .active_agent_message
-                    .as_ref()
-                    .map(|(message_id, _)| message_id.clone());
                 let card = cx.new(|_| ToolCard::proposed(&call));
                 self.observe_tool_card(&card, cx);
                 self.append_live_tool(card.clone(), cx);
-                if let Some(entry_index) = self.entries.iter().position(
-                    |entry| matches!(entry, StreamEntry::Tool { card: entry_card } if entry_card == &card),
-                ) {
-                    let identity =
-                        self.tool_call_identity(&call_id, message_id.as_deref(), None);
-                    self.set_entry_identity(entry_index, identity);
-                }
                 self.tool_cards.insert(call_id, card);
                 self.install_pending_permission(cx);
                 cx.notify();
@@ -920,17 +1164,46 @@ impl ConversationStream {
                     project_id: self.thread.project_id.clone(),
                 });
             }
-            ConversationEvent::MessageFinished { message_id, .. } => {
+            ConversationEvent::MessageFinished {
+                message_id,
+                execution_duration_ms,
+                ..
+            } => {
+                self.finish_run_activity(
+                    &message_id,
+                    RunActivityStatus::Completed,
+                    execution_duration_ms,
+                    cx,
+                );
                 self.record_composer_terminal(&message_id, false);
                 self.finish_agent_message(&message_id, cx);
             }
-            ConversationEvent::Interrupted { message_id } => {
+            ConversationEvent::Interrupted {
+                message_id,
+                execution_duration_ms,
+            } => {
+                self.finish_run_activity(
+                    &message_id,
+                    RunActivityStatus::Interrupted,
+                    execution_duration_ms,
+                    cx,
+                );
                 self.record_composer_terminal(&message_id, true);
                 self.finish_agent_message(&message_id, cx);
             }
-            ConversationEvent::Error { message_id, error } => {
+            ConversationEvent::Error {
+                message_id,
+                error,
+                execution_duration_ms,
+            } => {
                 let failure = RunFailureKind::from_runtime(&error);
                 if let Some(message_id) = message_id {
+                    self.finish_run_activity(
+                        &message_id,
+                        RunActivityStatus::Failed,
+                        execution_duration_ms,
+                        cx,
+                    );
                     // A stale event must not annotate the currently active
                     // assistant turn (nor overwrite a newer composer error).
                     if let Some((active_id, entry_index)) = self.active_agent_message.as_ref()
@@ -976,20 +1249,31 @@ impl ConversationStream {
         // 这是从 mutable tail 摘除前的最后一次显式失效（C4 白名单），必须
         // 在本帧内完成最终物化——否则批量 ingress 末批 [delta…, Finished]
         // 的尾部 delta 永不上屏、终块永无 committed 高亮。
-        if let Some(StreamEntry::Assistant { stream, model, .. }) =
-            self.entries.get_mut(*entry_index)
-        {
-            stream.finish();
-            let snapshot = stream.snapshot();
-            model.sync(&snapshot, &self.counters);
+        if *entry_index != usize::MAX {
+            if let Some(StreamEntry::Assistant { stream, model, .. }) =
+                self.entries.get_mut(*entry_index)
+            {
+                stream.finish();
+                let snapshot = stream.snapshot();
+                model.sync(&snapshot, &self.counters);
+            }
+            self.invalidate_item(Some(*entry_index));
         }
-        self.invalidate_item(Some(*entry_index));
         self.last_finished_agent_message = self
             .active_agent_message
             .take()
             .filter(|(_, index)| *index != usize::MAX);
         self.active_segment_has_text = false;
         self.active_segment_ordinal = 0;
+        self.active_agent_sequence = None;
+        self.active_run_activity_segment = None;
+        if self
+            .active_run_activity
+            .as_ref()
+            .is_some_and(|(active, _)| active == message_id)
+        {
+            self.active_run_activity = None;
+        }
         self.timeout_permission(cx);
         cx.notify();
     }
@@ -1029,20 +1313,52 @@ impl ConversationStream {
     /// units is deliberately untouched — they are not the newest, so the user
     /// may keep them open alongside the current one.
     pub(crate) fn collapse_current_activity(&mut self, cx: &mut Context<Self>) {
+        let active_group = self
+            .active_run_activity
+            .as_ref()
+            .map(|(_, group)| group.clone())
+            .filter(|group| group.read(cx).has_children());
+        let latest_group = active_group.or_else(|| {
+            self.entries.iter().rev().find_map(|entry| match entry {
+                StreamEntry::RunActivity { group }
+                | StreamEntry::RunActivitySegment { group, .. }
+                    if group.read(cx).has_children() =>
+                {
+                    Some(group.clone())
+                }
+                _ => None,
+            })
+        });
+        if let Some(group) = latest_group {
+            group.update(cx, |group, cx| group.collapse_latest_activity(cx));
+            let indices = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(index, entry)| match entry {
+                    StreamEntry::RunActivity { group: owned }
+                    | StreamEntry::RunActivitySegment { group: owned, .. }
+                        if owned == &group =>
+                    {
+                        Some(index)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            for index in indices {
+                self.invalidate_item(Some(index));
+            }
+            return;
+        }
         let Some(index) = self.entries.iter().rposition(|entry| {
             matches!(
                 entry,
-                StreamEntry::Thinking { .. }
-                    | StreamEntry::Tool { .. }
-                    | StreamEntry::ToolGroup { .. }
+                StreamEntry::Tool { .. } | StreamEntry::ToolGroup { .. }
             )
         }) else {
             return;
         };
         match &self.entries[index] {
-            StreamEntry::Thinking { card } => {
-                card.update(cx, |card, cx| card.set_expanded(false, cx));
-            }
             StreamEntry::Tool { card } => {
                 card.update(cx, |card, cx| card.set_expanded(false, cx));
             }
@@ -1118,6 +1434,8 @@ impl ConversationStream {
         cx: &App,
     ) -> bool {
         match entry {
+            StreamEntry::RunActivity { .. } => false,
+            StreamEntry::RunActivitySegment { group, .. } => group.read(cx).contains_tool(card, cx),
             StreamEntry::Tool { card: owned } => owned == card,
             StreamEntry::ToolGroup { group } => group.read(cx).contains(card),
             _ => false,
@@ -1127,7 +1445,11 @@ impl ConversationStream {
     pub(crate) fn tool_entry_index(&self, card: &Entity<ToolCard>, cx: &App) -> Option<usize> {
         self.entries
             .iter()
-            .position(|entry| Self::tool_entry_contains(entry, card, cx))
+            .position(|entry| {
+                matches!(entry, StreamEntry::RunActivitySegment { group, .. } if group.read(cx).contains_tool(card, cx))
+                    || matches!(entry, StreamEntry::Tool { card: owned } if owned == card)
+                    || matches!(entry, StreamEntry::ToolGroup { group } if group.read(cx).contains(card))
+            })
     }
 
     fn observe_tool_card(&mut self, card: &Entity<ToolCard>, cx: &mut Context<Self>) {
@@ -1141,9 +1463,13 @@ impl ConversationStream {
 
     fn observe_tool_group(&mut self, group: &Entity<ToolActivityGroup>, cx: &mut Context<Self>) {
         cx.observe(group, |this, group, cx| {
-            let index = this.entry_index_where(
-                |entry| matches!(entry, StreamEntry::ToolGroup { group: owned } if owned == &group),
-            );
+            let index = this.entry_index_where(|entry| match entry {
+                StreamEntry::ToolGroup { group: owned } => owned == &group,
+                StreamEntry::RunActivitySegment {
+                    group: activity, ..
+                } => activity.read(cx).contains_tool_group(&group),
+                _ => false,
+            });
             this.invalidate_item(index);
             cx.notify();
         })
@@ -1190,6 +1516,16 @@ impl ConversationStream {
     }
 
     fn append_live_tool(&mut self, card: Entity<ToolCard>, cx: &mut Context<Self>) {
+        let active_message_id = self
+            .active_agent_message
+            .as_ref()
+            .map(|(message_id, _)| message_id.clone());
+        if let Some(message_id) = active_message_id
+            && let Some((group, segment)) = self.ensure_live_run_activity_segment(&message_id, cx)
+        {
+            group.update(cx, |group, cx| group.append_tool(segment, card, cx));
+            return;
+        }
         enum Tail {
             Single(Entity<ToolCard>),
             Group(Entity<ToolActivityGroup>),

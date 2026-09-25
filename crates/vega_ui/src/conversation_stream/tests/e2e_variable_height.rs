@@ -13,7 +13,8 @@ fn entry_kinds_at(stream: &ConversationStream, indices: &[usize]) -> Vec<&'stati
         .filter_map(|index| {
             stream.entries.get(*index).map(|entry| match entry {
                 StreamEntry::UserImages { .. } => "user-images",
-                StreamEntry::Thinking { .. } => "thinking",
+                StreamEntry::RunActivity { .. } => "run-activity",
+                StreamEntry::RunActivitySegment { .. } => "run-activity-segment",
                 StreamEntry::User { .. } => "user",
                 StreamEntry::Assistant { .. } => "assistant",
                 StreamEntry::Tool { .. } => "tool",
@@ -102,7 +103,11 @@ async fn ten_k_mixed_items_trunk_e2e(cx: &mut TestAppContext) {
     });
 
     let total_entries = stream.read_with(cx, |stream, _| stream.entries.len());
-    assert_eq!(total_entries, ITEM_COUNT + 1, "fixture + one live turn");
+    assert_eq!(
+        total_entries,
+        ITEM_COUNT + 1,
+        "fixture plus run status without an empty answer row"
+    );
 
     // ── 2) 打开窗口并完成首帧布局 ──
     let (harness, visual) = cx.add_window_view(|_, _| StreamHarness {

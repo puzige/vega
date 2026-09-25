@@ -432,7 +432,7 @@ async fn issue117_compaction_preserves_stream_order_and_detached_tail(cx: &mut T
             );
             assert_eq!(
                 stream.entries.len(),
-                2,
+                3,
                 "compaction is a semantic list item"
             );
             stream.apply_event(
@@ -443,7 +443,7 @@ async fn issue117_compaction_preserves_stream_order_and_detached_tail(cx: &mut T
                 cx,
             );
             stream.apply_context_status("context-thread", "mock", status(1, Status::Succeeded), cx);
-            assert_eq!(stream.entries.len(), 3, "later text follows compaction");
+            assert_eq!(stream.entries.len(), 4, "later text follows compaction");
             assert!(!stream.following_tail());
             assert_eq!(
                 compaction_timeline(stream),
@@ -486,8 +486,8 @@ async fn issue117_compaction_preserves_stream_order_and_detached_tail(cx: &mut T
             }
             assert_eq!(
                 stream.entries.len(),
-                12,
-                "each operation keeps one row without eviction"
+                13,
+                "compaction operations keep one row and the run keeps its duration header"
             );
             assert!(!stream.following_tail());
             let timeline = compaction_timeline(stream);
@@ -509,32 +509,36 @@ fn compaction_timeline(stream: &mut ConversationStream) -> Vec<String> {
     stream
         .entries
         .iter_mut()
-        .map(|entry| match entry {
+        .filter_map(|entry| match entry {
             StreamEntry::Assistant {
                 stream: parser,
                 model,
                 ..
             } => {
                 model.sync(&parser.snapshot(), &stream.counters);
-                model
-                    .committed_lines
-                    .iter()
-                    .chain(&model.pending_lines)
-                    .flat_map(|line| &line.spans)
-                    .map(|span| span.text.as_str())
-                    .collect()
+                Some(
+                    model
+                        .committed_lines
+                        .iter()
+                        .chain(&model.pending_lines)
+                        .flat_map(|line| &line.spans)
+                        .map(|span| span.text.as_str())
+                        .collect(),
+                )
             }
             StreamEntry::ContextCompaction {
                 record, restored, ..
-            } => format!(
+            } => Some(format!(
                 "{}:{:?}:{}",
                 record.generation,
                 record.status,
                 if *restored { "restored" } else { "live" }
-            ),
-            StreamEntry::Tool { .. } => "tool".into(),
-            StreamEntry::User { .. } => "user".into(),
-            _ => "other".into(),
+            )),
+            StreamEntry::RunActivity { .. } => None,
+            StreamEntry::RunActivitySegment { .. } => Some("tool".into()),
+            StreamEntry::Tool { .. } => Some("tool".into()),
+            StreamEntry::User { .. } => Some("user".into()),
+            _ => Some("other".into()),
         })
         .collect()
 }

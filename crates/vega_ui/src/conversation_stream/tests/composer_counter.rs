@@ -88,6 +88,7 @@ async fn composer_counter_projects_estimate_calibration_and_fences(cx: &mut Test
             ConversationEvent::MessageFinished {
                 message_id: "assistant".into(),
                 stop_reason: vega_conversation::types::ConversationStopReason::End,
+                execution_duration_ms: None,
             },
             cx,
         );

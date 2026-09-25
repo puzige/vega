@@ -53,9 +53,14 @@ pub enum HistoryEntry {
         message_id: String,
         content: String,
         status: AssistantStatus,
+        execution_duration_ms: Option<u64>,
     },
     /// Durable Plan card with its review state.
-    Plan { seq: i64, plan: Plan },
+    Plan {
+        seq: i64,
+        plan: Plan,
+        execution_duration_ms: Option<u64>,
+    },
     /// Read-only S7 per-task cost summary reference, attached directly after
     /// the assistant message (and its tools) it summarizes.
     Summary { seq: i64, summary: TaskCostSummary },
@@ -511,6 +516,10 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                             review_note: row.plan_review_note.clone(),
                             reviewed_at: row.plan_reviewed_at,
                         },
+                        execution_duration_ms: page
+                            .execution_durations_ms
+                            .get(&row.id)
+                            .and_then(|duration| u64::try_from(*duration).ok()),
                     });
                 }
                 _ => {
@@ -521,7 +530,13 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                         ))
                     })?;
                     let calls = calls_by_message.remove(row.id.as_str()).unwrap_or_default();
-                    project_assistant(row, status, &calls, &mut entries)?;
+                    project_assistant(
+                        row,
+                        status,
+                        page.execution_durations_ms.get(&row.id).copied(),
+                        &calls,
+                        &mut entries,
+                    )?;
                 }
             },
             other => {
@@ -549,6 +564,7 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
 fn project_assistant(
     row: &vega_store::messages::MessageRow,
     status: AssistantStatus,
+    execution_duration_ms: Option<i64>,
     calls: &[&PageToolCall],
     entries: &mut Vec<HistoryEntry>,
 ) -> Result<(), ConversationError> {
@@ -560,6 +576,8 @@ fn project_assistant(
             message_id: row.id.clone(),
             content: row.content.clone(),
             status,
+            execution_duration_ms: execution_duration_ms
+                .and_then(|duration| u64::try_from(duration).ok()),
         });
         entries.extend(calls.iter().map(|call| tool_entry(call)));
         return Ok(());
@@ -577,6 +595,7 @@ fn project_assistant(
                 message_id: row.id.clone(),
                 content: row.content[start..offset].to_string(),
                 status: AssistantStatus::Done,
+                execution_duration_ms: None,
             });
         }
         entries.push(tool_entry(call));
@@ -588,12 +607,15 @@ fn project_assistant(
             status,
             AssistantStatus::Failed | AssistantStatus::Interrupted
         )
+        || execution_duration_ms.is_some()
     {
         entries.push(HistoryEntry::AssistantText {
             seq: row.seq,
             message_id: row.id.clone(),
             content: row.content[start..].to_string(),
             status,
+            execution_duration_ms: execution_duration_ms
+                .and_then(|duration| u64::try_from(duration).ok()),
         });
     }
     Ok(())
@@ -748,5 +770,99 @@ mod issue90_tests {
                 }
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod issue146_tests {
+    use super::*;
+
+    #[test]
+    fn issue146_history_attaches_duration_only_to_final_assistant_segment() {
+        let page = MessagePage {
+            images: Vec::new(),
+            rows: vec![vega_store::messages::MessageRow {
+                id: "assistant".into(),
+                thread_id: "thread".into(),
+                seq: 2,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: "beforeafter".into(),
+                status: "done".into(),
+                created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            }],
+            execution_durations_ms: HashMap::from([("assistant".into(), 10_001)]),
+            older_cursor: None,
+            newer_cursor: None,
+            tool_calls: vec![PageToolCall {
+                id: "call".into(),
+                message_id: "assistant".into(),
+                seq: 1,
+                text_offset_bytes: Some(6),
+                tool: "unknown".into(),
+                input_json: "{}".into(),
+                output_text: None,
+                status: "failed".into(),
+                approval: None,
+                exit_code: None,
+                duration_ms: None,
+            }],
+        };
+        let entries = project_rows(&page).unwrap();
+        assert!(matches!(
+            &entries[0],
+            HistoryEntry::AssistantText {
+                content,
+                execution_duration_ms: None,
+                ..
+            } if content == "before"
+        ));
+        assert!(matches!(&entries[1], HistoryEntry::Tool { .. }));
+        assert!(matches!(
+            &entries[2],
+            HistoryEntry::AssistantText {
+                content,
+                execution_duration_ms: Some(10_001),
+                ..
+            } if content == "after"
+        ));
+
+        let mut legacy = page.clone();
+        legacy.execution_durations_ms.clear();
+        let entries = project_rows(&legacy).unwrap();
+        assert!(matches!(
+            entries.last(),
+            Some(HistoryEntry::AssistantText {
+                execution_duration_ms: None,
+                ..
+            })
+        ));
+
+        let mut unavailable_offsets = page.clone();
+        unavailable_offsets.tool_calls[0].text_offset_bytes = None;
+        let entries = project_rows(&unavailable_offsets).unwrap();
+        assert!(matches!(
+            entries.first(),
+            Some(HistoryEntry::AssistantText {
+                execution_duration_ms: Some(10_001),
+                ..
+            })
+        ));
+
+        let mut empty_success = page;
+        empty_success.rows[0].content.clear();
+        empty_success.tool_calls.clear();
+        let entries = project_rows(&empty_success).unwrap();
+        assert!(matches!(
+            entries.as_slice(),
+            [HistoryEntry::AssistantText {
+                content,
+                execution_duration_ms: Some(10_001),
+                ..
+            }] if content.is_empty()
+        ));
     }
 }
