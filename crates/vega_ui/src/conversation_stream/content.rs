@@ -368,6 +368,9 @@ impl ConversationStream {
         }
         self.entries.clear();
         self.entry_identities.clear();
+        self.measured_entry_heights.clear();
+        self.message_anchor_hovered = None;
+        self.message_anchor_keyboard_id = None;
         self.list.reset(0);
         self.tool_cards.clear();
         self.artifact_cards.clear();

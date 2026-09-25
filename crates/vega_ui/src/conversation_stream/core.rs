@@ -51,6 +51,11 @@ pub struct ConversationStream {
     /// tail-follow semantics (`FollowMode::Tail`).
     pub(crate) list: gpui_kit::ListState,
     pub(crate) entry_identities: Vec<StreamEntryIdentity>,
+    pub(crate) measured_entry_heights: HashMap<String, f32>,
+    pub(crate) message_anchor_hovered: Option<String>,
+    pub(crate) message_anchor_keyboard_id: Option<String>,
+    pub(crate) message_anchor_focus: FocusHandle,
+    pub(crate) message_anchor_rail_last_shown: bool,
     pub(crate) next_local_entry_id: u64,
     /// Active demo injection (`None` = idle/finished).
     pub(crate) injecting: Option<InjectionState>,
@@ -245,11 +250,13 @@ impl ConversationStream {
             .is_some_and(|previous| (previous - width).abs() > 0.5);
         self.workspace_width = Some(width);
         if width_changed && !self.entries.is_empty() {
+            self.measured_entry_heights.clear();
             self.ensure_entry_identities();
             let top = self.list.logical_scroll_top();
             let anchor = self.scroll_anchor_snapshot();
             self.list.remeasure();
             self.restore_scroll_anchor_at(&anchor, top.item_ix);
+            cx.notify();
         }
         let compact = width < 500.;
         if self.compact_workspace != compact {
@@ -397,6 +404,11 @@ impl ConversationStream {
             counters: Arc::new(StreamCounters::default()),
             list,
             entry_identities: Vec::new(),
+            measured_entry_heights: HashMap::new(),
+            message_anchor_hovered: None,
+            message_anchor_keyboard_id: None,
+            message_anchor_focus: cx.focus_handle().tab_index(17).tab_stop(true),
+            message_anchor_rail_last_shown: false,
             next_local_entry_id: 0,
             injecting: None,
             input,
@@ -506,6 +518,7 @@ impl ConversationStream {
     pub(crate) fn set_entry_identity(&mut self, index: usize, identity: StreamEntryIdentity) {
         self.ensure_entry_identities();
         if let Some(slot) = self.entry_identities.get_mut(index) {
+            self.measured_entry_heights.remove(&slot.key);
             *slot = identity;
         }
     }
@@ -648,7 +661,8 @@ impl ConversationStream {
     /// Registers the removal of the item at `index` (permission resolution).
     pub(crate) fn list_remove(&mut self, index: usize) {
         if index < self.entry_identities.len() {
-            self.entry_identities.remove(index);
+            let identity = self.entry_identities.remove(index);
+            self.measured_entry_heights.remove(&identity.key);
         }
         self.list.splice(index..index + 1, 0);
     }
@@ -659,6 +673,9 @@ impl ConversationStream {
         if let Some(index) = index
             && index < self.list.item_count()
         {
+            if let Some(identity) = self.entry_identities.get(index) {
+                self.measured_entry_heights.remove(&identity.key);
+            }
             let top = self.list.logical_scroll_top();
             let anchor = self.scroll_anchor_snapshot();
             self.list.remeasure_items(index..index + 1);

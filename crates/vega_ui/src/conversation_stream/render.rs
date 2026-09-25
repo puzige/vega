@@ -1058,6 +1058,35 @@ impl ConversationStream {
         .with_priority(2)
         .into_any_element()
     }
+
+    fn message_location_status_element(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let status = self.message_location_status?;
+        let colors = theme(cx).colors;
+        let (label, color) = match status {
+            MessageLocationStatus::Searching => ("正在定位消息…", colors.text_secondary),
+            MessageLocationStatus::Deferred => ("任务完成后定位消息…", colors.text_secondary),
+            MessageLocationStatus::NotFound => {
+                ("当前会话中没有这条消息，可选择其他消息。", colors.warning)
+            }
+            MessageLocationStatus::Failed => {
+                ("定位消息失败，可重试或选择其他消息。", colors.danger)
+            }
+            MessageLocationStatus::Located => return None,
+        };
+        Some(
+            div()
+                .id("message-anchor-status")
+                .debug_selector(|| "message-anchor-status".into())
+                .aria_label(label)
+                .w_full()
+                .px_2()
+                .py_1()
+                .text_size(px(Typography::METADATA))
+                .text_color(color)
+                .child(label)
+                .into_any_element(),
+        )
+    }
 }
 
 impl Render for ConversationStream {
@@ -1131,37 +1160,63 @@ impl Render for ConversationStream {
                         .text_color(colors.text_secondary)
                         .child("输入任务开始，或用 @ 引用文件"),
                 )
+                .children(self.message_location_status_element(cx))
                 .into_any_element()
         } else {
             div()
                 .id("conversation-scroll")
+                .debug_selector(|| "conversation-scroll".into())
                 .size_full()
+                .flex()
+                .flex_col()
                 .overflow_hidden()
                 .child(
-                    list(
-                        self.list.clone(),
-                        cx.processor(
-                            move |this: &mut ConversationStream, index: usize, window, cx| {
-                                let row_t0 = Instant::now();
-                                let entry = this.entries.get(index);
-                                let item = match entry {
-                                    Some(entry) => render_entry_with_selection(
-                                        entry,
-                                        window,
-                                        cx,
-                                        &this.selection_focus,
-                                    ),
-                                    None => div().into_any_element(),
-                                };
-                                this.counters
-                                    .record_row_callback(row_t0.elapsed().as_nanos());
-                                item
-                            },
+                    div()
+                        .min_h_0()
+                        .flex_1()
+                        .flex()
+                        .flex_row()
+                        .overflow_hidden()
+                        .child(self.render_message_anchor_rail(window, cx))
+                        .child(
+                            div()
+                                .id("conversation-message-list")
+                                .debug_selector(|| "conversation-message-list".into())
+                                .min_w_0()
+                                .flex_1()
+                                .h_full()
+                                .child(
+                                    list(
+                                        self.list.clone(),
+                                        cx.processor(
+                                            move |this: &mut ConversationStream,
+                                                  index: usize,
+                                                  window,
+                                                  cx| {
+                                                let row_t0 = Instant::now();
+                                                let entry = this.entries.get(index);
+                                                let item = match entry {
+                                                    Some(entry) => render_entry_with_selection(
+                                                        entry,
+                                                        window,
+                                                        cx,
+                                                        &this.selection_focus,
+                                                    ),
+                                                    None => div().into_any_element(),
+                                                };
+                                                this.counters.record_row_callback(
+                                                    row_t0.elapsed().as_nanos(),
+                                                );
+                                                item
+                                            },
+                                        ),
+                                    )
+                                    .h_full()
+                                    .w_full(),
+                                ),
                         ),
-                    )
-                    .h_full()
-                    .w_full(),
                 )
+                .children(self.message_location_status_element(cx))
                 .into_any_element()
         };
 
