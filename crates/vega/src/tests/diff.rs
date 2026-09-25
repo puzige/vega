@@ -175,7 +175,12 @@ async fn diff_controller_real_finish_drops_superseded_result_and_global_switch_c
     let view = cx.new(|cx| DiffView::new(thread_id.clone(), project_id.clone(), cx));
     let identity = root.update(cx, |root, _| {
         root.diff_controller
-            .begin(thread_id, project_id, view.clone())
+            .begin(
+                thread_id,
+                project_id,
+                view.clone(),
+                DiffFocusIntent::ExplicitDiffTab,
+            )
             .expect("diff route")
     });
     root.update(cx, |root, cx| {
@@ -227,7 +232,7 @@ async fn diff_controller_real_finish_drops_superseded_result_and_global_switch_c
         root.diff_controller
             .active
             .as_ref()
-            .is_some_and(|active| !active.focus_pending)
+            .is_some_and(|active| active.focus_intent == DiffFocusIntent::PreserveCurrent)
     }));
     let focused = window
         .update(cx, |_, window, cx| {
@@ -258,6 +263,7 @@ async fn diff_controller_real_finish_drops_superseded_result_and_global_switch_c
                     .project_id
                     .clone(),
                 exhausted_view.clone(),
+                DiffFocusIntent::PreserveCurrent,
             )
             .expect("exhausted route");
         let active = root
@@ -312,7 +318,12 @@ async fn diff_refresh_intents_keep_content_during_background_and_retry(
     let view = cx.new(|cx| DiffView::new(thread_id.clone(), project_id.clone(), cx));
     let identity = root.update(cx, |root, _| {
         root.diff_controller
-            .begin(thread_id.clone(), project_id.clone(), view.clone())
+            .begin(
+                thread_id.clone(),
+                project_id.clone(),
+                view.clone(),
+                DiffFocusIntent::PreserveCurrent,
+            )
             .expect("diff refresh intent route")
     });
 
@@ -480,7 +491,12 @@ async fn diff_controller_route_latest_poll_tool_and_cross_project_fences(
     let second_view = cx.new(|cx| DiffView::new("thread-b".into(), "project-b".into(), cx));
     let mut controller = DiffController::default();
     let first_route = controller
-        .begin("thread-a".into(), "project-a".into(), first_view)
+        .begin(
+            "thread-a".into(),
+            "project-a".into(),
+            first_view,
+            DiffFocusIntent::PreserveCurrent,
+        )
         .expect("first route");
     let first_cancel = controller
         .active
@@ -489,7 +505,12 @@ async fn diff_controller_route_latest_poll_tool_and_cross_project_fences(
         .cancel
         .clone();
     let second_route = controller
-        .begin("thread-b".into(), "project-b".into(), second_view)
+        .begin(
+            "thread-b".into(),
+            "project-b".into(),
+            second_view,
+            DiffFocusIntent::ExplicitDiffTab,
+        )
         .expect("second route");
     assert!(first_cancel.is_cancelled());
     assert!(!controller.matches(&first_route));
@@ -498,7 +519,7 @@ async fn diff_controller_route_latest_poll_tool_and_cross_project_fences(
         controller
             .active
             .as_ref()
-            .is_some_and(|active| active.focus_pending)
+            .is_some_and(|active| { active.focus_intent == DiffFocusIntent::ExplicitDiffTab })
     );
     cx.update(|cx| {
         assert!(VegaWindow::diff_route_is_current(&second_route, cx));

@@ -54,6 +54,7 @@ impl VegaWindow {
         &mut self,
         stream: Entity<ConversationStream>,
         request: &OpenWorkspaceDiffRequested,
+        focus_intent: DiffFocusIntent,
         cx: &mut Context<Self>,
     ) {
         if !self.owns_stream_request(&stream, &request.thread_id, cx) {
@@ -72,7 +73,7 @@ impl VegaWindow {
         self.sync_workspace_route(cx);
         self.workspace.open(workspace::TabKey::Diff);
         if let Some(active) = self.diff_controller.active.as_mut() {
-            active.focus_pending = true;
+            active.focus_intent = focus_intent;
             cx.notify();
             return;
         }
@@ -94,6 +95,7 @@ impl VegaWindow {
             request.thread_id.clone(),
             request.project_id.clone(),
             view.clone(),
+            focus_intent,
         ) else {
             view.update(cx, |view, cx| {
                 view.apply_refresh_error(GitWorkspaceErrorCode::OutputTooLarge, cx)

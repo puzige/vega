@@ -354,7 +354,12 @@ impl Render for VegaWindow {
                             )
                             .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
-                                this.open_workspace_diff(stream.clone(), request, cx);
+                                this.open_workspace_diff(
+                                    stream.clone(),
+                                    request,
+                                    DiffFocusIntent::PreserveCurrent,
+                                    cx,
+                                );
                             })
                             .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
@@ -739,16 +744,22 @@ impl VegaWindow {
                 .debug_selector(|| "main-header-terminal".into()),
             )
             .child(
-                shell_icon_button(
-                    Icon::DockRight,
-                    "切换右侧面板",
-                    None,
-                    self.right_workspace_rendered_non_terminal(window, cx),
-                    self.right_workspace_slot_available(window, cx),
-                    colors,
-                    cx.listener(|this, _, window, cx| this.workspace_toggle_right(window, cx)),
-                )
-                .debug_selector(|| "main-header-workspace-right".into()),
+                div()
+                    .capture_any_mouse_down(|_, window, _| window.prevent_default())
+                    .child(
+                        shell_icon_button(
+                            Icon::DockRight,
+                            "切换右侧面板",
+                            None,
+                            self.right_workspace_rendered_non_terminal(window, cx),
+                            self.right_workspace_slot_available(window, cx),
+                            colors,
+                            cx.listener(|this, _, window, cx| {
+                                this.workspace_toggle_right(window, cx)
+                            }),
+                        )
+                        .debug_selector(|| "main-header-workspace-right".into()),
+                    ),
             )
             .into_any_element()
     }
