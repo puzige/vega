@@ -30,6 +30,7 @@ mod issue148_long_session_scroll;
 mod issue151_latest_activity;
 mod issue70_tool_activity;
 mod issue78_message_bubbles;
+mod issue79_composer_error;
 mod issue98_scroll_button;
 mod menu_lists;
 mod model_markdown;
