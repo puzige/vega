@@ -766,7 +766,9 @@ fn issue74_vega_owned_global_requires_exact_ui_link_and_uses_config_dir_root() {
     let config_parent = tempdir().unwrap();
     let config_dir = config_parent.path().join("vega");
     let owned_root = config_dir.join("skills");
+    let pi_root = config_parent.path().join(".pi/agent/skills");
     add_skill(&owned_root, "reviewer", "PRIVATE VEGA GLOBAL RULE");
+    add_skill(&pi_root, "pi-reviewer", "PRIVATE PI RULE");
     let source = SkillSource::vega_global(&config_dir).unwrap().unwrap();
     let settings = skills::read_settings(store.conn()).unwrap();
     skills::set_global_settings(store.conn(), settings.consent_generation, true, true).unwrap();
@@ -802,17 +804,14 @@ fn issue74_vega_owned_global_requires_exact_ui_link_and_uses_config_dir_root() {
     .unwrap()
     .unwrap();
     assert!(prepared.run.model_catalog().contains("reviewer"));
+    assert!(!prepared.run.model_catalog().contains("pi-reviewer"));
     assert_eq!(
         prepared.run.load_model("reviewer", |_| true).receipt.status,
         "loaded"
     );
-    assert!(
-        prepared
-            .run
-            .render_skill_envelope()
-            .unwrap()
-            .contains("PRIVATE VEGA GLOBAL RULE")
-    );
+    let envelope = prepared.run.render_skill_envelope().unwrap();
+    assert!(envelope.contains("PRIVATE VEGA GLOBAL RULE"));
+    assert!(!envelope.contains("PRIVATE PI RULE"));
 }
 
 #[tokio::test]
