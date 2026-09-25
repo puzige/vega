@@ -76,3 +76,75 @@ exit_code=0
 - `ACCEPTED`: 真实桌面窗口中的视觉、鼠标 hover/click 和完整菜单仍需协调 Agent 在集成构建上用 Computer Use 复核；此工作树记录的是 GPUI 自动交互测试证据。
 - 首轮冻结规格末尾有一个多余空行；仅移除此 EOF 空白并记录前后 SHA-256，需求文字未改。
 - 与冻结规格的偏离：无。
+
+## 静止指针 hover 回归修复
+
+- 基线：`origin/master` `90d7eba`；分支：`feat/157-hover-refresh`。
+- 在冻结规格中新增 Pin/unpin 分区重排、Archive/restore 移除与恢复时静止指针的验收条款。
+- 成功的 pin/status 持久化操作会立即清除任务行 hover，并抑制列表重排后 GPUI 因旧指针命中区重新激活 hover；真实鼠标移动到任务行后恢复正常 hover。失败的持久化操作不更改 hover 状态。
+- 两个 GPUI 测试走快捷按钮、SQLite 写入和组织列表刷新路径。覆盖 pin/unpin、archive/restore、静止指针下快捷按钮和 row state 的清除，并检查打开任务、选中项目、未读投影、菜单状态和焦点状态保持不变。
+- 改动文件：`docs/vega-issue-157-sidebar-hover-actions.md`、`crates/vega_ui/src/sidebar/threads_block.rs`、`crates/vega_ui/src/sidebar/threads_block/organization/tests.rs`。
+
+### 先红后绿
+
+测试命令：
+
+```text
+cargo nextest run -p vega_ui -E 'test(r157_pin_reorder_clears_stale_hover_after_stationary_projection_change) | test(r157_archive_restore_clears_stale_hover_after_stationary_projection_change)'
+```
+
+首次运行的原始结果（run ID `163546c8-b7b0-4093-b03b-e8670c027b29`）：
+
+```text
+Starting 2 tests across 1 binary (487 tests skipped)
+FAIL r157_archive_restore_clears_stale_hover_after_stationary_projection_change
+FAIL r157_pin_reorder_clears_stale_hover_after_stationary_projection_change
+Summary: 2 tests run: 0 passed, 2 failed, 487 skipped
+```
+
+两个失败都观察到目标 thread 仍是 `hovered`；Archive 用例还确认展开归档列表后快捷按钮重新出现。
+
+只在 mutation 后清空 `hovered` 的中间实现仍失败：列表重新布局时 GPUI 会按静止指针的旧坐标重新触发 hover。最终实现增加“鼠标实际移动前抑制行 hover”，相同命令原始结果（run ID `8a70178e-2fd2-494c-b88f-72aadd14cbeb`）：
+
+```text
+Starting 2 tests across 1 binary (487 tests skipped)
+PASS r157_pin_reorder_clears_stale_hover_after_stationary_projection_change
+PASS r157_archive_restore_clears_stale_hover_after_stationary_projection_change
+Summary: 2 tests run: 2 passed, 487 skipped
+```
+
+### 最终定向验证
+
+命令：
+
+```text
+cargo nextest run -p vega_ui -E 'test(/r157_|right_click_during_rename_keeps_editor_and_menu_closed|r33_production_task_rows_are_quiet_and_keep_stable_actions|r26_sidebar_projects_each_task_once_and_reveals_contextual_actions|task_menu_keyboard_reaches_unread_and_escape|issue150_row_indicator_does_not_displace_the_row_or_trigger|issue150_running_row_shows_no_resting_timestamp/)'
+cargo fmt --all -- --check
+git diff --check
+cargo clippy -p vega_ui --all-targets -- -D warnings
+```
+
+最终 Nextest 原始结果（run ID `44341e32-b7d7-451a-8806-c3447395acd5`）：
+
+```text
+Starting 10 tests across 1 binary (479 tests skipped)
+PASS r157_pin_reorder_clears_stale_hover_after_stationary_projection_change
+PASS r157_archive_restore_clears_stale_hover_after_stationary_projection_change
+PASS r157_task_right_click_reuses_full_menu_and_keyboard_actions
+PASS r157_task_hover_shortcuts_keep_geometry_and_persist_without_navigation
+PASS r26_sidebar_projects_each_task_once_and_reveals_contextual_actions
+PASS r33_production_task_rows_are_quiet_and_keep_stable_actions
+PASS right_click_during_rename_keeps_editor_and_menu_closed
+PASS task_menu_keyboard_reaches_unread_and_escape
+PASS issue150_row_indicator_does_not_displace_the_row_or_trigger
+PASS issue150_running_row_shows_no_resting_timestamp
+Summary: 10 tests run: 10 passed, 479 skipped
+```
+
+`cargo fmt --all -- --check`、`git diff --check` 和 `cargo clippy -p vega_ui --all-targets -- -D warnings` 均退出码为 0。未运行 workspace 全量测试。
+
+### 偏离与待验收
+
+- 与本次补充的冻结规格偏离：无。
+- 尚待用户安装集成版本后，用 Computer Use 在桌面窗口复验静止指针 Pin/Archive 操作；GPUI 测试已覆盖自动交互路径。
+- 其他未解决风险：无。

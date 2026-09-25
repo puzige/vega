@@ -1041,6 +1041,239 @@ async fn r157_task_hover_shortcuts_keep_geometry_and_persist_without_navigation(
 }
 
 #[gpui_kit::test]
+async fn r157_pin_reorder_clears_stale_hover_after_stationary_projection_change(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let target = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let row_selector = format!("standalone-thread-row-{}", target.id);
+    let pin_selector = format!("standalone-thread-pin-{}", target.id);
+    let pinned_row_selector = format!("pinned-thread-row-{}", target.id);
+    let pinned_pin_selector = format!("pinned-thread-pin-{}", target.id);
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(
+        bounds(&f, cx, &row_selector).center(),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    assert!(!absent(&f, cx, &pin_selector));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.hovered.clone()),
+        Some(target.id.clone())
+    );
+    let focused_before =
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone());
+    drop(visual);
+
+    click(&f, cx, &pin_selector);
+
+    assert!(persisted_thread(&f, &target.id).pinned);
+    assert!(!absent(&f, cx, &pinned_row_selector));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.hovered.clone()),
+        None
+    );
+    assert!(absent(&f, cx, &pinned_pin_selector));
+    assert!(absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-visible", target.id)
+    ));
+    assert!(!absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-rest", target.id)
+    ));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
+        None
+    );
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone()),
+        focused_before
+    );
+    cx.update(|cx| {
+        assert_eq!(
+            cx.global::<OpenedThread>().0.as_ref().unwrap().id,
+            f.first.id
+        );
+        assert_eq!(cx.global::<SelectedProject>().0.as_deref(), Some("p"));
+    });
+    assert!(persisted_thread(&f, &f.other.id).unread);
+    assert!(sessions(&f, cx).read_with(cx, |block, _| {
+        block
+            .threads
+            .iter()
+            .find(|thread| thread.id == f.other.id)
+            .unwrap()
+            .unread
+    }));
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(
+        bounds(&f, cx, &pinned_row_selector).center(),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    assert!(!absent(&f, cx, &pinned_pin_selector));
+    drop(visual);
+
+    click(&f, cx, &pinned_pin_selector);
+
+    assert!(!persisted_thread(&f, &target.id).pinned);
+    assert!(!absent(&f, cx, &row_selector));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.hovered.clone()),
+        None
+    );
+    assert!(absent(&f, cx, &pin_selector));
+    assert!(!absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-rest", target.id)
+    ));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
+        None
+    );
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone()),
+        focused_before
+    );
+    cx.update(|cx| {
+        assert_eq!(
+            cx.global::<OpenedThread>().0.as_ref().unwrap().id,
+            f.first.id
+        );
+        assert_eq!(cx.global::<SelectedProject>().0.as_deref(), Some("p"));
+    });
+    assert!(persisted_thread(&f, &f.other.id).unread);
+}
+
+#[gpui_kit::test]
+async fn r157_archive_restore_clears_stale_hover_after_stationary_projection_change(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let target = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let row_selector = format!("standalone-thread-row-{}", target.id);
+    let archive_selector = format!("standalone-thread-archive-{}", target.id);
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(
+        bounds(&f, cx, &row_selector).center(),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    assert!(!absent(&f, cx, &archive_selector));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.hovered.clone()),
+        Some(target.id.clone())
+    );
+    let focused_before =
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone());
+    drop(visual);
+
+    click(&f, cx, &archive_selector);
+
+    assert_eq!(
+        persisted_thread(&f, &target.id).status,
+        ThreadStatus::Archived
+    );
+    assert!(absent(&f, cx, &row_selector));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.hovered.clone()),
+        None
+    );
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
+        None
+    );
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone()),
+        focused_before
+    );
+    cx.update(|cx| {
+        assert_eq!(
+            cx.global::<OpenedThread>().0.as_ref().unwrap().id,
+            f.first.id
+        );
+        assert_eq!(cx.global::<SelectedProject>().0.as_deref(), Some("p"));
+    });
+    assert!(persisted_thread(&f, &f.other.id).unread);
+    assert!(sessions(&f, cx).read_with(cx, |block, _| {
+        block
+            .threads
+            .iter()
+            .find(|thread| thread.id == f.other.id)
+            .unwrap()
+            .unread
+    }));
+
+    sessions(&f, cx).update(cx, |block, cx| {
+        block.organization.as_mut().unwrap().archive = true;
+        block.refresh_organization(cx);
+    });
+    cx.run_until_parked();
+    assert!(!absent(&f, cx, &row_selector));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.hovered.clone()),
+        None
+    );
+    assert!(absent(&f, cx, &archive_selector));
+    assert!(!absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-rest", target.id)
+    ));
+
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(
+        bounds(&f, cx, &row_selector).center(),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    assert!(!absent(&f, cx, &archive_selector));
+    drop(visual);
+
+    click(&f, cx, &archive_selector);
+
+    assert_eq!(
+        persisted_thread(&f, &target.id).status,
+        ThreadStatus::Active
+    );
+    assert!(!absent(&f, cx, &row_selector));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.hovered.clone()),
+        None
+    );
+    assert!(absent(&f, cx, &archive_selector));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
+        None
+    );
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone()),
+        focused_before
+    );
+    cx.update(|cx| {
+        assert_eq!(
+            cx.global::<OpenedThread>().0.as_ref().unwrap().id,
+            f.first.id
+        );
+        assert_eq!(cx.global::<SelectedProject>().0.as_deref(), Some("p"));
+    });
+    assert!(persisted_thread(&f, &f.other.id).unread);
+}
+
+#[gpui_kit::test]
 async fn r157_task_right_click_reuses_full_menu_and_keyboard_actions(
     cx: &mut gpui_kit::TestAppContext,
 ) {
