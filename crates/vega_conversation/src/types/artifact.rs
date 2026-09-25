@@ -125,6 +125,8 @@ pub enum GitWorkspaceErrorCode {
     BranchUnborn,
     BranchUnsafeFilter,
     BranchAlreadyCurrent,
+    BranchPathLimit,
+    BranchCountLimit,
 }
 
 impl GitWorkspaceErrorCode {
@@ -154,6 +156,8 @@ impl GitWorkspaceErrorCode {
             Self::BranchUnborn => "branch_unborn",
             Self::BranchUnsafeFilter => "branch_unsafe_filter",
             Self::BranchAlreadyCurrent => "branch_already_current",
+            Self::BranchPathLimit => "branch_path_limit",
+            Self::BranchCountLimit => "branch_count_limit",
         }
     }
 }

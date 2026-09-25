@@ -133,7 +133,7 @@ fn path_counts_and_filter_values_are_inclusive_and_fail_closed() {
     refs.extend_from_slice(b"\0refs/heads/overflow\0\n");
     assert_eq!(
         error_code(parse_refs(&refs, b"b0", oid)),
-        GitWorkspaceErrorCode::OutputTooLarge
+        GitWorkspaceErrorCode::BranchCountLimit
     );
 
     let mut exact = Vec::new();
@@ -181,6 +181,40 @@ fn path_counts_and_filter_values_are_inclusive_and_fail_closed() {
             "filter value {value:?}"
         );
     }
+}
+
+#[test]
+fn branch_list_path_limit_is_bounded_and_separate_from_workspace_limit() {
+    let mut paths = Vec::new();
+    for index in 0..BRANCH_PATH_LIMIT {
+        paths.extend_from_slice(format!("tracked-{index}\0").as_bytes());
+    }
+    let parsed = parse_nul_paths_with_limit(
+        &paths,
+        BRANCH_PATH_LIMIT,
+        GitWorkspaceErrorCode::BranchPathLimit,
+    )
+    .expect("exact branch-list path limit");
+    assert_eq!(parsed.len(), BRANCH_PATH_LIMIT);
+
+    paths.extend_from_slice(b"tracked-overflow\0");
+    assert_eq!(
+        error_code(parse_nul_paths_with_limit(
+            &paths,
+            BRANCH_PATH_LIMIT,
+            GitWorkspaceErrorCode::BranchPathLimit,
+        )),
+        GitWorkspaceErrorCode::BranchPathLimit
+    );
+
+    let mut workspace_paths = Vec::new();
+    for index in 0..=PATH_LIMIT {
+        workspace_paths.extend_from_slice(format!("workspace-{index}\0").as_bytes());
+    }
+    assert_eq!(
+        error_code(parse_nul_paths(&workspace_paths)),
+        GitWorkspaceErrorCode::OutputTooLarge
+    );
 }
 
 #[test]

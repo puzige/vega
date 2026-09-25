@@ -30,6 +30,74 @@ async fn unchanged_refresh_keeps_ids_and_branch_change_rotates() {
 }
 
 #[tokio::test]
+async fn refresh_accepts_14449_paths_and_nine_local_branch_refs() {
+    let fixture = BranchFixture::new("main-clean");
+    let mut paths = String::new();
+    for index in 0..14_449 {
+        paths.push_str(&format!("tracked-{index}\0"));
+    }
+    let mut refs = String::new();
+    for index in 0..9 {
+        let oid = if index == 0 {
+            "a".repeat(40)
+        } else {
+            "b".repeat(40)
+        };
+        let name = if index == 0 {
+            "main".to_owned()
+        } else {
+            format!("branch-{index}")
+        };
+        refs.push_str(&oid);
+        refs.push('\0');
+        refs.push_str("refs/heads/");
+        refs.push_str(&name);
+        refs.push('\0');
+        refs.push('\n');
+    }
+    fixture.set_raw("paths", &paths);
+    fixture.set_raw("attrs", "");
+    fixture.set_raw("refs", &refs);
+
+    let snapshot = fixture
+        .service()
+        .refresh(CancellationToken::new())
+        .await
+        .expect("branch snapshot within capacity");
+
+    assert_eq!(snapshot.branches.len(), 9);
+    assert!(
+        snapshot
+            .branches
+            .iter()
+            .any(|branch| branch.label == "main" && branch.current)
+    );
+    fixture.assert_clean();
+}
+
+#[tokio::test]
+async fn refresh_reports_the_branch_path_limit_when_capacity_is_exceeded() {
+    let fixture = BranchFixture::new("main-clean");
+    let mut paths = String::new();
+    for index in 0..=BRANCH_PATH_LIMIT {
+        paths.push_str(&format!("tracked-{index}\0"));
+    }
+    fixture.set_raw("paths", &paths);
+    fixture.set_raw("attrs", "");
+
+    assert_eq!(
+        fixture
+            .service()
+            .refresh(CancellationToken::new())
+            .await
+            .expect_err("path count over safe bound")
+            .code(),
+        GitWorkspaceErrorCode::BranchPathLimit
+    );
+    fixture.assert_clean();
+}
+
+#[tokio::test]
 async fn opaque_ids_are_service_generation_slot_and_seal_bound() {
     let fixture = BranchFixture::new("main-clean");
     let service = fixture.service();

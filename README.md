@@ -37,6 +37,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-70-tool-activity.md](docs/vega-issue-70-tool-activity.md) | #70 紧凑工具活动分组、渐进展开与安全显示规格 |
 | [vega-issue-191-branch-entry.md](docs/vega-issue-191-branch-entry.md) | #191 已有对话中的分支切换入口与 R49 页面状态约束 |
 | [vega-issue-191-branch-list-capacity.md](docs/vega-issue-191-branch-list-capacity.md) | #191 分支列表路径容量、资源上界与准确错误状态 |
+| [vega-issue-191-branch-list-capacity-delivery.md](docs/vega-issue-191-branch-list-capacity-delivery.md) | #191 分支列表容量修复的定向测试、PR 与原生验收状态 |
 | [vega-issue-148-long-session-scroll.md](docs/vega-issue-148-long-session-scroll.md) | #148 长会话虚拟滚动的基线、稳定锚点与定向验收 |
 | [vega-issue-100-composer-width.md](docs/vega-issue-100-composer-width.md) | #100 Composer 与正文列统一为 768px（参考实现共用同一宽度 token） |
 | [vega-issue-98-scroll-to-bottom.md](docs/vega-issue-98-scroll-to-bottom.md) | #98 「回到底部」改为悬浮圆形向下箭头按钮（参考 Codex 实测 32px / 居中 / 悬浮 composer 上方） |

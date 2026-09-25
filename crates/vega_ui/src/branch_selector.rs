@@ -242,7 +242,7 @@ impl BranchSelectorModel {
                 self.focused = None;
                 self.visual_focused = None;
                 self.filtered.clear();
-                self.status = SelectorStatus::Failed(GitWorkspaceErrorCode::OutputTooLarge);
+                self.status = SelectorStatus::Failed(GitWorkspaceErrorCode::BranchCountLimit);
             }
             return false;
         }
@@ -1205,8 +1205,14 @@ fn branch_error_label(code: GitWorkspaceErrorCode) -> &'static str {
         }
         GitWorkspaceErrorCode::TimedOut => "Branch operation timed out",
         GitWorkspaceErrorCode::Cancelled => "Branch operation cancelled",
+        GitWorkspaceErrorCode::BranchPathLimit => {
+            "Branch listing supports at most 25,000 tracked files; reduce tracked files and retry"
+        }
+        GitWorkspaceErrorCode::BranchCountLimit => {
+            "Too many local branches to display (10,000 limit); remove branches and retry"
+        }
         GitWorkspaceErrorCode::OutputTooLarge | GitWorkspaceErrorCode::ArtifactLimit => {
-            "Too many branches"
+            "Branch data exceeded a safety limit; reduce repository size or retry"
         }
         _ => "Branches unavailable",
     }
@@ -1246,6 +1252,30 @@ mod tests {
         assert_eq!(
             branch_error_label(GitWorkspaceErrorCode::BranchUnsafeFilter),
             "Branch contains filtered files"
+        );
+    }
+
+    #[test]
+    fn branch_selector_limit_errors_name_the_limited_resource() {
+        assert_eq!(
+            branch_error_label(GitWorkspaceErrorCode::BranchPathLimit),
+            "Branch listing supports at most 25,000 tracked files; reduce tracked files and retry"
+        );
+        assert_eq!(
+            branch_error_label(GitWorkspaceErrorCode::BranchCountLimit),
+            "Too many local branches to display (10,000 limit); remove branches and retry"
+        );
+        assert_eq!(
+            branch_error_label(GitWorkspaceErrorCode::OutputTooLarge),
+            "Branch data exceeded a safety limit; reduce repository size or retry"
+        );
+        assert_eq!(
+            branch_error_label(GitWorkspaceErrorCode::ArtifactLimit),
+            "Branch data exceeded a safety limit; reduce repository size or retry"
+        );
+        assert!(
+            !branch_error_label(GitWorkspaceErrorCode::OutputTooLarge)
+                .contains("Too many branches")
         );
     }
 

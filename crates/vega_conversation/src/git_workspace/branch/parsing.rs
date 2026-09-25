@@ -103,7 +103,11 @@ pub(crate) fn capture_branch_filter_identity(
         cancel,
     )?;
     let path_bytes: Arc<[u8]> = paths.stdout.into();
-    let parsed_paths = parse_nul_paths(&path_bytes)?;
+    let parsed_paths = parse_nul_paths_with_limit(
+        &path_bytes,
+        BRANCH_PATH_LIMIT,
+        GitWorkspaceErrorCode::BranchPathLimit,
+    )?;
     let remaining = BRANCH_RETAINED_LIMIT
         .checked_sub(path_bytes.len())
         .ok_or_else(|| error(GitWorkspaceErrorCode::OutputTooLarge))?;
@@ -187,11 +191,11 @@ pub(crate) fn parse_refs(
             .filter(|short| !short.is_empty())
             .ok_or_else(|| error(GitWorkspaceErrorCode::MalformedOutput))?;
         validate_branch_short(short)?;
-        if !seen_short.insert(short.to_vec())
-            || !seen_full.insert(fields[1].to_vec())
-            || branches.len() == BRANCH_LIMIT
-        {
+        if !seen_short.insert(short.to_vec()) || !seen_full.insert(fields[1].to_vec()) {
             return Err(error(GitWorkspaceErrorCode::OutputTooLarge));
+        }
+        if branches.len() == BRANCH_LIMIT {
+            return Err(error(GitWorkspaceErrorCode::BranchCountLimit));
         }
         let is_current = short == current;
         if is_current && fields[0] != current_oid {
