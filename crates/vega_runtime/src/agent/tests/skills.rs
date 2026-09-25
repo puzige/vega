@@ -1094,6 +1094,93 @@ async fn issue74_reference_reads_are_lower_trust_and_frozen_on_first_read() {
 }
 
 #[tokio::test]
+async fn issue74_s14_binary_asset_path_is_rejected_without_text_injection() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let (run, _) = skill_run_with_body(
+        project.path(),
+        true,
+        "Use the binary asset at assets/pixel.png to guide the response.",
+    );
+    let asset = project
+        .path()
+        .join(".agents/skills/reviewer/assets/pixel.png");
+    fs::create_dir_all(asset.parent().unwrap()).unwrap();
+    let asset_marker = "PRIVATE BINARY ASSET MUST NOT BE TEXT";
+    let mut asset_bytes = b"\x89PNG\r\n\x1a\n\0\xff".to_vec();
+    asset_bytes.extend_from_slice(asset_marker.as_bytes());
+    fs::write(&asset, &asset_bytes).unwrap();
+
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "asset-load".into(),
+                name: "load_skill".into(),
+                input_json: r#"{"name":"reviewer"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "asset-read".into(),
+                name: "read_skill_resource".into(),
+                input_json: r#"{"name":"reviewer","path":"assets/pixel.png"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(vec![ChatMessage::new(
+        ChatRole::User,
+        "Inspect the binary asset referenced by the Skill.",
+    )]);
+    req.tool_config = req.tool_config.with_skill_run(run, Vec::new());
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(!outcome.failed);
+    let resource_result = outcome
+        .events
+        .iter()
+        .find_map(|event| match event {
+            RuntimeEvent::ToolCallFinished(result) if result.call_id == "asset-read" => {
+                Some(result)
+            }
+            _ => None,
+        })
+        .expect("asset resource result");
+    assert_eq!(resource_result.status, RuntimeToolStatus::Failed);
+    assert!(resource_result.output.contains("unsafe_path"));
+    assert!(!resource_result.output.contains(asset_marker));
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().all(|provider_request| {
+        provider_request.messages.iter().all(|message| {
+            !message.content.contains(asset_marker)
+                && message.images.is_empty()
+                && message
+                    .tool_calls
+                    .iter()
+                    .all(|call| !call.input_json.contains(asset_marker))
+        }) && provider_request.tools.iter().all(|tool| {
+            !tool.description.contains(asset_marker)
+                && !tool.input_schema.to_string().contains(asset_marker)
+        })
+    }));
+    assert!(requests[2].messages.iter().any(|message| {
+        message.role == ChatRole::Tool && message.content.contains("unsafe_path")
+    }));
+    assert_eq!(fs::read(asset).unwrap(), asset_bytes);
+}
+
+#[tokio::test]
 async fn issue74_revocation_fence_blocks_cached_reference_tool_before_dispatch() {
     let project = tempdir().unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
