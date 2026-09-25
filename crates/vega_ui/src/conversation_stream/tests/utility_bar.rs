@@ -81,6 +81,12 @@ async fn r49_new_task_page_renders_the_utility_bar_at_its_frozen_height(cx: &mut
         Layout::COMPOSER_UTILITY_BAR_HEIGHT,
         "utility bar height",
     );
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-footer-branch-chip")
+            .is_none(),
+        "a new-task draft must not duplicate the utility-bar branch selector in the footer"
+    );
 }
 
 #[gpui_kit::test]
@@ -104,6 +110,122 @@ async fn r49_session_page_with_a_message_renders_no_utility_bar(cx: &mut TestApp
             .debug_bounds("composer-utility-bar")
             .is_none(),
         "a conversation with messages must not render the utility bar"
+    );
+}
+
+#[gpui_kit::test]
+async fn issue191_persisted_project_conversation_opens_the_footer_branch_selector(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _events) = open_controller_stream(cx, "issue191-branch-entry");
+    install_utility_globals(cx, &[], Some(PROJECT_BINDING));
+    stream.update(cx, |stream, cx| {
+        stream.composer_submit_pending = true;
+        stream.accept_composer_submission("first message", cx);
+    });
+
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-utility-bar")
+            .is_none(),
+        "a persisted conversation must keep the R49 utility bar absent"
+    );
+    let add = bounds(window, "composer-add", cx);
+    let footer_branch = bounds(window, "composer-footer-branch-chip", cx);
+    assert!(
+        add.right() <= footer_branch.left(),
+        "the persisted conversation branch entry must follow the add-context control"
+    );
+    let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+    let requests = Arc::new(Mutex::new(
+        Vec::<crate::branch_selector::BranchListRequested>::new(),
+    ));
+    let captured = requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(
+            &selector,
+            move |_, request: &crate::branch_selector::BranchListRequested, _| {
+                if let Ok(mut requests) = captured.lock() {
+                    requests.push(request.clone());
+                }
+            },
+        )
+        .detach();
+    });
+
+    click(window, "composer-footer-branch-chip", cx);
+    assert_eq!(
+        requests
+            .lock()
+            .expect("branch list request capture")
+            .as_slice(),
+        &[crate::branch_selector::BranchListRequested {
+            thread_id: "issue191-branch-entry".into(),
+            project_id: PROJECT_BINDING.into(),
+        }]
+    );
+
+    let snapshot = branch_snapshot(&["main", "feature"]);
+    selector.update(cx, |selector, cx| {
+        assert!(selector.apply_snapshot(snapshot, cx));
+    });
+    bounds(window, "branch-selector-popup", cx);
+    bounds(window, "branch-row-0", cx);
+
+    let switches = Arc::new(Mutex::new(Vec::<
+        crate::branch_selector::BranchSwitchRequested,
+    >::new()));
+    let captured = switches.clone();
+    cx.update(|cx| {
+        cx.subscribe(
+            &selector,
+            move |_, request: &crate::branch_selector::BranchSwitchRequested, _| {
+                if let Ok(mut requests) = captured.lock() {
+                    requests.push(request.clone());
+                }
+            },
+        )
+        .detach();
+    });
+    click(window, "branch-row-0", cx);
+    let request = switches
+        .lock()
+        .expect("branch switch request capture")
+        .first()
+        .cloned()
+        .expect("branch switch request");
+    assert_eq!(request.thread_id, "issue191-branch-entry");
+    assert_eq!(request.project_id, PROJECT_BINDING);
+    assert!(selector.read_with(cx, |selector, _| selector.is_pending()));
+
+    selector.update(cx, |selector, cx| {
+        assert!(selector.finish_switch(
+            request.operation_id,
+            request.snapshot_generation,
+            request.branch_id,
+            Some(branch_snapshot(&["feature", "main"])),
+            None,
+            cx,
+        ));
+    });
+    assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
+    assert!(!selector.read_with(cx, |selector, _| selector.is_open()));
+}
+
+#[gpui_kit::test]
+async fn issue191_standalone_conversation_has_no_footer_branch_entry(cx: &mut TestAppContext) {
+    let (window, stream, _events) = open_controller_stream(cx, "issue191-standalone");
+    install_utility_globals(cx, &[], None);
+    stream.update(cx, |stream, cx| {
+        stream.thread.project_id.clear();
+        stream.composer_submit_pending = true;
+        stream.accept_composer_submission("first message", cx);
+    });
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-footer-branch-chip")
+            .is_none(),
+        "standalone conversations must not render the branch entry"
     );
 }
 

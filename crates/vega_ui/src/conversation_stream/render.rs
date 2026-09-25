@@ -253,6 +253,9 @@ impl ConversationStream {
                                 .track_focus(&self.action_focus[0])
                                 .debug_selector(|| "composer-add".into()),
                             )
+                            .when(self.composer_branch_entry_visible(), |row| {
+                                row.child(self.render_composer_branch_entry())
+                            })
                             .child(self.render_permission_status(cx))
                             .child(div().flex_1())
                             .child(self.render_model_selector(cx))
