@@ -1535,3 +1535,353 @@ async fn issue70_t70_7_grouping_preserves_redaction_and_fail_closed_visibility(
         "a mixed failed group must not claim success: {visible}"
     );
 }
+
+fn issue103_wheel(
+    window: WindowHandle<StreamHarness>,
+    position: gpui_kit::Point<Pixels>,
+    delta: f32,
+    cx: &mut TestAppContext,
+) {
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_event(gpui_kit::ScrollWheelEvent {
+        position,
+        delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(delta))),
+        modifiers: gpui_kit::Modifiers::default(),
+        touch_phase: gpui_kit::TouchPhase::Moved,
+    });
+    visual.run_until_parked();
+}
+
+fn issue103_prefix(stream: &mut ConversationStream, cx: &mut Context<ConversationStream>) {
+    stream.apply_event(
+        ConversationEvent::MessageStarted {
+            message_id: "prefix".into(),
+            seq: 1,
+        },
+        cx,
+    );
+    stream.apply_event(
+        ConversationEvent::TextDelta {
+            message_id: "prefix".into(),
+            delta: "Earlier answer paragraph.\n\n".repeat(60),
+        },
+        cx,
+    );
+    stream.apply_event(
+        ConversationEvent::MessageFinished {
+            message_id: "prefix".into(),
+            stop_reason: vega_conversation::types::ConversationStopReason::End,
+        },
+        cx,
+    );
+}
+
+#[gpui_kit::test]
+async fn issue103_tool_detail_is_bounded(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "issue103-tool");
+    stream.update(cx, |stream, cx| {
+        issue103_prefix(stream, cx);
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("long", "printf lines"),
+            },
+            cx,
+        );
+        finish(
+            stream,
+            "long",
+            ToolCallStatus::Success,
+            &"output line\n".repeat(80),
+            Some(0),
+            Some(10),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(stream.read_with(cx, |stream, cx| {
+        stream.tool_cards["long"].read(cx).is_expanded()
+    }));
+    let body = bounds(window, "tool-activity-single-row-detail", cx);
+    assert!(
+        body.size.height <= px(240.),
+        "tool body: {:?}",
+        body.size.height
+    );
+    let scroll = stream.read_with(cx, |stream, cx| {
+        stream.tool_cards["long"].read(cx).scroll_handle()
+    });
+    assert!(
+        scroll.max_offset().y > px(1000.),
+        "rows must retain their natural height"
+    );
+    let outer = stream.read_with(cx, |stream, _| {
+        let top = stream.list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item)
+    });
+    let header = bounds(window, "tool-activity-single-row", cx);
+    issue103_wheel(window, body.center(), -80., cx);
+    assert_eq!(scroll.offset().y, px(-80.));
+    issue103_wheel(window, body.center(), 40., cx);
+    assert_eq!(scroll.offset().y, px(-40.));
+    assert_eq!(
+        stream.read_with(cx, |stream, _| {
+            let top = stream.list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        }),
+        outer
+    );
+    assert_eq!(bounds(window, "tool-activity-single-row", cx), header);
+    click(window, "tool-activity-single-row", cx);
+    click(window, "tool-activity-single-row", cx);
+    assert_eq!(
+        scroll.offset().y,
+        px(-40.),
+        "reopening preserves reading position"
+    );
+    issue103_wheel(window, body.center(), -10000., cx);
+    assert_eq!(
+        scroll.offset().y,
+        -scroll.max_offset().y,
+        "footer remains reachable"
+    );
+    issue103_wheel(window, body.center(), 10000., cx);
+    assert_eq!(scroll.offset().y, px(0.));
+    assert_eq!(
+        stream.read_with(cx, |stream, _| {
+            let top = stream.list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        }),
+        outer
+    );
+    issue103_wheel(window, body.center(), 40., cx);
+    let chained_outer = stream.read_with(cx, |stream, _| {
+        let top = stream.list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item)
+    });
+    assert_ne!(
+        chained_outer, outer,
+        "upper boundary chains to conversation"
+    );
+    let moved_body = bounds(window, "tool-activity-single-row-detail", cx);
+    issue103_wheel(window, moved_body.center(), -10000., cx);
+    assert_eq!(scroll.offset().y, -scroll.max_offset().y);
+    assert_eq!(
+        stream.read_with(cx, |stream, _| {
+            let top = stream.list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        }),
+        chained_outer,
+        "landing at lower edge is still internal movement"
+    );
+    issue103_wheel(window, moved_body.center(), -20., cx);
+    assert_ne!(
+        stream.read_with(cx, |stream, _| {
+            let top = stream.list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        }),
+        chained_outer,
+        "lower boundary chains to conversation"
+    );
+    let header = bounds(window, "tool-activity-single-row", cx);
+    issue103_wheel(window, header.center(), 100., cx);
+    assert_ne!(
+        stream.read_with(cx, |stream, _| {
+            let top = stream.list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        }),
+        outer,
+        "outside the body still scrolls the conversation"
+    );
+}
+
+#[gpui_kit::test]
+async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "issue103-group");
+    stream.update(cx, |stream, cx| {
+        issue103_prefix(stream, cx);
+        for index in 0..30 {
+            let id = format!("call-{index}");
+            stream.apply_event(
+                ConversationEvent::ToolCallProposed {
+                    call: bash_call(&id, "printf lines"),
+                },
+                cx,
+            );
+            finish(
+                stream,
+                &id,
+                ToolCallStatus::Success,
+                &"output line\n".repeat(80),
+                Some(0),
+                Some(10),
+                cx,
+            );
+        }
+    });
+    cx.run_until_parked();
+    assert!(stream.read_with(cx, |stream, cx| group(stream).read(cx).expanded()));
+    let body = bounds(window, "tool-activity-group", cx);
+    assert!(
+        body.size.height <= px(320. + ROW_HEIGHT),
+        "group: {:?}",
+        body.size.height
+    );
+    click(window, "tool-activity-child-0", cx);
+    let detail = bounds(window, "tool-activity-child-0-detail", cx);
+    assert!(detail.size.height <= px(240.));
+    let (group_scroll, child_scroll, other_scroll) = stream.read_with(cx, |stream, cx| {
+        (
+            group(stream).read(cx).scroll_handle(),
+            stream.tool_cards["call-0"].read(cx).scroll_handle(),
+            stream.tool_cards["call-1"].read(cx).scroll_handle(),
+        )
+    });
+    let outer = stream.read_with(cx, |stream, _| {
+        let top = stream.list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item)
+    });
+    issue103_wheel(window, detail.center(), -80., cx);
+    assert_eq!(child_scroll.offset().y, px(-80.));
+    assert_eq!(group_scroll.offset().y, px(0.));
+    assert_eq!(other_scroll.offset().y, px(0.));
+    assert_eq!(
+        stream.read_with(cx, |stream, _| {
+            let top = stream.list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        }),
+        outer
+    );
+    let group_body = bounds(window, "tool-activity-group-content", cx);
+    let group_gutter = gpui_kit::point(group_body.left() + px(2.), group_body.center().y);
+    issue103_wheel(window, group_gutter, -80., cx);
+    assert_eq!(group_scroll.offset().y, px(-80.));
+    assert_eq!(
+        child_scroll.offset().y,
+        px(-80.),
+        "group movement does not change nested reading offset"
+    );
+    click(window, "tool-activity-group-toggle", cx);
+    click(window, "tool-activity-group-toggle", cx);
+    assert_eq!(group_scroll.offset().y, px(-80.));
+    assert_eq!(child_scroll.offset().y, px(-80.));
+    issue103_wheel(window, group_gutter, -10000., cx);
+    assert_eq!(group_scroll.offset().y, -group_scroll.max_offset().y);
+    let last = bounds(window, "tool-activity-child-29", cx);
+    assert!(
+        last.top() >= group_body.top() && last.bottom() <= group_body.bottom(),
+        "final child is reachable"
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, _| {
+            let top = stream.list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        }),
+        outer
+    );
+}
+
+#[gpui_kit::test]
+async fn issue103_short_empty_error_body_keeps_natural_height_and_chains(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "issue103-short-tool");
+    stream.update(cx, |stream, cx| {
+        issue103_prefix(stream, cx);
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("short", "false"),
+            },
+            cx,
+        );
+        finish(
+            stream,
+            "short",
+            ToolCallStatus::Success,
+            "",
+            Some(1),
+            Some(10),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert!(stream.read_with(cx, |stream, cx| {
+        stream.tool_cards["short"].read(cx).is_expanded()
+    }));
+    let body = bounds(window, "tool-activity-single-row-detail", cx);
+    assert!(body.size.height > px(0.) && body.size.height < px(240.));
+    let scroll = stream.read_with(cx, |stream, cx| {
+        let card = stream.tool_cards["short"].read(cx);
+        assert!(card.visible_text().contains("exit 1"));
+        card.scroll_handle()
+    });
+    assert_eq!(scroll.max_offset().y, px(0.));
+    let outer = stream.read_with(cx, |stream, _| {
+        let top = stream.list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item)
+    });
+    issue103_wheel(window, body.center(), 40., cx);
+    assert_eq!(scroll.offset().y, px(0.));
+    assert_ne!(
+        stream.read_with(cx, |stream, _| {
+            let top = stream.list.logical_scroll_top();
+            (top.item_ix, top.offset_in_item)
+        }),
+        outer,
+        "short content never traps wheel input"
+    );
+}
+
+#[gpui_kit::test]
+async fn issue103_tool_status_update_preserves_reading_offset(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "issue103-tool-status");
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallProposed {
+                call: bash_call("status", &"printf line\n".repeat(80)),
+            },
+            cx,
+        );
+        approve_and_run(stream, "status", cx);
+    });
+    cx.run_until_parked();
+    assert!(stream.read_with(cx, |stream, cx| {
+        stream.tool_cards["status"].read(cx).is_expanded()
+    }));
+    let body = bounds(window, "tool-activity-single-row-detail", cx);
+    let scroll = stream.read_with(cx, |stream, cx| {
+        stream.tool_cards["status"].read(cx).scroll_handle()
+    });
+    issue103_wheel(window, body.center(), -80., cx);
+    assert_eq!(scroll.offset().y, px(-80.));
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::ToolCallFinished {
+                call_id: "status".into(),
+                result: ToolResult {
+                    status: ToolCallStatus::Success,
+                    output: "done".into(),
+                    reused: false,
+                    exit_code: Some(0),
+                    duration_ms: Some(10),
+                    truncated: Some(false),
+                    invalid: None,
+                },
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(scroll.offset().y, px(-80.));
+    assert!(
+        bounds(window, "tool-activity-single-row-detail", cx)
+            .size
+            .height
+            <= px(240.)
+    );
+    stream.read_with(cx, |stream, cx| {
+        assert!(
+            stream.tool_cards["status"]
+                .read(cx)
+                .visible_text()
+                .contains("已完成")
+        );
+    });
+}

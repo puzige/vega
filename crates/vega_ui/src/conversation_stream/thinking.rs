@@ -21,15 +21,22 @@ pub(crate) struct ThinkingBlock {
     pub(crate) expanded: bool,
     pub(crate) truncated: bool,
     focus: FocusHandle,
+    scroll: ScrollHandle,
 }
 
 impl ThinkingBlock {
+    #[cfg(test)]
+    pub(crate) fn scroll_handle(&self) -> ScrollHandle {
+        self.scroll.clone()
+    }
+
     fn new(cx: &mut Context<Self>) -> Self {
         Self {
             text: String::new(),
             expanded: false,
             truncated: false,
             focus: cx.focus_handle(),
+            scroll: ScrollHandle::new(),
         }
     }
     /// #151 R151-1/R151-2: the newest live activity unit is expanded; older
@@ -109,7 +116,13 @@ impl Render for ThinkingBlock {
             .when(self.expanded, |block| {
                 block.child(
                     div()
+                        .id("thinking-content")
                         .debug_selector(|| "thinking-content".into())
+                        .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
+                        .overflow_x_hidden()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&self.scroll))
                         .w_full()
                         .min_w_0()
                         .text_size(px(Typography::BODY))
