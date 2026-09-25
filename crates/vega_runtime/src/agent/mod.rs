@@ -565,6 +565,54 @@ pub struct RuntimeToolResult {
     pub remember_rule: Option<RuntimePermissionTarget>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeDiagnosticPhase {
+    PrimaryModel,
+    ContextSummary,
+    Tool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeDiagnosticState {
+    Started,
+    Succeeded,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeDiagnosticFailure {
+    ContextOverLimit,
+    ReasoningLimit,
+    ProviderHttp,
+    ProviderTransportOrStream,
+    ProviderProtocol,
+    ProviderRejected,
+    UnknownSafeFailure,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeDiagnosticMetrics {
+    pub provider: crate::ProviderResponseMetadata,
+    pub stop_reason: Option<StopReason>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub visible_output_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeDiagnosticAttempt {
+    pub attempt_id: String,
+    pub phase: RuntimeDiagnosticPhase,
+    pub state: RuntimeDiagnosticState,
+    pub failure: Option<RuntimeDiagnosticFailure>,
+    pub duration_ms: Option<u64>,
+    pub metrics: RuntimeDiagnosticMetrics,
+}
+
 impl fmt::Debug for RuntimeToolResult {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -586,6 +634,7 @@ impl fmt::Debug for RuntimeToolResult {
 /// converting it into the sole UI/store event type.
 #[derive(Clone)]
 pub enum RuntimeEvent {
+    DiagnosticAttempt(RuntimeDiagnosticAttempt),
     /// Visible assistant delta.
     TextDelta(String),
     /// Reasoning delta.
@@ -678,6 +727,10 @@ pub enum RuntimeEvent {
 impl fmt::Debug for RuntimeEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::DiagnosticAttempt(attempt) => formatter
+                .debug_tuple("DiagnosticAttempt")
+                .field(attempt)
+                .finish(),
             Self::TextDelta(value) => formatter
                 .debug_tuple("TextDelta")
                 .field(&format_args!("{} bytes", value.len()))

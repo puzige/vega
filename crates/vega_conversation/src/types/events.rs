@@ -55,6 +55,26 @@ impl RunFailureKind {
                 ..
             } => Self::ProviderHttp(*status),
             vega_runtime::VegaError::Provider { status: None, .. } => Self::ProviderTransport,
+            vega_runtime::VegaError::ProviderDiagnostic {
+                status: Some(400),
+                message,
+                ..
+            } if provider_has_quota_code(message) => Self::ProviderQuota,
+            vega_runtime::VegaError::ProviderDiagnostic {
+                status: Some(401 | 403),
+                ..
+            } => Self::ProviderAuthorization,
+            vega_runtime::VegaError::ProviderDiagnostic {
+                status: Some(429), ..
+            } => Self::ProviderRateLimited,
+            vega_runtime::VegaError::ProviderDiagnostic {
+                status: Some(status),
+                ..
+            } => Self::ProviderHttp(*status),
+            vega_runtime::VegaError::ProviderDiagnostic {
+                kind: vega_runtime::ProviderFailureKind::Transport,
+                ..
+            } => Self::ProviderTransport,
             _ => Self::Runtime,
         }
     }
@@ -341,6 +361,7 @@ pub(crate) fn from_runtime_event(
     use vega_runtime::{RuntimeEvent, RuntimeFinishReason, RuntimeToolStatus};
 
     match event {
+        RuntimeEvent::DiagnosticAttempt(_) => None,
         RuntimeEvent::TextDelta(delta) => Some(ConversationEvent::TextDelta {
             message_id: message_id.to_string(),
             delta: delta.clone(),

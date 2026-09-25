@@ -39,6 +39,8 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-191-branch-list-capacity.md](docs/vega-issue-191-branch-list-capacity.md) | #191 分支列表路径容量、资源上界与准确错误状态 |
 | [vega-issue-191-branch-list-capacity-delivery.md](docs/vega-issue-191-branch-list-capacity-delivery.md) | #191 分支列表容量修复的定向测试、PR 与原生验收状态 |
 | [vega-issue-148-long-session-scroll.md](docs/vega-issue-148-long-session-scroll.md) | #148 长会话虚拟滚动的基线、稳定锚点与定向验收 |
+| [vega-issue-171-run-diagnostics-spec.md](docs/vega-issue-171-run-diagnostics-spec.md) | #171 运行诊断、失败分类与脱敏持久化规格 |
+| [vega-issue-171-run-diagnostics-delivery.md](docs/vega-issue-171-run-diagnostics-delivery.md) | #171 实现计划、定向验收与交付证据 |
 | [vega-issue-100-composer-width.md](docs/vega-issue-100-composer-width.md) | #100 Composer 与正文列统一为 768px（参考实现共用同一宽度 token） |
 | [vega-issue-98-scroll-to-bottom.md](docs/vega-issue-98-scroll-to-bottom.md) | #98 「回到底部」改为悬浮圆形向下箭头按钮（参考 Codex 实测 32px / 居中 / 悬浮 composer 上方） |
 | [vega-issue-70-tool-activity-delivery.md](docs/vega-issue-70-tool-activity-delivery.md) | #70 测试先行矩阵、门禁与原生验收记录 |

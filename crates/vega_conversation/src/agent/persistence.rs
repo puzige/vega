@@ -107,6 +107,7 @@ pub(crate) enum PersistenceCommand {
         execution_duration_ms: Option<i64>,
         ack: oneshot::Sender<Result<(), VegaError>>,
     },
+    Diagnostic(Box<vega_store::run_diagnostics::NewDiagnosticEvent>),
 }
 
 pub(crate) struct PersistenceActor {
@@ -197,6 +198,9 @@ impl PersistenceActor {
                             )
                         });
                         let _ = ack.send(result);
+                    }
+                    PersistenceCommand::Diagnostic(event) => {
+                        let _ = vega_store::run_diagnostics::insert(store.conn(), &event);
                     }
                 }
             }
@@ -298,5 +302,6 @@ pub(crate) fn runtime_event_requires_ack(event: &RuntimeEvent) -> bool {
         RuntimeEvent::TextDelta(_)
             | RuntimeEvent::ThinkingDelta(_)
             | RuntimeEvent::ToolCallOutput { .. }
+            | RuntimeEvent::DiagnosticAttempt(_)
     )
 }

@@ -197,6 +197,12 @@ pub enum ContextRuntimeError {
     /// otherwise unusable.
     #[error("context summary response was invalid")]
     InvalidSummary,
+    #[error("context summary response was empty")]
+    SummaryEmpty,
+    #[error("context summary framing or format was invalid")]
+    SummaryFormatInvalid,
+    #[error("generated context summary projection was invalid")]
+    SummaryProjectionInvalid,
     /// Historical source or reconstructed projection failed structural validation.
     #[error("context source or projection was invalid")]
     InvalidProjection,
@@ -421,6 +427,9 @@ impl ContextCompactionStatusFailure {
             | VegaError::Context(ContextRuntimeError::Estimate(_)) => Self::OverLimit,
             VegaError::Context(
                 ContextRuntimeError::InvalidSummary
+                | ContextRuntimeError::SummaryEmpty
+                | ContextRuntimeError::SummaryFormatInvalid
+                | ContextRuntimeError::SummaryProjectionInvalid
                 | ContextRuntimeError::InvalidProjection
                 | ContextRuntimeError::SummaryTimedOut
                 | ContextRuntimeError::SummaryOutputTruncated { .. },

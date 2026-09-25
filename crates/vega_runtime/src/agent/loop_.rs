@@ -71,6 +71,115 @@ fn compaction_usage_state(
     }
 }
 
+fn diagnostic_failure(error: &VegaError) -> RuntimeDiagnosticFailure {
+    match error {
+        VegaError::ProviderDiagnostic { kind, .. } => match kind {
+            crate::ProviderFailureKind::Http => RuntimeDiagnosticFailure::ProviderHttp,
+            crate::ProviderFailureKind::Transport => {
+                RuntimeDiagnosticFailure::ProviderTransportOrStream
+            }
+            crate::ProviderFailureKind::Protocol => RuntimeDiagnosticFailure::ProviderProtocol,
+            crate::ProviderFailureKind::Rejected => RuntimeDiagnosticFailure::ProviderRejected,
+        },
+        VegaError::Provider {
+            status: Some(_), ..
+        } => RuntimeDiagnosticFailure::ProviderHttp,
+        VegaError::ReasoningBudgetExceeded { .. } => RuntimeDiagnosticFailure::ReasoningLimit,
+        VegaError::Context(ContextRuntimeError::OverLimit { .. }) => {
+            RuntimeDiagnosticFailure::ContextOverLimit
+        }
+        VegaError::Cancelled => RuntimeDiagnosticFailure::UnknownSafeFailure,
+        _ => RuntimeDiagnosticFailure::UnknownSafeFailure,
+    }
+}
+
+fn primary_attempt_event(
+    attempt_id: &str,
+    state: RuntimeDiagnosticState,
+    failure: Option<RuntimeDiagnosticFailure>,
+    started_at: std::time::Instant,
+    metrics: &RuntimeDiagnosticMetrics,
+    error: Option<&VegaError>,
+) -> RuntimeEvent {
+    let mut metrics = metrics.clone();
+    match error {
+        Some(VegaError::ProviderDiagnostic {
+            status,
+            retry_count,
+            request_id,
+            ..
+        }) => {
+            if status.is_some() {
+                metrics.provider.http_status = *status;
+            }
+            if retry_count.is_some() {
+                metrics.provider.retry_count = *retry_count;
+            }
+            if request_id.is_some() {
+                metrics.provider.request_id = request_id.clone();
+            }
+        }
+        Some(VegaError::Provider {
+            status: Some(status),
+            ..
+        }) => {
+            metrics.provider.http_status = Some(*status);
+        }
+        _ => {}
+    }
+    RuntimeEvent::DiagnosticAttempt(RuntimeDiagnosticAttempt {
+        attempt_id: attempt_id.to_string(),
+        phase: RuntimeDiagnosticPhase::PrimaryModel,
+        state,
+        failure,
+        duration_ms: (state != RuntimeDiagnosticState::Started)
+            .then(|| u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        metrics,
+    })
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn stream_failure_preserves_success_response_metadata() {
+        let metrics = RuntimeDiagnosticMetrics {
+            provider: crate::ProviderResponseMetadata {
+                http_status: Some(200),
+                request_id: Some("resp-opaque-1".into()),
+                retry_count: Some(2),
+            },
+            ..RuntimeDiagnosticMetrics::default()
+        };
+        let error = VegaError::ProviderDiagnostic {
+            kind: crate::ProviderFailureKind::Protocol,
+            status: None,
+            message: "parser detail canary".into(),
+            retryable: false,
+            retry_count: None,
+            request_id: None,
+        };
+        let event = primary_attempt_event(
+            "attempt",
+            RuntimeDiagnosticState::Failed,
+            Some(RuntimeDiagnosticFailure::ProviderProtocol),
+            std::time::Instant::now(),
+            &metrics,
+            Some(&error),
+        );
+        let RuntimeEvent::DiagnosticAttempt(event) = event else {
+            unreachable!()
+        };
+        assert_eq!(event.metrics.provider.http_status, Some(200));
+        assert_eq!(
+            event.metrics.provider.request_id.as_deref(),
+            Some("resp-opaque-1")
+        );
+        assert_eq!(event.metrics.provider.retry_count, Some(2));
+    }
+}
+
 // Deliberately closed: status-less transport/projection guards and authorization
 // failures must never be converted into permission to issue a primary request.
 fn recoverable_compaction_failure(error: &VegaError) -> bool {
@@ -86,7 +195,10 @@ fn recoverable_compaction_failure(error: &VegaError) -> bool {
                 | ContextRuntimeError::InvalidSummary
                 | ContextRuntimeError::SummaryTimedOut
                 | ContextRuntimeError::SummaryOutputTruncated { .. }
-        )
+        ) | VegaError::ProviderDiagnostic {
+            status: Some(400 | 408 | 413 | 429 | 500..=599),
+            ..
+        }
     )
 }
 
@@ -1333,9 +1445,39 @@ where
         } else {
             None
         };
-        let mut stream = match provider.chat_stream(chat_request, cancel.clone()).await {
-            Ok(stream) => stream,
+        let attempt_id = ulid::Ulid::generate().to_string();
+        let attempt_started_at = std::time::Instant::now();
+        let mut diagnostic_metrics = RuntimeDiagnosticMetrics::default();
+        emit!(
+            events,
+            sink,
+            primary_attempt_event(
+                &attempt_id,
+                RuntimeDiagnosticState::Started,
+                None,
+                attempt_started_at,
+                &diagnostic_metrics,
+                None,
+            )
+        );
+        let call = match provider
+            .chat_stream_with_metadata(chat_request, cancel.clone())
+            .await
+        {
+            Ok(call) => call,
             Err(VegaError::Cancelled) => {
+                emit!(
+                    events,
+                    sink,
+                    primary_attempt_event(
+                        &attempt_id,
+                        RuntimeDiagnosticState::Cancelled,
+                        None,
+                        attempt_started_at,
+                        &diagnostic_metrics,
+                        None,
+                    )
+                );
                 emit!(events, sink, RuntimeEvent::Interrupted);
                 return Ok(outcome(
                     events,
@@ -1348,6 +1490,18 @@ where
                 ));
             }
             Err(error) => {
+                emit!(
+                    events,
+                    sink,
+                    primary_attempt_event(
+                        &attempt_id,
+                        RuntimeDiagnosticState::Failed,
+                        Some(diagnostic_failure(&error)),
+                        attempt_started_at,
+                        &diagnostic_metrics,
+                        Some(&error),
+                    )
+                );
                 emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
                 return Ok(outcome(
                     events,
@@ -1360,6 +1514,8 @@ where
                 ));
             }
         };
+        diagnostic_metrics.provider = call.metadata;
+        let mut stream = call.events;
 
         let mut assistant_text = String::new();
         let preserve_reasoning_content = request
@@ -1373,6 +1529,18 @@ where
             let next = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => {
+                    emit!(
+                        events,
+                        sink,
+                        primary_attempt_event(
+                            &attempt_id,
+                            RuntimeDiagnosticState::Cancelled,
+                            None,
+                            attempt_started_at,
+                            &diagnostic_metrics,
+                            None,
+                        )
+                    );
                     emit!(events, sink, RuntimeEvent::Interrupted);
                     return Ok(outcome(
                         events,
@@ -1392,6 +1560,12 @@ where
             }
             match item {
                 Ok(ProviderEvent::TextDelta(delta)) => {
+                    diagnostic_metrics.visible_output_bytes = Some(
+                        diagnostic_metrics
+                            .visible_output_bytes
+                            .unwrap_or_default()
+                            .saturating_add(delta.len() as u64),
+                    );
                     assistant_text.push_str(&delta);
                     final_text.push_str(&delta);
                     emit!(events, sink, RuntimeEvent::TextDelta(delta));
@@ -1407,6 +1581,18 @@ where
                             limit_bytes: reasoning_budget_limit(scope),
                             observed_bytes,
                         });
+                        emit!(
+                            events,
+                            sink,
+                            primary_attempt_event(
+                                &attempt_id,
+                                RuntimeDiagnosticState::Failed,
+                                Some(RuntimeDiagnosticFailure::ReasoningLimit),
+                                attempt_started_at,
+                                &diagnostic_metrics,
+                                Some(&error),
+                            )
+                        );
                         cancel.cancel();
                         emit!(events, sink, RuntimeEvent::Error(error));
                         return Ok(outcome(
@@ -1449,15 +1635,24 @@ where
                     // C3: exactly one terminal usage per provider call;
                     // duplicates and usage-after-terminal fail closed.
                     if stop_reason.is_some() {
+                        let error = VegaError::Provider {
+                            status: None,
+                            message: "usage event after terminal done".to_string(),
+                            retryable: false,
+                        };
                         emit!(
                             events,
                             sink,
-                            RuntimeEvent::Error(Arc::new(VegaError::Provider {
-                                status: None,
-                                message: "usage event after terminal done".to_string(),
-                                retryable: false,
-                            }))
+                            primary_attempt_event(
+                                &attempt_id,
+                                RuntimeDiagnosticState::Failed,
+                                Some(RuntimeDiagnosticFailure::UnknownSafeFailure),
+                                attempt_started_at,
+                                &diagnostic_metrics,
+                                Some(&error),
+                            )
                         );
+                        emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
                         return Ok(outcome(
                             events,
                             messages,
@@ -1469,15 +1664,24 @@ where
                         ));
                     }
                     if usage_seen {
+                        let error = VegaError::Provider {
+                            status: None,
+                            message: "duplicate usage event in one provider call".to_string(),
+                            retryable: false,
+                        };
                         emit!(
                             events,
                             sink,
-                            RuntimeEvent::Error(Arc::new(VegaError::Provider {
-                                status: None,
-                                message: "duplicate usage event in one provider call".to_string(),
-                                retryable: false,
-                            }))
+                            primary_attempt_event(
+                                &attempt_id,
+                                RuntimeDiagnosticState::Failed,
+                                Some(RuntimeDiagnosticFailure::UnknownSafeFailure),
+                                attempt_started_at,
+                                &diagnostic_metrics,
+                                Some(&error),
+                            )
                         );
+                        emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
                         return Ok(outcome(
                             events,
                             messages,
@@ -1488,6 +1692,10 @@ where
                             true,
                         ));
                     }
+                    diagnostic_metrics.input_tokens = Some(input);
+                    diagnostic_metrics.output_tokens = Some(output);
+                    diagnostic_metrics.cache_read_tokens = Some(cache_read);
+                    diagnostic_metrics.cache_write_tokens = Some(cache_write);
                     usage_seen = true;
                     valid_primary_input =
                         (input > 0 && cache_read <= input && cache_write <= input).then_some(input);
@@ -1533,15 +1741,24 @@ where
                                 Err(error) => {
                                     // Invalid usage / overflow fails closed: no
                                     // zero or partial usage row may be written.
+                                    let error = VegaError::Provider {
+                                        status: None,
+                                        message: format!("usage pricing failed: {error}"),
+                                        retryable: false,
+                                    };
                                     emit!(
                                         events,
                                         sink,
-                                        RuntimeEvent::Error(Arc::new(VegaError::Provider {
-                                            status: None,
-                                            message: format!("usage pricing failed: {error}"),
-                                            retryable: false,
-                                        }))
+                                        primary_attempt_event(
+                                            &attempt_id,
+                                            RuntimeDiagnosticState::Failed,
+                                            Some(RuntimeDiagnosticFailure::UnknownSafeFailure),
+                                            attempt_started_at,
+                                            &diagnostic_metrics,
+                                            Some(&error),
+                                        )
                                     );
+                                    emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
                                     return Ok(outcome(
                                         events,
                                         messages,
@@ -1568,8 +1785,23 @@ where
                 }
                 Ok(ProviderEvent::Done {
                     stop_reason: reason,
-                }) => stop_reason = Some(reason),
+                }) => {
+                    diagnostic_metrics.stop_reason = Some(reason);
+                    stop_reason = Some(reason);
+                }
                 Err(VegaError::Cancelled) => {
+                    emit!(
+                        events,
+                        sink,
+                        primary_attempt_event(
+                            &attempt_id,
+                            RuntimeDiagnosticState::Cancelled,
+                            None,
+                            attempt_started_at,
+                            &diagnostic_metrics,
+                            None,
+                        )
+                    );
                     emit!(events, sink, RuntimeEvent::Interrupted);
                     return Ok(outcome(
                         events,
@@ -1582,6 +1814,18 @@ where
                     ));
                 }
                 Err(error) => {
+                    emit!(
+                        events,
+                        sink,
+                        primary_attempt_event(
+                            &attempt_id,
+                            RuntimeDiagnosticState::Failed,
+                            Some(diagnostic_failure(&error)),
+                            attempt_started_at,
+                            &diagnostic_metrics,
+                            Some(&error),
+                        )
+                    );
                     emit!(events, sink, RuntimeEvent::Error(Arc::new(error)));
                     return Ok(outcome(
                         events,
@@ -1600,6 +1844,18 @@ where
             cancel.cancel();
         }
         if cancel.is_cancelled() {
+            emit!(
+                events,
+                sink,
+                primary_attempt_event(
+                    &attempt_id,
+                    RuntimeDiagnosticState::Cancelled,
+                    None,
+                    attempt_started_at,
+                    &diagnostic_metrics,
+                    None,
+                )
+            );
             emit!(events, sink, RuntimeEvent::Interrupted);
             return Ok(outcome(
                 events,
@@ -1614,6 +1870,18 @@ where
         let normal_terminal = matches!(
             (stop_reason, calls.is_empty()),
             (Some(StopReason::End), true) | (Some(StopReason::ToolUse), false)
+        );
+        emit!(
+            events,
+            sink,
+            primary_attempt_event(
+                &attempt_id,
+                RuntimeDiagnosticState::Succeeded,
+                None,
+                attempt_started_at,
+                &diagnostic_metrics,
+                None,
+            )
         );
         input_anchor = if anchor_protocol_valid && normal_terminal {
             pending_anchor

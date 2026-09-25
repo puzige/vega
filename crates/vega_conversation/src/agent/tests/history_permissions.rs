@@ -2724,7 +2724,7 @@ async fn issue91_generic_invalid_summary_does_not_retry_a_splittable_source() {
     .unwrap_err();
     assert!(matches!(
         failure.error.as_ref(),
-        VegaError::Context(vega_runtime::ContextRuntimeError::InvalidSummary)
+        VegaError::Context(vega_runtime::ContextRuntimeError::SummaryFormatInvalid)
     ));
     assert_eq!(provider.requests().len(), 1);
     assert_eq!(failure.usages.len(), 1);

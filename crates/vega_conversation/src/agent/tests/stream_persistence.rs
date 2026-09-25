@@ -101,6 +101,66 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
         .unwrap();
     assert_eq!(usage_count, 2);
     assert_eq!(nonzero_cost_count, 0);
+
+    let diagnostic_events = vega_store::run_diagnostics::read_by_run(
+        store.conn(),
+        "thread-1",
+        &run.assistant_message_id,
+    )
+    .unwrap();
+    assert_eq!(diagnostic_events.len(), 8);
+    let root = diagnostic_events
+        .iter()
+        .find(|event| event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::Run)
+        .unwrap();
+    assert!(root.event.parent_attempt_id.is_none());
+    assert_eq!(
+        root.event.state,
+        vega_store::run_diagnostics::DiagnosticState::Started
+    );
+    let root_attempt_id = root.event.attempt_id.clone();
+    let primary_attempts = diagnostic_events
+        .iter()
+        .filter(|event| {
+            event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::PrimaryModel
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(primary_attempts.len(), 4);
+    assert!(primary_attempts.iter().all(|event| event.event.parent_attempt_id.as_deref() == Some(root_attempt_id.as_str())));
+    assert!(
+        primary_attempts
+            .iter()
+            .any(|event| event.event.metrics.stop_reason
+                == Some(vega_store::run_diagnostics::DiagnosticStopReason::ToolUse))
+    );
+    let tool_attempts = diagnostic_events
+        .iter()
+        .filter(|event| event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::Tool)
+        .collect::<Vec<_>>();
+    assert_eq!(tool_attempts.len(), 2);
+    assert!(
+        tool_attempts
+            .iter()
+            .all(|event| event.event.tool_call_id.as_deref() == Some("call-1"))
+    );
+    assert!(tool_attempts.iter().any(|event| {
+        event.event.state == vega_store::run_diagnostics::DiagnosticState::Succeeded
+            && event
+                .event
+                .metrics
+                .tool_output_bytes
+                .is_some_and(|bytes| bytes > 0)
+    }));
+    let diagnostic_json = vega_store::run_diagnostics::export_run(
+        store.conn(),
+        "thread-1",
+        &run.assistant_message_id,
+    )
+    .unwrap();
+    for content in ["Find TODO", "lib.rs:1:// TODO", r#"{"pattern":"TODO""#] {
+        assert!(!diagnostic_json.contains(content));
+    }
+
     let updated_at: i64 = store
         .conn()
         .query_row(
@@ -135,6 +195,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "model_context_policies",
             "permissions",
             "projects",
+            "run_diagnostic_events",
             "sidebar_groups",
             "sidebar_memberships",
             "sidebar_organization",
@@ -151,6 +212,141 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
             "tool_calls"
         ]
     );
+}
+
+#[tokio::test]
+async fn diagnostics_keep_tool_success_before_later_provider_failure() {
+    const FAILURE_CANARY: &str = "VEGA_PROVIDER_FAILURE_CANARY";
+    let (store, directory, _project_id) = setup();
+    let tools = vega_tools::Tools::new(directory.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("before tool".into()),
+            ProviderEvent::ToolUse {
+                id: "call-after-tool".into(),
+                name: "grep".into(),
+                input_json: r#"{"pattern":"TODO","path":"lib.rs"}"#.into(),
+            },
+            ProviderEvent::Usage {
+                input: 12,
+                output: 3,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::Error {
+            status: Some(503),
+            message: FAILURE_CANARY.into(),
+            retryable: false,
+        }],
+    ]);
+    let run = run_thread_task(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Find TODO then report",
+        "Inspect repositories.",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(run.failed);
+
+    let events = vega_store::run_diagnostics::read_by_run(
+        store.conn(),
+        "thread-1",
+        &run.assistant_message_id,
+    )
+    .unwrap();
+    assert_eq!(events.len(), 8);
+    let tool_terminal_index = events
+        .iter()
+        .position(|event| {
+            event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::Tool
+                && event.event.state == vega_store::run_diagnostics::DiagnosticState::Succeeded
+        })
+        .unwrap();
+    let failed_model_index = events
+        .iter()
+        .position(|event| {
+            event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::PrimaryModel
+                && event.event.state == vega_store::run_diagnostics::DiagnosticState::Failed
+        })
+        .unwrap();
+    assert!(tool_terminal_index < failed_model_index);
+    assert_eq!(
+        events[failed_model_index].event.failure_code,
+        Some(vega_store::run_diagnostics::DiagnosticFailureCode::ProviderHttp)
+    );
+    assert_eq!(
+        events[failed_model_index].event.metrics.http_status,
+        Some(503)
+    );
+    let export = vega_store::run_diagnostics::export_run(
+        store.conn(),
+        "thread-1",
+        &run.assistant_message_id,
+    )
+    .unwrap();
+    assert!(!export.contains(FAILURE_CANARY));
+    assert!(events.iter().any(|event| {
+        event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::Tool
+            && event.event.tool_call_id.as_deref() == Some("call-after-tool")
+    }));
+}
+
+#[tokio::test]
+async fn diagnostic_sql_write_failure_does_not_change_required_run_result() {
+    let (store, directory, _project_id) = setup();
+    store
+        .conn()
+        .execute_batch(
+            "CREATE TRIGGER fail_run_diagnostic_insert
+             BEFORE INSERT ON run_diagnostic_events
+             BEGIN SELECT RAISE(FAIL, 'diagnostic write failure'); END;",
+        )
+        .unwrap();
+    let tools = vega_tools::Tools::new(directory.path()).unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("completed safely".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+
+    let run = run_thread_task(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Canary prompt excluded from diagnostics",
+        "System canary excluded from diagnostics",
+        CancellationToken::new(),
+    )
+    .await
+    .expect("diagnostic-only SQLite failure must not fail a completed run");
+
+    assert_eq!(run.content, "completed safely");
+    let assistant_status: String = store
+        .conn()
+        .query_row(
+            "SELECT status FROM messages WHERE id = ?1",
+            [&run.assistant_message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(assistant_status, "done");
+    let diagnostic_rows: i64 = store
+        .conn()
+        .query_row("SELECT COUNT(*) FROM run_diagnostic_events", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(diagnostic_rows, 0);
 }
 
 #[tokio::test]

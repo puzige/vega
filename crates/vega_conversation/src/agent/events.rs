@@ -7,6 +7,10 @@ pub(super) struct RuntimeEventContext<'a, F> {
     pub(super) event_sink: &'a mut F,
     pub(super) cancel: CancellationToken,
     pub(super) run_started_at: std::time::Instant,
+    pub(super) diagnostics: &'a super::diagnostics::DiagnosticsWriter,
+    pub(super) thread_id: &'a str,
+    pub(super) run_id: &'a str,
+    pub(super) root_attempt_id: &'a str,
 }
 
 pub(super) async fn process_runtime_events<F>(
@@ -24,10 +28,16 @@ where
         event_sink,
         cancel,
         run_started_at,
+        diagnostics,
+        thread_id,
+        run_id,
+        root_attempt_id,
     } = context;
     let mut pending_text = Vec::new();
     let mut pending_text_bytes = 0usize;
     let mut batch_deadline = None;
+    let mut tool_attempts =
+        std::collections::HashMap::<String, (String, std::time::Instant)>::new();
 
     loop {
         let received = if let Some(deadline) = batch_deadline {
@@ -72,7 +82,10 @@ where
         };
 
         let RuntimeEnvelope { event, ack } = envelope;
-        let result = if let RuntimeEvent::TextDelta(delta) = &event {
+        let result = if let RuntimeEvent::DiagnosticAttempt(attempt) = &event {
+            diagnostics.runtime_attempt(thread_id, run_id, root_attempt_id, attempt);
+            Ok(())
+        } else if let RuntimeEvent::TextDelta(delta) = &event {
             streamed_content.push_str(delta);
             pending_text_bytes = pending_text_bytes.saturating_add(delta.len());
             if let Some(converted) = from_runtime_event(message_id, &event) {
@@ -121,6 +134,14 @@ where
                         .await
                     {
                         Ok(()) => {
+                            record_tool_lifecycle(
+                                diagnostics,
+                                thread_id,
+                                run_id,
+                                root_attempt_id,
+                                &event,
+                                &mut tool_attempts,
+                            );
                             let terminal_output = match &event {
                                 RuntimeEvent::ToolCallFinished(result)
                                 | RuntimeEvent::ToolCallValidationRejected { result, .. }
@@ -167,6 +188,92 @@ where
                 return Err(error);
             }
         }
+    }
+}
+
+fn record_tool_lifecycle(
+    diagnostics: &super::diagnostics::DiagnosticsWriter,
+    thread_id: &str,
+    run_id: &str,
+    root_attempt_id: &str,
+    event: &RuntimeEvent,
+    attempts: &mut std::collections::HashMap<String, (String, std::time::Instant)>,
+) {
+    match event {
+        RuntimeEvent::ToolCallProposed(call) => {
+            let attempt_id = ulid::Ulid::generate().to_string();
+            let started_at = std::time::Instant::now();
+            attempts.insert(call.id.clone(), (attempt_id.clone(), started_at));
+            diagnostics.tool_event(super::diagnostics::ToolDiagnosticEvent {
+                thread_id,
+                run_id,
+                root_attempt_id,
+                attempt_id: &attempt_id,
+                tool_call_id: &call.id,
+                state: vega_store::run_diagnostics::DiagnosticState::Started,
+                failure_code: None,
+                started_at,
+                output_bytes: None,
+                truncated: None,
+                duration_ms: None,
+            });
+        }
+        RuntimeEvent::ToolCallValidationRejected { result, .. }
+        | RuntimeEvent::ToolCallConflict { result, .. }
+        | RuntimeEvent::ToolCallFinished(result) => {
+            let (attempt_id, started_at) = if let Some(attempt) = attempts.remove(&result.call_id) {
+                attempt
+            } else {
+                let attempt_id = ulid::Ulid::generate().to_string();
+                let started_at = std::time::Instant::now();
+                diagnostics.tool_event(super::diagnostics::ToolDiagnosticEvent {
+                    thread_id,
+                    run_id,
+                    root_attempt_id,
+                    attempt_id: &attempt_id,
+                    tool_call_id: &result.call_id,
+                    state: vega_store::run_diagnostics::DiagnosticState::Started,
+                    failure_code: None,
+                    started_at,
+                    output_bytes: None,
+                    truncated: None,
+                    duration_ms: None,
+                });
+                (attempt_id, started_at)
+            };
+            let (state, failure) = match result.status {
+                vega_runtime::RuntimeToolStatus::Success => (
+                    vega_store::run_diagnostics::DiagnosticState::Succeeded,
+                    None,
+                ),
+                vega_runtime::RuntimeToolStatus::Rejected => (
+                    vega_store::run_diagnostics::DiagnosticState::Failed,
+                    Some(vega_store::run_diagnostics::DiagnosticFailureCode::ToolRejected),
+                ),
+                vega_runtime::RuntimeToolStatus::Failed => (
+                    vega_store::run_diagnostics::DiagnosticState::Failed,
+                    Some(vega_store::run_diagnostics::DiagnosticFailureCode::ToolFailed),
+                ),
+                vega_runtime::RuntimeToolStatus::Cancelled => (
+                    vega_store::run_diagnostics::DiagnosticState::Cancelled,
+                    None,
+                ),
+            };
+            diagnostics.tool_event(super::diagnostics::ToolDiagnosticEvent {
+                thread_id,
+                run_id,
+                root_attempt_id,
+                attempt_id: &attempt_id,
+                tool_call_id: &result.call_id,
+                state,
+                failure_code: failure,
+                started_at,
+                output_bytes: Some(result.output.len() as u64),
+                truncated: result.truncated,
+                duration_ms: result.duration_ms,
+            });
+        }
+        _ => {}
     }
 }
 
@@ -650,6 +757,7 @@ pub(crate) fn persist_runtime_event(
         }
         RuntimeEvent::TextDelta(_)
         | RuntimeEvent::ThinkingDelta(_)
+        | RuntimeEvent::DiagnosticAttempt(_)
         | RuntimeEvent::ContextAccountingUpdated(_)
         | RuntimeEvent::ToolCallOutput { .. }
         | RuntimeEvent::ToolCallFinished(_) => {}

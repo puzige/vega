@@ -693,7 +693,7 @@ async fn issue74_imported_global_auto_respects_ui_switches_without_ambient_scan(
         calls: Arc::new(AtomicUsize::new(0)),
         decision: PermissionDecision::Deny { note: None },
     };
-    run_thread_task_with_images_and_reasoning(
+    let first_run = run_thread_task_with_images_and_reasoning(
         &store,
         &provider,
         &tools,
@@ -711,6 +711,16 @@ async fn issue74_imported_global_auto_respects_ui_switches_without_ambient_scan(
     )
     .await
     .unwrap();
+    let first_run_diagnostics = vega_store::run_diagnostics::read_by_run(
+        store.conn(),
+        "thread-1",
+        &first_run.assistant_message_id,
+    )
+    .unwrap();
+    assert!(first_run_diagnostics.iter().any(|event| {
+        event.event.phase == vega_store::run_diagnostics::DiagnosticPhase::Run
+            && event.event.state == vega_store::run_diagnostics::DiagnosticState::Succeeded
+    }));
     assert!(
         !provider.requests()[0].messages[0]
             .content

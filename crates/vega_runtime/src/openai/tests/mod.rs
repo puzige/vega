@@ -305,7 +305,7 @@ fn incomplete_tool_identity_fails_atomically_before_tool_use() {
             .unwrap_err();
         assert!(matches!(
             error,
-            VegaError::Provider {
+            VegaError::ProviderDiagnostic {
                 status: None,
                 retryable: false,
                 ..
@@ -406,7 +406,7 @@ fn invalid_json_chunk_is_a_provider_error() {
     let err = assembler.absorb("not json").unwrap_err();
     assert!(matches!(
         err,
-        VegaError::Provider {
+        VegaError::ProviderDiagnostic {
             retryable: false,
             ..
         }
@@ -690,15 +690,17 @@ fn assert_items_eq(
 fn assert_error_eq(actual: &VegaError, expected: &VegaError, index: usize) {
     let equal = match (actual, expected) {
         (
-            VegaError::Provider {
+            VegaError::ProviderDiagnostic {
                 status: actual_status,
                 message: actual_message,
                 retryable: actual_retryable,
+                ..
             },
-            VegaError::Provider {
+            VegaError::ProviderDiagnostic {
                 status: expected_status,
                 message: expected_message,
                 retryable: expected_retryable,
+                ..
             },
         ) => {
             actual_status == expected_status

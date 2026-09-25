@@ -210,7 +210,15 @@ async fn text_only_preserves_events_usage_and_visible_content() {
     assert_eq!(outcome.final_text, "ab");
     assert!(!outcome.final_text.contains("reason"));
     assert_eq!(provider.requests().len(), 1);
-    assert!(matches!(&outcome.events[..], [
+    let semantic_events = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::DiagnosticAttempt(_) => None,
+            event => Some(event.clone()),
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(&semantic_events[..], [
             RuntimeEvent::TextDelta(first),
             RuntimeEvent::ThinkingDelta(thinking),
             RuntimeEvent::TextDelta(second),
@@ -456,8 +464,16 @@ async fn provider_error_emits_error_without_message_finished() {
     .await
     .unwrap();
     assert!(outcome.failed);
+    let semantic_events = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::DiagnosticAttempt(_) => None,
+            event => Some(event.clone()),
+        })
+        .collect::<Vec<_>>();
     assert!(matches!(
-        outcome.events.as_slice(),
+        semantic_events.as_slice(),
         [RuntimeEvent::Error(error)]
             if matches!(
                 error.as_ref(),

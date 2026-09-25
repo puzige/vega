@@ -585,8 +585,8 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
     assert_eq!(
-        user_version, 14,
-        "exactly the fourteen authorized migrations"
+        user_version, 15,
+        "exactly the fifteen authorized migrations"
     );
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
@@ -609,6 +609,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "model_context_policies",
             "permissions",
             "projects",
+            "run_diagnostic_events",
             "sidebar_groups",
             "sidebar_memberships",
             "sidebar_organization",
@@ -624,7 +625,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "token_usage",
             "tool_calls",
         ],
-        "exactly the twenty-five authorized tables"
+        "exactly the twenty-six authorized tables"
     );
     Ok(())
 }
