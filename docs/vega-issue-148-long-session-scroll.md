@@ -50,11 +50,16 @@ counts as mounted or painted rows.
   target that does not belong to the thread returns an explicit not-found
   result; it must not silently scroll to an index or the top of the list.
   Superseded requests are fenced when the active thread changes.
-- Switching between cached conversation routes preserves each route's
-  in-memory anchor. A process restart continues to open the newest history page
-  under the current startup policy; locating an older durable message after a
-  restart uses the same message-ID request path rather than persisting transient
-  list indexes.
+- Route changes keep only a lightweight LRU state for the 64 most recently
+  visited threads: stable anchor identity, in-item pixel offset, and tail-follow
+  mode. An evicted or previously unseen thread opens at the current newest-page
+  default.
+  Do not cache `ConversationStream` entities or their loaded entries to preserve
+  scroll position. Returning to a thread restores its anchor after history
+  hydration (loading the target page by message ID if needed). A process restart
+  continues to open the newest history page under the current startup policy;
+  locating an older durable message after a restart uses the same message-ID
+  request path rather than persisting transient list indexes.
 - Copy, selection, focused controls, nested tool/thinking scrolling, and
   disclosure state keep their existing behavior when rows leave and re-enter
   the virtualized viewport.
@@ -68,7 +73,7 @@ counts as mounted or painted rows.
 | V3 | Prepend older pages while detached from tail | The same stable entry remains at the same pixel offset; page sequence and list count remain correct |
 | V4 | Expand/collapse a tool or thinking row, stream content, and resize the conversation column | The same stable anchor remains visible; changed row geometry is remeasured, including previously measured offscreen rows |
 | V5 | Request a loaded and an unloaded durable message ID | Loaded target is revealed; unloaded target loads the containing page and is revealed; unknown/foreign target returns not-found; thread changes fence stale results |
-| V6 | Switch away from and back to a cached thread; scroll a row out and back into the viewport | Per-thread anchor, copy text, selection/focus, nested scroll state, and disclosure state remain coherent |
+| V6 | Switch A→B→A so both `ConversationStream` routes are rebuilt; scroll a row out and back into the viewport | Bounded 64-thread LRU restores A's stable anchor without retaining its old entry/card tree; copy text, selection/focus, nested scroll state, and disclosure state remain coherent while an entry is virtualized in one route |
 | V7 | Open a thread after app restart | Startup keeps the existing newest-page policy; an older target remains locatable by message ID |
 
 Automated GPUI tests cover V1, V3–V7 and observable geometry. The real-window
@@ -103,6 +108,8 @@ squash merge. Do not run the local workspace suite.
 ## Non-scope
 
 Do not build the #72 navigation UI, change message rendering, cap persisted
-history, or claim that UI virtualization bounds the memory held by retained
-message data. Do not rewrite the native list or introduce a timing threshold
-without measurements from a fixed device and protocol.
+history, persist transient scroll state across process restarts, or claim that
+UI virtualization bounds the memory held by retained message data. Do not
+retain old `ConversationStream` entities as a scroll-state cache, rewrite the
+native list, or introduce a timing threshold without measurements from a fixed
+device and protocol.
