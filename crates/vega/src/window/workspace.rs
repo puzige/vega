@@ -3256,10 +3256,13 @@ mod tests {
                 .focus_handle(cx)
         });
         assert!(
-            window
-                .update(cx, |_, window, _| diff_focus.is_focused(window))
-                .expect("diff focus after restore"),
-            "generic restore activates the pane content"
+            focus_is(window, &input_focus, cx),
+            "restoring hidden Review preserves Composer focus"
+        );
+        shell_click(window, "workspace-tab-Diff", cx);
+        assert!(
+            focus_is(window, &diff_focus, cx),
+            "explicit Diff tab activation focuses the pane content"
         );
 
         // Branch c again: with the hidden tab closed, the slot opens Review.
