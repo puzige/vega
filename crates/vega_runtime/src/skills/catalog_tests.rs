@@ -240,6 +240,60 @@ fn s04_s07_catalog_uses_only_approved_auto_winner_and_explicit_shadow() {
 }
 
 #[test]
+fn s04_unapproved_project_copy_does_not_shadow_approved_vega_global() {
+    let project = tempdir().unwrap();
+    let config = tempdir().unwrap();
+    let project_copy = project_candidate(
+        project.path(),
+        "same",
+        "Unapproved project guide.",
+        "UNAPPROVED PROJECT BODY",
+    );
+    write_skill(
+        &config.path().join("skills"),
+        "same",
+        "Approved Vega-global guide.",
+        "APPROVED VEGA-GLOBAL BODY",
+    );
+    let global_copy = SkillSource::vega_global(config.path())
+        .unwrap()
+        .unwrap()
+        .discover()
+        .unwrap()
+        .candidates
+        .remove(0);
+    let global_approval = SkillApproval::reviewed(&global_copy, "vega-global", true, true).unwrap();
+    let catalog = SkillCatalog::freeze(
+        vec![global_copy.clone(), project_copy],
+        &[global_approval],
+        true,
+    )
+    .unwrap();
+
+    assert!(
+        catalog
+            .model_catalog()
+            .contains("Approved Vega-global guide.")
+    );
+    assert!(
+        !catalog
+            .model_catalog()
+            .contains("Unapproved project guide.")
+    );
+    assert!(!catalog.model_catalog().contains("UNAPPROVED PROJECT BODY"));
+    let mut run = SkillRun::new(catalog, true);
+    let activation = run.load_model("same", |body| body.contains("APPROVED VEGA-GLOBAL BODY"));
+    assert_eq!(activation.receipt.status, "loaded");
+    assert_eq!(
+        activation.audit.source_label.as_deref(),
+        Some("vega-global")
+    );
+    let envelope = run.render_skill_envelope().unwrap();
+    assert!(envelope.contains("APPROVED VEGA-GLOBAL BODY"));
+    assert!(!envelope.contains("UNAPPROVED PROJECT BODY"));
+}
+
+#[test]
 fn s04_stale_approved_winner_does_not_promote_shadow_without_selection() {
     let project = tempdir().unwrap();
     let config = tempdir().unwrap();
