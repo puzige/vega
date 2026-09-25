@@ -784,6 +784,16 @@ async fn issue74_mixed_skill_batch_rejects_operational_call_before_execution() {
                 stop_reason: StopReason::ToolUse,
             },
         ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "write-2".into(),
+                name: "write".into(),
+                input_json: r#"{"path":"after-skill.txt","content":"second-round write"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
         vec![ScriptStep::events(vec![ProviderEvent::Done {
             stop_reason: StopReason::End,
         }])],
@@ -798,17 +808,50 @@ async fn issue74_mixed_skill_batch_rejects_operational_call_before_execution() {
     let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
         .await
         .unwrap();
+    assert!(!outcome.failed);
     assert!(!project.path().join("bad.txt").exists());
+    assert_eq!(
+        fs::read_to_string(project.path().join("after-skill.txt")).unwrap(),
+        "second-round write"
+    );
+    let first_write = outcome.events.iter().find_map(|event| match event {
+        RuntimeEvent::ToolCallFinished(result) if result.call_id == "write-1" => Some(result),
+        _ => None,
+    });
+    assert_eq!(first_write.unwrap().status, RuntimeToolStatus::Rejected);
+    let second_write = outcome.events.iter().find_map(|event| match event {
+        RuntimeEvent::ToolCallFinished(result) if result.call_id == "write-2" => Some(result),
+        _ => None,
+    });
+    assert_eq!(second_write.unwrap().status, RuntimeToolStatus::Success);
     assert!(outcome.events.iter().any(|event| matches!(
         event,
-        RuntimeEvent::ToolCallFinished(result)
-            if result.call_id == "write-1" && result.status == RuntimeToolStatus::Rejected
+        RuntimeEvent::SkillActivation { audit, .. }
+            if audit.name == "reviewer" && audit.status == "loaded"
     )));
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
     assert!(
-        provider.requests()[1].messages[0]
+        !requests[0].messages[0]
             .content
             .contains("PRIVATE REVIEW RULE")
     );
+    for provider_request in requests.iter().skip(1) {
+        assert_eq!(
+            provider_request.messages[0]
+                .content
+                .matches("PRIVATE REVIEW RULE")
+                .count(),
+            1
+        );
+        assert!(
+            provider_request
+                .messages
+                .iter()
+                .skip(1)
+                .all(|message| { !message.content.contains("PRIVATE REVIEW RULE") })
+        );
+    }
 }
 
 #[tokio::test]
