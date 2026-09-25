@@ -81,6 +81,12 @@ async fn r49_new_task_page_renders_the_utility_bar_at_its_frozen_height(cx: &mut
         Layout::COMPOSER_UTILITY_BAR_HEIGHT,
         "utility bar height",
     );
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-footer-branch-chip")
+            .is_none(),
+        "a new-task draft must not duplicate the utility-bar branch selector in the footer"
+    );
 }
 
 #[gpui_kit::test]
@@ -104,6 +110,288 @@ async fn r49_session_page_with_a_message_renders_no_utility_bar(cx: &mut TestApp
             .debug_bounds("composer-utility-bar")
             .is_none(),
         "a conversation with messages must not render the utility bar"
+    );
+}
+
+#[gpui_kit::test]
+async fn issue191_persisted_project_conversation_opens_the_footer_branch_selector(
+    cx: &mut TestAppContext,
+) {
+    let project_root = tempfile::tempdir().expect("issue191 project root");
+    let project_path = project_root
+        .path()
+        .canonicalize()
+        .expect("canonical issue191 project path");
+    let git_dir = project_path.join(".git");
+    std::fs::create_dir_all(&git_dir).expect("issue191 Git metadata directory");
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").expect("issue191 initial HEAD");
+    let database_root = tempfile::tempdir().expect("issue191 database root");
+    let store = vega_store::Store::open(database_root.path().join("vega.sqlite"))
+        .expect("issue191 project store");
+    store.migrate().expect("issue191 project migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        project_path.to_str().expect("issue191 project path"),
+        "issue191",
+        None,
+    )
+    .expect("issue191 project row");
+    let project_id = project.id.clone();
+    let mut thread = permission_thread();
+    thread.id = "issue191-branch-entry".into();
+    thread.project_id = project_id.clone();
+    init_permission_test(cx);
+    cx.update(|cx| {
+        cx.set_global(crate::sidebar::VegaStore(Ok(store)));
+        cx.set_global(crate::sidebar::SelectedProject(Some(project_id.clone())));
+        cx.set_global(crate::sidebar::OpenedThread(Some(thread.clone())));
+    });
+    let stream = cx.new(|cx| ConversationStream::new(thread, cx));
+    let root_stream = stream.clone();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), move |_, cx| {
+            cx.new(|_| StreamHarness {
+                stream: root_stream,
+            })
+        })
+        .expect("issue191 conversation window")
+    });
+    stream.update(cx, |stream, cx| {
+        stream.composer_submit_pending = true;
+        stream.accept_composer_submission("first message", cx);
+    });
+
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-utility-bar")
+            .is_none(),
+        "a persisted conversation must keep the R49 utility bar absent"
+    );
+    let add = bounds(window, "composer-add", cx);
+    let footer_branch = bounds(window, "composer-footer-branch-chip", cx);
+    assert!(
+        add.right() <= footer_branch.left(),
+        "the persisted conversation branch entry must follow the add-context control"
+    );
+    let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+    let requests = Arc::new(Mutex::new(
+        Vec::<crate::branch_selector::BranchListRequested>::new(),
+    ));
+    let captured = requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(
+            &selector,
+            move |_, request: &crate::branch_selector::BranchListRequested, _| {
+                if let Ok(mut requests) = captured.lock() {
+                    requests.push(request.clone());
+                }
+            },
+        )
+        .detach();
+    });
+
+    click(window, "composer-footer-branch-chip", cx);
+    assert_eq!(
+        requests
+            .lock()
+            .expect("branch list request capture")
+            .as_slice(),
+        &[crate::branch_selector::BranchListRequested {
+            thread_id: "issue191-branch-entry".into(),
+            project_id: project_id.clone(),
+        }]
+    );
+
+    let snapshot = branch_snapshot(&["main", "feature"]);
+    assert_eq!(
+        snapshot
+            .branches
+            .iter()
+            .find(|branch| branch.current)
+            .map(|branch| branch.label.as_str()),
+        Some("main")
+    );
+    let feature_id = snapshot
+        .branches
+        .iter()
+        .find(|branch| branch.label == "feature")
+        .expect("issue191 feature branch")
+        .id;
+    selector.update(cx, |selector, cx| {
+        assert!(selector.apply_snapshot(snapshot, cx));
+    });
+    let main_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        selector.update(cx, |selector, cx| selector.poll_current_head_for_test(cx));
+        cx.run_until_parked();
+        if VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("branch-current-main")
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < main_deadline,
+            "the production project-head resolver must display main before switching"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    bounds(window, "branch-selector-popup", cx);
+    bounds(window, "branch-row-0", cx);
+
+    let switches = Arc::new(Mutex::new(Vec::<
+        crate::branch_selector::BranchSwitchRequested,
+    >::new()));
+    let captured = switches.clone();
+    cx.update(|cx| {
+        cx.subscribe(
+            &selector,
+            move |_, request: &crate::branch_selector::BranchSwitchRequested, _| {
+                if let Ok(mut requests) = captured.lock() {
+                    requests.push(request.clone());
+                }
+            },
+        )
+        .detach();
+    });
+    click(window, "branch-row-0", cx);
+    let request = switches
+        .lock()
+        .expect("branch switch request capture")
+        .first()
+        .cloned()
+        .expect("branch switch request");
+    assert_eq!(request.thread_id, "issue191-branch-entry");
+    assert_eq!(request.project_id, project_id);
+    assert_eq!(request.branch_id, feature_id);
+    assert!(selector.read_with(cx, |selector, _| selector.is_pending()));
+
+    std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/feature\n")
+        .expect("issue191 switched HEAD");
+    let switched_snapshot = branch_snapshot(&["feature", "main"]);
+    assert_eq!(
+        switched_snapshot
+            .branches
+            .iter()
+            .find(|branch| branch.current)
+            .map(|branch| branch.label.as_str()),
+        Some("feature")
+    );
+    selector.update(cx, |selector, cx| {
+        assert!(selector.finish_switch(
+            request.operation_id,
+            request.snapshot_generation,
+            request.branch_id,
+            Some(switched_snapshot),
+            None,
+            cx,
+        ));
+    });
+    assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
+    assert!(!selector.read_with(cx, |selector, _| selector.is_open()));
+    let feature_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        selector.update(cx, |selector, cx| selector.poll_current_head_for_test(cx));
+        cx.run_until_parked();
+        if VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("branch-current-feature")
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < feature_deadline,
+            "the footer branch chip must display feature after the switch finishes"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("branch-current-main").is_none());
+    assert!(visual.debug_bounds("branch-current-feature").is_some());
+    assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
+}
+
+#[gpui_kit::test]
+async fn issue191_standalone_conversation_has_no_footer_branch_entry(cx: &mut TestAppContext) {
+    let (window, stream, _events) = open_controller_stream(cx, "issue191-standalone");
+    install_utility_globals(cx, &[], None);
+    stream.update(cx, |stream, cx| {
+        stream.thread.project_id.clear();
+        stream.composer_submit_pending = true;
+        stream.accept_composer_submission("first message", cx);
+    });
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-footer-branch-chip")
+            .is_none(),
+        "standalone conversations must not render the branch entry"
+    );
+}
+
+#[gpui_kit::test]
+async fn issue191_non_git_project_hides_the_footer_branch_chip(cx: &mut TestAppContext) {
+    let project_root = tempfile::tempdir().expect("non-Git project root");
+    let database_root = tempfile::tempdir().expect("non-Git project database root");
+    let store = vega_store::Store::open(database_root.path().join("vega.sqlite"))
+        .expect("non-Git project store");
+    store.migrate().expect("non-Git project migrations");
+    let project_path = project_root
+        .path()
+        .canonicalize()
+        .expect("canonical non-Git project path");
+    let project = vega_store::projects::create(
+        store.conn(),
+        project_path.to_str().expect("non-Git project path"),
+        "non-Git",
+        None,
+    )
+    .expect("non-Git project row");
+    let mut thread = permission_thread();
+    thread.id = "issue191-non-git".into();
+    thread.project_id = project.id.clone();
+    init_permission_test(cx);
+    cx.update(|cx| {
+        cx.set_global(crate::sidebar::VegaStore(Ok(store)));
+        cx.set_global(crate::sidebar::SelectedProject(Some(project.id)));
+        cx.set_global(crate::sidebar::OpenedThread(Some(thread.clone())));
+    });
+    let stream = cx.new(|cx| ConversationStream::new(thread, cx));
+    let root_stream = stream.clone();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), move |_, cx| {
+            cx.new(|_| StreamHarness {
+                stream: root_stream,
+            })
+        })
+        .expect("non-Git conversation window")
+    });
+    stream.update(cx, |stream, cx| {
+        stream.composer_submit_pending = true;
+        stream.accept_composer_submission("first message", cx);
+    });
+    let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+
+    for _ in 0..100 {
+        selector.update(cx, |selector, cx| selector.poll_current_head_for_test(cx));
+        if selector.read_with(cx, |selector, _| {
+            selector.current_head_is_non_git_for_test()
+        }) {
+            break;
+        }
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert!(
+        selector.read_with(cx, |selector, _| selector
+            .current_head_is_non_git_for_test()),
+        "the existing project-head resolver must classify the registered folder as NonGit"
+    );
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("branch-current-非 Git 文件夹")
+            .is_none(),
+        "a NonGit project must not render a visible branch trigger in the footer"
     );
 }
 

@@ -72,6 +72,10 @@ impl ConversationStream {
             == Some(binding)
     }
 
+    pub(crate) fn composer_branch_entry_visible(&self) -> bool {
+        !self.draft_route && !self.entries.is_empty() && self.thread.project_binding().is_some()
+    }
+
     /// The utility bar layer above the composer card. It is
     /// [`Layout::COMPOSER_UTILITY_BAR_INSET`] narrower than the card on each
     /// side and centered on the card's axis; its bottom edge is flush against
@@ -367,6 +371,17 @@ impl ConversationStream {
         div()
             .id("composer-utility-branch")
             .debug_selector(|| "composer-utility-branch-chip".into())
+            .flex()
+            .items_center()
+            .tooltip(|_, cx| crate::icons::tooltip("切换分支", cx))
+            .child(self.branch_selector.clone())
+            .into_any_element()
+    }
+
+    pub(crate) fn render_composer_branch_entry(&self) -> AnyElement {
+        div()
+            .id("composer-footer-branch")
+            .debug_selector(|| "composer-footer-branch-chip".into())
             .flex()
             .items_center()
             .tooltip(|_, cx| crate::icons::tooltip("切换分支", cx))

@@ -561,6 +561,19 @@ impl BranchSelector {
         (&self.thread_id, &self.project_id)
     }
 
+    #[cfg(test)]
+    pub(crate) fn current_head_is_non_git_for_test(&self) -> bool {
+        matches!(
+            self.current_head.state,
+            Some(vega_conversation::types::ProjectBranchState::NonGit)
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poll_current_head_for_test(&mut self, cx: &mut Context<Self>) {
+        self.poll_current_head(cx);
+    }
+
     /// Changes the project of the window-owned unmaterialized draft while
     /// retaining this entity and its event subscriptions. Old snapshots and
     /// pending operations cannot be reused for the new repository.
