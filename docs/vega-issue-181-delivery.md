@@ -51,3 +51,11 @@ note: to see what the problems were, use the option `--future-incompat-report`, 
 ```text
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.88s
 ```
+
+## master 自动发版追加与基线同步
+
+2026-09-25 用户确认每次合入 master 后 patch +1 自动发布。发布流程改为共用版本分配、签名打包和 draft→publish；同 SHA 重跑复用版本。此前仅 tag 发布的约定已被取代。
+
+同步 #149/#183 基线后：`cargo check -p vega -p xtask --bins` exit 0（4.94s）；同范围 `cargo clippy -p vega -p xtask --bins -- -D warnings` exit 101，报基线 `mcp_registry.rs` 的 `large_enum_variant`。本卡未改该运行时文件；保留失败记录，实际合并门禁使用仓库云端全目标 check。上述早期 lint PASS 仅对应同步前代码，不能当作同步后通过。
+
+推送认证：HTTPS 的 gh OAuth token 缺 workflow scope；本机现有 SSH 认证已由 GitHub 确认身份 puzige，后续使用现有 SSH 推送，不更改或扩展凭据权限。

@@ -52,3 +52,17 @@ release workflow 支持正式签名、公证、staple、之后压缩与摘要；
 - 安装启动超时裁决：若新版进程已经退出或无法启动，恢复旧版；若新版仍存活但未及时确认启动，不强杀，保留备份与安装记录，交由用户恢复。启动确认前不清理旧包。目录重命名能在普通失败时回滚，但不宣称两个目录切换具有跨断电原子性；断电/强杀后的自有备份位置必须在交付文档说明。
 
 - 安装路径按仓库约定限制为当前用户 `~/Documents/Vega/Vega.app`；其他位置只检查与打开发布页。稍后仅保证当前进程内保留下载；未安装 staging 在退出/崩溃后可能残留，本卡不自动扫描历史目录，以免删除安装恢复证据，列入交付限制。
+
+## 2026-09-25 用户追加：master 自动 patch 发布
+
+用户确认合入 master 后自动 bump release，默认 patch +1。此裁决取代此前仅 tag 发版、master 只产 artifact 的规定。
+
+- master push 固定使用事件 commit SHA，自动选取已有 canonical stable 三段版本 tag 最大值后 patch +1；无 stable tag 时从 workspace version 开始。只创建 tag/Release 并向 bundle 注入版本，不自动提交 Cargo.toml 回 master，不产生递归提交。
+- 将签名/打包/资产发布共用一条实现；master 不再重复构建独立 artifact。保留人工 tag 发布及手动重跑入口。GITHUB_TOKEN 创建 tag 不会触发另一个 push workflow，必须直接调用共用发布流程。
+- 共享发布串行队列使用 GitHub 当前支持的 concurrency queue:max；不取消运行中的发版，队列上限100的外部限制写入文档。重复同一SHA复用已有tag/Release：已完成直接结束，未完成继续补齐，不再bump、不覆盖其他commit。已发布同版资产禁止重写。
+- 自动选取/保留tag后打包，校验候选SHA在master历史上。若最新已发布stable对应commit并非候选祖先，拒绝陈旧/逆序发版，避免latest把用户带回旧代码。tag可先保留版本，Release先draft，全部资产成功才publish；失败不暴露不完整stable，重跑复用版本。
+- 发布ZIP与sha256，继续执行正式签名/公证门禁；保留master共享Cargo缓存。不变更PR required check/nextest。
+
+追加验收矩阵（本轮不新增/运行测试）：首次无tag、现有v0.1.0→v0.1.1、同SHA重跑、tag已分配但build失败、draft资产上传失败、并发merge、旧SHA重跑、非法/预发布tag、权限不足均需有明确分支；以静态审查记录，真实首次自动发版待合并后流水线结果。
+
+参考：[GitHub concurrency queue](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)、[GITHUB_TOKEN 触发规则](https://docs.github.com/en/enterprise-cloud@latest/actions/concepts/security/github_token)。

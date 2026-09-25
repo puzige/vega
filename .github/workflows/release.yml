@@ -5,10 +5,14 @@ on:
     tags:
       - "v*"
   workflow_dispatch: {}
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
+    inputs:
+      automatic:
+        type: boolean
+        default: false
+      target_sha:
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -18,29 +22,30 @@ jobs:
     name: build & publish (macos-latest, arm64)
     runs-on: macos-latest
     timeout-minutes: 60
+    concurrency:
+      group: vega-stable-publication
+      cancel-in-progress: false
+      queue: max
     steps:
-      - name: Checkout the tag
+      - name: Checkout fixed release commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+          fetch-depth: 0
 
-      - name: Validate release tag
+      - name: Reserve release version
+        id: plan
         env:
-          TAG: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
+          GH_TOKEN: ${{ github.token }}
+          AUTOMATIC: ${{ inputs.automatic && 'true' || 'false' }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os, re, sys
-          tag = os.environ['TAG']
-          pattern = r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
-          match = re.fullmatch(pattern, tag)
-          if os.environ['REF_TYPE'] != 'tag' or match is None:
-              sys.exit('Release requires a stable vMAJOR.MINOR.PATCH tag without leading zeros')
-          maximum = '18446744073709551615'
-          if any(len(part) > len(maximum) or (len(part) == len(maximum) and part > maximum) for part in match.groups()):
-              sys.exit('Release version components must fit unsigned 64-bit integers')
-          PY
+          git fetch origin master --tags
+          python3 scripts/release.py prepare
 
       - name: Inspect signing configuration
+        if: steps.plan.outputs.complete != 'true'
         id: signing
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -67,20 +72,24 @@ jobs:
           fi
 
       - name: Install the pinned toolchain
+        if: steps.plan.outputs.complete != 'true'
         uses: dtolnay/rust-toolchain@1.98.0
 
       - name: Cache cargo build
+        if: steps.plan.outputs.complete != 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          key: v-${{ github.ref_name }}
+          shared-key: vega-master-build
+          save-if: ${{ inputs.automatic == true }}
 
       - name: Build the bundle
+        if: steps.plan.outputs.complete != 'true'
         env:
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ steps.plan.outputs.tag }}
         run: cargo xtask package --version "${RELEASE_VERSION#v}"
 
       - name: Sign, notarize, staple and repack
-        if: steps.signing.outputs.enabled == 'true'
+        if: steps.plan.outputs.complete != 'true' && steps.signing.outputs.enabled == 'true'
         env:
           APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -150,6 +159,7 @@ jobs:
           (cd dist && shasum -a 256 Vega-macos-arm64.zip > Vega-macos-arm64.zip.sha256)
 
       - name: Attach the artifact
+        if: steps.plan.outputs.complete != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Vega-macos-arm64
@@ -158,14 +168,10 @@ jobs:
             dist/Vega-macos-arm64.zip.sha256
           if-no-files-found: error
 
-      - name: Create the GitHub Release
+      - name: Publish complete draft
+        if: steps.plan.outputs.complete != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          gh release create "$TAG" \
-            --verify-tag \
-            --title "$TAG" \
-            --generate-notes \
-            dist/Vega-macos-arm64.zip \
-            dist/Vega-macos-arm64.zip.sha256
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+          RELEASE_SHA: ${{ steps.plan.outputs.sha }}
+        run: python3 scripts/release.py publish
