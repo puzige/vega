@@ -208,7 +208,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         );
         assert_eq!(
             card.compact_visible_text(),
-            "正在运行 printf 'tick'",
+            "正在运行命令",
             "approval alone must not estimate a start time"
         );
     });
@@ -236,7 +236,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
     let _mounted_zero_second_row = bounds(window, "tool-activity-single-row", cx);
     stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["elapsed"].read(cx);
-        assert_eq!(card.compact_visible_text(), "正在运行 printf 'tick' · 0 秒");
+        assert_eq!(card.compact_visible_text(), "正在运行命令 · 0 秒");
         assert!(card.live_elapsed_active());
         let colors = theme(cx).colors;
         assert!(matches!(card.leading_icon(), Icon::Terminal));
@@ -249,7 +249,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
             .compact_visible_text()),
-        "正在运行 printf 'tick' · 1 秒"
+        "正在运行命令 · 1 秒"
     );
 
     cx.executor().advance_clock(Duration::from_secs(1));
@@ -258,7 +258,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
             .compact_visible_text()),
-        "正在运行 printf 'tick' · 2 秒",
+        "正在运行命令 · 2 秒",
         "the compact row refreshes at the next whole-second boundary"
     );
 
@@ -268,7 +268,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         stream.read_with(cx, |stream, cx| stream.tool_cards["elapsed"]
             .read(cx)
             .compact_visible_text()),
-        "正在运行 printf 'tick' · 1 分 5 秒"
+        "正在运行命令 · 1 分 5 秒"
     );
 
     stream.update(cx, |stream, cx| {
@@ -296,7 +296,7 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
         );
         card.compact_visible_text()
     });
-    assert_eq!(terminal, "已运行 printf 'tick' · 1.2 秒");
+    assert_eq!(terminal, "已运行命令 · 1.2 秒");
     cx.executor().advance_clock(Duration::from_secs(30));
     cx.run_until_parked();
     assert_eq!(
@@ -358,14 +358,8 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
     });
 
     let expanded = stream.read_with(cx, |stream, cx| group(stream).read(cx).visible_text(cx));
-    assert!(
-        expanded.contains("正在运行 sleep first · 5 秒"),
-        "{expanded}"
-    );
-    assert!(
-        expanded.contains("正在运行 sleep second · 3 秒"),
-        "{expanded}"
-    );
+    assert!(expanded.contains("正在运行命令 · 5 秒"), "{expanded}");
+    assert!(expanded.contains("正在运行命令 · 3 秒"), "{expanded}");
     assert!(expanded.contains("正在读取文件"), "{expanded}");
     assert_eq!(
         expanded.matches(" · ").count(),
@@ -473,15 +467,16 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
         "running duration must retain its intrinsic width"
     );
 
-    let full_title = format!("正在运行 {command}");
-    let intrinsic_title_width = body_text_width(window, full_title, cx);
+    let compact_title = "正在运行命令";
+    let intrinsic_title_width = body_text_width(window, compact_title.into(), cx);
     assert!(
-        intrinsic_title_width > title.size.width,
-        "the mounted title lane must be narrower than the full long command"
+        intrinsic_title_width <= title.size.width,
+        "the mounted title lane must fit the generic shell title"
     );
     stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["long-running"].read(cx);
-        assert_eq!(card.visible_text(), format!("正在运行 {command} · 0 秒"));
+        assert_eq!(card.visible_text(), "正在运行命令 · 0 秒");
+        assert!(!card.visible_text().contains(&command));
         let colors = theme(cx).colors;
         assert!(matches!(card.leading_icon(), Icon::Terminal));
         assert_eq!(card.leading_icon_color(&colors), colors.text_secondary);
@@ -524,7 +519,7 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
     stream.read_with(cx, |stream, cx| {
         assert_eq!(
             stream.tool_cards["long-running"].read(cx).visible_text(),
-            format!("已运行 {command} · 1.2 秒")
+            "已运行命令 · 1.2 秒"
         );
         let aggregate = group(stream).read(cx).aggregate_summary(cx);
         assert!(
@@ -632,7 +627,7 @@ async fn issue70_e70_non_bash_running_and_hydrated_bash_do_not_invent_elapsed(
     });
     hydrated.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["hydrated-running"].read(cx);
-        assert_eq!(card.visible_text(), "正在运行 sleep hydrated");
+        assert_eq!(card.visible_text(), "正在运行命令");
         assert!(!card.live_elapsed_active());
     });
 }
@@ -683,7 +678,7 @@ async fn issue70_t70_1_single_shell_is_one_surface_free_compact_row(cx: &mut Tes
         rows, 5,
         "one compact row plus the four disclosed shell detail rows"
     );
-    assert_eq!(compact, "已运行 printf ok · 12 毫秒");
+    assert_eq!(compact, "已运行命令 · 12 毫秒");
     assert!(
         matches!(leading_icon, Icon::Terminal),
         "successful Shell keeps its category icon instead of Check"
