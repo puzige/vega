@@ -465,7 +465,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 25);
+        assert_eq!(tables, 26);
         for table in [
             "projects",
             "threads",
@@ -549,7 +549,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 25);
+        assert_eq!(tables, 26);
     }
 
     #[test]

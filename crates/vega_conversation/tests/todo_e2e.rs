@@ -338,6 +338,7 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
             "model_context_policies",
             "permissions",
             "projects",
+            "run_diagnostic_events",
             "sidebar_groups",
             "sidebar_memberships",
             "sidebar_organization",

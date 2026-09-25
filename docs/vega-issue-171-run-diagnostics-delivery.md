@@ -8,7 +8,7 @@
 **Pull request:** [#217](https://github.com/puzige/vega/pull/217) — OPEN, not merged
 **PR base:** `master` (`db97c5d2d5961c33a52df276f157be4836c2c9f9`)
 **PR head:** `feat/171-run-diagnostics-implementation`
-**Local verification:** affected-crate targeted Nextest, fmt, `cargo check`, Clippy with `-D warnings`, and `git diff --check` passed after the diagnostic-precision follow-up.
+**Local verification:** affected-crate targeted Nextest (including the CI expectation fixes), fmt, `cargo check`, Clippy with `-D warnings`, and `git diff --check` passed on the current PR worktree.
 
 ## Scope
 
@@ -55,14 +55,27 @@
 | `cargo nextest run -p vega_runtime usage_limits::` | 0 | `5 tests run: 5 passed, 207 skipped`; duplicate and post-terminal events preserve accepted diagnostic metrics and usage event count |
 | `cargo nextest run -p vega_runtime stream_failure_preserves_success_response_metadata` | 0 | `1 test run: 1 passed, 211 skipped` |
 | `cargo nextest run -p vega_conversation agent::compaction::` | 0 | `19 tests run: 19 passed, 515 skipped`; `summary_stage_records_overflow_bytes_without_persisting_summary_text` asserts complete observed byte count and export canary exclusion |
+| PR CI regression remediation — conversation targeted filters | 0 | Three stale #171 expectations pass: `3 tests run: 3 passed` (summary failure classification, migration version/table list, seeded todo schema list) |
+| PR CI regression remediation — runtime targeted filters | 0 | Three event-sequence expectations pass: `3 tests run: 3 passed` after asserting user-visible semantics while filtering internal `DiagnosticAttempt` events |
+| PR CI regression remediation — store targeted filters | 0 | Two migration table-count expectations pass: `2 tests run: 2 passed` |
+| `cargo nextest run -p vega_conversation issue74_imported_global_auto_respects_ui_switches_without_ambient_scan` | 0 | `1 test run: 1 passed` on PR branch and on base `db97c5d`; left unchanged because the single CI failure did not reproduce in isolation on either revision |
 | Conversation writer, correlation, SQL failure and required persistence filters | 0 | Seven targeted cases: `1 test run: 1 passed` each; exact test names are recorded in the matrix above |
-| `cargo check -p vega_runtime -p vega_conversation` | 0 | `Finished dev profile` after the review follow-up |
-| `cargo clippy -p vega_runtime -p vega_conversation --all-targets -- -D warnings` | 0 | `Finished dev profile` after the review follow-up |
+| `cargo check -p vega_runtime -p vega_store -p vega_conversation` | 0 | `Finished dev profile` after CI expectation updates |
+| `cargo clippy -p vega_runtime -p vega_store -p vega_conversation --all-targets -- -D warnings` | 0 | `Finished dev profile` after CI expectation updates |
 | `cargo fmt --all -- --check` | 0 | No output |
 | `git diff --check` | 0 | No output |
-| Implementation diff SHA-256 (excluding this delivery record) | — | `b220a0208d10fa447b4e6cb756124071daf299bff4877fb5841f3e8b79fde3bc` |
-| GitHub PR Clippy | PENDING | Await the PR workflow result for the diagnostic-precision follow-up head |
-| GitHub PR Nextest | PENDING | Await the PR workflow result for the diagnostic-precision follow-up head |
+| Implementation diff SHA-256 (excluding this delivery record) | — | `d923b99237dbb033985d52f13fb27ce08f69c5fccca0e9712c352215801cbb98` |
+| GitHub PR Clippy (run `36170726674`, head `458afdac8b6c51de6bfac1a9794f9a5290d41fef`) | PASS | Clippy passed; Nextest reported 1880 passed, 9 failed, 5 skipped. Eight failures were stale assertions for #171's schema, internal events, and precise summary error type; all eight now pass in the targeted reruns above. |
+| GitHub PR Nextest remaining skills case (same run) | NON-REPRODUCIBLE | The one `issue74_imported_global_auto_respects_ui_switches_without_ambient_scan` CI failure passes in isolation on both PR head and base `db97c5d`; no skills code or tests were changed. |
+| GitHub PR checks for remediation head | PENDING | Await the workflow result for the new PR head. |
+
+## PR CI regression review
+
+Run `36170726674` was triggered for PR head `458afdac8b6c51de6bfac1a9794f9a5290d41fef`. Its eight reproducible #171-related failures came from tests that still expected the pre-diagnostics contract: schema version 14 and 25 tables, user-visible event sequences without internal `DiagnosticAttempt`, and the old generic `InvalidSummary` category. The test-only fixes update migration expectations and assert user-visible event order after filtering internal diagnostic events; production behavior is unchanged. The eight affected tests pass in three focused reruns (conversation 3/3, runtime 3/3, store 2/2).
+
+The remaining skills test failed once in that full CI run, then passed when run alone on both the PR revision and base `db97c5d`. This does not establish a PR regression, so it remains unchanged and is recorded as a non-reproducible suite-level failure.
+
+The CI run URL is [36170726674](https://github.com/puzige/vega/actions/runs/36170726674). Its Clippy job passed; the failed Nextest result is superseded locally by the focused passing reruns above. The workflow for the remediation head is pending.
 
 ## Privacy boundary and residuals
 
@@ -72,4 +85,5 @@
 - Graceful last-sender shutdown is tested to drain the bounded queue before the writer exits. Abrupt process termination (`SIGKILL`/power loss) can still lose queued best-effort diagnostics and is not claimed to flush.
 - Real desktop/UI acceptance is **NOT RUN** and remains for product acceptance after the PR is reviewed.
 - The review follow-up updates summary overflow byte counts without appending over-limit text. Runtime token metrics are updated only after usage events pass protocol checks.
+- The CI remediation commit updates tests only; it does not widen production scope.
 - PR URL: [https://github.com/puzige/vega/pull/217](https://github.com/puzige/vega/pull/217); base `master` at `db97c5d2d5961c33a52df276f157be4836c2c9f9`, head ref `feat/171-run-diagnostics-implementation`.

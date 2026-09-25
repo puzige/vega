@@ -399,8 +399,16 @@ async fn invalid_write_is_atomic_validation_rejection_before_any_proposal() {
     let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
         .await
         .unwrap();
+    let semantic_events = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::DiagnosticAttempt(_) => None,
+            event => Some(event.clone()),
+        })
+        .collect::<Vec<_>>();
     assert!(
-        matches!(outcome.events.first(), Some(RuntimeEvent::ToolCallValidationRejected { call, result }) if !call.input_json.contains("SECRET") && matches!(result.approval, Some(RuntimeApprovalAudit { source: RuntimeApprovalSource::Validation, .. })))
+        matches!(semantic_events.first(), Some(RuntimeEvent::ToolCallValidationRejected { call, result }) if !call.input_json.contains("SECRET") && matches!(result.approval, Some(RuntimeApprovalAudit { source: RuntimeApprovalSource::Validation, .. })))
     );
     assert!(
         !outcome
