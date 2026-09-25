@@ -51,6 +51,12 @@ pub(super) struct Workspace {
     pub(super) composer_focus_pending: bool,
 }
 
+impl VegaWindow {
+    pub(super) fn workspace_has_terminals(&self) -> bool {
+        !self.workspace.terminals.is_empty()
+    }
+}
+
 impl Workspace {
     pub(super) fn open(&mut self, key: TabKey) {
         let bottom = self
@@ -180,6 +186,9 @@ impl VegaWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if crate::updater::installing() {
+            return;
+        }
         self.sync_workspace_route(cx);
         let project_id = cx.global::<vega_ui::sidebar::SelectedProject>().0.clone();
         let target = project_id.clone().zip(self.file_backed_store_path(cx));

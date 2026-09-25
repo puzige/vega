@@ -395,7 +395,7 @@ impl VegaWindow {
         {
             return;
         }
-        if self.agent_controller.active.contains_key(thread_id) {
+        if crate::updater::installing() || self.agent_controller.active.contains_key(thread_id) {
             stream.update(cx, ConversationStream::apply_agent_busy);
             return;
         }
@@ -708,6 +708,10 @@ impl VegaWindow {
         request: &ComposerSubmitted,
         cx: &mut Context<Self>,
     ) {
+        if crate::updater::installing() {
+            stream.update(cx, ConversationStream::apply_agent_busy);
+            return;
+        }
         if (request.content.is_empty() && request.images.is_empty())
             || !self.owns_stream_request(&stream, &request.thread_id, cx)
         {

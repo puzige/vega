@@ -43,6 +43,9 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issues-58-59-61-delivery.md](docs/vega-issues-58-59-61-delivery.md) | #58/#59/#61 测试、原生模型回复与安装验收记录 |
 | [vega-feature-teardown.md](docs/vega-feature-teardown.md) | 五家竞品功能矩阵与取舍依据 |
 | [vega-features.md](docs/vega-features.md) | 功能点全表（Phase 1 P0 ×38） |
+| [vega-issue-178-auto-update.md](docs/vega-issue-178-auto-update.md) | 自动更新调研方案（实现契约由 #181 冻结） |
+| [vega-issue-181-auto-update.md](docs/vega-issue-181-auto-update.md) | macOS 自动更新：设置、签名门禁、显式重启安装 |
+| [vega-issue-181-delivery.md](docs/vega-issue-181-delivery.md) | 自动更新交付状态、手测步骤与恢复方式 |
 | [vega-design-guidelines.md](docs/vega-design-guidelines.md) | Vega 原生设计守则：视觉语言、语义 token、状态与 UI 变更检查表 |
 | [vega-ui-spec.md](docs/vega-ui-spec.md) | UI 规格与可测量验收准线 |
 | [vega-r21-screenshot-parity.md](docs/vega-r21-screenshot-parity.md) | 当前 Codex 截图像素对标：可变 Sidebar、Environment、Settings、Composer 与浮层 |

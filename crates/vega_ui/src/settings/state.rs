@@ -7,6 +7,7 @@ type ProviderConfigSaver = std::sync::Arc<dyn Fn(&AppConfig) -> Result<(), Strin
 
 /// the config — each time settings is opened).
 pub struct SettingsView {
+    pub(crate) updater: vega_conversation::types::UpdateProjection,
     pub(crate) provider_management: super::provider_management::ProviderManagement,
     pub(crate) section: usize,
     pub(crate) usage: super::usage::UsageState,
@@ -149,6 +150,7 @@ impl SettingsView {
             cx.new(|cx| TextInput::new(cx, "Peak Cache Write", false)),
         ];
         Self {
+            updater: Default::default(),
             provider_management: Default::default(),
             section: if cx
                 .try_global::<PricingSettingsRequested>()

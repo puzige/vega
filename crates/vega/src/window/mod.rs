@@ -31,6 +31,7 @@ mod reasoning;
 mod render;
 mod session;
 mod skills;
+mod updater;
 mod workspace;
 
 use self::file_index::*;
@@ -82,6 +83,8 @@ impl ModelSelectionRefresh {
 /// either the settings view (Cmd+, / Esc), the opened session
 /// ([`ConversationStream`], S3-T17), or the ui-spec §4.6 empty state.
 pub(crate) struct VegaWindow {
+    pub(crate) updater: crate::updater::Updater,
+    update_notice_dismissed: bool,
     navigation: navigation::Navigation,
     pub(crate) palette: crate::app_palette::AppPalette,
     /// Sidebar with the [新建任务] button, projects block, and sessions block.
@@ -284,6 +287,8 @@ impl VegaWindow {
             .and_then(|path| path.parent())
             .map(|root| Arc::new(PricingSettingsService::new(root.join("pricing.json"))));
         let mut window = Self {
+            updater: crate::updater::Updater::default(),
+            update_notice_dismissed: false,
             navigation: navigation::Navigation::new(cx, None),
             palette: crate::app_palette::AppPalette::default(),
             sidebar: cx.new(Sidebar::new),
@@ -342,6 +347,9 @@ impl VegaWindow {
             model_catalog_worker_gate: None,
         };
         window.start_pricing_load(cx);
+        if !cfg!(test) {
+            window.start_updater(cx);
+        }
         window
     }
 

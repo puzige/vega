@@ -69,3 +69,6 @@ pub use project_worker::*;
 
 mod running_threads;
 pub use running_threads::*;
+
+mod updater;
+pub use updater::*;

@@ -1,116 +1,177 @@
-# Tag-triggered release pipeline for Vega (macOS arm64 app bundle).
-#
-# ── Cost note ────────────────────────────────────────────────────────────────
-# This repo is PUBLIC (verified 2026-09-22, issue #123): GitHub-hosted runners,
-# including macos-latest, are free and do not consume the minute quota. The old
-# "PRIVATE / 10x cost" warning was obsolete. Releases stay tag-driven so not
-# every commit becomes a version; PR checks run in pr-check.yml and the master
-# build runs in cicd.yml (workflow name: master).
-#
-# ── Design notes ─────────────────────────────────────────────────────────────
-# - Tag-derived values reach `run:` only via `env:` indirection, never inline
-#   `${{ }}` interpolation: tag names legally contain `$()`, quotes, `;`, and
-#   pushing a tag needs only write access — inline interpolation into `run:`
-#   would be shell injection.
-# - Tests deliberately do NOT run here: they gate every PR in pr-check.yml
-#   (fmt, clippy, workspace test) before merge, so a tag build rebuilds already
-#   verified code and re-running the suite here would only add time.
-# - Structure learned from zed-industries/zed (xtask-driven bundling,
-#   concurrency cancel for duplicate tags) and BurntSushi/ripgrep (tag→version
-#   extraction, gh release create/upload) — simplified per the "simplest
-#   option" ruling: official actions + rust-cache + gh-release only.
-# - `permissions` is job-scoped and minimal: `contents: write` is required to
-#   create a Release and upload assets; nothing else.
-#
-# ── Signing / notarization (HUMAN PENDING — see docs/vega-release.md) ───────
-# The bundle is currently ad-hoc signed (codesign -), so installers need the
-# Gatekeeper right-click-open step (INSTALL.txt inside the zip). Once the
-# owner holds a Developer ID Application certificate, add repo secrets and
-# uncomment the steps below:
-#   APPLE_CERTIFICATE_P12      base64 of the exported .p12
-#   APPLE_CERTIFICATE_PASSWORD .p12 password
-#   KEYCHAIN_PASSWORD          any strong random value for the CI keychain
-#   APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD  (notarytool)
-# Unlock template (adapted from docs/vega-packaging.md HUMAN PENDING):
-#   1. `echo "$APPLE_CERTIFICATE_P12" | base64 --decode > cert.p12`
-#   2. `security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain`
-#      `security import cert.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign`
-#      `security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" build.keychain`
-#      `security list-keychains -d user -s build.keychain`
-#   3. Re-sign with hardened runtime + timestamp:
-#      `codesign --force --deep --options runtime --timestamp --sign "Developer ID Application: <名> (<TEAM_ID>)" dist/Vega.app`
-#      (re-zip with `ditto -c -k --keepParent --sequesterRsrc` instead of `zip`)
-#   4. Notarize before the release upload step:
-#      `xcrun notarytool submit dist/Vega-macos-arm64.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait`
-#      `xcrun stapler staple dist/Vega.app` (then re-zip once more)
-# All of the above runs in the `package` job between "Build the bundle" and
-# "Attach the artifact"; nothing else in this file needs to change.
-
 name: release
 
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: {} # manual re-run to recover a failed release build
-
-# Cancel a superseded run for the same ref (e.g. re-pushed tag).
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_dispatch: {}
+  workflow_call:
+    inputs:
+      automatic:
+        type: boolean
+        default: false
+      target_sha:
+        type: string
+        default: ''
 
 permissions:
-  contents: write # create the Release and upload assets — nothing more
+  contents: write
 
 jobs:
   release:
     name: build & publish (macos-latest, arm64)
-    runs-on: macos-latest # arm64, auto-follows GitHub image updates (owner decision)
+    runs-on: macos-latest
     timeout-minutes: 60
+    concurrency:
+      group: vega-stable-publication
+      cancel-in-progress: false
+      queue: max
     steps:
-      - name: Checkout the tag
+      - name: Checkout fixed release commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_sha || github.sha }}
+          fetch-depth: 0
 
-      - name: Install the pinned toolchain (rust-toolchain.toml = 1.98.0)
-        # Ref is the toolchain version so it matches rust-toolchain.toml; @stable
-        # would install for stable while the pin still forces 1.98.0.
+      - name: Reserve release version
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTOMATIC: ${{ inputs.automatic && 'true' || 'false' }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          git fetch origin master --tags
+          python3 scripts/release.py prepare
+
+      - name: Inspect signing configuration
+        if: steps.plan.outputs.complete != 'true'
+        id: signing
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          configured=0
+          for name in APPLE_CERTIFICATE_P12 APPLE_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+            if [[ -n "${!name}" ]]; then configured=$((configured + 1)); fi
+          done
+          if [[ "$configured" == 0 ]]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Signing credentials absent: publishing ad-hoc package; automatic installation disabled."
+          elif [[ "$configured" == 6 ]]; then
+            [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "Invalid signing Team ID"; exit 1; }
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Signing credentials are incomplete; refusing to publish."
+            exit 1
+          fi
+
+      - name: Install the pinned toolchain
+        if: steps.plan.outputs.complete != 'true'
         uses: dtolnay/rust-toolchain@1.98.0
 
-      - name: Cache cargo build (keyed per tag)
+      - name: Cache cargo build
+        if: steps.plan.outputs.complete != 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          # Cache per tag so a re-run (workflow_dispatch) reuses the tag's
-          # artifacts; different tags never pollute each other.
-          # (Default workspace scope = root workspace, which already includes
-          # the xtask member — no separate workspaces entry.)
-          key: v-${{ github.ref_name }}
+          shared-key: vega-master-build
+          save-if: ${{ inputs.automatic == true }}
 
-      - name: Build the bundle (cargo xtask package)
-        # Runs `cargo build --release` internally, then assembles dist/Vega.app,
-        # ad-hoc signs it and zips dist/Vega-macos-arm64.zip.
-        # The version override path is: --version > VEGA_RELEASE_VERSION > Cargo.toml.
-        # Tag → env indirection (never inline ${{ }}): see the design notes —
-        # a tag name may contain shell metacharacters.
+      - name: Build the bundle
+        if: steps.plan.outputs.complete != 'true'
         env:
-          RELEASE_VERSION: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ steps.plan.outputs.tag }}
         run: cargo xtask package --version "${RELEASE_VERSION#v}"
 
+      - name: Sign, notarize, staple and repack
+        if: steps.plan.outputs.complete != 'true' && steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          signing_dir=$(mktemp -d "$RUNNER_TEMP/vega-signing.XXXXXX")
+          keychain="$signing_dir/build.keychain-db"
+          cleanup() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -rf "$signing_dir"
+          }
+          trap cleanup EXIT
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$signing_dir/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$signing_dir/certificate.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$keychain" >/dev/null
+          security find-identity -v -p codesigning "$keychain" > "$signing_dir/identities.txt"
+          identity=$(python3 - "$signing_dir/identities.txt" <<'PY'
+          import os, re, sys
+          text = open(sys.argv[1]).read()
+          team = re.escape(os.environ['APPLE_TEAM_ID'])
+          identities = re.findall(r'\b([0-9A-Fa-f]{40}) "Developer ID Application: [^"\n]+ \(' + team + r'\)"', text)
+          if len(identities) != 1:
+              sys.exit('Expected exactly one Developer ID Application identity for configured team')
+          print(identities[0])
+          PY
+          )
+          codesign --force --options runtime --timestamp --keychain "$keychain" --sign "$identity" dist/Vega.app
+          codesign --verify --deep --strict dist/Vega.app
+          codesign -dv --verbose=4 dist/Vega.app 2> "$signing_dir/signature.txt"
+          python3 - "$signing_dir/signature.txt" <<'PY'
+          import os, sys
+          lines = open(sys.argv[1]).read().splitlines()
+          if 'TeamIdentifier=' + os.environ['APPLE_TEAM_ID'] not in lines:
+              sys.exit('Signed Team ID mismatch')
+          if 'Identifier=ai.vega' not in lines:
+              sys.exit('Signed bundle ID mismatch')
+          if not any(line.startswith('Authority=Developer ID Application:') for line in lines):
+              sys.exit('Developer ID authority missing')
+          PY
+          rm dist/Vega-macos-arm64.zip
+          (cd dist && zip -r -q -X Vega-macos-arm64.zip Vega.app INSTALL.txt)
+          xcrun notarytool submit dist/Vega-macos-arm64.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait --timeout 20m --output-format json > "$signing_dir/notary.json"
+          python3 - "$signing_dir/notary.json" <<'PY'
+          import json, sys
+          if json.load(open(sys.argv[1])).get('status') != 'Accepted':
+              sys.exit('Notarization was not accepted; refusing to publish')
+          PY
+          xcrun stapler staple dist/Vega.app
+          xcrun stapler validate dist/Vega.app
+          codesign --verify --deep --strict dist/Vega.app
+          spctl --assess --type execute dist/Vega.app
+          rm dist/Vega-macos-arm64.zip
+          (cd dist && zip -r -q -X Vega-macos-arm64.zip Vega.app INSTALL.txt)
+          mkdir "$signing_dir/unpacked"
+          unzip -q dist/Vega-macos-arm64.zip -d "$signing_dir/unpacked"
+          xcrun stapler validate "$signing_dir/unpacked/Vega.app"
+          codesign --verify --deep --strict "$signing_dir/unpacked/Vega.app"
+          spctl --assess --type execute "$signing_dir/unpacked/Vega.app"
+          (cd dist && shasum -a 256 Vega-macos-arm64.zip > Vega-macos-arm64.zip.sha256)
+
       - name: Attach the artifact
+        if: steps.plan.outputs.complete != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Vega-macos-arm64
-          path: dist/Vega-macos-arm64.zip
+          path: |
+            dist/Vega-macos-arm64.zip
+            dist/Vega-macos-arm64.zip.sha256
           if-no-files-found: error
 
-      - name: Create the GitHub Release
-        # --generate-notes derives the changelog from commits since the
-        # previous tag; the release is published immediately (no draft step —
-        # single-asset pipeline, kept simple).
+      - name: Publish complete draft
+        if: steps.plan.outputs.complete != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --generate-notes \
-            dist/Vega-macos-arm64.zip
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+          RELEASE_SHA: ${{ steps.plan.outputs.sha }}
+        run: python3 scripts/release.py publish

@@ -545,6 +545,7 @@ impl SettingsView {
                     .child(field_label("模型", colors.text_secondary))
                     .child(self.render_model_selector(cx)),
             )
+            .child(self.render_updater(cx))
             .into_any_element()
     }
 

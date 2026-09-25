@@ -31,6 +31,7 @@ mod diff_controller;
 mod pricing_controller;
 mod thread_reload;
 mod trusted_action;
+mod updater;
 mod window;
 
 #[cfg(test)]
@@ -39,6 +40,9 @@ mod tests;
 use window::VegaWindow;
 
 fn main() {
+    if updater::run_helper_if_requested() {
+        return;
+    }
     // S3-T17 隐藏自测量模式：`vega --vega-bench-render <out.json>` 跑完写
     // JSON 后退出（xtask bench render_frame 的数据来源），不进入正常应用。
     if let Some(output) = render_frame_bench::output_path_from_args() {
@@ -156,6 +160,7 @@ fn main() {
             app_palette::bind_shortcuts(window.into(), root, cx);
         }
         cx.activate(true);
+        updater::acknowledge_startup();
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &ToggleTheme, cx| {
             let appearance = {
