@@ -9,6 +9,8 @@ use vega_conversation::types::{
 };
 use vega_store::context_compaction::{DEFAULT_MODEL_INPUT_LIMIT, DEFAULT_MODEL_OUTPUT_RESERVE};
 
+const PROVIDER_TEST_HELP_COPY: &str = "测试会发送少量固定文本请求；不会使用聊天内容。";
+
 #[derive(Default)]
 pub(crate) struct ProviderManagement {
     #[cfg(test)]
@@ -24,6 +26,7 @@ pub(crate) struct ProviderManagement {
     checked: BTreeSet<String>,
     statuses: BTreeMap<String, String>,
     message: Option<String>,
+    test_help_hovered: Option<usize>,
     model_editor: Option<ModelEditor>,
     next_model_context_request: u64,
     pending_model_reopen: Option<(String, Option<String>)>,
@@ -93,6 +96,65 @@ enum Command {
 }
 
 impl SettingsView {
+    fn provider_test_help_control(
+        &self,
+        index: usize,
+        focus: FocusHandle,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = theme(cx).colors;
+        let help_is_open =
+            focus.is_focused(window) || self.provider_management.test_help_hovered == Some(index);
+        let selector = if index == 0 {
+            "provider-test-help-discover".to_string()
+        } else {
+            format!("provider-test-help-model-{}", index - 1)
+        };
+        let tooltip_selector = format!("{selector}-tooltip");
+        div()
+            .id(selector.clone())
+            .debug_selector(move || selector.clone())
+            .role(gpui_kit::Role::Button)
+            .aria_label("测试请求说明")
+            .aria_description(PROVIDER_TEST_HELP_COPY)
+            .focusable()
+            .track_focus(&focus)
+            .tab_stop(true)
+            .size(px(24.))
+            .flex_shrink_0()
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .focus_visible(move |style| style.border_2().border_color(colors.accent))
+            .hover(move |style| style.bg(colors.bg_hover))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.provider_management.test_help_hovered = Some(index);
+                } else if this.provider_management.test_help_hovered == Some(index) {
+                    this.provider_management.test_help_hovered = None;
+                }
+                cx.notify();
+            }))
+            .when(help_is_open, |control| {
+                control.child(
+                    div()
+                        .debug_selector(move || tooltip_selector.clone())
+                        .absolute()
+                        .right_0()
+                        .bottom(px(28.))
+                        .child(crate::icons::tooltip(PROVIDER_TEST_HELP_COPY, cx)),
+                )
+            })
+            .child(crate::icons::icon(
+                crate::icons::Icon::Help,
+                colors.text_secondary,
+            ))
+            .into_any_element()
+    }
+
     pub(crate) fn provider_escape(
         &mut self,
         _: &CloseSettings,
@@ -907,7 +969,11 @@ impl SettingsView {
             .child(label)
             .into_any_element()
     }
-    pub(crate) fn render_provider_management(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_provider_management(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.sync_provider_edit_focuses(cx);
         if self.provider_management.selected.is_none() {
             self.provider_management.selected =
@@ -1017,6 +1083,13 @@ impl SettingsView {
                     cx,
                 ));
         } else if let Some(p) = self.selected_provider() {
+            let help_focus_count = p.models.len() + 1;
+            self.provider_test_help_focuses.truncate(help_focus_count);
+            while self.provider_test_help_focuses.len() < help_focus_count {
+                self.provider_test_help_focuses
+                    .push(cx.focus_handle().tab_stop(true));
+            }
+            let help_focuses = self.provider_test_help_focuses.clone();
             let index = self
                 .config
                 .providers
@@ -1092,13 +1165,25 @@ impl SettingsView {
                         .text_color(colors.text_secondary)
                         .child("API 格式 · Chat Completions"),
                 )
-                .child(div().text_color(colors.text_secondary).child(
-                    if self.available_key_refs.contains(&p.key_ref) {
-                        KEY_STORED_PLACEHOLDER
-                    } else {
-                        "需重新输入 API Key"
-                    },
-                ))
+                .child(
+                    div()
+                        .debug_selector({
+                            let stored = self.available_key_refs.contains(&p.key_ref);
+                            move || {
+                                if stored {
+                                    "provider-key-stored".into()
+                                } else {
+                                    "provider-key-missing".into()
+                                }
+                            }
+                        })
+                        .text_color(colors.text_secondary)
+                        .child(if self.available_key_refs.contains(&p.key_ref) {
+                            KEY_STORED_PLACEHOLDER
+                        } else {
+                            "需重新输入 API Key"
+                        }),
+                )
                 .child(
                     div()
                         .flex()
@@ -1109,6 +1194,12 @@ impl SettingsView {
                             "发现模型",
                             Command::Discover,
                             !busy && !network_busy && p.enabled,
+                            cx,
+                        ))
+                        .child(self.provider_test_help_control(
+                            0,
+                            help_focuses[0].clone(),
+                            window,
                             cx,
                         ))
                         .child(self.provider_button(
@@ -1127,11 +1218,6 @@ impl SettingsView {
                                 cx,
                             ))
                         }),
-                )
-                .child(
-                    div()
-                        .text_color(colors.text_tertiary)
-                        .child("测试会发送少量固定文本请求；不会使用聊天内容。"),
                 );
             for (index, model) in p.models.iter().enumerate() {
                 detail = detail.child(
@@ -1153,6 +1239,12 @@ impl SettingsView {
                                     "测试",
                                     Command::Test(model.clone()),
                                     !busy && !network_busy && p.enabled,
+                                    cx,
+                                ))
+                                .child(self.provider_test_help_control(
+                                    index + 1,
+                                    help_focuses[index + 1].clone(),
+                                    window,
                                     cx,
                                 ))
                                 .child(self.provider_button(

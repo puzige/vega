@@ -934,7 +934,7 @@ impl Render for SettingsView {
                                     .flex_col()
                                     .gap_4()
                                     .when(self.section == 0, |body| {
-                                        body.child(self.render_provider_management(cx))
+                                        body.child(self.render_provider_management(window, cx))
                                     })
                                     .when(self.section == 1, |body| {
                                         body.child(self.render_defaults(cx))

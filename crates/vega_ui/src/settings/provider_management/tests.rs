@@ -429,7 +429,7 @@ async fn small_provider_detail_retains_url_height_with_multiple_models(cx: &mut 
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                         None,
-                        size(px(960.), px(600.)),
+                        size(px(960.), px(560.)),
                         cx,
                     ))),
                     ..Default::default()
@@ -474,7 +474,9 @@ async fn small_provider_detail_retains_url_height_with_multiple_models(cx: &mut 
         let message = visual.debug_bounds("provider-network-message").unwrap();
         assert!(
             flow.size.height > viewport.size.height,
-            "overflow must expand the scrollable flow"
+            "overflow must expand the scrollable flow: flow={:?}, viewport={:?}",
+            flow.size,
+            viewport.size
         );
         assert!(
             message.size.height >= px((Typography::BODY * Typography::BODY_LINE_HEIGHT).floor())
@@ -619,6 +621,149 @@ fn mounted_pi_fixture(
     });
     cx.run_until_parked();
     (root, view, window, provider, pi_path)
+}
+
+fn mounted_issue82_provider_fixture(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    Entity<SettingsView>,
+    WindowHandle<Harness>,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.toml");
+    AppConfig {
+        providers: vec![
+            ProviderConfig {
+                name: "Stored".into(),
+                enabled: true,
+                base_url: "https://stored.invalid/v1".into(),
+                models: vec!["stored-model".into()],
+                key_ref: "stored".into(),
+            },
+            ProviderConfig {
+                name: "Missing".into(),
+                enabled: true,
+                base_url: "https://missing.invalid/v1".into(),
+                models: vec!["missing-model".into()],
+                key_ref: "missing".into(),
+            },
+        ],
+        ..Default::default()
+    }
+    .save_to(&path)
+    .unwrap();
+    keystore::set_key(root.path(), "stored", "issue82-test-secret").unwrap();
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(|cx| SettingsView::from_path(Some(path), cx));
+    let window = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(960.), px(750.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                |_, cx| cx.new(|_| Harness(view.clone())),
+            )
+        })
+        .unwrap();
+    cx.run_until_parked();
+    click(cx, window, "settings-nav-providers");
+    (root, view, window)
+}
+
+#[gpui_kit::test]
+async fn issue82_provider_help_opens_on_hover_and_focus_and_keeps_credential_states(
+    cx: &mut TestAppContext,
+) {
+    let (_root, view, window) = mounted_issue82_provider_fixture(cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("provider-key-stored").is_some());
+    assert!(visual.debug_bounds("provider-key-missing").is_none());
+    assert!(visual.debug_bounds("provider-import-pi").is_some());
+    assert!(visual.debug_bounds("provider-test-help-discover").is_some());
+    assert!(visual.debug_bounds("provider-test-help-model-0").is_some());
+    assert_eq!(
+        PROVIDER_TEST_HELP_COPY,
+        "测试会发送少量固定文本请求；不会使用聊天内容。"
+    );
+
+    let discover_help = visual.debug_bounds("provider-test-help-discover").unwrap();
+    let discover_button = visual.debug_bounds("provider-discover").unwrap();
+    assert!(discover_button.right() <= discover_help.left());
+    visual.simulate_mouse_move(discover_help.center(), None, Default::default());
+    cx.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("provider-test-help-discover-tooltip")
+            .is_some()
+    );
+    visual.simulate_mouse_move(gpui_kit::point(px(1.), px(1.)), None, Default::default());
+    cx.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("provider-test-help-discover-tooltip")
+            .is_none()
+    );
+
+    let discover_focus = view.read_with(cx, |view, _| view.provider_test_help_focuses[0].clone());
+    window
+        .update(cx, |_, window, cx| discover_focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("provider-test-help-discover-tooltip")
+            .is_some()
+    );
+    let model_focus = view.read_with(cx, |view, _| view.provider_test_help_focuses[1].clone());
+    window
+        .update(cx, |_, window, cx| model_focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("provider-test-help-discover-tooltip")
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds("provider-test-help-model-0-tooltip")
+            .is_some()
+    );
+    let test_button = visual.debug_bounds("model-test-0").unwrap();
+    let model_help = visual.debug_bounds("provider-test-help-model-0").unwrap();
+    let edit_button = visual.debug_bounds("model-edit-0").unwrap();
+    assert!(test_button.right() <= model_help.left());
+    assert!(model_help.right() <= edit_button.left());
+
+    view.update(cx, |view, cx| {
+        view.provider_management.selected = Some("Missing".into());
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(visual.debug_bounds("provider-key-stored").is_none());
+    assert!(visual.debug_bounds("provider-key-missing").is_some());
+    assert!(visual.debug_bounds("provider-import-pi").is_some());
+    assert!(visual.debug_bounds("provider-test-help-model-0").is_some());
+
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::dark());
+        cx.refresh_windows();
+    });
+    visual.simulate_resize(size(px(960.), px(750.)));
+    cx.run_until_parked();
+    let help = visual.debug_bounds("provider-test-help-model-0").unwrap();
+    assert!(help.right() <= px(960.));
+    assert!(help.bottom() <= px(750.));
 }
 
 #[gpui_kit::test]
