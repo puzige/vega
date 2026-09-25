@@ -1,6 +1,7 @@
 //! Active-composer read-only HEAD projection; independent of switch authority.
 use super::*;
 use crate::sidebar::{OpenedThread, VegaStore};
+use gpui_kit::BackgroundExecutor;
 use std::{
     path::PathBuf,
     time::{Duration, Instant},
@@ -11,6 +12,7 @@ use vega_conversation::{
 };
 
 pub(super) struct CurrentHead {
+    clock: BackgroundExecutor,
     service: Option<ProjectBranchService>,
     database: Option<PathBuf>,
     target: Option<ProjectBranchTarget>,
@@ -21,7 +23,7 @@ pub(super) struct CurrentHead {
     pub(super) state: Option<ProjectBranchState>,
 }
 impl CurrentHead {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(clock: BackgroundExecutor) -> Self {
         Self {
             service: ProjectBranchService::new().ok(),
             database: None,
@@ -29,7 +31,8 @@ impl CurrentHead {
             generation: 0,
             resolving: false,
             pending: None,
-            next_refresh: Instant::now(),
+            next_refresh: clock.now(),
+            clock,
             state: None,
         }
     }
@@ -39,7 +42,7 @@ impl CurrentHead {
             service.invalidate(self.generation);
         }
         self.pending = None;
-        self.next_refresh = Instant::now();
+        self.next_refresh = self.clock.now();
     }
 
     pub(super) fn reset_route(&mut self) {
@@ -58,6 +61,17 @@ fn database(cx: &App) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 impl BranchSelector {
+    #[cfg(feature = "test-support")]
+    pub fn current_head_waiting_for_worker_for_test(&self) -> bool {
+        self.current_head.resolving
+            || (self.current_head.pending.is_some()
+                && !self
+                    .current_head
+                    .service
+                    .as_ref()
+                    .is_some_and(ProjectBranchService::has_completion_for_test))
+    }
+
     fn active_head_owner(&self, cx: &App) -> bool {
         cx.try_global::<OpenedThread>()
             .and_then(|v| v.0.as_ref())
@@ -78,7 +92,9 @@ impl BranchSelector {
             return;
         }
         if self.current_head.target.is_none() {
-            if self.current_head.resolving || Instant::now() < self.current_head.next_refresh {
+            if self.current_head.resolving
+                || self.current_head.clock.now() < self.current_head.next_refresh
+            {
                 return;
             }
             let Some(owner) = self.current_head.database.clone() else {
@@ -109,7 +125,8 @@ impl BranchSelector {
                     this.current_head.target = target;
                     if this.current_head.target.is_none() {
                         this.current_head.state = Some(ProjectBranchState::Unknown);
-                        this.current_head.next_refresh = Instant::now() + Duration::from_secs(2);
+                        this.current_head.next_refresh =
+                            this.current_head.clock.now() + Duration::from_secs(2);
                     }
                     cx.notify();
                 })
@@ -135,27 +152,29 @@ impl BranchSelector {
                 cx.notify();
             }
         }
-        if self
-            .current_head
-            .pending
-            .is_some_and(|start| start.elapsed() >= Duration::from_secs(1))
-        {
+        if self.current_head.pending.is_some_and(|start| {
+            self.current_head.clock.now().duration_since(start) >= Duration::from_secs(1)
+        }) {
             self.current_head.invalidate();
             self.current_head.state = Some(ProjectBranchState::Unknown);
-            self.current_head.next_refresh = Instant::now() + Duration::from_secs(2);
+            self.current_head.next_refresh = self.current_head.clock.now() + Duration::from_secs(2);
             cx.notify();
         }
-        if self.current_head.pending.is_none() && Instant::now() >= self.current_head.next_refresh {
+        if self.current_head.pending.is_none()
+            && self.current_head.clock.now() >= self.current_head.next_refresh
+        {
             self.current_head.generation = self.current_head.generation.wrapping_add(1);
             if let (Some(service), Some(target)) =
                 (&self.current_head.service, &self.current_head.target)
             {
                 service.request(self.current_head.generation, vec![target.clone()]);
-                self.current_head.pending = Some(Instant::now());
-                self.current_head.next_refresh = Instant::now() + Duration::from_secs(2);
+                self.current_head.pending = Some(self.current_head.clock.now());
+                self.current_head.next_refresh =
+                    self.current_head.clock.now() + Duration::from_secs(2);
             } else {
                 self.current_head.state = Some(ProjectBranchState::Unknown);
-                self.current_head.next_refresh = Instant::now() + Duration::from_secs(2);
+                self.current_head.next_refresh =
+                    self.current_head.clock.now() + Duration::from_secs(2);
                 cx.notify();
             }
         }

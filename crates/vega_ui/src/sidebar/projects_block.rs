@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::BackgroundExecutor;
 use std::{
     collections::HashMap,
     time::{Duration, Instant},
@@ -39,6 +40,7 @@ pub struct ProjectsBlock {
     branch_generation: u64,
     branch_cursor: usize,
     next_branch_refresh: Instant,
+    branch_clock: BackgroundExecutor,
     branch_probe: bool,
     branch_rendered: bool,
     branch_pending: bool,
@@ -61,7 +63,8 @@ impl ProjectsBlock {
             branch_service: ProjectBranchService::new().ok(),
             branch_generation: 0,
             branch_cursor: 0,
-            next_branch_refresh: Instant::now(),
+            next_branch_refresh: cx.background_executor().now(),
+            branch_clock: cx.background_executor().clone(),
             branch_probe: false,
             branch_rendered: false,
             branch_pending: false,
@@ -117,7 +120,7 @@ impl ProjectsBlock {
         self.branch_completion = None;
         self.branch_probe = false;
         self.branch_cursor = 0;
-        self.next_branch_refresh = Instant::now();
+        self.next_branch_refresh = self.branch_clock.now();
     }
 
     #[allow(dead_code)]
@@ -161,13 +164,12 @@ impl ProjectsBlock {
             self.branch_rendered = false;
             return;
         }
-        if self
-            .branch_started
-            .is_some_and(|start| start.elapsed() >= Duration::from_secs(1))
-        {
+        if self.branch_started.is_some_and(|start| {
+            self.branch_clock.now().duration_since(start) >= Duration::from_secs(1)
+        }) {
             // A stalled filesystem cannot keep a previously displayed branch indefinitely.
             self.invalidate_branches();
-            self.next_branch_refresh = Instant::now() + Duration::from_secs(2);
+            self.next_branch_refresh = self.branch_clock.now() + Duration::from_secs(2);
             cx.notify();
             return;
         }
@@ -189,7 +191,7 @@ impl ProjectsBlock {
                 if self.branch_pending || !self.branches.is_empty() {
                     self.invalidate_branches();
                 }
-                self.next_branch_refresh = Instant::now() + Duration::from_secs(2);
+                self.next_branch_refresh = self.branch_clock.now() + Duration::from_secs(2);
                 return;
             }
             if let Some(completion) = self.branch_completion.take() {
@@ -212,7 +214,7 @@ impl ProjectsBlock {
             } else {
                 self.start_branch_refresh();
             }
-        } else if !self.branch_pending && Instant::now() >= self.next_branch_refresh {
+        } else if !self.branch_pending && self.branch_clock.now() >= self.next_branch_refresh {
             // Probe actual mounted visibility; render only records a flag, never IO.
             self.branch_rendered = false;
             self.branch_probe = true;
@@ -221,7 +223,7 @@ impl ProjectsBlock {
     }
 
     fn start_branch_refresh(&mut self) {
-        self.next_branch_refresh = Instant::now() + Duration::from_secs(2);
+        self.next_branch_refresh = self.branch_clock.now() + Duration::from_secs(2);
         let Some(generation) = self.branch_generation.checked_add(1) else {
             self.branches.clear();
             self.branch_service = None;
@@ -247,7 +249,7 @@ impl ProjectsBlock {
         if let Some(service) = &self.branch_service {
             service.request(generation, targets);
             self.branch_pending = true;
-            self.branch_started = Some(Instant::now());
+            self.branch_started = Some(self.branch_clock.now());
         }
     }
 

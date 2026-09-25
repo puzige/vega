@@ -28,7 +28,7 @@ fn wait_for_suffix(
             Instant::now() < deadline,
             "production sidebar suffix did not converge"
         );
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::yield_now();
     }
 }
 #[gpui_kit::test]
@@ -73,6 +73,15 @@ async fn production_sidebar_refreshes_head_metadata_and_rejects_removed_results(
     );
     wait_for_suffix(&view, &project.id, Some("main"), cx);
     write_head(&root, "ref: refs/heads/other\n");
+    cx.executor().advance_clock(Duration::from_millis(1999));
+    view.update(cx, |view, cx| view.poll_branches(cx));
+    assert_eq!(
+        view.read_with(cx, |view, _| view
+            .branch_suffix(&project)
+            .map(str::to_owned)),
+        Some("main".into())
+    );
+    cx.executor().advance_clock(Duration::from_millis(1));
     wait_for_suffix(&view, &project.id, Some("other"), cx);
     view.update(cx, |view, cx| view.select_project(&project.id, cx));
     assert!(view.read_with(cx, |view, _| view.branch_suffix(&project).is_none()));
@@ -84,10 +93,28 @@ async fn production_sidebar_refreshes_head_metadata_and_rejects_removed_results(
     view.update(cx, |view, cx| view.reload(cx));
     wait_for_suffix(&view, &project.id, None, cx);
     view.update(cx, |view, _| view.start_branch_refresh());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let completion = loop {
+        if let Some(completion) = view.read_with(cx, |view, _| {
+            view.branch_service.as_ref().unwrap().take_completion()
+        }) {
+            break completion;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pending branch read did not complete"
+        );
+        std::thread::yield_now();
+    };
     view.update(cx, |view, cx| view.remove_project(&project.id, cx));
-    std::thread::sleep(Duration::from_millis(50));
     view.update(cx, |view, cx| {
         view.poll_branches(cx);
+        assert_ne!(completion.generation, view.branch_generation);
+        view.branch_completion = Some(completion);
+        view.branch_probe = true;
+        view.branch_rendered = true;
+        view.poll_branches(cx);
+        assert!(view.branch_completion.is_none());
         assert!(view.projects.is_empty());
         assert!(view.branches.is_empty());
     });

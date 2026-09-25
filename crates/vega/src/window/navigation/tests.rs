@@ -618,12 +618,41 @@ async fn r14_current_head_loads_without_selector_click_and_refreshes_hidden_side
         )
         .unwrap()
     });
+    let drive_head_timer = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        let waiting = root.read_with(cx, |root, cx| {
+            root.stream_view.as_ref().is_some_and(|(_, stream)| {
+                stream
+                    .read(cx)
+                    .branch_selector()
+                    .read(cx)
+                    .current_head_waiting_for_worker_for_test()
+            })
+        });
+        if waiting {
+            std::thread::yield_now();
+        } else {
+            cx.executor().advance_clock(Duration::from_millis(25));
+            cx.run_until_parked();
+        }
+    };
     let wait_label = |label: &str, cx: &mut TestAppContext| {
         let selector: &'static str = Box::leak(format!("branch-current-{label}").into_boxed_str());
-        pump(cx, |cx| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            drive_head_timer(cx);
+            cx.run_until_parked();
             let mut visual = VisualTestContext::from_window(window.into(), cx);
-            visual.debug_bounds(selector).is_some()
-        });
+            if visual.debug_bounds(selector).is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "current HEAD did not settle"
+            );
+            std::thread::yield_now();
+        }
         root.read_with(cx, |root, cx| {
             let selector = root
                 .stream_view
@@ -646,6 +675,8 @@ async fn r14_current_head_loads_without_selector_click_and_refreshes_hidden_side
         "ref: refs/heads/external-current\n",
     )
     .unwrap();
+    wait_label("actual-current", cx);
+    cx.executor().advance_clock(Duration::from_secs(2));
     wait_label("external-current", cx);
     assert!(cx.update(|cx| cx.global::<SidebarCollapsed>().0));
     let visit = |thread: &Thread, cx: &mut TestAppContext| {
@@ -670,28 +701,40 @@ async fn r14_current_head_loads_without_selector_click_and_refreshes_hidden_side
         "1111111111111111111111111111111111111111\n",
     )
     .unwrap();
+    cx.executor().advance_clock(Duration::from_secs(2));
     wait_label("detached", cx);
     assert_eq!(
         std::fs::read_to_string(linked_metadata.join("HEAD")).unwrap(),
         "1111111111111111111111111111111111111111\n"
     );
     visit(&routes[2], cx);
-    pump(cx, |cx| {
-        if !root.read_with(cx, |root, _| {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        cx.run_until_parked();
+        drive_head_timer(cx);
+        cx.run_until_parked();
+        let current_route = root.read_with(cx, |root, _| {
             root.stream_view
                 .as_ref()
                 .is_some_and(|(id, _)| id == &routes[2].id)
-        }) {
-            return false;
-        }
+        });
         let mut visual = VisualTestContext::from_window(window.into(), cx);
-        visual.debug_bounds("branch-current-读取分支…").is_none()
+        if current_route
+            && visual.debug_bounds("branch-current-读取分支…").is_none()
             && visual.debug_bounds("branch-current-分支暂不可用").is_none()
             && visual.debug_bounds("branch-current-detached").is_none()
             && visual
                 .debug_bounds("branch-current-非 Git 文件夹")
                 .is_none()
-    });
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "non-Git route did not settle"
+        );
+        std::thread::yield_now();
+    }
     visit(&routes[0], cx);
     wait_label("external-current", cx);
     assert_eq!(
