@@ -213,7 +213,7 @@ async fn issue64_context_usage_focus_keeps_the_same_tip_after_pointer_leaves(
 }
 
 #[gpui_kit::test]
-async fn issue64_context_usage_focus_tip_fits_narrow_window_without_covering_composer_controls(
+async fn issue64_context_usage_hover_and_focus_tips_fit_narrow_window_without_covering_composer_controls(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "issue64-narrow-window");
@@ -237,8 +237,25 @@ async fn issue64_context_usage_focus_tip_fits_narrow_window_without_covering_com
         .update(cx, |_, window, _| window.viewport_size())
         .expect("narrow viewport size");
     assert_eq!(viewport.width, px(360.0));
+
+    let indicator = visual
+        .debug_bounds("composer-context-usage")
+        .expect("context usage indicator");
+    visual.simulate_mouse_move(indicator.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert_narrow_tooltip_fits_and_clears_controls(&mut visual, viewport);
+
+    let tooltip = visual
+        .debug_bounds("context-usage-tooltip")
+        .expect("hover context usage tooltip");
+    visual.simulate_mouse_move(tooltip.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert_narrow_tooltip_fits_and_clears_controls(&mut visual, viewport);
+
     visual.simulate_mouse_move(point(px(1.0), px(1.0)), None, Modifiers::default());
     visual.run_until_parked();
+    assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+
     window
         .update(cx, |_, window, cx| {
             let focus = stream.read_with(cx, |stream, _| stream.context_usage_focus.clone());

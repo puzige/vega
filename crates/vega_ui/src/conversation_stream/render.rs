@@ -50,14 +50,6 @@ pub(crate) fn model_trigger_label(
     model
 }
 
-struct ContextUsageTooltip(ContextUsageDisplay);
-
-impl Render for ContextUsageTooltip {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        ConversationStream::context_usage_tooltip_element(&self.0, theme(cx).colors)
-    }
-}
-
 impl ConversationStream {
     fn emit_open_diff(&mut self, cx: &mut Context<Self>) {
         if self.thread.is_standalone() {
@@ -792,6 +784,7 @@ impl ConversationStream {
         let focused = display
             .as_ref()
             .is_some_and(|_| self.context_usage_focus.contains_focused(window, cx));
+        let hovered = self.context_usage_trigger_hovered || self.context_usage_tooltip_hovered;
         div()
             .relative()
             .flex()
@@ -800,13 +793,19 @@ impl ConversationStream {
             .children(
                 display
                     .as_ref()
-                    .map(|display| self.render_context_usage_indicator(display, focused, colors)),
+                    .map(|display| self.render_context_usage_indicator(display, colors, cx)),
             )
             .child(self.render_model_selector(cx))
-            .children(display.filter(|_| focused).map(|display| {
+            .children(display.filter(|_| focused || hovered).map(|display| {
+                let tooltip_hover = cx.listener(|this, hovered: &bool, _, cx| {
+                    this.context_usage_tooltip_hovered = *hovered;
+                    cx.notify();
+                });
                 gpui_kit::deferred(
                     div()
-                        .debug_selector(|| "context-usage-focus-tooltip".into())
+                        .id("context-usage-tooltip-popover")
+                        .debug_selector(|| "context-usage-tooltip-popover".into())
+                        .on_hover(tooltip_hover)
                         .absolute()
                         .bottom(gpui_kit::relative(1.0))
                         .mb(px(4.0))
@@ -821,8 +820,8 @@ impl ConversationStream {
     fn render_context_usage_indicator(
         &self,
         display: &ContextUsageDisplay,
-        focused: bool,
         colors: ThemeColors,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let accessible_label = display.accessibility_label();
         let control = div()
@@ -832,13 +831,10 @@ impl ConversationStream {
             .min_h(px(29.0))
             .flex()
             .items_center()
-            .when(!focused, |indicator| {
-                let tooltip_display = display.clone();
-                indicator.hoverable_tooltip(move |_, cx| {
-                    cx.new(|_| ContextUsageTooltip(tooltip_display.clone()))
-                        .into()
-                })
-            })
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                this.context_usage_trigger_hovered = *hovered;
+                cx.notify();
+            }))
             .child(
                 div()
                     .id("composer-context-usage")
