@@ -62,7 +62,7 @@ pub(crate) fn context_compaction_label(
 /// cached materialization — no markdown re-materialization here (P3).
 pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
     let colors = theme(cx).colors;
-    let item = match entry {
+    match entry {
         StreamEntry::ContextCompaction {
             record, restored, ..
         } => {
@@ -211,8 +211,7 @@ pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut Ap
                 ))
                 .into_any_element()
         }
-    };
-    item
+    }
 }
 
 /// One card entry as one natural-height item: the card's compact subrows
