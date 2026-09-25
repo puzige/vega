@@ -230,6 +230,73 @@ async fn issue191_standalone_conversation_has_no_footer_branch_entry(cx: &mut Te
 }
 
 #[gpui_kit::test]
+async fn issue191_non_git_project_hides_the_footer_branch_chip(cx: &mut TestAppContext) {
+    let project_root = tempfile::tempdir().expect("non-Git project root");
+    let database_root = tempfile::tempdir().expect("non-Git project database root");
+    let store = vega_store::Store::open(database_root.path().join("vega.sqlite"))
+        .expect("non-Git project store");
+    store.migrate().expect("non-Git project migrations");
+    let project_path = project_root
+        .path()
+        .canonicalize()
+        .expect("canonical non-Git project path");
+    let project = vega_store::projects::create(
+        store.conn(),
+        project_path.to_str().expect("non-Git project path"),
+        "non-Git",
+        None,
+    )
+    .expect("non-Git project row");
+    let mut thread = permission_thread();
+    thread.id = "issue191-non-git".into();
+    thread.project_id = project.id.clone();
+    init_permission_test(cx);
+    cx.update(|cx| {
+        cx.set_global(crate::sidebar::VegaStore(Ok(store)));
+        cx.set_global(crate::sidebar::SelectedProject(Some(project.id)));
+        cx.set_global(crate::sidebar::OpenedThread(Some(thread.clone())));
+    });
+    let stream = cx.new(|cx| ConversationStream::new(thread, cx));
+    let root_stream = stream.clone();
+    let window = cx.update(|cx| {
+        cx.open_window(Default::default(), move |_, cx| {
+            cx.new(|_| StreamHarness {
+                stream: root_stream,
+            })
+        })
+        .expect("non-Git conversation window")
+    });
+    stream.update(cx, |stream, cx| {
+        stream.composer_submit_pending = true;
+        stream.accept_composer_submission("first message", cx);
+    });
+    let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+
+    for _ in 0..100 {
+        selector.update(cx, |selector, cx| selector.poll_current_head_for_test(cx));
+        if selector.read_with(cx, |selector, _| {
+            selector.current_head_is_non_git_for_test()
+        }) {
+            break;
+        }
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert!(
+        selector.read_with(cx, |selector, _| selector
+            .current_head_is_non_git_for_test()),
+        "the existing project-head resolver must classify the registered folder as NonGit"
+    );
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("branch-current-非 Git 文件夹")
+            .is_none(),
+        "a NonGit project must not render a visible branch trigger in the footer"
+    );
+}
+
+#[gpui_kit::test]
 async fn r49_utility_bar_keeps_the_frozen_inset_and_chip_ladder(cx: &mut TestAppContext) {
     let (window, _stream, _events) = open_controller_stream(cx, "r49-utility-geometry");
     install_utility_globals(cx, &[], Some(PROJECT_BINDING));
