@@ -6,21 +6,28 @@ use gpui_kit::{KeyDownEvent, Keystroke, Modifiers, VisualTestContext, point};
 use std::sync::{Arc, Mutex};
 
 fn issue72_page(count: usize) -> HistoryPage {
+    issue72_page_range(0, count, 1)
+}
+
+fn issue72_page_range(start_index: usize, count: usize, content_repetitions: usize) -> HistoryPage {
     HistoryPage {
         entries: (0..count)
-            .map(|index| HistoryEntry::AssistantText {
-                seq: index as i64 + 1,
-                message_id: format!("persisted-answer-{index}"),
-                content: format!(
-                    "答案 {index}。{}",
-                    "不同长度的消息文本。".repeat(index % 7 + 1)
-                ),
-                status: vega_conversation::history::AssistantStatus::Done,
+            .map(|offset| {
+                let index = start_index + offset;
+                HistoryEntry::AssistantText {
+                    seq: index as i64 + 1,
+                    message_id: format!("persisted-answer-{index}"),
+                    content: format!(
+                        "答案 {index}。{}",
+                        "不同长度的消息文本。".repeat((index % 7 + 1) * content_repetitions)
+                    ),
+                    status: vega_conversation::history::AssistantStatus::Done,
+                }
             })
             .collect(),
         older_cursor: None,
         newer_cursor: None,
-        newest_seq: Some(count as i64),
+        newest_seq: Some((start_index + count) as i64),
     }
 }
 
@@ -143,6 +150,184 @@ async fn rail_is_hidden_for_short_content_and_shown_for_long_overflow(cx: &mut T
             .windows(2)
             .all(|pair| pair[0].fraction < pair[1].fraction)
     );
+}
+
+#[gpui_kit::test]
+async fn width_remeasure_preserves_anchor_identity_and_updates_rail_geometry(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue72-width-remeasure");
+    stream.update(cx, |stream, cx| {
+        stream.set_workspace_width(1100., cx);
+        stream.apply_history_page(issue72_page_range(0, 80, 24), cx);
+        stream.list.set_follow_mode(gpui_kit::FollowMode::Normal);
+        stream.list.scroll_to(gpui_kit::ListOffset {
+            item_ix: 30,
+            offset_in_item: px(11.),
+        });
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(gpui_kit::size(px(1100.), px(800.)));
+    visual.draw(
+        point(px(0.), px(0.)),
+        gpui_kit::size(px(1100.), px(800.)),
+        |_, _| stream.clone().into_any_element(),
+    );
+    let before = stream.read_with(&visual, |stream, cx| {
+        let geometry = stream.message_anchor_geometry(cx, 800.0);
+        (
+            stream.scroll_anchor_snapshot(),
+            stream
+                .message_anchor_projections()
+                .into_iter()
+                .map(|anchor| anchor.message_id)
+                .collect::<Vec<_>>(),
+            geometry.entry_heights,
+            geometry
+                .anchors
+                .into_iter()
+                .map(|anchor| (anchor.message_id, anchor.fraction))
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert_eq!(before.0.message_id.as_deref(), Some("persisted-answer-30"));
+    assert!((before.0.offset_in_item_px - 11.).abs() < 1.0);
+
+    visual.simulate_resize(gpui_kit::size(px(720.), px(800.)));
+    stream.update(&mut visual, |stream, cx| {
+        stream.set_workspace_width(720., cx)
+    });
+    visual.draw(
+        point(px(0.), px(0.)),
+        gpui_kit::size(px(720.), px(800.)),
+        |_, _| stream.clone().into_any_element(),
+    );
+    let after = stream.read_with(&visual, |stream, cx| {
+        let geometry = stream.message_anchor_geometry(cx, 800.0);
+        (
+            stream.scroll_anchor_snapshot(),
+            stream
+                .message_anchor_projections()
+                .into_iter()
+                .map(|anchor| anchor.message_id)
+                .collect::<Vec<_>>(),
+            geometry.entry_heights,
+            geometry
+                .anchors
+                .into_iter()
+                .map(|anchor| (anchor.message_id, anchor.fraction))
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert_eq!(after.0.identity, before.0.identity);
+    assert_eq!(after.0.message_id, before.0.message_id);
+    assert!((after.0.offset_in_item_px - before.0.offset_in_item_px).abs() < 1.0);
+    assert_eq!(
+        after.1, before.1,
+        "width changes must not reorder message IDs"
+    );
+    assert!(
+        before
+            .2
+            .iter()
+            .zip(&after.2)
+            .any(|(old, new)| (old - new).abs() > 1.0),
+        "narrower content should invalidate at least one estimated or measured row height"
+    );
+    assert_eq!(after.3.len(), before.3.len());
+    assert!(
+        after
+            .3
+            .iter()
+            .zip(&before.3)
+            .all(|((new_id, _), (old_id, _))| new_id == old_id),
+        "the rail should map the remeasured geometry to the same messages"
+    );
+    assert!(after.3.windows(2).all(|pair| pair[0].1 < pair[1].1));
+}
+
+#[gpui_kit::test]
+async fn prepending_neighbor_history_page_keeps_existing_anchor_identity_and_order(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue72-history-prepend");
+    stream.update(cx, |stream, cx| {
+        stream.set_workspace_width(1100., cx);
+        stream.apply_history_page(issue72_page_range(20, 40, 12), cx);
+        stream.list.set_follow_mode(gpui_kit::FollowMode::Normal);
+        stream.list.scroll_to(gpui_kit::ListOffset {
+            item_ix: 15,
+            offset_in_item: px(17.),
+        });
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(gpui_kit::size(px(1100.), px(800.)));
+    visual.draw(
+        point(px(0.), px(0.)),
+        gpui_kit::size(px(1100.), px(800.)),
+        |_, _| stream.clone().into_any_element(),
+    );
+    let before = stream.read_with(&visual, |stream, cx| {
+        let geometry = stream.message_anchor_geometry(cx, 800.0);
+        (
+            stream.scroll_anchor_snapshot(),
+            stream
+                .message_anchor_projections()
+                .into_iter()
+                .map(|anchor| anchor.message_id)
+                .collect::<Vec<_>>(),
+            geometry
+                .anchors
+                .into_iter()
+                .map(|anchor| (anchor.entry_index, anchor.message_id, anchor.fraction))
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert_eq!(before.0.message_id.as_deref(), Some("persisted-answer-35"));
+
+    stream.update(&mut visual, |stream, cx| {
+        stream.apply_history_page(issue72_page_range(0, 20, 12), cx);
+    });
+    visual.draw(
+        point(px(0.), px(0.)),
+        gpui_kit::size(px(1100.), px(800.)),
+        |_, _| stream.clone().into_any_element(),
+    );
+    let after = stream.read_with(&visual, |stream, cx| {
+        let geometry = stream.message_anchor_geometry(cx, 800.0);
+        (
+            stream.scroll_anchor_snapshot(),
+            stream
+                .message_anchor_projections()
+                .into_iter()
+                .map(|anchor| anchor.message_id)
+                .collect::<Vec<_>>(),
+            geometry
+                .anchors
+                .into_iter()
+                .map(|anchor| (anchor.entry_index, anchor.message_id, anchor.fraction))
+                .collect::<Vec<_>>(),
+        )
+    });
+    assert_eq!(after.0.identity, before.0.identity);
+    assert_eq!(after.0.message_id, before.0.message_id);
+    assert!((after.0.offset_in_item_px - before.0.offset_in_item_px).abs() < 1.0);
+    assert_eq!(after.1.len(), before.1.len() + 20);
+    assert_eq!(&after.1[20..], before.1.as_slice());
+    assert!(after.2.windows(2).all(|pair| pair[0].2 < pair[1].2));
+    for (old_index, old_id, old_fraction) in &before.2 {
+        let (new_index, new_id, new_fraction) = after
+            .2
+            .iter()
+            .find(|(_, message_id, _)| message_id == old_id)
+            .expect("each existing message remains in the rail");
+        assert_eq!(new_id, old_id);
+        assert_eq!(*new_index, old_index + 20);
+        assert!(
+            new_fraction > old_fraction,
+            "prepended content should move existing anchor {old_id} down the normalized rail"
+        );
+    }
 }
 
 #[gpui_kit::test]
