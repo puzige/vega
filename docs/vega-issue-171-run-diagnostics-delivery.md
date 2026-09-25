@@ -2,9 +2,9 @@
 
 **Status:** implementation and local verification complete; Issue remains OPEN
 **Branch:** `feat/171-run-diagnostics-implementation`
-**Base:** current `origin/master` (includes #146)
+**Base:** `db97c5d` (`origin/master`, includes #146 and #64)
 **Spec:** [Run diagnostics implementation contract](vega-issue-171-run-diagnostics-spec.md)
-**Implementation commits:** pending
+**Implementation commit:** `d136bc7 feat(#171): persist safe run diagnostics`
 **Pull request:** pending
 
 ## Scope
@@ -19,11 +19,11 @@
 
 | ID | Requirement / risk | Test setup and operation | Observable result | Evidence | Status |
 |---|---|---|---|---|---|
-| D171-01 | Schema migration and constrained event writes | Temporary SQLite; migrate v14→v15; append valid and invalid lifecycle events | Valid closed-vocabulary rows persist; unsafe IDs and invalid terminal shape rejected; current schema has 26 tables | `cargo nextest run -p vega_store run_diagnostics` (4/4); migration table-count filters (1/1 each) | PASS |
+| D171-01 | Schema migration and constrained event writes | Temporary SQLite; migrate v14→v15; append valid and invalid lifecycle events | Valid closed-vocabulary rows persist; unsafe IDs and invalid terminal shape rejected; current schema has 26 tables | `cargo nextest run -p vega_store run_diagnostics` (5/5); migration table-count filters (1/1 each) | PASS |
 | D171-02 | Ordered reads and restart recovery | Append start/terminal and incomplete start; close/reopen temp DB; close writer sender and wait for drain | Ordered events survive reopen; incomplete attempts remain visible; graceful last-sender close drains terminal record | Store reopen test (1/1); conversation writer drain/reopen test (1/1) | PASS |
 | D171-03 | Provider metadata and retry count | In-process HTTP fixtures return allowlisted and invalid response IDs and actual retry counts | Typed status/request ID/retry count are projected; invalid IDs are omitted; unknown metadata remains absent | `cargo nextest run -p vega_runtime openai::tests::` (41/41), including allowlist and retry metadata cases | PASS |
 | D171-04 | Provider failure classification | Inject typed HTTP, transport and protocol failures, plus rejected response | Closed categories differ without parsing diagnostic text; Debug/Display hide error body and request-ID values | Runtime error/provider/OpenAI filters (5/5, 5/5, 41/41); primary metadata-retention test (1/1) | PASS |
-| D171-05 | Summary outcomes | Mock summary stream, expired deadline, oversized input, empty/malformed output and typed provider failures | Timeout, truncation, empty, framing, projection/source and known preflight failures map to safe typed codes; over-budget preflight never calls provider | `agent::compaction::` (19/19 after final run); preflight provider-call assertion and timeout persistence cases included | PASS |
+| D171-05 | Summary outcomes | Mock summary stream, expired deadline, oversized input, empty/malformed output and typed provider failures | Timeout, truncation, empty, framing, projection/source and known preflight failures map to safe typed codes; over-budget preflight never calls provider | `cargo nextest run -p vega_conversation agent::compaction::` (19/19); preflight provider-call assertion and timeout persistence cases included | PASS |
 | D171-06 | Tool and later-stage correlation | Mock successful tool then failing model attempt under one run | Ordered records share run ID and validated tool call ID; provider failure receives its typed code | Conversation correlation integration test (1/1); normal tool lifecycle test (1/1) | PASS |
 | D171-07 | Diagnostic write isolation | Fill/close queue; install diagnostic-only SQLite ABORT trigger while required store remains healthy | Calls remain non-blocking/error-free; run result and required assistant message persist despite diagnostic INSERT failure | Queue isolation (1/1); SQL trigger isolation integration test (1/1) | PASS |
 | D171-08 | Privacy canaries | Use fake key, Authorization, prompt, response, reasoning, summary, provider error and tool-output canaries | Canaries absent from diagnostic export and custom error/metadata Debug/Display; only safe counts/status/request ID allowlist survive | Runtime OpenAI redaction suite (41/41), summary truncation/export test (1/1), run/tool export assertions (1/1), provider format canaries (2/2) | PASS |
@@ -44,17 +44,19 @@
 
 | Command | Exit | Result / raw output excerpt |
 |---|---:|---|
-| `cargo nextest run -p vega_store run_diagnostics` | 0 | `4 tests run: 4 passed, 145 skipped` |
-| `cargo nextest run -p vega_runtime error::tests::` | 0 | `5 tests run: 5 passed, 206 skipped` |
-| `cargo nextest run -p vega_runtime provider::tests::` | 0 | `5 tests run: 5 passed, 206 skipped` |
-| `cargo nextest run -p vega_runtime openai::tests::` | 0 | `41 tests run: 41 passed, 170 skipped` |
+| `cargo nextest run -p vega_store run_diagnostics` | 0 | `5 tests run: 5 passed, 145 skipped` |
+| Store migration/table-count filters | 0 | Two targeted schema tests: `1 test run: 1 passed` each; user_version 15, 26 tables |
+| `cargo nextest run -p vega_runtime error::tests::` | 0 | `5 tests run: 5 passed, 207 skipped` |
+| `cargo nextest run -p vega_runtime provider::tests::` | 0 | `5 tests run: 5 passed, 207 skipped` |
+| `cargo nextest run -p vega_runtime openai::tests::` | 0 | `41 tests run: 41 passed, 171 skipped` |
 | `cargo nextest run -p vega_runtime stream_failure_preserves_success_response_metadata` | 0 | `1 test run: 1 passed, 211 skipped` |
-| `cargo nextest run -p vega_conversation agent::compaction::` | 0 | `19 tests run: 19 passed` (re-run after final test additions) |
-| conversation diagnostics, correlation, write-failure, timeout and persistence filters | 0 | Queue/reopen/SQL-trigger/correlation/critical-persistence targeted cases passed individually; see matrix above |
+| `cargo nextest run -p vega_conversation agent::compaction::` | 0 | `19 tests run: 19 passed, 515 skipped` |
+| Conversation writer, correlation, SQL failure and required persistence filters | 0 | Seven targeted cases: `1 test run: 1 passed` each; exact test names are recorded in the matrix above |
 | `cargo check -p vega_runtime -p vega_store -p vega_conversation` | 0 | `Finished dev profile` |
 | `cargo clippy -p vega_runtime -p vega_store -p vega_conversation --all-targets -- -D warnings` | 0 | `Finished dev profile` |
-| `cargo fmt --all -- --check` | Pending | NOT RUN |
-| `git diff --check` | Pending | NOT RUN |
+| `cargo fmt --all -- --check` | 0 | No output |
+| `git diff --check` | 0 | No output |
+| Implementation diff SHA-256 (excluding this delivery record) | — | `0c100328328bf01fb9982fcbeb27365663255af8c0ba7d4cf897843bcbc7d118` |
 
 ## Privacy boundary and residuals
 
@@ -63,4 +65,4 @@
 - No user database, real credentials, external provider, live HTTP service, app install or native UI was accessed for implementation verification.
 - Graceful last-sender shutdown is tested to drain the bounded queue before the writer exits. Abrupt process termination (`SIGKILL`/power loss) can still lose queued best-effort diagnostics and is not claimed to flush.
 - Real desktop/UI acceptance is **NOT RUN** and remains for product acceptance after the PR is reviewed.
-- Check results, implementation commits, diff hash and PR URL: pending final rebase/report update.
+- PR URL and final diff hash: pending push and PR creation.
