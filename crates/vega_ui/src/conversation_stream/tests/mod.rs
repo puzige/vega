@@ -26,6 +26,7 @@ mod core_flow;
 mod e2e_variable_height;
 mod hover_copy;
 mod hydration;
+mod issue148_long_session_scroll;
 mod issue151_latest_activity;
 mod issue70_tool_activity;
 mod issue78_message_bubbles;
@@ -215,6 +216,7 @@ fn hydration_state(older_cursor: Option<i64>, loading: bool, paused: bool) -> Hi
 fn hydration_user(seq: i64, content: &str) -> HistoryEntry {
     HistoryEntry::UserText {
         seq,
+        message_id: format!("user-{seq}"),
         content: content.into(),
     }
 }

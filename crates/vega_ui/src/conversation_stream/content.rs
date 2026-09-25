@@ -38,6 +38,9 @@ impl ConversationStream {
             .as_ref()
             .filter(|(message_id, _)| message_id == &id)
             .map(|(_, entry_index)| *entry_index);
+        let sequence = replace_index
+            .and_then(|entry_index| self.entry_identities.get(entry_index))
+            .and_then(|identity| identity.sequence);
         if let Some(entry_index) = replace_index {
             self.last_finished_agent_message = None;
             // Replaces an existing entry in place: same index, content may
@@ -45,15 +48,21 @@ impl ConversationStream {
             if let Some(entry) = self.entries.get_mut(entry_index) {
                 *entry = StreamEntry::Plan { card: card.clone() };
                 self.invalidate_item(Some(entry_index));
+                let identity = self.durable_entry_identity(&id, "plan", sequence);
+                self.set_entry_identity(entry_index, identity);
             } else {
                 let index = self.entries.len();
                 self.entries.push(StreamEntry::Plan { card: card.clone() });
                 self.list_append(index);
+                let identity = self.durable_entry_identity(&id, "plan", None);
+                self.set_entry_identity(index, identity);
             }
         } else {
             let index = self.entries.len();
             self.entries.push(StreamEntry::Plan { card: card.clone() });
             self.list_append(index);
+            let identity = self.durable_entry_identity(&id, "plan", None);
+            self.set_entry_identity(index, identity);
         }
         self.plan_cards.insert(id, card);
         cx.notify();
@@ -76,6 +85,8 @@ impl ConversationStream {
         self.entries
             .push(StreamEntry::Summary { card: card.clone() });
         self.list_append(index);
+        let identity = self.durable_entry_identity(&message_id, "summary", None);
+        self.set_entry_identity(index, identity);
         self.summary_cards.insert(message_id, card);
         cx.notify();
     }
@@ -89,25 +100,53 @@ impl ConversationStream {
     /// the pixel adjustment exact), and in-flight entry indices shift so a
     /// streaming run keeps writing into its own turn.
     pub fn apply_history_page(&mut self, page: HistoryPage, cx: &mut Context<Self>) {
+        self.ensure_entry_identities();
+        let anchor = self.scroll_anchor_snapshot();
         let mut hydrated: Vec<StreamEntry> = Vec::new();
+        let mut hydrated_identities: Vec<StreamEntryIdentity> = Vec::new();
+        let mut assistant_segments: HashMap<String, usize> = HashMap::new();
         for entry in page.entries {
             match entry {
-                HistoryEntry::UserImages { images, .. } => {
+                HistoryEntry::UserImages {
+                    seq,
+                    message_id,
+                    images,
+                } => {
                     hydrated.push(StreamEntry::UserImages {
                         images: self.history_image_previews(images, cx),
                     });
+                    hydrated_identities.push(self.durable_entry_identity(
+                        &message_id,
+                        "user-images",
+                        Some(seq),
+                    ));
                 }
-                HistoryEntry::UserText { content, .. } => {
+                HistoryEntry::UserText {
+                    seq,
+                    message_id,
+                    content,
+                } => {
                     let block_id = self.user_block_seq;
                     self.user_block_seq += 1;
                     hydrated.push(StreamEntry::User {
                         copy: MessageCopy::new(&content),
                         lines: user_message_lines(block_id, &content),
                     });
+                    hydrated_identities.push(self.durable_entry_identity(
+                        &message_id,
+                        "user-text",
+                        Some(seq),
+                    ));
                 }
                 HistoryEntry::AssistantText {
-                    content, status, ..
+                    seq,
+                    message_id,
+                    content,
+                    status,
                 } => {
+                    let segment = assistant_segments.entry(message_id.clone()).or_default();
+                    let segment_ordinal = *segment;
+                    *segment += 1;
                     // Durable markdown is complete; one append + finish is the
                     // whole turn. Empty (killed-before-first-delta) turns
                     // materialize zero content, like an empty live stream. The
@@ -128,8 +167,13 @@ impl ConversationStream {
                         failure: (status == vega_conversation::history::AssistantStatus::Failed)
                             .then_some(RunFailureKind::Persisted),
                     });
+                    hydrated_identities.push(self.durable_entry_identity(
+                        &message_id,
+                        &format!("assistant-text-{segment_ordinal}"),
+                        Some(seq),
+                    ));
                 }
-                HistoryEntry::Plan { plan, .. } => {
+                HistoryEntry::Plan { seq, plan } => {
                     // Same foreign-thread fence as the live `apply_plan` path;
                     // duplicate durable plans reconcile first-wins.
                     if plan.thread_id != self.thread.id || self.plan_cards.contains_key(&plan.id) {
@@ -148,19 +192,27 @@ impl ConversationStream {
                         cx.notify();
                     })
                     .detach();
-                    self.plan_cards.insert(id, card.clone());
+                    self.plan_cards.insert(id.clone(), card.clone());
                     hydrated.push(StreamEntry::Plan { card });
+                    hydrated_identities.push(self.durable_entry_identity(&id, "plan", Some(seq)));
                 }
-                HistoryEntry::Summary { summary, .. } => {
+                HistoryEntry::Summary { seq, summary } => {
                     if self.summary_cards.contains_key(&summary.message_id) {
                         continue;
                     }
                     let message_id = summary.message_id.clone();
                     let card = cx.new(|_| SummaryCard::new(summary));
-                    self.summary_cards.insert(message_id, card.clone());
+                    self.summary_cards.insert(message_id.clone(), card.clone());
                     hydrated.push(StreamEntry::Summary { card });
+                    hydrated_identities.push(self.durable_entry_identity(
+                        &message_id,
+                        "summary",
+                        Some(seq),
+                    ));
                 }
                 HistoryEntry::Tool {
+                    seq,
+                    message_id,
                     call_id,
                     input,
                     status,
@@ -173,11 +225,32 @@ impl ConversationStream {
                     }
                     let card = cx.new(|_| ToolCard::hydrated(input, status, approval, result));
                     self.observe_tool_card(&card, cx);
-                    self.tool_cards.insert(call_id, card.clone());
+                    self.tool_cards.insert(call_id.clone(), card.clone());
+                    let previous_len = hydrated.len();
                     self.append_hydrated_tool(&mut hydrated, card, cx);
+                    if hydrated.len() > previous_len {
+                        hydrated_identities.push(self.tool_call_identity(
+                            &call_id,
+                            Some(&message_id),
+                            Some(seq),
+                        ));
+                    }
                 }
-                HistoryEntry::SkillActivation { activation, .. } => {
+                HistoryEntry::SkillActivation { seq, activation } => {
+                    let stable_id = format!(
+                        "{}:{}:{}:{:?}:{:?}",
+                        activation.run_id,
+                        activation.name,
+                        activation.content_sha256,
+                        activation.origin,
+                        activation.source_scope
+                    );
                     hydrated.push(StreamEntry::SkillActivation { activation });
+                    hydrated_identities.push(self.durable_entry_identity(
+                        &stable_id,
+                        "skill-activation",
+                        Some(seq),
+                    ));
                 }
             }
         }
@@ -185,6 +258,8 @@ impl ConversationStream {
         let mut entries = hydrated;
         entries.append(&mut self.entries);
         self.entries = entries;
+        hydrated_identities.append(&mut self.entry_identities);
+        self.entry_identities = hydrated_identities;
         self.list_prepend(prepended_entries);
         if prepended_entries > 0 {
             // Entry indices booked before the prepend must follow their turns.
@@ -196,6 +271,7 @@ impl ConversationStream {
             if let Some((_, index)) = &mut self.last_finished_agent_message {
                 *index += prepended_entries;
             }
+            self.restore_scroll_anchor(&anchor);
         }
         self.hydration.older_cursor = page.older_cursor;
         self.hydration.loading = false;
@@ -510,7 +586,7 @@ impl ConversationStream {
         // events (fence below) before ownership moves into the render path.
         self.feed_meter(&event, cx);
         match event {
-            ConversationEvent::MessageStarted { message_id, .. } => {
+            ConversationEvent::MessageStarted { message_id, seq } => {
                 if self.active_agent_message.is_some() {
                     self.apply_controller_error(cx);
                     return;
@@ -526,6 +602,13 @@ impl ConversationStream {
                     failure: None,
                 });
                 self.list_append(entry_index);
+                self.active_segment_ordinal = 0;
+                let identity = self.durable_entry_identity(
+                    &message_id,
+                    "assistant-text-0",
+                    i64::try_from(seq).ok(),
+                );
+                self.set_entry_identity(entry_index, identity);
                 self.active_agent_message = Some((message_id, entry_index));
                 self.active_segment_has_text = false;
                 cx.notify();
@@ -557,6 +640,12 @@ impl ConversationStream {
                         failure: None,
                     });
                     self.list_append(index);
+                    let identity = self.durable_entry_identity(
+                        &message_id,
+                        &format!("assistant-text-{}", self.active_segment_ordinal),
+                        None,
+                    );
+                    self.set_entry_identity(index, identity);
                     if let Some((_, active_index)) = &mut self.active_agent_message {
                         *active_index = index;
                     }
@@ -606,9 +695,20 @@ impl ConversationStream {
                 }
                 self.close_active_segment_before_tool();
                 let call_id = call.id.clone();
+                let message_id = self
+                    .active_agent_message
+                    .as_ref()
+                    .map(|(message_id, _)| message_id.clone());
                 let card = cx.new(|_| ToolCard::proposed(&call));
                 self.observe_tool_card(&card, cx);
                 self.append_live_tool(card.clone(), cx);
+                if let Some(entry_index) = self.entries.iter().position(
+                    |entry| matches!(entry, StreamEntry::Tool { card: entry_card } if entry_card == &card),
+                ) {
+                    let identity =
+                        self.tool_call_identity(&call_id, message_id.as_deref(), None);
+                    self.set_entry_identity(entry_index, identity);
+                }
                 self.tool_cards.insert(call_id, card);
                 self.install_pending_permission(cx);
                 cx.notify();
@@ -735,6 +835,7 @@ impl ConversationStream {
             .take()
             .filter(|(_, index)| *index != usize::MAX);
         self.active_segment_has_text = false;
+        self.active_segment_ordinal = 0;
         self.timeout_permission(cx);
         cx.notify();
     }
@@ -757,6 +858,7 @@ impl ConversationStream {
                 model.sync(&stream.snapshot(), &self.counters);
             }
             self.invalidate_item(Some(index));
+            self.active_segment_ordinal = self.active_segment_ordinal.saturating_add(1);
         } else {
             self.entries.remove(index);
             self.list_remove(index);
@@ -800,6 +902,10 @@ impl ConversationStream {
 
     fn append_empty_terminal_segment(&mut self) {
         let index = self.entries.len();
+        let message_id = self
+            .active_agent_message
+            .as_ref()
+            .map(|(message_id, _)| message_id.clone());
         self.entries.push(StreamEntry::Assistant {
             copy: MessageCopy::default(),
             stream: Box::new(MarkdownStream::new()),
@@ -807,6 +913,14 @@ impl ConversationStream {
             failure: None,
         });
         self.list_append(index);
+        if let Some(message_id) = message_id {
+            let identity = self.durable_entry_identity(
+                &message_id,
+                &format!("assistant-text-{}", self.active_segment_ordinal),
+                None,
+            );
+            self.set_entry_identity(index, identity);
+        }
         if let Some((_, active_index)) = &mut self.active_agent_message {
             *active_index = index;
         }

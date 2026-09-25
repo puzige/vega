@@ -1118,18 +1118,15 @@ impl Render for ConversationStream {
                         self.list.clone(),
                         cx.processor(
                             move |this: &mut ConversationStream, index: usize, window, cx| {
+                                let row_t0 = Instant::now();
                                 let entry = this.entries.get(index);
-                                match entry {
-                                    Some(entry) => {
-                                        let row_t0 = Instant::now();
-                                        let item = render_entry(entry, &this.counters, window, cx);
-                                        if let Ok(mut samples) = this.counters.row_build_ns.lock() {
-                                            samples.push(row_t0.elapsed().as_nanos());
-                                        }
-                                        item
-                                    }
+                                let item = match entry {
+                                    Some(entry) => render_entry(entry, window, cx),
                                     None => div().into_any_element(),
-                                }
+                                };
+                                this.counters
+                                    .record_row_callback(row_t0.elapsed().as_nanos());
+                                item
                             },
                         ),
                     )

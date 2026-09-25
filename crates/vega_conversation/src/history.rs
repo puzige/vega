@@ -36,10 +36,15 @@ pub enum HistoryEntry {
     /// Durable user text (the synthetic approval instruction is controller
     /// capability, not conversation content, and is dropped — same rule as
     /// Composer history).
-    UserText { seq: i64, content: String },
+    UserText {
+        seq: i64,
+        message_id: String,
+        content: String,
+    },
     /// Explicit images directly following their owning user text.
     UserImages {
         seq: i64,
+        message_id: String,
         images: Vec<crate::types::ImageAttachment>,
     },
     /// One durable assistant text segment with its terminal state on the tail.
@@ -437,6 +442,7 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                 }
                 entries.push(HistoryEntry::UserText {
                     seq: row.seq,
+                    message_id: row.id.clone(),
                     content: row.content.clone(),
                 });
                 let images = page
@@ -453,6 +459,7 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                 if !images.is_empty() {
                     entries.push(HistoryEntry::UserImages {
                         seq: row.seq,
+                        message_id: row.id.clone(),
                         images,
                     });
                 }

@@ -173,6 +173,7 @@ async fn ten_thousand_rows_walk_without_gap_or_duplicate() -> Result<(), Box<dyn
     let (store, _dir) = open_store()?;
     seed_exchanges(&store, 5_000, 1)?; // 10k rows
     let mut seen: Vec<i64> = Vec::new();
+    let mut seen_message_ids: Vec<(i64, String)> = Vec::new();
     let mut loads = 0usize;
     let mut cursor = PageCursor::Head;
     loop {
@@ -180,9 +181,16 @@ async fn ten_thousand_rows_walk_without_gap_or_duplicate() -> Result<(), Box<dyn
         loads += 1;
         for entry in &page.entries {
             let seq = match entry {
-                HistoryEntry::UserText { seq, .. }
-                | HistoryEntry::UserImages { seq, .. }
-                | HistoryEntry::AssistantText { seq, .. }
+                HistoryEntry::UserText {
+                    seq, message_id, ..
+                }
+                | HistoryEntry::AssistantText {
+                    seq, message_id, ..
+                } => {
+                    seen_message_ids.push((*seq, message_id.clone()));
+                    *seq
+                }
+                HistoryEntry::UserImages { seq, .. }
                 | HistoryEntry::Plan { seq, .. }
                 | HistoryEntry::Summary { seq, .. }
                 | HistoryEntry::Tool { seq, .. }
@@ -202,6 +210,15 @@ async fn ten_thousand_rows_walk_without_gap_or_duplicate() -> Result<(), Box<dyn
     // None).
     assert_eq!(loads, 51, "50 full pages plus one exhaustion-proof read");
     assert_eq!(seen.len(), 10_000, "no duplicates and no misses");
+    assert_eq!(seen_message_ids.len(), 10_000);
+    for (seq, message_id) in &seen_message_ids {
+        let expected_id = if seq % 2 == 1 {
+            format!("seed-user-{}", (seq + 1) / 2)
+        } else {
+            format!("seed-assistant-{}", seq / 2)
+        };
+        assert_eq!(message_id, &expected_id, "durable identity at seq {seq}");
+    }
     seen.sort_unstable();
     assert!(
         seen.iter().copied().eq(1..=10_000),

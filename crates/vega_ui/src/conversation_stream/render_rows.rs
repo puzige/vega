@@ -60,13 +60,7 @@ pub(crate) fn context_compaction_label(
 /// (S8-T44/C4: 一项=一个 user/assistant/tool/permission/plan/artifact/
 /// summary item 的自然高度). Per-frame: clone-only element assembly from
 /// cached materialization — no markdown re-materialization here (P3).
-pub(crate) fn render_entry(
-    entry: &StreamEntry,
-    counters: &StreamCounters,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let row_t0 = Instant::now();
+pub(crate) fn render_entry(entry: &StreamEntry, window: &mut Window, cx: &mut App) -> AnyElement {
     let colors = theme(cx).colors;
     let item = match entry {
         StreamEntry::ContextCompaction {
@@ -218,9 +212,6 @@ pub(crate) fn render_entry(
                 .into_any_element()
         }
     };
-    if let Ok(mut samples) = counters.row_build_ns.lock() {
-        samples.push(row_t0.elapsed().as_nanos());
-    }
     item
 }
 
