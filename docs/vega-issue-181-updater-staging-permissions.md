@@ -39,10 +39,10 @@
 
 ## 实现交付与验证证据
 
-- verified_at_utc：2026-09-25 13:41 UTC。
+- verified_at_utc：2026-09-25 13:55 UTC。
 - 分支：`feat/181-updater-staging-permissions`；已先 fetch/rebase 到当时最新 `origin/master`。
 - OS/架构：Darwin 24.6.0 arm64；Cargo 1.98.0；rustc 1.98.0。
-- 受影响 production 文件相对 `origin/master` 的二进制 diff SHA-256：`ac4411608070c5b5e066beab5b8085d223db7989e6b38afe05bb4e2cec1805f7`。
+- 受影响 production 文件相对 `origin/master` 的二进制 diff SHA-256：`183b4c6a05634d9ce1ed47bfd7690e2ed6323192fe929dc17c0478526067b1ee`。
 - 根因复现：给 helper 暂时使用未配置权限的 Builder 后，helper 按原样调用 `private_dir`，与桌面错误一致地拒绝了默认目录。该初次失败输出保留如下。
 
 ```text
@@ -89,5 +89,42 @@ error: test run failed
 退出状态：0。
 
 - `git diff --check`：exit 0，无输出。
-- 本地未运行全量测试、fmt 或 clippy；这些留给 PR 云端门禁。真实桌面更新尚未重试，等待修复合并并发布后由 Computer Use 验收。
+- 本地未运行全量测试；格式门禁与定向 Clippy 后续修正见下节。真实桌面更新尚未重试，等待修复合并并发布后由 Computer Use 验收。
 - 与规格偏离：无。
+
+## PR #202 格式门禁修正
+
+- 2026-09-25 检查 PR #202 的 [run `36142885736`](https://github.com/puzige/vega/actions/runs/36142885736)：Clippy job `108096749133` 中 `Format` 步骤失败，`Clippy (deny warnings)` 因前一步失败而跳过。完整 job 日志现可读取，CI 报错摘录如下（runner 路径简化为仓库相对路径）：
+
+```text
+Run cargo fmt --all -- --check
+Diff in crates/vega/src/updater/platform.rs:386:
+-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+-            .unwrap();
++        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+Process completed with exit code 1.
+```
+
+- 本次 CI 失败仅为格式检查；实际 Clippy 步骤被跳过。下方本地格式命令复现了同一差异。
+- 本地用相同格式门禁复现的唯一差异是新测试的 `set_permissions(...).unwrap()` 可合并为一行：
+
+```text
+Diff in crates/vega/src/updater/platform.rs:386:
+-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
+-            .unwrap();
++        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+```
+
+- 已执行 `cargo fmt --all`；本次仅格式化了上述表达式。
+- `cargo fmt --all -- --check`：exit 0，无输出。
+- 格式修正后的定向 lint：`cargo clippy -p vega --all-targets -- -D warnings`，exit 0；`Finished dev profile [unoptimized + debuginfo] target(s) in 2.05s`。只有依赖 `block v0.1.6` 的既有 future-incompatibility 提示，没有 lint warning。
+- 格式修正后定向回归：`cargo nextest run -p vega -E 'test(updater_private_tempdir_)'`：exit 0，2 passed、209 skipped；Nextest run ID `0b7ce366-64b4-47e2-9d4d-2dad6b5c7f97`。
+- 原 PR run 的 workspace Nextest 最终通过，耗时 6m19s；summary check 因 Clippy job 的格式步骤失败而失败。此次未运行本地 workspace 全量 Nextest；PR 云端 Nextest 门禁负责全量测试。
+
+## PR #199 合并后的基线复验
+
+- PR #199 合并后已 fetch 并 rebase 到最新 `origin/master`，包含 Composer 错误行修复；生产变更 diff hash 相对新基线复算后仍为上方记录值。
+- `cargo fmt --all -- --check`：exit 0，无输出。
+- `cargo nextest run -p vega -E 'test(updater_private_tempdir_)'`：exit 0；2 passed、209 skipped；Nextest run ID `65956143-dc27-4311-b2b3-9967ae24b66e`。
+- `cargo clippy -p vega --all-targets -- -D warnings`：exit 0；`Finished dev profile [unoptimized + debuginfo] target(s) in 3.93s`。保留 `block v0.1.6` 的既有 future-incompatibility 提示。
+- 未运行本地 workspace 全量测试；等待更新 PR 后的云端 Nextest 与格式/Clippy 门禁。

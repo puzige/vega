@@ -386,8 +386,7 @@ mod tests {
     fn updater_private_tempdir_rejects_group_and_world_permissions() {
         let parent = tempfile::tempdir().unwrap();
         let directory = private_tempdir_in(parent.path(), ".vega-update-").unwrap();
-        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755))
-            .unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let error = private_dir(directory.path()).unwrap_err();
         assert_eq!(error.to_string(), "更新暂存目录权限无效");
     }
