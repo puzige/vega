@@ -1,7 +1,7 @@
 # Issue #171 — 运行时间线与失败诊断规格
 
-**状态：** 已冻结，实现契约  
-**Issue：** [#171](https://github.com/puzige/vega/issues/171)（保持 OPEN，等待桌面验收）  
+**状态：** 已冻结，实现契约
+**Issue：** [#171](https://github.com/puzige/vega/issues/171)（保持 OPEN，等待桌面验收）
 **基线：** 2026-09-26 当前 `origin/master`（含 #146）
 
 ## 目标与边界

@@ -5,7 +5,10 @@
 **Base:** `db97c5d` (`origin/master`, includes #146 and #64)
 **Spec:** [Run diagnostics implementation contract](vega-issue-171-run-diagnostics-spec.md)
 **Implementation commit:** `d136bc7 feat(#171): persist safe run diagnostics`
-**Pull request:** pending
+**Pull request:** [#217](https://github.com/puzige/vega/pull/217) — OPEN, not merged
+**PR base:** `master` (`db97c5d2d5961c33a52df276f157be4836c2c9f9`)
+**PR head:** `feat/171-run-diagnostics-implementation` (this documentation-only follow-up advances the branch head)
+**Local verification:** affected-crate targeted Nextest, fmt, `cargo check`, Clippy with `-D warnings`, and `git diff --check` passed; no Rust files changed in this follow-up.
 
 ## Scope
 
@@ -56,7 +59,9 @@
 | `cargo clippy -p vega_runtime -p vega_store -p vega_conversation --all-targets -- -D warnings` | 0 | `Finished dev profile` |
 | `cargo fmt --all -- --check` | 0 | No output |
 | `git diff --check` | 0 | No output |
-| Implementation diff SHA-256 (excluding this delivery record) | — | `0c100328328bf01fb9982fcbeb27365663255af8c0ba7d4cf897843bcbc7d118` |
+| Implementation diff SHA-256 (excluding this delivery record) | — | `e41516cf0d72d87ed420d2b5b752a7d30a892613c108b79e20eb3331994d4c2b` |
+| GitHub PR Clippy | SUCCESS | PR #217 check completed successfully before this documentation-only follow-up |
+| GitHub PR Nextest | IN PROGRESS | PR #217 check was still running when this record was updated; rerun status after pushing this follow-up |
 
 ## Privacy boundary and residuals
 
@@ -65,4 +70,5 @@
 - No user database, real credentials, external provider, live HTTP service, app install or native UI was accessed for implementation verification.
 - Graceful last-sender shutdown is tested to drain the bounded queue before the writer exits. Abrupt process termination (`SIGKILL`/power loss) can still lose queued best-effort diagnostics and is not claimed to flush.
 - Real desktop/UI acceptance is **NOT RUN** and remains for product acceptance after the PR is reviewed.
-- PR URL and final diff hash: pending push and PR creation.
+- This follow-up changes documentation only; no Rust production code or tests were changed.
+- PR URL: [https://github.com/puzige/vega/pull/217](https://github.com/puzige/vega/pull/217); base `master` at `db97c5d2d5961c33a52df276f157be4836c2c9f9`, head ref `feat/171-run-diagnostics-implementation`.
