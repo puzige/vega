@@ -1711,9 +1711,15 @@ impl ThreadsBlock {
                                 MouseButton::Left,
                                 cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
+                                    let clear_action_focus = index == 0
+                                        && this.focused_thread_action.as_deref()
+                                            == Some(thread_id.as_str());
                                     this.activate_action_index(
                                         &thread_id, archived, index, window, cx,
                                     );
+                                    if clear_action_focus {
+                                        window.blur(cx);
+                                    }
                                 }),
                             )
                             .child(label);
