@@ -29,8 +29,10 @@
 
 #### Fix Freeze
 
-- 验证时间：2026-09-26 03:32 UTC / 2026-09-26 11:32 CST。
+- 验证时间：2026-09-26 03:36 UTC / 2026-09-26 11:36 CST。
 - 分支：`feat/82-provider-help-overflow`；实现前 fetch/rebase 后与 `origin/master` 一致。
+- 实现提交：`d2b51a8`；PR [#224](https://github.com/puzige/vega/pull/224) 已创建，未合并；Clippy/Nextest 云端检查正在运行。
+- Issue #82 评论已记录实现、测试结果和交付状态；Issue 保持开放，Project 状态为 In progress。
 - 任务契约：[补充规格](vega-issue-82-provider-help-copy.md)；实现范围与补充验收条件一致。
 - 源码、测试与补充规格差异补丁 SHA-256（不含本交付记录）：`d6450ef327afc3e9527242c44f79183edc1aee9427968e85fa1136a0bfc5c6bd`。
 - 环境：Darwin arm64；rustc 1.98.0；cargo 1.98.0；git 2.55.0。
@@ -116,7 +118,8 @@ note: to see what the problems were, use the option `--future-incompat-report`, 
 
 ## Residuals
 
-- `NOT RUN`：云端 PR gate，等待 PR 建立后执行。
+- `IN PROGRESS`：PR #224 的云端 Clippy 与 Nextest 检查。
 - `NOT RUN`：master 集成后的桌面 Computer Use 和真实服务验收；依仓库验收规程由主控/用户在 master 完成。
 - `NOT RUN`：workspace 全量测试和全量 Clippy；本地按规程只执行本卡定向 nextest，PR gate 承担完整门禁。
+- `NOT MERGED`：等待云端 PR 检查和后续集成/桌面复验；当前 Issue 开放且看板为 In progress。
 - spec 偏离：无。
