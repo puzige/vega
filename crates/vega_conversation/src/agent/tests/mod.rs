@@ -9,6 +9,7 @@ use super::*;
 use crate::types::{ConversationEvent, ToolCallStatus};
 
 mod automatic_titles;
+mod credential_redaction;
 mod failure_paths;
 mod file_edit_parity;
 mod history_permissions;

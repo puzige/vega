@@ -211,7 +211,7 @@ pub async fn run_approved_plan_task_with_pricing_reasoning_and_mcp<F>(
     pricing_catalog: Option<vega_token::PricingCatalog>,
     reasoning: Option<FrozenReasoning>,
     mcp_servers: Vec<vega_runtime::McpReadyServer>,
-    turn_limit: u32,
+    actor_config: PersistenceActorConfig,
 ) -> Result<ConversationRun, ConversationError>
 where
     F: FnMut(&ConversationEvent) -> Result<(), VegaError>,
@@ -226,7 +226,7 @@ where
         cancel,
         permission_hook,
         event_sink,
-        PersistenceActorConfig::default().with_turn_limit(turn_limit),
+        actor_config,
         Some(instruction_message_id.to_string()),
         pricing_catalog,
         reasoning,
@@ -751,6 +751,7 @@ where
             prepared.request.reasoning.clone(),
             prepared.request.pricing_catalog.clone(),
         )
+        .with_credential_reader(prepared.request.tool_config.credential_reader())
         .with_diagnostics(diagnostics_context.clone())
     });
     let context_hook_ref = context_hook

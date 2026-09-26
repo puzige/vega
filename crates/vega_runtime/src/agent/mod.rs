@@ -35,6 +35,11 @@ use crate::{
 
 mod mcp_registry;
 use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
+mod credential_redaction;
+pub use credential_redaction::{
+    CredentialReader, PROVIDER_CREDENTIAL_REDACTION_MARKER, contains_sensitive_credential,
+    redact_sensitive_credential_text,
+};
 pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 
 /// Maximum bytes accepted from one streamed reasoning delta.
@@ -143,6 +148,8 @@ pub struct RuntimeToolConfig {
     skills: Option<RuntimeSkillConfig>,
     foreign_call_ids: HashSet<String>,
     permission_timeout: Duration,
+    credential_reader: Option<CredentialReader>,
+    legacy_credential_cleanup_detected: bool,
 }
 
 impl RuntimeToolConfig {
@@ -167,6 +174,8 @@ impl RuntimeToolConfig {
             skills: None,
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
+            credential_reader: None,
+            legacy_credential_cleanup_detected: false,
         }
     }
 
@@ -183,6 +192,29 @@ impl RuntimeToolConfig {
     pub fn with_foreign_call_ids(mut self, ids: Vec<String>) -> Self {
         self.foreign_call_ids = ids.into_iter().collect();
         self
+    }
+
+    pub fn with_credential_reader(mut self, reader: CredentialReader) -> Self {
+        self.credential_reader = Some(reader);
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn credential_reader(&self) -> Option<CredentialReader> {
+        self.credential_reader.clone()
+    }
+
+    pub fn with_legacy_credential_cleanup_detected(mut self) -> Self {
+        self.legacy_credential_cleanup_detected = true;
+        self
+    }
+
+    pub(crate) fn redact_tool_output(&self, output: &str) -> Result<String, VegaError> {
+        let credentials = match &self.credential_reader {
+            Some(reader) => reader().map_err(|_| VegaError::CredentialExposureBlocked)?,
+            None => Vec::new(),
+        };
+        Ok(redact_sensitive_credential_text(output, &credentials))
     }
 
     #[cfg(test)]
@@ -286,6 +318,14 @@ impl fmt::Debug for RuntimeToolConfig {
             .field("foreign_call_id_count", &self.foreign_call_ids.len())
             .field("mcp_candidate_count", &self.mcp_candidates.len())
             .field("skills_configured", &self.skills.is_some())
+            .field(
+                "credential_reader_configured",
+                &self.credential_reader.is_some(),
+            )
+            .field(
+                "legacy_credential_cleanup_detected",
+                &self.legacy_credential_cleanup_detected,
+            )
             .finish()
     }
 }

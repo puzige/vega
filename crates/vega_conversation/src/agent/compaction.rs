@@ -62,6 +62,7 @@ pub struct ConversationCompactionHook<'a> {
     model: String,
     reasoning: Option<FrozenReasoning>,
     pricing_catalog: Option<vega_token::PricingCatalog>,
+    credential_reader: Option<vega_runtime::CredentialReader>,
     diagnostics: Option<super::diagnostics::DiagnosticsContext>,
 }
 
@@ -82,8 +83,17 @@ impl<'a> ConversationCompactionHook<'a> {
             model: model.into(),
             reasoning,
             pricing_catalog,
+            credential_reader: None,
             diagnostics: None,
         }
+    }
+
+    pub(crate) fn with_credential_reader(
+        mut self,
+        reader: Option<vega_runtime::CredentialReader>,
+    ) -> Self {
+        self.credential_reader = reader;
+        self
     }
 
     pub(crate) fn with_diagnostics(
@@ -292,6 +302,37 @@ pub async fn compact_thread_manually(
     reasoning: Option<FrozenReasoning>,
     pricing_catalog: Option<vega_token::PricingCatalog>,
 ) -> Result<ContextCompactionResult, ContextCompactionFailure> {
+    compact_thread_manually_with_credential_reader(
+        store,
+        provider,
+        thread_id,
+        expected_model,
+        system_prompt,
+        tools,
+        budget,
+        cancel,
+        reasoning,
+        pricing_catalog,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
+pub async fn compact_thread_manually_with_credential_reader(
+    store: &Store,
+    provider: &dyn Provider,
+    thread_id: &str,
+    expected_model: &str,
+    system_prompt: &str,
+    tools: Vec<ToolDefinition>,
+    budget: ContextBudget,
+    cancel: CancellationToken,
+    reasoning: Option<FrozenReasoning>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    credential_reader: Option<vega_runtime::CredentialReader>,
+) -> Result<ContextCompactionResult, ContextCompactionFailure> {
     let database_path = store
         .database_path()
         .ok_or_else(|| failure(context_error(ContextRuntimeError::SourceChanged), None))?
@@ -378,6 +419,7 @@ pub async fn compact_thread_manually(
         reasoning,
         pricing_catalog,
     )
+    .with_credential_reader(credential_reader)
     .with_diagnostics(diagnostics_context);
     let result = hook
         .compact(
@@ -439,6 +481,35 @@ pub async fn compact_thread_manually_accounted(
     pricing_catalog: Option<vega_token::PricingCatalog>,
     generation: u64,
 ) -> Result<Vec<crate::types::ConversationEvent>, crate::types::ConversationError> {
+    compact_thread_manually_accounted_with_credential_reader(
+        store,
+        provider,
+        thread_id,
+        expected_model,
+        system_prompt,
+        cancel,
+        reasoning,
+        pricing_catalog,
+        generation,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[doc(hidden)]
+pub async fn compact_thread_manually_accounted_with_credential_reader(
+    store: &Store,
+    provider: &dyn Provider,
+    thread_id: &str,
+    expected_model: &str,
+    system_prompt: &str,
+    cancel: CancellationToken,
+    reasoning: Option<FrozenReasoning>,
+    pricing_catalog: Option<vega_token::PricingCatalog>,
+    generation: u64,
+    credential_reader: Option<vega_runtime::CredentialReader>,
+) -> Result<Vec<crate::types::ConversationEvent>, crate::types::ConversationError> {
     let projection = read_context_projection(store, thread_id, expected_model, system_prompt)?;
     let settings = projection.settings.clone().ok_or_else(|| {
         conversation_runtime_error(context_error(ContextRuntimeError::MissingHook))
@@ -490,7 +561,7 @@ pub async fn compact_thread_manually_accounted(
         record: started_record,
     }];
 
-    let result = compact_thread_manually(
+    let result = compact_thread_manually_with_credential_reader(
         store,
         provider,
         thread_id,
@@ -501,6 +572,7 @@ pub async fn compact_thread_manually_accounted(
         cancel.clone(),
         reasoning,
         pricing_catalog,
+        credential_reader,
     )
     .await;
     match result {
@@ -878,6 +950,12 @@ impl ConversationCompactionHook<'_> {
         cancel: &CancellationToken,
         deadline: tokio::time::Instant,
     ) -> Result<String, ContextCompactionFailure> {
+        if let Some(reader) = &self.credential_reader
+            && let Err(error) =
+                super::credential_guard::reject_owner_secret(&summary_request, reader.as_ref())
+        {
+            return Err(failure_with_usages(error, usages, *usage_complete));
+        }
         let attempt_id = ulid::Ulid::generate().to_string();
         let started_at = std::time::Instant::now();
         let empty_metrics = SummaryDiagnosticMetrics::default();
@@ -941,6 +1019,23 @@ impl ConversationCompactionHook<'_> {
                 } else {
                     *usage_complete = false;
                 }
+                let credentials = match &self.credential_reader {
+                    Some(reader) => match reader() {
+                        Ok(credentials) => credentials,
+                        Err(()) => {
+                            return Err(failure_with_usages(
+                                VegaError::CredentialExposureBlocked,
+                                usages,
+                                *usage_complete,
+                            ));
+                        }
+                    },
+                    None => Vec::new(),
+                };
+                let summary = vega_runtime::redact_sensitive_credential_text(
+                    &collection.summary,
+                    &credentials,
+                );
                 if let Some(diagnostics) = &self.diagnostics {
                     diagnostics.stage_event(
                         &attempt_id,
@@ -951,7 +1046,7 @@ impl ConversationCompactionHook<'_> {
                         summary_store_metrics(&collection.metrics),
                     );
                 }
-                Ok(collection.summary)
+                Ok(summary)
             }
             Err(stage_failure) => {
                 *usage_complete &= stage_failure.failure.usage_complete;
@@ -1988,6 +2083,103 @@ mod tests {
     use super::*;
     use futures::future::pending;
     use vega_runtime::{MockProvider, ScriptStep};
+
+    #[tokio::test]
+    async fn issue170_compaction_redacts_provider_summary_before_checkpoint_install() {
+        const CANARY: &str = "canary-credential-redaction-170-abcdefghijklmnopqrstuvwxyz";
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("vega.db");
+        let store = Store::open(&database_path).unwrap();
+        store.migrate().unwrap();
+        vega_store::threads::create_standalone(
+            store.conn(),
+            vega_store::threads::NewThread {
+                id: "summary-redaction-thread",
+                project_id: "",
+                title: "fixture",
+                mode: "execute",
+                permission_mode: "readonly",
+                model: "mock-model",
+                status: "active",
+                pinned: false,
+                unread: false,
+                created_at: 1,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        for (id, seq, role, content) in [
+            ("old-user", 1_i64, "user", "the original request"),
+            ("old-assistant", 2_i64, "assistant", "the earlier result"),
+            ("current-user", 3_i64, "user", "continue"),
+        ] {
+            vega_store::messages::insert(
+                store.conn(),
+                &vega_store::messages::MessageRow {
+                    id: id.into(),
+                    thread_id: "summary-redaction-thread".into(),
+                    seq,
+                    role: role.into(),
+                    kind: "text".into(),
+                    content: content.into(),
+                    status: "done".into(),
+                    created_at: seq,
+                    plan_status: None,
+                    plan_review_note: None,
+                    plan_reviewed_at: None,
+                },
+            )
+            .unwrap();
+        }
+        let provider = MockProvider::new(vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta(format!("Summary retained {CANARY}")),
+            ProviderEvent::Usage {
+                input: 20,
+                output: 8,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])]);
+        let reader: vega_runtime::CredentialReader =
+            std::sync::Arc::new(|| Ok(vec![CANARY.to_string()]));
+        let result = compact_thread_manually_with_credential_reader(
+            &store,
+            &provider,
+            "summary-redaction-thread",
+            "mock-model",
+            "System",
+            vega_runtime::tool_definitions(vega_runtime::RuntimeRunMode::Execute),
+            ContextBudget::new(20_000, 1_000, false).unwrap(),
+            CancellationToken::new(),
+            None,
+            None,
+            Some(reader),
+        )
+        .await
+        .unwrap();
+        assert!(result.messages.iter().any(|message| {
+            message
+                .content
+                .contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+                && !message.content.contains(CANARY)
+        }));
+        let checkpoint = vega_store::context_compaction::latest_checkpoint(
+            store.conn(),
+            "summary-redaction-thread",
+            "mock-model",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            checkpoint
+                .summary
+                .contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+        );
+        assert!(!checkpoint.summary.contains(CANARY));
+    }
 
     #[tokio::test]
     async fn summary_stage_records_overflow_bytes_without_persisting_summary_text() {

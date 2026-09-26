@@ -33,58 +33,58 @@ impl OwnerCredentialProvider {
 }
 
 fn blocked() -> VegaError {
-    VegaError::Provider {
-        status: None,
-        message: "owner credential appeared in provider projection".into(),
-        retryable: false,
-    }
+    VegaError::CredentialExposureBlocked
 }
 
-fn contains_json_secret(value: &serde_json::Value, secret: &str) -> bool {
+fn contains_json_secret(value: &serde_json::Value, credentials: &[String]) -> bool {
     match value {
-        serde_json::Value::String(text) => text.contains(secret),
-        serde_json::Value::Array(items) => {
-            items.iter().any(|item| contains_json_secret(item, secret))
+        serde_json::Value::String(text) => {
+            vega_runtime::contains_sensitive_credential(text, credentials)
         }
-        serde_json::Value::Object(fields) => fields
+        serde_json::Value::Array(items) => items
             .iter()
-            .any(|(key, value)| key.contains(secret) || contains_json_secret(value, secret)),
+            .any(|item| contains_json_secret(item, credentials)),
+        serde_json::Value::Object(fields) => fields.iter().any(|(key, value)| {
+            vega_runtime::contains_sensitive_credential(key, credentials)
+                || contains_json_secret(value, credentials)
+        }),
         serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
             false
         }
     }
 }
 
-fn reject_owner_secret(
+pub(crate) fn reject_owner_secret(
     request: &ChatRequest,
     reader: &(dyn Fn() -> Result<Vec<String>, ()> + Send + Sync),
 ) -> Result<(), VegaError> {
     let known = reader().map_err(|_| blocked())?;
-    for secret in known.iter().filter(|secret| !secret.is_empty()) {
-        if request.messages.iter().any(|message| {
-            message.content.contains(secret)
-                || message
-                    .tool_call_id
-                    .as_deref()
-                    .is_some_and(|id| id.contains(secret))
-                || message
-                    .reasoning_content
-                    .as_deref()
-                    .is_some_and(|reasoning| reasoning.contains(secret))
-                || message.tool_calls.iter().any(|call| {
-                    call.id.contains(secret)
-                        || call.name.contains(secret)
-                        || call.input_json.contains(secret)
+    if request.messages.iter().any(|message| {
+        vega_runtime::contains_sensitive_credential(&message.content, &known)
+            || message
+                .tool_call_id
+                .as_deref()
+                .is_some_and(|id| vega_runtime::contains_sensitive_credential(id, &known))
+            || message
+                .reasoning_content
+                .as_deref()
+                .is_some_and(|reasoning| {
+                    vega_runtime::contains_sensitive_credential(reasoning, &known)
                 })
-        }) || request.tools.iter().any(|tool| {
-            tool.name.contains(secret)
-                || tool.description.contains(secret)
-                || contains_json_secret(&tool.input_schema, secret)
-                || serde_json::to_string(&tool.input_schema)
-                    .map_or(true, |schema| schema.contains(secret))
-        }) {
-            return Err(blocked());
-        }
+            || message.tool_calls.iter().any(|call| {
+                vega_runtime::contains_sensitive_credential(&call.id, &known)
+                    || vega_runtime::contains_sensitive_credential(&call.name, &known)
+                    || vega_runtime::contains_sensitive_credential(&call.input_json, &known)
+            })
+    }) || request.tools.iter().any(|tool| {
+        vega_runtime::contains_sensitive_credential(&tool.name, &known)
+            || vega_runtime::contains_sensitive_credential(&tool.description, &known)
+            || contains_json_secret(&tool.input_schema, &known)
+            || serde_json::to_string(&tool.input_schema).map_or(true, |schema| {
+                vega_runtime::contains_sensitive_credential(&schema, &known)
+            })
+    }) {
+        return Err(blocked());
     }
     Ok(())
 }
@@ -152,18 +152,34 @@ mod tests {
         vega_store::keystore::set_key(config.path(), "provider-owned", ROTATED).unwrap();
         assert!(matches!(
             guard(&request),
-            Err(VegaError::Provider {
-                retryable: false,
-                ..
-            })
+            Err(VegaError::CredentialExposureBlocked)
         ));
         assert!(matches!(
             guarded.chat_stream(request, CancellationToken::new()).await,
-            Err(VegaError::Provider {
-                retryable: false,
-                ..
-            })
+            Err(VegaError::CredentialExposureBlocked)
         ));
         assert_eq!(inner.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn issue170_historical_credential_block_is_not_provider_transport_failure() {
+        const SECRET: &str = "canary-credential-redaction-170-abcdefghijklmnopqrstuvwxyz";
+        let inner = Arc::new(MockProvider::new(vec![ScriptStep::text("safe")]));
+        let reader: Arc<dyn Fn() -> Result<Vec<String>, ()> + Send + Sync> =
+            Arc::new(|| Ok(vec![SECRET.to_string()]));
+        let guarded = OwnerCredentialProvider::new(inner.clone(), reader);
+        let request = ChatRequest {
+            model: "fixture-model".into(),
+            messages: vec![ChatMessage::tool_result("historical-call", SECRET)],
+            ..ChatRequest::default()
+        };
+
+        let error = match guarded.chat_stream(request, CancellationToken::new()).await {
+            Ok(_) => panic!("legacy credential must be blocked before provider dispatch"),
+            Err(error) => error,
+        };
+
+        assert!(!matches!(error, VegaError::Provider { status: None, .. }));
+        assert!(inner.requests().is_empty());
     }
 }

@@ -752,6 +752,20 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
     )
     .map_err(runtime_store_error)?;
 
+    let credential_values = match &config.owner_credential_reader {
+        Some(reader) => reader().map_err(|_| {
+            ConversationError::Runtime(Arc::new(VegaError::CredentialExposureBlocked))
+        })?,
+        None => Vec::new(),
+    };
+    let legacy_credential_cleanup_detected =
+        vega_store::context_compaction::redact_legacy_thread_content(
+            &transaction,
+            &thread_id,
+            |text| vega_runtime::redact_sensitive_credential_text(text, &credential_values),
+        )
+        .map_err(runtime_store_error)?;
+
     // Validate and project the complete source while the accepted user and
     // streaming assistant rows are still in this transaction.  Any bounded
     // read, image, or tool-pairing failure therefore rolls back the turn
@@ -859,25 +873,39 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
             context_source_fingerprint: Some(source.fingerprint.clone()),
             context_operation_id: Some(assistant_message_id.clone()),
             context_compaction_hook: None,
-            tool_config: RuntimeToolConfig::new(
-                match run_mode {
-                    ThreadMode::Ask => RuntimeRunMode::Ask,
-                    ThreadMode::Plan => RuntimeRunMode::Plan,
-                    ThreadMode::Execute => RuntimeRunMode::Execute,
-                },
-                match permission_mode {
-                    crate::types::PermissionMode::ReadOnly => RuntimePermissionMode::ReadOnly,
-                    crate::types::PermissionMode::Confirm => RuntimePermissionMode::Confirm,
-                    crate::types::PermissionMode::Auto => RuntimePermissionMode::Auto,
-                    crate::types::PermissionMode::FullAccess => RuntimePermissionMode::FullAccess,
-                },
-                checkpoint_scope_id(&thread.project_id, &thread_id),
-                thread_id,
-                checkpoint_root,
-                exact_rules,
-            )
-            .with_foreign_call_ids(foreign_call_ids)
-            .with_turn_limit(config.turn_limit as usize),
+            tool_config: {
+                let runtime_config = RuntimeToolConfig::new(
+                    match run_mode {
+                        ThreadMode::Ask => RuntimeRunMode::Ask,
+                        ThreadMode::Plan => RuntimeRunMode::Plan,
+                        ThreadMode::Execute => RuntimeRunMode::Execute,
+                    },
+                    match permission_mode {
+                        crate::types::PermissionMode::ReadOnly => RuntimePermissionMode::ReadOnly,
+                        crate::types::PermissionMode::Confirm => RuntimePermissionMode::Confirm,
+                        crate::types::PermissionMode::Auto => RuntimePermissionMode::Auto,
+                        crate::types::PermissionMode::FullAccess => {
+                            RuntimePermissionMode::FullAccess
+                        }
+                    },
+                    checkpoint_scope_id(&thread.project_id, &thread_id),
+                    thread_id,
+                    checkpoint_root,
+                    exact_rules,
+                );
+                let runtime_config = match config.owner_credential_reader.clone() {
+                    Some(reader) => runtime_config.with_credential_reader(reader),
+                    None => runtime_config,
+                };
+                let runtime_config = if legacy_credential_cleanup_detected {
+                    runtime_config.with_legacy_credential_cleanup_detected()
+                } else {
+                    runtime_config
+                };
+                runtime_config
+                    .with_foreign_call_ids(foreign_call_ids)
+                    .with_turn_limit(config.turn_limit as usize)
+            },
         },
         next_tool_seq,
     })
