@@ -2676,3 +2676,101 @@ async fn issue74_s19_skill_cannot_dispatch_unregistered_mcp_alias() {
             if result.output.contains(dispatcher_result)
     )));
 }
+
+#[tokio::test]
+async fn issue74_s22_statusless_provider_failure_keeps_input_and_stops_before_skill_activation() {
+    const SKILL_BODY: &str = "S22_PRIVATE_SKILL_BODY_MARKER";
+    const USER_INPUT: &str = "S22_ORIGINAL_TRANSCRIPT_MARKER";
+    const PROVIDER_DETAIL: &str = "S22_PRIVATE_PROVIDER_DETAIL";
+
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let (run, _) = skill_run_with_body(project.path(), true, SKILL_BODY);
+    let provider = MockProvider::new(vec![ScriptStep::Error {
+        status: None,
+        message: PROVIDER_DETAIL.into(),
+        retryable: false,
+    }]);
+    let original_transcript = vec![ChatMessage::new(ChatRole::User, USER_INPUT)];
+    let mut req = request(original_transcript.clone());
+    req.tool_config = req.tool_config.with_skill_run(run, Vec::new());
+
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+
+    assert!(outcome.failed);
+    assert!(!outcome.interrupted);
+    assert!(outcome.final_text.is_empty());
+    assert_eq!(outcome.tool_call_count, 0);
+    assert_eq!(outcome.executed_tool_call_count, 0);
+    assert_eq!(
+        outcome
+            .messages
+            .iter()
+            .filter(|message| message.role == ChatRole::User)
+            .cloned()
+            .collect::<Vec<_>>(),
+        original_transcript
+    );
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .messages
+            .iter()
+            .any(|message| { message.role == ChatRole::User && message.content == USER_INPUT })
+    );
+    assert!(requests.iter().all(|request| {
+        request
+            .messages
+            .iter()
+            .all(|message| !message.content.contains(SKILL_BODY))
+    }));
+
+    let diagnostics = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::DiagnosticAttempt(attempt)
+                if attempt.phase == RuntimeDiagnosticPhase::PrimaryModel =>
+            {
+                Some(attempt)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].state, RuntimeDiagnosticState::Started);
+    assert_eq!(diagnostics[1].state, RuntimeDiagnosticState::Failed);
+    assert_eq!(
+        diagnostics[1].failure,
+        Some(RuntimeDiagnosticFailure::UnknownSafeFailure)
+    );
+
+    let provider_error = outcome.events.iter().find_map(|event| match event {
+        RuntimeEvent::Error(error) => Some(error.as_ref()),
+        _ => None,
+    });
+    let provider_error = provider_error.expect("status-less provider failure event");
+    assert!(matches!(
+        provider_error,
+        VegaError::Provider {
+            status: None,
+            retryable: false,
+            ..
+        }
+    ));
+    assert!(!provider_error.to_string().contains(PROVIDER_DETAIL));
+    assert!(!format!("{provider_error:?}").contains(PROVIDER_DETAIL));
+    assert!(!format!("{:?}", outcome.events).contains(PROVIDER_DETAIL));
+    assert!(!outcome.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::SkillActivation { .. } | RuntimeEvent::ToolCallProposed(_)
+    )));
+    assert!(!outcome.events.iter().any(|event| matches!(
+        event,
+        RuntimeEvent::ToolCallRunning { .. } | RuntimeEvent::ToolCallFinished(_)
+    )));
+}
