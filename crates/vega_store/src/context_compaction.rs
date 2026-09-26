@@ -771,6 +771,107 @@ pub fn load_source(conn: &Connection, thread_id: &str) -> Result<ContextSource, 
     Ok(source)
 }
 
+pub fn redact_legacy_thread_content<F>(
+    conn: &Connection,
+    thread_id: &str,
+    mut redact: F,
+) -> Result<bool, rusqlite::Error>
+where
+    F: FnMut(&str) -> String,
+{
+    let tool_rows = {
+        let mut statement = conn.prepare(
+            "SELECT id, output_text FROM tool_calls WHERE thread_id = ?1 AND output_text IS NOT NULL",
+        )?;
+        statement
+            .query_map([thread_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut changed = false;
+    for (id, text) in tool_rows {
+        let redacted = redact(&text);
+        if redacted != text {
+            conn.execute(
+                "UPDATE tool_calls SET output_text = ?1 WHERE id = ?2 AND thread_id = ?3",
+                params![redacted, id, thread_id],
+            )?;
+            changed = true;
+        }
+    }
+
+    let message_rows = {
+        let mut statement = conn.prepare(
+            "SELECT id, content FROM messages WHERE thread_id = ?1 AND role = 'assistant' AND status <> 'streaming'",
+        )?;
+        statement
+            .query_map([thread_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, text) in message_rows {
+        let redacted = redact(&text);
+        if redacted != text {
+            let call_rows = {
+                let mut statement = conn.prepare(
+                    "SELECT id, text_offset_bytes FROM tool_calls WHERE thread_id = ?1 AND message_id = ?2",
+                )?;
+                statement
+                    .query_map(params![thread_id, id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            for (call_id, offset) in call_rows {
+                let Some(offset) = offset else {
+                    continue;
+                };
+                let offset = usize::try_from(offset).map_err(|_| {
+                    rusqlite::Error::InvalidParameterName("negative tool text offset".into())
+                })?;
+                if offset > text.len() || !text.is_char_boundary(offset) {
+                    return Err(rusqlite::Error::InvalidParameterName(
+                        "invalid tool text offset".into(),
+                    ));
+                }
+                let redacted_offset = redact(&text[..offset]).len().min(redacted.len());
+                conn.execute(
+                    "UPDATE tool_calls SET text_offset_bytes = ?1 WHERE id = ?2 AND thread_id = ?3",
+                    params![redacted_offset as i64, call_id, thread_id],
+                )?;
+            }
+            conn.execute(
+                "UPDATE messages SET content = ?1 WHERE id = ?2 AND thread_id = ?3 AND role = 'assistant' AND status <> 'streaming'",
+                params![redacted, id, thread_id],
+            )?;
+            changed = true;
+        }
+    }
+
+    let checkpoint_rows = {
+        let mut statement =
+            conn.prepare("SELECT id, summary FROM context_checkpoints WHERE thread_id = ?1")?;
+        statement
+            .query_map([thread_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (id, summary) in checkpoint_rows {
+        let redacted = redact(&summary);
+        if redacted != summary {
+            conn.execute(
+                "UPDATE context_checkpoints SET summary = ?1 WHERE id = ?2 AND thread_id = ?3",
+                params![redacted, id, thread_id],
+            )?;
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
 /// Loads a complete source projection inside a caller-owned transaction.
 ///
 /// Conversation preparation uses this before committing its user/streaming
