@@ -213,6 +213,81 @@ async fn issue64_context_usage_focus_keeps_the_same_tip_after_pointer_leaves(
 }
 
 #[gpui_kit::test]
+async fn issue64_context_usage_tab_from_composer_input_reaches_indicator_and_tooltip(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue64-tab-focus");
+    stream.update(cx, |stream, cx| {
+        assert!(stream.apply_context_projection(
+            "issue64-tab-focus",
+            "mock",
+            Some(settings("issue64-tab-focus", "mock", Some(100_000))),
+            Some(50_000),
+            true,
+            cx,
+        ));
+    });
+    focus_composer(window, &stream, cx);
+
+    cx.simulate_keystrokes(window.into(), "tab");
+    cx.simulate_keystrokes(window.into(), "tab");
+    assert!(
+        window
+            .update(cx, |_, window, cx| {
+                stream.read_with(cx, |stream, _| {
+                    stream.context_usage_focus.contains_focused(window, cx)
+                })
+            })
+            .expect("context usage focus")
+    );
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_mouse_move(point(px(1.0), px(1.0)), None, Modifiers::default());
+    visual.run_until_parked();
+    for selector in [
+        "context-usage-tooltip-title",
+        "context-usage-tooltip-percentage",
+        "context-usage-tooltip-compact",
+        "context-usage-tooltip-estimate",
+        "context-usage-tooltip-capacity",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_some(),
+            "missing {selector}"
+        );
+    }
+
+    let display =
+        super::super::context_usage::ContextUsageDisplay::new(Some(50_000), Some(100_000))
+            .expect("context usage display");
+    assert_eq!(
+        display.accessibility_label(),
+        "上下文窗口；估算输入：50,000 tokens（含系统提示和实际工具定义）；估算使用量：50%；当前设置上限：100,000 tokens（会话设置，非供应商验证容量）"
+    );
+
+    cx.simulate_keystrokes(window.into(), "tab");
+    assert!(
+        window
+            .update(cx, |_, window, cx| {
+                stream.read_with(cx, |stream, _| {
+                    stream.model_focus.contains_focused(window, cx)
+                })
+            })
+            .expect("model focus after context usage")
+    );
+    cx.simulate_keystrokes(window.into(), "shift-tab");
+    assert!(
+        window
+            .update(cx, |_, window, cx| {
+                stream.read_with(cx, |stream, _| {
+                    stream.context_usage_focus.contains_focused(window, cx)
+                })
+            })
+            .expect("context usage reverse focus")
+    );
+}
+
+#[gpui_kit::test]
 async fn issue64_context_usage_hover_and_focus_tips_fit_narrow_window_without_covering_composer_controls(
     cx: &mut TestAppContext,
 ) {

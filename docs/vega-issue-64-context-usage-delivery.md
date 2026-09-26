@@ -41,3 +41,12 @@
 - 窄布局：360px GPUI 测试覆盖 hover 和键盘 focus；触发器与提示框无间距，测试以 2px 步进穿过原间隙区域并确认提示始终挂载，移入提示后保持可见，移开后关闭。两条路径都确认提示在视口内，且不与模型选择、发送、Composer 分支入口相交。
 - Spec 偏离：无。
 - 用户桌面验收：NOT RUN；需在合并后的版本确认 hover/focus、已知/未知容量、会话切换和主题。
+
+## Follow-up：真实桌面发现与键盘焦点修复
+
+- 真实桌面复验版本：Vega v0.1.22。鼠标点击圆环能显示当前估算提示，但从 Composer 输入框使用 Tab / Shift+Tab 时，圆环不在可见焦点序列中，无法通过键盘打开提示。已把 #64 从 In review 退回 In progress，并记录于 Issue #64 与 v0.1.22 回归卡 #220。
+- 根因：`move_composer_focus` 的自定义焦点列表包含输入框、加号、模型选择和发送/停止，漏掉了已渲染的 context usage focus handle。
+- 修复：当上下文估算有效、圆环实际渲染时，将其焦点句柄插入加号与模型选择之间；没有估算、圆环隐藏时不加入不可见焦点目标。
+- 回归先行：新增 GPUI 测试从实际 Composer 输入焦点按 Tab 两次到达圆环，移开鼠标后确认完整 tooltip 和无障碍 label，再验证 Tab 到模型选择及 Shift+Tab 返回圆环。修复前该测试因焦点未落到圆环而失败（exit 100）；修复后 `cargo nextest run -p vega_ui issue64_context_usage_tab_from_composer_input_reaches_indicator_and_tooltip` 通过（1/1，exit 0）。
+- 定向回归：`cargo nextest run -p vega_ui issue64_context_usage_` 通过（12/12，504 skipped，exit 0）；`cargo fmt --all -- --check` 与 `git diff --check` 均 exit 0。未运行 workspace 全量测试。
+- 集成状态：follow-up PR [#225](https://github.com/puzige/vega/pull/225) 已开放，代码提交 `8627edc` 的云端 Clippy、Nextest workspace 与 required check 均通过；PR 保持开放且未合并，v0.1.22 实机缺陷仍存在。合并并安装新版本后还需 Computer Use 确认 Tab/Shift+Tab、tooltip 与无估算时的焦点顺序。

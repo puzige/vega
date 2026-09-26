@@ -1,4 +1,5 @@
 //! Small local composer commands; all durable changes still use thread settings.
+use super::context_usage::ContextUsageDisplay;
 use super::*;
 use gpui_kit::Focusable;
 
@@ -384,10 +385,6 @@ impl ConversationStream {
         cx.notify();
     }
 
-    /// R57 P2b tab order: the remaining composer stops are the input, the `+`
-    /// context/mode button, the model trigger, and the send/stop button. The
-    /// mode/permission dropdown stops and the thinking chip stop are gone
-    /// with their controls.
     fn move_composer_focus(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.input.read(cx).is_composing() {
             cx.propagate();
@@ -396,8 +393,12 @@ impl ConversationStream {
         let mut controls = vec![
             self.input.read(cx).focus_handle(cx),
             self.action_focus[0].clone(),
-            self.model_focus.clone(),
         ];
+        let (estimated_tokens, context_limit) = self.context_usage_source();
+        if ContextUsageDisplay::new(estimated_tokens, context_limit).is_some() {
+            controls.push(self.context_usage_focus.clone());
+        }
+        controls.push(self.model_focus.clone());
         if self.actions.running || self.composer_submit_pending {
             controls.push(self.action_focus[1].clone());
         }
