@@ -20,7 +20,7 @@ No schema migration is required. Tool output full-file spill is not part of the 
 | --- | --- | --- |
 | Runtime output scanner | Exact canary values are removed from stdout, stderr, structured JSON, error text, assembled fragments, and large strings; safe neighboring text remains | Runtime unit tests |
 | Tool lifecycle | Redaction precedes tool-output events, persistence, and follow-up model context | Temporary project/store fixture with a test Bash executor and `MockProvider` |
-| MCP structured output | Text and structured result are combined and redacted before the result is returned | MCP registry test |
+| MCP structured output | Text and structured result are combined and redacted before the result is returned, including credentials escaped by JSON serialization | MCP registry test |
 | Legacy restore | Existing assistant output, tool output, and context summary are redacted locally; the first resumed attempt produces the typed local block and zero provider requests | Temporary SQLite fixture and `MockProvider` |
 | Context summary | Held credentials in a summary response are redacted before checkpoint installation | Compaction fixture with `MockProvider` |
 | Outbound guard | A contaminated historical request is blocked with `CredentialExposureBlocked`, not a status-less provider transport error | Provider wrapper regression |
@@ -29,17 +29,17 @@ All credential fixtures are synthetic canaries. Tests must not read user SQLite,
 
 ## Delivery evidence
 
-The regression was first run against the old behavior and failed because the contaminated historical request was classified as a provider transport failure. After implementation:
+The legacy-history regression was first run against the old behavior and failed because the contaminated historical request was classified as a provider transport failure. A separate escaped-canary regression failed because JSON serialization escaped quotes and backslashes before scanning. Both pass after implementation:
 
 ```text
 cargo nextest run -p vega_runtime issue170_ --lib
-5 tests run: 5 passed, 212 skipped
+6 tests run: 6 passed, 212 skipped
 
 cargo nextest run -p vega_conversation issue170_ --lib
 5 tests run: 5 passed, 484 skipped
 
 cargo nextest run -p vega_runtime issue73_final_result_join_redacts_owner_secret --lib
-1 test run: 1 passed, 216 skipped
+1 test run: 1 passed, 217 skipped
 
 cargo fmt --all -- --check
 exit 0

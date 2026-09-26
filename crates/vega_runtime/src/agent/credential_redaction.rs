@@ -55,6 +55,13 @@ pub fn redact_sensitive_credential_text(text: &str, credentials: &[String]) -> S
     ordered.dedup();
     for credential in ordered {
         redacted = redacted.replace(credential.as_str(), PROVIDER_CREDENTIAL_REDACTION_MARKER);
+        let Ok(encoded) = serde_json::to_string(credential.as_str()) else {
+            continue;
+        };
+        let Some(escaped) = encoded.get(1..encoded.len().saturating_sub(1)) else {
+            continue;
+        };
+        redacted = redacted.replace(escaped, PROVIDER_CREDENTIAL_REDACTION_MARKER);
     }
     redact_common_credential_formats(&redacted)
 }
@@ -238,6 +245,15 @@ mod tests {
             assert!(!redacted.contains(SECRET));
             assert!(redacted.contains(PROVIDER_CREDENTIAL_REDACTION_MARKER));
         }
+    }
+
+    #[test]
+    fn issue170_json_escaped_held_credentials_are_redacted() {
+        let secret = "fake-\"quoted\\credential-73";
+        let output = serde_json::json!({"nested": {"credential": secret}}).to_string();
+        let redacted = redact_sensitive_credential_text(&output, &[secret.to_string()]);
+        assert!(!redacted.contains("fake-"));
+        assert!(redacted.contains(PROVIDER_CREDENTIAL_REDACTION_MARKER));
     }
 
     #[test]

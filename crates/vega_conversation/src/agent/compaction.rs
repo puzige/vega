@@ -2745,7 +2745,7 @@ mod tests {
         assert!(matches!(
             failure,
             Err(ref failure)
-                if matches!(failure.error.as_ref(), VegaError::Provider { retryable: false, .. })
+                if matches!(failure.error.as_ref(), VegaError::CredentialExposureBlocked)
         ));
         assert!(inner.requests().is_empty());
 
