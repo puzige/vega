@@ -768,13 +768,19 @@ impl Render for SettingsView {
         ];
         div()
             .id("settings-page")
-            .key_context("PricingSettings")
+            .key_context(if self.section == 6 {
+                "SkillsSettings"
+            } else {
+                "PricingSettings"
+            })
             .on_action(cx.listener(Self::activate_provider_action))
             .on_action(cx.listener(Self::next_provider_action))
             .on_action(cx.listener(Self::previous_provider_action))
             .on_action(cx.listener(Self::activate_pricing_action))
             .on_action(cx.listener(Self::next_pricing_action))
             .on_action(cx.listener(Self::previous_pricing_action))
+            .on_action(cx.listener(Self::next_skills_action))
+            .on_action(cx.listener(Self::previous_skills_action))
             .size_full()
             .flex()
             .flex_row()

@@ -39,7 +39,9 @@ actions!(
         PreviousProviderAction,
         ActivatePricingAction,
         NextPricingAction,
-        PreviousPricingAction
+        PreviousPricingAction,
+        NextSkillsAction,
+        PreviousSkillsAction
     ]
 );
 

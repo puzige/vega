@@ -186,7 +186,7 @@ async fn issue74_skills_settings_import_is_keyboard_reachable(cx: &mut TestAppCo
     let view = cx.new(SettingsView::new_for_test);
     view.update(cx, |view, cx| {
         view.section = 6;
-        view.set_skills_service(Some(service), cx);
+        view.set_skills_service(Some(service.clone()), cx);
     });
     let root = view.clone();
     let window: WindowHandle<Harness> = cx
@@ -209,15 +209,47 @@ async fn issue74_skills_settings_import_is_keyboard_reachable(cx: &mut TestAppCo
     window
         .update(cx, |_, window, cx| window.focus(&section_focus, cx))
         .expect("focus Skills navigation row");
-    for _ in 0..5 {
+    let before_tab = view.read_with(cx, |view, _| view.skills.request_generation);
+    cx.simulate_keystrokes(window.into(), "tab");
+    assert!(
+        !window
+            .update(cx, |_, window, _| section_focus.is_focused(window))
+            .expect("Skills navigation focus after Tab"),
+        "Tab should move from Skills navigation into the Skills controls"
+    );
+    cx.simulate_keystrokes(window.into(), "enter");
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |view, _| view.skills.request_generation) > before_tab,
+        "Tab should focus Refresh so Enter invokes its read-only reload"
+    );
+    cx.simulate_keystrokes(window.into(), "tab");
+    cx.simulate_keystrokes(window.into(), "enter");
+    cx.run_until_parked();
+    assert!(
+        service.projection().unwrap().global_enabled,
+        "Tab from Refresh should focus the next visible Skills control"
+    );
+    let before_refresh = view.read_with(cx, |view, _| view.skills.request_generation);
+    cx.simulate_keystrokes(window.into(), "shift-tab");
+    cx.simulate_keystrokes(window.into(), "enter");
+    cx.run_until_parked();
+    assert!(
+        view.read_with(cx, |view, _| view.skills.request_generation) > before_refresh,
+        "Shift+Tab should return from the toggle to Refresh"
+    );
+    cx.simulate_keystrokes(window.into(), "shift-tab");
+    assert!(
         window
-            .update(cx, |_, window, cx| window.focus_next(cx))
-            .expect("advance keyboard focus");
-    }
+            .update(cx, |_, window, _| section_focus.is_focused(window))
+            .expect("Skills navigation focus after Shift+Tab"),
+        "Shift+Tab from Refresh should return to Skills navigation"
+    );
+    cx.simulate_keystrokes(window.into(), "tab tab tab tab tab");
     cx.simulate_keystrokes(window.into(), "enter");
     cx.run_until_parked();
     assert!(
         cx.did_prompt_for_paths(),
-        "native import must activate by keyboard"
+        "keyboard traversal should reach the external-folder import action"
     );
 }
