@@ -20,6 +20,29 @@ fn click(cx: &mut TestAppContext, window: WindowHandle<Harness>, selector: &'sta
     cx.run_until_parked();
 }
 
+fn assert_provider_tooltip_fits_detail(
+    visual: &mut VisualTestContext,
+    selector: &'static str,
+    body_selector: &'static str,
+    viewport: Bounds<gpui_kit::Pixels>,
+) -> Bounds<gpui_kit::Pixels> {
+    let tooltip = visual
+        .debug_bounds(selector)
+        .unwrap_or_else(|| panic!("missing {selector}"));
+    let body = visual
+        .debug_bounds(body_selector)
+        .unwrap_or_else(|| panic!("missing {body_selector}"));
+    assert!(
+        tooltip.left() >= viewport.left() && tooltip.right() <= viewport.right(),
+        "provider tooltip must remain in the detail viewport: tooltip={tooltip:?} viewport={viewport:?}"
+    );
+    assert!(
+        body.left() >= viewport.left() && body.right() <= viewport.right(),
+        "provider tooltip copy must remain in the detail viewport: body={body:?} viewport={viewport:?}"
+    );
+    body
+}
+
 #[gpui_kit::test]
 async fn model_context_editor_projects_assumed_unknown_and_saved_states(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -764,6 +787,88 @@ async fn issue82_provider_help_opens_on_hover_and_focus_and_keeps_credential_sta
     let help = visual.debug_bounds("provider-test-help-model-0").unwrap();
     assert!(help.right() <= px(960.));
     assert!(help.bottom() <= px(750.));
+}
+
+#[gpui_kit::test]
+async fn issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes(
+    cx: &mut TestAppContext,
+) {
+    let (_root, view, window) = mounted_issue82_provider_fixture(cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    for width in [960.0, 800.0, 680.0] {
+        visual.simulate_resize(size(px(width), px(750.0)));
+        cx.run_until_parked();
+        let viewport = visual
+            .debug_bounds("provider-detail-viewport")
+            .expect("provider detail viewport");
+        for dark in [false, true] {
+            cx.update(|cx| {
+                cx.set_global(if dark {
+                    vega_theme::Theme::dark()
+                } else {
+                    vega_theme::Theme::light()
+                });
+                cx.refresh_windows();
+            });
+            cx.run_until_parked();
+            for (index, control_selector, tooltip_selector, body_selector) in [
+                (
+                    0,
+                    "provider-test-help-discover",
+                    "provider-test-help-discover-tooltip",
+                    "provider-test-help-discover-tooltip-body",
+                ),
+                (
+                    1,
+                    "provider-test-help-model-0",
+                    "provider-test-help-model-0-tooltip",
+                    "provider-test-help-model-0-tooltip-body",
+                ),
+            ] {
+                let control = visual
+                    .debug_bounds(control_selector)
+                    .unwrap_or_else(|| panic!("missing {control_selector}"));
+                visual.simulate_mouse_move(control.center(), None, Default::default());
+                cx.run_until_parked();
+                let body = assert_provider_tooltip_fits_detail(
+                    &mut visual,
+                    tooltip_selector,
+                    body_selector,
+                    viewport,
+                );
+                if width == 680.0 {
+                    assert!(
+                        body.size.height > px(28.5),
+                        "narrow tooltip copy must wrap instead of clipping: body={body:?} viewport={viewport:?}"
+                    );
+                }
+                visual.simulate_mouse_move(
+                    gpui_kit::point(px(1.0), px(1.0)),
+                    None,
+                    Default::default(),
+                );
+                cx.run_until_parked();
+                let focus =
+                    view.read_with(cx, |view, _| view.provider_test_help_focuses[index].clone());
+                window
+                    .update(cx, |_, window, cx| focus.focus(window, cx))
+                    .unwrap();
+                cx.run_until_parked();
+                let body = assert_provider_tooltip_fits_detail(
+                    &mut visual,
+                    tooltip_selector,
+                    body_selector,
+                    viewport,
+                );
+                if width == 680.0 {
+                    assert!(
+                        body.size.height > px(28.5),
+                        "narrow tooltip copy must wrap instead of clipping: body={body:?} viewport={viewport:?}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[gpui_kit::test]
