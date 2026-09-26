@@ -37,6 +37,11 @@
 - 源码、测试与补充规格差异补丁 SHA-256（不含本交付记录）：`d6450ef327afc3e9527242c44f79183edc1aee9427968e85fa1136a0bfc5c6bd`。
 - 环境：Darwin arm64；rustc 1.98.0；cargo 1.98.0；git 2.55.0。
 
+#### CI 完成记录
+
+- GitHub Actions run [36215367050](https://github.com/puzige/vega/actions/runs/36215367050) 已完成：Clippy、Nextest 与 required `check (fmt, clippy, test)` 全部通过。
+- PR #224 仍开放且未合并；master 集成后的 Computer Use 和真实服务验收仍待执行。
+
 ## 实现与兼容性
 
 - 移除 Provider 详情中的常驻说明段落；在“发现模型”和各模型“测试”旁加入紧凑帮助图标。
@@ -118,8 +123,8 @@ note: to see what the problems were, use the option `--future-incompat-report`, 
 
 ## Residuals
 
-- `IN PROGRESS`：PR #224 的云端 Clippy 与 Nextest 检查。
+- `PASS`：PR #224 的云端 Clippy、Nextest 与 required check。
 - `NOT RUN`：master 集成后的桌面 Computer Use 和真实服务验收；依仓库验收规程由主控/用户在 master 完成。
 - `NOT RUN`：workspace 全量测试和全量 Clippy；本地按规程只执行本卡定向 nextest，PR gate 承担完整门禁。
-- `NOT MERGED`：等待云端 PR 检查和后续集成/桌面复验；当前 Issue 开放且看板为 In progress。
+- `NOT MERGED`：PR #224 仍开放；云端检查已通过，后续集成/桌面复验仍待完成；当前 Issue 开放且看板为 In progress。
 - spec 偏离：无。
