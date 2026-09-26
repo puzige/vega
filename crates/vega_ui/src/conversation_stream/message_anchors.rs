@@ -6,6 +6,10 @@ pub(crate) const MESSAGE_ANCHOR_MEASURED_CACHE_LIMIT: usize = 512;
 const MESSAGE_ANCHOR_CACHE_RADIUS: usize =
     (MESSAGE_ANCHOR_MEASURED_CACHE_LIMIT - MESSAGE_ANCHOR_MEASUREMENT_SCAN_LIMIT) / 2;
 const MESSAGE_ANCHOR_PREVIEW_INPUT_LIMIT: usize = MESSAGE_ANCHOR_PREVIEW_LIMIT * 4;
+const MESSAGE_ANCHOR_PREVIEW_MAX_WIDTH: f32 = 180.0;
+const MESSAGE_ANCHOR_PREVIEW_GUTTER_GAP: f32 = 0.0;
+const MESSAGE_ANCHOR_PREVIEW_MIN_GUTTER_WIDTH: f32 = 96.0;
+const MESSAGE_ANCHOR_PREVIEW_HEIGHT: f32 = 28.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessageAnchorKind {
@@ -224,7 +228,7 @@ impl ConversationStream {
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> (AnyElement, Option<AnyElement>, bool) {
         self.capture_visible_entry_heights();
         let window_height = f32::from(window.bounds().size.height);
         let fallback_viewport_height = (window_height - 260.0).max(0.0);
@@ -239,7 +243,7 @@ impl ConversationStream {
             cx.notify();
         }
         if !shown {
-            return div().into_any_element();
+            return (div().into_any_element(), None, false);
         }
 
         let anchors = geometry
@@ -249,9 +253,14 @@ impl ConversationStream {
             .collect::<Vec<_>>();
         let is_focused = self.message_anchor_focus.is_focused(window);
         let selected_id = self
-            .message_anchor_hovered
+            .message_anchor_preview_hovered
             .as_ref()
             .filter(|id| anchors.iter().any(|(candidate, _)| candidate == *id))
+            .or_else(|| {
+                self.message_anchor_hovered
+                    .as_ref()
+                    .filter(|id| anchors.iter().any(|(candidate, _)| candidate == *id))
+            })
             .or_else(|| {
                 self.message_anchor_keyboard_id
                     .as_ref()
@@ -271,9 +280,6 @@ impl ConversationStream {
                 .iter()
                 .find(|anchor| anchor.message_id == id)
         });
-        let tooltip_text = selected
-            .map(|anchor| format!("{} · {}", anchor.kind.label(), anchor.preview))
-            .unwrap_or_else(|| "按上下键选择消息，按 Enter 跳转".to_string());
         let accessible_label = selected
             .map(|anchor| {
                 format!(
@@ -294,6 +300,70 @@ impl ConversationStream {
             .collect::<Vec<_>>();
         let current_fraction = geometry.current_fraction;
         let colors = theme(cx).colors;
+        let preview_active = is_focused
+            || self.message_anchor_hovered.is_some()
+            || self.message_anchor_preview_hovered.is_some();
+        let (preview, preview_in_lane) = if let Some(selected) = selected.filter(|_| preview_active)
+        {
+            let preview_label = anchor_preview_label(selected);
+            let message_id = selected.message_id.clone();
+            let available_width = self
+                .workspace_width
+                .unwrap_or_else(|| f32::from(window.viewport_size().width));
+            let content_width = (available_width - Layout::CONTENT_PADDING * 2.0).max(0.0);
+            let column_width = content_width.min(Layout::CONTENT_MAX_WIDTH);
+            let outer_gutter_width =
+                Layout::CONTENT_PADDING + ((content_width - column_width).max(0.0) / 2.0);
+            let preview_y = (selected.fraction * geometry.viewport_height).clamp(
+                0.0,
+                (geometry.viewport_height
+                    - MESSAGE_ANCHOR_PREVIEW_HEIGHT
+                    - Layout::CONTENT_PADDING)
+                    .max(0.0),
+            );
+            let outer_width = (outer_gutter_width - MESSAGE_ANCHOR_PREVIEW_GUTTER_GAP)
+                .min(MESSAGE_ANCHOR_PREVIEW_MAX_WIDTH);
+            if outer_width >= MESSAGE_ANCHOR_PREVIEW_MIN_GUTTER_WIDTH {
+                let content = render_message_anchor_preview(
+                    message_id,
+                    preview_label,
+                    outer_width,
+                    colors,
+                    cx,
+                );
+                let overlay = div()
+                    .absolute()
+                    .left(px(outer_gutter_width
+                        - outer_width
+                        - MESSAGE_ANCHOR_PREVIEW_GUTTER_GAP))
+                    .top(px(Layout::CONTENT_PADDING + preview_y))
+                    .child(content)
+                    .into_any_element();
+                (Some(overlay), false)
+            } else {
+                let lane_width =
+                    ((content_width - 20.0).max(0.0) * 0.3).min(MESSAGE_ANCHOR_PREVIEW_MAX_WIDTH);
+                let content = render_message_anchor_preview(
+                    message_id,
+                    preview_label,
+                    lane_width,
+                    colors,
+                    cx,
+                );
+                let lane = div()
+                    .id("message-anchor-preview-lane")
+                    .debug_selector(|| "message-anchor-preview-lane".into())
+                    .w(px(lane_width))
+                    .h_full()
+                    .flex_shrink_0()
+                    .relative()
+                    .child(div().absolute().left_0().top(px(preview_y)).child(content))
+                    .into_any_element();
+                (Some(lane), true)
+            }
+        } else {
+            (None, false)
+        };
         let track_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
         let prepaint_bounds = track_bounds.clone();
         let mouse_track_bounds = track_bounds.clone();
@@ -338,7 +408,7 @@ impl ConversationStream {
             },
         )
         .size_full();
-        div()
+        let rail = div()
             .id("message-anchor-rail")
             .debug_selector(|| "message-anchor-rail".into())
             .aria_label(accessible_label)
@@ -351,7 +421,6 @@ impl ConversationStream {
             .h_full()
             .flex_shrink_0()
             .relative()
-            .tooltip(move |_, cx| crate::icons::tooltip(tooltip_text.clone(), cx))
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -383,7 +452,9 @@ impl ConversationStream {
                 }),
             )
             .on_mouse_exit(cx.listener(|this, _: &gpui_kit::MouseExitEvent, _, cx| {
-                if this.message_anchor_hovered.take().is_some() {
+                if this.message_anchor_preview_hovered.is_none()
+                    && this.message_anchor_hovered.take().is_some()
+                {
                     cx.notify();
                 }
             }))
@@ -421,11 +492,13 @@ impl ConversationStream {
                             let next = start_index.saturating_sub(1);
                             this.message_anchor_keyboard_id = Some(anchors[next].0.clone());
                             this.message_anchor_hovered = None;
+                            this.message_anchor_preview_hovered = None;
                         }
                         "down" => {
                             let next = (start_index + 1).min(anchors.len() - 1);
                             this.message_anchor_keyboard_id = Some(anchors[next].0.clone());
                             this.message_anchor_hovered = None;
+                            this.message_anchor_preview_hovered = None;
                         }
                         "enter" | "space" => {
                             if let Some(message_id) = start_id {
@@ -441,8 +514,64 @@ impl ConversationStream {
                 }),
             )
             .child(rail_canvas)
-            .into_any_element()
+            .into_any_element();
+        (rail, preview, preview_in_lane)
     }
+}
+
+fn anchor_preview_label(anchor: &PositionedMessageAnchor) -> String {
+    format!("{} · {}", anchor.kind.label(), anchor.preview)
+}
+
+fn render_message_anchor_preview(
+    message_id: String,
+    label: String,
+    width: f32,
+    colors: ThemeColors,
+    cx: &mut Context<ConversationStream>,
+) -> AnyElement {
+    div()
+        .id("message-anchor-preview")
+        .debug_selector(|| "message-anchor-preview".into())
+        .aria_label(label.clone())
+        .w(px(width))
+        .h(px(MESSAGE_ANCHOR_PREVIEW_HEIGHT))
+        .flex()
+        .items_center()
+        .px_2()
+        .rounded_md()
+        .border_1()
+        .border_color(colors.border_subtle)
+        .bg(colors.bg_elevated)
+        .shadow_sm()
+        .text_size(px(Typography::METADATA))
+        .text_color(colors.text_primary)
+        .child(div().min_w_0().truncate().child(label))
+        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+            if *hovered {
+                if this.message_anchor_preview_hovered.as_deref() != Some(message_id.as_str()) {
+                    this.message_anchor_preview_hovered = Some(message_id.clone());
+                    cx.notify();
+                }
+            } else if this.message_anchor_preview_hovered.as_deref() == Some(message_id.as_str()) {
+                this.message_anchor_preview_hovered = None;
+                if this.message_anchor_hovered.as_deref() == Some(message_id.as_str()) {
+                    this.message_anchor_hovered = None;
+                }
+                cx.notify();
+            }
+        }))
+        .on_scroll_wheel(
+            cx.listener(|this, event: &gpui_kit::ScrollWheelEvent, _, cx| {
+                let delta = event
+                    .delta
+                    .pixel_delta(px(Typography::MESSAGE_LINE_HEIGHT * Typography::MESSAGE));
+                this.list.scroll_by(-delta.y);
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
+        .into_any_element()
 }
 
 fn nearest_anchor_id(anchors: &[(String, f32)], fraction: f32) -> Option<String> {
