@@ -18,7 +18,7 @@ No schema migration is required. Tool output full-file spill is not part of the 
 
 | Surface | Required behavior | Evidence |
 | --- | --- | --- |
-| Runtime output scanner | Exact canary values are removed from stdout, stderr, structured JSON, error text, assembled fragments, and large strings; safe neighboring text remains | Runtime unit tests |
+| Runtime output scanner | Exact canary values are removed from stdout, stderr, structured JSON, error text, assembled fragments, and large strings; multi-MiB bash output reaches the scanner only after the S5 collector bounds it to retained head/tail, the omitted middle stays absent, safe neighboring text remains, and persisted `output_full_path` is `NULL` | Runtime unit tests and bounded-output tool lifecycle test |
 | Tool lifecycle | Redaction precedes tool-output events, persistence, and follow-up model context | Temporary project/store fixture with a test Bash executor and `MockProvider` |
 | MCP structured output | Text and structured result are combined and redacted before the result is returned, including credentials escaped by JSON serialization | MCP registry test |
 | Legacy restore | Existing assistant output, tool output, and context summary are redacted locally; the first resumed attempt produces the typed local block and zero provider requests | Temporary SQLite fixture and `MockProvider` |

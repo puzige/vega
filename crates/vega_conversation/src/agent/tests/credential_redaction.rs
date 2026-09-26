@@ -1,23 +1,59 @@
 use super::*;
 
 const CANARY: &str = "canary-credential-redaction-170-abcdefghijklmnopqrstuvwxyz";
+const HEAD_CANARY: &str = "canary-head-credential-redaction-170-abcdefghijklmnopqrstuvwxyz";
+const TAIL_CANARY: &str = "canary-tail-credential-redaction-170-abcdefghijklmnopqrstuvwxyz";
+const OMITTED_CANARY: &str = "canary-omitted-credential-redaction-170-abcdefghijklmnopqrstuvwxyz";
 
 #[tokio::test]
-async fn issue170_tool_output_is_redacted_before_events_storage_and_followup_request() {
+async fn issue170_bounded_bash_output_is_redacted_before_events_storage_and_followup_request() {
     let (store, dir, _project_id) = setup();
+    let mut raw_output =
+        format!("stdout head-safe-before {HEAD_CANARY} head-safe-after\n").into_bytes();
+    let filler_line = vec![b'x'; 4_096];
+    for line_index in 0..2_198 {
+        if line_index == 1_099 {
+            raw_output
+                .extend_from_slice(format!("stdout omitted-middle {OMITTED_CANARY}").as_bytes());
+        } else {
+            raw_output.extend_from_slice(&filler_line);
+        }
+        raw_output.push(b'\n');
+    }
+    raw_output.extend_from_slice(
+        format!("stderr tail-safe-before {TAIL_CANARY} tail-safe-after\n").as_bytes(),
+    );
+    let visible_output_budget = 2 * vega_tools::BASH_MAX_BYTES_PER_SIDE;
+    assert!(raw_output.len() > visible_output_budget);
+    let collected = vega_tools::collect_bash_output_for_test(&raw_output);
+    assert!(collected.truncated);
+    assert!(collected.text.len() <= visible_output_budget);
+    assert!(collected.text.contains(HEAD_CANARY));
+    assert!(collected.text.contains(TAIL_CANARY));
+    assert!(!collected.text.contains(OMITTED_CANARY));
+    assert!(
+        collected
+            .text
+            .contains(vega_tools::BASH_OUTPUT_MIDDLE_MARKER)
+    );
+    let (head, tail) = collected
+        .text
+        .split_once(vega_tools::BASH_OUTPUT_MIDDLE_MARKER)
+        .expect("bounded collector marks the omitted middle");
+    let near_side_byte_limit = vega_tools::BASH_MAX_BYTES_PER_SIDE - 16 * 1_024;
+    assert!(head.len() >= near_side_byte_limit);
+    assert!(tail.len() >= near_side_byte_limit);
+    assert!(head.lines().count() < vega_tools::BASH_MAX_LINES_PER_SIDE);
+    assert!(tail.lines().count() < vega_tools::BASH_MAX_LINES_PER_SIDE);
+    assert!(collected.text.contains("head-safe-before"));
+    assert!(collected.text.contains("head-safe-after"));
+    assert!(collected.text.contains("tail-safe-before"));
+    assert!(collected.text.contains("tail-safe-after"));
     let tools = vega_tools::Tools::new(dir.path())
         .unwrap()
-        .with_bash_test_executor(Arc::new(|_, _, _| {
-            Box::pin(async {
-                Ok(vega_tools::BashOutput {
-                    text: format!(
-                        "stdout: {CANARY}\nstderr: {CANARY}\nstructured: {{\"credential\":\"{CANARY}\"}}"
-                    ),
-                    exit_code: 0,
-                    duration_ms: 1,
-                    truncated: false,
-                })
-            })
+        .with_bash_test_executor(Arc::new(move |_, _, _| {
+            let collected = collected.clone();
+            Box::pin(async move { Ok(collected) })
         }));
     let provider = MockProvider::new_rounds(vec![
         vec![ScriptStep::events(vec![
@@ -37,7 +73,8 @@ async fn issue170_tool_output_is_redacted_before_events_storage_and_followup_req
             },
         ])],
     ]);
-    let reader: vega_runtime::CredentialReader = Arc::new(|| Ok(vec![CANARY.to_string()]));
+    let reader: vega_runtime::CredentialReader =
+        Arc::new(|| Ok(vec![HEAD_CANARY.to_string(), TAIL_CANARY.to_string()]));
     let mut live_events = Vec::new();
     let run = run_thread_task_with_images_reasoning_and_mcp(
         &store,
@@ -70,29 +107,63 @@ async fn issue170_tool_output_is_redacted_before_events_storage_and_followup_req
         event,
         ConversationEvent::ToolCallOutput { chunk, .. }
             if chunk.0.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
-                && !chunk.0.contains(CANARY)
+                && chunk.0.matches(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER).count() == 2
+                && !chunk.0.contains(HEAD_CANARY)
+                && !chunk.0.contains(TAIL_CANARY)
+                && !chunk.0.contains(OMITTED_CANARY)
+                && chunk.0.contains("head-safe-before")
+                && chunk.0.contains("head-safe-after")
+                && chunk.0.contains("tail-safe-before")
+                && chunk.0.contains("tail-safe-after")
+                && chunk.0.contains(vega_tools::BASH_OUTPUT_MIDDLE_MARKER)
     )));
     assert!(live_events.iter().any(|event| matches!(
         event,
         ConversationEvent::ToolCallFinished { result, .. }
             if result.output.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
-                && !result.output.contains(CANARY)
+                && result.output.matches(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER).count() == 2
+                && !result.output.contains(HEAD_CANARY)
+                && !result.output.contains(TAIL_CANARY)
+                && !result.output.contains(OMITTED_CANARY)
+                && result.output.contains("head-safe-before")
+                && result.output.contains("head-safe-after")
+                && result.output.contains("tail-safe-before")
+                && result.output.contains("tail-safe-after")
+                && result.output.contains(vega_tools::BASH_OUTPUT_MIDDLE_MARKER)
     )));
-    let stored: String = store
+    let (stored, output_full_path): (String, Option<String>) = store
         .conn()
         .query_row(
-            "SELECT output_text FROM tool_calls WHERE id = 'credential-output-call'",
+            "SELECT output_text, output_full_path FROM tool_calls WHERE id = 'credential-output-call'",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
+    assert!(
+        output_full_path.is_none(),
+        "S5 output must not spill to a file"
+    );
     assert!(stored.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER));
-    assert!(!stored.contains(CANARY));
+    assert_eq!(
+        stored
+            .matches(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+            .count(),
+        2
+    );
+    assert!(!stored.contains(HEAD_CANARY));
+    assert!(!stored.contains(TAIL_CANARY));
+    assert!(!stored.contains(OMITTED_CANARY));
+    assert!(stored.contains("head-safe-before"));
+    assert!(stored.contains("head-safe-after"));
+    assert!(stored.contains("tail-safe-before"));
+    assert!(stored.contains("tail-safe-after"));
+    assert!(stored.contains(vega_tools::BASH_OUTPUT_MIDDLE_MARKER));
     assert!(provider.requests().iter().all(|request| {
-        request
-            .messages
-            .iter()
-            .all(|message| !message.content.contains(CANARY))
+        request.messages.iter().all(|message| {
+            !message.content.contains(HEAD_CANARY)
+                && !message.content.contains(TAIL_CANARY)
+                && !message.content.contains(OMITTED_CANARY)
+        })
     }));
     assert!(provider.requests()[1].messages.iter().any(|message| {
         message

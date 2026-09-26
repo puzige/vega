@@ -229,6 +229,23 @@ pub(crate) struct CollectedBashOutput {
     pub(crate) high_water_bytes: usize,
 }
 
+#[cfg(feature = "test-support")]
+pub fn collect_bash_output_for_test(bytes: &[u8]) -> BashOutput {
+    let mut collector = BashOutputCollector::new();
+    for chunk in bytes.chunks(BASH_READ_CHUNK_BYTES) {
+        collector.push(chunk);
+    }
+    let collected = collector.finish();
+    BashOutput {
+        text: collected.text,
+        exit_code: 0,
+        duration_ms: 1,
+        truncated: collected.truncated,
+        #[cfg(test)]
+        high_water_bytes: collected.high_water_bytes,
+    }
+}
+
 #[derive(Debug)]
 struct RenderedLine {
     text: String,
