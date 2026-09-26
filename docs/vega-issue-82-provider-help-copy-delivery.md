@@ -17,6 +17,30 @@
 | H3 | 凭据状态与 Pi 导入入口保持原状 | 一个本地已存储 key 的供应商和一个缺失 key 的供应商 | 分别检查两个供应商 | 存储/缺失状态仍按原分支渲染，Pi 导入入口仍可见；不把 key 正文放入视图 | GPUI | 新增的 #82 用例；`mounted_pi_import_*` 四项回归 | PASS |
 | H4 | 帮助图标不遮挡测试、编辑和删除操作 | 960px 窄窗口、至少一个模型 | 检查发现和模型行控件边界，并切换深浅主题 | 图标紧邻对应操作；按钮之间不重叠；图标在窗口内 | GPUI | 新增的 #82 用例 | PASS |
 | H5 | 模型发现/测试行为与详情行布局不回退 | 固定配置与 mock provider transport | 发现模型、测试模型；在小窗口检查 URL 与滚动区 | 既有请求路径和结果保持；窄窗下 URL 行完整，内容溢出由 viewport 滚动 | GPUI | `pointer_settings_uses_real_service_config_and_mock_transport`；`small_provider_detail_retains_url_height_with_multiple_models` | PASS |
+| H6 | Provider help tooltip 不被滚动视口裁切 | 已选中供应商，已渲染 Settings → Providers | 960/800/680px 窗口分别 hover/聚焦发现模型与模型测试图标，并切换浅色/深色主题 | 全文完整显示；提示留在详情视口内，680px 下自动换行 | GPUI | `issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes` | PASS |
+
+### v0.1.22 回归修复补充
+
+- 桌面回归发现，“发现模型”帮助提示在 hover 与键盘聚焦时只露出尾部文案，浅色和深色模式均复现；模型测试帮助提示完整。检查未点击模型测试，也未发送 Provider 请求。
+- 旧布局复现：960px GPUI 窗口中 tooltip 边界为 x=422…606，Provider 详情视口从 x=524 开始，左侧 102px 被裁；只剩右侧约 82px 文案可见。
+- 修复：tooltip 现以整行操作区为定位容器，限制最大宽度为 224px；窄列按详情栏宽度收缩，文案容器显式允许换行。发现模型提示左对齐操作行，模型测试提示右对齐对应行，并通过 deferred 绘制离开滚动内容遮罩。
+- 新回归覆盖 960、800、680px，以及浅/深主题和 hover/键盘焦点。680px 下断言文案区增高，证明发生换行；所有提示边界都落在 Provider 详情视口内。
+- 不修改网络行为、凭据状态或 Pi Agent 范围；Computer Use 检查期间不点击模型测试，也不发送 Provider 请求。
+
+#### Fix Freeze
+
+- 验证时间：2026-09-26 03:36 UTC / 2026-09-26 11:36 CST。
+- 分支：`feat/82-provider-help-overflow`；实现前 fetch/rebase 后与 `origin/master` 一致。
+- 实现提交：`d2b51a8`；PR [#224](https://github.com/puzige/vega/pull/224) 已创建，未合并；Clippy/Nextest 云端检查正在运行。
+- Issue #82 评论已记录实现、测试结果和交付状态；Issue 保持开放，Project 状态为 In progress。
+- 任务契约：[补充规格](vega-issue-82-provider-help-copy.md)；实现范围与补充验收条件一致。
+- 源码、测试与补充规格差异补丁 SHA-256（不含本交付记录）：`d6450ef327afc3e9527242c44f79183edc1aee9427968e85fa1136a0bfc5c6bd`。
+- 环境：Darwin arm64；rustc 1.98.0；cargo 1.98.0；git 2.55.0。
+
+#### CI 完成记录
+
+- GitHub Actions run [36215367050](https://github.com/puzige/vega/actions/runs/36215367050) 已完成：Clippy、Nextest 与 required `check (fmt, clippy, test)` 全部通过。
+- PR #224 仍开放且未合并；master 集成后的 Computer Use 和真实服务验收仍待执行。
 
 ## 实现与兼容性
 
@@ -40,6 +64,7 @@
 | requirement | evidence class | exact command | result | duration | bounded footer/hash |
 |---|---|---|---|---|---|
 | #82 hover/focus、凭据状态、窄窗主题和相邻操作 | GPUI targeted | `cargo nextest run -p vega_ui -E 'test(issue82_provider_help_opens_on_hover_and_focus_and_keeps_credential_states) | test(mounted_pi_import_) | test(pointer_settings_uses_real_service_config_and_mock_transport) | test(small_provider_detail_retains_url_height_with_multiple_models)'` | exit 0；7 passed，476 skipped | 0.192s 测试运行时间 | Nextest `3be52311-94df-4bc7-aa44-3a5c84c72753` |
+| v0.1.22 tooltip 裁切回归：960/800/680px、浅/深主题、hover/focus、Pi 导入与 Provider 操作 | GPUI targeted | `cargo nextest run -p vega_ui -E 'test(issue82_provider_help_opens_on_hover_and_focus_and_keeps_credential_states) | test(issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes) | test(mounted_pi_import_) | test(pointer_settings_uses_real_service_config_and_mock_transport) | test(small_provider_detail_retains_url_height_with_multiple_models)'` | exit 0；8 passed，508 skipped | 0.262s 测试运行时间 | Nextest `cc7c023c-b4fe-4bd5-81a4-b0f762d43ed5` |
 | 格式 | formatter | `cargo fmt --all -- --check` | exit 0；stdout 空 | — | — |
 | 空白/冲突标记 | git | `git diff --check` | exit 0；stdout 空 | — | — |
 
@@ -65,9 +90,32 @@ note: to see what the problems were, use the option `--future-incompat-report`, 
 
 格式与 diff 检查命令均返回 0，原始 stdout 为空。
 
+v0.1.22 tooltip 回归的原始 nextest 输出：
+
+```text
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+────────────
+ Nextest run ID cc7c023c-b4fe-4bd5-81a4-b0f762d43ed5 with nextest profile: default
+    Starting 8 tests across 1 binary (508 tests skipped)
+        PASS [   0.048s] (1/8) vega_ui settings::provider_management::tests::mounted_pi_import_has_explicit_reachable_action_and_idle_does_not_read_source
+        PASS [   0.062s] (2/8) vega_ui settings::provider_management::tests::small_provider_detail_retains_url_height_with_multiple_models
+        PASS [   0.071s] (3/8) vega_ui settings::provider_management::tests::mounted_pi_import_in_progress_disables_action
+        PASS [   0.087s] (4/8) vega_ui settings::provider_management::tests::mounted_pi_import_failure_is_visible_and_does_not_enable_provider
+        PASS [   0.100s] (5/8) vega_ui settings::provider_management::tests::mounted_pi_import_success_shows_setup_status_enables_provider_and_keeps_key_blank
+        PASS [   0.106s] (6/8) vega_ui settings::provider_management::tests::issue82_provider_help_opens_on_hover_and_focus_and_keeps_credential_states
+        PASS [   0.181s] (7/8) vega_ui settings::provider_management::tests::pointer_settings_uses_real_service_config_and_mock_transport
+        PASS [   0.262s] (8/8) vega_ui settings::provider_management::tests::issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes
+────────────
+     Summary [   0.262s] 8 tests run: 8 passed, 508 skipped
+```
+
 ### 失败复现与修复记录
 
 - 首次 `cargo fmt --all -- --check` 返回 1，仅报告实现文件的格式化差异；运行 `cargo fmt --all` 后复查通过。
+- 新增边界断言首次运行旧实现时返回 100：`tooltip=Bounds { origin: Point { x: 422px, y: 300.5px }, size: Size { 184px × 28.5px } }`，详情视口从 x=524 开始，证明左侧文案遭裁切。
+- 首轮布局修复后增加 680px 文案换行断言，定向回归返回 100：外框已受限到 132px，但文本仍保持 28.5px 单行高度。给文本 flex 子项添加 `min_w_0` 与 normal wrapping 后，680px 换行断言通过。
 - 首次定向编译因 gpui-kit 0.6.0 未提供 `IconName::CircleHelp` 而返回 101：`error[E0599]: no variant, associated function, or constant named 'CircleHelp' found for enum 'IconName'`。改为项目既有 Lucide SVG 约定的内联问号圆形图标，定向编译通过。
 - 首次运行 `small_provider_detail_retains_url_height_with_multiple_models` 失败：`overflow must expand the scrollable flow: flow=Size { 412px × 475px }, viewport=Size { 412px × 475px }`。说明移除常驻段落后，该 600px 窗口的内容不再发生滚动溢出。将测试窗口高度减至 560px，保留原来的完整 URL 行和 overflow 断言；复测通过。
 - 流程偏离：新增 GPUI 回归用例是在实现改动后补入，而非先运行失败用例再实现；最终定向回归集全部通过，未对断言放宽。
@@ -75,7 +123,8 @@ note: to see what the problems were, use the option `--future-incompat-report`, 
 
 ## Residuals
 
-- `NOT RUN`：云端 PR gate，等待 PR 建立后执行。
+- `PASS`：PR #224 的云端 Clippy、Nextest 与 required check。
 - `NOT RUN`：master 集成后的桌面 Computer Use 和真实服务验收；依仓库验收规程由主控/用户在 master 完成。
 - `NOT RUN`：workspace 全量测试和全量 Clippy；本地按规程只执行本卡定向 nextest，PR gate 承担完整门禁。
+- `NOT MERGED`：PR #224 仍开放；云端检查已通过，后续集成/桌面复验仍待完成；当前 Issue 开放且看板为 In progress。
 - spec 偏离：无。

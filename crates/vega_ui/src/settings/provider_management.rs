@@ -100,18 +100,14 @@ impl SettingsView {
         &self,
         index: usize,
         focus: FocusHandle,
-        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let help_is_open =
-            focus.is_focused(window) || self.provider_management.test_help_hovered == Some(index);
         let selector = if index == 0 {
             "provider-test-help-discover".to_string()
         } else {
             format!("provider-test-help-model-{}", index - 1)
         };
-        let tooltip_selector = format!("{selector}-tooltip");
         div()
             .id(selector.clone())
             .debug_selector(move || selector.clone())
@@ -138,20 +134,60 @@ impl SettingsView {
                 }
                 cx.notify();
             }))
-            .when(help_is_open, |control| {
-                control.child(
-                    div()
-                        .debug_selector(move || tooltip_selector.clone())
-                        .absolute()
-                        .right_0()
-                        .bottom(px(28.))
-                        .child(crate::icons::tooltip(PROVIDER_TEST_HELP_COPY, cx)),
-                )
-            })
             .child(crate::icons::icon(
                 crate::icons::Icon::Help,
                 colors.text_secondary,
             ))
+            .into_any_element()
+    }
+
+    fn provider_test_help_tooltip(
+        &self,
+        index: usize,
+        colors: vega_theme::ThemeColors,
+    ) -> AnyElement {
+        let selector = if index == 0 {
+            "provider-test-help-discover-tooltip".to_string()
+        } else {
+            format!("provider-test-help-model-{}-tooltip", index - 1)
+        };
+        let body_selector = format!("{selector}-body");
+        let body = div()
+            .id(body_selector.clone())
+            .debug_selector(move || body_selector.clone())
+            .w_full()
+            .max_w_full()
+            .min_w_0()
+            .whitespace_normal()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_elevated)
+            .text_size(px(Typography::METADATA))
+            .text_color(colors.text_primary)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .child(PROVIDER_TEST_HELP_COPY),
+            );
+        let popup = div()
+            .debug_selector(move || selector.clone())
+            .absolute()
+            .bottom(relative(1.0))
+            .w(px(224.))
+            .max_w_full()
+            .when(index == 0, |popup| popup.left_0())
+            .when(index > 0, |popup| popup.right_0())
+            .child(body);
+        gpui_kit::deferred(popup)
+            .with_priority(2)
             .into_any_element()
     }
 
@@ -1090,6 +1126,8 @@ impl SettingsView {
                     .push(cx.focus_handle().tab_stop(true));
             }
             let help_focuses = self.provider_test_help_focuses.clone();
+            let discover_help_open = help_focuses[0].is_focused(window)
+                || self.provider_management.test_help_hovered == Some(0);
             let index = self
                 .config
                 .providers
@@ -1120,6 +1158,8 @@ impl SettingsView {
                 )
                 .child(
                     div()
+                        .w_full()
+                        .relative()
                         .flex()
                         .flex_wrap()
                         .gap_2()
@@ -1196,12 +1236,7 @@ impl SettingsView {
                             !busy && !network_busy && p.enabled,
                             cx,
                         ))
-                        .child(self.provider_test_help_control(
-                            0,
-                            help_focuses[0].clone(),
-                            window,
-                            cx,
-                        ))
+                        .child(self.provider_test_help_control(0, help_focuses[0].clone(), cx))
                         .child(self.provider_button(
                             "provider-add-model".into(),
                             "添加模型",
@@ -1217,9 +1252,15 @@ impl SettingsView {
                                 true,
                                 cx,
                             ))
+                        })
+                        .when(discover_help_open, |row| {
+                            row.child(self.provider_test_help_tooltip(0, colors))
                         }),
                 );
             for (index, model) in p.models.iter().enumerate() {
+                let help_index = index + 1;
+                let help_open = help_focuses[help_index].is_focused(window)
+                    || self.provider_management.test_help_hovered == Some(help_index);
                 detail = detail.child(
                     div()
                         .flex()
@@ -1230,6 +1271,8 @@ impl SettingsView {
                         .py_2()
                         .child(
                             div()
+                                .w_full()
+                                .relative()
                                 .flex()
                                 .items_center()
                                 .gap_1()
@@ -1242,9 +1285,8 @@ impl SettingsView {
                                     cx,
                                 ))
                                 .child(self.provider_test_help_control(
-                                    index + 1,
-                                    help_focuses[index + 1].clone(),
-                                    window,
+                                    help_index,
+                                    help_focuses[help_index].clone(),
                                     cx,
                                 ))
                                 .child(self.provider_button(
@@ -1260,7 +1302,10 @@ impl SettingsView {
                                     Command::DeleteModel(model.clone()),
                                     !busy,
                                     cx,
-                                )),
+                                ))
+                                .when(help_open, |row| {
+                                    row.child(self.provider_test_help_tooltip(help_index, colors))
+                                }),
                         )
                         .children(self.provider_management.statuses.get(model).map(|status| {
                             div()
