@@ -524,3 +524,42 @@ fn s14_s15_reference_is_lower_trust_and_frozen_after_first_read() {
         Err(SkillError::NotActivated)
     );
 }
+
+#[test]
+fn s22_activated_reference_read_fails_closed_after_source_root_disappears() {
+    const REFERENCE_BODY: &str = "S22_PRIVATE_REFERENCE_MARKER";
+
+    let root = tempdir().unwrap();
+    write_skill(
+        root.path(),
+        "reviewer",
+        "Review code changes.",
+        "Read references/note.md",
+    );
+    let references = root.path().join("reviewer/references");
+    fs::create_dir_all(&references).unwrap();
+    fs::write(references.join("note.md"), REFERENCE_BODY).unwrap();
+
+    let source = SkillSource::imported_approved(root.path(), 0).unwrap();
+    let candidate = source.discover().unwrap().candidates.remove(0);
+    let approval = SkillApproval::reviewed(&candidate, "import-a", true, true).unwrap();
+    let catalog = SkillCatalog::freeze(vec![candidate.clone()], &[approval], true).unwrap();
+    let selection = SkillSelection::from_candidate(&candidate);
+    let mut run = SkillRun::new(catalog, true);
+    assert_eq!(
+        run.load_explicit(&selection, |_| true).receipt.status,
+        "loaded"
+    );
+
+    let root_path = root.path().to_path_buf();
+    drop(root);
+    assert!(!root_path.exists());
+
+    let result = run.read_reference("reviewer", "references/note.md", |serialized| {
+        assert!(!serialized.contains(REFERENCE_BODY));
+        true
+    });
+    let error = result.expect_err("a removed source root must not return reference content");
+    assert_eq!(error, SkillError::RootChanged);
+    assert_eq!(error.code(), "root_changed");
+}
