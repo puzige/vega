@@ -49,4 +49,4 @@
 - 修复：当上下文估算有效、圆环实际渲染时，将其焦点句柄插入加号与模型选择之间；没有估算、圆环隐藏时不加入不可见焦点目标。
 - 回归先行：新增 GPUI 测试从实际 Composer 输入焦点按 Tab 两次到达圆环，移开鼠标后确认完整 tooltip 和无障碍 label，再验证 Tab 到模型选择及 Shift+Tab 返回圆环。修复前该测试因焦点未落到圆环而失败（exit 100）；修复后 `cargo nextest run -p vega_ui issue64_context_usage_tab_from_composer_input_reaches_indicator_and_tooltip` 通过（1/1，exit 0）。
 - 定向回归：`cargo nextest run -p vega_ui issue64_context_usage_` 通过（12/12，504 skipped，exit 0）；`cargo fmt --all -- --check` 与 `git diff --check` 均 exit 0。未运行 workspace 全量测试。
-- 集成状态：follow-up 改动待 PR / 云端 `pr-check`；未合并、未安装或重启桌面应用。合并后的 Tab/Shift+Tab 实机回归仍需确认。
+- 集成状态：follow-up PR [#225](https://github.com/puzige/vega/pull/225) 已开放，代码提交 `8627edc` 的云端 Clippy、Nextest workspace 与 required check 均通过；PR 保持开放且未合并，v0.1.22 实机缺陷仍存在。合并并安装新版本后还需 Computer Use 确认 Tab/Shift+Tab、tooltip 与无估算时的焦点顺序。
