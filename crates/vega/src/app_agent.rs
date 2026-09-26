@@ -963,7 +963,8 @@ pub(crate) fn run_agent_worker_with_mcp(
                             event_sink,
                             vega_conversation::agent::PersistenceActorConfig::default()
                                 .with_automatic_title(automatic_title)
-                                .with_turn_limit(turn_limit),
+                                .with_turn_limit(turn_limit)
+                                .with_owner_credential_reader(owner_credential_reader.clone()),
                             None,
                             pricing_catalog,
                             Some(reasoning),
@@ -1028,7 +1029,9 @@ pub(crate) fn run_agent_worker_with_mcp(
                         pricing_catalog,
                         Some(reasoning),
                         mcp_servers,
-                        turn_limit,
+                        vega_conversation::agent::PersistenceActorConfig::default()
+                            .with_turn_limit(turn_limit)
+                            .with_owner_credential_reader(owner_credential_reader.clone()),
                     ),
                 )
                 }

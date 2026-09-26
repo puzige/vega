@@ -664,6 +664,14 @@ fn run_manual_context_worker(
     let config_path = config_path.ok_or(())?;
     let config = vega_store::config::read_from(&config_path).map_err(|_| ())?;
     let configured = unique_provider_for_model(&config, &model).ok_or(())?;
+    let credential_root = config_path.parent().ok_or(())?.to_path_buf();
+    let credential_key_ref = configured.key_ref.clone();
+    let provider_credential_reader: vega_runtime::CredentialReader =
+        std::sync::Arc::new(move || {
+            vega_store::keystore::get_key(&credential_root, &credential_key_ref)
+                .map(|key| vec![key])
+                .map_err(|_| ())
+        });
     let reasoning = match reasoning {
         Some(reasoning) => {
             reasoning.validate().map_err(|_| ())?;
@@ -689,8 +697,13 @@ fn run_manual_context_worker(
         let key =
             vega_store::keystore::get_key(config_path.parent().ok_or(())?, &configured.key_ref)
                 .map_err(|_| ())?;
-        let provider =
-            vega_runtime::OpenAiProvider::new(configured.base_url, key).map_err(|_| ())?;
+        let pre_attempt_guard =
+            vega_conversation::agent::OwnerCredentialProvider::pre_attempt_guard(
+                provider_credential_reader.clone(),
+            );
+        let provider = vega_runtime::OpenAiProvider::new(configured.base_url, key)
+            .map_err(|_| ())?
+            .with_pre_attempt_guard(pre_attempt_guard);
         Ok(Arc::new(provider))
     };
     let provider = make_provider()?;
@@ -700,16 +713,19 @@ fn run_manual_context_worker(
         .build()
         .map_err(|_| ())?;
     runtime
-        .block_on(vega_conversation::agent::compact_thread_manually_accounted(
-            &store,
-            provider.as_ref(),
-            &thread_id,
-            &model,
-            SYSTEM_PROMPT,
-            cancel,
-            Some(reasoning),
-            pricing,
-            generation,
-        ))
+        .block_on(
+            vega_conversation::agent::compact_thread_manually_accounted_with_credential_reader(
+                &store,
+                provider.as_ref(),
+                &thread_id,
+                &model,
+                SYSTEM_PROMPT,
+                cancel,
+                Some(reasoning),
+                pricing,
+                generation,
+                Some(provider_credential_reader),
+            ),
+        )
         .map_err(|_| ())
 }

@@ -140,7 +140,7 @@ mod credential_tests {
     }
 
     #[test]
-    fn issue73_final_result_join_cannot_assemble_owner_secret() {
+    fn issue73_final_result_join_redacts_owner_secret() {
         let mut known = KnownCredentials::default();
         known.extend(["alpha\n{\"fragment\":\"beta\"}".to_owned()]);
         let frozen = FrozenMcpTool {
@@ -156,7 +156,10 @@ mod credential_tests {
             structured_content: Some(serde_json::json!({"fragment":"beta"})),
             is_error: false,
         };
-        assert!(frozen.safe_result_text(&result).is_err());
+        let text = frozen.safe_result_text(&result).unwrap();
+        assert_eq!(text, crate::PROVIDER_CREDENTIAL_REDACTION_MARKER);
+        assert!(!text.contains("alpha"));
+        assert!(!text.contains("beta"));
     }
 }
 
@@ -700,24 +703,18 @@ impl FrozenMcpTool {
 
     pub(crate) fn safe_result_text(&self, output: &McpDispatchOutput) -> Result<String, ()> {
         let credentials = self.known_credentials.snapshot()?;
-        if credentials.contains(&output.text) {
-            return Err(());
-        }
         let mut text = output.text.clone();
         if let Some(structured) = &output.structured_content {
-            if credentials.contains_json_projection(structured) {
-                return Err(());
-            }
             let json = serde_json::to_string(structured).map_err(|_| ())?;
             if !text.is_empty() {
                 text.push('\n');
             }
             text.push_str(&json);
         }
-        if credentials.contains(&text) {
-            return Err(());
-        }
-        Ok(text)
+        Ok(super::redact_sensitive_credential_text(
+            &text,
+            &credentials.values,
+        ))
     }
 
     pub(crate) fn dispatch(

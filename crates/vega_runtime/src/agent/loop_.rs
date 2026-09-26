@@ -4,6 +4,18 @@ use super::*;
 use crate::skills::{BatchPolicy, classify_tool_batch};
 use crate::{ContextCheck, ContextCompactionRequest, ContextRuntimeError};
 
+fn redact_runtime_tool_result(config: &RuntimeToolConfig, result: &mut RuntimeToolResult) {
+    match config.redact_tool_output(&result.output) {
+        Ok(output) => result.output = output,
+        Err(_) => {
+            result.output = "Tool error: credential safety check unavailable".to_string();
+            result.status = RuntimeToolStatus::Failed;
+            result.truncated = None;
+            result.exit_code = None;
+        }
+    }
+}
+
 fn request_output_cap(
     max_tokens: Option<u32>,
     budget: Option<crate::ContextBudget>,
@@ -862,6 +874,23 @@ where
     let mut direct_user_skill_round = true;
     let mut input_anchor: Option<InputAnchor> = None;
     let mut primary_revision = 0_u64;
+
+    if tool_config.legacy_credential_cleanup_detected {
+        emit!(
+            events,
+            sink,
+            RuntimeEvent::Error(Arc::new(VegaError::CredentialExposureBlocked))
+        );
+        return Ok(outcome(
+            events,
+            messages,
+            final_text,
+            tool_call_count,
+            executed_tool_call_count,
+            false,
+            true,
+        ));
+    }
 
     if !skill_authority_current(skill_config.as_ref()) {
         cancel.cancel();
@@ -2025,6 +2054,7 @@ where
                     terminal.reused = true;
                     terminal.truncated = None;
                 }
+                redact_runtime_tool_result(&tool_config, &mut terminal);
                 emit!(
                     events,
                     sink,
@@ -2078,6 +2108,7 @@ where
                 let mut result = prior.result;
                 result.reused = true;
                 result.truncated = None;
+                redact_runtime_tool_result(&tool_config, &mut result);
                 emit!(
                     events,
                     sink,
@@ -2100,6 +2131,8 @@ where
                     RuntimeToolStatus::Rejected,
                     Some(validation_audit()),
                 );
+                let mut result = result;
+                redact_runtime_tool_result(&tool_config, &mut result);
                 emit!(events, sink, RuntimeEvent::ToolCallFinished(result.clone()));
                 messages.push(ChatMessage::tool_result(&call.id, &result.output));
                 completed.insert(
@@ -2278,6 +2311,7 @@ where
             if cancelled_while_running {
                 result.status = RuntimeToolStatus::Cancelled;
             }
+            redact_runtime_tool_result(&tool_config, &mut result);
             emit!(
                 events,
                 sink,

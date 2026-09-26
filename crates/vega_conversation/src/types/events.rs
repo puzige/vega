@@ -28,6 +28,8 @@ pub enum RunFailureKind {
     ProviderTransport,
     /// An in-process runtime error rather than a provider HTTP failure.
     Runtime,
+    #[allow(missing_docs)]
+    CredentialExposureBlocked,
     /// A durable failed row whose original reason was not persisted.
     Persisted,
 }
@@ -75,6 +77,7 @@ impl RunFailureKind {
                 kind: vega_runtime::ProviderFailureKind::Transport,
                 ..
             } => Self::ProviderTransport,
+            vega_runtime::VegaError::CredentialExposureBlocked => Self::CredentialExposureBlocked,
             _ => Self::Runtime,
         }
     }
@@ -93,6 +96,10 @@ impl RunFailureKind {
                 format!("供应商请求失败（HTTP {status}）；请检查供应商状态、模型和额度后重试")
             }
             Self::ProviderTransport => "无法连接供应商；请检查网络和供应商地址后重试".into(),
+            Self::CredentialExposureBlocked => {
+                "为保护本地凭据，本次发送已在本地拦截。请移除对话中残留的凭据后重试，或在新对话中继续。"
+                    .into()
+            }
             Self::Runtime => "任务执行失败；请检查运行环境后重试".into(),
             Self::Persisted => "这条回复执行失败；请检查供应商状态、额度或运行环境后重试".into(),
         }
@@ -821,5 +828,16 @@ mod run_failure_tests {
                 .message()
                 .contains("SECRET_SENTINEL")
         );
+    }
+
+    #[test]
+    fn issue170_credential_safety_block_has_local_actionable_failure_state() {
+        let kind = RunFailureKind::from_runtime(&VegaError::CredentialExposureBlocked);
+        assert_eq!(kind, RunFailureKind::CredentialExposureBlocked);
+        let message = kind.message();
+        assert!(message.contains("本地拦截"));
+        assert!(message.contains("残留的凭据"));
+        assert!(message.contains("新对话"));
+        assert!(!message.contains("无法连接供应商"));
     }
 }

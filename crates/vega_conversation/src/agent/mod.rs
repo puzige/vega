@@ -60,7 +60,9 @@ mod tests;
 
 pub use compaction::{
     ConversationCompactionHook, compact_thread_manually, compact_thread_manually_accounted,
-    read_context_projection, read_context_settings, save_context_settings,
+    compact_thread_manually_accounted_with_credential_reader,
+    compact_thread_manually_with_credential_reader, read_context_projection, read_context_settings,
+    save_context_settings,
 };
 pub use credential_guard::OwnerCredentialProvider;
 pub use entry::*;
