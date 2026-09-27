@@ -1400,6 +1400,8 @@ impl SettingsView {
         if !rejected.is_empty() {
             card = card.child(
                 div()
+                    .id(format!("mcp-rejected-tools-{id}"))
+                    .debug_selector(|| "mcp-rejected-tools".into())
                     .text_color(colors.warning)
                     .child(format!("未采纳的工具：{}", rejected.join("、"))),
             );

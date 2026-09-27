@@ -2654,6 +2654,180 @@ fn mcp_async_for_test<T>(
 }
 
 #[gpui_kit::test]
+async fn issue86_m08_malformed_schema_is_visible_and_excluded_in_settings(cx: &mut TestAppContext) {
+    use vega_conversation::types::{McpRemoteAuthorization, McpServerForm, McpServerTransport};
+
+    let methods = Arc::new(Mutex::new(Vec::new()));
+    let fixture_methods = methods.clone();
+    let endpoint = vega_mcp::mock::Endpoint::new("/mcp", |_| {
+        Arc::new(move |request| {
+            let request: serde_json::Value = serde_json::from_slice(
+                request
+                    .body()
+                    .and_then(|body| body.as_bytes())
+                    .expect("owned request body"),
+            )
+            .expect("owned request JSON");
+            let method = request["method"]
+                .as_str()
+                .expect("owned MCP method")
+                .to_owned();
+            let id = request
+                .get("id")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            fixture_methods
+                .lock()
+                .expect("owned request methods")
+                .push(method.clone());
+            let result = match method.as_str() {
+                "server/discover" => serde_json::json!({
+                    "resultType":"complete",
+                    "ttlMs":0,
+                    "cacheScope":"private",
+                    "supportedVersions":["2026-07-28"],
+                    "capabilities":{"tools":{}}
+                }),
+                "tools/list" => serde_json::json!({
+                    "resultType":"complete",
+                    "tools":[
+                        {"name":"accepted_tool","inputSchema":{"type":"object"}},
+                        {"name":"rejected_tool","inputSchema":{"type":"object","properties":{"value":{"type":"unsupported"}}}}
+                    ],
+                    "ttlMs":0,
+                    "cacheScope":"private"
+                }),
+                _ => serde_json::json!({"unexpectedMethod":method}),
+            };
+            let body = serde_json::json!({"jsonrpc":"2.0","id":id,"result":result});
+            Box::pin(async move {
+                Ok(vega_mcp::mock::response(
+                    200,
+                    "application/json",
+                    body.to_string(),
+                    Vec::new(),
+                ))
+            })
+        })
+    });
+    let owned = tempfile::tempdir().expect("owned MCP Settings root");
+    let service = vega_conversation::McpServerSettingsService::new(
+        owned.path().join("vega.db"),
+        owned.path().join("config"),
+    );
+    let saved = service
+        .create(McpServerForm {
+            display_name: "catalog rejection fixture".into(),
+            transport: McpServerTransport::Remote {
+                endpoint: endpoint.to_string(),
+                allow_loopback_http: true,
+                authorization: McpRemoteAuthorization::None,
+            },
+        })
+        .expect("saved disabled catalog fixture");
+
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    view.update(cx, |view, cx| {
+        view.install_mcp_service(Some(service.clone()), cx)
+    });
+    wait_for_mcp_idle(cx, &view);
+    let root = view.clone();
+    let window: WindowHandle<SettingsHarness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1403.), px(860.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| {
+                    cx.new(|_| SettingsHarness {
+                        view: root,
+                        closes: Arc::new(AtomicUsize::new(0)),
+                    })
+                },
+            )
+        })
+        .expect("Settings window");
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let nav = visual
+        .debug_bounds("settings-nav-mcp")
+        .expect("MCP navigation");
+    visual.simulate_click(nav.center(), Default::default());
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let test = visual
+        .debug_bounds("mcp-test")
+        .expect("test connection action");
+    visual.simulate_click(test.center(), Default::default());
+    cx.run_until_parked();
+    assert!(matches!(
+        view.read_with(cx, |view, _| view.mcp.confirmation.clone()),
+        Some(super::mcp::McpConfirmation::Test { id, revision })
+            if id == saved.id && revision == saved.config_revision
+    ));
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let confirm = visual
+        .debug_bounds("mcp-confirm")
+        .expect("confirm catalog test");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(confirm.center(), Default::default());
+    for _ in 0..150 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+        if view.read_with(cx, |view, _| {
+            view.mcp.generation > generation && !view.mcp.busy
+        }) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let (preview, message, message_error) = view.read_with(cx, |view, _| {
+        (
+            view.mcp.preview.get(&saved.id).cloned(),
+            view.mcp.message.clone(),
+            view.mcp.message_error,
+        )
+    });
+    let preview = preview.expect("Settings Test retains a discovery preview");
+    assert_eq!(preview.tool_names, ["accepted_tool"]);
+    assert_eq!(preview.rejected_tools, ["invalid tool definition"]);
+    assert_eq!(
+        message.as_deref(),
+        Some("连接测试发现 1 个工具；测试不改变启用状态")
+    );
+    assert!(!message_error);
+    let row = service.list().expect("saved settings projection").remove(0);
+    assert!(!row.enabled, "testing does not enable the MCP server");
+    assert!(
+        row.tool_names.is_empty(),
+        "preview tools are not persisted as authority"
+    );
+    assert_eq!(
+        methods.lock().expect("owned request methods").as_slice(),
+        ["server/discover", "tools/list"]
+    );
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let rejection = visual
+        .debug_bounds("mcp-rejected-tools")
+        .expect("mounted visible rejection warning");
+    assert!(rejection.size.height > px(0.));
+}
+
+#[gpui_kit::test]
 async fn issue73_mcp_enable_mounted_ui_describes_task_start_connection(cx: &mut TestAppContext) {
     let owned = tempfile::tempdir().expect("owned MCP Settings root");
     let script = owned.path().join("owned-server.sh");
