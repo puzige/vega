@@ -260,6 +260,9 @@ fn mcp_error_label(error: McpSettingsError) -> &'static str {
             "浏览器授权失败、被取消或已超时；请核对服务器状态后重新开始"
         }
         McpSettingsError::Connection => "连接或工具发现失败；服务器保持原有启用状态",
+        McpSettingsError::UnsupportedTransport => {
+            "服务器使用了已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点"
+        }
         McpSettingsError::ConfirmationRequired => "需要先确认此服务器的权限范围",
     }
 }
@@ -272,6 +275,9 @@ pub(super) fn health_label(health: &McpServerHealth) -> &'static str {
         McpServerHealth::Ready => "已连接",
         McpServerHealth::NeedsCredential => "缺少凭据",
         McpServerHealth::NeedsAuthorization => "需要授权",
+        McpServerHealth::Error(code) if code == "unsupported_transport" => {
+            "不支持已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点"
+        }
         McpServerHealth::Error(_) => "连接失败",
     }
 }
@@ -282,6 +288,10 @@ pub(super) fn enable_result_message(row: Option<&McpServerView>) -> (&'static st
             McpServerHealth::Disconnected | McpServerHealth::Ready => (
                 "已启用；将在任务开始时连接，连接失败时该任务不会广告工具",
                 false,
+            ),
+            McpServerHealth::Error(code) if code == "unsupported_transport" => (
+                "已启用，但服务器使用了已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点；该任务不会向模型提供工具",
+                true,
             ),
             McpServerHealth::Error(_) => (
                 "已启用，但连接验证失败；任务开始时可重试，若仍失败则不会向模型提供工具",

@@ -47,6 +47,8 @@ pub enum McpSettingsError {
     AuthorizationFailed,
     #[error("MCP connection failed")]
     Connection,
+    #[error("deprecated standalone HTTP+SSE transport is unsupported")]
+    UnsupportedTransport,
     #[error("confirm this MCP server's command or endpoint before activation")]
     ConfirmationRequired,
 }
@@ -64,6 +66,7 @@ impl McpSettingsError {
             Self::CimdUnavailable => "cimd_unavailable",
             Self::AuthorizationFailed => "authorization_failed",
             Self::Connection => "connection_failed",
+            Self::UnsupportedTransport => "unsupported_transport",
             Self::ConfirmationRequired => "confirmation_required",
         }
     }
@@ -1280,12 +1283,20 @@ fn oauth_endpoint(
 
 fn map_oauth_error(error: vega_mcp::McpError) -> McpSettingsError {
     match error {
+        vega_mcp::McpError::UnsupportedTransport => McpSettingsError::UnsupportedTransport,
         vega_mcp::McpError::CimdUnavailable => McpSettingsError::CimdUnavailable,
         vega_mcp::McpError::ConsentRequired => McpSettingsError::ConfirmationRequired,
         vega_mcp::McpError::AuthRequired
         | vega_mcp::McpError::AuthSecurity
         | vega_mcp::McpError::CredentialBinding
         | vega_mcp::McpError::ScopeEscalation => McpSettingsError::AuthorizationFailed,
+        _ => McpSettingsError::Connection,
+    }
+}
+
+fn map_remote_connection_error(error: vega_mcp::McpError) -> McpSettingsError {
+    match error {
+        vega_mcp::McpError::UnsupportedTransport => McpSettingsError::UnsupportedTransport,
         _ => McpSettingsError::Connection,
     }
 }
@@ -1853,7 +1864,7 @@ async fn connect_row(
                 McpRemoteAuthorization::None => {
                     vega_mcp::HttpClient::connect(&endpoint, allow_loopback_http)
                         .await
-                        .map_err(|_| McpSettingsError::Connection)?
+                        .map_err(map_remote_connection_error)?
                 }
                 McpRemoteAuthorization::Bearer => {
                     let reference = row
@@ -1875,7 +1886,7 @@ async fn connect_row(
                         bearer,
                     )
                     .await
-                    .map_err(|_| McpSettingsError::Connection)?
+                    .map_err(map_remote_connection_error)?
                 }
                 McpRemoteAuthorization::OAuth { .. } => {
                     let reference = row
@@ -1997,6 +2008,53 @@ mod tests {
             .test_connection(&saved.id, saved.config_revision, true)
             .await;
         assert!(matches!(preview, Err(McpSettingsError::Connection)));
+    }
+
+    #[tokio::test]
+    async fn issue86_m05_settings_preserves_unsupported_transport() {
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let request_counter = requests.clone();
+        let endpoint = vega_mcp::mock::Endpoint::new("/mcp", |_| {
+            Arc::new(move |_| {
+                request_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async {
+                    Ok(vega_mcp::mock::response(
+                        404,
+                        "text/plain",
+                        String::new(),
+                        Vec::new(),
+                    ))
+                })
+            })
+        });
+        let service =
+            McpServerSettingsService::new(data.path().join("vega.db"), config.path().to_path_buf());
+        let saved = service
+            .create(McpServerForm {
+                display_name: "deprecated HTTP+SSE".into(),
+                transport: McpServerTransport::Remote {
+                    endpoint: endpoint.to_string(),
+                    allow_loopback_http: true,
+                    authorization: crate::types::McpRemoteAuthorization::None,
+                },
+            })
+            .unwrap();
+
+        let result = service
+            .test_connection(&saved.id, saved.config_revision, true)
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(McpSettingsError::UnsupportedTransport)
+        ));
+        assert_eq!(
+            McpSettingsError::UnsupportedTransport.code(),
+            "unsupported_transport"
+        );
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
