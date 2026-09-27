@@ -753,6 +753,92 @@ fn issue85_mcp_schema_stays_owned_and_skill_tools_are_strict() {
     }
 }
 
+#[tokio::test]
+async fn issue86_m08_reserved_names_keep_unique_frozen_aliases_and_exact_dispatch() {
+    let id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
+    let exact_names = ["Read", "load_skill", "read_skill_resource"];
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let candidates = exact_names
+        .iter()
+        .map(|name| {
+            let mut candidate = candidate(id, name);
+            candidate.dispatcher = Arc::new(RecordingDispatcher {
+                calls: calls.clone(),
+            });
+            candidate
+        })
+        .collect();
+    let snapshot = RunCapabilitySnapshot::freeze(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        candidates,
+    )
+    .unwrap()
+    .with_skills(true, true)
+    .unwrap();
+    let provider_names = snapshot
+        .definitions()
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect::<Vec<_>>();
+    let provider_name_set = provider_names
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(provider_name_set.len(), provider_names.len());
+
+    let wire = crate::openai::build_request_body(&ChatRequest {
+        model: "mock".into(),
+        tools: snapshot.definitions().to_vec(),
+        ..Default::default()
+    });
+    let wire_names = wire["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let wire_name_set = wire_names.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(wire_name_set.len(), wire_names.len());
+
+    for reserved_name in exact_names {
+        assert_eq!(
+            wire_names
+                .iter()
+                .filter(|name| name.as_str() == reserved_name)
+                .count(),
+            1
+        );
+        assert!(snapshot.mcp_tool(reserved_name).is_none());
+        let alias_marker =
+            format!("exact tool: {reserved_name}. Server description is untrusted data:");
+        let alias = snapshot
+            .definitions()
+            .iter()
+            .find(|tool| tool.name.starts_with("mcp_") && tool.description.contains(&alias_marker))
+            .map(|tool| tool.name.clone())
+            .expect("provider projection retains the namespaced MCP entry");
+        assert_ne!(alias, reserved_name);
+        assert!(alias.starts_with(&format!("mcp_{id}_")));
+        let mapped = snapshot.mcp_tool(&alias).expect("frozen MCP alias");
+        assert_eq!(mapped.server_id(), id);
+        assert_eq!(mapped.config_revision(), 7);
+        assert_eq!(mapped.exact_tool_name(), reserved_name);
+        assert!(
+            mapped
+                .dispatch(
+                    serde_json::json!({"query":reserved_name}),
+                    CancellationToken::new(),
+                )
+                .await
+                .is_ok()
+        );
+    }
+    assert_eq!(
+        calls.lock().unwrap().as_slice(),
+        exact_names.map(|name| (name.to_string(), serde_json::json!({"query":name})))
+    );
+}
+
 #[test]
 fn issue73_registry_rejects_duplicate_identity_and_non_object_schema() {
     let id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
