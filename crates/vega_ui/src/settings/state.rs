@@ -34,11 +34,6 @@ pub struct SettingsView {
     pub(crate) key_writer: Option<ProviderKeyWriter>,
     #[cfg(test)]
     pub(crate) config_saver: Option<ProviderConfigSaver>,
-    /// Owned Pi source override for mounted Settings tests. Production leaves
-    /// this unset so the service resolves `$HOME/.pi/agent/models.json` only
-    /// after the explicit import action.
-    #[cfg(test)]
-    pub(crate) pi_models_path: Option<std::path::PathBuf>,
     pub(crate) pricing: PricingSettingsProjection,
     pub(crate) pricing_editor: Option<PricingEditor>,
     pub(crate) pricing_model_input: Entity<TextInput>,
@@ -183,8 +178,6 @@ impl SettingsView {
             key_writer: None,
             #[cfg(test)]
             config_saver: None,
-            #[cfg(test)]
-            pi_models_path: None,
             pricing: PricingSettingsProjection::Loading,
             pricing_editor: None,
             pricing_model_input,
