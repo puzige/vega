@@ -1155,6 +1155,110 @@ async fn r157_pin_reorder_clears_stale_hover_after_stationary_projection_change(
 }
 
 #[gpui_kit::test]
+async fn r157_context_menu_pin_toggle_clears_stale_hover_after_stationary_pointer_reorder(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::MouseButton;
+
+    let f = fixture(cx);
+    let store = Store::open(f.dir.path().join("organization.db")).unwrap();
+    let target = conversation::create_standalone_thread(&store, "model", "confirm").unwrap();
+    sessions(&f, cx).update(cx, ThreadsBlock::refresh_organization);
+    cx.run_until_parked();
+
+    let row_selector = format!("standalone-thread-row-{}", target.id);
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    let row = bounds(&f, cx, &row_selector);
+    visual.simulate_mouse_move(row.center(), None, gpui_kit::Modifiers::default());
+    visual.simulate_mouse_down(row.center(), MouseButton::Right, Default::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Right, Default::default());
+    cx.run_until_parked();
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.actions_open.clone()),
+        Some(target.id.clone())
+    );
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone()),
+        Some(target.id.clone())
+    );
+
+    let pin_item = bounds(&f, cx, format!("standalone-thread-action-{}-0", target.id));
+    visual.simulate_mouse_move(pin_item.center(), None, gpui_kit::Modifiers::default());
+    visual.simulate_click(pin_item.center(), Default::default());
+    cx.run_until_parked();
+
+    assert!(persisted_thread(&f, &target.id).pinned);
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.hovered.clone()),
+        None
+    );
+    assert!(sessions(&f, cx).read_with(cx, |block, _| block.actions_open.is_none()));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone()),
+        None
+    );
+    assert!(absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-visible", target.id)
+    ));
+
+    let pinned_row_selector = format!("pinned-thread-row-{}", target.id);
+    let pinned_row = bounds(&f, cx, &pinned_row_selector);
+    visual.simulate_mouse_move(pinned_row.center(), None, gpui_kit::Modifiers::default());
+    visual.simulate_mouse_down(pinned_row.center(), MouseButton::Right, Default::default());
+    visual.simulate_mouse_up(pinned_row.center(), MouseButton::Right, Default::default());
+    cx.run_until_parked();
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone()),
+        Some(target.id.clone())
+    );
+
+    let unpin_item = bounds(&f, cx, format!("pinned-thread-action-{}-0", target.id));
+    visual.simulate_mouse_move(unpin_item.center(), None, gpui_kit::Modifiers::default());
+    visual.simulate_click(unpin_item.center(), Default::default());
+    cx.run_until_parked();
+
+    assert!(!persisted_thread(&f, &target.id).pinned);
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.hovered.clone()),
+        None
+    );
+    assert!(sessions(&f, cx).read_with(cx, |block, _| block.actions_open.is_none()));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone()),
+        None
+    );
+    assert!(absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-visible", target.id)
+    ));
+
+    let action_focus = sessions(&f, cx).read_with(cx, |block, _| {
+        block.thread_action_focuses.get(&target.id).unwrap().clone()
+    });
+    f.window
+        .update(cx, |_, window, cx| action_focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_keystrokes(f.window.into(), "enter enter");
+    cx.run_until_parked();
+
+    assert!(persisted_thread(&f, &target.id).pinned);
+    assert!(sessions(&f, cx).read_with(cx, |block, _| block.actions_open.is_none()));
+    assert_eq!(
+        sessions(&f, cx).read_with(cx, |block, _| block.focused_thread_action.clone()),
+        Some(target.id.clone())
+    );
+    assert!(!absent(
+        &f,
+        cx,
+        format!("thread-actions-state-{}-visible", target.id)
+    ));
+}
+
+#[gpui_kit::test]
 async fn r157_archive_restore_clears_stale_hover_after_stationary_projection_change(
     cx: &mut gpui_kit::TestAppContext,
 ) {
