@@ -4,6 +4,7 @@ use gpui_kit::{
     WindowHandle, WindowOptions, size,
 };
 use std::fs;
+use std::path::PathBuf;
 use tempfile::tempdir;
 use vega_store::Store;
 
@@ -12,6 +13,30 @@ struct Harness(Entity<SettingsView>);
 impl Render for Harness {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().size_full().child(self.0.clone())
+    }
+}
+
+fn stale_skills_projection() -> SkillSettingsProjection {
+    SkillSettingsProjection {
+        consent_generation: 1,
+        revocation_generation: 0,
+        global_enabled: false,
+        automatic_enabled: false,
+        selected_project_id: None,
+        project_enabled: false,
+        project_automatic: false,
+        sources: vec![SkillSourceView {
+            id: "stale-source".into(),
+            scope: SkillUiScope::Imported,
+            project_id: None,
+            configured_root: PathBuf::from("/stale/configured"),
+            canonical_root: PathBuf::from("/stale/canonical"),
+            source_label: "stale-source".into(),
+            enabled: false,
+            automatic: false,
+            diagnostic: None,
+            candidates: Vec::new(),
+        }],
     }
 }
 
@@ -251,5 +276,72 @@ async fn issue74_skills_settings_import_is_keyboard_reachable(cx: &mut TestAppCo
     assert!(
         cx.did_prompt_for_paths(),
         "keyboard traversal should reach the external-folder import action"
+    );
+}
+
+#[gpui_kit::test]
+async fn issue74_s06_reload_hides_stale_projection_while_pending_and_after_failure(
+    cx: &mut TestAppContext,
+) {
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    let service = SkillSettingsService::new(PathBuf::new(), PathBuf::new(), None);
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(super::super::SettingsOpen(true));
+        cx.set_global(crate::sidebar::SidebarWidth(
+            vega_theme::Layout::SIDEBAR_WIDTH,
+        ));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    view.update(cx, |view, _| {
+        view.section = 6;
+        view.skills.service = Some(service);
+        view.skills.projection = Some(stale_skills_projection());
+        view.skills.reload_response_override = Some(response_rx);
+    });
+    let root = view.clone();
+    let window: WindowHandle<Harness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1403.), px(1200.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| cx.new(|_| Harness(root)),
+            )
+        })
+        .expect("Skills Settings window");
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view
+            .skills
+            .projection
+            .as_ref()
+            .map(|projection| projection.sources[0].id == "stale-source")),
+        Some(true)
+    );
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("settings-skills")
+            .is_some()
+    );
+    view.update(cx, |view, cx| {
+        view.handle_skills_action(SkillAction::Reload, cx)
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.skills.busy));
+    assert!(view.read_with(cx, |view, _| view.skills.projection.is_none()));
+    assert!(response_tx.send(Err(SkillSettingsError::Store)).is_ok());
+    cx.run_until_parked();
+    assert!(!view.read_with(cx, |view, _| view.skills.busy));
+    assert!(view.read_with(cx, |view, _| view.skills.projection.is_none()));
+    assert_eq!(
+        view.read_with(cx, |view, _| view.skills.message.clone()),
+        Some("Skills 数据库读写失败，请重试".into())
     );
 }

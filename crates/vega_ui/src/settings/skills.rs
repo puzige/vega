@@ -25,6 +25,9 @@ pub(crate) struct SkillsSettingsState {
     busy: bool,
     message: Option<String>,
     request_generation: u64,
+    #[cfg(test)]
+    reload_response_override:
+        Option<tokio::sync::oneshot::Receiver<Result<SkillSettingsProjection, SkillSettingsError>>>,
 }
 
 #[derive(Clone)]
@@ -112,10 +115,19 @@ impl SettingsView {
     }
 
     fn skills_operation(&mut self, operation: SkillOperation, cx: &mut gpui_kit::Context<Self>) {
+        if matches!(&operation, SkillOperation::Reload) {
+            self.skills.projection = None;
+        }
         let Some(service) = self.skills.service.clone() else {
             self.skills.message = Some("Skills 数据库不可用".into());
             cx.notify();
             return;
+        };
+        #[cfg(test)]
+        let reload_response_override = if matches!(&operation, SkillOperation::Reload) {
+            self.skills.reload_response_override.take()
+        } else {
+            None
         };
         self.skills.request_generation = self.skills.request_generation.wrapping_add(1);
         let request_generation = self.skills.request_generation;
@@ -125,6 +137,13 @@ impl SettingsView {
         let task = cx.background_executor().spawn(async move {
             match operation {
                 SkillOperation::Reload => {
+                    #[cfg(test)]
+                    if let Some(response) = reload_response_override {
+                        return response
+                            .await
+                            .unwrap_or(Err(SkillSettingsError::Store))
+                            .map(SkillOperationResult::Projection);
+                    }
                     service.projection().map(SkillOperationResult::Projection)
                 }
                 SkillOperation::PreviewProject => service
