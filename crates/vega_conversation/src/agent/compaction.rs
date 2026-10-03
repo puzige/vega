@@ -2909,7 +2909,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn claude_summary_requests_reuse_operation_deadline_and_usage() {
         let first = MockProvider::new(vec![ScriptStep::events(vec![
             ProviderEvent::TextDelta("complete".into()),

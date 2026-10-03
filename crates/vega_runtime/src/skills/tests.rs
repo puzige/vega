@@ -220,6 +220,27 @@ fn s06_reference_paths_and_import_root_retarget_are_fenced() {
 }
 
 #[test]
+fn s15_hardlinked_reference_file_is_rejected() {
+    let project = tempdir().expect("project");
+    let outside = tempdir().expect("outside");
+    let skills = project.path().join(".agents/skills");
+    write_skill(&skills, "safe", BODY);
+    let references = skills.join("safe/references");
+    fs::create_dir_all(&references).expect("references");
+    let outside_file = outside.path().join("outside.md");
+    fs::write(&outside_file, "PRIVATE OUTSIDE REFERENCE").expect("outside reference");
+    fs::hard_link(&outside_file, references.join("shared.md")).expect("hardlink reference");
+    let source = SkillSource::project_approved(project.path())
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        source.read_reference("safe", "references/shared.md"),
+        Err(SkillError::Hardlink)
+    );
+}
+
+#[test]
 fn s06_oversize_and_nonregular_skill_files_are_rejected() {
     let project = tempdir().expect("project");
     let root = project.path().join(".agents/skills");

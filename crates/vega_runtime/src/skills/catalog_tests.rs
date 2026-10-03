@@ -240,6 +240,60 @@ fn s04_s07_catalog_uses_only_approved_auto_winner_and_explicit_shadow() {
 }
 
 #[test]
+fn s04_unapproved_project_copy_does_not_shadow_approved_vega_global() {
+    let project = tempdir().unwrap();
+    let config = tempdir().unwrap();
+    let project_copy = project_candidate(
+        project.path(),
+        "same",
+        "Unapproved project guide.",
+        "UNAPPROVED PROJECT BODY",
+    );
+    write_skill(
+        &config.path().join("skills"),
+        "same",
+        "Approved Vega-global guide.",
+        "APPROVED VEGA-GLOBAL BODY",
+    );
+    let global_copy = SkillSource::vega_global(config.path())
+        .unwrap()
+        .unwrap()
+        .discover()
+        .unwrap()
+        .candidates
+        .remove(0);
+    let global_approval = SkillApproval::reviewed(&global_copy, "vega-global", true, true).unwrap();
+    let catalog = SkillCatalog::freeze(
+        vec![global_copy.clone(), project_copy],
+        &[global_approval],
+        true,
+    )
+    .unwrap();
+
+    assert!(
+        catalog
+            .model_catalog()
+            .contains("Approved Vega-global guide.")
+    );
+    assert!(
+        !catalog
+            .model_catalog()
+            .contains("Unapproved project guide.")
+    );
+    assert!(!catalog.model_catalog().contains("UNAPPROVED PROJECT BODY"));
+    let mut run = SkillRun::new(catalog, true);
+    let activation = run.load_model("same", |body| body.contains("APPROVED VEGA-GLOBAL BODY"));
+    assert_eq!(activation.receipt.status, "loaded");
+    assert_eq!(
+        activation.audit.source_label.as_deref(),
+        Some("vega-global")
+    );
+    let envelope = run.render_skill_envelope().unwrap();
+    assert!(envelope.contains("APPROVED VEGA-GLOBAL BODY"));
+    assert!(!envelope.contains("UNAPPROVED PROJECT BODY"));
+}
+
+#[test]
 fn s04_stale_approved_winner_does_not_promote_shadow_without_selection() {
     let project = tempdir().unwrap();
     let config = tempdir().unwrap();
@@ -469,4 +523,43 @@ fn s14_s15_reference_is_lower_trust_and_frozen_after_first_read() {
         run.read_reference("unloaded", "references/note.md", |_| true),
         Err(SkillError::NotActivated)
     );
+}
+
+#[test]
+fn s22_activated_reference_read_fails_closed_after_source_root_disappears() {
+    const REFERENCE_BODY: &str = "S22_PRIVATE_REFERENCE_MARKER";
+
+    let root = tempdir().unwrap();
+    write_skill(
+        root.path(),
+        "reviewer",
+        "Review code changes.",
+        "Read references/note.md",
+    );
+    let references = root.path().join("reviewer/references");
+    fs::create_dir_all(&references).unwrap();
+    fs::write(references.join("note.md"), REFERENCE_BODY).unwrap();
+
+    let source = SkillSource::imported_approved(root.path(), 0).unwrap();
+    let candidate = source.discover().unwrap().candidates.remove(0);
+    let approval = SkillApproval::reviewed(&candidate, "import-a", true, true).unwrap();
+    let catalog = SkillCatalog::freeze(vec![candidate.clone()], &[approval], true).unwrap();
+    let selection = SkillSelection::from_candidate(&candidate);
+    let mut run = SkillRun::new(catalog, true);
+    assert_eq!(
+        run.load_explicit(&selection, |_| true).receipt.status,
+        "loaded"
+    );
+
+    let root_path = root.path().to_path_buf();
+    drop(root);
+    assert!(!root_path.exists());
+
+    let result = run.read_reference("reviewer", "references/note.md", |serialized| {
+        assert!(!serialized.contains(REFERENCE_BODY));
+        true
+    });
+    let error = result.expect_err("a removed source root must not return reference content");
+    assert_eq!(error, SkillError::RootChanged);
+    assert_eq!(error.code(), "root_changed");
 }
