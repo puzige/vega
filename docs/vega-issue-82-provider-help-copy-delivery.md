@@ -110,5 +110,5 @@ Pre-#223 Pi import test commands and their output have been removed from the cur
 - `PASS`：#223 后 rebase head 的 GPUI 定向测试、格式和 diff 检查。
 - `NOT RUN`：master 集成后的桌面 Computer Use 和真实服务验收；依仓库验收规程由主控/用户在 master 完成。
 - `NOT RUN`：workspace 全量测试和全量 Clippy；本地按规程只执行本卡定向 nextest，PR gate 承担完整门禁。
-- `NOT MERGED`：PR #224 仍开放；rebase head 的云端 check、master 集成和桌面复验仍待完成；当前 Issue 开放且看板为 In progress。
+- `NOT MERGED`：PR #224 仍开放；rebase head 的云端 check、master 集成和桌面复验仍待完成；当前 Issue 开放且看板为 In review。
 - spec 偏离：无。
