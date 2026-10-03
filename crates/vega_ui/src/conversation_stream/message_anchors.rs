@@ -451,8 +451,9 @@ impl ConversationStream {
                     }
                 }),
             )
-            .on_mouse_exit(cx.listener(|this, _: &gpui_kit::MouseExitEvent, _, cx| {
-                if this.message_anchor_preview_hovered.is_none()
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !hovered
+                    && this.message_anchor_preview_hovered.is_none()
                     && this.message_anchor_hovered.take().is_some()
                 {
                     cx.notify();

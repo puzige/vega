@@ -665,6 +665,133 @@ async fn mouse_and_keyboard_anchor_navigation_emit_real_message_ids(cx: &mut Tes
 }
 
 #[gpui_kit::test]
+async fn hover_anchor_preview_dismisses_when_pointer_leaves_rail_and_preview(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue72-hover-preview-exit");
+    stream.update(cx, |stream, cx| {
+        stream.set_workspace_width(656.0, cx);
+        stream.apply_history_page(issue72_page(80), cx);
+    });
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(gpui_kit::size(px(960.0), px(600.0)));
+    visual.draw(
+        point(px(0.), px(0.)),
+        gpui_kit::size(px(960.), px(600.)),
+        |_, _| stream.clone().into_any_element(),
+    );
+    let rail = visual
+        .debug_bounds("message-anchor-rail")
+        .expect("long session rail");
+    let transcript = visual
+        .debug_bounds("conversation-scroll")
+        .expect("transcript viewport");
+    let target = stream.read_with(&visual, |stream, _| {
+        stream
+            .message_anchor_projections()
+            .get(38)
+            .expect("target anchor")
+            .message_id
+            .clone()
+    });
+    let y = stream.read_with(&visual, |stream, cx| {
+        let geometry = stream.message_anchor_geometry(cx, f32::from(rail.size.height));
+        let index = geometry
+            .anchors
+            .iter()
+            .position(|anchor| anchor.message_id == target)
+            .expect("target position");
+        rail.top() + rail.size.height * geometry.anchors[index].fraction
+    });
+    let rail_point = point(rail.center().x, y);
+    visual.simulate_mouse_move(rail_point, None, Modifiers::default());
+    cx.run_until_parked();
+
+    assert_eq!(
+        stream.read_with(&visual, |stream, _| stream
+            .message_anchor_hovered
+            .as_deref()
+            .map(str::to_string)),
+        Some(target.clone())
+    );
+    let preview = visual
+        .debug_bounds("message-anchor-preview")
+        .expect("rail hover displays preview");
+    let lane = visual
+        .debug_bounds("message-anchor-preview-lane")
+        .expect("narrow pane reserves a preview lane");
+    assert!(lane.intersects(&preview));
+    assert!(!rail.contains(&preview.center()));
+    let blank_transcript_point = point(
+        px(f32::from(transcript.right()) - 4.0),
+        transcript.center().y,
+    );
+    assert!(transcript.contains(&blank_transcript_point));
+    assert!(!rail.contains(&blank_transcript_point));
+    assert!(!preview.contains(&blank_transcript_point));
+
+    visual.simulate_mouse_move(blank_transcript_point, None, Modifiers::default());
+    cx.run_until_parked();
+
+    assert_eq!(
+        stream.read_with(&visual, |stream, _| stream.message_anchor_hovered.clone()),
+        None,
+        "leaving the rail for blank transcript space clears its hover selection"
+    );
+    assert_eq!(
+        stream.read_with(&visual, |stream, _| stream
+            .message_anchor_preview_hovered
+            .clone()),
+        None,
+        "blank transcript space is outside the preview hover target"
+    );
+    assert!(
+        visual.debug_bounds("message-anchor-preview").is_none(),
+        "preview is hidden once the pointer has left both the rail and preview"
+    );
+
+    visual.simulate_mouse_move(rail_point, None, Modifiers::default());
+    cx.run_until_parked();
+    let preview = visual
+        .debug_bounds("message-anchor-preview")
+        .expect("returning to the rail displays its preview");
+    let selected_on_reentry = stream
+        .read_with(&visual, |stream, _| stream.message_anchor_hovered.clone())
+        .expect("rail hover selects an anchor after reentry");
+    visual.simulate_mouse_move(preview.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        stream.read_with(&visual, |stream, _| stream
+            .message_anchor_preview_hovered
+            .clone()),
+        Some(selected_on_reentry),
+        "entering the preview transfers hover ownership without dismissing it"
+    );
+    assert!(visual.debug_bounds("message-anchor-preview").is_some());
+
+    visual.simulate_mouse_move(blank_transcript_point, None, Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        stream.read_with(&visual, |stream, _| stream
+            .message_anchor_preview_hovered
+            .clone()),
+        None,
+        "leaving the preview clears its hover ownership"
+    );
+    assert_eq!(
+        stream.read_with(&visual, |stream, _| stream.message_anchor_hovered.clone()),
+        None,
+        "leaving the preview also clears the rail selection"
+    );
+    assert!(
+        visual.debug_bounds("message-anchor-preview").is_none(),
+        "the preview dismisses after the pointer leaves both hover targets"
+    );
+}
+
+#[gpui_kit::test]
 async fn keyboard_anchor_selection_displays_a_bounded_sanitized_preview(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue72-keyboard-preview");
     let target_index = 38;
@@ -694,6 +821,9 @@ async fn keyboard_anchor_selection_displays_a_bounded_sanitized_preview(cx: &mut
     window
         .update(cx, |_, window, cx| focus.focus(window, cx))
         .expect("focus rail");
+    let previous_preview = visual
+        .debug_bounds("message-anchor-preview")
+        .expect("focus keeps the previous keyboard selection visible");
     visual.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse("down").expect("Down keystroke"),
         is_held: false,
@@ -721,6 +851,11 @@ async fn keyboard_anchor_selection_displays_a_bounded_sanitized_preview(cx: &mut
     let preview_bounds = visual
         .debug_bounds("message-anchor-preview")
         .expect("keyboard selection displays the visible preview");
+    assert_ne!(
+        preview_bounds.top(),
+        previous_preview.top(),
+        "the visible preview follows the newly selected anchor"
+    );
     let rail = visual
         .debug_bounds("message-anchor-rail")
         .expect("message anchor rail");
