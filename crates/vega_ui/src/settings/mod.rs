@@ -41,7 +41,9 @@ actions!(
         NextPricingAction,
         PreviousPricingAction,
         NextSkillsAction,
-        PreviousSkillsAction
+        PreviousSkillsAction,
+        NextMcpAction,
+        PreviousMcpAction
     ]
 );
 

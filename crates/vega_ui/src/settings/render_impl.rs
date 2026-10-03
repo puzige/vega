@@ -768,7 +768,9 @@ impl Render for SettingsView {
         ];
         div()
             .id("settings-page")
-            .key_context(if self.section == 6 {
+            .key_context(if self.section == 5 {
+                "McpSettings"
+            } else if self.section == 6 {
                 "SkillsSettings"
             } else {
                 "PricingSettings"
@@ -781,6 +783,8 @@ impl Render for SettingsView {
             .on_action(cx.listener(Self::previous_pricing_action))
             .on_action(cx.listener(Self::next_skills_action))
             .on_action(cx.listener(Self::previous_skills_action))
+            .on_action(cx.listener(Self::next_mcp_action))
+            .on_action(cx.listener(Self::previous_mcp_action))
             .size_full()
             .flex()
             .flex_row()
