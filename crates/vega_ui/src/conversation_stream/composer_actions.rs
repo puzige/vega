@@ -400,6 +400,11 @@ impl ConversationStream {
         if self.actions.running || self.composer_submit_pending {
             controls.push(self.action_focus[1].clone());
         }
+        controls.extend(
+            self.active_skill_focuses
+                .iter()
+                .flat_map(|focuses| focuses.iter().cloned()),
+        );
         let index = controls
             .iter()
             .position(|focus| focus.is_focused(window))

@@ -999,6 +999,7 @@ impl ConversationStream {
                 self.last_finished_agent_message = None;
                 self.active_thinking = None;
                 self.active_skills.clear();
+                self.active_skill_focuses.clear();
                 let group =
                     cx.new(|_| RunActivityGroup::new(RunActivityStatus::Running, None, true));
                 self.observe_run_activity_group(&group, cx);
@@ -1089,6 +1090,10 @@ impl ConversationStream {
                         .any(|item| item.name == skill.name)
                 {
                     self.active_skills.push(skill);
+                    self.active_skill_focuses.push([
+                        cx.focus_handle().tab_stop(true),
+                        cx.focus_handle().tab_stop(true),
+                    ]);
                     cx.notify();
                 }
             }
@@ -1249,6 +1254,7 @@ impl ConversationStream {
         }
         self.active_thinking = None;
         self.active_skills.clear();
+        self.active_skill_focuses.clear();
         // finish() 丢弃 pending 并把尾块冻结为 committed（version bump）：
         // 这是从 mutable tail 摘除前的最后一次显式失效（C4 白名单），必须
         // 在本帧内完成最终物化——否则批量 ingress 末批 [delta…, Finished]
