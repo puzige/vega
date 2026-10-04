@@ -259,7 +259,12 @@ fn jwt_range(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
     if !has_token_boundary_before(bytes, start) || !bytes[start..].starts_with(b"eyJ") {
         return None;
     }
-    let end = credential_token_end(bytes, start);
+    let token_end = credential_token_end(bytes, start);
+    let end = if token_end > start && bytes[token_end - 1] == b'.' {
+        token_end - 1
+    } else {
+        token_end
+    };
     let token = &bytes[start..end];
     let mut segments = token.split(|byte| *byte == b'.');
     let first = segments.next()?;
@@ -406,6 +411,15 @@ mod tests {
             assert!(!redacted.contains(secret));
             assert!(redacted.contains(PROVIDER_CREDENTIAL_REDACTION_MARKER));
         }
+    }
+
+    #[test]
+    fn issue170_common_provider_formats_are_redacted_without_owner_lookup_jwt_period() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signatureCanary1234567890";
+        assert_eq!(
+            redact_sensitive_credential_text(&format!("{jwt}."), &[]),
+            format!("{PROVIDER_CREDENTIAL_REDACTION_MARKER}.")
+        );
     }
 
     #[test]
