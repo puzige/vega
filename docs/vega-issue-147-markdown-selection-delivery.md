@@ -85,3 +85,22 @@ note: to see what the problems were, run `cargo report future-incompatibilities 
 - NOT RUN：云端 PR check 尚未完成；本地静态分析与定向测试不替代云端门禁。分支保持未合并。
 - LIMIT：编译存在既有依赖 `block v0.1.6` 的 future-incompatibility warning；本卡没有修改该依赖。
 - 本次验证中的一次静态注释扫描误把 Rust 解引用表达式中的 `*` 识别成注释；修正扫描规则后通过。实现源码和测试未新增注释或诊断输出。
+
+## Follow-up: active Markdown delta invalidates an established selection
+
+| ID | requirement / risk | initial state | operation | expected observable result | evidence class | status |
+|---|---|---|---|---|---|---|
+| M147-5a | A stable selection in an active assistant Markdown message must not survive the next stream delta | GPUI has laid out an unfinished assistant Markdown stream and a drag selection has settled on `Alpha` | Apply the next `ConversationEvent::TextDelta` through `ConversationStream::apply_event`; issue Cmd+C before repaint, then let the pending Markdown tail repaint | `MessageCopy` has no selected text immediately; Cmd+C leaves the clipboard sentinel unchanged; repaint clears GPUI's selected text and exposes the updated Markdown projection | Production GPUI test context, no Provider | PASS |
+
+### Verification
+
+- verified_at_utc: 2026-10-04T10:18:23Z
+- verified_at_local: 2026-10-04 18:18:23 CST
+- branch: `feat/147-stable-selection-stream-delta`
+- test_source_diff_sha256: `5423b6810c11adfd6ebaed2a5e8c54737c6d4b7a65f5ca54562c32ecd785f1d6` (relative to `origin/master`)
+- exact command: `cargo nextest run -p vega_ui issue147_markdown_selection`
+- result: PASS; 4 passed, 525 skipped; Nextest run ID `598b7ffa-d5aa-482c-b2ec-7c0771815c29`
+- `cargo fmt --all -- --check`: PASS, exit 0
+- `git diff --check`: PASS, exit 0
+- first test build attempt exited 101 with E0499 in the test harness helper because `cx` was mutably borrowed in both the outer call and nested argument. The helper now stores the new stream in a local before opening the window. No production code changed.
+- scope: regression test and this delivery record only; no Provider request and no 360px/table-copy expansion.
