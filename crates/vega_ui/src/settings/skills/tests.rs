@@ -5,6 +5,7 @@ use gpui_kit::{
 };
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tempfile::tempdir;
 use vega_store::Store;
 
@@ -344,4 +345,149 @@ async fn issue74_s06_reload_hides_stale_projection_while_pending_and_after_failu
         view.read_with(cx, |view, _| view.skills.message.clone()),
         Some("Skills 数据库读写失败，请重试".into())
     );
+}
+
+fn skills_ui_fixture() -> (tempfile::TempDir, SkillSettingsService) {
+    let owned = tempdir().unwrap();
+    let config = owned.path().join("config");
+    let candidate = config.join("skills/reviewer");
+    fs::create_dir_all(&candidate).unwrap();
+    fs::write(
+        candidate.join("SKILL.md"),
+        "---\nname: reviewer\ndescription: Review changes.\n---\nPRIVATE BODY\n",
+    )
+    .unwrap();
+    let database = owned.path().join("vega.db");
+    let store = Store::open(&database).unwrap();
+    store.migrate().unwrap();
+    (owned, SkillSettingsService::new(database, config, None))
+}
+
+fn open_skills_settings(
+    cx: &mut TestAppContext,
+    service: SkillSettingsService,
+) -> (Entity<SettingsView>, WindowHandle<Harness>) {
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(super::super::SettingsOpen(true));
+        cx.set_global(crate::sidebar::SidebarWidth(
+            vega_theme::Layout::SIDEBAR_WIDTH,
+        ));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    view.update(cx, |view, cx| {
+        view.section = 6;
+        view.set_skills_service(Some(service), cx);
+    });
+    let root = view.clone();
+    let window: WindowHandle<Harness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1403.), px(1200.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| cx.new(|_| Harness(root)),
+            )
+        })
+        .expect("Skills Settings window");
+    cx.run_until_parked();
+    (view, window)
+}
+
+fn gated_first_skills_operation() -> (
+    Arc<SkillsOperationGate>,
+    tokio::sync::oneshot::Receiver<bool>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    (
+        Arc::new(SkillsOperationGate::new(entered, release_rx)),
+        entered_rx,
+        release_tx,
+    )
+}
+
+#[gpui_kit::test]
+async fn issue87_skills_settings_discards_late_result_after_page_leave(cx: &mut TestAppContext) {
+    let (_owned, service) = skills_ui_fixture();
+    let (view, _window) = open_skills_settings(cx, service);
+    assert!(view.read_with(cx, |view, _| view.skills.projection.is_some()));
+    let (gate, mut entered, release) = gated_first_skills_operation();
+    view.update(cx, |view, cx| {
+        view.skills.test_operation_gate = Some(gate);
+        view.skills_operation(SkillOperation::PreviewGlobal, cx);
+    });
+    cx.run_until_parked();
+    assert!(entered.try_recv().expect("completed global preview"));
+    view.update(cx, |view, cx| {
+        view.skills_section_changed(5, cx);
+        view.section = 5;
+    });
+    let left_generation = view.read_with(cx, |view, _| view.skills.request_generation);
+    assert!(!view.read_with(cx, |view, _| view.skills.busy));
+    release.send(()).expect("release late preview result");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.skills.request_generation, left_generation);
+        assert!(!view.skills.busy);
+        assert!(view.skills.root_preview.is_none());
+        assert!(view.skills.body_preview.is_none());
+        assert!(view.skills.message.is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn issue87_skills_settings_discards_late_result_after_new_generation(
+    cx: &mut TestAppContext,
+) {
+    let (_owned, service) = skills_ui_fixture();
+    let (view, _window) = open_skills_settings(cx, service);
+    let (gate, mut entered, release) = gated_first_skills_operation();
+    view.update(cx, |view, cx| {
+        view.skills.test_operation_gate = Some(gate);
+        view.skills_operation(SkillOperation::PreviewGlobal, cx);
+    });
+    cx.run_until_parked();
+    assert!(entered.try_recv().expect("completed global preview"));
+    let old_generation = view.read_with(cx, |view, _| view.skills.request_generation);
+    view.update(cx, |view, cx| {
+        view.skills_operation(SkillOperation::Reload, cx)
+    });
+    cx.run_until_parked();
+    let (new_generation, current_projection, busy, root_preview) = view.read_with(cx, |view, _| {
+        (
+            view.skills.request_generation,
+            view.skills
+                .projection
+                .as_ref()
+                .map(|projection| projection.consent_generation),
+            view.skills.busy,
+            view.skills.root_preview.clone(),
+        )
+    });
+    assert!(new_generation > old_generation);
+    assert!(!busy);
+    assert!(current_projection.is_some());
+    assert!(root_preview.is_none());
+    release.send(()).expect("release superseded preview result");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.skills.request_generation, new_generation);
+        assert_eq!(
+            view.skills
+                .projection
+                .as_ref()
+                .map(|projection| projection.consent_generation),
+            current_projection
+        );
+        assert!(!view.skills.busy);
+        assert!(view.skills.root_preview.is_none());
+    });
 }

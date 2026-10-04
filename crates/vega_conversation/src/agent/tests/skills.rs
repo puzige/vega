@@ -287,6 +287,119 @@ async fn issue74_project_auto_load_persists_audit_snapshot_and_content_free_rece
 }
 
 #[tokio::test]
+async fn issue74_s22_structurally_invalid_persisted_catalog_is_unavailable_after_restart() {
+    let (store, project, project_id) = setup();
+    let skills_root = project.path().join(".agents/skills");
+    add_skill(&skills_root, "reviewer", "PRIVATE PROJECT RULE");
+    let source = SkillSource::project_approved(project.path())
+        .unwrap()
+        .unwrap();
+    let settings = skills::read_settings(store.conn()).unwrap();
+    skills::set_project_settings(
+        store.conn(),
+        settings.consent_generation,
+        &project_id,
+        true,
+        true,
+    )
+    .unwrap();
+    approve(
+        &store,
+        &source,
+        "source-project",
+        Some(&project_id),
+        &skills_root,
+        true,
+    );
+    let provider = load_provider();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let run = run_thread_task_with_images_and_reasoning(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "review the change",
+        "System",
+        CancellationToken::new(),
+        &FixedPermissionHook {
+            calls: Arc::new(AtomicUsize::new(0)),
+            decision: PermissionDecision::Deny { note: None },
+        },
+        |_| Ok(()),
+        PersistenceActorConfig::default(),
+        None,
+        None,
+        None,
+        Vec::new(),
+    )
+    .await
+    .unwrap();
+    assert!(!run.failed);
+    assert_eq!(provider.requests().len(), 2);
+
+    let snapshot = skills::load_recoverable_snapshot(store.conn(), &run.assistant_message_id)
+        .unwrap()
+        .unwrap();
+    let binding = vega_runtime::skills::RunBinding::from_trusted_parts(
+        &snapshot.run_id,
+        &snapshot.thread_id,
+        snapshot.consent_generation,
+        snapshot.revocation_generation,
+        &snapshot.catalog_sha256,
+    )
+    .unwrap();
+    let mut payload: serde_json::Value = serde_json::from_slice(&snapshot.bytes).unwrap();
+    payload["catalog"]["model_winners"]["reviewer"] = 999.into();
+    let bytes = serde_json::to_vec(&payload).unwrap();
+    let snapshot_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    assert!(matches!(
+        vega_runtime::skills::SkillRun::restore_snapshot(&bytes, &binding, &snapshot_sha256),
+        Err(vega_runtime::skills::SkillError::InvalidFormat)
+    ));
+    store
+        .conn()
+        .execute(
+            "UPDATE skill_run_snapshots SET bytes = ?2, snapshot_sha256 = ?3 WHERE run_id = ?1",
+            (
+                &run.assistant_message_id,
+                bytes.as_slice(),
+                snapshot_sha256.as_str(),
+            ),
+        )
+        .unwrap();
+
+    let database_path = store.database_path().unwrap();
+    let reopened = Store::open(database_path).unwrap();
+    assert!(
+        super::super::recover_skill_run(&reopened, &run.assistant_message_id, "thread-1").is_err()
+    );
+    let page = crate::history::restart_history_page(&reopened, "thread-1", 20).unwrap();
+    let verification = page
+        .entries
+        .iter()
+        .find_map(|entry| match entry {
+            crate::history::HistoryEntry::SkillActivation { activation, .. }
+                if activation.run_id == run.assistant_message_id =>
+            {
+                Some(activation.verification)
+            }
+            _ => None,
+        })
+        .expect("persisted activation has a history projection");
+    assert_eq!(
+        verification,
+        crate::history::SkillHistoryVerification::Unavailable
+    );
+    assert_eq!(
+        skills::list_activation_audits(reopened.conn(), "thread-1")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(provider.requests().len(), 2);
+}
+
+#[tokio::test]
 async fn issue74_mid_run_disable_cancels_stream_before_later_tool_side_effects() {
     let (store, project, project_id) = setup();
     let skills_root = project.path().join(".agents/skills");

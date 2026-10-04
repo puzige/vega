@@ -2,6 +2,11 @@
 //! service; no Skill path, file or SQLite row is trusted on the UI thread.
 
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -16,6 +21,49 @@ use vega_theme::{Typography, theme};
 
 use super::{SettingsView, section_title};
 
+#[cfg(test)]
+pub(super) struct SkillsOperationGate {
+    entered: Mutex<Option<tokio::sync::oneshot::Sender<bool>>>,
+    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    used: AtomicBool,
+}
+
+#[cfg(test)]
+impl SkillsOperationGate {
+    pub(super) fn new(
+        entered: tokio::sync::oneshot::Sender<bool>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    ) -> Self {
+        Self {
+            entered: Mutex::new(Some(entered)),
+            release: Mutex::new(Some(release)),
+            used: AtomicBool::new(false),
+        }
+    }
+
+    async fn hold_first(&self, succeeded: bool) {
+        if self.used.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if let Some(entered) = self
+            .entered
+            .lock()
+            .ok()
+            .and_then(|mut sender| sender.take())
+        {
+            let _ = entered.send(succeeded);
+        }
+        let release = self
+            .release
+            .lock()
+            .ok()
+            .and_then(|mut receiver| receiver.take());
+        if let Some(release) = release {
+            let _ = release.await;
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct SkillsSettingsState {
     service: Option<SkillSettingsService>,
@@ -28,6 +76,8 @@ pub(crate) struct SkillsSettingsState {
     #[cfg(test)]
     reload_response_override:
         Option<tokio::sync::oneshot::Receiver<Result<SkillSettingsProjection, SkillSettingsError>>>,
+    #[cfg(test)]
+    test_operation_gate: Option<Arc<SkillsOperationGate>>,
 }
 
 #[derive(Clone)]
@@ -134,16 +184,21 @@ impl SettingsView {
         self.skills.busy = true;
         self.skills.message = None;
         cx.notify();
+        #[cfg(test)]
+        let test_operation_gate = self.skills.test_operation_gate.clone();
         let task = cx.background_executor().spawn(async move {
-            match operation {
+            let result = match operation {
                 SkillOperation::Reload => {
                     #[cfg(test)]
                     if let Some(response) = reload_response_override {
-                        return response
+                        response
                             .await
                             .unwrap_or(Err(SkillSettingsError::Store))
-                            .map(SkillOperationResult::Projection);
+                            .map(SkillOperationResult::Projection)
+                    } else {
+                        service.projection().map(SkillOperationResult::Projection)
                     }
+                    #[cfg(not(test))]
                     service.projection().map(SkillOperationResult::Projection)
                 }
                 SkillOperation::PreviewProject => service
@@ -165,7 +220,12 @@ impl SettingsView {
                     service.apply(generation, mutation)?;
                     service.projection().map(SkillOperationResult::Projection)
                 }
+            };
+            #[cfg(test)]
+            if let Some(gate) = test_operation_gate {
+                gate.hold_first(result.is_ok()).await;
             }
+            result
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;

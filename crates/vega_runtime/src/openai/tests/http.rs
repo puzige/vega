@@ -597,6 +597,68 @@ async fn network_error_is_retried_then_succeeds() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn exhausted_transport_errors_keep_typed_diagnostic_and_redact_request_data() {
+    const MAX_RETRIES: u32 = 2;
+    const MODEL_CANARY: &str = "VEGA_TRANSPORT_MODEL_CANARY";
+    const PROMPT_CANARY: &str = "VEGA_TRANSPORT_PROMPT_CANARY";
+
+    let server = mock_transport(Arc::new(|_| Err(simulated_transport_error()))).await;
+    let provider = provider_for(
+        &server,
+        RetryPolicy {
+            max_retries: MAX_RETRIES,
+            base_delay: Duration::from_millis(1),
+            ..RetryPolicy::default()
+        },
+    );
+    let result = provider
+        .chat_stream(
+            ChatRequest {
+                model: MODEL_CANARY.into(),
+                messages: vec![ChatMessage::new(ChatRole::User, PROMPT_CANARY)],
+                ..request()
+            },
+            CancellationToken::new(),
+        )
+        .await;
+    let Err(error) = result else {
+        panic!("expected exhausted transport error, got a successful stream");
+    };
+
+    let rendered_error = format!("{error:?} {error}");
+    match &error {
+        VegaError::ProviderDiagnostic {
+            kind,
+            status,
+            message,
+            retryable,
+            retry_count,
+            request_id,
+        } => {
+            assert_eq!(*kind, ProviderFailureKind::Transport);
+            assert_eq!(*status, None);
+            assert!(!*retryable);
+            assert_eq!(*retry_count, Some(MAX_RETRIES));
+            assert!(request_id.is_none());
+            for sentinel in [KEY, MODEL_CANARY, PROMPT_CANARY] {
+                assert!(!message.contains(sentinel), "provider message leaked data");
+                assert!(
+                    !rendered_error.contains(sentinel),
+                    "provider error output leaked data"
+                );
+            }
+        }
+        other => panic!("expected typed exhausted transport error, got {other:?}"),
+    }
+    assert_eq!(
+        server.attempt_count(),
+        (MAX_RETRIES + 1) as usize,
+        "one initial attempt plus configured retries"
+    );
+    assert_eq!(server.captured().len(), (MAX_RETRIES + 1) as usize);
+}
+
+#[tokio::test(start_paused = true)]
 async fn non_retryable_4xx_fails_without_retry() {
     let server = mock_transport(scripted_responses(vec![status_response(
         "401 Unauthorized",
