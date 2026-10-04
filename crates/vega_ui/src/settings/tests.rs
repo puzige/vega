@@ -440,6 +440,171 @@ fn issue73_mcp_enable_message_distinguishes_enabled_failure_states() {
     );
 }
 
+#[gpui_kit::test]
+async fn issue86_m05_unsupported_transport_is_visible_in_settings(cx: &mut TestAppContext) {
+    let owned = tempfile::tempdir().expect("owned MCP Settings root");
+    let requests = Arc::new(AtomicUsize::new(0));
+    let request_counter = requests.clone();
+    let endpoint = vega_mcp::mock::Endpoint::new("/mcp", |_| {
+        Arc::new(move |_| {
+            request_counter.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Ok(vega_mcp::mock::response(
+                    404,
+                    "text/plain",
+                    String::new(),
+                    Vec::new(),
+                ))
+            })
+        })
+    });
+    let service = vega_conversation::McpServerSettingsService::new(
+        owned.path().join("vega.db"),
+        owned.path().join("config"),
+    );
+    let saved = service
+        .create(vega_conversation::types::McpServerForm {
+            display_name: "deprecated HTTP+SSE".into(),
+            transport: vega_conversation::types::McpServerTransport::Remote {
+                endpoint: endpoint.to_string(),
+                allow_loopback_http: true,
+                authorization: vega_conversation::types::McpRemoteAuthorization::None,
+            },
+        })
+        .expect("save remote fixture");
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    view.update(cx, |view, cx| {
+        view.install_mcp_service(Some(service.clone()), cx)
+    });
+    wait_for_mcp_idle(cx, &view);
+    let root = view.clone();
+    let window: WindowHandle<SettingsHarness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1403.), px(860.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| {
+                    cx.new(|_| SettingsHarness {
+                        view: root,
+                        closes: Arc::new(AtomicUsize::new(0)),
+                    })
+                },
+            )
+        })
+        .expect("Settings window");
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let nav = visual
+        .debug_bounds("settings-nav-mcp")
+        .expect("MCP navigation");
+    visual.simulate_click(nav.center(), Default::default());
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let test = visual.debug_bounds("mcp-test").expect("test connection");
+    visual.simulate_click(test.center(), Default::default());
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let confirm = visual.debug_bounds("mcp-confirm").expect("confirm test");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(confirm.center(), Default::default());
+    for _ in 0..150 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+        if view.read_with(cx, |view, _| {
+            view.mcp.generation > generation && !view.mcp.busy
+        }) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (message, message_error, health) = view.read_with(cx, |view, _| {
+        (
+            view.mcp.message.clone(),
+            view.mcp.message_error,
+            view.mcp
+                .servers
+                .iter()
+                .find(|row| row.id == saved.id)
+                .map(|row| super::mcp::health_label(&row.health)),
+        )
+    });
+
+    assert_eq!(
+        message.as_deref(),
+        Some("服务器使用了已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点")
+    );
+    assert!(message_error);
+    assert_eq!(health, Some("未启用"));
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("mcp-message")
+            .is_some()
+    );
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let enable = visual.debug_bounds("mcp-enable").expect("enable action");
+    visual.simulate_click(enable.center(), Default::default());
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let confirm = visual.debug_bounds("mcp-confirm").expect("confirm enable");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(confirm.center(), Default::default());
+    for _ in 0..150 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+        if view.read_with(cx, |view, _| {
+            view.mcp.generation > generation && !view.mcp.busy
+        }) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let (enabled_message, enabled_error, enabled_health) = view.read_with(cx, |view, _| {
+        let row = view
+            .mcp
+            .servers
+            .iter()
+            .find(|row| row.id == saved.id)
+            .expect("enabled MCP row");
+        (
+            view.mcp.message.clone(),
+            view.mcp.message_error,
+            super::mcp::health_label(&row.health),
+        )
+    });
+    assert_eq!(
+        enabled_message.as_deref(),
+        Some(
+            "已启用，但服务器使用了已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点；该任务不会向模型提供工具"
+        )
+    );
+    assert!(enabled_error);
+    assert_eq!(
+        enabled_health,
+        "不支持已弃用的独立 HTTP+SSE；请改用 Streamable HTTP 端点"
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("mcp-health")
+            .is_some()
+    );
+}
+
 #[test]
 fn issue73_mcp_remote_confirmation_discloses_auth_and_loopback_http() {
     let row = vega_conversation::types::McpServerView {
