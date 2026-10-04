@@ -19,14 +19,32 @@ fn open_selection_harness(
     cx: &mut TestAppContext,
     entry: StreamEntry,
 ) -> (Entity<ConversationStream>, VisualTestContext) {
-    init_permission_test(cx);
-    let mut thread = permission_thread();
-    thread.id = "issue147-selection".into();
-    let stream = cx.new(|cx| ConversationStream::new(thread, cx));
+    let stream = new_selection_stream(cx);
     stream.update(cx, |stream, _| {
         stream.entries.push(entry);
         stream.list_append(0);
     });
+    open_stream_harness(cx, stream)
+}
+
+fn open_empty_selection_harness(
+    cx: &mut TestAppContext,
+) -> (Entity<ConversationStream>, VisualTestContext) {
+    let stream = new_selection_stream(cx);
+    open_stream_harness(cx, stream)
+}
+
+fn new_selection_stream(cx: &mut TestAppContext) -> Entity<ConversationStream> {
+    init_permission_test(cx);
+    let mut thread = permission_thread();
+    thread.id = "issue147-selection".into();
+    cx.new(|cx| ConversationStream::new(thread, cx))
+}
+
+fn open_stream_harness(
+    cx: &mut TestAppContext,
+    stream: Entity<ConversationStream>,
+) -> (Entity<ConversationStream>, VisualTestContext) {
     let root_stream = stream.clone();
     let window = cx.update(|cx| {
         cx.open_window(Default::default(), move |_, cx| {
@@ -174,6 +192,91 @@ fn issue147_stream_append_invalidates_stale_copy_before_repaint(cx: &mut TestApp
             .and_then(|item| item.text())
             .as_deref(),
         Some("sentinel")
+    );
+}
+
+#[gpui_kit::test]
+fn issue147_streaming_markdown_delta_invalidates_stable_selection_before_repaint(
+    cx: &mut TestAppContext,
+) {
+    let initial_text = "prefix Alpha suffix";
+    let message_id = "issue147-live-assistant";
+    selection::SELECTION_RUN_LAYOUTS.with_borrow_mut(Vec::clear);
+    let (stream, mut visual) = open_empty_selection_harness(cx);
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::MessageStarted {
+                message_id: message_id.into(),
+                seq: 1,
+            },
+            cx,
+        );
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: message_id.into(),
+                delta: initial_text.into(),
+            },
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    let copy = stream
+        .read_with(&visual, |stream, _| {
+            stream.entries.iter().find_map(|entry| match entry {
+                StreamEntry::Assistant { copy, .. } => Some(copy.clone()),
+                _ => None,
+            })
+        })
+        .expect("active assistant markdown entry");
+
+    let layout = layout_for(initial_text);
+    let start = initial_text.find("Alpha").expect("selection start");
+    let end = start + "Alpha".len();
+    drag(
+        &mut visual,
+        text_point(&layout, start, false),
+        text_point(&layout, end, true),
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        visual.update(gpui_kit::base::TextSelection::selected_text),
+        "Alpha"
+    );
+    assert!(copy.has_selected_text());
+
+    visual.write_to_clipboard(gpui_kit::ClipboardItem::new_string("sentinel".into()));
+    stream.update(cx, |stream, cx| {
+        stream.apply_event(
+            ConversationEvent::TextDelta {
+                message_id: message_id.into(),
+                delta: " and **new** text".into(),
+            },
+            cx,
+        );
+    });
+
+    assert!(
+        !copy.has_selected_text(),
+        "stream delta retained the previous selection before repaint"
+    );
+    visual.simulate_keystrokes("cmd-c");
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("sentinel")
+    );
+
+    visual.run_until_parked();
+    assert!(
+        visual
+            .update(gpui_kit::base::TextSelection::selected_text)
+            .is_empty()
+    );
+    assert_eq!(
+        copy.visible_text().as_deref(),
+        Some("prefix Alpha suffix and new text")
     );
 }
 
