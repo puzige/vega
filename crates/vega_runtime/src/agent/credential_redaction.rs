@@ -46,7 +46,16 @@ const ASSIGNMENT_KEYS: [&str; 15] = [
 ];
 
 pub fn redact_sensitive_credential_text(text: &str, credentials: &[String]) -> String {
+    redact_sensitive_credential_text_with_offsets(text, credentials, &[]).0
+}
+
+pub fn redact_sensitive_credential_text_with_offsets(
+    text: &str,
+    credentials: &[String],
+    offsets: &[usize],
+) -> (String, Vec<usize>) {
     let mut redacted = text.to_string();
+    let mut mapped_offsets = offsets.to_vec();
     let mut ordered = credentials
         .iter()
         .filter(|credential| !credential.is_empty())
@@ -54,43 +63,120 @@ pub fn redact_sensitive_credential_text(text: &str, credentials: &[String]) -> S
     ordered.sort_by_key(|credential| std::cmp::Reverse(credential.len()));
     ordered.dedup();
     for credential in ordered {
-        redacted = redacted.replace(credential.as_str(), PROVIDER_CREDENTIAL_REDACTION_MARKER);
+        (redacted, mapped_offsets) = replace_text_with_offsets(
+            &redacted,
+            credential,
+            PROVIDER_CREDENTIAL_REDACTION_MARKER,
+            &mapped_offsets,
+        );
         let Ok(encoded) = serde_json::to_string(credential.as_str()) else {
             continue;
         };
         let Some(escaped) = encoded.get(1..encoded.len().saturating_sub(1)) else {
             continue;
         };
-        redacted = redacted.replace(escaped, PROVIDER_CREDENTIAL_REDACTION_MARKER);
+        (redacted, mapped_offsets) = replace_text_with_offsets(
+            &redacted,
+            escaped,
+            PROVIDER_CREDENTIAL_REDACTION_MARKER,
+            &mapped_offsets,
+        );
     }
-    redact_common_credential_formats(&redacted)
+    redact_common_credential_formats_with_offsets(&redacted, &mapped_offsets)
 }
 
 pub fn contains_sensitive_credential(text: &str, credentials: &[String]) -> bool {
     redact_sensitive_credential_text(text, credentials) != text
 }
 
-fn redact_common_credential_formats(text: &str) -> String {
+fn redact_common_credential_formats_with_offsets(
+    text: &str,
+    offsets: &[usize],
+) -> (String, Vec<usize>) {
     let lowercase = text.to_ascii_lowercase();
     let bytes = text.as_bytes();
     let lowercase_bytes = lowercase.as_bytes();
-    let mut result = String::with_capacity(text.len());
     let mut cursor = 0usize;
+    let mut ranges = Vec::new();
     while cursor < bytes.len() {
         if let Some((start, end)) = credential_range_at(bytes, lowercase_bytes, cursor) {
-            result.push_str(&text[cursor..start]);
-            result.push_str(PROVIDER_CREDENTIAL_REDACTION_MARKER);
+            ranges.push((start, end));
             cursor = end;
         } else {
             let next = text[cursor..]
                 .chars()
                 .next()
                 .map_or(bytes.len(), |character| cursor + character.len_utf8());
-            result.push_str(&text[cursor..next]);
             cursor = next;
         }
     }
-    result
+    replace_ranges_with_offsets(text, &ranges, PROVIDER_CREDENTIAL_REDACTION_MARKER, offsets)
+}
+
+fn replace_text_with_offsets(
+    text: &str,
+    needle: &str,
+    replacement: &str,
+    offsets: &[usize],
+) -> (String, Vec<usize>) {
+    if needle.is_empty() {
+        return (text.to_string(), offsets.to_vec());
+    }
+    let ranges = text
+        .match_indices(needle)
+        .map(|(start, matched)| (start, start + matched.len()))
+        .collect::<Vec<_>>();
+    replace_ranges_with_offsets(text, &ranges, replacement, offsets)
+}
+
+fn replace_ranges_with_offsets(
+    text: &str,
+    ranges: &[(usize, usize)],
+    replacement: &str,
+    offsets: &[usize],
+) -> (String, Vec<usize>) {
+    if ranges.is_empty() {
+        return (text.to_string(), offsets.to_vec());
+    }
+    let mut result = String::with_capacity(text.len());
+    let mut cursor = 0usize;
+    for (start, end) in ranges {
+        result.push_str(&text[cursor..*start]);
+        result.push_str(replacement);
+        cursor = *end;
+    }
+    result.push_str(&text[cursor..]);
+
+    let mut indexed_offsets = offsets.iter().copied().enumerate().collect::<Vec<_>>();
+    indexed_offsets.sort_by_key(|(_, offset)| *offset);
+    let mut mapped_offsets = vec![0; offsets.len()];
+    let mut range_index = 0usize;
+    let mut source_cursor = 0usize;
+    let mut output_cursor = 0usize;
+    for (offset_index, offset) in indexed_offsets {
+        let mut mapped = None;
+        while let Some((start, end)) = ranges.get(range_index).copied() {
+            let output_start = output_cursor + (start - source_cursor);
+            if offset < start {
+                mapped = Some(output_cursor + (offset - source_cursor));
+                break;
+            }
+            if offset == start {
+                mapped = Some(output_start);
+                break;
+            }
+            if offset <= end {
+                mapped = Some(output_start + replacement.len());
+                break;
+            }
+            source_cursor = end;
+            output_cursor = output_start + replacement.len();
+            range_index += 1;
+        }
+        mapped_offsets[offset_index] =
+            mapped.unwrap_or_else(|| output_cursor + (offset - source_cursor));
+    }
+    (result, mapped_offsets)
 }
 
 fn credential_range_at(bytes: &[u8], lowercase: &[u8], start: usize) -> Option<(usize, usize)> {
@@ -245,6 +331,33 @@ mod tests {
             assert!(!redacted.contains(SECRET));
             assert!(redacted.contains(PROVIDER_CREDENTIAL_REDACTION_MARKER));
         }
+    }
+
+    #[test]
+    fn issue170_exact_redaction_maps_offsets_around_replaced_credentials() {
+        let prefix = "前置 ";
+        let suffix = " 后置";
+        let text = format!("{prefix}{SECRET}{suffix}");
+        let start = prefix.len();
+        let end = start + SECRET.len();
+        let offsets = [0, start, start + 7, end, text.len()];
+        let (redacted, mapped) =
+            redact_sensitive_credential_text_with_offsets(&text, &[SECRET.to_string()], &offsets);
+        let marker_end = start + PROVIDER_CREDENTIAL_REDACTION_MARKER.len();
+
+        assert_eq!(
+            redacted,
+            format!("{prefix}{PROVIDER_CREDENTIAL_REDACTION_MARKER}{suffix}")
+        );
+        assert_eq!(
+            mapped,
+            vec![0, start, marker_end, marker_end, redacted.len()]
+        );
+        assert!(
+            mapped
+                .iter()
+                .all(|offset| redacted.is_char_boundary(*offset))
+        );
     }
 
     #[test]

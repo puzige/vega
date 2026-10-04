@@ -777,7 +777,7 @@ pub fn redact_legacy_thread_content<F>(
     mut redact: F,
 ) -> Result<bool, rusqlite::Error>
 where
-    F: FnMut(&str) -> String,
+    F: FnMut(&str, &[usize]) -> (String, Vec<usize>),
 {
     let tool_rows = {
         let mut statement = conn.prepare(
@@ -791,7 +791,7 @@ where
     };
     let mut changed = false;
     for (id, text) in tool_rows {
-        let redacted = redact(&text);
+        let (redacted, _) = redact(&text, &[]);
         if redacted != text {
             conn.execute(
                 "UPDATE tool_calls SET output_text = ?1 WHERE id = ?2 AND thread_id = ?3",
@@ -812,7 +812,7 @@ where
             .collect::<Result<Vec<_>, _>>()?
     };
     for (id, text) in message_rows {
-        let redacted = redact(&text);
+        let (redacted, _) = redact(&text, &[]);
         if redacted != text {
             let call_rows = {
                 let mut statement = conn.prepare(
@@ -824,11 +824,12 @@ where
                     })?
                     .collect::<Result<Vec<_>, _>>()?
             };
-            for (call_id, offset) in call_rows {
+            let mut offsets = Vec::new();
+            for (_, offset) in &call_rows {
                 let Some(offset) = offset else {
                     continue;
                 };
-                let offset = usize::try_from(offset).map_err(|_| {
+                let offset = usize::try_from(*offset).map_err(|_| {
                     rusqlite::Error::InvalidParameterName("negative tool text offset".into())
                 })?;
                 if offset > text.len() || !text.is_char_boundary(offset) {
@@ -836,11 +837,38 @@ where
                         "invalid tool text offset".into(),
                     ));
                 }
-                let redacted_offset = redact(&text[..offset]).len().min(redacted.len());
+                offsets.push(offset);
+            }
+            let (redacted, redacted_offsets) = redact(&text, &offsets);
+            if redacted_offsets.len() != offsets.len() {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "invalid redacted tool text offsets".into(),
+                ));
+            }
+            let mut redacted_offsets = redacted_offsets.into_iter();
+            for (call_id, offset) in call_rows {
+                if offset.is_none() {
+                    continue;
+                }
+                let redacted_offset = redacted_offsets.next().ok_or_else(|| {
+                    rusqlite::Error::InvalidParameterName(
+                        "missing redacted tool text offset".into(),
+                    )
+                })?;
+                if redacted_offset > redacted.len() || !redacted.is_char_boundary(redacted_offset) {
+                    return Err(rusqlite::Error::InvalidParameterName(
+                        "invalid redacted tool text offset".into(),
+                    ));
+                }
                 conn.execute(
                     "UPDATE tool_calls SET text_offset_bytes = ?1 WHERE id = ?2 AND thread_id = ?3",
                     params![redacted_offset as i64, call_id, thread_id],
                 )?;
+            }
+            if redacted_offsets.next().is_some() {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "extra redacted tool text offsets".into(),
+                ));
             }
             conn.execute(
                 "UPDATE messages SET content = ?1 WHERE id = ?2 AND thread_id = ?3 AND role = 'assistant' AND status <> 'streaming'",
@@ -860,7 +888,7 @@ where
             .collect::<Result<Vec<_>, _>>()?
     };
     for (id, summary) in checkpoint_rows {
-        let redacted = redact(&summary);
+        let (redacted, _) = redact(&summary, &[]);
         if redacted != summary {
             conn.execute(
                 "UPDATE context_checkpoints SET summary = ?1 WHERE id = ?2 AND thread_id = ?3",
@@ -2072,6 +2100,91 @@ mod tests {
             other => panic!("unexpected install result: {other:?}"),
         };
         assert!(!format!("{row:?}").contains(SECRET));
+    }
+
+    #[test]
+    fn issue170_legacy_redaction_keeps_tool_offsets_outside_replacement_text() {
+        const SECRET: &str = "held-secret-crossing-offset";
+        const MARKER: &str = "[REDACTED:provider_credential]";
+        let (store, _directory) = store();
+        let prefix = "前置文本 ";
+        let suffix = " 后续文本";
+        let content = format!("{prefix}{SECRET}{suffix}");
+        add_message(&store, "assistant", 1, "assistant", &content);
+        let before_secret = prefix.len();
+        let inside_secret = before_secret + 7;
+        let after_secret = before_secret + SECRET.len();
+        for (id, seq, offset) in [
+            ("before", 2, before_secret),
+            ("inside", 3, inside_secret),
+            ("after", 4, after_secret),
+        ] {
+            store
+                .conn()
+                .execute(
+                    "INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, status, created_at, text_offset_bytes) \
+                     VALUES (?1, 't', 'assistant', ?2, 'read', '{}', 'success', ?2, ?3)",
+                    params![id, seq, offset as i64],
+                )
+                .unwrap();
+        }
+
+        assert!(
+            redact_legacy_thread_content(store.conn(), "t", |text, offsets| {
+                let replacement_start = prefix.len();
+                let secret_end = replacement_start + SECRET.len();
+                let replacement_end = replacement_start + MARKER.len();
+                let mapped_offsets = offsets
+                    .iter()
+                    .map(|offset| {
+                        if *offset <= replacement_start {
+                            *offset
+                        } else if *offset <= secret_end {
+                            replacement_end
+                        } else {
+                            *offset - SECRET.len() + MARKER.len()
+                        }
+                    })
+                    .collect();
+                (text.replace(SECRET, MARKER), mapped_offsets)
+            })
+            .unwrap()
+        );
+
+        let redacted: String = store
+            .conn()
+            .query_row(
+                "SELECT content FROM messages WHERE id = 'assistant'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let offsets = store
+            .conn()
+            .prepare("SELECT text_offset_bytes FROM tool_calls ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let replacement_start = prefix.len();
+        let replacement_end = replacement_start + MARKER.len();
+
+        assert_eq!(redacted, format!("{prefix}{MARKER}{suffix}"));
+        assert_eq!(
+            offsets,
+            vec![
+                replacement_start as i64,
+                replacement_end as i64,
+                replacement_end as i64
+            ]
+        );
+        assert!(offsets.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(
+            offsets
+                .iter()
+                .all(|offset| redacted.is_char_boundary(*offset as usize))
+        );
     }
 
     #[test]

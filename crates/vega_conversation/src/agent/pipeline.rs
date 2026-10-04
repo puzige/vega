@@ -762,7 +762,13 @@ pub(crate) fn prepare_run_with_images_and_reasoning(
         vega_store::context_compaction::redact_legacy_thread_content(
             &transaction,
             &thread_id,
-            |text| vega_runtime::redact_sensitive_credential_text(text, &credential_values),
+            |text, offsets| {
+                vega_runtime::redact_sensitive_credential_text_with_offsets(
+                    text,
+                    &credential_values,
+                    offsets,
+                )
+            },
         )
         .map_err(runtime_store_error)?;
 

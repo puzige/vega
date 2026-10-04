@@ -38,7 +38,7 @@ use mcp_registry::{KnownCredentials, McpCandidate, RunCapabilitySnapshot};
 mod credential_redaction;
 pub use credential_redaction::{
     CredentialReader, PROVIDER_CREDENTIAL_REDACTION_MARKER, contains_sensitive_credential,
-    redact_sensitive_credential_text,
+    redact_sensitive_credential_text, redact_sensitive_credential_text_with_offsets,
 };
 pub use mcp_registry::{McpReadyServer, McpRevocationLease};
 

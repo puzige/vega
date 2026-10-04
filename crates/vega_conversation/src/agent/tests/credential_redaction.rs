@@ -224,6 +224,14 @@ async fn issue170_legacy_credential_history_is_scrubbed_and_blocked_before_provi
         },
     )
     .unwrap();
+    let assistant_prefix = "old assistant saw ";
+    store
+        .conn()
+        .execute(
+            "UPDATE tool_calls SET text_offset_bytes = ?1 WHERE id = 'legacy-tool-call'",
+            [(assistant_prefix.len() + 7) as i64],
+        )
+        .unwrap();
     tool_calls::update(
         store.conn(),
         "legacy-tool-call",
@@ -300,8 +308,20 @@ async fn issue170_legacy_credential_history_is_scrubbed_and_blocked_before_provi
             |row| row.get(0),
         )
         .unwrap();
+    let text_offset: i64 = store
+        .conn()
+        .query_row(
+            "SELECT text_offset_bytes FROM tool_calls WHERE id = 'legacy-tool-call'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
     for cleaned in [assistant, tool_output, summary] {
         assert!(!cleaned.contains(CANARY));
         assert!(cleaned.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER));
     }
+    assert_eq!(
+        text_offset,
+        (assistant_prefix.len() + vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER.len()) as i64
+    );
 }
