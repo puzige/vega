@@ -5,14 +5,139 @@ use crate::types::{
     McpServerTransport, ToolCall, ToolCallStatus, ToolCardInputProjection,
     ToolCardResultProjection,
 };
+use std::io::{self, Write};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use vega_runtime::RuntimeToolCall;
 use vega_runtime::{
     McpReadyServer, RuntimeApprovalAudit, RuntimeApprovalDecision, RuntimeApprovalSource,
     RuntimeEvent, RuntimeToolResult,
 };
+
+#[derive(Clone)]
+struct M07LogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for M07LogWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+type M07RequestCapture = Arc<Mutex<Vec<(String, Option<String>, String)>>>;
+
+fn m07_http_fixture(name: &str, answer: &str) -> (vega_mcp::mock::Endpoint, M07RequestCapture) {
+    let tools = serde_json::json!([{
+        "name": name,
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"]
+        }
+    }]);
+    let answer = answer.to_owned();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    let endpoint = vega_mcp::mock::Endpoint::new("/mcp", move |_| {
+        Arc::new(move |request| {
+            let url = request.url().as_str().to_owned();
+            let authorization = request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let body = request
+                .body()
+                .and_then(|body| body.as_bytes())
+                .expect("fixture request body")
+                .to_vec();
+            let body = String::from_utf8(body).expect("fixture JSON is UTF-8");
+            captured
+                .lock()
+                .unwrap()
+                .push((url, authorization, body.clone()));
+            let request: serde_json::Value =
+                serde_json::from_str(&body).expect("fixture request JSON");
+            let result = vega_mcp::mock::catalog_reply(&request, &tools, &answer)
+                .expect("known MCP request")
+                .to_string();
+            Box::pin(async move {
+                Ok(vega_mcp::mock::response(
+                    200,
+                    "application/json",
+                    result,
+                    Vec::new(),
+                ))
+            })
+        })
+    });
+    (endpoint, requests)
+}
+
+fn m07_redirect_fixture(location: &str) -> (vega_mcp::mock::Endpoint, M07RequestCapture) {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured = requests.clone();
+    let location = location.to_owned();
+    let endpoint = vega_mcp::mock::Endpoint::new("/mcp", move |_| {
+        let captured = captured.clone();
+        let location = location.clone();
+        Arc::new(move |request| {
+            let url = request.url().as_str().to_owned();
+            let authorization = request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let body = request
+                .body()
+                .and_then(|body| body.as_bytes())
+                .expect("redirect request body")
+                .to_vec();
+            let body = String::from_utf8(body).expect("redirect body UTF-8");
+            captured.lock().unwrap().push((url, authorization, body));
+            let location = location.clone();
+            Box::pin(async move {
+                Ok(vega_mcp::mock::response(
+                    302,
+                    "text/plain",
+                    String::new(),
+                    vec![("location", location)],
+                ))
+            })
+        })
+    });
+    (endpoint, requests)
+}
+
+fn assert_m07_no_secret_in_files(root: &Path, credential_file: &Path, secret: &str) {
+    fn scan(path: &Path, credential_file: &Path, secret: &[u8]) {
+        if path == credential_file {
+            return;
+        }
+        let metadata = fs::symlink_metadata(path).expect("fixture file metadata");
+        if metadata.file_type().is_dir() {
+            for entry in fs::read_dir(path).expect("fixture directory") {
+                scan(
+                    &entry.expect("fixture directory entry").path(),
+                    credential_file,
+                    secret,
+                );
+            }
+        } else if metadata.file_type().is_file() {
+            let bytes = fs::read(path).expect("fixture file contents");
+            assert!(
+                !bytes.windows(secret.len()).any(|window| window == secret),
+                "bearer secret leaked outside the owner-only credential file"
+            );
+        }
+    }
+    scan(root, credential_file, secret.as_bytes());
+}
 
 fn proposal() -> (RuntimeToolCall, McpCallIdentity) {
     let identity = McpCallIdentity {
@@ -1063,6 +1188,232 @@ async fn issue73_owned_remote_http_reaches_durable_conversation_and_second_provi
     assert!(provider.requests()[1].messages.iter().any(|message| {
         message.role == vega_runtime::ChatRole::Tool && message.content.contains("remote-answer")
     }));
+}
+
+#[test]
+fn issue73_m07_bearer_canary_stays_out_of_every_noncredential_surface() {
+    const SECRET: &str = "fake-m07-owner-only-bearer-canary-73";
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let log_writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || M07LogWriter(log_writer.clone()))
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        owned_runtime().block_on(async {
+            let (store, project_dir, data_dir, _) = setup_external("confirm");
+            let database_path = data_dir.path().join("vega.db");
+            let config_root = data_dir.path().join("config");
+            let service = McpServerSettingsService::new(database_path, config_root.clone());
+            let (anonymous_endpoint, anonymous_requests) =
+                m07_http_fixture("anonymous_lookup", "anonymous-answer");
+            let (bearer_endpoint, bearer_requests) =
+                m07_http_fixture("bearer_lookup", "bearer-answer");
+            let (redirect_target, target_requests) =
+                m07_http_fixture("redirect_target", "must-not-receive-bearer");
+            let redirect_location = redirect_target.to_string();
+            let (redirect_source, redirect_requests) = m07_redirect_fixture(&redirect_location);
+            let redirect_credential =
+                vega_mcp::BearerCredential::manual(&redirect_source, true, SECRET.into())
+                    .expect("bind redirect canary to source endpoint");
+            assert!(matches!(
+                vega_mcp::HttpClient::connect_with_bearer(
+                    &redirect_source,
+                    true,
+                    redirect_credential
+                )
+                .await,
+                Err(vega_mcp::McpError::InvalidConfig)
+            ));
+            let redirect_source_request = {
+                let requests = redirect_requests.lock().unwrap();
+                assert_eq!(requests.len(), 1);
+                requests[0].clone()
+            };
+            assert_eq!(
+                redirect_source_request.1.as_deref(),
+                Some("Bearer fake-m07-owner-only-bearer-canary-73")
+            );
+            assert!(!redirect_source_request.0.contains(SECRET));
+            assert!(!redirect_source_request.2.contains(SECRET));
+            assert!(target_requests.lock().unwrap().is_empty());
+            let changed_origin_credential =
+                vega_mcp::BearerCredential::manual(&redirect_source, true, SECRET.into())
+                    .expect("bind changed-origin canary to source endpoint");
+            assert!(matches!(
+                vega_mcp::HttpClient::connect_with_bearer(
+                    &redirect_target,
+                    true,
+                    changed_origin_credential
+                )
+                .await,
+                Err(vega_mcp::McpError::CredentialBinding)
+            ));
+            assert!(target_requests.lock().unwrap().is_empty());
+            let remote_form = |endpoint: &str, authorization| McpServerForm {
+                display_name: "Owned M07 fixture".into(),
+                transport: McpServerTransport::Remote {
+                    endpoint: endpoint.into(),
+                    allow_loopback_http: true,
+                    authorization,
+                },
+            };
+            let anonymous = service
+                .create(remote_form(
+                    &anonymous_endpoint,
+                    McpRemoteAuthorization::None,
+                ))
+                .expect("save anonymous endpoint");
+            let bearer = service
+                .create(remote_form(
+                    &bearer_endpoint,
+                    McpRemoteAuthorization::Bearer,
+                ))
+                .expect("save explicit bearer endpoint");
+            let bearer = service
+                .set_bearer_secret(&bearer.id, bearer.config_revision, SECRET.into())
+                .expect("store owned fake bearer");
+            assert!(
+                service
+                    .list()
+                    .unwrap()
+                    .iter()
+                    .all(|view| { !format!("{view:?}").contains(SECRET) })
+            );
+
+            let anonymous = service
+                .set_enabled(&anonymous.id, anonymous.config_revision, true, true)
+                .await
+                .expect("connect anonymous endpoint");
+            let bearer = service
+                .set_enabled(&bearer.id, bearer.config_revision, true, true)
+                .await
+                .expect("connect bearer endpoint");
+            let readiness = service.ready_for_run().await.expect("ready endpoints");
+            assert!(
+                readiness.unavailable.is_empty(),
+                "{:?}",
+                readiness.unavailable
+            );
+            assert_eq!(readiness.ready_servers.len(), 2);
+
+            let identity = |server_id: &str, revision: u64, tool: &str| McpCallIdentity {
+                server_id: server_id.into(),
+                config_revision: revision,
+                exact_tool_name: tool.into(),
+                arguments_bytes: 0,
+                arguments_sha256: "0".repeat(64),
+                argument_preview: String::new(),
+            };
+            let anonymous_alias =
+                identity(&anonymous.id, anonymous.config_revision, "anonymous_lookup").alias();
+            let bearer_alias =
+                identity(&bearer.id, bearer.config_revision, "bearer_lookup").alias();
+            let provider = MockProvider::new_rounds(vec![
+                vec![ScriptStep::events(vec![
+                    ProviderEvent::ToolUse {
+                        id: "m07-anonymous-call".into(),
+                        name: anonymous_alias,
+                        input_json: r#"{"query":"owned anonymous fixture"}"#.into(),
+                    },
+                    ProviderEvent::ToolUse {
+                        id: "m07-bearer-call".into(),
+                        name: bearer_alias,
+                        input_json: r#"{"query":"owned bearer fixture"}"#.into(),
+                    },
+                    ProviderEvent::Done {
+                        stop_reason: StopReason::ToolUse,
+                    },
+                ])],
+                vec![ScriptStep::events(vec![ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                }])],
+            ]);
+            let tools = vega_tools::Tools::new(project_dir.path()).expect("owned project tools");
+            let hook = FixedPermissionHook {
+                calls: Arc::new(AtomicUsize::new(0)),
+                decision: PermissionDecision::Once,
+            };
+            let mut live_events = Vec::new();
+            let run = run_thread_task_with_images_reasoning_and_mcp(
+                &store,
+                &provider,
+                &tools,
+                "thread-1",
+                "Use both owned MCP endpoints",
+                "System",
+                CancellationToken::new(),
+                &hook,
+                |event| {
+                    live_events.push(event.clone());
+                    Ok(())
+                },
+                PersistenceActorConfig::default(),
+                None,
+                None,
+                None,
+                Vec::new(),
+                readiness.ready_servers,
+            )
+            .await
+            .expect("run both owned calls");
+            assert!(!run.failed);
+            for event in &live_events {
+                assert!(!format!("{event:?}").contains(SECRET));
+            }
+            for request in provider.requests() {
+                assert!(
+                    request
+                        .messages
+                        .iter()
+                        .all(|message| !message.content.contains(SECRET))
+                );
+                assert!(request.tools.iter().all(|tool| {
+                    !tool.name.contains(SECRET)
+                        && !tool.description.contains(SECRET)
+                        && !tool.input_schema.to_string().contains(SECRET)
+                }));
+            }
+            let history = crate::history::latest_history_page(&store, "thread-1", 32).unwrap();
+            assert!(!format!("{history:?}").contains(SECRET));
+            assert!(history.entries.iter().any(|entry| matches!(
+                entry,
+                crate::history::HistoryEntry::Tool {
+                    result: Some(ToolCardResultProjection::Mcp {
+                        status: ToolCallStatus::Success,
+                        ..
+                    }),
+                    ..
+                }
+            )));
+
+            let anonymous_seen = anonymous_requests.lock().unwrap();
+            assert!(!anonymous_seen.is_empty());
+            assert!(anonymous_seen.iter().all(|(url, authorization, body)| {
+                !url.contains(SECRET) && authorization.is_none() && !body.contains(SECRET)
+            }));
+            let bearer_seen = bearer_requests.lock().unwrap();
+            assert!(!bearer_seen.is_empty());
+            assert!(bearer_seen.iter().all(|(url, authorization, body)| {
+                !url.contains(SECRET)
+                    && authorization.as_deref()
+                        == Some("Bearer fake-m07-owner-only-bearer-canary-73")
+                    && !body.contains(SECRET)
+            }));
+
+            let credential_file = config_root.join("credentials/credentials.toml");
+            let credential_bytes = fs::read(&credential_file).expect("owner-only credential file");
+            assert!(
+                credential_bytes
+                    .windows(SECRET.len())
+                    .any(|window| window == SECRET.as_bytes())
+            );
+            assert_m07_no_secret_in_files(data_dir.path(), &credential_file, SECRET);
+        });
+    });
+    let captured_logs = String::from_utf8_lossy(&logs.lock().unwrap()).into_owned();
+    assert!(!captured_logs.contains(SECRET));
 }
 
 fn owned_runtime() -> tokio::runtime::Runtime {
