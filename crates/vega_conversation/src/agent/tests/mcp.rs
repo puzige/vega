@@ -832,7 +832,7 @@ async fn issue73_owned_stdio_reaches_durable_conversation_and_second_provider_ro
 }
 
 #[tokio::test]
-async fn issue73_owner_secret_echo_never_reaches_live_events_provider_or_restart_history() {
+async fn issue73_owner_secret_echo_is_redacted_in_events_provider_and_restart_history() {
     const SECRET: &str = "fake-durable-owner-credential-73";
     let (store, project_dir, data_dir, _) = setup_external("confirm");
     let script = data_dir.path().join("secret-echo-mcp.sh");
@@ -916,7 +916,9 @@ async fn issue73_owner_secret_echo_never_reaches_live_events_provider_or_restart
     assert!(live_events.iter().any(|event| matches!(
         event,
         ConversationEvent::ToolCallFinished { result, .. }
-            if result.status == ToolCallStatus::Failed && !result.output.contains(SECRET)
+            if result.status == ToolCallStatus::Success
+                && result.output.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+                && !result.output.contains(SECRET)
     )));
     assert!(live_events.iter().all(|event| match event {
         ConversationEvent::ToolCallOutput { chunk, .. } => !chunk.0.contains(SECRET),
@@ -926,13 +928,22 @@ async fn issue73_owner_secret_echo_never_reaches_live_events_provider_or_restart
     let row = tool_calls::find_state(store.conn(), "secret-echo-call")
         .unwrap()
         .unwrap();
-    assert_eq!(row.status, "failed");
-    assert!(!row.output_text.unwrap_or_default().contains(SECRET));
+    assert_eq!(row.status, "success");
+    let output = row.output_text.unwrap_or_default();
+    assert!(output.contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER));
+    assert!(!output.contains(SECRET));
     assert!(provider.requests().iter().all(|request| {
         request
             .messages
             .iter()
             .all(|message| !message.content.contains(SECRET))
+    }));
+    assert!(provider.requests().iter().any(|request| {
+        request.messages.iter().any(|message| {
+            message
+                .content
+                .contains(vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+        })
     }));
     let history = crate::history::latest_history_page(&store, "thread-1", 32).unwrap();
     assert!(history.entries.iter().any(|entry| matches!(
@@ -940,7 +951,7 @@ async fn issue73_owner_secret_echo_never_reaches_live_events_provider_or_restart
         crate::history::HistoryEntry::Tool {
             call_id,
             result: Some(ToolCardResultProjection::Mcp {
-                status: ToolCallStatus::Failed,
+                status: ToolCallStatus::Success,
                 ..
             }),
             ..

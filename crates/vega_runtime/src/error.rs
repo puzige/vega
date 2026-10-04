@@ -45,6 +45,8 @@ pub enum VegaError {
     /// Operation was cancelled through its `CancellationToken`.
     #[error("operation cancelled")]
     Cancelled,
+    #[error("local credential safety block")]
+    CredentialExposureBlocked,
     /// A frozen provider/model thinking selection violated its explicit
     /// capability declaration before any request was sent.
     #[error("reasoning selection is invalid")]
@@ -109,6 +111,7 @@ impl fmt::Debug for VegaError {
                 .field("message_bytes", &message.len())
                 .finish(),
             Self::Cancelled => formatter.write_str("Cancelled"),
+            Self::CredentialExposureBlocked => formatter.write_str("CredentialExposureBlocked"),
             Self::ReasoningSelectionInvalid { message } => formatter
                 .debug_struct("ReasoningSelectionInvalid")
                 .field("message_bytes", &message.len())

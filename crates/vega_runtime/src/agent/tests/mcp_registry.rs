@@ -973,7 +973,7 @@ async fn issue73_mcp_schema_secret_with_json_escapes_is_never_advertised() {
 }
 
 #[tokio::test]
-async fn issue73_mcp_success_result_echoing_owner_secret_is_never_published() {
+async fn issue73_mcp_success_result_echoing_owner_secret_is_redacted() {
     const SECRET: &str = "fake-owner-only-result-credential-73";
     let owned = tempdir().unwrap();
     let script = owned.path().join("result-echo.sh");
@@ -1032,9 +1032,11 @@ async fn issue73_mcp_success_result_echoing_owner_secret_is_never_published() {
     assert!(outcome.events.iter().any(|event| matches!(
         event,
         RuntimeEvent::ToolCallFinished(RuntimeToolResult {
-            status: RuntimeToolStatus::Failed,
+            status: RuntimeToolStatus::Success,
+            output,
             ..
-        })
+        }) if output.contains(crate::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+            && !output.contains(SECRET)
     )));
     for event in &outcome.events {
         if let RuntimeEvent::ToolCallFinished(result) = event {
@@ -1047,6 +1049,11 @@ async fn issue73_mcp_success_result_echoing_owner_secret_is_never_published() {
             .iter()
             .all(|message| !message.content.contains(SECRET))
     );
+    assert!(outcome.messages.iter().any(|message| {
+        message
+            .content
+            .contains(crate::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+    }));
     assert!(provider.requests().iter().all(|request| {
         request
             .messages
@@ -1056,7 +1063,7 @@ async fn issue73_mcp_success_result_echoing_owner_secret_is_never_published() {
 }
 
 #[tokio::test]
-async fn issue73_mcp_result_rechecks_owner_secret_after_concurrent_rotation() {
+async fn issue73_mcp_result_redacts_owner_secret_after_concurrent_rotation() {
     const OLD: &str = "fake-oauth-access-before-refresh-73";
     const NEW: &str = "fake-oauth-access-after-refresh-73";
     let owned = tempdir().unwrap();
@@ -1122,11 +1129,17 @@ async fn issue73_mcp_result_rechecks_owner_secret_after_concurrent_rotation() {
     assert!(outcome.events.iter().any(|event| matches!(
         event,
         RuntimeEvent::ToolCallFinished(RuntimeToolResult {
-            status: RuntimeToolStatus::Failed,
+            status: RuntimeToolStatus::Success,
             output,
             ..
-        }) if !output.contains(NEW)
+        }) if output.contains(crate::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+            && !output.contains(NEW)
     )));
+    assert!(outcome.messages.iter().any(|message| {
+        message
+            .content
+            .contains(crate::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+    }));
     assert!(provider.requests().iter().all(|request| {
         request
             .messages
@@ -1136,7 +1149,7 @@ async fn issue73_mcp_result_rechecks_owner_secret_after_concurrent_rotation() {
 }
 
 #[tokio::test]
-async fn issue73_mcp_structured_secret_with_json_escapes_is_rejected_for_both_error_flags() {
+async fn issue73_mcp_structured_secret_with_json_escapes_is_redacted_for_both_error_flags() {
     const SECRET: &str = "fake-\"quoted\\credential-73";
     for is_error in [false, true] {
         let owned = tempdir().unwrap();
@@ -1202,19 +1215,33 @@ async fn issue73_mcp_structured_secret_with_json_escapes_is_rejected_for_both_er
         )
         .await
         .unwrap();
+        let expected_status = if is_error {
+            RuntimeToolStatus::Failed
+        } else {
+            RuntimeToolStatus::Success
+        };
         assert!(outcome.events.iter().any(|event| matches!(
             event,
             RuntimeEvent::ToolCallFinished(RuntimeToolResult {
-                status: RuntimeToolStatus::Failed,
+                status,
                 output,
                 ..
-            }) if !output.contains("fake-")
+            }) if *status == expected_status
+                && output.contains(crate::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+                && !output.contains("fake-")
         )));
         assert!(provider.requests().iter().all(|request| {
             request
                 .messages
                 .iter()
                 .all(|message| !message.content.contains("fake-"))
+        }));
+        assert!(provider.requests().iter().any(|request| {
+            request.messages.iter().any(|message| {
+                message
+                    .content
+                    .contains(crate::PROVIDER_CREDENTIAL_REDACTION_MARKER)
+            })
         }));
     }
 }

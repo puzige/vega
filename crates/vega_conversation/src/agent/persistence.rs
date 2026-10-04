@@ -7,6 +7,7 @@ pub struct PersistenceActorConfig {
     /// unlimited (Issue #114, mirrors Claude Code's `--max-turns`). Carried
     /// from `[agent] turn_limit` in config.toml through to the runtime.
     pub turn_limit: u32,
+    pub(crate) owner_credential_reader: Option<vega_runtime::CredentialReader>,
     #[cfg(test)]
     pub(crate) snapshot_writes: Option<Arc<AtomicUsize>>,
     #[cfg(test)]
@@ -34,6 +35,11 @@ pub(crate) enum InjectedPersistenceFailure {
 }
 
 impl PersistenceActorConfig {
+    pub fn with_owner_credential_reader(mut self, reader: vega_runtime::CredentialReader) -> Self {
+        self.owner_credential_reader = Some(reader);
+        self
+    }
+
     pub fn with_automatic_title(
         mut self,
         request: Option<crate::types::AutomaticTitleRequest>,
