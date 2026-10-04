@@ -1495,6 +1495,7 @@ impl ConversationStream {
             | ConversationEvent::ToolCallOutput { .. }
             | ConversationEvent::ToolCallFinished { .. } => true,
             ConversationEvent::ThinkingDelta { .. }
+            | ConversationEvent::SummaryDelta { .. }
             | ConversationEvent::SkillActivated { .. }
             | ConversationEvent::ContextCompactionStatus { .. }
             | ConversationEvent::ContextAccounting { .. } => false,

@@ -18,6 +18,7 @@ mod mcp;
 mod model_context;
 mod permissions;
 mod plan_approval;
+mod responses;
 mod skills;
 mod stream_persistence;
 mod tool_lifecycle;

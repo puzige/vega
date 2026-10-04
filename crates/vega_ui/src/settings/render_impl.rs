@@ -333,6 +333,65 @@ impl SettingsView {
             .flex_col()
             .gap_2()
             .child(section_title("添加或更新 Provider", colors.text_primary))
+            .child(
+                div().flex().gap_2().children(
+                    [
+                        (
+                            vega_conversation::types::ProviderApi::ChatCompletions,
+                            "Chat Completions",
+                            "provider-api-chat",
+                        ),
+                        (
+                            vega_conversation::types::ProviderApi::Responses,
+                            "Responses",
+                            "provider-api-responses",
+                        ),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (api, label, id))| {
+                        div()
+                            .id(id)
+                            .debug_selector(move || id.into())
+                            .cursor_pointer()
+                            .track_focus(&self.provider_api_focuses[index])
+                            .tab_stop(true)
+                            .aria_label(label)
+                            .focus_visible(move |row| row.border_1().border_color(colors.accent))
+                            .on_key_down(cx.listener(
+                                move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                                    if !this.provider_management.saving
+                                        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                    {
+                                        this.provider_management.form_api = api;
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }
+                                },
+                            ))
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .text_size(px(Typography::BODY))
+                            .bg(if self.provider_management.form_api == api {
+                                colors.bg_hover
+                            } else {
+                                colors.bg_elevated
+                            })
+                            .text_color(colors.text_primary)
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    if !this.provider_management.saving {
+                                        this.provider_management.form_api = api;
+                                        cx.notify();
+                                    }
+                                }),
+                            )
+                            .child(label)
+                    }),
+                ),
+            )
             .child(self.name_input.clone())
             .child(self.base_url_input.clone())
             .child(
@@ -359,6 +418,8 @@ impl SettingsView {
                         PROVIDER_MODEL_COUNT_MAX
                     )),
             )
+            .child(div().text_color(colors.text_tertiary).text_size(px(Typography::BODY))
+                .child("Responses 请求摘要；需要兼容的 reasoning 配置，不支持原始思考回传或 Zhipu thinking 开关。"))
             .child(self.key_input.clone())
             .child(
                 div()

@@ -1,4 +1,5 @@
 //! Content-free provider settings commands and asynchronous operation identity.
+pub use vega_store::config::ProviderApi;
 use vega_store::config::ProviderConfig;
 
 /// Content-free readiness failures raised before a composer submission is

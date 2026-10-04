@@ -154,6 +154,10 @@ pub enum ConversationEvent {
         /// Incremental reasoning text.
         delta: String,
     },
+    SummaryDelta {
+        message_id: MessageId,
+        delta: String,
+    },
     /// One persisted activation receipt, never Skill body or file path.
     SkillActivated {
         message_id: MessageId,
@@ -268,6 +272,11 @@ impl std::fmt::Debug for ConversationEvent {
                 .field("message_id_bytes", &message_id.len())
                 .field("delta_bytes", &delta.len())
                 .finish(),
+            Self::SummaryDelta { message_id, delta } => formatter
+                .debug_struct("SummaryDelta")
+                .field("message_id_bytes", &message_id.len())
+                .field("delta_bytes", &delta.len())
+                .finish(),
             Self::SkillActivated { message_id, skill } => formatter
                 .debug_struct("SkillActivated")
                 .field("message_id_bytes", &message_id.len())
@@ -374,6 +383,10 @@ pub(crate) fn from_runtime_event(
             delta: delta.clone(),
         }),
         RuntimeEvent::ThinkingDelta(delta) => Some(ConversationEvent::ThinkingDelta {
+            message_id: message_id.to_string(),
+            delta: delta.clone(),
+        }),
+        RuntimeEvent::SummaryDelta(delta) => Some(ConversationEvent::SummaryDelta {
             message_id: message_id.to_string(),
             delta: delta.clone(),
         }),
