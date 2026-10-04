@@ -1983,6 +1983,141 @@ async fn issue76_real_hook_compacts_after_persisted_tool_result_without_reexecut
 }
 
 #[tokio::test]
+async fn issue168_auto_compaction_then_primary_failure_keeps_checkpoint_and_fails_run() {
+    let (store, dir, _project_id) = setup();
+    let input_limit = 11_200;
+    let output_reserve = 1_000;
+    fs::write(dir.path().join("large.txt"), "L".repeat(6_000)).unwrap();
+    for seq in 1..=8_i64 {
+        messages::insert(
+            store.conn(),
+            &messages::MessageRow {
+                id: format!("tool-threshold-history-{seq}"),
+                thread_id: "thread-1".into(),
+                seq,
+                role: if seq % 2 == 1 { "user" } else { "assistant" }.into(),
+                kind: "text".into(),
+                content: format!("tool-threshold-history-{seq}-{}", "x".repeat(2_300)),
+                status: "done".into(),
+                created_at: seq,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            },
+        )
+        .unwrap();
+    }
+    save_issue76_model_policy(&store, input_limit, output_reserve);
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "live-read".into(),
+                name: "read".into(),
+                input_json: r#"{"path":"large.txt"}"#.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![
+            ProviderEvent::TextDelta("tool-loop summary".into()),
+            ProviderEvent::Usage {
+                input: 120,
+                output: 16,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::End,
+            },
+        ])],
+        vec![ScriptStep::Error {
+            status: Some(503),
+            message: "primary request unavailable".into(),
+            retryable: false,
+        }],
+    ]);
+    let run = tokio::time::timeout(
+        Duration::from_secs(5),
+        run_issue76_model_owned(
+            &store,
+            &provider,
+            &tools,
+            "tool threshold current",
+            "system",
+            None,
+        ),
+    )
+    .await
+    .expect("the failed primary request must finish the conversation run")
+    .unwrap();
+
+    assert!(run.failed);
+    assert!(!run.interrupted);
+    assert_eq!(run.content, "");
+    let success_index = run
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                ConversationEvent::ContextCompactionStatus { record }
+                    if record.status == ContextCompactionStatus::Succeeded
+            )
+        })
+        .expect("successful automatic compaction must remain visible");
+    let error_index = run
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                ConversationEvent::Error { error, .. }
+                    if matches!(
+                        error.as_ref(),
+                        VegaError::Provider {
+                            status: Some(503),
+                            message,
+                            retryable: false,
+                        } if message == "primary request unavailable"
+                    )
+            )
+        })
+        .expect("the primary provider error must remain visible to the conversation caller");
+    assert!(success_index < error_index);
+
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].tools.is_empty());
+    assert!(!requests[2].tools.is_empty());
+    assert!(
+        requests[2]
+            .messages
+            .iter()
+            .any(|message| message.content.contains("Historical context summary"))
+    );
+    let checkpoint =
+        vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
+            .unwrap();
+    assert!(checkpoint.is_some());
+    let status =
+        vega_store::context_compaction::latest_status(store.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .unwrap();
+    assert_eq!(status.phase, "succeeded");
+    let assistant: (String, String) = store
+        .conn()
+        .query_row(
+            "SELECT status, content FROM messages WHERE id = ?1",
+            [&run.assistant_message_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(assistant, ("failed".into(), "".into()));
+}
+
+#[tokio::test]
 async fn issue88_long_completed_tool_history_compacts_and_continues_same_run() {
     let (store, dir, _project_id) = setup();
     for seq in 1..=8_i64 {

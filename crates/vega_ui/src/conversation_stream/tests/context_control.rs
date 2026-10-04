@@ -405,6 +405,77 @@ async fn context_ui_terminal_and_aba_status_transitions_remain_fenced(cx: &mut T
 }
 
 #[gpui_kit::test]
+async fn issue168_compaction_row_remains_visible_after_primary_provider_failure(
+    cx: &mut TestAppContext,
+) {
+    let window = setup(cx);
+    window
+        .update(cx, |stream, _, cx| {
+            stream.begin_composer_run(cx);
+            stream.apply_event(
+                ConversationEvent::MessageStarted {
+                    message_id: "issue168-active-run".into(),
+                    seq: 1,
+                },
+                cx,
+            );
+            assert!(stream.apply_context_status(
+                "context-thread",
+                "mock",
+                status(1, Status::Succeeded),
+                cx,
+            ));
+            stream.apply_event(
+                ConversationEvent::Error {
+                    message_id: Some("issue168-active-run".into()),
+                    error: Arc::new(vega_runtime::VegaError::Provider {
+                        status: Some(503),
+                        message: "provider unavailable".into(),
+                        retryable: false,
+                    }),
+                    execution_duration_ms: Some(2_345),
+                },
+                cx,
+            );
+        })
+        .expect("active compaction error window");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |stream, _, cx| {
+            assert!(compaction_timeline(stream).contains(&"1:Succeeded:live".into()));
+            let (message_id, assistant_index) =
+                stream.last_finished_agent_message.as_ref().unwrap();
+            assert_eq!(message_id, "issue168-active-run");
+            assert!(matches!(
+                &stream.entries[*assistant_index],
+                StreamEntry::Assistant {
+                    failure: Some(RunFailureKind::ProviderHttp(503)),
+                    ..
+                }
+            ));
+            assert_eq!(
+                stream.controller_error.as_deref(),
+                Some("供应商请求失败（HTTP 503）；请检查供应商状态、模型和额度后重试")
+            );
+            let group = stream
+                .run_activity_groups
+                .get("issue168-active-run")
+                .cloned()
+                .expect("run activity group");
+            assert_eq!(
+                group.read(cx).test_projection(),
+                (RunActivityStatus::Failed, Some(2_345), false, true)
+            );
+        })
+        .expect("failed run projection");
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("context-compaction-row").is_some());
+    assert!(visual.debug_bounds("assistant-run-failure").is_some());
+}
+
+#[gpui_kit::test]
 async fn issue117_compaction_preserves_stream_order_and_detached_tail(cx: &mut TestAppContext) {
     let window = setup(cx);
     window
