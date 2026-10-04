@@ -134,6 +134,28 @@ fn assert_composer_control_size(
     }
 }
 
+fn composer_add_is_visibly_focused(f: &Fixture, cx: &mut gpui_kit::TestAppContext) -> bool {
+    cx.run_until_parked();
+    let target = VisualTestContext::from_window(f.window.into(), cx)
+        .debug_bounds("composer-add")
+        .expect("production attachment button");
+    let active_color = cx.update(|cx| vega_theme::theme(cx).colors.bg_active);
+    f.window
+        .update(cx, |_, window, _| {
+            let scale = window.scale_factor();
+            window.painted_quads().into_iter().any(|quad| {
+                quad.background.as_solid() == Some(active_color.into())
+                    && (quad.bounds.left().as_f32() / scale - f32::from(target.left())).abs() <= 0.5
+                    && (quad.bounds.right().as_f32() / scale - f32::from(target.right())).abs()
+                        <= 0.5
+                    && (quad.bounds.top().as_f32() / scale - f32::from(target.top())).abs() <= 0.5
+                    && (quad.bounds.bottom().as_f32() / scale - f32::from(target.bottom())).abs()
+                        <= 0.5
+            })
+        })
+        .expect("production window")
+}
+
 fn assert_terminal(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
     pump_test_app(cx, |cx| {
         f.root
@@ -397,6 +419,90 @@ async fn r11_composer_stream_stop_retains_partial_and_next_draft(
     assert_eq!(draft(&f, cx), "unsent next draft");
     assert!(!f.repo.path().join("late-marker").exists());
     assert!(!cx.update(|cx| cx.global::<SettingsOpen>().0));
+}
+
+#[gpui_kit::test]
+async fn issue64_production_root_tab_reaches_context_ring_after_attachment(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use vega_conversation::types::ContextSettings;
+
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![]));
+    let f = fixture(cx, provider.clone());
+    let settings = ContextSettings {
+        thread_id: f.thread.id.clone(),
+        model: f.thread.model.clone(),
+        context_limit: Some(100_000),
+        output_reserve: 8_000,
+        automatic_compaction: false,
+        updated_at: 1,
+    };
+    assert!(f.stream.update(cx, |stream, cx| {
+        stream.apply_context_projection(
+            &f.thread.id,
+            &f.thread.model,
+            Some(settings.clone()),
+            Some(50_000),
+            true,
+            cx,
+        )
+    }));
+    edit(&f, "", cx);
+    let input_focus = f.stream.read_with(cx, |stream, cx| {
+        stream.composer_input().read(cx).focus_handle(cx)
+    });
+
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(
+        gpui_kit::point(px(1.0), px(1.0)),
+        None,
+        gpui_kit::Modifiers::default(),
+    );
+    visual.run_until_parked();
+    cx.simulate_keystrokes(f.window.into(), "tab");
+    visual.run_until_parked();
+    assert!(
+        !f.window
+            .update(cx, |_, window, _| input_focus.is_focused(window))
+            .expect("production window")
+    );
+    assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+    assert!(
+        composer_add_is_visibly_focused(&f, cx),
+        "the first Tab from Composer must focus the attachment button"
+    );
+
+    cx.simulate_keystrokes(f.window.into(), "tab");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("context-usage-tooltip-title").is_some(),
+        "Tab after the attachment button must focus the visible context ring"
+    );
+    cx.simulate_keystrokes(f.window.into(), "shift-tab");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+    assert!(
+        composer_add_is_visibly_focused(&f, cx),
+        "Shift+Tab from the context ring must return focus to the attachment button"
+    );
+    assert!(provider.requests().is_empty());
+
+    assert!(f.stream.update(cx, |stream, cx| {
+        stream.apply_context_projection(
+            &f.thread.id,
+            &f.thread.model,
+            Some(settings),
+            None,
+            true,
+            cx,
+        )
+    }));
+    edit(&f, "", cx);
+    cx.simulate_keystrokes(f.window.into(), "tab tab");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("composer-context-usage").is_none());
+    assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+    assert!(provider.requests().is_empty());
 }
 
 #[gpui_kit::test]
