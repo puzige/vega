@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::{Bounds, VisualTestContext, WindowBounds, WindowOptions, px, size};
 
 struct FileReferenceWindowHarness {
     root: Entity<VegaWindow>,
@@ -569,6 +570,94 @@ async fn location_worker_completion_defers_if_a_run_started_in_flight(
         0
     );
     assert!(root.read_with(cx, |root, _| root.deferred_message_location.is_some()));
+}
+
+#[gpui_kit::test]
+async fn loaded_message_location_routes_through_mounted_root_and_reveals_target(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (store, thread, _data) = seed_hydration_thread(150);
+    cx.update(|cx| install_diff_window_globals(store, thread.clone(), cx));
+    let config_root = tempfile::tempdir().expect("message location config");
+    let config_path = config_root.path().join("config.toml");
+    super::model_selection::model_selection_config(&config_path);
+    let root = cx.new(VegaWindow::new);
+    root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(config_path);
+    });
+    let window_root = root.clone();
+    let window = cx.update(|cx| {
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1200.), px(900.)),
+                    cx,
+                ))),
+                ..Default::default()
+            },
+            move |_, _| window_root,
+        )
+        .expect("mounted production root")
+    });
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| root.stream_view.is_some())
+    });
+
+    let stream = root.read_with(cx, |root, _| {
+        root.stream_view
+            .as_ref()
+            .expect("mounted conversation stream")
+            .1
+            .clone()
+    });
+    assert!(
+        stream.read_with(cx, |stream, _| stream.hydrated_entry_count())
+            >= vega_store::messages::PAGE_LIMIT
+    );
+    let target = "user-100";
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.draw(
+        gpui_kit::point(px(0.), px(0.)),
+        size(px(1200.), px(900.)),
+        |_, _| div().size_full().child(root.clone()),
+    );
+    visual.run_until_parked();
+    let at_bottom = stream.read_with(&visual, |stream, _| stream.scroll_anchor_snapshot());
+    assert!(at_bottom.following_tail);
+    assert_ne!(at_bottom.message_id.as_deref(), Some(target));
+    let target_turn = target
+        .rsplit_once('-')
+        .and_then(|(_, turn)| turn.parse::<usize>().ok())
+        .expect("fixture target has a durable turn number");
+    let viewport_turn = at_bottom
+        .message_id
+        .as_deref()
+        .and_then(|message_id| message_id.rsplit_once('-'))
+        .and_then(|(_, turn)| turn.parse::<usize>().ok())
+        .expect("bottom viewport begins at a durable fixture message");
+    assert!(viewport_turn > target_turn);
+    let request_generation_before =
+        root.read_with(&visual, |root, _| root.message_location_request_generation);
+
+    stream.update(&mut visual, |stream, cx| {
+        stream.request_message_location(target, cx);
+    });
+    visual.run_until_parked();
+
+    let after = stream.read_with(&visual, |stream, _| {
+        (
+            stream.scroll_anchor_snapshot(),
+            stream.message_location_status(),
+        )
+    });
+    let request_generation_after =
+        root.read_with(&visual, |root, _| root.message_location_request_generation);
+    assert_eq!(after.1, Some(MessageLocationStatus::Located));
+    assert_eq!(request_generation_after, request_generation_before + 1);
+    assert_eq!(after.0.message_id.as_deref(), Some(target));
+    assert!(!after.0.following_tail);
+    assert!(visual.debug_bounds("conversation-message-list").is_some());
 }
 
 #[gpui_kit::test]
