@@ -119,13 +119,47 @@ async fn issue74_loaded_skill_indicator_is_current_run_only_and_stop_is_real(
         assert_eq!(stream.active_skills.len(), 1);
     });
     cx.run_until_parked();
-    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("active-skill-stop").is_some());
-    assert!(visual.debug_bounds("active-skill-disable").is_some());
+    {
+        let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("active-skill-stop").is_some());
+        assert!(visual.debug_bounds("active-skill-disable").is_some());
+    }
+    let composer_stop_focus = stream.read_with(cx, |stream, _| stream.action_focus[1].clone());
+    let active_skill_focus =
+        stream.read_with(cx, |stream, _| stream.active_skill_focuses[0].clone());
+    window
+        .update(cx, |_, window, cx| window.focus(&composer_stop_focus, cx))
+        .expect("Composer Stop focus");
+    cx.simulate_keystrokes(window.into(), "tab");
+    assert!(
+        window
+            .update(cx, |_, window, _| active_skill_focus[0].is_focused(window))
+            .expect("active Skill Stop focus after Tab")
+    );
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert_eq!(
+        stops
+            .lock()
+            .expect("stop capture after keyboard activation")
+            .as_slice(),
+        ["skill-active"],
+        "Enter on the active Skill Stop action should stop the current run"
+    );
+    cx.simulate_keystrokes(window.into(), "tab");
+    assert!(
+        window
+            .update(cx, |_, window, _| active_skill_focus[1].is_focused(window))
+            .expect("active Skill Disable focus after Tab")
+    );
+    cx.simulate_keystrokes(window.into(), "shift-tab");
+    assert!(
+        window
+            .update(cx, |_, window, _| active_skill_focus[0].is_focused(window))
+            .expect("active Skill Stop focus after Shift+Tab")
+    );
+    cx.simulate_keystrokes(window.into(), "tab enter");
     stream.update(cx, |stream, cx| {
-        stream.disable_active_skill("reviewer".into(), cx);
         assert!(stream.skill_mutation_pending);
-        stream.request_composer_stop(cx);
         stream.apply_event(
             ConversationEvent::Interrupted {
                 message_id: "run-one".into(),

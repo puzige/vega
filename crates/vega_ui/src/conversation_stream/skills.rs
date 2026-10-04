@@ -11,6 +11,7 @@ impl ConversationStream {
         self.skill_mutation_pending = false;
         self.skill_intent = None;
         self.active_skills.clear();
+        self.active_skill_focuses.clear();
     }
 
     /// Settings may change consent while a catalog/mutation worker is still
@@ -212,11 +213,15 @@ impl ConversationStream {
         let colors = theme(cx).colors;
         let mut row = div()
             .debug_selector(|| "active-skills".into())
+            .key_context("Composer")
+            .on_action(cx.listener(Self::next_composer_control))
+            .on_action(cx.listener(Self::previous_composer_control))
             .flex()
             .flex_col()
             .gap_1();
-        for skill in &self.active_skills {
+        for (index, skill) in self.active_skills.iter().enumerate() {
             let name = skill.name.clone();
+            let focus = &self.active_skill_focuses[index];
             row = row.child(
                 div()
                     .flex()
@@ -230,6 +235,7 @@ impl ConversationStream {
                             .id("active-skill-stop")
                             .debug_selector(|| "active-skill-stop".into())
                             .focusable()
+                            .track_focus(&focus[0])
                             .tab_stop(true)
                             .aria_label("停止当前任务")
                             .focus_visible(move |style| {
@@ -257,6 +263,7 @@ impl ConversationStream {
                             .id("active-skill-disable")
                             .debug_selector(|| "active-skill-disable".into())
                             .focusable()
+                            .track_focus(&focus[1])
                             .tab_stop(true)
                             .aria_label("停用此 Skill 的后续激活")
                             .focus_visible(move |style| {
