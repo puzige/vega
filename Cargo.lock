@@ -7951,6 +7951,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "ulid",
  "vega_conversation",
  "vega_mcp",
