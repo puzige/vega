@@ -22,6 +22,7 @@ pub struct SettingsView {
     pub(crate) base_url_input: Entity<TextInput>,
     pub(crate) models_input: Entity<TextInput>,
     pub(crate) key_input: Entity<TextInput>,
+    pub(crate) provider_api_focuses: [FocusHandle; 2],
     pub(crate) provider_save_focus: FocusHandle,
     pub(crate) provider_edit_focuses: Vec<(String, FocusHandle)>,
     pub(crate) provider_test_help_focuses: Vec<FocusHandle>,
@@ -74,6 +75,7 @@ pub(crate) const PROVIDER_MODELS_FRAME_INSET: f32 = 18.0;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum ProviderFocusTarget {
+    Api(usize),
     Edit(String),
     Name,
     BaseUrl,
@@ -168,6 +170,7 @@ impl SettingsView {
             base_url_input,
             models_input,
             key_input,
+            provider_api_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             provider_save_focus: cx.focus_handle().tab_stop(true),
             provider_edit_focuses: Vec::new(),
             provider_test_help_focuses: Vec::new(),
@@ -222,6 +225,14 @@ impl SettingsView {
             .collect::<Vec<_>>();
         focuses.extend([
             (
+                ProviderFocusTarget::Api(0),
+                self.provider_api_focuses[0].clone(),
+            ),
+            (
+                ProviderFocusTarget::Api(1),
+                self.provider_api_focuses[1].clone(),
+            ),
+            (
                 ProviderFocusTarget::Name,
                 self.name_input.read(cx).focus_handle(cx),
             ),
@@ -257,6 +268,7 @@ impl SettingsView {
             return;
         };
         self.provider_management.form_base = Some(provider.clone());
+        self.provider_management.form_api = provider.api;
         self.name_input
             .update(cx, |input, cx| input.set_text(&provider.name, cx));
         self.base_url_input
@@ -290,6 +302,17 @@ impl SettingsView {
             return;
         };
         match target {
+            ProviderFocusTarget::Api(index) => {
+                if self.provider_management.saving {
+                    return;
+                }
+                self.provider_management.form_api = if index == 0 {
+                    vega_conversation::types::ProviderApi::ChatCompletions
+                } else {
+                    vega_conversation::types::ProviderApi::Responses
+                };
+                cx.notify();
+            }
             ProviderFocusTarget::Edit(name) => {
                 self.begin_edit_provider(&name, cx);
                 self.name_input.read(cx).focus_handle(cx).focus(window, cx);
@@ -413,6 +436,7 @@ impl SettingsView {
             self.save_provider_background(
                 existing.clone(),
                 ProviderConfig {
+                    api: self.provider_management.form_api,
                     name: name.clone(),
                     base_url,
                     models,
@@ -441,6 +465,7 @@ impl SettingsView {
             upsert_provider(
                 &mut candidate.providers,
                 ProviderConfig {
+                    api: self.provider_management.form_api,
                     name: name.clone(),
                     enabled: existing.as_ref().is_none_or(|provider| provider.enabled),
                     base_url,

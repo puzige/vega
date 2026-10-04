@@ -679,6 +679,7 @@ pub enum RuntimeEvent {
     TextDelta(String),
     /// Reasoning delta.
     ThinkingDelta(String),
+    SummaryDelta(String),
     /// Complete tool call before the S4 placeholder permission decision.
     ToolCallProposed(RuntimeToolCall),
     /// Invalid write/edit projection atomically reaches a terminal rejection.
@@ -774,6 +775,10 @@ impl fmt::Debug for RuntimeEvent {
             Self::TextDelta(value) => formatter
                 .debug_tuple("TextDelta")
                 .field(&format_args!("{} bytes", value.len()))
+                .finish(),
+            Self::SummaryDelta(value) => formatter
+                .debug_tuple("SummaryDelta")
+                .field(&format_args!("[redacted; {} bytes]", value.len()))
                 .finish(),
             Self::ThinkingDelta(value) => formatter
                 .debug_tuple("ThinkingDelta")

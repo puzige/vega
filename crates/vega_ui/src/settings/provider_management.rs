@@ -21,6 +21,7 @@ pub(crate) struct ProviderManagement {
     cancel: Option<CancellationToken>,
     pub(super) saving: bool,
     pub(super) form: bool,
+    pub(super) form_api: vega_conversation::types::ProviderApi,
     pub(super) form_base: Option<ProviderConfig>,
     candidates: Option<Vec<String>>,
     checked: BTreeSet<String>,
@@ -245,6 +246,8 @@ impl SettingsView {
                 self.cancel_provider_operation(cx);
                 self.provider_management.form = true;
                 self.provider_management.form_base = None;
+                self.provider_management.form_api =
+                    vega_conversation::types::ProviderApi::default();
                 self.name_input.update(cx, TextInput::clear);
                 self.base_url_input.update(cx, TextInput::clear);
                 self.models_input.update(cx, TextInput::clear);
@@ -1062,6 +1065,12 @@ impl SettingsView {
             let help_focuses = self.provider_test_help_focuses.clone();
             let discover_help_open = help_focuses[0].is_focused(window)
                 || self.provider_management.test_help_hovered == Some(0);
+            let api_label = match p.api {
+                vega_conversation::types::ProviderApi::ChatCompletions => {
+                    "API 格式 · Chat Completions"
+                }
+                vega_conversation::types::ProviderApi::Responses => "API 格式 · Responses",
+            };
             let index = self
                 .config
                 .providers
@@ -1129,8 +1138,9 @@ impl SettingsView {
                 )
                 .child(
                     div()
+                        .debug_selector(move || format!("provider-api-format:{api_label}"))
                         .text_color(colors.text_secondary)
-                        .child("API 格式 · Chat Completions"),
+                        .child(api_label),
                 )
                 .child(
                     div()

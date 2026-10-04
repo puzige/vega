@@ -53,6 +53,7 @@ pub struct OpenAiProvider {
     http: reqwest::Client,
     #[cfg(test)]
     test_transport: Option<tests::TestTransport>,
+    responses_api: bool,
     /// Endpoint root, e.g. `https://api.openai.com/v1` (trailing slash ok).
     base_url: String,
     /// API key; only ever serialized into the Authorization request header.
@@ -93,11 +94,17 @@ impl OpenAiProvider {
             http,
             #[cfg(test)]
             test_transport: None,
+            responses_api: false,
             base_url: base_url.into(),
             key: key.into(),
             retry: RetryPolicy::default(),
             before_attempt: None,
         })
+    }
+
+    pub fn with_responses_api(mut self, enabled: bool) -> Self {
+        self.responses_api = enabled;
+        self
     }
 
     /// Overrides the retry schedule (defaults: 1s / 2s / 4s, 3 retries).
@@ -127,11 +134,16 @@ impl OpenAiProvider {
         }
     }
 
-    async fn send_attempt(&self, req: &ChatRequest) -> Result<reqwest::Response, reqwest::Error> {
-        let url = format!(
-            "{}{CHAT_COMPLETIONS_PATH}",
-            self.base_url.trim_end_matches('/')
-        );
+    async fn send_attempt(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        let path = if self.responses_api {
+            "/responses"
+        } else {
+            CHAT_COMPLETIONS_PATH
+        };
+        let url = format!("{}{path}", self.base_url.trim_end_matches('/'));
         let request = self
             .http
             .post(url)
@@ -139,7 +151,7 @@ impl OpenAiProvider {
                 reqwest::header::AUTHORIZATION,
                 format!("{AUTH_SCHEME} {}", self.key),
             )
-            .json(&build_request_body(req))
+            .json(body)
             .build()?;
         #[cfg(test)]
         {
@@ -179,12 +191,22 @@ impl OpenAiProvider {
                 });
             }
         }
+        let body = if self.responses_api {
+            responses::build_body(&req)?
+        } else {
+            build_request_body(&req)
+        };
+        let endpoint = if self.responses_api {
+            "responses"
+        } else {
+            "chat/completions"
+        };
         let mut attempt: u32 = 0;
         loop {
             if let Some(guard) = &self.before_attempt {
                 guard(&req)?;
             }
-            let send = self.send_attempt(&req);
+            let send = self.send_attempt(&body);
             let outcome = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => return Err(VegaError::Cancelled),
@@ -198,7 +220,11 @@ impl OpenAiProvider {
                         retry_count: Some(attempt),
                     };
                     return Ok(ProviderStream {
-                        events: event_stream(resp, cancel),
+                        events: if self.responses_api {
+                            responses::event_stream(resp, cancel)
+                        } else {
+                            event_stream(resp, cancel)
+                        },
                         metadata,
                     });
                 }
@@ -206,9 +232,12 @@ impl OpenAiProvider {
                     let status = resp.status().as_u16();
                     let request_id = request_id_from_headers(resp.headers());
                     let retry_after = retry_after_of(&resp);
-                    let snippet = self.redact_key(&error_snippet(resp, &cancel).await);
-                    let message =
-                        format!("chat/completions request failed (HTTP {status}): {snippet}");
+                    let snippet = if self.responses_api {
+                        "<response body omitted>".to_string()
+                    } else {
+                        self.redact_key(&error_snippet(resp, &cancel).await)
+                    };
+                    let message = format!("{endpoint} request failed (HTTP {status}): {snippet}");
                     if !is_retryable_status(status) {
                         // 4xx（除 429）：重试无意义，立即失败
                         return Err(VegaError::ProviderDiagnostic {
@@ -225,7 +254,7 @@ impl OpenAiProvider {
                             kind: ProviderFailureKind::Http,
                             status: Some(status),
                             message: format!(
-                                "chat/completions request failed after {} retries (HTTP {status}): {snippet}",
+                                "{endpoint} request failed after {} retries (HTTP {status}): {snippet}",
                                 self.retry.max_retries
                             ),
                             retryable: false,
@@ -240,7 +269,7 @@ impl OpenAiProvider {
                     // 网络错误：指数退避后重建请求
                     if attempt >= self.retry.max_retries {
                         let message = self.redact_key(&format!(
-                            "chat/completions request failed after {} retries: {err}",
+                            "{endpoint} request failed after {} retries: {err}",
                             self.retry.max_retries
                         ));
                         return Err(VegaError::ProviderDiagnostic {
@@ -465,6 +494,7 @@ async fn error_snippet(resp: reqwest::Response, cancel: &CancellationToken) -> S
     String::from_utf8_lossy(&bytes).chars().take(512).collect()
 }
 
+pub(crate) mod responses;
 mod sse;
 
 pub(crate) use sse::*;

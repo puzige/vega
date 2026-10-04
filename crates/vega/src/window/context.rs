@@ -703,6 +703,7 @@ fn run_manual_context_worker(
             );
         let provider = vega_runtime::OpenAiProvider::new(configured.base_url, key)
             .map_err(|_| ())?
+            .with_responses_api(configured.api == vega_conversation::types::ProviderApi::Responses)
             .with_pre_attempt_guard(pre_attempt_guard);
         Ok(Arc::new(provider))
     };

@@ -757,6 +757,7 @@ pub(crate) fn persist_runtime_event(
         }
         RuntimeEvent::TextDelta(_)
         | RuntimeEvent::ThinkingDelta(_)
+        | RuntimeEvent::SummaryDelta(_)
         | RuntimeEvent::DiagnosticAttempt(_)
         | RuntimeEvent::ContextAccountingUpdated(_)
         | RuntimeEvent::ToolCallOutput { .. }

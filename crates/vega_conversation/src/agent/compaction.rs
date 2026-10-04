@@ -1819,7 +1819,8 @@ async fn collect_summary_with_timeout_diagnostics(
                 text.push_str(&delta);
                 metrics.visible_output_bytes = Some(text.len() as u64);
             }
-            Ok(ProviderEvent::ThinkingDelta(delta)) => {
+            Ok(ProviderEvent::ReasoningReplay(_)) => {}
+            Ok(ProviderEvent::ThinkingDelta(delta) | ProviderEvent::SummaryDelta(delta)) => {
                 if done.is_some() {
                     return Err(summary_collection_failure(
                         context_error(ContextRuntimeError::SummaryFormatInvalid),

@@ -47,6 +47,7 @@ fn change_and_abandon_never_schedule_execute_turn() {
 #[test]
 fn provider_model_resolution_is_exact_and_unique() {
     let provider = |name: &str, models: &[&str]| vega_store::config::ProviderConfig {
+        api: Default::default(),
         enabled: true,
         name: name.into(),
         base_url: "https://provider.invalid/v1".into(),
@@ -70,6 +71,7 @@ fn provider_model_resolution_is_exact_and_unique() {
 fn disabled_providers_do_not_resolve_or_make_enabled_models_ambiguous() {
     let mut config = vega_store::config::AppConfig {
         providers: vec![vega_store::config::ProviderConfig {
+            api: Default::default(),
             enabled: true,
             name: "enabled".into(),
             base_url: "http://127.0.0.1:1".into(),
