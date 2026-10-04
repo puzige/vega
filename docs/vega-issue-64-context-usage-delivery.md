@@ -50,3 +50,18 @@
 - 回归先行：新增 GPUI 测试从实际 Composer 输入焦点按 Tab 两次到达圆环，移开鼠标后确认完整 tooltip 和无障碍 label，再验证 Tab 到模型选择及 Shift+Tab 返回圆环。修复前该测试因焦点未落到圆环而失败（exit 100）；修复后 `cargo nextest run -p vega_ui issue64_context_usage_tab_from_composer_input_reaches_indicator_and_tooltip` 通过（1/1，exit 0）。
 - 定向回归：`cargo nextest run -p vega_ui issue64_context_usage_` 通过（12/12，504 skipped，exit 0）；`cargo fmt --all -- --check` 与 `git diff --check` 均 exit 0。未运行 workspace 全量测试。
 - 集成状态：follow-up PR [#225](https://github.com/puzige/vega/pull/225) 已开放，代码提交 `8627edc` 的云端 Clippy、Nextest workspace 与 required check 均通过；PR 保持开放且未合并，v0.1.22 实机缺陷仍存在。合并并安装新版本后还需 Computer Use 确认 Tab/Shift+Tab、tooltip 与无估算时的焦点顺序。
+
+## S21 production-root Tab discrepancy investigation
+
+The S21 report says Tab from the Composer input reaches the attachment button, but another Tab does not focus the visible context ring. The existing `vega_ui` regression mounts `ConversationStream` in `StreamHarness`; this follow-up checks the same sequence through the real `VegaWindow` root and an owned fixture, without launching the app or sending provider requests.
+
+| ID | Risk / setup | Action | Expected observation | Test layer | Status |
+|---|---|---|---|---|---|
+| C64-P1 | Production `VegaWindow`; current-thread context projection has an estimate and no provider request | Focus the Composer text input, press Tab once | The attachment button paints its focused surface and the tooltip stays closed | GPUI production-root regression | PASS |
+| C64-P2 | Continue from the attachment button with the same visible ring | Move the pointer away, press Tab once | The context ring owns focus and its tooltip remains visible | GPUI production-root regression | PASS |
+| C64-P3 | Continue from the focused context ring | Press Shift+Tab | Focus returns to the attachment button and the tooltip closes after pointer exit | GPUI production-root regression | PASS |
+| C64-P4 | Production Composer with no context estimate | Traverse the same focus sequence | The ring is absent and no tooltip is shown | GPUI production-root regression | PASS |
+
+Verification: `cargo nextest run -p vega issue64_production_root_tab_reaches_context_ring_after_attachment` passed (1 passed, 211 skipped). The test uses an owned app fixture with `MockProvider`, moves the pointer away before keyboard traversal, confirms the first Tab paints focus on the attachment button, confirms the next Tab keeps the ring tooltip visible, checks reverse focus and hidden-ring behavior, and asserts zero provider requests. A temporary removal of the context-ring handle from `move_composer_focus` made this test fail at the expected ring-tooltip assertion (0 passed, 1 failed); restoring the existing implementation returned it to PASS. `cargo fmt --all` completed successfully.
+
+No production change was made: current `origin/master` already contains the #225 focus-list repair, and this production-root regression confirms that code handles the reported sequence. The S21 native report and source behavior remain in tension; this test does not replace a native run against a hash-verified build. Do not change context settings, persist synthetic data, install an app, or issue a provider request during this follow-up.
