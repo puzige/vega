@@ -31,6 +31,47 @@ Scope: implement `docs/vega-issue-72-message-anchor-navigation.md` without rebui
 - Added a compact visible status row for the existing Searching, Deferred, NotFound, and Failed navigation states. `Located` adds no persistent UI.
 
 ### Verification log
+#### Hover-preview dismissal follow-up (2026-10-04, Asia/Shanghai)
+
+- On installed S21 (v0.1.22), native hover showed the preview and keyboard navigation updated it. A clean native pointer-exit check remains inconclusive because the Computer Use interface has no move-only pointer action; clicking or dragging is not a substitute.
+- The local fix changes rail exit handling to clear the rail-hover preview when the pointer leaves both the rail and preview. The preview's own hover state still keeps the preview open when the pointer enters it.
+- The new regression was red on the previous implementation (Nextest run `535c1aad-e39b-495f-94d3-2830dc7a6f88`) and passes on this fix (run `9f7b211c-9879-4e77-a815-1cd9abdd8561`, 1 passed / 517 skipped). The complete #72 target passed 12/12 (run `8537f117-62b4-419a-9aee-b10489f007f4`, 506 skipped); this includes entering the preview from the rail and retaining it.
+- The first run after extending the assertions stopped at compilation: the test compared `Some(target)` and later reused the `String`. Cloning the expected ID fixed the ownership error; no runtime test ran on that attempt.
+- The first 960px preview-lane version failed because it expected anchor 38 after hiding and reopening the lane, although remeasurement made the same fixed pointer coordinate select anchor 39 (Nextest run `0c0fc6c7-79b9-4022-9327-730a4da81e2f`, 11 passed / 1 failed). The regression now captures the actual selected ID after reentry and verifies the preview retains that selection when entered. This was a brittle test-coordinate assumption, not a product failure.
+- The expanded regression covers rail-to-outside dismissal, rail-to-preview retention, and preview-to-outside dismissal in the 960px lane layout; the existing interaction test covers the 1200px overlay layout. The keyboard test asserts that the visible preview moves when the selected anchor changes. The lane-only check passed (Nextest run `473f39f1-6260-48d0-a2ce-2d8e03d4a802`, 1 passed / 518 skipped); final target: `cargo nextest run -p vega_ui issue72_`, run `cd50142e-f452-4e22-8f97-9f5e80a7de21`, 12 passed / 507 skipped. `cargo fmt --all -- --check` and `git diff --check` exited 0.
+- Raw targeted result:
+
+```text
+$ cargo nextest run -p vega_ui issue72_
+Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+────────
+Nextest run ID cd50142e-f452-4e22-8f97-9f5e80a7de21 with nextest profile: default
+Starting 12 tests across 1 binary (507 tests skipped)
+PASS [   0.015s] ( 1/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::preview_normalization_redacts_common_credentials_and_is_bounded
+PASS [   0.028s] ( 2/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::anchors_use_unique_durable_message_ids_and_safe_text_projections
+PASS [   0.029s] ( 3/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::empty_thread_still_displays_recoverable_location_status
+PASS [   0.031s] ( 4/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::run_activity_entries_contribute_geometry_without_duplicating_message_anchors
+PASS [   0.060s] ( 5/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::rail_is_hidden_for_short_content_and_shown_for_long_overflow
+PASS [   0.093s] ( 6/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::keyboard_anchor_preview_uses_a_reserved_lane_in_a_narrow_pane
+PASS [   0.104s] ( 7/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::hover_anchor_preview_dismisses_when_pointer_leaves_rail_and_preview
+PASS [   0.109s] ( 8/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::keyboard_anchor_selection_displays_a_bounded_sanitized_preview
+PASS [   0.114s] ( 9/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::prepending_neighbor_history_page_keeps_existing_anchor_identity_and_order
+PASS [   0.131s] (10/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::mouse_and_keyboard_anchor_navigation_emit_real_message_ids
+PASS [   0.151s] (11/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::width_remeasure_preserves_anchor_identity_and_updates_rail_geometry
+PASS [   0.257s] (12/12) vega_ui conversation_stream::tests::issue72_message_anchor_navigation::measured_entry_height_cache_stays_bounded_while_scrolling
+────────
+Summary [   0.257s] 12 tests run: 12 passed, 507 skipped
+
+$ cargo fmt --all -- --check
+(exit 0; no output)
+
+$ git diff --check
+(exit 0; no output)
+```
+- `cargo fmt --all -- --check` and `git diff --check` both exited 0. No full-workspace tests were run. Installed-app acceptance of the fix remains pending a new candidate install and native pointer movement check.
+
 
 Before implementation, `cargo nextest run -p vega_ui issue72_` ran the four new tests: the preview/projection tests passed while the two visibility/interaction tests failed because the rail did not yet exist. After implementation and fixes:
 

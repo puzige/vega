@@ -1327,6 +1327,8 @@ impl Render for ConversationStream {
             });
         }
 
+        let mut message_anchor_preview = None;
+        let mut message_anchor_preview_in_lane = false;
         let body: AnyElement = if self.entries.is_empty() {
             div()
                 .w_full()
@@ -1352,6 +1354,10 @@ impl Render for ConversationStream {
                 .children(self.message_location_status_element(cx))
                 .into_any_element()
         } else {
+            let (message_anchor_rail, preview, preview_in_lane) =
+                self.render_message_anchor_rail(window, cx);
+            message_anchor_preview = preview;
+            message_anchor_preview_in_lane = preview_in_lane;
             div()
                 .id("conversation-scroll")
                 .debug_selector(|| "conversation-scroll".into())
@@ -1366,7 +1372,10 @@ impl Render for ConversationStream {
                         .flex()
                         .flex_row()
                         .overflow_hidden()
-                        .child(self.render_message_anchor_rail(window, cx))
+                        .child(message_anchor_rail)
+                        .when(preview_in_lane, |row| {
+                            row.children(message_anchor_preview.take())
+                        })
                         .child(
                             div()
                                 .id("conversation-message-list")
@@ -1451,6 +1460,7 @@ impl Render for ConversationStream {
                             .justify_center()
                     })
                     .px(px(Layout::CONTENT_PADDING))
+                    .relative()
                     .child(
                         div()
                             .debug_selector(|| "conversation-column".into())
@@ -1477,7 +1487,12 @@ impl Render for ConversationStream {
                             .when(!self.following_tail(), |column| {
                                 column.relative().child(self.render_resume_tail(cx))
                             }),
-                    ),
+                    )
+                    .children(if message_anchor_preview_in_lane {
+                        None
+                    } else {
+                        message_anchor_preview
+                    }),
             )
             .child(self.render_composer(window, cx))
             .when(project_bound, |root| root.child(self.commit_panel.clone()))
