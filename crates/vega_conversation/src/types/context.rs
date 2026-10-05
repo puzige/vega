@@ -149,6 +149,7 @@ pub struct ContextCompactionCancelRequested {
 pub struct ContextProjection {
     /// Exact persisted settings for the requested model, when configured.
     pub settings: Option<ContextSettings>,
+    pub model_input_limit: Option<u64>,
     /// Deterministic wire estimate including the system message and real tool
     /// definitions for the thread's run mode.
     pub estimated_tokens: Option<u64>,

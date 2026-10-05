@@ -19,6 +19,124 @@ fn save_issue76_model_policy(store: &Store, input_limit: u64, output_reserve: u6
     .unwrap();
 }
 
+#[test]
+fn issue64_context_projection_uses_only_exact_saved_model_input_capacity() {
+    let (store, _dir, _) = setup();
+    vega_store::context_compaction::save_settings(
+        store.conn(),
+        &vega_store::context_compaction::ContextSettings {
+            thread_id: "thread-1".into(),
+            model: "mock-model".into(),
+            context_limit: Some(3_333),
+            output_reserve: 1_000,
+            automatic_compaction: true,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+    save_issue76_model_policy(&store, 64_000, 8_000);
+    vega_store::context_compaction::save_model_policy(
+        store.conn(),
+        &vega_store::context_compaction::ModelContextPolicy {
+            provider: "mock-provider".into(),
+            model: "other-model".into(),
+            input_limit: Some(96_000),
+            output_reserve: Some(8_000),
+            automatic_compaction: true,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+    vega_store::context_compaction::save_model_policy(
+        store.conn(),
+        &vega_store::context_compaction::ModelContextPolicy {
+            provider: "other-provider".into(),
+            model: "mock-model".into(),
+            input_limit: Some(24_000),
+            output_reserve: Some(4_000),
+            automatic_compaction: true,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+    vega_store::context_compaction::save_model_policy(
+        store.conn(),
+        &vega_store::context_compaction::ModelContextPolicy {
+            provider: "model-only-provider".into(),
+            model: "other-model".into(),
+            input_limit: Some(12_000),
+            output_reserve: Some(1_000),
+            automatic_compaction: true,
+            updated_at: 1,
+        },
+    )
+    .unwrap();
+    vega_store::context_compaction::save_model_policy(
+        store.conn(),
+        &vega_store::context_compaction::ModelContextPolicy::unconfigured(
+            "unknown-provider",
+            "mock-model",
+        ),
+    )
+    .unwrap();
+
+    let exact = read_context_projection_with_provider(
+        &store,
+        "thread-1",
+        "mock-model",
+        Some("mock-provider"),
+        "system",
+    )
+    .unwrap();
+    assert_eq!(exact.model_input_limit, Some(64_000));
+    assert_eq!(exact.settings.unwrap().context_limit, Some(3_333));
+
+    let other_provider = read_context_projection_with_provider(
+        &store,
+        "thread-1",
+        "mock-model",
+        Some("other-provider"),
+        "system",
+    )
+    .unwrap();
+    assert_eq!(other_provider.model_input_limit, Some(24_000));
+
+    let wrong_provider = read_context_projection_with_provider(
+        &store,
+        "thread-1",
+        "mock-model",
+        Some("missing-provider"),
+        "system",
+    )
+    .unwrap();
+    assert_eq!(wrong_provider.model_input_limit, None);
+
+    let unknown = read_context_projection_with_provider(
+        &store,
+        "thread-1",
+        "mock-model",
+        Some("unknown-provider"),
+        "system",
+    )
+    .unwrap();
+    assert_eq!(unknown.model_input_limit, None);
+
+    let absent_provider =
+        read_context_projection_with_provider(&store, "thread-1", "mock-model", None, "system")
+            .unwrap();
+    assert_eq!(absent_provider.model_input_limit, None);
+
+    let other_model = read_context_projection_with_provider(
+        &store,
+        "thread-1",
+        "mock-model",
+        Some("model-only-provider"),
+        "system",
+    )
+    .unwrap();
+    assert_eq!(other_model.model_input_limit, None);
+}
+
 async fn run_issue76_model_owned(
     store: &Store,
     provider: &dyn Provider,

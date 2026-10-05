@@ -114,6 +114,18 @@ async fn i76_context_settings_real_inputs_persist_and_reopen(cx: &mut gpui_kit::
     cx.executor().allow_parking();
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![]));
     let f = fixture(cx, provider.clone());
+    vega_store::context_compaction::save_settings(
+        f.store.conn(),
+        &vega_store::context_compaction::ContextSettings {
+            thread_id: f.thread.id.clone(),
+            model: f.thread.model.clone(),
+            context_limit: Some(9_000),
+            output_reserve: 1_000,
+            automatic_compaction: true,
+            updated_at: 1,
+        },
+    )
+    .expect("legacy context setting");
     edit(&f, "keep this draft", cx);
     open_model_context_editor(&f, cx);
     input_context(&f, "model-context-input", "20000", cx);
@@ -137,6 +149,36 @@ async fn i76_context_settings_real_inputs_persist_and_reopen(cx: &mut gpui_kit::
     assert_eq!(draft(&f, cx), "keep this draft");
     assert!(provider.requests().is_empty());
     cx.update(|cx| cx.set_global(SettingsOpen(false)));
+    cx.run_until_parked();
+    f.root.update(cx, |root, cx| {
+        root.sync_context_route(&f.stream, cx);
+        root.refresh_context_projection(false, cx);
+    });
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.context_controller.last_load_succeeded == Some(true)
+        })
+    });
+    let mut composer_visual = VisualTestContext::from_window(f.window.into(), cx);
+    let indicator = composer_visual
+        .debug_bounds("composer-context-usage")
+        .expect("context usage indicator");
+    composer_visual.simulate_mouse_move(indicator.center(), None, gpui_kit::Modifiers::default());
+    composer_visual.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    composer_visual.run_until_parked();
+    assert!(
+        composer_visual
+            .debug_bounds("context-usage-tooltip-percentage")
+            .is_some()
+    );
+    assert!(
+        composer_visual
+            .debug_bounds("context-usage-tooltip-capacity")
+            .is_some()
+    );
+    assert!(provider.requests().is_empty());
     open_model_context_editor(&f, cx);
     let mut visual = VisualTestContext::from_window(f.window.into(), cx);
     assert!(visual.debug_bounds("model-context-source").is_some());

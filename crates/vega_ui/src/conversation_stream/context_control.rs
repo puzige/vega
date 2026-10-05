@@ -13,6 +13,7 @@ pub(crate) struct ContextControl {
     reserve: Entity<TextInput>,
     automatic: bool,
     settings: Option<ContextSettings>,
+    model_input_limit: Option<u64>,
     estimate: Option<u64>,
     live_accounting: Option<(String, ContextAccountingRecord)>,
     compactable: bool,
@@ -34,6 +35,7 @@ impl ContextControl {
             reserve: cx.new(|cx| TextInput::new(cx, "输出预留", false).with_tab_stop(true)),
             automatic: false,
             settings: None,
+            model_input_limit: None,
             estimate: None,
             live_accounting: None,
             compactable: false,
@@ -61,10 +63,7 @@ impl ConversationStream {
     pub(crate) fn context_usage_source(&self) -> (Option<u64>, Option<u64>) {
         (
             self.context_control.estimate,
-            self.context_control
-                .settings
-                .as_ref()
-                .and_then(|settings| settings.context_limit),
+            self.context_control.model_input_limit,
         )
     }
 
@@ -131,6 +130,7 @@ impl ConversationStream {
         thread_id: &str,
         model: &str,
         settings: Option<ContextSettings>,
+        model_input_limit: Option<u64>,
         estimated_tokens: Option<u64>,
         compactable: bool,
         cx: &mut Context<Self>,
@@ -147,6 +147,7 @@ impl ConversationStream {
             && self.context_control.limit.read(cx).text().is_empty()
             && self.context_control.reserve.read(cx).text().is_empty();
         self.context_control.settings = settings;
+        self.context_control.model_input_limit = model_input_limit;
         if self.context_control.live_accounting.is_none() {
             self.context_control.estimate = estimated_tokens;
         }

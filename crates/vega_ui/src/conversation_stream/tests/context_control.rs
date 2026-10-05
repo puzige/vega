@@ -66,6 +66,7 @@ async fn issue91_live_accounting_fences_reload_and_accepts_fallback_revision(
                 "context-thread",
                 "mock",
                 None,
+                None,
                 Some(9_000),
                 true,
                 cx
@@ -109,6 +110,7 @@ async fn issue91_live_accounting_fences_reload_and_accepts_fallback_revision(
             assert!(stream.apply_context_projection(
                 "context-thread",
                 "mock",
+                None,
                 None,
                 Some(1_300),
                 true,

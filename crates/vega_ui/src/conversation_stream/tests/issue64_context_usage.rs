@@ -63,6 +63,7 @@ async fn issue64_context_usage_known_capacity_shows_hover_tip_without_changing_c
             "issue64-known",
             "mock",
             Some(settings("issue64-known", "mock", Some(258_000))),
+            Some(258_000),
             Some(135_000),
             true,
             cx,
@@ -121,6 +122,7 @@ async fn issue64_context_usage_unknown_capacity_shows_no_percentage_and_unknown_
             "mock",
             Some(settings("issue64-unknown", "mock", None)),
             None,
+            None,
             true,
             cx,
         ));
@@ -132,6 +134,7 @@ async fn issue64_context_usage_unknown_capacity_shows_no_percentage_and_unknown_
             "issue64-unknown",
             "mock",
             Some(settings("issue64-unknown", "mock", None)),
+            None,
             Some(135_000),
             true,
             cx,
@@ -177,6 +180,7 @@ async fn issue64_context_usage_focus_keeps_the_same_tip_after_pointer_leaves(
             "issue64-focus",
             "mock",
             Some(settings("issue64-focus", "mock", Some(100_000))),
+            Some(100_000),
             Some(50_000),
             true,
             cx,
@@ -222,6 +226,7 @@ async fn issue64_context_usage_tab_from_composer_input_reaches_indicator_and_too
             "issue64-tab-focus",
             "mock",
             Some(settings("issue64-tab-focus", "mock", Some(100_000))),
+            Some(100_000),
             Some(50_000),
             true,
             cx,
@@ -262,7 +267,7 @@ async fn issue64_context_usage_tab_from_composer_input_reaches_indicator_and_too
             .expect("context usage display");
     assert_eq!(
         display.accessibility_label(),
-        "上下文窗口；估算输入：50,000 tokens（含系统提示和实际工具定义）；估算使用量：50%；当前设置上限：100,000 tokens（会话设置，非供应商验证容量）"
+        "上下文窗口；估算输入：50,000 tokens（含系统提示和实际工具定义）；估算使用量：50%；当前模型设置输入上限：100,000 tokens（非供应商验证容量）"
     );
 
     cx.simulate_keystrokes(window.into(), "tab");
@@ -303,6 +308,7 @@ async fn issue64_context_usage_hover_and_focus_tips_fit_narrow_window_without_co
             "issue64-narrow-window",
             "mock",
             Some(settings("issue64-narrow-window", "mock", Some(100_000))),
+            Some(100_000),
             Some(50_000),
             true,
             cx,
@@ -359,19 +365,24 @@ async fn issue64_context_usage_hover_and_focus_tips_fit_narrow_window_without_co
 }
 
 #[gpui_kit::test]
-async fn issue64_context_usage_model_change_clears_previous_projection(cx: &mut TestAppContext) {
+async fn issue64_context_usage_rejects_late_projection_after_model_change(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue64-model-switch");
     stream.update(cx, |stream, cx| {
         assert!(stream.apply_context_projection(
             "issue64-model-switch",
             "mock",
             Some(settings("issue64-model-switch", "mock", Some(100_000))),
+            Some(64_000),
             Some(80_000),
             true,
             cx,
         ));
     });
     assert!(bounds(window, "composer-context-usage", cx).is_some());
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.context_usage_source()),
+        (Some(80_000), Some(64_000))
+    );
 
     let mut changed = stream.read_with(cx, |stream, _| stream.thread.clone());
     changed.model = "other-model".to_string();
@@ -383,6 +394,7 @@ async fn issue64_context_usage_model_change_clears_previous_projection(cx: &mut 
             "issue64-model-switch",
             "mock",
             Some(settings("issue64-model-switch", "mock", Some(100_000))),
+            Some(128_000),
             Some(99_000),
             true,
             cx,
@@ -395,12 +407,51 @@ async fn issue64_context_usage_model_change_clears_previous_projection(cx: &mut 
                 "other-model",
                 Some(100_000)
             )),
+            None,
             Some(20_000),
             true,
             cx,
         ));
+        assert_eq!(stream.context_usage_source(), (Some(20_000), None));
     });
     assert!(bounds(window, "composer-context-usage", cx).is_some());
+}
+
+#[gpui_kit::test]
+async fn issue64_context_usage_ignores_legacy_capacity_when_model_policy_is_unknown(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue64-legacy-limit");
+    stream.update(cx, |stream, cx| {
+        assert!(stream.apply_context_projection(
+            "issue64-legacy-limit",
+            "mock",
+            Some(settings("issue64-legacy-limit", "mock", Some(33_333))),
+            None,
+            Some(10_000),
+            true,
+            cx,
+        ));
+        assert_eq!(stream.context_usage_source(), (Some(10_000), None));
+    });
+
+    let indicator = bounds(window, "composer-context-usage", cx).unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_mouse_move(indicator.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(2));
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("context-usage-tooltip-percentage")
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds("context-usage-tooltip-capacity")
+            .is_some()
+    );
 }
 
 #[gpui_kit::test]
@@ -435,6 +486,7 @@ async fn issue64_context_usage_uses_light_and_dark_theme_tokens_and_stays_read_o
                 "issue64-theme",
                 "mock",
                 Some(settings("issue64-theme", "mock", Some(100_000))),
+                Some(100_000),
                 Some(20_000),
                 true,
                 cx,

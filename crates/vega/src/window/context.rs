@@ -379,6 +379,7 @@ impl VegaWindow {
         let Some(database) = self.context_database(cx) else {
             return;
         };
+        let config_path = self.composer_config_path();
         self.context_controller.load_sequence =
             self.context_controller.load_sequence.saturating_add(1);
         let sequence = self.context_controller.load_sequence;
@@ -392,10 +393,16 @@ impl VegaWindow {
                 .background_executor()
                 .spawn(async move {
                     let store = Store::open(database).map_err(|_| ())?;
-                    vega_conversation::agent::read_context_projection(
+                    let provider = config_path
+                        .as_deref()
+                        .and_then(|path| vega_store::config::read_from(path).ok())
+                        .and_then(|config| unique_provider_for_model(&config, &worker_owner.model))
+                        .map(|provider| provider.name);
+                    vega_conversation::agent::read_context_projection_with_provider(
                         &store,
                         &worker_owner.thread_id,
                         &worker_owner.model,
+                        provider.as_deref(),
                         SYSTEM_PROMPT,
                     )
                     .map_err(|_| ())
@@ -424,6 +431,7 @@ impl VegaWindow {
                                 &owner.thread_id,
                                 &owner.model,
                                 projection.settings,
+                                projection.model_input_limit,
                                 projection.estimated_tokens,
                                 projection.compactable,
                                 cx,
