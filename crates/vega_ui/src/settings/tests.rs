@@ -2079,6 +2079,12 @@ struct OwnedOAuthMetadataFixture {
 }
 impl OwnedOAuthMetadataFixture {
     fn start() -> Self {
+        Self::with_rejected_registration(false)
+    }
+    fn rejecting_dcr() -> Self {
+        Self::with_rejected_registration(true)
+    }
+    fn with_rejected_registration(reject_registration: bool) -> Self {
         let registrations = Arc::new(AtomicUsize::new(0));
         let registration_redirects = Arc::new(Mutex::new(Vec::new()));
         let tokens = Arc::new(AtomicUsize::new(0));
@@ -2090,6 +2096,7 @@ impl OwnedOAuthMetadataFixture {
         let endpoint = vega_mcp::mock::Endpoint::new("/mcp", |origin| {
             let worker_origin = origin.to_owned();
             Arc::new(move |request| {
+                let reject_registration = reject_registration;
                 let path = request.url().path().to_owned();
                 let (status, body, headers) = match path.as_str() {
                     "/mcp" => (
@@ -2141,16 +2148,28 @@ impl OwnedOAuthMetadataFixture {
                             .lock()
                             .expect("owned DCR redirects")
                             .extend(redirects.clone());
-                        (
-                            "201 Created",
-                            serde_json::json!({
-                                "client_id":"owned-dynamic-client",
-                                "token_endpoint_auth_method":"none",
-                                "redirect_uris":redirects
-                            })
-                            .to_string(),
-                            String::new(),
-                        )
+                        if reject_registration {
+                            (
+                                "400 Bad Request",
+                                serde_json::json!({
+                                    "error":"invalid_client",
+                                    "error_description":"owned-dcr-error-canary"
+                                })
+                                .to_string(),
+                                String::new(),
+                            )
+                        } else {
+                            (
+                                "201 Created",
+                                serde_json::json!({
+                                    "client_id":"owned-dynamic-client",
+                                    "token_endpoint_auth_method":"none",
+                                    "redirect_uris":redirects
+                                })
+                                .to_string(),
+                                String::new(),
+                            )
+                        }
                     }
                     "/token" => {
                         tokens_worker.fetch_add(1, Ordering::SeqCst);
@@ -2252,6 +2271,7 @@ enum McpExpectedOperation {
     Preparation,
     RejectedStepUp,
     RejectedStaleAuthorization,
+    RejectedDcrRegistration,
 }
 
 fn mcp_test_state(view: &SettingsView) -> String {
@@ -2301,6 +2321,12 @@ fn wait_for_mcp_operation(
                 McpExpectedOperation::RejectedStaleAuthorization => {
                     view.mcp.oauth_preparation.is_none()
                         && view.mcp.oauth_flow_id.is_none()
+                        && view.mcp.message_error
+                }
+                McpExpectedOperation::RejectedDcrRegistration => {
+                    view.mcp.oauth_preparation.is_none()
+                        && view.mcp.oauth_flow_id.is_none()
+                        && !view.mcp.oauth_waiting
                         && view.mcp.message_error
                 }
             };
@@ -2909,6 +2935,196 @@ async fn issue73_mcp_oauth_ui_dcr_requires_fresh_issuer_revision_consent(cx: &mu
     );
     let status = view.read_with(cx, |view, _| view.mcp.message.clone().unwrap_or_default());
     assert!(!status.contains("owned-access") && !status.contains("owned-refresh"));
+}
+
+#[gpui_kit::test]
+async fn issue73_mcp_oauth_ui_rejected_dcr_stays_uncredentialed(cx: &mut TestAppContext) {
+    use vega_conversation::types::{
+        McpOAuthRegistration, McpRemoteAuthorization, McpServerForm, McpServerTransport,
+    };
+
+    let fixture = OwnedOAuthMetadataFixture::rejecting_dcr();
+    let owned = tempfile::tempdir().expect("owned MCP Settings root");
+    let database_path = owned.path().join("vega.db");
+    let config_root = owned.path().join("config");
+    let service = vega_conversation::McpServerSettingsService::new(
+        database_path.clone(),
+        config_root.clone(),
+    );
+    let saved = service
+        .create(McpServerForm {
+            display_name: "owned rejected DCR".into(),
+            transport: McpServerTransport::Remote {
+                endpoint: fixture.endpoint.clone(),
+                allow_loopback_http: true,
+                authorization: McpRemoteAuthorization::OAuth { client_id: None },
+            },
+        })
+        .expect("disabled OAuth server");
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    view.update(cx, |view, cx| {
+        view.install_mcp_service(Some(service.clone()), cx)
+    });
+    wait_for_mcp_idle(cx, &view);
+    let root = view.clone();
+    let window: WindowHandle<SettingsHarness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1403.), px(860.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| {
+                    cx.new(|_| SettingsHarness {
+                        view: root,
+                        closes: Arc::new(AtomicUsize::new(0)),
+                    })
+                },
+            )
+        })
+        .expect("Settings window");
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let nav = visual
+        .debug_bounds("settings-nav-mcp")
+        .expect("MCP navigation");
+    visual.simulate_click(nav.center(), Default::default());
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let discover = visual
+        .debug_bounds("mcp-oauth-discover")
+        .expect("discover OAuth");
+    visual.simulate_click(discover.center(), Default::default());
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let confirm = visual
+        .debug_bounds("mcp-confirm")
+        .expect("confirm metadata discovery");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(confirm.center(), Default::default());
+    wait_for_mcp_operation(cx, &view, generation, McpExpectedOperation::Discovery);
+    let discovery = view.read_with(cx, |view, _| view.mcp.oauth_discovery.clone());
+    let (_, _, discovery) = discovery.expect("validated OAuth metadata");
+    assert_eq!(discovery.issuers, [fixture.issuer.as_str()]);
+    assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tokens.load(Ordering::SeqCst), 0);
+    assert!(cx.opened_url().is_none());
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let issuer = visual
+        .debug_bounds("mcp-oauth-issuer")
+        .expect("select discovered issuer");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(issuer.center(), Default::default());
+    wait_for_mcp_operation(cx, &view, generation, McpExpectedOperation::Preparation);
+    let prepared = view
+        .read_with(cx, |view, _| view.mcp.oauth_preparation.clone())
+        .expect("exact DCR preview");
+    assert_eq!(prepared.issuer, fixture.issuer);
+    assert_eq!(
+        prepared.registration,
+        McpOAuthRegistration::DynamicRegistration
+    );
+    assert_eq!(
+        prepared.registration_endpoint.as_deref(),
+        Some(format!("{}/register", fixture.endpoint.trim_end_matches("/mcp")).as_str())
+    );
+    assert!(prepared.redirect_uri.starts_with("http://127.0.0.1:"));
+    assert_eq!(prepared.requested_scopes, ["tools:read"]);
+    let preview = super::mcp::mcp_oauth_preparation_lines(&prepared).join("\n");
+    assert!(preview.contains(&fixture.issuer));
+    assert!(preview.contains(&prepared.redirect_uri));
+    assert!(preview.contains("已弃用的动态客户端注册（DCR）"));
+    assert!(preview.contains("/register"));
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("mcp-oauth-preparation")
+            .is_some()
+    );
+    assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tokens.load(Ordering::SeqCst), 0);
+    assert!(cx.opened_url().is_none());
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let authorize = visual
+        .debug_bounds("mcp-oauth-authorize")
+        .expect("explicit DCR consent action");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(authorize.center(), Default::default());
+    wait_for_mcp_operation(
+        cx,
+        &view,
+        generation,
+        McpExpectedOperation::RejectedDcrRegistration,
+    );
+
+    assert_eq!(fixture.registrations.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.tokens.load(Ordering::SeqCst), 0);
+    assert!(cx.opened_url().is_none());
+    assert!(
+        fixture
+            .accepted_paths
+            .lock()
+            .expect("owned request trace")
+            .contains(&"/register | 400 Bad Request".into())
+    );
+    assert_eq!(
+        fixture
+            .registration_redirects
+            .lock()
+            .expect("owned DCR redirects")
+            .as_slice(),
+        [prepared.redirect_uri.as_str()]
+    );
+    let (message, is_error) = view.read_with(cx, |view, _| {
+        (
+            view.mcp.message.clone().unwrap_or_default(),
+            view.mcp.message_error,
+        )
+    });
+    assert!(is_error);
+    assert_eq!(message, "连接或工具发现失败；服务器保持原有启用状态");
+    assert!(!message.contains("owned-dcr-error-canary"));
+    assert!(!message.contains("owned-access") && !message.contains("owned-refresh"));
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("mcp-message")
+            .is_some()
+    );
+
+    let current = service
+        .list()
+        .expect("server after DCR rejection")
+        .remove(0);
+    assert!(!current.enabled);
+    assert!(!current.credential_configured);
+    let store = vega_store::Store::open(database_path).expect("owned settings database");
+    store.migrate().expect("settings migrations");
+    let stored = vega_store::mcp_servers::find(store.conn(), &saved.id)
+        .expect("stored row after registration rejection")
+        .expect("server row");
+    assert!(!stored.enabled);
+    assert!(stored.remote_credential_ref.is_none());
+    assert!(stored.remote_oauth_issuer.is_none());
+    assert!(stored.remote_oauth_client_id.is_none());
+    let credentials = config_root.join("credentials");
+    if credentials.exists() {
+        assert_eq!(
+            std::fs::read_dir(credentials)
+                .expect("owned credential directory")
+                .count(),
+            0
+        );
+    }
 }
 
 fn mcp_async_for_test<T>(
