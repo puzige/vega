@@ -57,6 +57,9 @@ F4. Release the gate only after the real app/stream has satisfied all original
 streaming assertions: provisional meter, active agent and unknown cost. Then
 perform the unchanged completion, identity, model, request-count, transcript,
 actual token, NULL pricing provenance, aggregate and reopen-summary assertions.
+The existing provisional pump predicate must also require the provider's gate
+waiting token: UI visibility can precede the worker polling its next event.
+This additional fixture readiness condition uses the same pump and deadline.
 The gate controls provider timing only; it must not synthesize UI state,
 persistence, events, approvals or successful outcomes.
 
@@ -70,17 +73,17 @@ cancellation wakes it with Cancelled without delivering Usage/Done. Keep any
 diagnostic output bounded and limited to fixture-owned scalar state, never
 credentials, bodies or paths.
 
-## Acceptance matrix before implementation
+## Frozen acceptance matrix and observed results
 
 | ID | Requirement / risk | Preconditions | Operation | Expected observation | Layer | Evidence | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | H1 | Historical cloud failure | Original PR/run/log | Read exact failing predicate and lifecycle | Historical failure retained; cause remains unconfirmed | Source / cloud log | Original SHA and run above | RECORDED |
 | D1 | Lost streaming observation | Owned existing fixture with temporary zero-delay patch | Exact original R69 test | Controlled red: first and all later bounded observations were completed/usage-calibrated with provisional false | App / mock provider / owned SQLite | `b71c6408-810f-4db8-b881-5f7506b5d503`, 0 passed / 1 failed / 216 skipped, exit 100 | REPRODUCED (CONTROLLED ONLY) |
-| G1 | Stable streaming checkpoint | Same fixture with explicit provider gate | Submit through actual Composer and observe stream before release | Provisional true, active agent true, cost None; no Usage/Done may cross the provider gate yet | App / gated MockProvider | `50e26b9d-0b5b-4771-b65d-9c84c8447763`, exact original R69 case | PASS on fac20c6 |
-| G2 | Release and durable completion | G1 observed and gate explicitly released | Finish original test, including reopening owned Store | All original request/model/identity/content/token/cost/reopen assertions remain exact | Production worker / owned SQLite | Same first green run, exact original R69 case | PASS on fac20c6 |
-| G3 | Failure cleanup | Pure in-process MockProvider paused at the gate | Poll until waiting, then drop its test-owned release guard | Wake probe fires; waiting next-event future receives the original Usage/Done | Fixture helper lifecycle | Same first green run, exact release-guard helper case | PASS on fac20c6 |
-| G4 | Run cancellation | Pure in-process MockProvider paused at the gate | Poll until waiting, then cancel the run token | Wake probe fires; waiting future yields Cancelled and ends without Usage/Done | Fixture helper lifecycle | Same first green run, exact cancellation helper case | PASS on fac20c6 |
-| M1 | Fresh integration baseline | Main reported new master `dbe90d06df99dd4211c2bedb46c8e5050cc4c88e` after the first source freeze | Commit clean, fetch/rebase, then freeze and rerun only the same three cases | All three remain exact and pass on latest master | Integration baseline / focused mock acceptance | Separate final run and hashes | NOT RUN |
+| G1 | Stable streaming checkpoint | Same fixture with explicit provider gate | Submit through actual Composer and observe stream before release | Provisional true, active agent true, cost None; no Usage/Done may cross the provider gate yet | App / gated MockProvider | `ac7d1bc9-3371-42c9-ab32-64b79e076708`, exact original R69 case | PASS on dbe90d0 |
+| G2 | Release and durable completion | G1 observed and gate explicitly released | Finish original test, including reopening owned Store | All original request/model/identity/content/token/cost/reopen assertions remain exact | Production worker / owned SQLite | Same final run, exact original R69 case | PASS on dbe90d0 |
+| G3 | Failure cleanup | Pure in-process MockProvider paused at the gate | Poll until waiting, then drop its test-owned release guard | Wake probe fires; waiting next-event future receives the original Usage/Done | Fixture helper lifecycle | Same final run, exact release-guard helper case | PASS on dbe90d0 |
+| G4 | Run cancellation | Pure in-process MockProvider paused at the gate | Poll until waiting, then cancel the run token | Wake probe fires; waiting future yields Cancelled and ends without Usage/Done | Fixture helper lifecycle | Same final run, exact cancellation helper case | PASS on dbe90d0 |
+| M1 | Fresh integration baseline | Main reported new master `dbe90d06df99dd4211c2bedb46c8e5050cc4c88e` after the first source freeze | Commit clean, fetch/rebase, then freeze and rerun only the same three cases | All three remain exact and pass on latest master | Integration baseline / focused mock acceptance | Separate final run and hashes below | PASS (3 / 3) |
 
 ## Implementation and verification plan
 
@@ -166,5 +169,49 @@ again after a token changed would not establish that. No timers, Tokio runtime,
 GPUI/global pump, child process or filesystem fixture is added to those checks.
 
 The first green above remains evidence for its original baseline. M1 is a
-separate pending fresh-base verification; a new integration result must not
-overwrite the first green or the controlled red.
+separate fresh-base verification; its integration result does not overwrite the
+first green or the controlled red.
+
+## Fresh baseline and gate readiness refinement
+
+Main-agent source review after the first green identified an additional fixture
+ordering risk: a provisional UI event can be visible before the worker has
+polled its next event and set the gate's waiting token. The final source retains
+the original provisional condition and adds `waiting.is_cancelled()` to that
+same existing pump predicate. It does not add a new pump, timer or deadline.
+Active-agent and unknown-cost assertions, explicit release and every durable
+assertion remain unchanged. The final assertion-preservation record treats this
+readiness conjunction as a fifth precise fixture change.
+
+The first tested implementation was committed cleanly as
+`caac3bb7d0436f123ee990acf4c7875563f78224` before another `fetch --prune origin`
+and rebase onto `dbe90d06df99dd4211c2bedb46c8e5050cc4c88e`, producing
+`25689e61724f116032a3117090f4e0acecaa037f`. The R69 source was unchanged by
+that rebase; its old SHA remains the first-green source recorded above. The
+readiness refinement is applied after this clean rebase, before the final
+source freeze and three-case run. `first-green-commit.patch`, `rebase-latest.log`
+and `rebase-latest.json` retain the prior state and successful fetch/rebase.
+
+## Final focused verification
+
+`freeze-final.json` records the fresh base
+`dbe90d06df99dd4211c2bedb46c8e5050cc4c88e`, pre-run head
+`25689e61724f116032a3117090f4e0acecaa037f`, tested tree
+`082d3862d17b2f33a29c6896832d223c93b058a0` and final R69 source SHA-256
+`d8537ba0b6f774e34d51c53217288d19527a1a9d8bee6d76f9828ddb213610a9`.
+
+`nextest-final.log` retains run `ac7d1bc9-3371-42c9-ab32-64b79e076708`:
+3 passed / 216 skipped, exit 0, zero retries. Its SHA-256 is
+`02ff14346caa63b4d134e0c4763caff7929b805c6a9d263d7eeffeda2a27cdb8`.
+`result-final.json` confirms both frozen files stayed unchanged during that run.
+Only this document's result recording follows the test freeze; the final Rust
+source remains exactly the tested source. `assertion-preservation-final.json`
+proves the current master original case matches the initial case and preserves
+the whole body after the five specific gate substitutions.
+
+Local scope is complete for G1–G4/M1. Full workspace checks, Clippy and the
+independent PR/cloud gate remain main-agent integration work. No product source,
+provider/public runtime API, pricing, permission, Store, worker lifecycle,
+global pump/deadline, CI, dependency or ignored-test set was changed. The old
+S16 worktree remains clean and unchanged; its later fresh-base validation is
+separate. Native behavior and real provider/network execution were not exercised.

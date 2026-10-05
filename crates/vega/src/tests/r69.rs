@@ -323,6 +323,7 @@ async fn issue60_unpriced_first_submit_reaches_provider(cx: &mut gpui_kit::TestA
     pump_test_app(cx, |cx| {
         f.stream(cx)
             .read_with(cx, |stream, _| stream.meter_snapshot().provisional)
+            && gated_provider.waiting.is_cancelled()
     });
     assert!(
         f.stream(cx)
