@@ -159,3 +159,83 @@ $ git diff --check
 ```
 
 No full-workspace tests were run. Native Computer Use remains for the main agent after integration.
+
+## Mounted production-root navigation fix (2026-10-05)
+
+- Branch: `codex/72-anchor-click-nav-20261005`; starting baseline was the requested current `origin/master`.
+- Root cause: the mounted `VegaWindow` receives `MessageLocationRequested` and reports the loaded message as located, but `ListState::scroll_to_reveal_item` does not stop active tail-following. The next layout therefore returns to the tail and leaves the requested message offscreen.
+- Fix: `ConversationStream::reveal_loaded_message` pauses tail-following before revealing the message. The regression mounts the production `VegaWindow`, confirms its loaded stream is following the tail, emits the request through the stream event, and checks the root request generation, `Located` status, real target message ID at the visible scroll anchor, and stopped tail-following after layout.
+- Contract deviations: none. Deferred and unloaded-message route behavior remains covered by the root `message_location` subset. No provider request, settings change, app install, new dependency, or code comment was added.
+- Verification time: 2026-10-05 03:38 CST / 2026-10-04 19:38 UTC.
+
+### Red-first regression and setup diagnostics
+
+The first compile attempt of the new test failed because its readiness closure passed `TestAppContext` where GPUI expected `App`; the closure was corrected before the runtime regression. A subsequent fixture assertion expected exactly 200 hydrated entries but observed 201, so the setup now checks that at least the 200-row requested page is loaded. The root starts in tail-follow mode, so the regression uses that mounted default instead of assuming a return-to-bottom button is visible.
+
+Before the implementation fix, the production-root regression failed after the event route had run and returned `Located`:
+
+```text
+$ cargo nextest run -p vega loaded_message_location_routes_through_mounted_root_and_reveals_target
+Nextest run ID a7a1bd36-14d4-4828-80c3-f8844474e8a3
+Starting 1 test across 2 binaries (212 tests skipped)
+FAIL vega::bin/vega tests::history::loaded_message_location_routes_through_mounted_root_and_reveals_target
+assertion `left == right` failed
+  left: Some("user-142")
+ right: Some("user-100")
+Summary: 1 test run: 0 passed, 1 failed, 212 skipped
+```
+
+An initial `cargo fmt --all -- --check` also found one formatting adjustment in the added test; it was corrected manually and the check rerun.
+
+### Final focused verification
+
+```text
+$ cargo nextest run -p vega message_location
+Nextest run ID 723159f3-2792-4791-a124-c0647638c20e
+Starting 5 tests across 2 binaries (208 tests skipped)
+PASS unknown_message_location_result_projects_not_found
+PASS message_location_generation_fences_loaded_reselection_and_a_b_a
+PASS message_location_worker_returns_the_bounded_containing_page
+PASS active_message_location_defers_without_mutating_live_entries_then_resumes
+PASS loaded_message_location_routes_through_mounted_root_and_reveals_target
+Summary: 5 tests run: 5 passed, 208 skipped
+
+$ cargo nextest run -p vega_ui issue72_
+Nextest run ID 164898f3-da42-4840-9e83-4ef157aa6004
+Starting 12 tests across 1 binary (517 tests skipped)
+PASS preview_normalization_redacts_common_credentials_and_is_bounded
+PASS anchors_use_unique_durable_message_ids_and_safe_text_projections
+PASS empty_thread_still_displays_recoverable_location_status
+PASS run_activity_entries_contribute_geometry_without_duplicating_message_anchors
+PASS rail_is_hidden_for_short_content_and_shown_for_long_overflow
+PASS keyboard_anchor_preview_uses_a_reserved_lane_in_a_narrow_pane
+PASS keyboard_anchor_selection_displays_a_bounded_sanitized_preview
+PASS hover_anchor_preview_dismisses_when_pointer_leaves_rail_and_preview
+PASS prepending_neighbor_history_page_keeps_existing_anchor_identity_and_order
+PASS mouse_and_keyboard_anchor_navigation_emit_real_message_ids
+PASS width_remeasure_preserves_anchor_identity_and_updates_rail_geometry
+PASS measured_entry_height_cache_stays_bounded_while_scrolling
+Summary: 12 tests run: 12 passed, 517 skipped
+
+$ cargo nextest run -p vega_ui issue148_long_session_scroll
+Nextest run ID 7c8f04a8-eed2-4ed6-9f36-fa63e2739267
+Starting 9 tests across 1 binary (520 tests skipped)
+PASS production_render_samples_remain_bounded
+PASS durable_entry_identity_survives_prepend_and_rebuild
+PASS target_window_replacement_drops_old_cards_and_preserves_thread_state
+PASS newer_page_appends_and_preserves_the_existing_anchor
+PASS scroll_anchor_snapshot_restores_message_identity_and_offset_after_rebuild
+PASS newer_page_request_waits_until_the_list_reaches_the_bottom
+PASS loaded_message_reveal_keeps_the_entry_model_and_scrolls_to_target
+PASS prepend_and_column_remeasure_restore_stable_pixel_anchor
+PASS mixed_fixtures_keep_entry_counts_and_render_callbacks_bounded
+Summary: 9 tests run: 9 passed, 520 skipped
+
+$ cargo fmt --all -- --check
+(exit 0; no output)
+
+$ git diff --check
+(exit 0; no output)
+```
+
+No workspace-wide tests were run. Native Computer Use on an integrated build remains with the main agent.

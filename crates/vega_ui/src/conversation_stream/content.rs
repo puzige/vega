@@ -522,6 +522,7 @@ impl ConversationStream {
         else {
             return false;
         };
+        self.list.pause_following_tail();
         self.list.scroll_to_reveal_item(index);
         self.message_location_status = Some(MessageLocationStatus::Located);
         cx.notify();
