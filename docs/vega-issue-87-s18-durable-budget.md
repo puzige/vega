@@ -112,7 +112,7 @@ Sequence after approval: refresh base -> serialize registration -> add owned tes
 
 ## 7. Planned focused verification and truthful delivery
 
-These commands are a **future plan**, not execution evidence. The new selection matches only the four proposed functions; fixture variants are branches within those tests. Do not invent counts or run IDs before Nextest prints them.
+At the specification freeze, these commands were a **future plan**, not execution evidence. Sections 8 and 9 retain their subsequent actual outcomes. The new selection matches only the four proposed functions; fixture variants are branches within those tests. Do not invent counts or run IDs before Nextest prints them.
 
 ```sh
 cargo nextest run -p vega_conversation -E 'test(/issue87_s18_durable_/)'
@@ -123,7 +123,7 @@ cargo nextest run -p vega_store -E 'test(/model_policy_is_shared_across_threads_
 
 Use the worktree's isolated default target. Retain exact commands, exit codes, first/final raw footers, actual run IDs, selected counts, source/tested-tree hashes and duration outside the worktree. No new ignore/retry, wall-clock tightening, local workspace-wide test or real shell/Git/network/MCP/model execution. Formatting/whitespace review follows task instructions; full Clippy/Nextest required gates belong to cloud CI.
 
-This audit has run no Cargo command or test and created no native artifact. Successful future cases may close only this owned MockProvider/Store evidence gap. Native acceptance, real summary quality/limit claims, real MCP use, original-run budget/schema persistence and whole Skills delivery remain separately tracked; S18/#87 must not be marked Done on these results alone.
+The initial source audit ran no Cargo command or test and created no native artifact. Successful owned cases may close only this MockProvider/Store evidence gap. Native acceptance, real summary quality/limit claims, real MCP use, original-run budget/schema persistence and whole Skills delivery remain separately tracked; S18/#87 must not be marked Done on these results alone.
 
 ## 8. Approved implementation and baseline evidence
 
@@ -164,3 +164,25 @@ DB01–DB10 now have owned process-local joint evidence on this baseline; DB11's
 Source self-review then strengthened the same zero-operational-replay criterion with the exact persisted live-call set: only one `load_skill`, plus the optional one `read_skill_resource`, all terminal success. This applies before and after recovery, including cancellation's load-only branch. It adds no test function or production change and relaxes no assertion. On the same baseline, frozen tree `e14bcbf0deae8460fda09b2e6e1fc0bdc5be7581` and child SHA `0d1f28db58de50ef529e8d16a15437525207fd27ce02021f7c10224cad6d32f2`, run `cb397c85-26fe-48d7-89c3-5a415d5b08a1` exited 0: `Summary [   1.385s] 4 tests run: 4 passed, 553 skipped`. Raw log SHA: `0676e90a6bf16d6f8bf8da4142553ab1339c71ee89f7ad0e7bdd4efbe03c0b6b`. Source/config/tree remained unchanged throughout this run; the final S14 integrated selection remains pending.
 
 The main agent completed full source/spec review and approved two further direct-wire assertions: the latest user `TASK` occurs exactly once in every primary request, including the primary before summary cancellation; each resumed primary contains exactly one labelled untrusted historical summary, with User role and the bounded returned summary text. This only strengthens already-frozen DB01/DB04/DB05. The pre-change source/commit and all raw logs remain retained. After fresh fetch/rebase confirmed the same base, these assertions were added without another old-baseline test run, as the main agent directed. Their result is **NOT RUN** until the final selection on the actual S14 integrated base; earlier green results do not cover this later source revision.
+
+## 9. Final integrated-base evidence
+
+The pending/NOT RUN statements in section 8 describe the earlier source freezes. The main agent supplied the actual S14 merge, and this child fresh-fetched and rebased onto `0d54db96b8d0ae1ecf7e6f6097080e0690ae232e`. S14's `asset_metadata` registration remains present; the sole shared-file delta is the S18 child registration. Every other S14 production/test/document file matches that integrated base exactly.
+
+- Tested HEAD: `4594384d9eff46e3d994a6f0c8cfac8ef9e83c9c`; tested tree: `45a185d2ac738d1269d9dc0b97406dba8d832684`.
+- Child source SHA-256: `095117d6643ededbb2a4c87d04cd2ff7337577974265bbe6ac9be86f9994fc23`.
+- Before/after freeze: `final-before.json` / `final-after.json`; verified at `2026-10-05T20:20:39.345989Z` / `2026-10-06 04:20:39 Asia/Shanghai`.
+- All 28 frozen source/configuration files, the clean HEAD/tree and selected environment fields were unchanged throughout all four selections. The later change to this document only records results.
+- The two direct-wire assertions had their **first actual execution** in the four-function run below. They passed without a retry, rerun, harness correction or production change on this integrated base.
+- Commands are the exact four selections in section 7. Actual profile `default`, `retries=0`, `fail-fast=false`, 600s hang guard, isolated worktree target; Rust/Cargo 1.98.0, Nextest 0.9.146.
+
+| Selection | Nextest run ID | Raw footer | Exit | Retained raw log | Raw log SHA-256 |
+| --- | --- | --- | --- | --- | --- |
+| Four new conversation functions | `8434bc2e-b132-43a0-8942-160908b7293f` | `Summary [   1.364s] 4 tests run: 4 passed, 557 skipped` | 0 | `final-coverage.log` | `d5c37df91b24a2bdf9b6027f3ed7d4a56dd9974a8cf8120529f2040b247ed9a0` |
+| Named conversation regressions | `efd6e15c-1bc3-4139-ad85-366e2e956341` | `Summary [   0.101s] 10 tests run: 10 passed, 551 skipped` | 0 | `final-conversation-related.log` | `92e6dec4bde56abe11d57d851a9667387f210e4c88f036a5abe5b2308a0bf6bf` |
+| Named Runtime regressions | `2cf7140e-c565-4f35-9abd-930a90c1c3ac` | `Summary [   0.061s] 2 tests run: 2 passed, 263 skipped` | 0 | `final-runtime-related.log` | `7d13a90a6a6703e458e3e0bae9b82f278a1176e7115d27dba9e1347ae3d9d4b1` |
+| Named Store regressions | `24b41b18-2581-4e03-b66b-ea667c78f948` | `Summary [   0.028s] 4 tests run: 4 passed, 148 skipped` | 0 | `final-store-related.log` | `43d7c496a0436b20ef31cee57fbd040bc1f9c761eb1133cf9d37c900ad59a020` |
+
+The before/after records preserve full toolchain output, exact commands and source/configuration hashes; `final-tested-owned-source.tar.gz` preserves the tested owned source and configuration. Raw logs and source evidence remain outside the worktree. No local workspace-wide test, cloud gate, native UI, real model, real MCP/network transport, operational Shell/Git subprocess, user DB/configuration, publication or installation was performed by this child.
+
+This completes the approved **coverage-only** joint evidence slice: configured budget and actual wire contributions, production append-only compaction, original raw rows and prior checkpoint preservation, true Store drop/reopen, persisted Skill/provenance/summary recovery, no operational replay, typed primary failure, deterministic summary cancellation and truthful unpriced/unknown Usage classifications. Production fixes: **0**. Fresh-run policy resolution is not restoration of the original run's budget or schema vector. Original-run budget/schema persistence, native and real-model acceptance, whole S18 and Issue #87 remain **PARTIAL**; the shared delivery matrix is unchanged.
