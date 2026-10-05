@@ -63,8 +63,7 @@ async fn issue64_context_usage_known_capacity_shows_hover_tip_without_changing_c
             "issue64-known",
             "mock",
             Some(settings("issue64-known", "mock", Some(258_000))),
-            Some(258_000),
-            Some(135_000),
+            ContextUsageProjection::new(Some(258_000), Some(135_000)),
             true,
             cx,
         ));
@@ -121,8 +120,7 @@ async fn issue64_context_usage_unknown_capacity_shows_no_percentage_and_unknown_
             "issue64-unknown",
             "mock",
             Some(settings("issue64-unknown", "mock", None)),
-            None,
-            None,
+            ContextUsageProjection::new(None, None),
             true,
             cx,
         ));
@@ -134,8 +132,7 @@ async fn issue64_context_usage_unknown_capacity_shows_no_percentage_and_unknown_
             "issue64-unknown",
             "mock",
             Some(settings("issue64-unknown", "mock", None)),
-            None,
-            Some(135_000),
+            ContextUsageProjection::new(None, Some(135_000)),
             true,
             cx,
         ));
@@ -180,8 +177,7 @@ async fn issue64_context_usage_focus_keeps_the_same_tip_after_pointer_leaves(
             "issue64-focus",
             "mock",
             Some(settings("issue64-focus", "mock", Some(100_000))),
-            Some(100_000),
-            Some(50_000),
+            ContextUsageProjection::new(Some(100_000), Some(50_000)),
             true,
             cx,
         ));
@@ -226,8 +222,7 @@ async fn issue64_context_usage_tab_from_composer_input_reaches_indicator_and_too
             "issue64-tab-focus",
             "mock",
             Some(settings("issue64-tab-focus", "mock", Some(100_000))),
-            Some(100_000),
-            Some(50_000),
+            ContextUsageProjection::new(Some(100_000), Some(50_000)),
             true,
             cx,
         ));
@@ -308,8 +303,7 @@ async fn issue64_context_usage_hover_and_focus_tips_fit_narrow_window_without_co
             "issue64-narrow-window",
             "mock",
             Some(settings("issue64-narrow-window", "mock", Some(100_000))),
-            Some(100_000),
-            Some(50_000),
+            ContextUsageProjection::new(Some(100_000), Some(50_000)),
             true,
             cx,
         ));
@@ -372,8 +366,7 @@ async fn issue64_context_usage_rejects_late_projection_after_model_change(cx: &m
             "issue64-model-switch",
             "mock",
             Some(settings("issue64-model-switch", "mock", Some(100_000))),
-            Some(64_000),
-            Some(80_000),
+            ContextUsageProjection::new(Some(64_000), Some(80_000)),
             true,
             cx,
         ));
@@ -394,8 +387,7 @@ async fn issue64_context_usage_rejects_late_projection_after_model_change(cx: &m
             "issue64-model-switch",
             "mock",
             Some(settings("issue64-model-switch", "mock", Some(100_000))),
-            Some(128_000),
-            Some(99_000),
+            ContextUsageProjection::new(Some(128_000), Some(99_000)),
             true,
             cx,
         ));
@@ -407,8 +399,7 @@ async fn issue64_context_usage_rejects_late_projection_after_model_change(cx: &m
                 "other-model",
                 Some(100_000)
             )),
-            None,
-            Some(20_000),
+            ContextUsageProjection::new(None, Some(20_000)),
             true,
             cx,
         ));
@@ -427,8 +418,7 @@ async fn issue64_context_usage_ignores_legacy_capacity_when_model_policy_is_unkn
             "issue64-legacy-limit",
             "mock",
             Some(settings("issue64-legacy-limit", "mock", Some(33_333))),
-            None,
-            Some(10_000),
+            ContextUsageProjection::new(None, Some(10_000)),
             true,
             cx,
         ));
@@ -486,8 +476,7 @@ async fn issue64_context_usage_uses_light_and_dark_theme_tokens_and_stays_read_o
                 "issue64-theme",
                 "mock",
                 Some(settings("issue64-theme", "mock", Some(100_000))),
-                Some(100_000),
-                Some(20_000),
+                ContextUsageProjection::new(Some(100_000), Some(20_000)),
                 true,
                 cx,
             ));

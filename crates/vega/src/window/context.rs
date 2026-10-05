@@ -431,8 +431,10 @@ impl VegaWindow {
                                 &owner.thread_id,
                                 &owner.model,
                                 projection.settings,
-                                projection.model_input_limit,
-                                projection.estimated_tokens,
+                                ContextUsageProjection::new(
+                                    projection.model_input_limit,
+                                    projection.estimated_tokens,
+                                ),
                                 projection.compactable,
                                 cx,
                             );

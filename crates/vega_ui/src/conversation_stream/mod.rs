@@ -326,6 +326,7 @@ mod composer_actions;
 use composer_actions::ComposerActions;
 mod content;
 mod context_control;
+pub use context_control::ContextUsageProjection;
 mod context_usage;
 pub use vega_conversation::types::{
     ContextCompactionCancelRequested, ContextCompactionRequested, ContextSettingsRequested,

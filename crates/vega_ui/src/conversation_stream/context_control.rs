@@ -7,6 +7,21 @@ use vega_conversation::types::{
 
 const LOAD_ERROR: &str = "上下文信息读取失败，请稍后重试";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextUsageProjection {
+    model_input_limit: Option<u64>,
+    estimated_tokens: Option<u64>,
+}
+
+impl ContextUsageProjection {
+    pub fn new(model_input_limit: Option<u64>, estimated_tokens: Option<u64>) -> Self {
+        Self {
+            model_input_limit,
+            estimated_tokens,
+        }
+    }
+}
+
 pub(crate) struct ContextControl {
     pub open: bool,
     limit: Entity<TextInput>,
@@ -130,8 +145,7 @@ impl ConversationStream {
         thread_id: &str,
         model: &str,
         settings: Option<ContextSettings>,
-        model_input_limit: Option<u64>,
-        estimated_tokens: Option<u64>,
+        usage: ContextUsageProjection,
         compactable: bool,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -147,9 +161,9 @@ impl ConversationStream {
             && self.context_control.limit.read(cx).text().is_empty()
             && self.context_control.reserve.read(cx).text().is_empty();
         self.context_control.settings = settings;
-        self.context_control.model_input_limit = model_input_limit;
+        self.context_control.model_input_limit = usage.model_input_limit;
         if self.context_control.live_accounting.is_none() {
-            self.context_control.estimate = estimated_tokens;
+            self.context_control.estimate = usage.estimated_tokens;
         }
         if self.context_control.estimate.is_none() {
             self.context_usage_trigger_hovered = false;
