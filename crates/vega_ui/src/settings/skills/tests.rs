@@ -9,6 +9,251 @@ use std::sync::Arc;
 use tempfile::tempdir;
 use vega_store::Store;
 
+fn candidate_view(name: &str, model_winner: bool) -> vega_conversation::types::SkillCandidateView {
+    let content_sha256 = "a".repeat(64);
+    vega_conversation::types::SkillCandidateView {
+        name: name.into(),
+        description: Some("Review changes.".into()),
+        content_sha256: Some(content_sha256.clone()),
+        approved_sha256: model_winner.then_some(content_sha256),
+        size_bytes: Some(64),
+        enabled: model_winner,
+        automatic: model_winner,
+        model_winner,
+        diagnostic: (!model_winner).then(|| "review_required".into()),
+    }
+}
+
+fn source_view(
+    id: &str,
+    scope: vega_conversation::types::SkillUiScope,
+    source_label: &str,
+    candidates: Vec<vega_conversation::types::SkillCandidateView>,
+) -> vega_conversation::types::SkillSourceView {
+    vega_conversation::types::SkillSourceView {
+        id: id.into(),
+        scope,
+        project_id: None,
+        configured_root: PathBuf::new(),
+        canonical_root: PathBuf::new(),
+        source_label: source_label.into(),
+        enabled: false,
+        automatic: false,
+        diagnostic: None,
+        candidates,
+    }
+}
+
+fn projection_with_global_winner() -> SkillSettingsProjection {
+    let mut projection = SkillSettingsProjection {
+        consent_generation: 0,
+        revocation_generation: 0,
+        global_enabled: false,
+        automatic_enabled: false,
+        selected_project_id: None,
+        project_enabled: false,
+        project_automatic: false,
+        sources: vec![
+            source_view(
+                "project-source",
+                vega_conversation::types::SkillUiScope::Project,
+                "project-label",
+                vec![candidate_view("reviewer", false)],
+            ),
+            source_view(
+                "global-source",
+                vega_conversation::types::SkillUiScope::VegaGlobal,
+                "global-label",
+                vec![candidate_view("reviewer", true)],
+            ),
+            source_view(
+                "import-source",
+                vega_conversation::types::SkillUiScope::Imported,
+                "skill-0123456789abcdef",
+                vec![candidate_view("reviewer", false)],
+            ),
+        ],
+    };
+    projection.global_enabled = true;
+    projection.automatic_enabled = true;
+    projection.sources[1].enabled = true;
+    projection.sources[1].automatic = true;
+    projection.sources[1].candidates[0] = candidate_view("reviewer", true);
+    projection
+}
+
+#[test]
+fn issue87_s04_global_winner_labels_project_and_import_duplicates() {
+    let projection = projection_with_global_winner();
+    let expected = Some("被 Vega 全局同名项遮蔽".to_owned());
+
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[0].candidates[0]),
+        expected
+    );
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[2].candidates[0]),
+        expected
+    );
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[1].candidates[0]),
+        None
+    );
+}
+
+#[test]
+fn issue87_s04_imported_winner_label_uses_opaque_source_label() {
+    let mut projection = projection_with_global_winner();
+    projection.global_enabled = false;
+    projection.automatic_enabled = false;
+    projection.sources[1].enabled = false;
+    projection.sources[1].automatic = false;
+    projection.sources[1].candidates[0].model_winner = false;
+    projection.sources[2].enabled = true;
+    projection.sources[2].automatic = true;
+    projection.sources[2].candidates[0] = candidate_view("reviewer", true);
+    projection.sources[2].configured_root = PathBuf::from("/private/imported-skills");
+    projection.sources[2].canonical_root = PathBuf::from("/private/imported-skills");
+
+    let label = skill_shadow_label(&projection, &projection.sources[0].candidates[0]);
+
+    assert_eq!(
+        label.as_deref(),
+        Some("被外部导入来源「skill-0123456789abcdef」的同名项遮蔽")
+    );
+    let label = label.unwrap();
+    assert!(!label.contains("/private/imported-skills"));
+    assert!(!label.contains("Review changes."));
+}
+
+#[test]
+fn issue87_s04_candidate_without_model_winner_is_not_marked_shadowed() {
+    let mut projection = projection_with_global_winner();
+    projection.global_enabled = false;
+    projection.automatic_enabled = false;
+    projection.sources[1].enabled = false;
+    projection.sources[1].automatic = false;
+    projection.sources[1].candidates[0].model_winner = false;
+
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[0].candidates[0]),
+        None
+    );
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[2].candidates[0]),
+        None
+    );
+}
+
+#[test]
+fn issue87_s04_project_winner_labels_global_and_import_duplicates() {
+    let mut projection = projection_with_global_winner();
+    projection.sources[0].enabled = true;
+    projection.sources[0].automatic = true;
+    projection.project_enabled = true;
+    projection.project_automatic = true;
+    projection.sources[0].candidates[0] = candidate_view("reviewer", true);
+    projection.sources[1].candidates[0].model_winner = false;
+
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[1].candidates[0]),
+        Some("被当前项目同名项遮蔽".into())
+    );
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[2].candidates[0]),
+        Some("被当前项目同名项遮蔽".into())
+    );
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[0].candidates[0]),
+        None
+    );
+}
+
+#[test]
+fn issue87_s04_invalid_same_name_diagnostic_is_not_marked_shadowed() {
+    let mut projection = projection_with_global_winner();
+    let mut invalid = candidate_view("reviewer", false);
+    invalid.content_sha256 = None;
+    invalid.diagnostic = Some("malformed_yaml".into());
+    projection.sources.push(source_view(
+        "invalid-import-source",
+        vega_conversation::types::SkillUiScope::Imported,
+        "skill-fedcba9876543210",
+        vec![invalid],
+    ));
+
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[3].candidates[0]),
+        None
+    );
+    assert_eq!(
+        skill_shadow_label(&projection, &projection.sources[0].candidates[0]),
+        Some("被 Vega 全局同名项遮蔽".into())
+    );
+
+    let mut invalid_winner_projection = projection_with_global_winner();
+    invalid_winner_projection.sources[1].candidates[0].content_sha256 = None;
+    invalid_winner_projection.sources[1].candidates[0].diagnostic = Some("malformed_yaml".into());
+    assert_eq!(
+        skill_shadow_label(
+            &invalid_winner_projection,
+            &invalid_winner_projection.sources[0].candidates[0]
+        ),
+        None
+    );
+}
+
+#[gpui_kit::test]
+async fn issue87_s04_shadow_label_is_mounted_for_shadowed_settings_rows(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(super::super::SettingsOpen(true));
+        cx.set_global(crate::sidebar::SidebarWidth(
+            vega_theme::Layout::SIDEBAR_WIDTH,
+        ));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    view.update(cx, |view, _| {
+        view.section = 6;
+        view.skills.projection = Some(projection_with_global_winner());
+    });
+    let root = view.clone();
+    let window: WindowHandle<Harness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1403.), px(1800.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| cx.new(|_| Harness(root)),
+            )
+        })
+        .expect("Skills Settings window");
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(
+        visual
+            .debug_bounds("skills-shadow-project-source-reviewer")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("skills-shadow-import-source-reviewer")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("skills-shadow-global-source-reviewer")
+            .is_none()
+    );
+}
+
 struct Harness(Entity<SettingsView>);
 
 impl Render for Harness {
