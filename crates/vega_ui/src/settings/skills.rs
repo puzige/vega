@@ -337,8 +337,10 @@ impl SettingsView {
             .child(section_title("Agent Skills", colors.text_primary))
             .child(
                 div()
+                    .id("skills-intro")
+                    .debug_selector(|| "skills-intro".into())
                     .text_color(colors.text_secondary)
-                    .child("Skills 是低信任的工作流程说明，不授予脚本、MCP 或文件工具额外权限。全局与自动触发默认关闭。"),
+                    .child("Skills 是低信任工作流说明，不会扩大脚本、MCP 或文件工具权限。全局与自动触发默认关闭。"),
             )
             .child(skill_button(
                 "刷新".into(),
