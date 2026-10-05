@@ -1043,7 +1043,7 @@ pub fn load_history_page_records(
          a.content_sha256, a.origin, a.status, a.created_at \
          FROM skill_activation_audits a JOIN messages m \
            ON m.id = a.run_id AND m.thread_id = a.thread_id \
-         WHERE a.thread_id = ?1 AND m.role = 'assistant' AND m.kind = 'text' \
+         WHERE a.thread_id = ?1 AND m.role = 'assistant' AND m.kind IN ('text', 'plan') \
            AND m.seq BETWEEN ?2 AND ?3 AND a.status IN ('loaded', 'revoked') \
          ORDER BY m.seq, a.id LIMIT ?4",
     )?;
@@ -1065,7 +1065,7 @@ pub fn load_history_page_records(
              SUM(length(s.bytes)) OVER (ORDER BY m.seq, s.run_id) AS total_bytes \
            FROM skill_run_snapshots s JOIN messages m \
              ON m.id = s.run_id AND m.thread_id = s.thread_id \
-           WHERE s.thread_id = ?1 AND m.role = 'assistant' AND m.kind = 'text' \
+           WHERE s.thread_id = ?1 AND m.role = 'assistant' AND m.kind IN ('text', 'plan') \
              AND m.seq BETWEEN ?2 AND ?3 \
              AND length(s.bytes) BETWEEN 1 AND 1048576 \
              AND EXISTS (SELECT 1 FROM skill_activation_audits a \

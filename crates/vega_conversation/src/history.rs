@@ -299,11 +299,11 @@ fn assemble(
             let Some(activations) = by_run.get(&row.id) else {
                 continue;
             };
-            let Some(position) = entries.iter().rposition(|entry| {
-                matches!(entry,
-                    HistoryEntry::AssistantText { message_id, .. }
-                    | HistoryEntry::Tool { message_id, .. }
-                    if message_id == &row.id)
+            let Some(position) = entries.iter().rposition(|entry| match entry {
+                HistoryEntry::AssistantText { message_id, .. }
+                | HistoryEntry::Tool { message_id, .. } => message_id == &row.id,
+                HistoryEntry::Plan { plan, .. } => plan.id == row.id,
+                _ => false,
             }) else {
                 continue;
             };
