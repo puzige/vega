@@ -91,3 +91,5 @@
 回归先使用真实 `sidebar-settings` 和 `settings-back` 控件。若入口点击在卸载前已经清理 hover，保留该实际结果，另以既有 `SettingsOpen` global 打开 production Settings route；该 seam 覆盖实际路由生命周期，不证明打开 Settings 的入口绑定。业务失败不得靠直接给 hover latch 赋值制造。测试先冻结源码与配置，再保留真正首次业务断言失败；编译/fixture 错误单列。真实桌面复验由主 Agent 在合并并核实安装身份后执行。
 
 以上 PASS 仅指本次定向进程内回归。修复后的原生 Settings 往返尚未执行，不把旧版本的原生失败或 GPUI 结果写成原生通过。第一次真实 Sidebar 点击的两个用例已经 PASS；另两个 existing SettingsOpen route seam 用例检出了缓存 hover 残留。完整首次结果、同一测试源码的修复后结果与证据 hash 见 [交付记录](vega-issue-64-context-usage-delivery.md#2026-10-06-follow-up-settings-route-leaves-context-tooltip-visible)。
+
+2026-10-06 集成更新：S18 合并后的基线 `4fc330ac` 上重新冻结并运行同一 18 项组合，首次 18/18 PASS（Nextest `60eede62-c13a-4051-83b6-aac9f54899f9`，default，零重试）。三个生产新增行、全部 #64 测试源码与原修复提交逐字节相同；本次仅补充基线与实际证据，未改变 C64-N1–N7 契约或 Shared Skills 内容。旧 cloud PASS 只属于原修复 HEAD，新候选 cloud 与原生复验仍待主 Agent，见 [集成记录](vega-issue-64-context-usage-delivery.md#2026-10-06-integration-update-after-s18-merge)。
