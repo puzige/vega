@@ -16,11 +16,229 @@ use super::*;
 use gpui_kit::{
     Bounds, Modifiers, Pixels, VisualTestContext, WindowBounds, WindowOptions, px, size,
 };
+use tokio_util::sync::CancellationToken;
 use vega_conversation::SkillSettingsService;
 use vega_conversation::types::{PermissionMode, ThreadMode, ThreadStatus};
 use vega_ui::branch_selector::BranchListRequested;
 use vega_ui::conversation_stream::{ComposerDefaultsRequested, ThreadSettingsRequested};
 use vega_ui::sidebar::SelectedProject;
+
+struct StreamingObservationProvider {
+    inner: Arc<vega_runtime::MockProvider>,
+    release: CancellationToken,
+    waiting: CancellationToken,
+}
+
+struct StreamingReleaseGuard(CancellationToken);
+
+impl StreamingReleaseGuard {
+    fn release(&self) {
+        self.0.cancel();
+    }
+}
+
+impl Drop for StreamingReleaseGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+impl StreamingObservationProvider {
+    fn new(inner: Arc<vega_runtime::MockProvider>) -> (Arc<Self>, StreamingReleaseGuard) {
+        let release = CancellationToken::new();
+        (
+            Arc::new(Self {
+                inner,
+                release: release.clone(),
+                waiting: CancellationToken::new(),
+            }),
+            StreamingReleaseGuard(release),
+        )
+    }
+}
+
+impl vega_runtime::Provider for StreamingObservationProvider {
+    fn chat_stream(
+        &self,
+        request: vega_runtime::ChatRequest,
+        cancel: CancellationToken,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<vega_runtime::EventStream, vega_runtime::VegaError>,
+    > {
+        use futures::StreamExt;
+        let future =
+            vega_runtime::Provider::chat_stream(self.inner.as_ref(), request, cancel.clone());
+        let release = self.release.clone();
+        let waiting = self.waiting.clone();
+        Box::pin(async move {
+            let stream = future.await?;
+            let gated = futures::stream::unfold(
+                (stream, Some(release), false, false),
+                move |(mut stream, mut gate, observed_text, finished)| {
+                    let cancel = cancel.clone();
+                    let waiting = waiting.clone();
+                    async move {
+                        if finished {
+                            return None;
+                        }
+                        if observed_text && let Some(release) = gate.take() {
+                            waiting.cancel();
+                            let released = tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => false,
+                                _ = release.cancelled() => true,
+                            };
+                            if !released {
+                                return Some((
+                                    Err(vega_runtime::VegaError::Cancelled),
+                                    (stream, None, true, true),
+                                ));
+                            }
+                        }
+                        stream.next().await.map(|event| {
+                            let observed_text = observed_text
+                                || matches!(&event, Ok(vega_runtime::ProviderEvent::TextDelta(text)) if !text.is_empty());
+                            (event, (stream, gate, observed_text, false))
+                        })
+                    }
+                },
+            );
+            Ok(Box::pin(gated) as vega_runtime::EventStream)
+        })
+    }
+}
+
+struct StreamingGateWakeProbe(AtomicBool);
+
+impl futures::task::ArcWake for StreamingGateWakeProbe {
+    fn wake_by_ref(probe: &Arc<Self>) {
+        probe.0.store(true, Ordering::SeqCst);
+    }
+}
+
+fn streaming_observation_fixture() -> (Arc<StreamingObservationProvider>, StreamingReleaseGuard) {
+    StreamingObservationProvider::new(Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::text("owned streaming fixture"),
+        vega_runtime::ScriptStep::events(vec![
+            vega_runtime::ProviderEvent::Usage {
+                input: 11,
+                output: 7,
+                cache_read: 2,
+                cache_write: 1,
+            },
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            },
+        ]),
+    ])))
+}
+
+#[test]
+fn issue60_streaming_gate_release_guard_drop_unblocks_stream() {
+    use futures::StreamExt;
+    futures::executor::block_on(async {
+        let (provider, release_guard) = streaming_observation_fixture();
+        let mut stream = vega_runtime::Provider::chat_stream(
+            provider.as_ref(),
+            vega_runtime::ChatRequest {
+                model: "issue60-streaming-fixture-helper".into(),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("owned gated stream");
+        assert_eq!(
+            stream
+                .next()
+                .await
+                .expect("first text")
+                .expect("text event"),
+            vega_runtime::ProviderEvent::TextDelta("owned streaming fixture".into())
+        );
+        let probe = Arc::new(StreamingGateWakeProbe(AtomicBool::new(false)));
+        let waker = futures::task::waker(probe.clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut next = Box::pin(stream.next());
+        assert!(std::future::Future::poll(next.as_mut(), &mut context).is_pending());
+        assert!(provider.waiting.is_cancelled());
+        assert!(!provider.release.is_cancelled());
+        assert!(!probe.0.load(Ordering::SeqCst));
+        drop(release_guard);
+        assert!(probe.0.load(Ordering::SeqCst));
+        assert_eq!(
+            next.await.expect("released usage").expect("usage event"),
+            vega_runtime::ProviderEvent::Usage {
+                input: 11,
+                output: 7,
+                cache_read: 2,
+                cache_write: 1,
+            }
+        );
+        assert_eq!(
+            stream.next().await.expect("done").expect("done event"),
+            vega_runtime::ProviderEvent::Done {
+                stop_reason: vega_runtime::StopReason::End,
+            }
+        );
+        assert!(stream.next().await.is_none());
+        assert_eq!(provider.inner.requests().len(), 1);
+        assert_eq!(
+            provider.inner.requests()[0].model,
+            "issue60-streaming-fixture-helper"
+        );
+    });
+}
+
+#[test]
+fn issue60_streaming_gate_run_cancel_stops_before_usage() {
+    use futures::StreamExt;
+    futures::executor::block_on(async {
+        let (provider, release_guard) = streaming_observation_fixture();
+        let cancel = CancellationToken::new();
+        let mut stream = vega_runtime::Provider::chat_stream(
+            provider.as_ref(),
+            vega_runtime::ChatRequest {
+                model: "issue60-streaming-fixture-helper".into(),
+                ..Default::default()
+            },
+            cancel.clone(),
+        )
+        .await
+        .expect("owned gated stream");
+        assert_eq!(
+            stream
+                .next()
+                .await
+                .expect("first text")
+                .expect("text event"),
+            vega_runtime::ProviderEvent::TextDelta("owned streaming fixture".into())
+        );
+        let probe = Arc::new(StreamingGateWakeProbe(AtomicBool::new(false)));
+        let waker = futures::task::waker(probe.clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut next = Box::pin(stream.next());
+        assert!(std::future::Future::poll(next.as_mut(), &mut context).is_pending());
+        assert!(provider.waiting.is_cancelled());
+        assert!(!provider.release.is_cancelled());
+        assert!(!probe.0.load(Ordering::SeqCst));
+        cancel.cancel();
+        assert!(probe.0.load(Ordering::SeqCst));
+        assert!(matches!(
+            next.await,
+            Some(Err(vega_runtime::VegaError::Cancelled))
+        ));
+        assert!(!provider.release.is_cancelled());
+        assert!(stream.next().await.is_none());
+        assert_eq!(provider.inner.requests().len(), 1);
+        assert_eq!(
+            provider.inner.requests()[0].model,
+            "issue60-streaming-fixture-helper"
+        );
+        drop(release_guard);
+    });
+}
 
 /// #60 P1: the real model menu and selection subscription use configured
 /// provider membership, not whether optional accounting knows the price.
@@ -83,7 +301,6 @@ async fn issue60_unpriced_first_submit_reaches_provider(cx: &mut gpui_kit::TestA
     });
     let provider = Arc::new(vega_runtime::MockProvider::new(vec![
         vega_runtime::ScriptStep::text("unpriced body succeeded"),
-        vega_runtime::ScriptStep::delay(Duration::from_millis(150)),
         vega_runtime::ScriptStep::events(vec![
             vega_runtime::ProviderEvent::Usage {
                 input: 11,
@@ -96,8 +313,9 @@ async fn issue60_unpriced_first_submit_reaches_provider(cx: &mut gpui_kit::TestA
             },
         ]),
     ]));
+    let (gated_provider, release_guard) = StreamingObservationProvider::new(provider.clone());
     f.root.update(cx, |root, _| {
-        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()))
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(gated_provider.clone()))
     });
     let draft = f.draft(cx);
     f.submit("issue60 first message", cx);
@@ -116,6 +334,8 @@ async fn issue60_unpriced_first_submit_reaches_provider(cx: &mut gpui_kit::TestA
         None,
         "streaming text is projected with unknown rather than free cost"
     );
+    assert!(gated_provider.waiting.is_cancelled());
+    release_guard.release();
     pump_test_app(cx, |cx| {
         f.root.read_with(cx, |root, _| {
             root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
