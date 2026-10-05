@@ -139,6 +139,25 @@ struct SnapshotPayload {
     cancelled: bool,
 }
 
+#[derive(Deserialize)]
+struct SnapshotVersion {
+    version: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotPayloadV2 {
+    version: u32,
+    binding: RunBinding,
+    catalog: SkillCatalog,
+    direct_user: bool,
+    active: Vec<ActiveSkill>,
+    references: Vec<FrozenReference>,
+    reference_bytes: usize,
+    cancelled: bool,
+    assets: Vec<FrozenAssetMetadata>,
+}
+
 impl SkillRun {
     /// A new run's binding is created by its trusted controller, never from
     /// Skill text or model output. `new` remains an in-memory-only constructor.
@@ -159,7 +178,20 @@ impl SkillRun {
     /// This performs no filesystem access and never silently refreshes a file.
     pub fn export_snapshot(&self) -> Result<SkillRunSnapshot, SkillError> {
         let binding = self.binding.as_ref().ok_or(SkillError::InvalidFormat)?;
-        let payload = SnapshotPayload {
+        let payload = self.snapshot_payload(binding);
+        if self.assets.is_empty() {
+            payload.validate(binding)?;
+            encode_snapshot(&payload)
+        } else {
+            let payload =
+                SnapshotPayloadV2::from_v1(payload, self.assets.values().cloned().collect());
+            payload.validate(binding)?;
+            encode_snapshot(&payload)
+        }
+    }
+
+    fn snapshot_payload(&self, binding: &RunBinding) -> SnapshotPayload {
+        SnapshotPayload {
             version: SNAPSHOT_VERSION,
             binding: binding.clone(),
             catalog: self.catalog.clone(),
@@ -168,16 +200,23 @@ impl SkillRun {
             references: self.references.values().cloned().collect(),
             reference_bytes: self.reference_bytes,
             cancelled: self.cancelled,
-        };
-        payload.validate(binding)?;
-        let bytes = serde_json::to_vec(&payload).map_err(|_| SkillError::InvalidFormat)?;
-        if bytes.len() > MAX_RUN_SNAPSHOT_BYTES {
-            return Err(SkillError::TooLarge);
         }
-        Ok(SkillRunSnapshot {
-            sha256: digest(&bytes),
-            bytes,
-        })
+    }
+
+    pub(super) fn validate_prospective_asset(
+        &self,
+        proposed: &FrozenAssetMetadata,
+    ) -> Result<(), SkillError> {
+        let binding = self.binding.as_ref().ok_or(SkillError::InvalidFormat)?;
+        let assets = self
+            .assets
+            .values()
+            .cloned()
+            .chain(std::iter::once(proposed.clone()))
+            .collect();
+        let payload = SnapshotPayloadV2::from_v1(self.snapshot_payload(binding), assets);
+        payload.validate(binding)?;
+        encode_snapshot(&payload).map(|_| ())
     }
 
     /// Restore only under the Store's separately retained binding and whole-
@@ -197,24 +236,133 @@ impl SkillRun {
         if digest(bytes) != expected_sha256 {
             return Err(SkillError::Stale);
         }
-        let payload: SnapshotPayload =
+        let header: SnapshotVersion =
             serde_json::from_slice(bytes).map_err(|_| SkillError::InvalidFormat)?;
-        payload.validate(expected_binding)?;
+        match header.version {
+            SNAPSHOT_VERSION => {
+                let payload: SnapshotPayload =
+                    serde_json::from_slice(bytes).map_err(|_| SkillError::InvalidFormat)?;
+                payload.validate(expected_binding)?;
+                payload.into_run()
+            }
+            2 => {
+                let payload: SnapshotPayloadV2 =
+                    serde_json::from_slice(bytes).map_err(|_| SkillError::InvalidFormat)?;
+                let asset_metadata_bytes = payload.validate(expected_binding)?;
+                let mut assets = BTreeMap::new();
+                for asset in &payload.assets {
+                    assets.insert((asset.name.clone(), asset.path.clone()), asset.clone());
+                }
+                let mut run = payload.into_v1().into_run()?;
+                run.assets = assets;
+                run.asset_metadata_bytes = asset_metadata_bytes;
+                Ok(run)
+            }
+            _ => Err(SkillError::InvalidFormat),
+        }
+    }
+}
+
+fn encode_snapshot(payload: &impl Serialize) -> Result<SkillRunSnapshot, SkillError> {
+    let bytes = serde_json::to_vec(payload).map_err(|_| SkillError::InvalidFormat)?;
+    if bytes.len() > MAX_RUN_SNAPSHOT_BYTES {
+        return Err(SkillError::TooLarge);
+    }
+    Ok(SkillRunSnapshot {
+        sha256: digest(&bytes),
+        bytes,
+    })
+}
+
+impl SnapshotPayloadV2 {
+    fn from_v1(payload: SnapshotPayload, assets: Vec<FrozenAssetMetadata>) -> Self {
+        Self {
+            version: 2,
+            binding: payload.binding,
+            catalog: payload.catalog,
+            direct_user: payload.direct_user,
+            active: payload.active,
+            references: payload.references,
+            reference_bytes: payload.reference_bytes,
+            cancelled: payload.cancelled,
+            assets,
+        }
+    }
+
+    fn into_v1(self) -> SnapshotPayload {
+        SnapshotPayload {
+            version: SNAPSHOT_VERSION,
+            binding: self.binding,
+            catalog: self.catalog,
+            direct_user: self.direct_user,
+            active: self.active,
+            references: self.references,
+            reference_bytes: self.reference_bytes,
+            cancelled: self.cancelled,
+        }
+    }
+
+    fn validate(&self, expected: &RunBinding) -> Result<usize, SkillError> {
+        if self.version != 2 || (!self.direct_user && !self.assets.is_empty()) {
+            return Err(SkillError::InvalidFormat);
+        }
+        SnapshotPayload {
+            version: SNAPSHOT_VERSION,
+            binding: self.binding.clone(),
+            catalog: self.catalog.clone(),
+            direct_user: self.direct_user,
+            active: self.active.clone(),
+            references: self.references.clone(),
+            reference_bytes: self.reference_bytes,
+            cancelled: self.cancelled,
+        }
+        .validate(expected)?;
+        if self.assets.len() > MAX_FROZEN_ASSETS {
+            return Err(SkillError::AggregateLimit);
+        }
+        let mut keys = BTreeSet::new();
+        let mut total_bytes = 0usize;
+        for asset in &self.assets {
+            if !asset.valid()
+                || !self
+                    .active
+                    .iter()
+                    .any(|active| active.candidate.name == asset.name)
+                || !keys.insert((&asset.name, &asset.path))
+            {
+                return Err(SkillError::InvalidFormat);
+            }
+            asset.result()?;
+            total_bytes = total_bytes
+                .checked_add(asset.to_json()?.len())
+                .ok_or(SkillError::AggregateLimit)?;
+        }
+        if total_bytes > MAX_RUN_ASSET_METADATA_BYTES {
+            return Err(SkillError::AggregateLimit);
+        }
+        Ok(total_bytes)
+    }
+}
+
+impl SnapshotPayload {
+    fn into_run(self) -> Result<SkillRun, SkillError> {
         let mut references = BTreeMap::new();
-        for reference in payload.references {
+        for reference in self.references {
             let key = (reference.name.clone(), reference.path.clone());
             if references.insert(key, reference).is_some() {
                 return Err(SkillError::InvalidFormat);
             }
         }
-        Ok(Self {
-            catalog: payload.catalog,
-            binding: Some(payload.binding),
-            direct_user: payload.direct_user,
-            active: payload.active,
+        Ok(SkillRun {
+            catalog: self.catalog,
+            binding: Some(self.binding),
+            direct_user: self.direct_user,
+            active: self.active,
             references,
-            reference_bytes: payload.reference_bytes,
-            cancelled: payload.cancelled,
+            reference_bytes: self.reference_bytes,
+            assets: BTreeMap::new(),
+            asset_metadata_bytes: 0,
+            cancelled: self.cancelled,
         })
     }
 }

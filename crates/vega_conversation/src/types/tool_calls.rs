@@ -299,6 +299,7 @@ pub enum SkillCardOutcome {
     Loaded,
     AlreadyLoaded,
     ResourceRead { text_bytes: usize, sha256: String },
+    AssetMetadata { size_bytes: u64 },
     Failed { code: String },
     Rejected,
     Cancelled,
@@ -806,7 +807,10 @@ fn skill_card_result_projection(
         }
         ToolCallStatus::Success if kind == SkillToolKind::ReadResource => {
             let Some(outcome) =
-                skill_reference_outcome(name, path_bytes, path_sha256, &result.output)
+                skill_asset_metadata_outcome(name, path_bytes, path_sha256, &result.output)
+                    .or_else(|| {
+                        skill_reference_outcome(name, path_bytes, path_sha256, &result.output)
+                    })
             else {
                 return ToolCardResultProjection::Corrupt;
             };
@@ -858,6 +862,57 @@ fn skill_receipt_outcome(
         }),
         _ => None,
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillAssetMetadataResult {
+    name: String,
+    path: String,
+    r#type: String,
+    size_bytes: u64,
+    lower_trust: bool,
+}
+
+pub(crate) fn skill_asset_metadata_outcome(
+    name: Option<&str>,
+    path_bytes: Option<u64>,
+    path_sha256: Option<&str>,
+    output: &str,
+) -> Option<SkillCardOutcome> {
+    if output.len() > 8 * 1024 {
+        return None;
+    }
+    let json = output.strip_prefix("[Lower-trust Skill asset metadata]\n")?;
+    let metadata: SkillAssetMetadataResult = serde_json::from_str(json).ok()?;
+    let bytes = metadata.name.as_bytes();
+    let actual_path_sha = format!("{:x}", Sha256::digest(metadata.path.as_bytes()));
+    if metadata.name != name?
+        || bytes.is_empty()
+        || bytes.len() > 64
+        || bytes[0] == b'-'
+        || bytes[bytes.len() - 1] == b'-'
+        || bytes.windows(2).any(|window| window == b"--")
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        || !metadata.path.starts_with("assets/")
+        || metadata.path.len() > 1024
+        || metadata.path.contains('\0')
+        || metadata
+            .path
+            .split('/')
+            .any(|part| matches!(part, "" | "." | ".."))
+        || path_bytes != Some(metadata.path.len() as u64)
+        || path_sha256 != Some(actual_path_sha.as_str())
+        || metadata.r#type != "unknown"
+        || !metadata.lower_trust
+    {
+        return None;
+    }
+    Some(SkillCardOutcome::AssetMetadata {
+        size_bytes: metadata.size_bytes,
+    })
 }
 
 fn skill_reference_outcome(
@@ -1008,3 +1063,6 @@ pub(crate) fn is_terminal(status: ToolCallStatus) -> bool {
             | ToolCallStatus::Cancelled
     )
 }
+
+#[cfg(test)]
+mod asset_metadata_tests;

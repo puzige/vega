@@ -928,6 +928,9 @@ fn skill_summary(name: Option<&str>, outcome: &SkillCardOutcome) -> String {
             "已读取 Skill {name} 引用 · {text_bytes} bytes · SHA-256 {}…",
             sha256.get(..12).unwrap_or("invalid")
         ),
+        SkillCardOutcome::AssetMetadata { size_bytes } => {
+            format!("已查看 Skill {name} 资源元数据 · {size_bytes} bytes · 类型未知 · 未读取内容")
+        }
         SkillCardOutcome::Failed { code } => format!("Skill {name} 失败 · {code}"),
         SkillCardOutcome::Rejected => format!("已拒绝 Skill {name}"),
         SkillCardOutcome::Cancelled => format!("已取消 Skill {name}"),
@@ -1061,6 +1064,7 @@ fn detail_row(text: String, color: gpui_kit::Rgba, code: bool) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
+    mod asset_metadata;
     use super::*;
     use vega_conversation::types::{InvalidToolCode, InvalidToolKind, InvalidToolProjection};
     use vega_theme::LIGHT;

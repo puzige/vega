@@ -611,14 +611,9 @@ fn execute_skill_call(
             let envelope = run
                 .render_skill_envelope()
                 .map_err(|_| skill_runtime_error())?;
-            let read = run.read_reference(&name, &path, |prospective| {
-                // Reserve the complete content-bearing result in the next
-                // primary request, including its tool-result wrapper.
+            let read = run.read_resource(&name, &path, |prospective| {
                 let mut projected = messages.to_vec();
-                projected.push(ChatMessage::tool_result(
-                    &call.id,
-                    format!("[Lower-trust Skill reference]\n{prospective}"),
-                ));
+                projected.push(ChatMessage::tool_result(&call.id, prospective.to_string()));
                 skill_fits(
                     base_prompt,
                     &catalog,
@@ -636,13 +631,7 @@ fn execute_skill_call(
                 )
             });
             let (output, success) = match read {
-                Ok(reference) => (
-                    format!(
-                        "[Lower-trust Skill reference]\n{}",
-                        reference.to_json().map_err(|_| skill_runtime_error())?
-                    ),
-                    true,
-                ),
+                Ok(output) => (output, true),
                 Err(error) => (
                     serde_json::json!({"name":name,"status":error.code()}).to_string(),
                     false,
