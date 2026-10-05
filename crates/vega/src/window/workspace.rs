@@ -55,6 +55,28 @@ impl VegaWindow {
     pub(super) fn workspace_has_terminals(&self) -> bool {
         !self.workspace.terminals.is_empty()
     }
+
+    #[cfg(test)]
+    pub(crate) fn add_test_terminal(
+        &mut self,
+        id: u64,
+        project_id: String,
+        view: Entity<vega_ui::terminal::TerminalView>,
+    ) {
+        self.workspace.terminals.insert(
+            id,
+            TerminalTab {
+                project_id,
+                view,
+                bottom: false,
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_test_terminals(&mut self) {
+        self.workspace.terminals.clear();
+    }
 }
 
 impl Workspace {

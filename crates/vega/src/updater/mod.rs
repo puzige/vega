@@ -44,6 +44,11 @@ pub(crate) struct Updater {
 }
 
 impl Updater {
+    #[cfg(test)]
+    pub(crate) fn set_test_request_sender(&mut self, sender: mpsc::SyncSender<UpdateRequest>) {
+        self.sender = Some(sender);
+    }
+
     pub(crate) fn start(&mut self) -> mpsc::Receiver<Event> {
         let (commands, receiver) = mpsc::sync_channel(1);
         let (events, updates) = mpsc::channel();
