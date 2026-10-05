@@ -32,7 +32,7 @@
 - 实现：代码完成，主 agent 与独立审查完成。
 - 编译：`cargo check -p vega -p xtask --bins`，exit 0，3.41s；日志 SHA-256：`66ab1b97530a826e4f94a7b597e843e2f96e727eb359d0014260659cc0fe4319`。
 - 本地测试：本次定向忙碌保护回归 1 passed；其他本地测试未运行。
-- 云端 check / PR / merge：待记录。
+- 云端 check / PR / merge：2026-10-05 合并前记录：[#256](https://github.com/puzige/vega/pull/256)，head `8587774f73c228cbf502dc3c7eec068204b7ce5d`；CI run `37262763011` 的 Clippy（2m51s）、Nextest（4m57s）及汇总 `check (fmt, clippy, test)` 均通过。记录时仍待合并；最终集成 SHA 将回写到 Issue #181。
 - 真实签名安装与用户手测：NOT RUN。
 - 日常安装：未更新。
 
