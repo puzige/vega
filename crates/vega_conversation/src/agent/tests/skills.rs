@@ -6,6 +6,7 @@ use vega_runtime::skills::{SkillSource, SourceScope};
 use vega_store::skills::{self, NewSkillApproval, NewSkillSource, NewThreadSkillPin};
 
 mod s16_durable;
+mod s18_durable_budget;
 
 fn add_skill(root: &Path, name: &str, body: &str) {
     let directory = root.join(name);
