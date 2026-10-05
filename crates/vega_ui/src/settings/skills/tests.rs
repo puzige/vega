@@ -605,6 +605,11 @@ fn assert_s21_intro_is_bounded(
         content.size.width,
         px((width - sidebar_width - 48.).min(vega_theme::Layout::SETTINGS_CONTENT_MAX_WIDTH))
     );
+    let viewport = visual
+        .debug_bounds("settings-section-content")
+        .expect("Settings section viewport");
+    assert!(viewport.size.width > px(0.));
+    assert!(viewport.size.height > px(0.));
     let intro = visual
         .debug_bounds("skills-intro")
         .expect("Skills introduction");
@@ -620,6 +625,10 @@ fn assert_s21_intro_is_bounded(
     assert!(intro.top() >= content.top());
     assert!(intro.bottom() <= content.bottom());
     assert!(intro.bottom() <= px(height));
+    assert!(intro.left() >= viewport.left());
+    assert!(intro.right() <= viewport.right());
+    assert!(intro.top() >= viewport.top());
+    assert!(intro.bottom() <= viewport.bottom());
     let refresh = visual
         .debug_bounds("skills-reload")
         .expect("Skills Refresh after introduction");
@@ -630,6 +639,10 @@ fn assert_s21_intro_is_bounded(
     assert!(refresh.right() <= content.right());
     assert!(refresh.bottom() <= content.bottom());
     assert!(refresh.bottom() <= px(height));
+    assert!(refresh.left() >= viewport.left());
+    assert!(refresh.right() <= viewport.right());
+    assert!(refresh.top() >= viewport.top());
+    assert!(refresh.bottom() <= viewport.bottom());
     assert!(visual.debug_bounds("skills-global-enabled").is_some());
     assert!(visual.debug_bounds("skills-global-automatic").is_some());
     assert!(visual.debug_bounds("skills-import-folder").is_some());

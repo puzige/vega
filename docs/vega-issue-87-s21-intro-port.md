@@ -1,6 +1,6 @@
 # Issue #87 S21 — Current-mainline Skills introduction port
 
-Status: **narrow implementation ported; first focused run passed; final viewport review and native acceptance remain open** (2026-10-06).
+Status: **narrow implementation ported; final focused GPUI regression passed on S22-integrated mainline; cloud gate and native acceptance remain open** (2026-10-06).
 
 ## Contract
 
@@ -23,13 +23,13 @@ The product patch is limited to the introduction container and literal. No depen
 
 | ID | Requirement / risk | Setup / operation | Expected observation | Evidence class | Status |
 |---|---|---|---|---|---|
-| P01 | Exact text and limited authority | Review the four-line product port against the frozen literal and old preview patch | Only ID, debug selector and literal change; authority code and tokens unchanged | source review | NOT RUN |
-| P02 | Minimum-size Light mounting | Owned empty Store/config, 960×600 window, maximum 365px Settings navigation; mount production Settings → Skills | Content width 547px; intro has positive bounded bounds inside the column and viewport, test-platform height below 30px; Refresh follows without overlap | GPUI production render / test-platform metrics | NOT RUN |
-| P03 | Minimum-size Dark mounting | Repeat P02 in Dark | Same bounded geometry and unchanged empty/default consent projection | GPUI production render / test-platform metrics | NOT RUN |
-| P04 | Normal-size Light mounting | Owned empty Store/config, 1403×860 window, default 304px navigation | Content capped at 744px; same intro and Refresh bounds | GPUI production render / test-platform metrics | NOT RUN |
-| P05 | Normal-size Dark mounting | Repeat P04 in Dark | Same bounded geometry and unchanged empty/default consent projection | GPUI production render / test-platform metrics | NOT RUN |
-| P06 | Existing Settings geometry | Run the existing Settings shell/sidebar-width regression | The rail follows Sidebar width and the content cap remains intact | existing GPUI regression | NOT RUN |
-| P07 | Existing consent/picker and keyboard flow | Run existing exact-root preview-before-link and keyboard-reachable Import Folder regressions | Existing preview/link/SHA-review separation and keyboard path remain protected | existing GPUI / owned Store regression | NOT RUN |
+| P01 | Exact text and limited authority | Review the four-line product port against the frozen literal and old preview patch | Only ID, debug selector and literal change; authority code and tokens unchanged | source review | PASS — exact narrow diff reviewed |
+| P02 | Minimum-size Light mounting | Owned empty Store/config, 960×600 window, maximum 365px Settings navigation; mount production Settings → Skills | Content width 547px; intro has positive bounded bounds inside the column and actual `settings-section-content` viewport, test-platform height below 30px; Refresh follows inside that viewport without overlap | GPUI production render / test-platform metrics | PASS — final focused run, GPUI only |
+| P03 | Minimum-size Dark mounting | Repeat P02 in Dark | Same bounded geometry and unchanged empty/default consent projection | GPUI production render / test-platform metrics | PASS — final focused run, GPUI only |
+| P04 | Normal-size Light mounting | Owned empty Store/config, 1403×860 window, default 304px navigation | Content capped at 744px; same intro and Refresh bounds | GPUI production render / test-platform metrics | PASS — final focused run, GPUI only |
+| P05 | Normal-size Dark mounting | Repeat P04 in Dark | Same bounded geometry and unchanged empty/default consent projection | GPUI production render / test-platform metrics | PASS — final focused run, GPUI only |
+| P06 | Existing Settings geometry | Run the existing Settings shell/sidebar-width regression | The rail follows Sidebar width and the content cap remains intact | existing GPUI regression | PASS — final focused run |
+| P07 | Existing consent/picker and keyboard flow | Run existing exact-root preview-before-link and keyboard-reachable Import Folder regressions | Existing preview/link/SHA-review separation and keyboard path remain protected | existing GPUI / owned Store regression | PASS — final focused run |
 | P08 | Native post-port typography | Install a separately identified approved current-mainline artifact, visit Skills at 960px and normal width in Light/Dark | Final punctuation remains with readable text; no clipped glyphs or control overlap | macOS native UI | NOT RUN |
 | P09 | Full S21 matrix | Independently verify active-Skill indicator, native focus/error states and other appearance rows | Evidence remains scoped to the actual artifact and operation | native UI / remaining matrix | NOT RUN |
 
@@ -44,7 +44,7 @@ The existing Settings implementation supplies 24px horizontal insets on both sid
 | 960 / 365 | `960 - 365 - 2×24 = 547` | `min(547, 744) = 547` |
 | 1403 / 304 | `1403 - 304 - 2×24 = 1051` | `min(1051, 744) = 744` |
 
-The test also checks the intro and following Refresh bounds lie inside the content column and the requested window height. The old preview's 30px test-platform ceiling is retained solely as a deterministic GPUI layout regression, not an inference about native line count.
+The test also checks the intro and following Refresh bounds lie inside the content column, the actual `settings-section-content` viewport and the requested window height. The old preview's 30px test-platform ceiling is retained solely as a deterministic GPUI layout regression, not an inference about native line count.
 
 ## Implementation and verification plan
 
@@ -84,4 +84,30 @@ Bounded raw footer:
      Summary [   0.172s] 7 tests run: 7 passed, 538 skipped
 ```
 
-The integrator reviewed the product diff and four mounted tests. After the first run completed, review requires an explicit `settings-section-content` viewport assertion for both the introduction and Refresh, in addition to the preserved content-column, window-height and spacing checks. The clean branch must also be rebased onto the S22-integrated current mainline before its final focused run. These final results are pending; this first run cannot substitute for them. Spec deviations: **none**.
+The integrator reviewed the product diff and four mounted tests. After the first run completed, explicit `settings-section-content` viewport assertions were added for all four edges of both the introduction and Refresh, preserving the content-column, window-height and spacing checks. The clean branch was fetched and rebased onto the S22-integrated current mainline without conflicts. The final focused run below verifies this updated source; the first run is preserved separately. Spec deviations: **none**.
+
+### Final current-mainline run
+
+- Frozen at 2026-10-05 17:53:36 UTC / 2026-10-06 01:53:36 Asia/Shanghai; branch `codex/87-s21-current-port` rebased onto current `origin/master` containing the merged S22 import-limit fix.
+- Environment unchanged from the first run. Source-set SHA-256: `729f86cb8ec3207ff353dfa854ffe057774cc5398a570ff64c3a13580858305f`.
+- Source diff SHA-256: `d2965ef54fffcdfd4953b6d56e2b3aac4cbe1e6a86d7d48cb932beed7f364906`; staged source/spec diff SHA-256 at test freeze: `479a3a64af42cd3f9e76d9507f33275f87e677ce831ba0edb85e6fdcc8b4bd0f`.
+- Exact command: the same planned task command above. Started 2026-10-05 17:54:12 UTC; completed 17:54:29 UTC.
+- Run ID: `d3426721-11b6-4913-a0f0-96dd8e42978e`; exit 0, 16.537s wall time including incremental build. Test summary: 7 passed, 543 skipped in 0.177s. The changed skipped count reflects the integrated S22 tests; it is not broader executed coverage.
+- Raw-log SHA-256: `5e06033229ca72ed660cb6cfc983c49fd73c6dddbb3b6f2f09d0951499cae869`. Raw first/final logs, source patches and complete Git/tree freeze identities are retained privately outside the worktree.
+- Source hashes after the final run exactly matched the freeze. Only this evidence document changed afterward.
+- `rustfmt --edition 2024 --check crates/vega_ui/src/settings/skills.rs` and `git diff --check origin/master`: exit 0. Both checks emitted empty raw logs, SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+Bounded raw footer:
+
+```text
+ Nextest run ID d3426721-11b6-4913-a0f0-96dd8e42978e with nextest profile: default
+    Starting 7 tests across 1 binary (543 tests skipped)
+     Summary [   0.177s] 7 tests run: 7 passed, 543 skipped
+```
+
+## Residuals
+
+- **LIMIT:** four new tests prove production GPUI mounting and test-platform bounds only. They do not prove native glyph wrapping, rendered text readability, native focus or visual contrast. The former literal was not tested for a failing native-wrap assertion; there is no fabricated automated production red.
+- **NOT RUN:** installed current-mainline native post-port checks and remaining S21 appearance/accessibility scenarios, including active-Skill indicator and native error/focus paths.
+- **NOT RUN:** S21 PR/cloud full gate and master integration at this implementation handoff. Those are owned by the main agent.
+- Parent #87 remains **OPEN/PARTIAL**. No user-owned Skill file, user configuration/database, installation, running app or Provider/MCP operation was changed by this subtask. The owned test fixtures are independent of the user's app state. No worktree is cleaned before the main task's acceptance decision.
