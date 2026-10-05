@@ -439,7 +439,7 @@ impl SettingsView {
                 );
             }
             for source in &projection.sources {
-                column = column.child(self.render_skill_source(source, cx));
+                column = column.child(self.render_skill_source(source, &projection, cx));
             }
         }
         if let Some(preview) = self.skills.root_preview.clone() {
@@ -454,6 +454,7 @@ impl SettingsView {
     fn render_skill_source(
         &self,
         source: &SkillSourceView,
+        projection: &SkillSettingsProjection,
         cx: &mut gpui_kit::Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
@@ -542,6 +543,18 @@ impl SettingsView {
                 .border_t_1()
                 .border_color(colors.border_subtle)
                 .child(div().child(format!("{} · {status}", candidate.name)));
+            if let Some(label) = skill_shadow_label(projection, candidate) {
+                let id = format!("skills-shadow-{}-{}", source.id, candidate.name);
+                let selector = id.clone();
+                row = row.child(
+                    div()
+                        .id(id)
+                        .debug_selector(move || selector.clone())
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_secondary)
+                        .child(label),
+                );
+            }
             if let Some(description) = &candidate.description {
                 row = row.child(
                     div()
@@ -763,6 +776,33 @@ fn scope_label(scope: SkillUiScope) -> &'static str {
         SkillUiScope::VegaGlobal => "Vega 全局",
         SkillUiScope::Imported => "外部导入（按引用）",
     }
+}
+
+fn skill_shadow_label(
+    projection: &SkillSettingsProjection,
+    candidate: &vega_conversation::types::SkillCandidateView,
+) -> Option<String> {
+    if candidate.model_winner || candidate.content_sha256.is_none() {
+        return None;
+    }
+    let winner = projection.sources.iter().find(|source| {
+        source.candidates.iter().any(|other| {
+            other.name == candidate.name
+                && other.model_winner
+                && other
+                    .content_sha256
+                    .as_ref()
+                    .is_some_and(|sha| other.approved_sha256.as_ref() == Some(sha))
+                && other.diagnostic.is_none()
+        })
+    })?;
+    Some(match winner.scope {
+        SkillUiScope::Project => "被当前项目同名项遮蔽".into(),
+        SkillUiScope::VegaGlobal => "被 Vega 全局同名项遮蔽".into(),
+        SkillUiScope::Imported => {
+            format!("被外部导入来源「{}」的同名项遮蔽", winner.source_label)
+        }
+    })
 }
 
 fn skill_error_label(error: SkillSettingsError) -> &'static str {
