@@ -2073,15 +2073,18 @@ struct OwnedOAuthMetadataFixture {
     issuer: String,
     _registration: vega_mcp::mock::Endpoint,
     registrations: Arc<AtomicUsize>,
+    registration_redirects: Arc<Mutex<Vec<String>>>,
     tokens: Arc<AtomicUsize>,
     accepted_paths: Arc<Mutex<Vec<String>>>,
 }
 impl OwnedOAuthMetadataFixture {
     fn start() -> Self {
         let registrations = Arc::new(AtomicUsize::new(0));
+        let registration_redirects = Arc::new(Mutex::new(Vec::new()));
         let tokens = Arc::new(AtomicUsize::new(0));
         let accepted_paths = Arc::new(Mutex::new(Vec::new()));
         let registrations_worker = registrations.clone();
+        let registration_redirects_worker = registration_redirects.clone();
         let tokens_worker = tokens.clone();
         let accepted_paths_worker = accepted_paths.clone();
         let endpoint = vega_mcp::mock::Endpoint::new("/mcp", |origin| {
@@ -2121,7 +2124,33 @@ impl OwnedOAuthMetadataFixture {
                     ),
                     "/register" => {
                         registrations_worker.fetch_add(1, Ordering::SeqCst);
-                        ("500 Unexpected registration", String::new(), String::new())
+                        let registration: serde_json::Value = serde_json::from_slice(
+                            request
+                                .body()
+                                .and_then(|body| body.as_bytes())
+                                .expect("owned DCR request body"),
+                        )
+                        .expect("owned DCR JSON");
+                        let redirects = registration["redirect_uris"]
+                            .as_array()
+                            .expect("DCR redirect list")
+                            .iter()
+                            .map(|redirect| redirect.as_str().expect("DCR redirect URI").to_owned())
+                            .collect::<Vec<_>>();
+                        registration_redirects_worker
+                            .lock()
+                            .expect("owned DCR redirects")
+                            .extend(redirects.clone());
+                        (
+                            "201 Created",
+                            serde_json::json!({
+                                "client_id":"owned-dynamic-client",
+                                "token_endpoint_auth_method":"none",
+                                "redirect_uris":redirects
+                            })
+                            .to_string(),
+                            String::new(),
+                        )
                     }
                     "/token" => {
                         tokens_worker.fetch_add(1, Ordering::SeqCst);
@@ -2157,6 +2186,7 @@ impl OwnedOAuthMetadataFixture {
             issuer: format!("{}/issuer", endpoint.origin()),
             _registration: endpoint,
             registrations,
+            registration_redirects,
             tokens,
             accepted_paths,
         }
@@ -2221,6 +2251,7 @@ enum McpExpectedOperation {
     Discovery,
     Preparation,
     RejectedStepUp,
+    RejectedStaleAuthorization,
 }
 
 fn mcp_test_state(view: &SettingsView) -> String {
@@ -2265,6 +2296,11 @@ fn wait_for_mcp_operation(
                 McpExpectedOperation::RejectedStepUp => {
                     view.mcp.oauth_preparation.is_none()
                         && view.mcp.step_up_offers.is_empty()
+                        && view.mcp.message_error
+                }
+                McpExpectedOperation::RejectedStaleAuthorization => {
+                    view.mcp.oauth_preparation.is_none()
+                        && view.mcp.oauth_flow_id.is_none()
                         && view.mcp.message_error
                 }
             };
@@ -2641,6 +2677,238 @@ async fn issue73_mcp_oauth_ui_requires_discovery_preview_and_consent_and_cancels
     service
         .cancel_oauth(&next.flow_id)
         .expect("fixture cleanup");
+}
+
+#[gpui_kit::test]
+async fn issue73_mcp_oauth_ui_dcr_requires_fresh_issuer_revision_consent(cx: &mut TestAppContext) {
+    use vega_conversation::types::{
+        McpOAuthRegistration, McpRemoteAuthorization, McpServerForm, McpServerTransport,
+    };
+
+    let fixture = OwnedOAuthMetadataFixture::start();
+    let owned = tempfile::tempdir().expect("owned MCP Settings root");
+    let database_path = owned.path().join("vega.db");
+    let service = vega_conversation::McpServerSettingsService::new(
+        database_path.clone(),
+        owned.path().join("config"),
+    );
+    let saved = service
+        .create(McpServerForm {
+            display_name: "owned dynamic OAuth".into(),
+            transport: McpServerTransport::Remote {
+                endpoint: fixture.endpoint.clone(),
+                allow_loopback_http: true,
+                authorization: McpRemoteAuthorization::OAuth { client_id: None },
+            },
+        })
+        .expect("disabled OAuth server");
+    cx.update(|cx| {
+        cx.set_global(vega_theme::Theme::light());
+        cx.set_global(SettingsOpen(true));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    view.update(cx, |view, cx| {
+        view.install_mcp_service(Some(service.clone()), cx)
+    });
+    wait_for_mcp_idle(cx, &view);
+    let root = view.clone();
+    let window: WindowHandle<SettingsHarness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(1403.), px(860.)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| {
+                    cx.new(|_| SettingsHarness {
+                        view: root,
+                        closes: Arc::new(AtomicUsize::new(0)),
+                    })
+                },
+            )
+        })
+        .expect("Settings window");
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let nav = visual
+        .debug_bounds("settings-nav-mcp")
+        .expect("MCP navigation");
+    visual.simulate_click(nav.center(), Default::default());
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let discover = visual
+        .debug_bounds("mcp-oauth-discover")
+        .expect("discover OAuth");
+    visual.simulate_click(discover.center(), Default::default());
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let confirm = visual
+        .debug_bounds("mcp-confirm")
+        .expect("confirm metadata discovery");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(confirm.center(), Default::default());
+    wait_for_mcp_operation(cx, &view, generation, McpExpectedOperation::Discovery);
+    let discovery = view.read_with(cx, |view, _| view.mcp.oauth_discovery.clone());
+    let (_, _, discovery) = discovery.expect("validated OAuth metadata");
+    assert_eq!(discovery.issuers, [fixture.issuer.as_str()]);
+    assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tokens.load(Ordering::SeqCst), 0);
+    assert!(cx.opened_url().is_none());
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let issuer = visual
+        .debug_bounds("mcp-oauth-issuer")
+        .expect("select discovered issuer");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(issuer.center(), Default::default());
+    wait_for_mcp_operation(cx, &view, generation, McpExpectedOperation::Preparation);
+    let prepared = view
+        .read_with(cx, |view, _| view.mcp.oauth_preparation.clone())
+        .expect("exact DCR preview");
+    assert_eq!(prepared.issuer, fixture.issuer);
+    assert_eq!(
+        prepared.registration,
+        McpOAuthRegistration::DynamicRegistration
+    );
+    assert!(
+        super::mcp::mcp_oauth_preparation_lines(&prepared)
+            .join("\n")
+            .contains("已弃用的动态客户端注册（DCR）")
+    );
+    assert_eq!(
+        prepared.registration_endpoint.as_deref(),
+        Some(format!("{}/register", fixture.endpoint.trim_end_matches("/mcp")).as_str())
+    );
+    assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tokens.load(Ordering::SeqCst), 0);
+    assert!(cx.opened_url().is_none());
+
+    let original = service.list().expect("stored disabled server").remove(0);
+    let edited = service
+        .replace(&saved.id, original.config_revision, original.form.clone())
+        .expect("out-of-band config edit advances revision");
+    assert_eq!(edited.config_revision, original.config_revision + 1);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let authorize = visual
+        .debug_bounds("mcp-oauth-authorize")
+        .expect("authorize action for stale preview");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(authorize.center(), Default::default());
+    wait_for_mcp_operation(
+        cx,
+        &view,
+        generation,
+        McpExpectedOperation::RejectedStaleAuthorization,
+    );
+    assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tokens.load(Ordering::SeqCst), 0);
+    assert!(cx.opened_url().is_none());
+    let current = service.list().expect("fresh server revision").remove(0);
+    assert!(!current.enabled && !current.credential_configured);
+    assert_eq!(current.config_revision, edited.config_revision);
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let discover = visual
+        .debug_bounds("mcp-oauth-discover")
+        .expect("retry against current revision");
+    visual.simulate_click(discover.center(), Default::default());
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let confirm = visual
+        .debug_bounds("mcp-confirm")
+        .expect("confirm fresh metadata discovery");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(confirm.center(), Default::default());
+    wait_for_mcp_operation(cx, &view, generation, McpExpectedOperation::Discovery);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let issuer = visual
+        .debug_bounds("mcp-oauth-issuer")
+        .expect("select current issuer");
+    let generation = view.read_with(cx, |view, _| view.mcp.generation);
+    visual.simulate_click(issuer.center(), Default::default());
+    wait_for_mcp_operation(cx, &view, generation, McpExpectedOperation::Preparation);
+    let prepared = view
+        .read_with(cx, |view, _| view.mcp.oauth_preparation.clone())
+        .expect("current revision DCR preview");
+    assert_eq!(prepared.issuer, fixture.issuer);
+    assert_eq!(
+        prepared.registration,
+        McpOAuthRegistration::DynamicRegistration
+    );
+    assert_eq!(fixture.registrations.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.tokens.load(Ordering::SeqCst), 0);
+    assert!(cx.opened_url().is_none());
+
+    let redirect = prepared.redirect_uri.clone();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let authorize = visual
+        .debug_bounds("mcp-oauth-authorize")
+        .expect("distinct user confirmation for DCR and authorization");
+    visual.simulate_click(authorize.center(), Default::default());
+    let mut browser_url = None;
+    for _ in 0..100 {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(20));
+        cx.run_until_parked();
+        if let Some(url) = cx.opened_url() {
+            browser_url = Some(url);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let url = browser_url.expect("browser opens after DCR consent");
+    assert_eq!(fixture.registrations.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.tokens.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        fixture
+            .registration_redirects
+            .lock()
+            .expect("owned DCR redirects")
+            .as_slice(),
+        [redirect.as_str()]
+    );
+    assert!(url.starts_with(&format!(
+        "{}/authorize?",
+        fixture.endpoint.trim_end_matches("/mcp")
+    )));
+    let response = fixture.complete_callback(&redirect, &url);
+    wait_for_mcp_idle(cx, &view);
+    assert!(
+        response.starts_with(b"HTTP/1.1 200 OK"),
+        "DCR callback failed: {:?}; fixture paths: {:?}",
+        String::from_utf8_lossy(&response),
+        fixture.accepted_paths.lock().expect("owned fixture paths")
+    );
+    assert_eq!(fixture.registrations.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.tokens.load(Ordering::SeqCst), 1);
+    assert!(view.read_with(cx, |view, _| view.mcp.oauth_flow_id.is_none()));
+
+    let current = service.list().expect("OAuth grant persisted").remove(0);
+    assert!(!current.enabled && current.credential_configured);
+    let store = vega_store::Store::open(database_path).expect("owned settings database");
+    store.migrate().expect("settings migrations");
+    let stored = vega_store::mcp_servers::find(store.conn(), &saved.id)
+        .expect("stored OAuth binding")
+        .expect("server row");
+    assert_eq!(stored.config_revision, current.config_revision);
+    assert_eq!(
+        stored.remote_oauth_issuer.as_deref(),
+        Some(fixture.issuer.as_str())
+    );
+    assert_eq!(
+        stored.remote_oauth_client_id.as_deref(),
+        Some("owned-dynamic-client")
+    );
+    assert_eq!(
+        stored.remote_credential_ref.as_deref(),
+        Some(format!("mcp-{}-r{}-oauth", saved.id, stored.config_revision).as_str())
+    );
+    let status = view.read_with(cx, |view, _| view.mcp.message.clone().unwrap_or_default());
+    assert!(!status.contains("owned-access") && !status.contains("owned-refresh"));
 }
 
 fn mcp_async_for_test<T>(
