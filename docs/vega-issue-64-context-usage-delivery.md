@@ -91,3 +91,50 @@ The original C64-01 path used legacy per-thread `ContextSettings.context_limit`;
 覆盖边界：`ConversationStream::context_usage_source()` 在 `vega_ui` crate 内为 `pub(crate)`，`vega` crate 的 production-root 集成测试不能直接读取其分母；没有为测试扩大公开 API。分母隔离由 conversation projection 用例断言，UI 用例断言已知输入上限显示与 unknown 状态无百分比，production-root 用例覆盖 Settings 保存后投影到 Composer tooltip 的链路。真实桌面验收仍待此修复的合并候选，届时检查已知/未知容量、hover/focus、会话/模型切换和主题。
 
 Implementation: resolve the provider through the existing unique-enabled-provider rule on the bounded worker; read the exact policy without touching credentials or the network; pass only the optional saved input limit through the conversation projection; preserve the existing load sequence and thread/model owner checks. Regressions were added before production changes.
+
+## 2026-10-06 follow-up: Settings route leaves Context tooltip visible
+
+Native v0.1.52 acceptance found that an open Context tooltip can remain visible after Settings → Back to app → clicking the empty Composer while the pointer is outside both tooltip and ring. Reentering and leaving the ring clears it. The minimal reproduction did not require a theme or size change. Native AX exposes no internal focus ownership, so that observation does not establish which GPUI handle was focused. The amended [C64-N1–N7 contract](vega-issue-64-context-usage.md#2026-10-06-修订settings-往返后的提示生命周期) governs this repair.
+
+Settings removes the rendered stream while retaining its entity. GPUI's element hover state is lost on an unmounted frame; when remounted outside the pointer, its new false state sends no false transition. The stream's two entity hover flags retained the previous true value and reopened the tooltip independently of focus. The fix adds three lines in the existing `SettingsOpen(true)` observer to clear the two Context hover flags and notify. It preserves the live focus handles, estimate, model input capacity, model/provider owner, draft, runtime state, and persistent data.
+
+The regressions use actual GPUI MouseMove events to establish trigger/popover hover. Four tests mount the production VegaWindow with an owned standalone thread, local config/database, saved model policy and message, and a MockProvider with zero requests. No real Git/shell process, Provider/MCP request, application launch, dependency, public API, migration, or user data/config mutation was introduced. Settings Back uses the production CloseSettings bindings. The actual Sidebar click tests passed before the fix; the separate `SettingsOpen` route-entry seam tests failed after returning while actual Composer focus was asserted. The seam covers the production route lifecycle, and does not prove the Settings opening action binding. Those two evidence classes remain distinct.
+
+### Freeze and first business result
+
+- Fresh fetch/rebase completed before repository edits; task branch `codex/64-context-settings-tooltip` stayed on the reviewed baseline.
+- Spec and test sources preceded production edits. The entire 825-file tracked candidate, configuration and toolchain were archived privately before each run. Both runs used Rust/Cargo 1.98.0, Nextest 0.9.146, Darwin arm64, the worktree's default isolated target, default profile, and `retries=0`.
+- First run UTC/local: 2026-10-05 20:30:24–20:31:46 UTC / 2026-10-06 04:30:24–04:31:46 Asia/Shanghai.
+- Command: `cargo nextest run --offline --locked -p vega -p vega_ui -E 'test(issue64_context_settings_) | test(issue64_context_usage_settings_open_)'`.
+- Run ID: `9be7948b-b283-410e-98d2-4edeaccba028`; exit 100. Raw footer: `Summary [0.336s] 5 tests run: 2 passed, 3 failed, 771 skipped`. Total command time including the new target build: 82.517 seconds.
+- The two Sidebar click cases passed. Both route seam cases failed at `Settings return must not revive a stale context hover while Composer owns focus`; the observer case failed at `Settings must invalidate indicator hover`. These were business assertion failures; compilation and fixture setup succeeded. No retries or assertion changes were used.
+- Raw log SHA-256: `b9076cf34baa79b405aa7a85ccce5621966f78bb81d3d911cb7ccc5fc7488c83`; first source archive SHA-256: `bb34b43c4fdc124288fc00142f67fb27aa174fb7834373b887e9e7eb1cb5d089`.
+
+### Repair result
+
+- The only source difference between the first failure candidate and the passing candidate was the three-line production observer repair. All test sources and configs stayed identical; neither run changed a frozen source file while executing.
+- Passing run UTC/local: 2026-10-05 20:32:23–20:32:34 UTC / 2026-10-06 04:32:23–04:32:34 Asia/Shanghai.
+- Command: `cargo nextest run --offline --locked -p vega -p vega_ui -E 'test(issue64_context_settings_) | test(issue64_context_usage_)'`.
+- Run ID: `b49a0a25-ac9f-482d-a347-fb7c8884c8be`; exit 0. Raw footer: `Summary [0.355s] 18 tests run: 18 passed, 758 skipped`. Total command time: 10.266 seconds.
+- Scope: four production-root Settings cases, one observer case and all thirteen existing Context usage tests. This covers C64-N1–N7, including valid forward/reverse ring keyboard focus, fresh hover and pointer transfer, known/unknown capacity, estimate/model invalidation, narrow tooltip geometry, full owned message equality and model policy equality, and zero Provider requests. Ordinary navigation visits may update timestamps; those columns are excluded from the unchanged-data claim.
+- Raw log SHA-256: `86117b8eb7f7447432dc518ed45d264d9b2a40142306f493867dfe5026ffedfd`; passing source archive SHA-256: `87767b332c9c3467c7541af9f34d9f7ac6ec96a44add09f42fc1c24954d76671`.
+- Frozen production-root test source SHA-256: `7b5ddfec25b5967f79edd094822bd2cc29b5a442b99789ffbaa18935374a7509`; frozen UI Context test source SHA-256: `0026895716881b60e1ebcf04009dd131f66438275b1bb711508eb33e213151c9`.
+- Existing dependency future-incompatibility notice for `block 0.1.6` remains visible in both raw logs; it did not fail either compilation. No dependency was changed.
+
+### Residuals and recovery
+
+- NOT RUN: local workspace gate and repaired native app. Full fmt/Clippy/Nextest remains the cloud PR gate; the main agent owns PR/merge and hash-verified native repeat. This report does not claim cloud or native PASS.
+- The first two Sidebar click cases being green before the repair limit the inference about exact native event order. The route seam's red→green proves the cached-hover lifecycle defect, while the supplied native failure remains separate evidence.
+- Spec deviation: none. Rollback is reverting this task's commit; no user data, installation, config, schema, or public API needs restoration.
+
+## 2026-10-06 integration update after S18 merge
+
+PR [#276](https://github.com/puzige/vega/pull/276) originally tested `761ad45`. The main agent retained the original cloud evidence: attempt 1 was cancelled before a hosted runner was acquired, with zero steps; attempt 2 completed with Clippy and the required check successful, and Nextest run `241ebf2b-a386-4a12-b730-aef510deb9b9` reported 2017 passed / 5 skipped under the default profile. S18 PR [#274](https://github.com/puzige/vega/pull/274) then merged into master, making #276 behind the strict required-check base. The original cloud result is historical evidence for its exact original HEAD, not a gate pass for the rebased candidate.
+
+- Fresh fetch and rebase used actual `origin/master` `4fc330ac`; rebased tested HEAD was `7f006e8d`. The worktree was clean when frozen. The entire 827-file tracked source, HEAD/tree, configuration and toolchain were archived before the first new-baseline run.
+- The Context production file, both Context test files, test module declaration, Cargo.lock, Nextest config and toolchain file were all byte-identical to the original repair HEAD. The three-line production diff was also identical (SHA-256 `6098ae75e40d67e0ab06c13f5ac6cc548e90f9bfb8baa7a44ab96efd6e738802`). S18's four changed files remained baseline content; no Shared Skills file was modified.
+- The single new-baseline command was `cargo nextest run --offline --locked -p vega -p vega_ui -E 'test(issue64_context_settings_) | test(issue64_context_usage_)'`. It used the original isolated worktree target, default profile and `retries=0`, with the same owned Store/config/message/model policy and MockProvider fixtures. No test source, dependency or public API changed, and no new RED or repeat of the old-baseline GREEN was created.
+- UTC/local time: 2026-10-05 21:47:08–21:47:19 UTC / 2026-10-06 05:47:08–05:47:19 Asia/Shanghai. Nextest run ID `60eede62-c13a-4051-83b6-aac9f54899f9`; exit 0. Raw footer: `Summary [0.341s] 18 tests run: 18 passed, 758 skipped`. Total command time was 10.138 seconds. The frozen source/configuration remained unchanged throughout the run.
+- Raw log SHA-256: `11ad11c783265dfcfdeb9adde6db1a608772137b79c5c81342ad6da8e3f78b3c`; new-baseline source archive SHA-256: `c1fd3f8de3fd700bd422b4706f320ba4376d022d2d9940da0fd9dbf5bfb76ef3`. The original red/green archives, raw logs, run IDs and tested HEAD were retained separately.
+- Only these two #64 documents were updated after the passing run; executable source and configuration kept the tested identity. The new candidate requires fresh cloud checks after the main agent updates the PR. Repaired native acceptance remains NOT RUN; the installed v0.1.53 does not contain this repair.
+- Recovery remains reverting the task's production change; no user application, database, config, credentials, installation or schema was touched. No push, merge, publication or external board/comment update was performed during this rebase verification.

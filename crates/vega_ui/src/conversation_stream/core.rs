@@ -352,6 +352,9 @@ impl ConversationStream {
                 .try_global::<SettingsOpen>()
                 .is_some_and(|settings| settings.0)
             {
+                this.context_usage_trigger_hovered = false;
+                this.context_usage_tooltip_hovered = false;
+                cx.notify();
                 this.timeout_permission(cx);
             }
         })

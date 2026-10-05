@@ -69,3 +69,27 @@
 - 原生复验发现：设置中当前选中模型已有显式模型上下文策略，而 Composer 指示器仍显示“容量未配置”。该缺陷说明原 #64 的会话级容量来源已过时。
 - 按 [Issue #76 模型归属更正](vega-issue-76-model-context-correction.md)，模型容量归属精确 provider/model 对；本指示器只展示显式保存的模型输入上限，不展示输出预留、legacy per-thread 上限或未编辑默认假设。该展示选择不更改 #76 运行时对缺失策略行使用默认预算的规则。
 - provider 必须通过当前唯一启用 provider 规则解析。缺配置、provider 不唯一、策略不存在或输入上限为 unknown 都保持“容量未配置”。估算、百分比/超限呈现、交互和只读约束不变。
+
+## 2026-10-06 修订：Settings 往返后的提示生命周期
+
+原生 v0.1.52 复验发现：上下文提示打开后进入 Settings，再 Back to app，指针在指示器和提示以外且点击 Composer 后，提示仍残留；重新移入指示器再移出才关闭。该现象在不改变主题或窗口宽度的最小步骤下仍出现。原生辅助功能树没有给出内部焦点，不能据此声称圆环仍拥有真实焦点。
+
+进入 Settings 时，缓存的 `ConversationStream` 必须清理上下文指示器和提示框的瞬时 hover 状态。返回 App 后，旧 hover 不得重新打开提示；新的指示器/提示框 hover 和真实圆环键盘焦点仍可打开同一个当前提示。指针在指示器与提示框之间移动时继续保持提示；指针离开两者且焦点也离开圆环时关闭。
+
+此清理不改变输入估算、当前模型设置上限、模型/provider 归属、Composer 草稿、运行状态、请求所有权或已存内容，不启动 Provider/MCP 请求。现有 known/unknown 容量、legacy 隔离、迟到投影、百分比和只读契约继续适用。不新增依赖、公开 API、schema、真实外部进程/网络 E2E 或用户运行时配置修改。
+
+| ID | 前置状态与操作 | 预期可观察结果 | 层级 | 定向验证状态 |
+|---|---|---|---|---|
+| C64-N1 | production VegaWindow；真实 MouseMove 悬停圆环；Settings → production Back to app → 外侧 Composer 点击及 Tab | 复用同一 stream；Composer 实际聚焦时提示不残留；正常 Tab 到圆环仍显示提示，再离开关闭 | GPUI production-root | PASS；route seam 首轮业务 FAIL 后修复 |
+| C64-N2 | 圆环移入提示正文后做同一 Settings 往返 | 旧提示 hover 不残留；重新悬停当前圆环可打开，离开两表面关闭 | GPUI production-root | PASS；route seam 首轮业务 FAIL 后修复 |
+| C64-N3 | ConversationStream 实际 hover 分别来自圆环/提示，打开既有 SettingsOpen global | 两个 transient latch 清理；source tuple、草稿、模型、运行状态及真实 Composer 焦点不变 | GPUI observer | PASS；首轮业务 FAIL 后修复 |
+| C64-N4 | 指针在外侧；实际键盘焦点正向/反向进入与离开圆环 | 焦点独立控制提示；Tab 与 Shift+Tab 路径有效 | 既有 + production-root GPUI | PASS |
+| C64-N5 | Settings 返回后新悬停；窄视口从圆环移入提示 | 当前提示可重新打开；跨表面没有 hover 间隙，离开关闭 | 既有 + production-root GPUI | PASS |
+| C64-N6 | 已知/未知容量、估算失效、迟到 owner/model 投影 | 容量、估算与归属结果保持原契约；不能通过清 source 关闭提示 | 既有 issue64 GPUI + source 不变断言 | PASS |
+| C64-N7 | owned config/database、已存消息与模型策略、MockProvider，Settings 往返 | 模型策略和消息完整内容不变，零 Provider 请求；普通导航访问时间可变化并如实记录 | GPUI production-root owned fixture | PASS；不把导航时间列作为不变断言 |
+
+回归先使用真实 `sidebar-settings` 和 `settings-back` 控件。若入口点击在卸载前已经清理 hover，保留该实际结果，另以既有 `SettingsOpen` global 打开 production Settings route；该 seam 覆盖实际路由生命周期，不证明打开 Settings 的入口绑定。业务失败不得靠直接给 hover latch 赋值制造。测试先冻结源码与配置，再保留真正首次业务断言失败；编译/fixture 错误单列。真实桌面复验由主 Agent 在合并并核实安装身份后执行。
+
+以上 PASS 仅指本次定向进程内回归。修复后的原生 Settings 往返尚未执行，不把旧版本的原生失败或 GPUI 结果写成原生通过。第一次真实 Sidebar 点击的两个用例已经 PASS；另两个 existing SettingsOpen route seam 用例检出了缓存 hover 残留。完整首次结果、同一测试源码的修复后结果与证据 hash 见 [交付记录](vega-issue-64-context-usage-delivery.md#2026-10-06-follow-up-settings-route-leaves-context-tooltip-visible)。
+
+2026-10-06 集成更新：S18 合并后的基线 `4fc330ac` 上重新冻结并运行同一 18 项组合，首次 18/18 PASS（Nextest `60eede62-c13a-4051-83b6-aac9f54899f9`，default，零重试）。三个生产新增行、全部 #64 测试源码与原修复提交逐字节相同；本次仅补充基线与实际证据，未改变 C64-N1–N7 契约或 Shared Skills 内容。旧 cloud PASS 只属于原修复 HEAD，新候选 cloud 与原生复验仍待主 Agent，见 [集成记录](vega-issue-64-context-usage-delivery.md#2026-10-06-integration-update-after-s18-merge)。
