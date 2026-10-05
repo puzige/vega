@@ -8,6 +8,8 @@
 
 本轮证据来自官方规范、已发布适配器源码、Vega 当前代码及本机 CLI 帮助。运行兼容性、登录、真实编码和重启恢复尚未验证。
 
+已根据用户确认的使用方式补充 [A4 首版规格草案](vega-acp-codex-v1-spec.md)，包括任务后端、session 绑定、外部审批、停止/恢复与实施卡建议。草案尚未进入实现。
+
 ## 已核对的协议与上游版本
 
 | 项目 | 当前证据 | 对 Vega 的影响 |
@@ -156,6 +158,8 @@ fs/read_text_file、fs/write_text_file 和 terminal/* 是 Client 可选能力。
 
 v2.1.1 仅在 APP_SERVER_LOGS 被设置时启用文件日志，而 prompt 处理代码会把输入放入日志上下文。Vega 默认保持该日志关闭，对 stderr 和可见错误进行限量、脱敏处理；诊断导出保存结构化状态。[Logger](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/Logger.ts)、[Prompt 日志位置](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/CodexAcpServer.ts#L2858)
 
+SDK v2.2.0 的公开传输架构使用 unbounded channels。Vega 需要审查并限制完整读入/分派路径的积压；只限制 UI 队列不足以证明整个进程内存有界。具体限制与 SDK 接入策略应由协议核心卡先验证。[SDK 传输架构](https://github.com/agentclientprotocol/rust-sdk/blob/v2.2.0/md/transport-architecture.md)
+
 ## 建议实施顺序
 
 以下是待进入实现规格的工作拆分，本轮没有领取实现卡或改变既有功能状态。
@@ -196,4 +200,4 @@ v2.1.1 仅在 APP_SERVER_LOGS 被设置时启用文件日志，而 prompt 处理
 
 ## 下一步
 
-将已确认的用户流程和本报告建议转成 A4 首版实现规格，冻结执行后端共享类型、初始权限、可选 Client 能力、依赖与分发组合，然后建立实现任务。当前调研证明接入路径存在；完整兼容性仍需上述矩阵给出运行证据。
+已将确认的用户流程整理为 A4 首版规格草案。下一步评审共享类型、初始权限、资源上限、依赖与分发组合，建立实现任务。当前调研证明接入路径存在；完整兼容性仍需上述矩阵给出运行证据。
