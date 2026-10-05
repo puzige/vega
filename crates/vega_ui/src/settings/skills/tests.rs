@@ -542,6 +542,151 @@ impl Render for Harness {
     }
 }
 
+fn assert_s21_intro_is_bounded(
+    cx: &mut TestAppContext,
+    theme: vega_theme::Theme,
+    width: f32,
+    height: f32,
+    sidebar_width: f32,
+) {
+    let owned = tempdir().unwrap();
+    let config = owned.path().join("config");
+    fs::create_dir_all(config.join("skills")).unwrap();
+    let database = owned.path().join("vega.db");
+    let store = Store::open(&database).unwrap();
+    store.migrate().unwrap();
+    let service = SkillSettingsService::new(database, config, None);
+    let before = service.projection().unwrap();
+    assert!(!before.global_enabled);
+    assert!(!before.automatic_enabled);
+    assert!(!before.project_enabled);
+    assert!(!before.project_automatic);
+    assert!(before.sources.is_empty());
+
+    cx.update(|cx| {
+        cx.set_global(theme);
+        cx.set_global(super::super::SettingsOpen(true));
+        cx.set_global(crate::sidebar::SidebarWidth(sidebar_width));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    view.update(cx, |view, cx| {
+        view.section = 6;
+        view.set_skills_service(Some(service.clone()), cx);
+    });
+    let root = view.clone();
+    let window: WindowHandle<Harness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(width), px(height)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| cx.new(|_| Harness(root)),
+            )
+        })
+        .expect("S21 Skills Settings window");
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let navigation = visual
+        .debug_bounds("settings-navigation")
+        .expect("Settings navigation");
+    assert_eq!(navigation.size.width, px(sidebar_width));
+    assert!(visual.debug_bounds("settings-page-skills").is_some());
+    let content = visual
+        .debug_bounds("settings-content-column")
+        .expect("Settings content column");
+    assert_eq!(
+        content.size.width,
+        px((width - sidebar_width - 48.).min(vega_theme::Layout::SETTINGS_CONTENT_MAX_WIDTH))
+    );
+    let intro = visual
+        .debug_bounds("skills-intro")
+        .expect("Skills introduction");
+    assert!(intro.size.width > px(0.));
+    assert!(intro.size.height > px(0.));
+    assert!(
+        intro.size.height < px(30.),
+        "S21 test-platform introduction height: {:?}",
+        intro.size.height
+    );
+    assert!(intro.left() >= content.left());
+    assert!(intro.right() <= content.right());
+    assert!(intro.top() >= content.top());
+    assert!(intro.bottom() <= content.bottom());
+    assert!(intro.bottom() <= px(height));
+    let refresh = visual
+        .debug_bounds("skills-reload")
+        .expect("Skills Refresh after introduction");
+    assert!(refresh.top() >= intro.bottom());
+    assert!(refresh.size.width > px(0.));
+    assert!(refresh.size.height > px(0.));
+    assert!(refresh.left() >= content.left());
+    assert!(refresh.right() <= content.right());
+    assert!(refresh.bottom() <= content.bottom());
+    assert!(refresh.bottom() <= px(height));
+    assert!(visual.debug_bounds("skills-global-enabled").is_some());
+    assert!(visual.debug_bounds("skills-global-automatic").is_some());
+    assert!(visual.debug_bounds("skills-import-folder").is_some());
+    assert!(view.read_with(cx, |view, _| {
+        !view.skills.busy
+            && view.skills.message.is_none()
+            && view.skills.root_preview.is_none()
+            && view.skills.body_preview.is_none()
+            && view.skills.projection.as_ref() == Some(&before)
+    }));
+    assert!(service.projection().unwrap() == before);
+}
+
+#[gpui_kit::test]
+async fn issue87_s21_intro_minimum_window_light(cx: &mut TestAppContext) {
+    assert_s21_intro_is_bounded(
+        cx,
+        vega_theme::Theme::light(),
+        960.,
+        600.,
+        vega_theme::Layout::SIDEBAR_MAX_WIDTH,
+    );
+}
+
+#[gpui_kit::test]
+async fn issue87_s21_intro_minimum_window_dark(cx: &mut TestAppContext) {
+    assert_s21_intro_is_bounded(
+        cx,
+        vega_theme::Theme::dark(),
+        960.,
+        600.,
+        vega_theme::Layout::SIDEBAR_MAX_WIDTH,
+    );
+}
+
+#[gpui_kit::test]
+async fn issue87_s21_intro_normal_window_light(cx: &mut TestAppContext) {
+    assert_s21_intro_is_bounded(
+        cx,
+        vega_theme::Theme::light(),
+        1403.,
+        860.,
+        vega_theme::Layout::SIDEBAR_WIDTH,
+    );
+}
+
+#[gpui_kit::test]
+async fn issue87_s21_intro_normal_window_dark(cx: &mut TestAppContext) {
+    assert_s21_intro_is_bounded(
+        cx,
+        vega_theme::Theme::dark(),
+        1403.,
+        860.,
+        vega_theme::Layout::SIDEBAR_WIDTH,
+    );
+}
+
 fn stale_skills_projection() -> SkillSettingsProjection {
     SkillSettingsProjection {
         consent_generation: 1,
