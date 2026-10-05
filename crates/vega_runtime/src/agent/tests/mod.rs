@@ -80,6 +80,7 @@ mod loop_tools;
 mod mcp_registry;
 mod permission_flow;
 mod skills;
+mod skills_s16;
 mod usage_limits;
 
 #[tokio::test]
