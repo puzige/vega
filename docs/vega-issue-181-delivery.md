@@ -12,6 +12,27 @@
 - 命令：`cargo nextest run -p vega issue181_install_refuses_each_active_owner_without_dispatching`；exit 0。Nextest run ID：`1ae3fb81-ad2d-4005-b64d-2007c6f32fbe`；`PASS [0.097s] vega::bin/vega tests::updater::issue181_install_refuses_each_active_owner_without_dispatching`；结果：1 passed，213 skipped。
 - 此回归覆盖生产窗口的活动任务安装拒绝门禁；真实签名更新、原生安装替换、安装失败回滚及启动恢复仍为 NOT RUN。
 
+## UPD06 / UPD09 owned-temp 定向回归（2026-10-05）
+
+- UPD06：使用隔离 `TempDir` 和真实 ZIP fixture，验证归档父路径穿越与 symlink 条目均被拒绝，已有假 app 的 executable 与 bundle 数据保持不变。
+- UPD09：`updater_rollback_helper_restores_old_bundle_and_preserves_failed_candidate` 直接对 rollback helper 注入失败，验证旧 executable 与资源恢复、新候选保留为 `failed.app`。这是 helper 级 fault-injection 回归，不覆盖 `replace_and_launch` 内的启动错误分支或完整安装集成路径。
+- 命令：`cargo nextest run -p vega updater::`；exit 0；Nextest run ID：`ad221517-3e19-4a20-ab63-3436247517c3`。
+
+```text
+Finished `test` profile [unoptimized + debuginfo] target(s) in 4.71s
+Starting 6 tests across 2 binaries (211 tests skipped)
+PASS [0.018s] vega::bin/vega updater::platform::tests::updater_private_tempdir_rejects_group_and_world_permissions
+PASS [0.019s] vega::bin/vega updater::platform::tests::updater_private_tempdir_owner_only
+PASS [0.023s] vega::bin/vega updater::platform::tests::updater_archive_symlink_is_rejected_without_modifying_existing_bundle
+PASS [0.023s] vega::bin/vega updater::platform::tests::updater_archive_parent_path_is_rejected_without_modifying_existing_bundle
+PASS [0.024s] vega::bin/vega updater::install::tests::updater_rollback_helper_restores_old_bundle_and_preserves_failed_candidate
+PASS [0.047s] vega::bin/vega tests::updater::issue181_install_refuses_each_active_owner_without_dispatching
+Summary [0.048s] 6 tests run: 6 passed, 211 skipped
+```
+
+- 首次 symlink fixture 尝试失败：`unix_permissions(0o120777)` 被当前 zip crate 编码为普通文件，导致拒绝断言不成立；改用 `ZipWriter::add_symlink` 后上述定向命令通过。
+- Developer ID / 公证签名、macOS 原生替换安装、真实安装失败回滚及启动失败恢复仍为 NOT RUN；本地只验证上述 owned-temp helper。
+
 ## 用户手测步骤（合并后）
 
 1. 从固定 `~/Documents/Vega/Vega.app` 打开应用，在设置中找到更新区域，确认版本与实际 bundle 的 `CFBundleShortVersionString` 一致。
@@ -31,8 +52,8 @@
 
 - 实现：代码完成，主 agent 与独立审查完成。
 - 编译：`cargo check -p vega -p xtask --bins`，exit 0，3.41s；日志 SHA-256：`66ab1b97530a826e4f94a7b597e843e2f96e727eb359d0014260659cc0fe4319`。
-- 本地测试：本次定向忙碌保护回归 1 passed；其他本地测试未运行。
-- 云端 check / PR / merge：2026-10-05 合并前记录：[#256](https://github.com/puzige/vega/pull/256)，head `8587774f73c228cbf502dc3c7eec068204b7ce5d`；CI run `37262763011` 的 Clippy（2m51s）、Nextest（4m57s）及汇总 `check (fmt, clippy, test)` 均通过。记录时仍待合并；最终集成 SHA 将回写到 Issue #181。
+- 本地测试：忙碌保护与 UPD06/UPD09 定向 updater 回归合计 6 passed、211 skipped；其他本地测试未运行，详见上节。
+- 云端 check / PR / merge：[#256](https://github.com/puzige/vega/pull/256) 于 2026-10-05 合并，PR head `8587774f73c228cbf502dc3c7eec068204b7ce5d`；CI run `37262763011` 的 Clippy（2m51s）、Nextest（4m57s）及汇总 `check (fmt, clippy, test)` 均通过。合并提交 `f87479f5e6f7468e6dfe18d5acc15b53ef9a8f51` 对应版本 v0.1.45。
 - 真实签名安装与用户手测：NOT RUN。
 - 日常安装：未更新。
 
