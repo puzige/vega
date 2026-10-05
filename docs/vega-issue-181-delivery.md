@@ -4,7 +4,13 @@
 
 ## 当前证据边界
 
-本轮未新增或运行本地测试（会话约束）。静态审查、编译、云端 check 与真实签名安装分别报告；任何一个不替代其他证据。真实 Developer ID、公证与 UI 手测尚未执行。仓库凭据查询为空，本轮不配置凭据、不发 tag、不更改日常应用。
+既有实现记录未新增或运行本地测试；本次补充的定向忙碌保护回归单独记录如下。静态审查、编译、云端 check 与真实签名安装分别报告；任何一个不替代其他证据。真实 Developer ID、公证与 UI 手测尚未执行。仓库凭据查询为空，本轮不配置凭据、不发 tag、不更改日常应用。
+
+## 安装忙碌保护定向回归
+
+- 测试提交：`8c488552f92de098d0016e3ec193b4d8e0a1a8d3`。
+- 命令：`cargo nextest run -p vega issue181_install_refuses_each_active_owner_without_dispatching`；exit 0。Nextest run ID：`1ae3fb81-ad2d-4005-b64d-2007c6f32fbe`；`PASS [0.097s] vega::bin/vega tests::updater::issue181_install_refuses_each_active_owner_without_dispatching`；结果：1 passed，213 skipped。
+- 此回归覆盖生产窗口的活动任务安装拒绝门禁；真实签名更新、原生安装替换、安装失败回滚及启动恢复仍为 NOT RUN。
 
 ## 用户手测步骤（合并后）
 
@@ -25,7 +31,7 @@
 
 - 实现：代码完成，主 agent 与独立审查完成。
 - 编译：`cargo check -p vega -p xtask --bins`，exit 0，3.41s；日志 SHA-256：`66ab1b97530a826e4f94a7b597e843e2f96e727eb359d0014260659cc0fe4319`。
-- 本地测试：NOT RUN。
+- 本地测试：本次定向忙碌保护回归 1 passed；其他本地测试未运行。
 - 云端 check / PR / merge：待记录。
 - 真实签名安装与用户手测：NOT RUN。
 - 日常安装：未更新。
