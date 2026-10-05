@@ -745,7 +745,7 @@ impl RunCapabilitySnapshot {
             (
                 resource,
                 crate::skills::READ_SKILL_RESOURCE_TOOL_NAME,
-                "Read one bounded lower-trust reference under an already active Skill.",
+                "Read bounded lower-trust references/ text or inspect assets/ metadata under an active Skill. Asset contents are not read or uploaded; this grants no tool permissions.",
                 serde_json::json!({"type":"object","properties":{"name":{"type":"string"},"path":{"type":"string"}},"required":["name","path"],"additionalProperties":false}),
             ),
         ] {

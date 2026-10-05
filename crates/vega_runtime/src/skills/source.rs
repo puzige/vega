@@ -369,6 +369,48 @@ impl SkillSource {
         String::from_utf8(bytes).map_err(|_| SkillError::InvalidUtf8)
     }
 
+    pub(super) fn inspect_asset_metadata(&self, name: &str, path: &str) -> Result<u64, SkillError> {
+        if !valid_name(name) || !valid_asset_path(path) {
+            return Err(SkillError::UnsafePath);
+        }
+        let components = normal_components(&Path::new(name).join(path))?;
+        let root = self.ensure_current()?;
+        let opened = open_chain(&root, &components)?;
+        let before = opened.file.metadata().map_err(|_| SkillError::Io)?;
+        if !before.is_file() {
+            return Err(SkillError::NotRegular);
+        }
+        if before.nlink() != 1 {
+            return Err(SkillError::Hardlink);
+        }
+        #[cfg(test)]
+        super::asset_probe::run_asset_recheck();
+        let after = opened.file.metadata().map_err(|_| SkillError::Io)?;
+        if !same_file_state(&before, &after) {
+            return Err(SkillError::Stale);
+        }
+        let reopened = open_chain(&root, &components)?;
+        if opened.directories.len() != reopened.directories.len() {
+            return Err(SkillError::Stale);
+        }
+        for (before_dir, after_dir) in opened.directories.iter().zip(&reopened.directories) {
+            if !same_identity(
+                &before_dir.metadata().map_err(|_| SkillError::Io)?,
+                &after_dir.metadata().map_err(|_| SkillError::Io)?,
+            ) {
+                return Err(SkillError::Stale);
+            }
+        }
+        if !same_file_state(
+            &before,
+            &reopened.file.metadata().map_err(|_| SkillError::Io)?,
+        ) {
+            return Err(SkillError::Stale);
+        }
+        let _root = self.ensure_current()?;
+        Ok(before.len())
+    }
+
     fn read_relative(&self, relative: &Path, limit: usize) -> Result<Vec<u8>, SkillError> {
         let components = normal_components(relative)?;
         let root = self.ensure_current()?;
@@ -484,11 +526,19 @@ pub(super) fn valid_name(name: &str) -> bool {
 }
 
 pub(super) fn valid_reference_path(path: &str) -> bool {
+    valid_resource_path(path, "references")
+}
+
+pub(super) fn valid_asset_path(path: &str) -> bool {
+    valid_resource_path(path, "assets")
+}
+
+fn valid_resource_path(path: &str, directory: &str) -> bool {
     if path.len() > MAX_RESOURCE_PATH_BYTES {
         return false;
     }
     match normal_components(Path::new(path)) {
-        Ok(components) => components.len() >= 2 && components[0] == OsStr::new("references"),
+        Ok(components) => components.len() >= 2 && components[0] == OsStr::new(directory),
         Err(_) => false,
     }
 }
@@ -584,6 +634,8 @@ fn child_is_symlink(parent: &File, component: &CString) -> bool {
 }
 
 fn read_limited(file: &mut File, limit: usize) -> Result<Vec<u8>, SkillError> {
+    #[cfg(test)]
+    super::asset_probe::record_body_read(file);
     let mut bytes = Vec::new();
     file.take(limit as u64 + 1)
         .read_to_end(&mut bytes)

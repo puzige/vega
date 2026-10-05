@@ -6,7 +6,7 @@
 
 use super::source::{
     MAX_RESOURCE_PATH_BYTES, MAX_SKILL_BYTES, SkillCandidate, SkillError, SkillSource,
-    SourceIdentity, SourceScope, valid_name,
+    SourceIdentity, SourceScope, valid_asset_path, valid_name,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -25,6 +25,11 @@ pub const MAX_RUN_REFERENCE_BYTES: usize = 128 * 1024;
 /// Native names reserved in #73's shared dynamic tool registry.
 pub const LOAD_SKILL_TOOL_NAME: &str = "load_skill";
 pub const READ_SKILL_RESOURCE_TOOL_NAME: &str = "read_skill_resource";
+
+const MAX_FROZEN_ASSETS: usize = 128;
+const MAX_RUN_ASSET_METADATA_BYTES: usize = 128 * 1024;
+const MAX_ASSET_RESULT_BYTES: usize = 8 * 1024;
+const ASSET_METADATA_PREFIX: &str = "[Lower-trust Skill asset metadata]\n";
 
 /// Durable per-Skill UI consent record. Its exact content hash never floats to
 /// a changed file. Construct only after the trusted UI has shown a preview and
@@ -456,7 +461,40 @@ pub struct SkillRun {
     active: Vec<ActiveSkill>,
     references: BTreeMap<(String, String), FrozenReference>,
     reference_bytes: usize,
+    assets: BTreeMap<(String, String), FrozenAssetMetadata>,
+    asset_metadata_bytes: usize,
     cancelled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrozenAssetMetadata {
+    name: String,
+    path: String,
+    r#type: String,
+    size_bytes: u64,
+    lower_trust: bool,
+}
+
+impl FrozenAssetMetadata {
+    fn valid(&self) -> bool {
+        valid_name(&self.name)
+            && valid_asset_path(&self.path)
+            && self.r#type == "unknown"
+            && self.lower_trust
+    }
+
+    fn to_json(&self) -> Result<String, SkillError> {
+        serde_json::to_string(self).map_err(|_| SkillError::InvalidFormat)
+    }
+
+    fn result(&self) -> Result<String, SkillError> {
+        let output = format!("{ASSET_METADATA_PREFIX}{}", self.to_json()?);
+        if output.len() > MAX_ASSET_RESULT_BYTES {
+            return Err(SkillError::TooLarge);
+        }
+        Ok(output)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -477,6 +515,8 @@ impl SkillRun {
             active: Vec::new(),
             references: BTreeMap::new(),
             reference_bytes: 0,
+            assets: BTreeMap::new(),
+            asset_metadata_bytes: 0,
             cancelled: false,
         }
     }
@@ -684,6 +724,70 @@ impl SkillRun {
         self.references.insert(key, frozen.clone());
         Ok(frozen)
     }
+
+    pub(crate) fn read_resource(
+        &mut self,
+        name: &str,
+        path: &str,
+        fits: impl FnOnce(&str) -> bool,
+    ) -> Result<String, SkillError> {
+        if !path.starts_with("assets/") {
+            let reference = self.read_reference(name, path, |json| {
+                fits(&format!("[Lower-trust Skill reference]\n{json}"))
+            })?;
+            return Ok(format!(
+                "[Lower-trust Skill reference]\n{}",
+                reference.to_json()?
+            ));
+        }
+        if self.cancelled {
+            return Err(SkillError::Cancelled);
+        }
+        if !valid_name(name) || !valid_asset_path(path) {
+            return Err(SkillError::UnsafePath);
+        }
+        let active = self
+            .active
+            .iter()
+            .find(|skill| skill.candidate.name == name)
+            .ok_or(SkillError::NotActivated)?;
+        let key = (name.to_string(), path.to_string());
+        if let Some(previous) = self.assets.get(&key) {
+            let output = previous.result()?;
+            if !fits(&output) {
+                return Err(SkillError::OverBudget);
+            }
+            return Ok(output);
+        }
+        if self.assets.len() >= MAX_FROZEN_ASSETS {
+            return Err(SkillError::AggregateLimit);
+        }
+        let size_bytes = active.candidate.source.inspect_asset_metadata(name, path)?;
+        let frozen = FrozenAssetMetadata {
+            name: name.into(),
+            path: path.into(),
+            r#type: "unknown".into(),
+            size_bytes,
+            lower_trust: true,
+        };
+        let next_bytes = self
+            .asset_metadata_bytes
+            .checked_add(frozen.to_json()?.len())
+            .ok_or(SkillError::AggregateLimit)?;
+        if next_bytes > MAX_RUN_ASSET_METADATA_BYTES {
+            return Err(SkillError::AggregateLimit);
+        }
+        let output = frozen.result()?;
+        if !fits(&output) {
+            return Err(SkillError::OverBudget);
+        }
+        if self.binding.is_some() {
+            self.validate_prospective_asset(&frozen)?;
+        }
+        self.assets.insert(key, frozen);
+        self.asset_metadata_bytes = next_bytes;
+        Ok(output)
+    }
 }
 
 impl FrozenReference {
@@ -762,3 +866,6 @@ fn outcome(
             && status != "already_loaded",
     }
 }
+
+#[cfg(test)]
+mod asset_tests;

@@ -139,6 +139,15 @@ fn valid_skill_result(
             && (matches!(receipt_status, "loaded" | "already_loaded")
                 == (status == RuntimeToolStatus::Success));
     }
+    if output.starts_with("[Lower-trust Skill asset metadata]\n") {
+        return crate::types::skill_asset_metadata_outcome(
+            Some(name),
+            input.get("path_bytes").and_then(serde_json::Value::as_u64),
+            input.get("path_sha256").and_then(serde_json::Value::as_str),
+            output,
+        )
+        .is_some();
+    }
     let Some(json) = output.strip_prefix("[Lower-trust Skill reference]\n") else {
         return false;
     };
@@ -1533,3 +1542,6 @@ pub(crate) fn forward_pipeline_error_with_duration<F>(
         execution_duration_ms,
     });
 }
+
+#[cfg(test)]
+mod asset_metadata_tests;

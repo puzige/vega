@@ -1187,3 +1187,5 @@ async fn issue74_mixed_batch_rejects_persisted_write_without_permission_prompt()
             .contains("PRIVATE BODY")
     );
 }
+
+mod asset_metadata;

@@ -1177,7 +1177,7 @@ async fn issue74_reference_reads_are_lower_trust_and_frozen_on_first_read() {
 }
 
 #[tokio::test]
-async fn issue74_s14_binary_asset_path_is_rejected_without_text_injection() {
+async fn issue87_s14_binary_asset_metadata_has_no_body_or_upload() {
     let project = tempdir().unwrap();
     let tools = vega_tools::Tools::new(project.path()).unwrap();
     let (run, _) = skill_run_with_body(
@@ -1238,8 +1238,24 @@ async fn issue74_s14_binary_asset_path_is_rejected_without_text_injection() {
             _ => None,
         })
         .expect("asset resource result");
-    assert_eq!(resource_result.status, RuntimeToolStatus::Failed);
-    assert!(resource_result.output.contains("unsafe_path"));
+    assert_eq!(resource_result.status, RuntimeToolStatus::Success);
+    let metadata: serde_json::Value = serde_json::from_str(
+        resource_result
+            .output
+            .strip_prefix("[Lower-trust Skill asset metadata]\n")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        metadata,
+        serde_json::json!({
+            "name":"reviewer",
+            "path":"assets/pixel.png",
+            "type":"unknown",
+            "size_bytes":asset_bytes.len(),
+            "lower_trust":true
+        })
+    );
     assert!(!resource_result.output.contains(asset_marker));
 
     let requests = provider.requests();
@@ -1258,7 +1274,7 @@ async fn issue74_s14_binary_asset_path_is_rejected_without_text_injection() {
         })
     }));
     assert!(requests[2].messages.iter().any(|message| {
-        message.role == ChatRole::Tool && message.content.contains("unsafe_path")
+        message.role == ChatRole::Tool && message.content == resource_result.output
     }));
     assert_eq!(fs::read(asset).unwrap(), asset_bytes);
 }
@@ -2905,4 +2921,188 @@ async fn issue74_s22_statusless_provider_failure_keeps_input_and_stops_before_sk
         event,
         RuntimeEvent::ToolCallRunning { .. } | RuntimeEvent::ToolCallFinished(_)
     )));
+}
+
+#[tokio::test]
+async fn issue87_s14_repeated_metadata_is_frozen_and_exact_wire_budgeted() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let (run, _) = skill_run_with_body(project.path(), true, "PRIVATE GUIDANCE");
+    let asset = project
+        .path()
+        .join(".agents/skills/reviewer/assets/pixel.png");
+    fs::create_dir_all(asset.parent().unwrap()).unwrap();
+    fs::write(&asset, b"\0\xffPRIVATE ASSET BODY").unwrap();
+    fs::write(
+        asset.with_file_name("unrequested.bin"),
+        b"OTHER PRIVATE BODY",
+    )
+    .unwrap();
+    let mut rounds = Vec::new();
+    for (id, tool, input) in [
+        ("load", "load_skill", r#"{"name":"reviewer"}"#),
+        (
+            "asset-first",
+            "read_skill_resource",
+            r#"{"name":"reviewer","path":"assets/pixel.png"}"#,
+        ),
+        (
+            "asset-repeat",
+            "read_skill_resource",
+            r#"{"name":"reviewer","path":"assets/pixel.png"}"#,
+        ),
+    ] {
+        rounds.push(vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: id.into(),
+                name: tool.into(),
+                input_json: input.into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])]);
+    }
+    rounds.push(vec![ScriptStep::events(vec![ProviderEvent::Done {
+        stop_reason: StopReason::End,
+    }])]);
+    let provider = MockProvider::new_rounds(rounds);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "Inspect one asset")]);
+    req.context_budget = Some(ContextBudget::new(428_000, 128_000, true).unwrap());
+    req.tool_config = req.tool_config.with_skill_run(run, Vec::new());
+    let changed = asset.clone();
+    let outcome = run_agent_with_sink(&provider, &tools, req, CancellationToken::new(), move |event| {
+        if matches!(event, RuntimeEvent::ToolCallFinished(ref result) if result.call_id == "asset-first") {
+            fs::write(&changed, b"CHANGED MUCH LONGER BINARY BODY").unwrap();
+        }
+        async { Ok(()) }
+    }).await.unwrap();
+    assert!(!outcome.failed && !outcome.interrupted);
+    let results: Vec<_> = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ToolCallFinished(result) if result.call_id.starts_with("asset-") => {
+                Some(result)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|result| result.status == RuntimeToolStatus::Success)
+    );
+    assert_eq!(results[0].output, results[1].output);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 4);
+    let preflights: Vec<_> = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ContextAccountingUpdated(decision)
+                if decision.stage == ContextAccountingStage::PrimaryPreflight =>
+            {
+                Some(decision)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(preflights.len(), requests.len());
+    for (decision, request) in preflights.iter().zip(&requests) {
+        assert_eq!(
+            decision.predicted_input,
+            crate::estimate_wire_context(&request.messages, &request.tools)
+                .unwrap()
+                .input_tokens
+        );
+        assert!(
+            request
+                .messages
+                .iter()
+                .all(|message| message.images.is_empty()
+                    && !message.content.contains("PRIVATE ASSET BODY")
+                    && !message.content.contains("OTHER PRIVATE BODY")
+                    && !message.content.contains("unrequested.bin")
+                    && !message.content.contains("CHANGED MUCH LONGER"))
+        );
+        assert!(
+            request
+                .tools
+                .iter()
+                .find(|tool| tool.name == "read_skill_resource")
+                .unwrap()
+                .description
+                .contains("metadata")
+        );
+    }
+    assert_eq!(requests[2].messages.iter().filter(|message| message.role == ChatRole::Tool && message.content == results[0].output).count(), 1);
+    assert!(
+        !requests[2].messages[0]
+            .content
+            .contains("[Lower-trust Skill asset metadata]")
+    );
+}
+
+#[tokio::test]
+async fn issue87_s14_stop_and_revocation_interrupt_before_asset_success() {
+    for revoke in [false, true] {
+        let project = tempdir().unwrap();
+        let tools = vega_tools::Tools::new(project.path()).unwrap();
+        let (run, _) = skill_run_with_body(project.path(), true, "Guide");
+        let asset = project.path().join(".agents/skills/reviewer/assets/safe");
+        fs::create_dir_all(asset.parent().unwrap()).unwrap();
+        fs::write(&asset, b"PRIVATE ASSET BODY").unwrap();
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: "load".into(),
+                    name: "load_skill".into(),
+                    input_json: r#"{"name":"reviewer"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: "asset".into(),
+                    name: "read_skill_resource".into(),
+                    input_json: r#"{"name":"reviewer","path":"assets/safe"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+        ]);
+        let authority = Arc::new(AtomicBool::new(true));
+        let probe = authority.clone();
+        let mut req = request(Vec::new());
+        req.tool_config = req
+            .tool_config
+            .with_skill_run(run, Vec::new())
+            .with_skill_authority_probe(Arc::new(move || probe.load(Ordering::SeqCst)));
+        let frozen = req.tool_config.skills.as_ref().unwrap().run.clone();
+        let cancel = CancellationToken::new();
+        let stopped = cancel.clone();
+        let outcome = run_agent_with_sink(&provider, &tools, req, cancel, move |event| {
+            if matches!(event, RuntimeEvent::ToolCallFinished(ref result) if result.call_id == "load") && revoke {
+                authority.store(false, Ordering::SeqCst);
+            }
+            if matches!(event, RuntimeEvent::ToolCallProposed(ref call) if call.id == "asset") && !revoke {
+                stopped.cancel();
+            }
+            async { Ok(()) }
+        }).await.unwrap();
+        assert!(outcome.interrupted);
+        assert!(!outcome.events.iter().any(|event| matches!(event, RuntimeEvent::ToolCallFinished(result) if result.call_id == "asset" && result.status == RuntimeToolStatus::Success)));
+        assert_eq!(provider.requests().len(), if revoke { 1 } else { 2 });
+        let mut restored = frozen.lock().unwrap();
+        fs::remove_file(asset).unwrap();
+        assert_eq!(
+            restored.read_resource("reviewer", "assets/safe", |_| true),
+            Err(crate::skills::SkillError::Stale)
+        );
+    }
 }
