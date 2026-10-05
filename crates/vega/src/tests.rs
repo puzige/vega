@@ -26,8 +26,9 @@ use vega_ui::commit_panel::{
     CommitDraftRequested, CommitPanel, CommitPanelClosed, CommitPrepareRequested, CommitRequested,
 };
 use vega_ui::conversation_stream::{
-    ConversationStream, HistoryPageRequested, MessageLocationRequested, NewerHistoryPageRequested,
-    OpenCommitPanelRequested, OpenWorkspaceDiffRequested, ThreadSettingsRequested,
+    ContextUsageProjection, ConversationStream, HistoryPageRequested, MessageLocationRequested,
+    NewerHistoryPageRequested, OpenCommitPanelRequested, OpenWorkspaceDiffRequested,
+    ThreadSettingsRequested,
 };
 use vega_ui::diff_view::{
     DIFF_REFRESH_INTERVAL, DiffProjectionRequested, DiffRetryRequested, DiffView,

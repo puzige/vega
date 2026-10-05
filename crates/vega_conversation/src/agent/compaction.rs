@@ -149,6 +149,16 @@ pub fn read_context_projection(
     expected_model: &str,
     system_prompt: &str,
 ) -> Result<crate::types::ContextProjection, crate::types::ConversationError> {
+    read_context_projection_with_provider(store, thread_id, expected_model, None, system_prompt)
+}
+
+pub fn read_context_projection_with_provider(
+    store: &Store,
+    thread_id: &str,
+    expected_model: &str,
+    provider: Option<&str>,
+    system_prompt: &str,
+) -> Result<crate::types::ContextProjection, crate::types::ConversationError> {
     let transaction = store
         .immediate_transaction()
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
@@ -167,6 +177,19 @@ pub fn read_context_projection(
     let settings = load_settings(&transaction, thread_id, expected_model)
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
         .map(context_settings_from_store);
+    let model_input_limit = provider
+        .filter(|provider| !provider.trim().is_empty())
+        .map(|provider| {
+            vega_store::context_compaction::load_model_policy(
+                &transaction,
+                provider,
+                expected_model,
+            )
+        })
+        .transpose()
+        .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?
+        .flatten()
+        .and_then(|policy| policy.input_limit);
     let history = crate::agent::pipeline::primary_history_from_context_source_with_checkpoint(
         &source,
         checkpoint.as_ref(),
@@ -203,6 +226,7 @@ pub fn read_context_projection(
         .map_err(|error| crate::types::ConversationError::Store(error.to_string()))?;
     Ok(crate::types::ContextProjection {
         settings,
+        model_input_limit,
         estimated_tokens: Some(estimate.input_tokens),
         compactable,
         last_status: status,

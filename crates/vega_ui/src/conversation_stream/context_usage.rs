@@ -1,24 +1,27 @@
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ContextUsageDisplay {
     pub(crate) estimated_tokens: u64,
-    pub(crate) context_limit: Option<u64>,
+    pub(crate) model_input_limit: Option<u64>,
     pub(crate) percent_used: Option<u128>,
     pub(crate) fill_fraction: f32,
 }
 
 impl ContextUsageDisplay {
-    pub(crate) fn new(estimated_tokens: Option<u64>, context_limit: Option<u64>) -> Option<Self> {
+    pub(crate) fn new(
+        estimated_tokens: Option<u64>,
+        model_input_limit: Option<u64>,
+    ) -> Option<Self> {
         let estimated_tokens = estimated_tokens?;
-        let context_limit = context_limit.filter(|limit| *limit > 0);
-        let percent_used = context_limit.map(|limit| {
+        let model_input_limit = model_input_limit.filter(|limit| *limit > 0);
+        let percent_used = model_input_limit.map(|limit| {
             (u128::from(estimated_tokens) * 100 + u128::from(limit) / 2) / u128::from(limit)
         });
-        let fill_fraction = context_limit.map_or(0.0, |limit| {
+        let fill_fraction = model_input_limit.map_or(0.0, |limit| {
             ((estimated_tokens as f64) / (limit as f64)).min(1.0) as f32
         });
         Some(Self {
             estimated_tokens,
-            context_limit,
+            model_input_limit,
             percent_used,
             fill_fraction,
         })
@@ -30,7 +33,7 @@ impl ContextUsageDisplay {
     }
 
     pub(crate) fn compact_usage_label(&self) -> String {
-        match self.context_limit {
+        match self.model_input_limit {
             Some(limit) => format!(
                 "{} / {} tokens",
                 compact_token_count(self.estimated_tokens),
@@ -48,11 +51,11 @@ impl ContextUsageDisplay {
     }
 
     pub(crate) fn capacity_label(&self) -> String {
-        self.context_limit.map_or_else(
+        self.model_input_limit.map_or_else(
             || "容量未配置".to_string(),
             |limit| {
                 format!(
-                    "当前设置上限：{} tokens（会话设置，非供应商验证容量）",
+                    "当前模型设置输入上限：{} tokens（非供应商验证容量）",
                     grouped_token_count(limit)
                 )
             },
@@ -114,14 +117,15 @@ mod tests {
         );
         assert!(display.estimate_label().contains("135,000 tokens"));
         assert!(display.capacity_label().contains("258,000 tokens"));
+        assert!(display.capacity_label().contains("当前模型设置输入上限"));
         assert!(display.accessibility_label().contains("非供应商验证容量"));
     }
 
     #[test]
     fn issue64_context_usage_unknown_or_zero_capacity_has_no_percent_or_fill() {
-        for context_limit in [None, Some(0)] {
-            let display = ContextUsageDisplay::new(Some(135_000), context_limit).unwrap();
-            assert_eq!(display.context_limit, None);
+        for model_input_limit in [None, Some(0)] {
+            let display = ContextUsageDisplay::new(Some(135_000), model_input_limit).unwrap();
+            assert_eq!(display.model_input_limit, None);
             assert_eq!(display.percent_used, None);
             assert_eq!(display.fill_fraction, 0.0);
             assert_eq!(display.compact_usage_label(), "135k tokens");

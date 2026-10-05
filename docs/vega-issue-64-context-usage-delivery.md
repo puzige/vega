@@ -3,7 +3,7 @@
 ## 需求与范围
 
 - 用户场景：在 Composer 模型选择器旁只读查看当前会话输入上下文估算。
-- 数据来源：复用当前 `ConversationStream` 的输入估算及 `ContextSettings.context_limit`。
+- 数据来源：复用当前 `ConversationStream` 的输入估算；容量只取唯一匹配的启用 provider/model 对中显式保存的模型输入上限。
 - 容量未知时保留中性圆环并说明未配置；没有估算时隐藏。
 - Composer 的分支入口依据 #191 规格保留，本卡不改它的位置、可见性、交互和 BranchSelector 行为。
 - 不新增 provider 请求、数据库字段、供应商容量发现或自动压缩行为；不存取 prompt 正文。
@@ -12,7 +12,7 @@
 
 | ID | 风险/需求 | 前置状态 | 操作 | 预期可观察结果 | 测试层级 | 状态 |
 |---|---|---|---|---|---|---|
-| C64-01 | 已知用量与容量 | 135000 估算、258000 设置上限 | 渲染并悬停 | 圆环可见；同一提示显示估算、52%、135k / 258k 和设置上限来源 | 纯函数 + GPUI | PASS |
+| C64-01 | 已知用量与容量 | 135000 估算、精确 provider/model 策略显式保存 258000 输入上限 | 渲染并悬停 | 圆环可见；同一提示显示估算、52%、135k / 258k 和模型设置输入上限来源 | 纯函数 + GPUI | PASS |
 | C64-02 | 容量未知 | 有估算、无有效配置上限 | 悬停或聚焦 | 显示估算及“容量未配置”；无百分比或猜测分母 | 纯函数 + GPUI | PASS |
 | C64-03 | 估算未知 | 无输入估算 | 渲染 | 不挂载指示器，不显示 0 或旧会话数据 | GPUI | PASS |
 | C64-04 | 超过设置上限 | 估算大于正上限 | 计算并渲染 | 提示保留真实超限百分比；圆环填充封顶 100% | 纯函数 | PASS |
@@ -40,7 +40,7 @@
 - Diff：`git diff --check` — PASS。
 - 窄布局：360px GPUI 测试覆盖 hover 和键盘 focus；触发器与提示框无间距，测试以 2px 步进穿过原间隙区域并确认提示始终挂载，移入提示后保持可见，移开后关闭。两条路径都确认提示在视口内，且不与模型选择、发送、Composer 分支入口相交。
 - Spec 偏离：无。
-- 用户桌面验收：NOT RUN；需在合并后的版本确认 hover/focus、已知/未知容量、会话切换和主题。
+- 原始交付记录中的桌面检查当时为 NOT RUN；后续键盘焦点修复已另有 v0.1.22 原生复验记录。当前容量来源修复仍需在合并候选上做真实桌面验收，见下方 2026-10-05 follow-up。
 
 ## Follow-up：真实桌面发现与键盘焦点修复
 
@@ -65,3 +65,29 @@ The S21 report says Tab from the Composer input reaches the attachment button, b
 Verification: `cargo nextest run -p vega issue64_production_root_tab_reaches_context_ring_after_attachment` passed (1 passed, 211 skipped). The test uses an owned app fixture with `MockProvider`, moves the pointer away before keyboard traversal, confirms the first Tab paints focus on the attachment button, confirms the next Tab keeps the ring tooltip visible, checks reverse focus and hidden-ring behavior, and asserts zero provider requests. A temporary removal of the context-ring handle from `move_composer_focus` made this test fail at the expected ring-tooltip assertion (0 passed, 1 failed); restoring the existing implementation returned it to PASS. `cargo fmt --all` completed successfully.
 
 No production change was made: current `origin/master` already contains the #225 focus-list repair, and this production-root regression confirms that code handles the reported sequence. The S21 native report and source behavior remain in tension; this test does not replace a native run against a hash-verified build. Do not change context settings, persist synthetic data, install an app, or issue a provider request during this follow-up.
+
+## 2026-10-05 follow-up: saved model capacity missing from Composer
+
+Native acceptance found that Settings → Providers contains an explicitly saved context input policy for the selected model, while the Composer ring for a conversation using that model still says “容量未配置”. No setting was changed, no provider request was made, and no provider identity, endpoint, or local capacity value is included in this record.
+
+The original C64-01 path used legacy per-thread `ContextSettings.context_limit`; it did not prove that the model-owned value corrected by #76 reached the Composer. The #64 contract is amended to read capacity from the exact currently unique enabled provider/model pair. Only an explicitly saved numeric input limit is a ring denominator. An absent policy, unknown input limit, or ambiguous provider stays unconfigured; the ring does not use legacy per-thread capacity or the runtime's unedited assumed default. This is a presentation rule only: it does not change #76 runtime behavior, where an absent policy row can still resolve to the editable assumed budget. Output reserve does not contribute to the displayed denominator.
+
+| ID | Risk / setup | Action | Expected observation | Test layer | Status |
+|---|---|---|---|---|---|
+| C64-R1 | Exact selected provider/model has a saved numeric input limit | Read Composer context projection and hover ring | Estimate and percentage use that exact input limit | Projection 1/1; UI 13/13; production-root 1/1 | PASS (layered) |
+| C64-R2 | Exact policy missing or input limit explicitly unknown | Read projection while a legacy per-thread limit exists | Ring says “容量未配置”; no percentage or legacy fallback | Projection 1/1; UI 13/13 | PASS |
+| C64-R3 | Same model ID exists under another provider, or there is no unique enabled provider | Read current projection | Other provider's policy is not used | Provider resolver 1/1; projection 1/1 | PASS |
+| C64-R4 | A projection read finishes after the conversation or model changes | Complete stale read after route/model switch | Stale policy is rejected and cannot replace current capacity | Stale-model UI regression; production route round-trip 1/1 | PASS |
+| C64-R5 | Hover/focus with explicit saved input limit, then switch to an unknown model | Inspect tooltip and Composer state | Tooltip names the value as an estimate against the model setting; old value clears | UI 13/13; production-root tooltip 1/1 | PASS |
+
+定向验证命令与结果：
+
+- `cargo nextest run -p vega_conversation issue64_context_projection_uses_only_exact_saved_model_input_capacity` — PASS 1/1（543 skipped）。覆盖精确 provider/model、同 model ID 的另一 provider、无 provider、unknown 输入上限及 legacy per-thread 上限不作为分母。
+- `cargo nextest run -p vega_ui issue64_context_usage_` — PASS 13/13（528 skipped）。覆盖已知/未知容量显示、旧模型延迟投影被拒绝及 tooltip 文案/状态。
+- `cargo nextest run -p vega provider_model_resolution_is_exact_and_unique` — PASS 1/1（216 skipped）；`cargo nextest run -p vega i76_context_metadata_failure_retries_after_real_settings_route_roundtrip` — PASS 1/1（216 skipped）。覆盖唯一 provider 解析与设置路由往返后的投影刷新。
+- `cargo nextest run -p vega i76_context_settings_real_inputs_persist_and_reopen` — PASS 1/1（216 skipped）。从 Settings UI 保存模型策略、关闭设置并刷新 production-root 投影，确认圆环及 percentage/capacity tooltip 节点出现，且无 provider 请求；fixture 同时保留不同的 legacy per-thread 上限。
+- `cargo fmt --all -- --check` 与 `git diff --check` — PASS。未运行 workspace 全量测试。
+
+覆盖边界：`ConversationStream::context_usage_source()` 在 `vega_ui` crate 内为 `pub(crate)`，`vega` crate 的 production-root 集成测试不能直接读取其分母；没有为测试扩大公开 API。分母隔离由 conversation projection 用例断言，UI 用例断言已知输入上限显示与 unknown 状态无百分比，production-root 用例覆盖 Settings 保存后投影到 Composer tooltip 的链路。真实桌面验收仍待此修复的合并候选，届时检查已知/未知容量、hover/focus、会话/模型切换和主题。
+
+Implementation: resolve the provider through the existing unique-enabled-provider rule on the bounded worker; read the exact policy without touching credentials or the network; pass only the optional saved input limit through the conversation projection; preserve the existing load sequence and thread/model owner checks. Regressions were added before production changes.

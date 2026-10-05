@@ -442,7 +442,7 @@ async fn issue64_production_root_tab_reaches_context_ring_after_attachment(
             &f.thread.id,
             &f.thread.model,
             Some(settings.clone()),
-            Some(50_000),
+            ContextUsageProjection::new(Some(100_000), Some(50_000)),
             true,
             cx,
         )
@@ -492,7 +492,7 @@ async fn issue64_production_root_tab_reaches_context_ring_after_attachment(
             &f.thread.id,
             &f.thread.model,
             Some(settings),
-            None,
+            ContextUsageProjection::new(None, None),
             true,
             cx,
         )
