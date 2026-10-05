@@ -38,6 +38,248 @@ fn generation(store: &Store) -> u64 {
         .consent_generation
 }
 
+fn add_limit_candidates(root: &Path, count: usize) {
+    for index in 0..count {
+        let name = format!("limit-skill-{index:03}");
+        let directory = root.join(&name);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: Review owned changes.\n---\nPRIVATE LIMIT BODY\n"
+            ),
+        )
+        .unwrap();
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ImportAuthority {
+    settings: skills::SkillSettings,
+    project: skills::ProjectSkillSettings,
+    sources: Vec<SkillSourceRecord>,
+    approvals: Vec<skills::SkillApprovalRecord>,
+}
+
+fn import_authority(store: &Store, project_id: &str) -> ImportAuthority {
+    ImportAuthority {
+        settings: skills::read_settings(store.conn()).unwrap(),
+        project: skills::read_project_settings(store.conn(), project_id).unwrap(),
+        sources: skills::list_sources(store.conn()).unwrap(),
+        approvals: skills::list_approved_skills(store.conn()).unwrap(),
+    }
+}
+
+#[test]
+fn issue87_s22_import_rejects_129_candidates_without_mutating_authority() {
+    let (owned, store, service, project_id) = fixture();
+    let root = owned.path().join("private-limit-input");
+    add_limit_candidates(&root, 129);
+    let before = import_authority(&store, &project_id);
+    assert!(before.sources.is_empty());
+    assert!(before.approvals.is_empty());
+    let error = service.preview_imported_root(&root).err().unwrap();
+    assert_eq!(import_authority(&store, &project_id), before);
+    assert!(service.projection().unwrap().sources.is_empty());
+    let previews = service.previews.lock().unwrap();
+    assert!(previews.root.is_none());
+    assert!(previews.skill.is_none());
+    assert_eq!(error.code(), "too_many_candidates");
+    assert_eq!(error, SkillSettingsError::TooManyCandidates);
+    assert_eq!(
+        error.to_string(),
+        "Skill source exceeds the candidate limit"
+    );
+}
+
+#[test]
+fn issue87_s22_import_previews_all_128_candidates_without_mutating_authority() {
+    let (owned, store, service, project_id) = fixture();
+    let root = owned.path().join("private-limit-input");
+    add_limit_candidates(&root, 128);
+    let before = import_authority(&store, &project_id);
+    let preview = service.preview_imported_root(&root).unwrap();
+    assert_eq!(preview.scope, SkillUiScope::Imported);
+    assert_eq!(preview.canonical_root, root.canonicalize().unwrap());
+    assert_eq!(preview.candidates.len(), 128);
+    let names = preview
+        .candidates
+        .iter()
+        .map(|candidate| candidate.name.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        names,
+        (0..128)
+            .map(|index| format!("limit-skill-{index:03}"))
+            .collect()
+    );
+    for candidate in preview.candidates {
+        assert!(candidate.content_sha256.is_some());
+        assert!(candidate.approved_sha256.is_none());
+        assert!(!candidate.enabled);
+        assert!(!candidate.automatic);
+        assert!(!candidate.model_winner);
+        assert!(candidate.diagnostic.is_none());
+    }
+    assert_eq!(import_authority(&store, &project_id), before);
+    assert!(service.projection().unwrap().sources.is_empty());
+}
+
+#[test]
+fn issue87_s22_import_limit_retries_reduced_root_and_cancel_remains_unlinked_after_reopen() {
+    let (owned, store, service, project_id) = fixture();
+    let database = store.database_path().unwrap().to_path_buf();
+    let root = owned.path().join("private-limit-input");
+    add_limit_candidates(&root, 129);
+    let before = import_authority(&store, &project_id);
+    assert_eq!(
+        service.preview_imported_root(&root).err(),
+        Some(SkillSettingsError::TooManyCandidates)
+    );
+    for index in 1..129 {
+        fs::remove_dir_all(root.join(format!("limit-skill-{index:03}"))).unwrap();
+    }
+    let preview = service.preview_imported_root(&root).unwrap();
+    assert_eq!(preview.candidates.len(), 1);
+    assert_eq!(preview.candidates[0].name, "limit-skill-000");
+    assert_eq!(import_authority(&store, &project_id), before);
+    service.clear_previews();
+    assert_eq!(
+        service.apply(
+            before.settings.consent_generation,
+            SkillSettingsMutation::LinkRoot {
+                preview_token: preview.token,
+            },
+        ),
+        Err(SkillSettingsError::PreviewRequired)
+    );
+    assert_eq!(import_authority(&store, &project_id), before);
+    drop(service);
+    drop(store);
+    let reopened = Store::open(&database).unwrap();
+    reopened.migrate().unwrap();
+    assert_eq!(import_authority(&reopened, &project_id), before);
+    let reopened_service =
+        SkillSettingsService::new(database, owned.path().join("config"), Some(project_id));
+    assert!(reopened_service.projection().unwrap().sources.is_empty());
+    assert!(root.join("limit-skill-000/SKILL.md").is_file());
+}
+
+#[test]
+fn issue87_s22_import_limit_does_not_change_invalid_or_unsafe_path_rejection() {
+    let (owned, store, service, project_id) = fixture();
+    let before = import_authority(&store, &project_id);
+    let file_root = owned.path().join("private-file-root");
+    fs::write(&file_root, "PRIVATE INVALID ROOT").unwrap();
+    assert_eq!(
+        service.preview_imported_root(&file_root).err(),
+        Some(SkillSettingsError::Invalid)
+    );
+    let root = owned.path().join("private-unsafe-input");
+    let outside = owned.path().join("outside-input");
+    fs::create_dir_all(&root).unwrap();
+    add_skill(&outside, "PRIVATE OUTSIDE BODY");
+    std::os::unix::fs::symlink(outside.join("reviewer"), root.join("reviewer")).unwrap();
+    let preview = service.preview_imported_root(&root).unwrap();
+    assert_eq!(preview.candidates.len(), 1);
+    let candidate = &preview.candidates[0];
+    assert_eq!(candidate.name, "reviewer");
+    assert_eq!(candidate.diagnostic.as_deref(), Some("unsafe_path"));
+    assert!(candidate.description.is_none());
+    assert!(candidate.content_sha256.is_none());
+    assert!(candidate.size_bytes.is_none());
+    assert!(candidate.approved_sha256.is_none());
+    assert!(!candidate.enabled);
+    assert!(!candidate.automatic);
+    assert!(!candidate.model_winner);
+    assert_eq!(import_authority(&store, &project_id), before);
+    assert!(service.projection().unwrap().sources.is_empty());
+    assert_eq!(
+        fs::read_to_string(outside.join("reviewer/SKILL.md")).unwrap(),
+        "---\nname: reviewer\ndescription: Review changes.\n---\nPRIVATE OUTSIDE BODY\n"
+    );
+}
+
+#[test]
+fn issue87_s22_root_preview_limit_mapping_applies_to_project_and_vega_global() {
+    let (owned, store, service, project_id) = fixture();
+    let before = import_authority(&store, &project_id);
+    add_limit_candidates(&owned.path().join("project/.agents/skills"), 129);
+    add_limit_candidates(&owned.path().join("config/skills"), 129);
+    assert_eq!(
+        service.preview_project_root().err(),
+        Some(SkillSettingsError::TooManyCandidates)
+    );
+    assert_eq!(
+        service.preview_vega_global_root().err(),
+        Some(SkillSettingsError::TooManyCandidates)
+    );
+    assert_eq!(import_authority(&store, &project_id), before);
+    assert!(service.projection().unwrap().sources.is_empty());
+}
+
+#[test]
+fn issue87_s22_import_limit_preserves_existing_authority_and_switches() {
+    let (owned, store, service, project_id) = fixture();
+    let approved_root = owned.path().join("approved-input");
+    add_skill(&approved_root, "EXISTING APPROVED BODY");
+    let root_preview = service.preview_imported_root(&approved_root).unwrap();
+    service
+        .apply(
+            generation(&store),
+            SkillSettingsMutation::LinkRoot {
+                preview_token: root_preview.token,
+            },
+        )
+        .unwrap();
+    let source_id = service.projection().unwrap().sources[0].id.clone();
+    let body_preview = service.preview_skill(&source_id, "reviewer").unwrap();
+    service
+        .apply(
+            generation(&store),
+            SkillSettingsMutation::ApproveSkill {
+                preview_token: body_preview.token,
+            },
+        )
+        .unwrap();
+    for mutation in [
+        SkillSettingsMutation::SetGlobal {
+            enabled: true,
+            automatic: true,
+        },
+        SkillSettingsMutation::SetProject {
+            project_id: project_id.clone(),
+            enabled: true,
+            automatic: true,
+        },
+        SkillSettingsMutation::SetSource {
+            source_id,
+            enabled: true,
+            automatic: true,
+        },
+    ] {
+        service.apply(generation(&store), mutation).unwrap();
+    }
+    service.clear_previews();
+    let before = import_authority(&store, &project_id);
+    assert_eq!(before.sources.len(), 1);
+    assert_eq!(before.approvals.len(), 1);
+    assert!(before.settings.global_enabled);
+    assert!(before.settings.automatic_enabled);
+    assert!(before.project.enabled);
+    assert!(before.project.automatic);
+    let root = owned.path().join("private-limit-input");
+    add_limit_candidates(&root, 129);
+    assert_eq!(
+        service.preview_imported_root(&root).err(),
+        Some(SkillSettingsError::TooManyCandidates)
+    );
+    assert_eq!(import_authority(&store, &project_id), before);
+    let previews = service.previews.lock().unwrap();
+    assert!(previews.root.is_none());
+    assert!(previews.skill.is_none());
+}
+
 #[test]
 fn project_review_is_hash_bound_and_stale_approval_cannot_reenable() {
     let (owned, store, service, project_id) = fixture();
