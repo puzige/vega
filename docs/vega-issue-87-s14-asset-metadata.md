@@ -1,6 +1,6 @@
 # Issue #87 · S14 on-demand asset metadata
 
-Status: **FROZEN by main-agent review; implementation/test-first work authorized** (2026-10-06). Native/system acceptance remains NOT RUN.
+Status: **FROZEN contract; metadata implementation and scoped in-process acceptance PASS** (2026-10-06). Native/system acceptance remains NOT RUN.
 Parent: [#87](https://github.com/puzige/vega/issues/87), OPEN / In progress / PARTIAL.
 Authority: [Skills S2/S3/S4](vega-issue-74-skills.md), [S14/S15 matrix](vega-issue-74-skills-delivery.md), [execution guide](vega-exec-guide.md), and the current #140/#149 in-process test boundary.
 
@@ -70,7 +70,7 @@ An unbound in-memory `SkillRun::new` applies the same path, count, metadata JSON
 
 Preserve all existing reference/activation/catalog/Store limits. Add private asset limits without changing text capacity:
 
-| Bound | Proposed value | Validation |
+| Bound | Approved value | Validation |
 |---|---:|---|
 | Distinct frozen metadata records per run | 128 across all activated Skills | 128 succeeds; 129th new record is `aggregate_limit`; cached record remains usable |
 | Retained metadata JSON bytes per run | 128 KiB | Sum the exact compact five-field JSON UTF-8 bytes; enforce before insertion and after restore; no asset body bytes included |
@@ -128,3 +128,25 @@ This delivers the already-frozen **on-demand metadata observation** part of S14.
 ## Change record
 
 - 2026-10-06: source audit and minimum metadata contract/test plan; main-agent implementation approval with the compatibility correction that no-asset runs continue to export exact v1 bytes. Added explicit bound/unbound behavior and v2-empty decoding/canonicalization rules. No broader asset transport/tool authority approved.
+
+## Scoped implementation evidence
+
+Tested implementation commit: `5d298986bd430b9857d12e0e532e5f553a640cae`; tree `aaa2c09b2ae69638b3c110c554b6999312d7d264`; rebased on `a53662e46f85cfd6155dc1f556b4fb4e578613e7`, preserving merged S16 durable registration and text/Plan provenance. Source/tree and all owned source hashes match before and after final execution. This evidence section is a subsequent documentation-only change.
+
+| Stage | Nextest run ID | Result / exit |
+|---|---|---|
+| Initial business red | `6e260f96-233f-4e2c-a108-9c9f26a25bbe` | 1 failed / 252 skipped; exit100; valid asset returned Failed when Success was required |
+| Compile/harness correction | No run ID | exit101; test-only inaccessible sibling digest helper; corrected to existing Sha256 calculation |
+| Owned fixture correction | `0affd4ee-827e-44cb-8a0d-a105d2ad0130` | 17 passed / 2 setup failures / 1352 skipped; exit100; macOS long-path creation used full paths; corrected owned fixture creation to descriptor-relative mkdirat/openat |
+| First task green | `cb43632b-e96d-4b9c-9603-4a614e5cf59d` | 19 passed / 1352 skipped; exit0 |
+| Final runtime task | `49b13788-d670-46f7-b566-2b0916036a1b` | 13 passed / 252 skipped; exit0 |
+| Final conversation task | `f6bc0db3-362c-4837-8a68-dd6e0f65126d` | 4 passed / 553 skipped; exit0 |
+| Final UI task | `a1ef0cb0-1a27-4b97-9477-a4c1004d2276` | 2 passed / 550 skipped; exit0 |
+| Final runtime reference/snapshot/permission selection | `06743c73-c06a-45f2-b6b7-6ea2499d53e7` | 37 passed / 228 skipped; exit0 |
+| Final conversation/UI safety selection, including merged S16 durable cases | `f5e07630-bdf0-45bd-8560-f11a97be08c4` | 11 passed / 1098 skipped; exit0 |
+
+All runs use the worktree default target and default Nextest profile with retries0. The three final task commands are the package-specific `issue87_s14_` filters listed above. Exact safety selectors, original log filenames/run IDs/SHA-256 values, before/after source hashes and corrections are preserved privately in `final-evidence.json` (SHA-256 `1647314b41b8c9c5dbc3d1d360af694ac41449dd288b3b31555d9631fdcef9ea`) and `pre-rebase-evidence.json` (SHA-256 `d2574e6e5fd82ae8ce600d746fe1021ec5bd8031836a807e49907edc04ec30bf`); raw logs are not committed. No workspace-wide local gate, provider request outside MockProvider, push, PR, install or native acceptance occurred in this subtask.
+
+Initial-red evidence limitation: the raw log and the main agent's contemporaneous test/spec-only status were retained, but no full contemporaneous first-red source manifest was collected. Preserved initial test code and the original production baseline supply an explicitly **post-run reconstruction**, not an original-time source freeze. Final executions have complete matching before/after source/tree/log evidence.
+
+The source call-chain review confirms assets do not reach `read_relative`/`read_limited`; the test observer establishes zero calls for the two owned asset inodes through that existing reader only. It does not count all OS reads. GPUI tests assert mounted bounds across light/dark and 960/1200/1229/1230/1403 widths; native glyph/rendered screenshot acceptance is still A16 NOT RUN. This is metadata-only S14 progress; full S14 and parent #87 remain PARTIAL / OPEN.
