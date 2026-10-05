@@ -138,7 +138,7 @@ Codex 还存在 terminal_output_delta 等输出约定。Codex 适配层需要单
 
 ## MCP Skills 与工作区操作
 
-ACP session/new、load、resume 可以携带 MCP 配置。首版对 stdio 与 HTTP 按协商结果传递用户为该外部任务授权的服务器，定义同名配置、启动失败和凭据传递规则。Vega 当前 MCP 启用状态与 Codex 自身配置需要有明确合并策略。[MCP session 配置](https://agentclientprotocol.com/protocol/v1/session-setup#mcp-servers)
+ACP session/new、load、resume 可以携带 MCP 配置。首版不导出 Vega 的 MCP 或凭据，Codex 使用的本地配置在 Agent 设置中明确标识。后续共享 MCP 时，再按协商结果支持 stdio 与 HTTP，并冻结用户授权、同名配置、启动失败和凭据传递规则。`mcpServers: []` 只说明 Vega 没有传入服务器，不能据此保证 Codex 没有自己的 MCP 配置；需要验证实际启动配置及覆盖规则。[MCP session 配置](https://agentclientprotocol.com/protocol/v1/session-setup#mcp-servers)
 
 Vega Skills 的批准与撤销状态由自研 Runtime 管理，Codex 有自己的技能加载路径。首版显示实际执行方与可用命令；共享 Vega Skills 需要后续定义导出、审查和撤销契约。
 
