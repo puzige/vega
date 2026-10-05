@@ -75,6 +75,7 @@ mod plan;
 mod pricing;
 mod r69;
 mod reasoning;
+mod updater;
 
 pub(crate) use artifact_terminal::{
     artifact_capture_work, artifact_controller_repo, artifact_write_call, artifact_write_result,
