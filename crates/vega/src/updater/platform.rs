@@ -373,6 +373,35 @@ pub(super) fn write_new(path: &Path, bytes: &[u8]) -> UpdateResult<()> {
 mod tests {
     use super::*;
 
+    fn archive_entry(path: &str, mode: u32, contents: &[u8]) -> Vec<u8> {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        archive
+            .start_file(
+                path,
+                zip::write::SimpleFileOptions::default().unix_permissions(mode),
+            )
+            .unwrap();
+        archive.write_all(contents).unwrap();
+        archive.finish().unwrap().into_inner()
+    }
+
+    fn symlink_archive_entry(path: &str, target: &str) -> Vec<u8> {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        archive
+            .add_symlink(path, target, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive.finish().unwrap().into_inner()
+    }
+
+    fn existing_bundle(root: &Path) -> (PathBuf, PathBuf) {
+        let bundle = root.join("Vega.app");
+        let binary = bundle.join("Contents/MacOS/vega");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(&binary, b"old executable").unwrap();
+        std::fs::write(bundle.join("Contents/Info.plist"), b"old bundle data").unwrap();
+        (bundle, binary)
+    }
+
     #[test]
     fn updater_private_tempdir_owner_only() {
         let parent = tempfile::tempdir().unwrap();
@@ -389,5 +418,49 @@ mod tests {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let error = private_dir(directory.path()).unwrap_err();
         assert_eq!(error.to_string(), "更新暂存目录权限无效");
+    }
+
+    #[test]
+    fn updater_archive_parent_path_is_rejected_without_modifying_existing_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let (bundle, binary) = existing_bundle(root.path());
+        let before = std::fs::read(&binary).unwrap();
+        let staging = root.path().join("staging");
+        std::fs::create_dir(&staging).unwrap();
+        let archive = archive_entry(
+            "../Vega.app/Contents/MacOS/vega",
+            0o100644,
+            b"attacker executable",
+        );
+
+        let error = extract(archive, &staging).unwrap_err();
+
+        assert_eq!(error.to_string(), "压缩包路径越界");
+        assert_eq!(std::fs::read(binary).unwrap(), before);
+        assert_eq!(
+            std::fs::read(bundle.join("Contents/Info.plist")).unwrap(),
+            b"old bundle data"
+        );
+    }
+
+    #[test]
+    fn updater_archive_symlink_is_rejected_without_modifying_existing_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let (bundle, binary) = existing_bundle(root.path());
+        let before = std::fs::read(&binary).unwrap();
+        let staging = root.path().join("staging");
+        std::fs::create_dir(&staging).unwrap();
+        let archive =
+            symlink_archive_entry("Vega.app/Contents/MacOS/vega", "../../outside-app/vega");
+
+        let error = extract(archive, &staging).unwrap_err();
+
+        assert_eq!(error.to_string(), "压缩包不允许链接或特殊文件");
+        assert_eq!(std::fs::read(binary).unwrap(), before);
+        assert_eq!(
+            std::fs::read(bundle.join("Contents/Info.plist")).unwrap(),
+            b"old bundle data"
+        );
+        assert!(!staging.join("Vega.app").exists());
     }
 }

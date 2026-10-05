@@ -233,8 +233,7 @@ fn replace_and_launch(
     let mut child = match launch(&manifest.target, Some(staging), false) {
         Ok(child) => child,
         Err(error) => {
-            rollback(staging, manifest, team)?;
-            return Err(error);
+            return fail_and_rollback(staging, manifest, team, error, platform::verify_candidate);
         }
     };
     let start = Instant::now();
@@ -252,8 +251,13 @@ fn replace_and_launch(
             return Ok(());
         }
         if child.try_wait()?.is_some() {
-            rollback(staging, manifest, team)?;
-            return Err(failure("新版本未正常启动，已恢复原应用"));
+            return fail_and_rollback(
+                staging,
+                manifest,
+                team,
+                failure("新版本未正常启动，已恢复原应用"),
+                platform::verify_candidate,
+            );
         }
         if start.elapsed() > Duration::from_secs(90) {
             platform::write_new(&staging.join("recovery-required.txt"), b"Startup acknowledgment timed out. The new application is still running. Quit it before manually restoring previous.app. User data is unchanged.")?;
@@ -282,10 +286,26 @@ fn launch(
         .spawn()?)
 }
 
-fn rollback(staging: &Path, manifest: &Manifest, team: Option<&str>) -> UpdateResult<()> {
+fn fail_and_rollback(
+    staging: &Path,
+    manifest: &Manifest,
+    team: Option<&str>,
+    error: Box<dyn std::error::Error + Send + Sync>,
+    verify_candidate: impl Fn(&Path, &str, Option<&str>) -> UpdateResult<()>,
+) -> UpdateResult<()> {
+    rollback_with_candidate_verifier(staging, manifest, team, verify_candidate)?;
+    Err(error)
+}
+
+fn rollback_with_candidate_verifier(
+    staging: &Path,
+    manifest: &Manifest,
+    team: Option<&str>,
+    verify_candidate: impl Fn(&Path, &str, Option<&str>) -> UpdateResult<()>,
+) -> UpdateResult<()> {
     let failed = staging.join("failed.app");
     let previous = staging.join("previous.app");
-    platform::verify_candidate(&previous, &manifest.old_version, team)?;
+    verify_candidate(&previous, &manifest.old_version, team)?;
     if platform::hash(&previous.join("Contents/MacOS/vega"))? != manifest.old_hash {
         return Err(failure("备份应用身份已变化，保留恢复记录"));
     }
@@ -338,4 +358,70 @@ pub(crate) fn acknowledge_startup() {
                 tracing::error!(%error, "update startup acknowledgment failed");
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_bundle(bundle: &Path, executable: &[u8], marker: &[u8]) {
+        let binary = bundle.join("Contents/MacOS/vega");
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
+        std::fs::write(binary, executable).unwrap();
+        std::fs::write(bundle.join("Contents/Resources/marker"), marker).unwrap();
+    }
+
+    #[test]
+    fn updater_rollback_helper_restores_old_bundle_and_preserves_failed_candidate() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("Vega.app");
+        let staging = root.path().join(".vega-update-test");
+        let previous = staging.join("previous.app");
+        let failed = staging.join("failed.app");
+        std::fs::create_dir(&staging).unwrap();
+        write_bundle(&target, b"failed new executable", b"new marker");
+        write_bundle(&previous, b"known old executable", b"old marker");
+        let old_hash = platform::hash(&previous.join("Contents/MacOS/vega")).unwrap();
+        let manifest = Manifest {
+            target: target.clone(),
+            old_version: "1.0.0".into(),
+            new_version: "1.0.1".into(),
+            old_hash,
+            new_hash: "new-hash".into(),
+            device: 1,
+            inode: 1,
+            parent_pid: 1,
+        };
+
+        let error = fail_and_rollback(
+            &staging,
+            &manifest,
+            None,
+            failure("injected launch failure"),
+            |bundle, version, team| {
+                assert_eq!(bundle, previous);
+                assert_eq!(version, "1.0.0");
+                assert!(team.is_none());
+                assert!(bundle.join("Contents/MacOS/vega").is_file());
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "injected launch failure");
+        assert_eq!(
+            std::fs::read(target.join("Contents/MacOS/vega")).unwrap(),
+            b"known old executable"
+        );
+        assert_eq!(
+            std::fs::read(target.join("Contents/Resources/marker")).unwrap(),
+            b"old marker"
+        );
+        assert_eq!(
+            std::fs::read(failed.join("Contents/MacOS/vega")).unwrap(),
+            b"failed new executable"
+        );
+        assert!(!previous.exists());
+    }
 }
