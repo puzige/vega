@@ -4,10 +4,290 @@ use gpui_kit::{
     WindowHandle, WindowOptions, size,
 };
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::tempdir;
 use vega_store::Store;
+
+const IMPORT_LIMIT_LABEL: &str = "每个目录最多支持 128 个 Skill 候选，请减少数量后重试，未更改授权";
+
+fn add_import_limit_candidates(root: &Path, count: usize) {
+    for index in 0..count {
+        let name = format!("limit-skill-{index:03}");
+        let directory = root.join(&name);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: Review owned changes.\n---\nPRIVATE LIMIT BODY\n"
+            ),
+        )
+        .unwrap();
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ImportAuthority {
+    settings: vega_store::skills::SkillSettings,
+    sources: Vec<vega_store::skills::SkillSourceRecord>,
+    approvals: Vec<vega_store::skills::SkillApprovalRecord>,
+}
+
+fn import_authority(store: &Store) -> ImportAuthority {
+    ImportAuthority {
+        settings: vega_store::skills::read_settings(store.conn()).unwrap(),
+        sources: vega_store::skills::list_sources(store.conn()).unwrap(),
+        approvals: vega_store::skills::list_approved_skills(store.conn()).unwrap(),
+    }
+}
+
+#[test]
+fn issue87_s22_import_limit_label_is_bounded_and_existing_errors_keep_their_labels() {
+    assert_eq!(
+        skill_error_label(SkillSettingsError::TooManyCandidates),
+        IMPORT_LIMIT_LABEL
+    );
+    assert!(IMPORT_LIMIT_LABEL.len() <= 256);
+    assert!(IMPORT_LIMIT_LABEL.contains("128"));
+    assert!(IMPORT_LIMIT_LABEL.contains("减少数量后重试"));
+    assert!(IMPORT_LIMIT_LABEL.contains("未更改授权"));
+    for (error, code, label) in [
+        (
+            SkillSettingsError::Store,
+            "storage_failed",
+            "Skills 数据库读写失败，请重试",
+        ),
+        (
+            SkillSettingsError::NotFound,
+            "not_found",
+            "目录或 Skill 不存在，请刷新",
+        ),
+        (
+            SkillSettingsError::Stale,
+            "changed_review_required",
+            "来源或文件已变化，请重新预览并审阅",
+        ),
+        (
+            SkillSettingsError::Invalid,
+            "invalid_source",
+            "目录不安全或内容无效，未更改授权",
+        ),
+        (
+            SkillSettingsError::PreviewRequired,
+            "preview_required",
+            "请先预览当前内容，再确认授权",
+        ),
+        (
+            SkillSettingsError::SelectionLimit,
+            "selection_limit",
+            "一个任务最多可选择三个 Skills",
+        ),
+    ] {
+        assert_eq!(error.code(), code);
+        assert_eq!(skill_error_label(error), label);
+    }
+}
+
+async fn assert_import_limit_mounted(cx: &mut TestAppContext, dark: bool, width: f32, height: f32) {
+    let owned = tempdir().unwrap();
+    let config = owned.path().join("config");
+    let imported = owned.path().join("private-limit-input");
+    fs::create_dir_all(&config).unwrap();
+    add_import_limit_candidates(&imported, 129);
+    let database = owned.path().join("vega.db");
+    let store = Store::open(&database).unwrap();
+    store.migrate().unwrap();
+    let before = import_authority(&store);
+    let service = SkillSettingsService::new(database.clone(), config.clone(), None);
+    cx.update(|cx| {
+        cx.set_global(if dark {
+            vega_theme::Theme::dark()
+        } else {
+            vega_theme::Theme::light()
+        });
+        cx.set_global(super::super::SettingsOpen(true));
+        cx.set_global(crate::sidebar::SidebarWidth(
+            vega_theme::Layout::SIDEBAR_WIDTH,
+        ));
+        crate::init(cx);
+    });
+    let view = cx.new(SettingsView::new_for_test);
+    view.update(cx, |view, cx| {
+        view.section = 6;
+        view.set_skills_service(Some(service.clone()), cx);
+    });
+    let root = view.clone();
+    let window: WindowHandle<Harness> = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                        None,
+                        size(px(width), px(height)),
+                        cx,
+                    ))),
+                    ..Default::default()
+                },
+                move |_, cx| cx.new(|_| Harness(root)),
+            )
+        })
+        .expect("Skills import limit window");
+    cx.run_until_parked();
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let button = visual
+            .debug_bounds("skills-import-folder")
+            .expect("native import action");
+        visual.simulate_click(button.center(), Default::default());
+    }
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| Some(vec![imported.clone()]));
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(!view.skills.busy);
+        assert!(view.skills.root_preview.is_none());
+        assert!(view.skills.body_preview.is_none());
+        assert_eq!(view.skills.message.as_deref(), Some(IMPORT_LIMIT_LABEL));
+        let message = view.skills.message.as_ref().unwrap();
+        assert!(message.len() <= 256);
+        assert!(!message.contains(imported.to_str().unwrap()));
+        assert!(!message.contains("limit-skill-000"));
+        assert!(!message.contains("PRIVATE LIMIT BODY"));
+    });
+    assert_eq!(import_authority(&store), before);
+    assert!(service.projection().unwrap().sources.is_empty());
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let message = visual
+            .debug_bounds("skills-message")
+            .expect("mounted limit message");
+        let page = visual
+            .debug_bounds("settings-section-content")
+            .expect("mounted Skills content viewport");
+        assert!(message.size.width > px(0.));
+        assert!(message.size.height > px(0.));
+        assert!(message.origin.x >= page.origin.x);
+        assert!(message.origin.y >= page.origin.y);
+        assert!(message.right() <= page.right());
+        assert!(message.bottom() <= page.bottom());
+        assert!(message.bottom() <= px(height));
+        assert!(visual.debug_bounds("skills-root-preview").is_none());
+        assert!(visual.debug_bounds("skills-link-root").is_none());
+        assert!(visual.debug_bounds("skills-body-preview").is_none());
+        let import = visual
+            .debug_bounds("skills-import-folder")
+            .expect("retryable import action");
+        visual.simulate_click(import.center(), Default::default());
+    }
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| None);
+    cx.run_until_parked();
+    assert_eq!(import_authority(&store), before);
+    for index in 1..129 {
+        fs::remove_dir_all(imported.join(format!("limit-skill-{index:03}"))).unwrap();
+    }
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let button = visual
+            .debug_bounds("skills-import-folder")
+            .expect("reduced-input import action");
+        visual.simulate_click(button.center(), Default::default());
+    }
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| Some(vec![imported.clone()]));
+    cx.run_until_parked();
+    let preview = view
+        .read_with(cx, |view, _| view.skills.root_preview.clone())
+        .expect("reduced-input preview");
+    assert_eq!(preview.candidates.len(), 1);
+    assert_eq!(preview.candidates[0].name, "limit-skill-000");
+    assert_eq!(preview.canonical_root, imported.canonicalize().unwrap());
+    assert!(view.read_with(cx, |view, _| view.skills.message.is_none()));
+    assert_eq!(import_authority(&store), before);
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("skills-root-preview").is_some());
+        assert!(visual.debug_bounds("skills-link-root").is_some());
+        assert!(visual.debug_bounds("skills-message").is_none());
+        let cancel = visual
+            .debug_bounds("skills-cancel-root-preview")
+            .expect("preview cancel action");
+        let viewport = visual
+            .debug_bounds("settings-section-content")
+            .expect("mounted Skills content viewport");
+        if cancel.bottom() > viewport.bottom() {
+            visual.simulate_event(gpui_kit::ScrollWheelEvent {
+                position: viewport.center(),
+                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                    px(0.),
+                    viewport.bottom() - cancel.bottom() - px(8.),
+                )),
+                modifiers: Default::default(),
+                touch_phase: gpui_kit::TouchPhase::Moved,
+            });
+            visual.run_until_parked();
+        }
+        let cancel = visual
+            .debug_bounds("skills-cancel-root-preview")
+            .expect("visible preview cancel action");
+        assert!(cancel.origin.y >= viewport.origin.y);
+        assert!(cancel.bottom() <= viewport.bottom());
+        visual.simulate_click(cancel.center(), Default::default());
+    }
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.skills.root_preview.is_none()));
+    assert!(view.read_with(cx, |view, _| view.skills.body_preview.is_none()));
+    assert_eq!(
+        service.apply(
+            before.settings.consent_generation,
+            SkillSettingsMutation::LinkRoot {
+                preview_token: preview.token,
+            },
+        ),
+        Err(SkillSettingsError::PreviewRequired)
+    );
+    assert_eq!(import_authority(&store), before);
+    view.update(cx, |view, _| view.close_skills_session());
+    drop(service);
+    drop(store);
+    let reopened = Store::open(&database).unwrap();
+    reopened.migrate().unwrap();
+    assert_eq!(import_authority(&reopened), before);
+    let reopened_service = SkillSettingsService::new(database, config, None);
+    assert!(reopened_service.projection().unwrap().sources.is_empty());
+    assert!(imported.join("limit-skill-000/SKILL.md").is_file());
+}
+
+#[gpui_kit::test]
+async fn issue87_s22_import_limit_is_mounted_narrow_light_and_retry_can_cancel(
+    cx: &mut TestAppContext,
+) {
+    assert_import_limit_mounted(cx, false, 960., 600.).await;
+}
+
+#[gpui_kit::test]
+async fn issue87_s22_import_limit_is_mounted_narrow_dark_and_retry_can_cancel(
+    cx: &mut TestAppContext,
+) {
+    assert_import_limit_mounted(cx, true, 960., 600.).await;
+}
+
+#[gpui_kit::test]
+async fn issue87_s22_import_limit_is_mounted_wide_light_and_retry_can_cancel(
+    cx: &mut TestAppContext,
+) {
+    assert_import_limit_mounted(cx, false, 1403., 860.).await;
+}
+
+#[gpui_kit::test]
+async fn issue87_s22_import_limit_is_mounted_wide_dark_and_retry_can_cancel(
+    cx: &mut TestAppContext,
+) {
+    assert_import_limit_mounted(cx, true, 1403., 860.).await;
+}
 
 fn candidate_view(name: &str, model_winner: bool) -> vega_conversation::types::SkillCandidateView {
     let content_sha256 = "a".repeat(64);

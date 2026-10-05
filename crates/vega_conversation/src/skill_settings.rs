@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
-use vega_runtime::skills::{SkillSource, SourceIdentity, parse_skill_md, resolve_precedence};
+use vega_runtime::skills::{
+    SkillError, SkillSource, SourceIdentity, parse_skill_md, resolve_precedence,
+};
 use vega_store::Store;
 use vega_store::skills::{
     self, NewSkillApproval, NewSkillSource, SkillSourceRecord, SkillStoreError,
@@ -27,6 +29,8 @@ pub enum SkillSettingsError {
     Stale,
     #[error("Skill source is unsafe or invalid")]
     Invalid,
+    #[error("Skill source exceeds the candidate limit")]
+    TooManyCandidates,
     #[error("Skill preview required")]
     PreviewRequired,
     #[error("Skill selection limit reached")]
@@ -40,6 +44,7 @@ impl SkillSettingsError {
             Self::NotFound => "not_found",
             Self::Stale => "changed_review_required",
             Self::Invalid => "invalid_source",
+            Self::TooManyCandidates => "too_many_candidates",
             Self::PreviewRequired => "preview_required",
             Self::SelectionLimit => "selection_limit",
         }
@@ -364,7 +369,10 @@ impl SkillSettingsService {
         source: SkillSource,
         epoch: u64,
     ) -> Result<SkillRootPreview, SkillSettingsError> {
-        let discovery = source.discover().map_err(|_| SkillSettingsError::Invalid)?;
+        let discovery = source.discover().map_err(|error| match error {
+            SkillError::TooManyCandidates => SkillSettingsError::TooManyCandidates,
+            _ => SkillSettingsError::Invalid,
+        })?;
         let generation = skills::read_settings(store.conn())?.consent_generation;
         let token = ulid::Ulid::generate().to_string();
         let identity = source.identity();

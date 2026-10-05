@@ -355,7 +355,13 @@ impl SettingsView {
             );
         }
         if let Some(message) = &self.skills.message {
-            column = column.child(div().text_color(colors.warning).child(message.clone()));
+            column = column.child(
+                div()
+                    .id("skills-message")
+                    .debug_selector(|| "skills-message".into())
+                    .text_color(colors.warning)
+                    .child(message.clone()),
+            );
         }
         if let Some(projection) = self.skills.projection.clone() {
             column = column
@@ -811,6 +817,9 @@ fn skill_error_label(error: SkillSettingsError) -> &'static str {
         SkillSettingsError::NotFound => "目录或 Skill 不存在，请刷新",
         SkillSettingsError::Stale => "来源或文件已变化，请重新预览并审阅",
         SkillSettingsError::Invalid => "目录不安全或内容无效，未更改授权",
+        SkillSettingsError::TooManyCandidates => {
+            "每个目录最多支持 128 个 Skill 候选，请减少数量后重试，未更改授权"
+        }
         SkillSettingsError::PreviewRequired => "请先预览当前内容，再确认授权",
         SkillSettingsError::SelectionLimit => "一个任务最多可选择三个 Skills",
     }
