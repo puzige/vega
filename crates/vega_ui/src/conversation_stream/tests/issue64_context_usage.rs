@@ -51,6 +51,71 @@ fn assert_narrow_tooltip_fits_and_clears_controls(
 }
 
 #[gpui_kit::test]
+async fn issue64_context_usage_settings_open_clears_only_hover_state(cx: &mut TestAppContext) {
+    for popover in [false, true] {
+        let (window, stream, _) = open_controller_stream(cx, "issue64-settings-observer");
+        stream.update(cx, |stream, cx| {
+            stream
+                .input
+                .update(cx, |input, cx| input.set_text("owned draft", cx));
+            assert!(stream.apply_context_projection(
+                "issue64-settings-observer",
+                "mock",
+                None,
+                ContextUsageProjection::new(Some(100_000), Some(50_000)),
+                true,
+                cx,
+            ));
+        });
+        focus_composer(window, &stream, cx);
+        let source = stream.read_with(cx, |stream, _| stream.context_usage_source());
+        let focus = stream.read_with(cx, |stream, _| stream.context_usage_focus.clone());
+        let indicator = bounds(window, "composer-context-usage", cx).expect("observer indicator");
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_mouse_move(indicator.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        let tooltip = visual
+            .debug_bounds("context-usage-tooltip")
+            .expect("observer tooltip");
+        if popover {
+            visual.simulate_mouse_move(tooltip.center(), None, Modifiers::default());
+            visual.run_until_parked();
+        }
+        assert!(stream.read_with(cx, |stream, _| if popover {
+            stream.context_usage_tooltip_hovered
+        } else {
+            stream.context_usage_trigger_hovered
+        }));
+        cx.update(|cx| cx.set_global(SettingsOpen(true)));
+        visual.run_until_parked();
+        stream.read_with(cx, |stream, cx| {
+            assert!(
+                !stream.context_usage_trigger_hovered,
+                "Settings must invalidate indicator hover"
+            );
+            assert!(
+                !stream.context_usage_tooltip_hovered,
+                "Settings must invalidate popover hover"
+            );
+            assert_eq!(stream.context_usage_source(), source);
+            assert_eq!(stream.context_usage_focus, focus);
+            assert_eq!(stream.input.read(cx).text(), "owned draft");
+            assert_eq!(stream.thread.model, "mock");
+            assert!(!stream.actions.running);
+        });
+        assert!(
+            window
+                .update(cx, |_, window, cx| {
+                    let focus =
+                        stream.read_with(cx, |stream, cx| stream.input.read(cx).focus_handle(cx));
+                    focus.contains_focused(window, cx)
+                })
+                .expect("observer preserves actual Composer focus")
+        );
+    }
+}
+
+#[gpui_kit::test]
 async fn issue64_context_usage_known_capacity_shows_hover_tip_without_changing_composer_height(
     cx: &mut TestAppContext,
 ) {

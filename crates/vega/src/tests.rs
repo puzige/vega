@@ -70,6 +70,7 @@ mod commit_panel;
 mod composer_actions;
 mod diff;
 mod history;
+mod issue64_context_settings;
 mod model_selection;
 mod palette;
 mod plan;
