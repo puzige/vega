@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_ARGUMENT_COUNT: usize = 128;
 const MAX_ARGUMENT_BYTES: usize = 65_536;
-const WRITER_QUEUE_CAPACITY: usize = 32;
+pub(crate) const WRITER_QUEUE_CAPACITY: usize = 32;
 const CLIENT_NAME: &str = "Vega";
 const PROTOCOL_VERSION: u64 = 1;
 
@@ -177,7 +177,7 @@ impl ChildControl for TokioChildControl {
 
 struct WriteCommand {
     line: Vec<u8>,
-    written: oneshot::Sender<Result<(), Error>>,
+    written: Option<oneshot::Sender<Result<(), Error>>>,
 }
 
 struct PendingOutgoing {
@@ -275,12 +275,38 @@ impl ConnectionInner {
             .reserve()
             .await
             .map_err(|_| Error::ConnectionClosed)?;
-        permit.send(WriteCommand { line, written });
+        permit.send(WriteCommand {
+            line,
+            written: Some(written),
+        });
         receiver.await.map_err(|_| Error::ConnectionClosed)??;
         Ok(())
     }
 
-    async fn respond_group(
+    fn enqueue_response_value(&self, value: &Value) -> Result<(), Error> {
+        self.active()?;
+        let line = serde_json::to_vec(value).map_err(|_| Error::MalformedMessage)?;
+        if line.len() > MAX_FRAME_BYTES {
+            self.fail(Error::FrameTooLarge);
+            return Err(Error::FrameTooLarge);
+        }
+        match self.writer.try_send(WriteCommand {
+            line,
+            written: None,
+        }) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.fail(Error::WriterQueueFull);
+                Err(Error::WriterQueueFull)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.fail(Error::ConnectionClosed);
+                Err(Error::ConnectionClosed)
+            }
+        }
+    }
+
+    fn respond_group(
         &self,
         group: &BatchReplyGroup,
         response_index: usize,
@@ -313,7 +339,7 @@ impl ConnectionInner {
         };
         if let Some(value) = ready {
             let inner = group.inner.upgrade().ok_or(Error::ConnectionClosed)?;
-            inner.write_value(&value).await?;
+            inner.enqueue_response_value(&value)?;
         }
         Ok(())
     }
@@ -510,8 +536,7 @@ impl ConnectionInner {
                         &group,
                         index,
                         error_response(&id, -32601, "Method not found"),
-                    )
-                    .await?;
+                    )?;
                 }
             }
         }
@@ -676,33 +701,52 @@ impl Connection {
             "clientCapabilities": {},
             "clientInfo": {"name": CLIENT_NAME, "version": env!("CARGO_PKG_VERSION")}
         });
-        let raw = self.request_value("initialize", params).await?;
-        let protocol_version = raw
-            .get("protocolVersion")
-            .and_then(Value::as_u64)
-            .ok_or(Error::InvalidResult)?;
-        if protocol_version != PROTOCOL_VERSION {
-            let error = Error::UnsupportedProtocolVersion {
-                offered: protocol_version,
+        let raw = match self.request_value("initialize", params).await {
+            Ok(raw) => raw,
+            Err(error) => {
+                self.inner.fail(error.clone());
+                return Err(error);
+            }
+        };
+        let result = (|| {
+            let protocol_version = raw
+                .get("protocolVersion")
+                .and_then(Value::as_u64)
+                .ok_or(Error::InvalidResult)?;
+            if protocol_version != PROTOCOL_VERSION {
+                return Err(Error::UnsupportedProtocolVersion {
+                    offered: protocol_version,
+                });
+            }
+            let agent_capabilities = raw
+                .get("agentCapabilities")
+                .cloned()
+                .filter(Value::is_object)
+                .ok_or(Error::InvalidResult)?;
+            let auth_methods = raw
+                .get("authMethods")
+                .cloned()
+                .filter(Value::is_array)
+                .ok_or(Error::InvalidResult)?;
+            let agent_info = match raw.get("agentInfo") {
+                Some(agent_info) if agent_info.is_object() => Some(agent_info.clone()),
+                Some(_) => return Err(Error::InvalidResult),
+                None => None,
             };
-            self.inner.fail(error.clone());
-            return Err(error);
-        }
-        let agent_capabilities = raw
-            .get("agentCapabilities")
-            .cloned()
-            .ok_or(Error::InvalidResult)?;
-        let auth_methods = raw
-            .get("authMethods")
-            .cloned()
-            .filter(Value::is_array)
-            .ok_or(Error::InvalidResult)?;
-        let result = InitializeResult {
-            protocol_version,
-            agent_capabilities,
-            auth_methods,
-            agent_info: raw.get("agentInfo").cloned(),
-            raw,
+            Ok(InitializeResult {
+                protocol_version,
+                agent_capabilities,
+                auth_methods,
+                agent_info,
+                raw,
+            })
+        })();
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.inner.fail(error.clone());
+                return Err(error);
+            }
         };
         *lock(&self.inner.initialized) = Some(result.clone());
         Ok(result)
@@ -836,13 +880,11 @@ impl Connection {
                 .remove(&request_id)
                 .ok_or(Error::PermissionRequestClosed)?
         };
-        self.inner
-            .respond_group(
-                &pending.reply_group,
-                pending.response_index,
-                response(&request_id, outcome.into_value()),
-            )
-            .await
+        self.inner.respond_group(
+            &pending.reply_group,
+            pending.response_index,
+            response(&request_id, outcome.into_value()),
+        )
     }
 
     pub async fn recv_event(&self) -> Result<Option<Event>, Error> {
@@ -928,6 +970,7 @@ impl Connection {
             inner: Arc::downgrade(&self.inner),
             id,
             armed: true,
+            enqueued: false,
         };
         let (written, written_receiver) = oneshot::channel();
         let slot = self
@@ -936,7 +979,12 @@ impl Connection {
             .reserve()
             .await
             .map_err(|_| Error::ConnectionClosed)?;
-        slot.send(WriteCommand { line, written });
+        slot.send(WriteCommand {
+            line,
+            written: Some(written),
+        });
+        let mut guard = guard;
+        guard.enqueued = true;
         written_receiver
             .await
             .map_err(|_| Error::ConnectionClosed)??;
@@ -974,6 +1022,11 @@ impl Connection {
     }
 
     #[cfg(test)]
+    pub(crate) fn available_writer_slots_for_test(&self) -> usize {
+        self.inner.writer.capacity()
+    }
+
+    #[cfg(test)]
     pub(crate) fn drain_stderr<R: AsyncRead + Unpin>(reader: R) -> impl Future<Output = usize> {
         drain_stderr(reader)
     }
@@ -1000,6 +1053,7 @@ struct PendingRegistration {
     inner: Weak<ConnectionInner>,
     id: RequestId,
     armed: bool,
+    enqueued: bool,
 }
 
 impl PendingRegistration {
@@ -1013,7 +1067,10 @@ impl Drop for PendingRegistration {
         if self.armed
             && let Some(inner) = self.inner.upgrade()
         {
-            lock(&inner.pending_outgoing).remove(&self.id);
+            let removed = lock(&inner.pending_outgoing).remove(&self.id).is_some();
+            if removed && self.enqueued {
+                inner.fail(Error::RequestAbandoned);
+            }
         }
     }
 }
@@ -1104,10 +1161,14 @@ async fn writer_loop<W>(
         .await;
         match result {
             Ok(()) => {
-                let _ = command.written.send(Ok(()));
+                if let Some(written) = command.written {
+                    let _ = written.send(Ok(()));
+                }
             }
             Err(error) => {
-                let _ = command.written.send(Err(error.clone()));
+                if let Some(written) = command.written {
+                    let _ = written.send(Err(error.clone()));
+                }
                 inner.fail(error);
                 return;
             }

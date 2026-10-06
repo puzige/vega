@@ -183,6 +183,54 @@ async fn c1_02_rejects_unsupported_protocol_before_creating_a_session() {
 }
 
 #[tokio::test]
+async fn c1_02_malformed_initialize_result_fails_connection_before_session_creation() {
+    let (connection, mut peer) = connection_pair(65_536).await;
+    let server = tokio::spawn(async move {
+        let request = read_json(&mut peer).await;
+        write_frame(
+            &mut peer,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "protocolVersion": 1,
+                    "agentCapabilities": [],
+                    "authMethods": []
+                }
+            }),
+        )
+        .await;
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            timeout(Duration::from_secs(2), peer.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+    });
+    assert!(matches!(
+        connection.initialize().await,
+        Err(Error::InvalidResult)
+    ));
+    assert_eq!(
+        timeout(
+            Duration::from_millis(100),
+            connection.wait_for_terminal_for_test()
+        )
+        .await
+        .unwrap()
+        .unwrap(),
+        Error::InvalidResult
+    );
+    assert!(matches!(
+        connection.new_session("/workspace").await,
+        Err(Error::NotInitialized)
+    ));
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn c1_03_session_operations_preserve_paths_ids_and_mode() {
     let (connection, mut peer) = connection_pair(65_536).await;
     let server = tokio::spawn(async move {
@@ -412,6 +460,47 @@ async fn c1_07_out_of_order_responses_resolve_only_their_matching_waiters() {
     );
     assert_eq!(first.unwrap(), json!({"modeId":"first"}));
     assert_eq!(second.unwrap(), json!({"modeId":"second"}));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn c1_07_dropping_enqueued_request_fails_connection_closed() {
+    let (connection, mut peer) = connection_pair(65_536).await;
+    let (request_sender, request_receiver) = tokio::sync::oneshot::channel();
+    let (release_sender, release_receiver) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        initialize_peer(&mut peer).await;
+        request_sender.send(read_json(&mut peer).await).unwrap();
+        release_receiver.await.unwrap();
+    });
+    connection.initialize().await.unwrap();
+    let connection = Arc::new(connection);
+    let request_connection = Arc::clone(&connection);
+    let request =
+        tokio::spawn(async move { request_connection.set_mode("s", "workspace-write").await });
+    let request_message = timeout(Duration::from_secs(2), request_receiver)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(request_message["method"], "session/set_mode");
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+
+    assert_eq!(
+        timeout(
+            Duration::from_millis(100),
+            connection.wait_for_terminal_for_test()
+        )
+        .await
+        .unwrap()
+        .unwrap(),
+        Error::RequestAbandoned
+    );
+    assert!(matches!(
+        connection.set_mode("s", "another-mode").await,
+        Err(Error::RequestAbandoned)
+    ));
+    release_sender.send(()).unwrap();
     server.await.unwrap();
 }
 
@@ -817,6 +906,63 @@ async fn c1_06_completed_inbound_request_id_fails_closed() {
 }
 
 #[tokio::test]
+async fn c1_06_writer_queue_overflow_fails_connection_before_permission_response() {
+    let (connection, mut peer) = connection_pair(1).await;
+    let server = tokio::spawn(async move {
+        initialize_peer(&mut peer).await;
+        peer
+    });
+    connection.initialize().await.unwrap();
+    let mut peer = server.await.unwrap();
+
+    let connection = Arc::new(connection);
+    let mut blocked_writes = Vec::new();
+    for _ in 0..(crate::connection::WRITER_QUEUE_CAPACITY + 8) {
+        let connection = Arc::clone(&connection);
+        blocked_writes.push(tokio::spawn(async move { connection.cancel("s").await }));
+    }
+    timeout(Duration::from_secs(2), async {
+        while connection.available_writer_slots_for_test() > 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    write_frame(&mut peer, &permission_request(json!(901))).await;
+    let Some(Event::PermissionRequest(request)) =
+        timeout(Duration::from_secs(2), connection.recv_event())
+            .await
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected permission request");
+    };
+
+    let mut responder = Box::pin(connection.respond_permission(request.request_id, "allow"));
+    assert!(matches!(
+        timeout(Duration::from_millis(100), &mut responder).await,
+        Ok(Err(Error::WriterQueueFull))
+    ));
+    drop(responder);
+    assert_eq!(
+        timeout(
+            Duration::from_millis(100),
+            connection.wait_for_terminal_for_test()
+        )
+        .await
+        .unwrap()
+        .unwrap(),
+        Error::WriterQueueFull
+    );
+
+    drop(peer);
+    for write in blocked_writes {
+        write.abort();
+    }
+}
+
+#[tokio::test]
 async fn c1_07_completed_outbound_request_id_fails_closed() {
     let (connection, mut peer) = connection_pair(65_536).await;
     let server = tokio::spawn(async move {
@@ -848,14 +994,17 @@ async fn c1_07_completed_outbound_request_id_fails_closed() {
 #[tokio::test]
 async fn c1_08_inbound_request_id_count_budget_fails_closed() {
     assert_eq!(MAX_SEEN_INBOUND_REQUEST_IDS, 4_096);
-    let (connection, peer) = connection_pair(2 * MAX_FRAME_BYTES).await;
+    let (connection, mut peer) = connection_pair(2 * MAX_FRAME_BYTES).await;
     let writer = tokio::spawn(async move {
-        let mut peer = peer;
         for start in (0..MAX_SEEN_INBOUND_REQUEST_IDS).step_by(MAX_BATCH_ELEMENTS) {
             let requests = (start..start + MAX_BATCH_ELEMENTS)
                 .map(|id| unknown_request(json!(id)))
                 .collect::<Vec<_>>();
             write_frame(&mut peer, &json!(requests)).await;
+            assert_eq!(
+                read_json(&mut peer).await.as_array().unwrap().len(),
+                MAX_BATCH_ELEMENTS
+            );
         }
         write_frame(
             &mut peer,

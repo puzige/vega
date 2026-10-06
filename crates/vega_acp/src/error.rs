@@ -48,6 +48,8 @@ pub enum Error {
     RequestIdHistoryFull,
     #[error("ACP event queue limit reached")]
     EventQueueOverflow,
+    #[error("ACP writer queue limit reached")]
+    WriterQueueFull,
     #[error("ACP permission request is no longer pending")]
     PermissionRequestClosed,
     #[error("ACP permission option was not offered")]
@@ -62,6 +64,8 @@ pub enum Error {
     AgentRejected { code: i64 },
     #[error("ACP agent response is malformed")]
     InvalidResult,
+    #[error("ACP request waiter was dropped before its response arrived")]
+    RequestAbandoned,
     #[error("ACP prompt response has no stop reason")]
     MissingStopReason,
     #[error("ACP launch failed")]
@@ -90,8 +94,10 @@ impl Error {
             Self::TooManyPendingRequests
             | Self::TooManyPendingPermissions
             | Self::RequestIdHistoryFull
-            | Self::EventQueueOverflow => ErrorCategory::Capacity,
+            | Self::EventQueueOverflow
+            | Self::WriterQueueFull => ErrorCategory::Capacity,
             Self::Interrupted
+            | Self::RequestAbandoned
             | Self::PermissionRequestClosed
             | Self::AlreadyInitialized
             | Self::NotInitialized => ErrorCategory::Lifecycle,
