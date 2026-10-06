@@ -618,7 +618,7 @@ impl Connection {
         ))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn from_io<R, W>(reader: R, writer: W, child: Option<Box<dyn ChildControl>>) -> Self
     where
         R: AsyncRead + Send + Unpin + 'static,

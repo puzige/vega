@@ -531,6 +531,7 @@ async fn issue67_concurrent_scenario(cx: &mut gpui_kit::TestAppContext, mode: u8
         };
         let batch = |record| AgentBatch {
             events: vec![ConversationEvent::ContextCompactionStatus { record }],
+            codex_mode_confirmed: false,
             mcp_unavailable: vec![],
             reference_failure: None,
             credential_failure: false,
@@ -1779,6 +1780,25 @@ fn finished_refresh_routes_only_to_matching_current_thread_cache() {
         current_cache_matches(Some("a"), Some("a"), "a"),
         "A→B→A must refresh the rebuilt A entity"
     );
+}
+
+#[test]
+fn issue287_codex_finish_refresh_preserves_another_current_route() {
+    assert!(current_cache_matches(
+        Some("codex-task"),
+        Some("codex-task"),
+        "codex-task"
+    ));
+    assert!(!current_cache_matches(
+        Some("other-task"),
+        Some("other-task"),
+        "codex-task"
+    ));
+    assert!(!current_cache_matches(
+        Some("codex-task"),
+        Some("other-stream"),
+        "codex-task"
+    ));
 }
 
 #[gpui_kit::test]

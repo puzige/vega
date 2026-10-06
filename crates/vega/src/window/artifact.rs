@@ -258,6 +258,9 @@ impl VegaWindow {
         if !self.agent_controller.matches(generation, thread_id, stream) {
             return AgentBatchIngress::Stale;
         }
+        if batch.codex_mode_confirmed {
+            stream.update(cx, ConversationStream::confirm_codex_mode);
+        }
         if !batch.mcp_unavailable.is_empty()
             && let Some(active) = self.agent_controller.active.get_mut(thread_id)
         {

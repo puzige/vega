@@ -196,6 +196,99 @@ pub struct AgentConfig {
     /// Maximum number of agentic turns before a run stops. `0` = unlimited.
     #[serde(default)]
     pub turn_limit: u32,
+    #[serde(default)]
+    pub codex_acp_profile: Option<CodexAcpProfileConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexAcpProfileConfig {
+    pub display_name: String,
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+impl CodexAcpProfileConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.display_name.trim().is_empty()
+            || self.display_name.len() > 128
+            || self.display_name.chars().any(char::is_control)
+        {
+            return Err("invalid Codex profile name");
+        }
+        let executable = Path::new(&self.executable);
+        if self.executable.trim().is_empty()
+            || self.executable.len() > 4096
+            || self.executable.chars().any(char::is_control)
+            || !executable.is_absolute()
+            || executable.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err("Codex executable must be an absolute path");
+        }
+        if self.args.len() > 32 || self.args.iter().any(|arg| !codex_profile_arg_is_safe(arg)) {
+            return Err("Codex profile arguments are invalid or may contain a secret");
+        }
+        Ok(())
+    }
+}
+
+fn codex_profile_arg_is_safe(value: &str) -> bool {
+    if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
+        return false;
+    }
+    let lowered = value.to_ascii_lowercase();
+    let sensitive_markers = [
+        "api-key",
+        "api_key",
+        "apikey",
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "credential",
+        "auth",
+        "oauth",
+        "private-key",
+        "private_key",
+        "ssh-key",
+        "bearer",
+        "env-file",
+        "openai_api_key=",
+    ];
+    let suspicious_prefixes = [
+        "sk-",
+        "sk_",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+        "glpat-",
+        "akia",
+        "asia",
+        "aiza",
+        "eyj",
+    ];
+    !sensitive_markers
+        .iter()
+        .any(|marker| lowered.contains(marker))
+        && !suspicious_prefixes
+            .iter()
+            .any(|prefix| lowered.contains(prefix))
+        && !value
+            .split(|character: char| !character.is_ascii_hexdigit())
+            .any(|component| component.len() >= 32)
+        && !value
+            .split_once("://")
+            .map(|(_, rest)| rest.split('/').next().unwrap_or_default())
+            .is_some_and(|authority| authority.contains('@') && authority.contains(':'))
 }
 
 /// Top-level configuration at the config root (tech-spec §6).
@@ -401,7 +494,10 @@ mod tests {
                 projects_collapsed: false,
                 sessions_collapsed: false,
             },
-            agent: AgentConfig { turn_limit: 0 },
+            agent: AgentConfig {
+                turn_limit: 0,
+                codex_acp_profile: None,
+            },
         }
     }
 
@@ -601,6 +697,40 @@ mod tests {
         assert_eq!(provider.key_ref, provider.name);
         let body = toml::to_string_pretty(&config).unwrap();
         assert!(body.contains("key_ref = \"deepseek\""));
+    }
+
+    #[test]
+    fn codex_acp_profile_round_trips_and_rejects_unsafe_launch_values() {
+        let dir = temp_dir("codex-profile");
+        let path = dir.join("config.toml");
+        let mut config = sample_config();
+        config.agent.codex_acp_profile = Some(CodexAcpProfileConfig {
+            display_name: "Codex ACP".into(),
+            executable: "/opt/vega/codex-acp".into(),
+            args: vec!["--stdio".into()],
+        });
+        config.save_to(&path).unwrap();
+        let loaded = load_from(&path).unwrap();
+        assert_eq!(
+            loaded.agent.codex_acp_profile,
+            config.agent.codex_acp_profile
+        );
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(!body.contains("api_key"));
+        assert!(!body.contains("access_token"));
+
+        let profile = config.agent.codex_acp_profile.as_ref().unwrap();
+        assert!(profile.validate().is_ok());
+        let mut invalid = profile.clone();
+        invalid.executable = "codex-acp".into();
+        assert!(invalid.validate().is_err());
+        let mut invalid = profile.clone();
+        invalid.args = vec!["--api-key=sk-example".into()];
+        assert!(invalid.validate().is_err());
+        let mut invalid = profile.clone();
+        invalid.args = vec!["OPENAI_API_KEY=secret".into()];
+        assert!(invalid.validate().is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
 

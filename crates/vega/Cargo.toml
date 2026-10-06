@@ -23,6 +23,8 @@ vega_store.workspace = true
 vega_theme.workspace = true
 vega_tools.workspace = true
 vega_ui.workspace = true
+vega_acp.workspace = true
+ulid.workspace = true
 
 [dev-dependencies]
 futures = { workspace = true }
@@ -32,3 +34,4 @@ vega_conversation = { workspace = true, features = ["test-support"] }
 vega_ui = { workspace = true, features = ["test-support"] }
 gpui_kit = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
+vega_acp = { workspace = true, features = ["test-support"] }

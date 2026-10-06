@@ -83,6 +83,7 @@ impl From<&str> for UserSubmission {
 
 pub(crate) enum AgentUpdate {
     Event(vega_conversation::types::ConversationEvent),
+    CodexModeConfirmed,
     McpUnavailable(Vec<vega_conversation::types::McpServerDiagnostic>),
     /// The terminal carries a resolver rejection atomically with `success`.
     /// That prevents a poll between two channel messages from losing the
@@ -96,6 +97,7 @@ pub(crate) enum AgentUpdate {
 
 pub(crate) struct AgentBatch {
     pub(crate) events: Vec<vega_conversation::types::ConversationEvent>,
+    pub(crate) codex_mode_confirmed: bool,
     pub(crate) mcp_unavailable: Vec<vega_conversation::types::McpServerDiagnostic>,
     pub(crate) reference_failure: Option<FileReferenceFailureCode>,
     pub(crate) credential_failure: bool,
@@ -104,6 +106,7 @@ pub(crate) struct AgentBatch {
 
 pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> AgentBatch {
     let mut events = Vec::new();
+    let mut codex_mode_confirmed = false;
     let mut mcp_unavailable = Vec::new();
     let mut reference_failure = None;
     let mut credential_failure = false;
@@ -111,6 +114,7 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
     for _ in 0..AGENT_EVENT_BATCH {
         match receiver.try_recv() {
             Ok(AgentUpdate::Event(event)) => events.push(event),
+            Ok(AgentUpdate::CodexModeConfirmed) => codex_mode_confirmed = true,
             Ok(AgentUpdate::McpUnavailable(diagnostics)) => {
                 mcp_unavailable.extend(diagnostics);
             }
@@ -133,6 +137,7 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
     }
     AgentBatch {
         events,
+        codex_mode_confirmed,
         mcp_unavailable,
         reference_failure,
         credential_failure,

@@ -112,12 +112,115 @@ impl ConversationStream {
                     .pl(px(Layout::COMPOSER_UTILITY_CHIP_INSET))
                     .bg(colors.bg_sidebar)
                     .rounded_t(px(Layout::COMPOSER_UTILITY_BAR_RADIUS))
+                    .child(self.render_utility_backend_chip(cx))
                     .child(self.render_utility_project_chip(window, cx))
                     .when(!self.thread.is_standalone(), |bar| {
                         bar.child(self.render_utility_branch_chip())
                     }),
             )
             .into_any_element()
+    }
+
+    fn render_utility_backend_chip(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        let backend = self.thread.backend;
+        let draft = self.draft_route && self.entries.is_empty();
+        let label = match backend {
+            vega_conversation::types::TaskBackend::Native => "Vega Native",
+            vega_conversation::types::TaskBackend::Codex => "Codex ACP",
+        };
+        div()
+            .relative()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .id("composer-utility-backend")
+                    .debug_selector(|| "composer-utility-backend-chip".into())
+                    .h(px(Layout::COMPOSER_UTILITY_CHIP_HEIGHT))
+                    .px(px(Layout::COMPOSER_UTILITY_CHIP_PADDING_X))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .text_size(px(Typography::SIDEBAR))
+                    .text_color(colors.text_primary)
+                    .when(draft, |chip| {
+                        chip.cursor_pointer()
+                            .hover(move |style| {
+                                style.bg(colors.bg_utility_chip_overlay).rounded_full()
+                            })
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    let open = !this.backend_selector_open;
+                                    this.close_composer_popovers(cx);
+                                    this.backend_selector_open = open;
+                                    cx.notify();
+                                }),
+                            )
+                    })
+                    .child(label),
+            )
+            .when(draft && self.backend_selector_open, |chip| {
+                chip.child(self.render_backend_menu(cx))
+            })
+            .into_any_element()
+    }
+
+    fn render_backend_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        let options = [
+            (vega_conversation::types::TaskBackend::Native, "Vega Native"),
+            (vega_conversation::types::TaskBackend::Codex, "Codex ACP"),
+        ];
+        let mut menu = div()
+            .id("composer-utility-backend-menu")
+            .debug_selector(|| "composer-utility-backend-menu".into())
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                if this.backend_selector_open {
+                    this.backend_selector_open = false;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .absolute()
+            .bottom(gpui_kit::relative(1.0))
+            .left_0()
+            .w(px(260.0))
+            .occlude()
+            .flex()
+            .flex_col()
+            .py_1()
+            .rounded(px(Layout::MENU_RADIUS))
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_elevated)
+            .text_color(colors.text_primary)
+            .shadow_sm();
+        for (index, (backend, label)) in options.into_iter().enumerate() {
+            let selected = self.thread.backend == backend;
+            menu = menu.child(
+                menu_list::row_container(
+                    ("composer-utility-backend-option", index as u32),
+                    selected,
+                    true,
+                    colors,
+                )
+                .debug_selector(move || {
+                    format!("composer-utility-backend-option-{}", backend.as_str())
+                })
+                .text_color(colors.text_primary)
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                        this.request_task_backend(backend, cx);
+                    }),
+                )
+                .child(div().flex_1().min_w_0().child(label)),
+            );
+        }
+        gpui_kit::deferred(menu).with_priority(2).into_any_element()
     }
 
     /// The folder chip: 16px folder icon + project name, with a transparent

@@ -210,7 +210,7 @@ impl ComposerActions {
     ///
     /// The permission group is `+`-menu-only: a slash query keeps the legacy
     /// mode-command filtering and never offers permission rows.
-    fn rows(&self) -> Vec<ComposerActionRow> {
+    fn rows(&self, backend: TaskBackend) -> Vec<ComposerActionRow> {
         let mut rows = Vec::new();
         if !self.visible() {
             return rows;
@@ -218,12 +218,14 @@ impl ComposerActions {
         if self.menu {
             rows.push(ComposerActionRow::FileReference);
         }
-        rows.extend(
-            self.modes()
-                .into_iter()
-                .map(|(_, mode)| ComposerActionRow::Mode(mode)),
-        );
-        if self.menu {
+        if backend == TaskBackend::Native {
+            rows.extend(
+                self.modes()
+                    .into_iter()
+                    .map(|(_, mode)| ComposerActionRow::Mode(mode)),
+            );
+        }
+        if self.menu && backend == TaskBackend::Native {
             rows.extend(
                 PERMISSION_ORDER
                     .into_iter()
@@ -234,8 +236,8 @@ impl ComposerActions {
         rows
     }
 
-    fn count(&self) -> usize {
-        self.rows().len()
+    fn count(&self, backend: TaskBackend) -> usize {
+        self.rows(backend).len()
     }
 }
 
@@ -252,6 +254,7 @@ impl ConversationStream {
         self.model_picker_level = ModelPickerLevel::Closed;
         self.permission_picker_open = false;
         self.utility_projects_open = false;
+        self.backend_selector_open = false;
         self.close_file_selector_and_cancel(cx);
     }
 
@@ -457,8 +460,8 @@ impl ConversationStream {
             cx.propagate();
             return;
         }
-        self.actions.highlight =
-            (self.actions.highlight + 1).min(self.actions.count().saturating_sub(1));
+        self.actions.highlight = (self.actions.highlight + 1)
+            .min(self.actions.count(self.thread.backend).saturating_sub(1));
         cx.stop_propagation();
         cx.notify();
     }
@@ -486,7 +489,7 @@ impl ConversationStream {
         if self.input.read(cx).is_composing() {
             return;
         }
-        let Some(row) = self.actions.rows().get(index).copied() else {
+        let Some(row) = self.actions.rows(self.thread.backend).get(index).copied() else {
             return;
         };
         match row {
@@ -574,7 +577,7 @@ impl ConversationStream {
 
     pub(crate) fn render_composer_actions(&self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let rows = self.actions.rows();
+        let rows = self.actions.rows(self.thread.backend);
         let mut children = Vec::with_capacity(rows.len() + 1);
         for (index, row) in rows.iter().enumerate() {
             // One separator between the thread-mode commands and the

@@ -56,6 +56,85 @@ async fn permission_queue_installs_matching_card_and_once_resolves(cx: &mut Test
 }
 
 #[gpui_kit::test]
+async fn issue287_codex_acp_permission_card_returns_the_selected_option_id(
+    cx: &mut TestAppContext,
+) {
+    use vega_conversation::types::{CodexAcpActivityIdentity, PermissionOptionChoice};
+
+    init_permission_test(cx);
+    let (window, queue) = open_permission_stream(cx);
+    let identity = CodexAcpActivityIdentity {
+        kind: "execute".into(),
+        arguments_bytes: 2,
+        arguments_sha256: "a".repeat(64),
+        argument_preview: "object with 1 fields".into(),
+    };
+    let call_id = "codex-acp-permission";
+    propose(
+        window,
+        cx,
+        ToolCall {
+            id: call_id.into(),
+            tool: "codex_acp".into(),
+            input_json: serde_json::json!({
+                "kind": identity.kind.clone(),
+                "arguments_bytes": identity.arguments_bytes,
+                "arguments_sha256": identity.arguments_sha256.clone(),
+                "argument_preview": identity.argument_preview.clone(),
+            })
+            .to_string(),
+        },
+    );
+    let decision = queue.request(
+        PermissionRequest {
+            call_id: call_id.into(),
+            tool: "codex_acp".into(),
+            display_target: identity.permission_target(),
+            danger_rule_id: None,
+            danger_reason: None,
+            external: None,
+            acp_options: Some(vec![
+                PermissionOptionChoice {
+                    option_id: "allow_once".into(),
+                    name: "Allow once".into(),
+                    kind: Some("allow_once".into()),
+                },
+                PermissionOptionChoice {
+                    option_id: "allow_always".into(),
+                    name: "Always allow".into(),
+                    kind: Some("allow_always".into()),
+                },
+            ]),
+        },
+        CancellationToken::new(),
+    );
+    cx.run_until_parked();
+    assert!(has_active_permission(window, cx));
+    let visible = window
+        .update(cx, |stream, _, cx| {
+            stream
+                .active_permission
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .visible_text()
+        })
+        .expect("stream window");
+    assert!(visible.contains("Allow once"));
+    assert!(visible.contains("Always allow"));
+
+    cx.simulate_keystrokes(window.into(), "tab enter");
+    assert_eq!(
+        decision.await.unwrap(),
+        PermissionDecision::AcpOption {
+            option_id: "allow_always".into(),
+        }
+    );
+    cx.run_until_parked();
+    assert!(!has_active_permission(window, cx));
+}
+
+#[gpui_kit::test]
 async fn issue73_mcp_proposal_mounts_once_approval_and_keeps_terminal_card(
     cx: &mut TestAppContext,
 ) {
@@ -94,6 +173,7 @@ async fn issue73_mcp_proposal_mounts_once_approval_and_keeps_terminal_card(
             danger_rule_id: None,
             danger_reason: None,
             external: Some(identity),
+            acp_options: None,
         },
         CancellationToken::new(),
     );
@@ -520,6 +600,7 @@ async fn issue112_external_read_permission_matches_canonical_card(cx: &mut TestA
             danger_rule_id: None,
             danger_reason: None,
             external: None,
+            acp_options: None,
         },
         CancellationToken::new(),
     );
@@ -568,6 +649,7 @@ async fn issue112_external_mutations_mount_real_permission_queue(cx: &mut TestAp
                 danger_rule_id: None,
                 danger_reason: None,
                 external: None,
+                acp_options: None,
             },
             CancellationToken::new(),
         );

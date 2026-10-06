@@ -816,6 +816,7 @@ impl Render for SettingsView {
             4 => ("Usage", "settings-page-usage"),
             5 => ("MCP", "settings-page-mcp"),
             6 => ("Skills", "settings-page-skills"),
+            7 => ("Agents", "settings-page-agents"),
             _ => ("Usage", "settings-page-usage"),
         };
         let navigation = [
@@ -826,6 +827,7 @@ impl Render for SettingsView {
             (4, "Usage", "settings-nav-usage"),
             (5, "MCP", "settings-nav-mcp"),
             (6, "Skills", "settings-nav-skills"),
+            (7, "Agents", "settings-nav-agents"),
         ];
         div()
             .id("settings-page")
@@ -1022,6 +1024,9 @@ impl Render for SettingsView {
                                     .when(self.section == 5, |body| body.child(self.render_mcp(cx)))
                                     .when(self.section == 6, |body| {
                                         body.child(self.render_skills(cx))
+                                    })
+                                    .when(self.section == 7, |body| {
+                                        body.child(self.render_agents(cx))
                                     }),
                             ),
                     ),

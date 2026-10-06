@@ -195,6 +195,7 @@ fn request_permission(queue: &PermissionQueue, call_id: &str, target: &str) -> D
             danger_rule_id: None,
             danger_reason: None,
             external: None,
+            acp_options: None,
         },
         CancellationToken::new(),
     );

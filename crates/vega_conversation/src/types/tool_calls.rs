@@ -339,6 +339,10 @@ pub enum ToolCardInputProjection {
         identity: McpCallIdentity,
         permission_target: String,
     },
+    CodexAcp {
+        identity: CodexAcpActivityIdentity,
+        permission_target: String,
+    },
     /// Only the validated Skill name and a reference path's length/hash.
     /// `name=None` represents the exact `{}` invalid-input audit placeholder.
     Skill {
@@ -360,6 +364,7 @@ impl ToolCardInputProjection {
             Self::Write { .. } => Some("write"),
             Self::Edit { .. } => Some("edit"),
             Self::Mcp { alias, .. } => Some(alias),
+            Self::CodexAcp { .. } => Some("codex_acp"),
             Self::Skill { kind, .. } => Some(kind.as_str()),
             Self::Corrupt => None,
         }
@@ -371,6 +376,9 @@ impl ToolCardInputProjection {
             Self::Bash { command } => Some(command),
             Self::Write { path, .. } | Self::Edit { path, .. } => Some(path),
             Self::Mcp {
+                permission_target, ..
+            } => Some(permission_target),
+            Self::CodexAcp {
                 permission_target, ..
             } => Some(permission_target),
             Self::ReadOnly {
@@ -401,6 +409,11 @@ pub enum ToolCardResultProjection {
     },
     /// Bounded lower-trust result from a third-party MCP server.
     Mcp {
+        status: ToolCallStatus,
+        output: String,
+        reused: bool,
+    },
+    CodexAcp {
         status: ToolCallStatus,
         output: String,
         reused: bool,
@@ -444,6 +457,15 @@ pub enum ToolCardResultProjection {
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
     if matches!(call.tool.as_str(), "load_skill" | "read_skill_resource") {
         return skill_card_input_projection(&call.tool, &call.input_json);
+    }
+    if call.tool == "codex_acp" {
+        return CodexAcpActivityIdentity::from_tool_call(call).map_or(
+            ToolCardInputProjection::Corrupt,
+            |identity| ToolCardInputProjection::CodexAcp {
+                permission_target: identity.permission_target(),
+                identity,
+            },
+        );
     }
     if call.tool.starts_with("mcp_") {
         return McpCallIdentity::from_tool_call(call).map_or(
@@ -693,6 +715,25 @@ pub fn tool_card_result_projection(
                 return ToolCardResultProjection::Corrupt;
             }
             ToolCardResultProjection::Mcp {
+                status: result.status,
+                output: result.output.clone(),
+                reused: result.reused,
+            }
+        }
+        ToolCardInputProjection::CodexAcp { .. } => {
+            if !is_terminal(result.status)
+                || result.exit_code.is_some()
+                || result.duration_ms.is_some()
+                || result.invalid.is_some()
+                || result.output.len() > 2048
+                || match result.status {
+                    ToolCallStatus::Success => result.truncated != Some(false),
+                    _ => result.truncated.is_some(),
+                }
+            {
+                return ToolCardResultProjection::Corrupt;
+            }
+            ToolCardResultProjection::CodexAcp {
                 status: result.status,
                 output: result.output.clone(),
                 reused: result.reused,

@@ -426,12 +426,41 @@ pub(crate) fn valid_permission_request(request: &PermissionRequest) -> bool {
     if request.call_id.is_empty() || request.display_target.is_empty() {
         return false;
     }
+    let acp_options_valid = request.acp_options.as_ref().is_none_or(|options| {
+        !options.is_empty()
+            && options.len() <= 16
+            && options.iter().all(|option| {
+                !option.option_id.is_empty()
+                    && option.option_id.len() <= 128
+                    && !option.option_id.chars().any(char::is_control)
+                    && !option.name.is_empty()
+                    && option.name.len() <= 128
+                    && !option.name.chars().any(char::is_control)
+                    && option.kind.as_ref().is_none_or(|kind| {
+                        !kind.is_empty() && kind.len() <= 64 && !kind.chars().any(char::is_control)
+                    })
+            })
+            && options
+                .iter()
+                .map(|option| option.option_id.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == options.len()
+    });
+    if !acp_options_valid {
+        return false;
+    }
     if let Some(identity) = &request.external {
         return request.danger_rule_id.is_none()
             && request.danger_reason.is_none()
             && identity.is_valid()
             && request.tool == identity.alias()
             && request.display_target == identity.permission_target();
+    }
+    if request.acp_options.is_some() {
+        return request.danger_rule_id.is_none()
+            && request.danger_reason.is_none()
+            && request.tool == "codex_acp";
     }
     let danger_valid = match (&request.danger_rule_id, &request.danger_reason) {
         (None, None) => true,
@@ -498,6 +527,7 @@ impl RuntimePermissionHook for RuntimePermissionAdapter<'_> {
                     PermissionDecision::Deny { note } => RuntimeUserDecision::Deny { note },
                     PermissionDecision::Always => RuntimeUserDecision::Deny { note: None },
                     PermissionDecision::Timeout => RuntimeUserDecision::Timeout,
+                    PermissionDecision::AcpOption { .. } => RuntimeUserDecision::Timeout,
                 })
             })
             .boxed()

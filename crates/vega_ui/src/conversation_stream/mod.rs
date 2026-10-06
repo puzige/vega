@@ -78,8 +78,8 @@ use vega_conversation::types::{
     ComposerDefaults, ConversationEvent, ConversationMeter, FileIndexSnapshot, FrozenReasoning,
     MeterSnapshot, PermissionMode, Plan, ProviderPreflightFailure, ReasoningChoice,
     ReasoningProfileProjection, ReasoningSupport, RestoredUsage, RunFailureKind, RunUsageEstimator,
-    SkillComposerMutation, SkillComposerProjection, SkillSelectionIntent, TaskCostSummary, Thread,
-    ThreadMode,
+    SkillComposerMutation, SkillComposerProjection, SkillSelectionIntent, TaskBackend,
+    TaskCostSummary, Thread, ThreadMode,
 };
 use vega_markdown::{
     BlockView, HighlightKind, HighlightSpan, Inline, ListBlock, MarkdownStream, MockReplay,
@@ -167,6 +167,12 @@ pub struct ThreadSettingsRequested {
     pub thread_id: String,
     pub mode: Option<ThreadMode>,
     pub permission_mode: Option<PermissionMode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskBackendSelectionRequested {
+    pub thread_id: String,
+    pub backend: TaskBackend,
 }
 
 /// Composer submission routed to the application controller.
