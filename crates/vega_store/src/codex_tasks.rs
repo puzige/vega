@@ -1,3 +1,4 @@
+use crate::threads::NewThread;
 use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +29,7 @@ pub struct NewCodexTaskSnapshot {
     pub profile_display_name: String,
     pub adapter_kind: String,
     pub executable: String,
-    pub arguments: Vec<String>,
+    pub arguments: Vec<Vec<String>>,
     pub adapter_version: String,
     pub codex_version: String,
     pub model: Option<String>,
@@ -84,38 +85,43 @@ pub fn bind_to_materialized_thread(
     {
         return Ok(false);
     }
-    let arguments_json = serde_json::to_string(&snapshot.arguments)
-        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-    let additional_directories_json = serde_json::to_string(&snapshot.additional_directories)
-        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    insert_snapshot(&tx, thread_id, snapshot, created_at)?;
+    tx.commit()?;
+    Ok(true)
+}
+
+pub fn materialize_codex_thread(
+    conn: &Connection,
+    project_id: Option<&str>,
+    thread: NewThread<'_>,
+    snapshot: &NewCodexTaskSnapshot,
+    created_at: i64,
+) -> Result<bool, rusqlite::Error> {
+    if project_id != snapshot.selected_project_id.as_deref()
+        || thread.project_id != project_id.unwrap_or_default()
+    {
+        return Ok(false);
+    }
+    let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "INSERT INTO codex_task_snapshots \
-         (thread_id, profile_id, profile_display_name, adapter_kind, executable, arguments_json, \
-          adapter_version, codex_version, model, model_provider, reasoning_effort, sandbox_mode, \
-          approval_policy, selected_project_id, worktree_id, canonical_working_directory, \
-          additional_directories_json, created_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        "INSERT INTO threads (id, project_id, title, mode, permission_mode, model, backend, \
+         status, pinned, unread, created_at, updated_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'codex', ?7, ?8, ?9, ?10, ?11)",
         params![
-            thread_id,
-            snapshot.profile_id,
-            snapshot.profile_display_name,
-            snapshot.adapter_kind,
-            snapshot.executable,
-            arguments_json,
-            snapshot.adapter_version,
-            snapshot.codex_version,
-            snapshot.model,
-            snapshot.model_provider,
-            snapshot.reasoning_effort,
-            snapshot.sandbox_mode,
-            snapshot.approval_policy,
-            snapshot.selected_project_id,
-            snapshot.worktree_id,
-            snapshot.canonical_working_directory,
-            additional_directories_json,
-            created_at,
+            thread.id,
+            project_id,
+            thread.title,
+            thread.mode,
+            thread.permission_mode,
+            thread.model,
+            thread.status,
+            thread.pinned,
+            thread.unread,
+            thread.created_at,
+            thread.updated_at,
         ],
     )?;
+    insert_snapshot(&tx, thread.id, snapshot, created_at)?;
     tx.commit()?;
     Ok(true)
 }
@@ -243,4 +249,45 @@ fn snapshot_from_row(row: &rusqlite::Row) -> Result<CodexTaskSnapshotRow, rusqli
         additional_directories_json: row.get(16)?,
         created_at: row.get(17)?,
     })
+}
+
+fn insert_snapshot(
+    conn: &Connection,
+    thread_id: &str,
+    snapshot: &NewCodexTaskSnapshot,
+    created_at: i64,
+) -> Result<(), rusqlite::Error> {
+    let arguments_json = serde_json::to_string(&snapshot.arguments)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    let additional_directories_json = serde_json::to_string(&snapshot.additional_directories)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    conn.execute(
+        "INSERT INTO codex_task_snapshots \
+         (thread_id, profile_id, profile_display_name, adapter_kind, executable, arguments_json, \
+          adapter_version, codex_version, model, model_provider, reasoning_effort, sandbox_mode, \
+          approval_policy, selected_project_id, worktree_id, canonical_working_directory, \
+          additional_directories_json, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        params![
+            thread_id,
+            snapshot.profile_id,
+            snapshot.profile_display_name,
+            snapshot.adapter_kind,
+            snapshot.executable,
+            arguments_json,
+            snapshot.adapter_version,
+            snapshot.codex_version,
+            snapshot.model,
+            snapshot.model_provider,
+            snapshot.reasoning_effort,
+            snapshot.sandbox_mode,
+            snapshot.approval_policy,
+            snapshot.selected_project_id,
+            snapshot.worktree_id,
+            snapshot.canonical_working_directory,
+            additional_directories_json,
+            created_at,
+        ],
+    )?;
+    Ok(())
 }

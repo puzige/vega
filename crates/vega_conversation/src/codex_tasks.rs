@@ -1,5 +1,6 @@
 use vega_store::Store;
 use vega_store::codex_tasks as store_codex_tasks;
+use vega_store::projects as store_projects;
 use vega_store::threads as store;
 
 use crate::types::{
@@ -7,7 +8,7 @@ use crate::types::{
     CodexPromptBinding, CodexReasoningEffort, CodexRunSettings, CodexSandboxMode,
     CodexSessionCreationState, CodexSessionFailureCode, CodexSessionIntentId,
     CodexSessionUncertaintyCode, CodexTaskIdentity, CodexWorkspaceSnapshot, ConversationError,
-    TaskBackend,
+    TaskBackend, Thread,
 };
 
 fn now_ms() -> i64 {
@@ -118,7 +119,7 @@ fn validate_codex_snapshot(
         return Err(ConversationError::InvalidTaskIdentity);
     }
     for argument in &snapshot.arguments {
-        CodexAdapterArgument::new(argument.as_str())?;
+        CodexAdapterArgument::from_persisted(argument.persisted_tokens())?;
     }
     let mut directories = std::collections::HashSet::new();
     directories.insert(snapshot.workspace.canonical_working_directory.as_str());
@@ -142,10 +143,10 @@ fn codex_session_intent(value: Option<String>) -> Result<CodexSessionIntentId, C
 fn codex_snapshot_from_row(
     row: &store_codex_tasks::CodexTaskSnapshotRow,
 ) -> Result<CodexExecutionSnapshot, ConversationError> {
-    let arguments = serde_json::from_str::<Vec<String>>(&row.arguments_json)
+    let arguments = serde_json::from_str::<Vec<Vec<String>>>(&row.arguments_json)
         .map_err(|_| ConversationError::CorruptRow("Codex arguments".to_string()))?
         .into_iter()
-        .map(CodexAdapterArgument::new)
+        .map(CodexAdapterArgument::from_persisted)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| ConversationError::CorruptRow("Codex arguments".to_string()))?;
     let additional_directories =
@@ -185,6 +186,37 @@ fn codex_snapshot_from_row(
     };
     validate_codex_snapshot(&snapshot, false)?;
     Ok(snapshot)
+}
+
+fn new_store_snapshot(
+    snapshot: &CodexExecutionSnapshot,
+) -> store_codex_tasks::NewCodexTaskSnapshot {
+    store_codex_tasks::NewCodexTaskSnapshot {
+        profile_id: snapshot.profile.id.clone(),
+        profile_display_name: snapshot.profile.display_name.clone(),
+        adapter_kind: snapshot.adapter.as_str().to_string(),
+        executable: snapshot.executable.clone(),
+        arguments: snapshot
+            .arguments
+            .iter()
+            .map(CodexAdapterArgument::persisted_tokens)
+            .collect(),
+        adapter_version: snapshot.adapter_version.clone(),
+        codex_version: snapshot.codex_version.clone(),
+        model: snapshot.settings.model.clone(),
+        model_provider: snapshot.settings.model_provider.clone(),
+        reasoning_effort: snapshot
+            .settings
+            .reasoning_effort
+            .map(CodexReasoningEffort::as_str)
+            .map(str::to_string),
+        sandbox_mode: snapshot.settings.sandbox_mode.as_str().to_string(),
+        approval_policy: snapshot.settings.approval_policy.as_str().to_string(),
+        selected_project_id: snapshot.workspace.project_id.clone(),
+        worktree_id: snapshot.workspace.worktree_id.clone(),
+        canonical_working_directory: snapshot.workspace.canonical_working_directory.clone(),
+        additional_directories: snapshot.workspace.additional_directories.clone(),
+    }
 }
 
 fn codex_session_state_from_row(
@@ -273,15 +305,75 @@ pub fn codex_task_identity(
     let snapshot = snapshot.ok_or_else(|| {
         ConversationError::CorruptRow("Codex task is missing its snapshot".to_string())
     })?;
+    let snapshot = codex_snapshot_from_row(&snapshot)?;
+    if (!thread.project_id.is_empty()).then_some(thread.project_id.as_str())
+        != snapshot.workspace.project_id.as_deref()
+    {
+        return Err(ConversationError::CorruptRow(
+            "Codex project binding".to_string(),
+        ));
+    }
     let session_creation = store_codex_tasks::find_session_creation(store.conn(), thread_id)
         .map_err(store_error)?
         .ok_or_else(|| ConversationError::CorruptRow("session creation row".to_string()))?;
     Ok(Some(CodexTaskIdentity {
         thread_id: thread_id.to_string(),
         backend,
-        snapshot: codex_snapshot_from_row(&snapshot)?,
+        snapshot,
         session_creation: codex_session_state_from_row(&session_creation)?,
     }))
+}
+
+pub fn materialize_codex_draft(
+    store: &Store,
+    draft: &Thread,
+    snapshot: &CodexExecutionSnapshot,
+) -> Result<Thread, ConversationError> {
+    validate_codex_snapshot(snapshot, true)?;
+    let project_id = draft.project_binding();
+    if draft.backend != TaskBackend::Codex || project_id != snapshot.workspace.project_id.as_deref()
+    {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    if let Some(project_id) = project_id {
+        let exists =
+            store_projects::project_exists(store.conn(), project_id).map_err(store_error)?;
+        if !exists {
+            return Err(ConversationError::NoProject);
+        }
+    }
+    let now = now_ms();
+    let materialized = Thread {
+        created_at: now,
+        updated_at: now,
+        ..draft.clone()
+    };
+    let values = store::NewThread {
+        id: &materialized.id,
+        project_id: &materialized.project_id,
+        title: &materialized.title,
+        mode: materialized.mode.as_str(),
+        permission_mode: materialized.permission_mode.as_str(),
+        model: &materialized.model,
+        status: materialized.status.as_str(),
+        pinned: materialized.pinned,
+        unread: materialized.unread,
+        created_at: materialized.created_at,
+        updated_at: materialized.updated_at,
+    };
+    let snapshot = new_store_snapshot(snapshot);
+    let created = store_codex_tasks::materialize_codex_thread(
+        store.conn(),
+        project_id,
+        values,
+        &snapshot,
+        now,
+    )
+    .map_err(store_error)?;
+    if !created {
+        return Err(ConversationError::InvalidTaskIdentity);
+    }
+    Ok(materialized)
 }
 
 pub fn bind_codex_task(
@@ -299,32 +391,7 @@ pub fn bind_codex_task(
     {
         return Err(ConversationError::InvalidTaskIdentity);
     }
-    let record = store_codex_tasks::NewCodexTaskSnapshot {
-        profile_id: snapshot.profile.id.clone(),
-        profile_display_name: snapshot.profile.display_name.clone(),
-        adapter_kind: snapshot.adapter.as_str().to_string(),
-        executable: snapshot.executable.clone(),
-        arguments: snapshot
-            .arguments
-            .iter()
-            .map(|argument| argument.as_str().to_string())
-            .collect(),
-        adapter_version: snapshot.adapter_version.clone(),
-        codex_version: snapshot.codex_version.clone(),
-        model: snapshot.settings.model.clone(),
-        model_provider: snapshot.settings.model_provider.clone(),
-        reasoning_effort: snapshot
-            .settings
-            .reasoning_effort
-            .map(CodexReasoningEffort::as_str)
-            .map(str::to_string),
-        sandbox_mode: snapshot.settings.sandbox_mode.as_str().to_string(),
-        approval_policy: snapshot.settings.approval_policy.as_str().to_string(),
-        selected_project_id: snapshot.workspace.project_id.clone(),
-        worktree_id: snapshot.workspace.worktree_id.clone(),
-        canonical_working_directory: snapshot.workspace.canonical_working_directory.clone(),
-        additional_directories: snapshot.workspace.additional_directories.clone(),
-    };
+    let record = new_store_snapshot(snapshot);
     let created =
         store_codex_tasks::bind_to_materialized_thread(store.conn(), thread_id, &record, now_ms())
             .map_err(store_error)?;
