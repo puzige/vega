@@ -32,6 +32,7 @@ ACP v1 stdio is UTF-8 JSON-RPC 2.0 with one frame per newline-delimited line. A 
 | Adapter argument count / aggregate encoded argument bytes | 128 / 65,536 bytes | Reject configuration before process creation |
 | Outbound requests awaiting responses | 16 per connection | Reject the next request before writing it |
 | Unanswered inbound requests | 16 per connection | Fail the connection; do not silently drop a permission request |
+| Queued writer commands | 32 commands, plus at most one command in the writer | Permission-response enqueue never waits for capacity; a full queue fails the connection with `WriterQueueFull`; ordinary outbound operations wait for the bounded queue |
 | Seen inbound JSON-RPC request IDs | 4,096 IDs and 1,048,576 UTF-8 identifier bytes per connection lifetime | Never evict completed IDs; fail the connection with `RequestIdHistoryFull` before admitting a new ID beyond either limit |
 | Buffered events | 128 events and 4,194,304 serialized bytes per connection | Fail the connection; do not drop text, permission, update, or terminal events |
 | Weight per queued event | 4,096 serialized bytes per permit, rounded up | Event admission fails closed if the byte budget is exhausted |
@@ -42,17 +43,21 @@ The frame reader checks the limit before appending bytes. The event queue is bou
 
 Unknown, duplicate, or already-completed wire request IDs fail closed. The runtime retains inbound wire IDs for the connection lifetime within the count and byte budgets above; once either budget is full, the next unique inbound request terminates the connection rather than evicting an ID. Replaying an active or completed inbound wire ID fails with `DuplicateRequestId`; replying again through an already-completed local permission responder returns `PermissionRequestClosed`; replaying a response for a completed outbound request fails with `UnknownRequestId`. Connection termination completes all outbound request waiters and permission responders with a sanitized typed error. Error values exposed outside the crate contain a category and safe display text only, never raw prompt, workspace contents, environment values, stderr, or credentials.
 
+Dropping an outbound request future before its request enters the writer queue removes its local registration without closing the connection. If the request has entered the queue and its response has not already been matched, dropping the waiter removes that registration and fails the connection with `RequestAbandoned`. This avoids retaining tombstones or allowing a later response to look like an unrelated unknown ID. A response already matched before waiter drop remains a normal completion.
+
+The writer channel is bounded at 32 queued commands, with one additional command at most being written. Completed permission and batch responses are synchronously transferred to that owned queue without an intervening await after removing their pending handle. If no queue slot is available, the runtime fails the connection with `WriterQueueFull`; it never leaves an active connection after consuming a responder without queueing its response. If the writer later encounters an I/O error, it fails the connection. An initialize RPC error or malformed initialize result is terminal; malformed results return sanitized `InvalidResult`, and session operations cannot proceed.
+
 ## Acceptance matrix
 
 | ID | Requirement | In-process test evidence | Status |
 |---|---|---|---|
 | C1-01 | Invalid executable/cwd and over-limit launch arguments are rejected before process creation | Launch validation covers the exact argument-count and aggregate-byte limits plus a spawn observer | PASS |
-| C1-02 | `initialize` requests stable v1; an unsupported protocol version prevents session creation; returned capabilities are represented exactly | Duplex protocol tests | PASS |
+| C1-02 | `initialize` requests stable v1; unsupported versions and malformed handshake results fail the connection before session creation; returned capabilities are represented exactly | Duplex protocol tests for valid, unsupported, and malformed results | PASS |
 | C1-03 | Session new/load/resume and workspace-write mode preserve exact paths, session ID, and response values | Scripted in-memory peer | PASS |
 | C1-04 | Prompt updates are delivered in order and completion reports the returned stop reason | Multi-message peer script and completion handle | PASS |
 | C1-05 | Cancel sends the protocol notification but remains stopping until the original prompt completion arrives | Cancel/prompt lifecycle test | PASS |
-| C1-06 | Permission labels, order, and raw option IDs survive projection; one request receives at most one response | Exact-option, completed wire-ID replay, and stale responder tests | PASS |
-| C1-07 | Concurrent request responses may arrive out of order and resolve only their matching waiters | Correlation test and 16-pending boundary | PASS |
+| C1-06 | Permission labels, order, and raw option IDs survive projection; one request receives at most one response; no cancellation point exists between consuming a responder and queueing its response | Exact-option, completed wire-ID replay, stale responder, and saturated writer queue fail-closed tests | PASS |
+| C1-07 | Concurrent request responses may arrive out of order and resolve only their matching waiters; dropping a queued request waiter fails closed if no response has matched | Correlation, 16-pending boundary, and dropped queued request tests | PASS |
 | C1-08 | Malformed UTF-8/JSON, missing LF, oversized frame, empty/over-limit/malformed batch, unknown/completed IDs, EOF, closed peer, and bounded ID-history overflow fail visibly without panic or partial dispatch | Incoming/outgoing frame boundaries, duplicate IDs, 4,096-ID and 1 MiB history limits, and transport tests | PASS |
 | C1-09 | Item-count, event-byte-budget, pending-permission, and batch-element limits fail closed without dropping an event or growing a queue | 128/129 events, four/five large queued events, 16/17 permissions, 16-entry response-array ordering, and 17-entry rejection | PASS |
 | C1-10 | Stderr is continuously drained without retaining/logging its contents | Injected reader test asserting zero retained bytes | PASS |

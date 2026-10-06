@@ -6,19 +6,19 @@
 - Product scope: [A4 Codex task v1](vega-acp-codex-v1-spec.md)
 - Evidence class: in-process scripted peer / Tokio duplex transport
 - Status: implemented; ready for main-agent review
-- Spec corrections: corrected the stale batch-array rejection statement to match the frozen <=16 element batch contract; updated the feature list and A4 module description to say Vega uses its own bounded headless stdio runtime without the ACP Rust SDK; added fixed inbound request-ID history limits. The local PRD copy was left unchanged because the repository workflow makes Notion authoritative.
+- Spec corrections: corrected the stale batch-array rejection statement to match the frozen <=16 element batch contract; updated the feature list and A4 module description to say Vega uses its own bounded headless stdio runtime without the ACP Rust SDK; added fixed inbound request-ID history and 32-command writer queue limits; specified terminal `WriterQueueFull` behavior, terminal malformed initialize results, and the `RequestAbandoned` policy for dropping queued outbound request waiters. Corrected stale SDK claims in the research table and transport-decision note. The local PRD copy was left unchanged because the repository workflow makes Notion authoritative.
 
 ## Acceptance cases
 
 | ID | Case | Evidence | State |
 |---|---|---|---|
 | C1-01 | Launch validation | Exact argument count/byte boundaries and a spawn observer | PASS |
-| C1-02 | Stable v1 initialization | Handshake, capabilities, and unsupported version scripted-peer tests | PASS |
+| C1-02 | Stable v1 initialization | Valid handshake, unsupported version, and malformed result terminal scripted-peer tests | PASS |
 | C1-03 | Session operations | New/load/resume, paths, IDs, and mode request/response tests | PASS |
 | C1-04 | Prompt lifecycle | Ordered updates and terminal stop reason test | PASS |
 | C1-05 | Cancel lifecycle | Cancel notification remains distinct from prompt completion | PASS |
-| C1-06 | Permission projection | Original options, exactly-once response, stale responder, and reused wire ID tests | PASS |
-| C1-07 | Correlation and pending limit | Out-of-order response mapping and 16/17 outbound request boundary | PASS |
+| C1-06 | Permission projection and response delivery | Original options, exactly-once response, stale responder, reused wire ID, and saturated writer queue terminal test | PASS |
+| C1-07 | Correlation and pending limit | Out-of-order response mapping, 16/17 outbound request boundary, and dropped queued request fail-closed test | PASS |
 | C1-08 | Framing and IDs | UTF-8/JSON/EOF/batch failures, exact inbound/outbound 1 MiB line limits, completed IDs, and 4,096-ID/1 MiB history limits | PASS |
 | C1-09 | Bounded queues and batches | 128/129 events, byte budget, 16/17 permission requests, batch boundary and response-array order | PASS |
 | C1-10 | Stderr | Fixed-buffer drain/discard seam retains zero bytes | PASS |
@@ -30,12 +30,15 @@ Commands are package-scoped; no workspace-wide test, format, or clippy command w
 
 | Command | Exit | Result |
 |---|---:|---|
-| `CARGO_NET_OFFLINE=true cargo nextest run -p vega_acp` | 0 | 25 passed, 0 failed |
+| `CARGO_NET_OFFLINE=true cargo nextest run -p vega_acp` | 0 | 28 passed, 0 failed |
+| `CARGO_NET_OFFLINE=true cargo nextest run -p vega_acp c1_07_dropping_enqueued_request_fails_connection_closed` | 100, then 0 | Regression failed before the guard policy was implemented, then passed once dropping an enqueued, unmatched request failed the connection with `RequestAbandoned`. |
 | Debug-only `cargo test -p vega_acp c1_09_event_byte_budget_overflow_fails_without_dropping_queued_events -- --nocapture` | 101, then 0 | First run exposed a timing assumption in the test; it now waits for the terminal signal before checking retained permits. Final acceptance uses the Nextest command above. |
 | `cargo fmt -p vega_acp` | 0 | Formatted package sources |
 | `cargo fmt -p vega_acp -- --check` | 0 | Clean |
 | `CARGO_NET_OFFLINE=true cargo clippy -p vega_acp --all-targets -- -D warnings` | 0 | Clean with warnings denied |
 | `git diff --check` | 0 | Clean |
+
+Follow-up verification note: the first full run after adding bounded response enqueue exposed that the inbound ID-count test peer did not read its 256 batch responses, so the new bounded writer correctly closed before the ID-history boundary and the scripted peer observed `BrokenPipe`. The test peer now drains each response array before sending the next frame; the final full package run passes. An initial focused saturation-test run was interrupted after its cleanup awaited blocked outbound calls serially; the regression cleanup now closes the duplex peer and aborts those scripted calls.
 
 Branch: `feat/281-acp-runtime`. Base: `origin/master` at `d9dceccd287fce0e28566e349fb89377143ad43a`. Final HEAD is recorded in the handoff message.
 

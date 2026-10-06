@@ -69,7 +69,7 @@ v2.1.1 的 initialize 源码声明 loadSession、resume、list、close、delete�
 | 模块 | 当前入口 | 建议改动 |
 |---|---|---|
 | 任务调度 | crates/vega/src/app_agent.rs；window/agent.rs | 引入 Native 与 ACP 任务后端分派，共用运行归属、取消与后台状态 |
-| 协议与进程 | workspace 当前没有 ACP crate | 新增无 GPUI 依赖的 vega_acp，封装 SDK、进程与 capability 协商 |
+| 协议与进程 | workspace 当前没有 ACP crate | 新增无 GPUI 依赖的 vega_acp，自研有界 headless stdio runtime、进程与 capability 协商；不引入 ACP Rust SDK |
 | 会话映射 | crates/vega_conversation/src/agent；types/events.rs | 添加外部消息、工具、审批与失败的类型化投影 |
 | 持久化 | crates/vega_conversation/src/types/thread.rs；vega_store | 增量 migration 保存后端、profile 与外部 session 绑定；旧任务默认 Native |
 | Composer 与设置 | crates/vega_ui/src/conversation_stream；settings | 新任务 Agent 选择器、连接状态、Agent 配置控件 |
@@ -158,7 +158,7 @@ fs/read_text_file、fs/write_text_file 和 terminal/* 是 Client 可选能力。
 
 尚未发布的 main snapshot v2.1.1 仅在 APP_SERVER_LOGS 被设置时启用文件日志，而 prompt 处理代码会把输入放入日志上下文。Vega 默认保持该日志关闭，对 stderr 和可见错误进行限量、脱敏处理；集成前仍须对 pinned v2.0.0 核对相同行为。[Logger](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/Logger.ts)、[Prompt 日志位置](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/CodexAcpServer.ts#L2858)
 
-SDK v2.2.0 的公开传输架构使用 unbounded channels。Vega 需要审查并限制完整读入/分派路径的积压；只限制 UI 队列不足以证明整个进程内存有界。具体限制与 SDK 接入策略应由协议核心卡先验证。[SDK 传输架构](https://github.com/agentclientprotocol/rust-sdk/blob/v2.2.0/md/transport-architecture.md)
+SDK v2.2.0 的公开传输架构使用 unbounded channels；这一点是排除该 SDK 的依据。A4-C1 已决定不引入 SDK，并实现自研有界 headless stdio runtime，在帧读取、writer 命令、待处理请求、事件与 ID 历史入口执行容量约束。SDK transport 策略已由 C1 解决，不再待协议核心卡验证。[SDK 传输架构](https://github.com/agentclientprotocol/rust-sdk/blob/v2.2.0/md/transport-architecture.md)、[A4-C1 runtime 合约](vega-acp-codex-c1-runtime.md)
 
 ## 建议实施顺序
 
