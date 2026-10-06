@@ -122,7 +122,7 @@
 ## Phase 2+ 模块（backlog 级）
 
 ### A4 · ACP 编排层 [Phase 2]
-- A4-01 ACP client（agent-client-protocol Rust SDK）
+- A4-01 ACP v1 client（Vega 自行实现的有界 headless stdio runtime）
 - A4-02 外部 agent 进程管理（spawn/monitor/kill：codex / claude-code）
 - A4-03 统一会话模型（外部 agent 消息映射进 Vega thread，同视图）
 - A4-04 外部 agent token/成本归集（API 返回为准，尽力而为）

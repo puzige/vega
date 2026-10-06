@@ -16,12 +16,12 @@
 |---|---|---|
 | ACP 协议 | 稳定 v1；v2 仍为 draft，Rust SDK 使用独立的 unstable_protocol_v2 开关 | 首版选择稳定 v1，并校验 initialize 返回的 protocolVersion |
 | 官方 Rust SDK | agent-client-protocol 发布版 v2.2.0；Rust 最低版本 1.88，schema 依赖 1.9.1 | SDK 的包版本 2.2.0 与协议 major version 是两个版本体系 |
-| Codex ACP 适配器 | 新维护仓库 agentclientprotocol/codex-acp，发布版 v2.1.1 | 采用新适配器，避免基于已经迁移的旧 Zed 实现开始接入 |
-| 适配器运行依赖 | v2.1.1 声明 @openai/codex ^0.159.1、TypeScript SDK ^1.5.0；npm 包包含 Codex 依赖 | 发布时锁定实际解析的依赖、运行时与完整性信息 |
-| 本机 Codex CLI | codex --version 返回 codex-cli 0.157.0；CLI 帮助提供 app-server，没有 acp 子命令 | 使用 CODEX_PATH 指向本机 CLI 的组合需要另行验证 |
+| Codex ACP 适配器 | 官方正式 release 为 v2.0.0（2026-09-28）；release package 包含 Codex 0.158.0 | 使用有正式 tag 的适配器；集成验收需固定 v2.0.0 与其 bundled Codex |
+| 适配器运行依赖 | v2.0.0 tag 的 package.json 声明 @openai/codex ^0.158.0；main 上的 v2.1.1 / ^0.159.1 尚非正式 release | 测试按 v2.0.0 固定，不把 main 上代码或依赖视为已发布行为 |
+| 本机 Codex CLI | codex --version 返回 codex-cli 0.157.0；CLI 帮助提供 app-server，没有 acp 子命令 | 与正式适配器 bundled Codex 0.158.0 的兼容性没有证据，不用本机 0.157.0 代替 pinned-release 验收 |
 | 本机 App Server | app-server --help 提供默认 stdio://，并标为 experimental | 首版使用本地 stdio；Vega 显示连接与版本错误 |
 
-版本证据：[Rust SDK 发布版](https://github.com/agentclientprotocol/rust-sdk/releases/tag/v2.2.0)、[SDK 清单](https://github.com/agentclientprotocol/rust-sdk/blob/v2.2.0/Cargo.toml)、[SDK 稳定与 draft API](https://github.com/agentclientprotocol/rust-sdk/blob/v2.2.0/README.md)、[Codex 适配器发布版](https://github.com/agentclientprotocol/codex-acp/releases/tag/v2.1.1)、[适配器依赖](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/package.json)。
+release 证据：[Rust SDK 发布版](https://github.com/agentclientprotocol/rust-sdk/releases/tag/v2.2.0)、[SDK 清单](https://github.com/agentclientprotocol/rust-sdk/blob/v2.2.0/Cargo.toml)、[SDK 稳定与 draft API](https://github.com/agentclientprotocol/rust-sdk/blob/v2.2.0/README.md)、[Codex 适配器 v2.0.0 正式 release](https://github.com/agentclientprotocol/codex-acp/releases/tag/v2.0.0)、[v2.0.0 package.json](https://github.com/agentclientprotocol/codex-acp/blob/v2.0.0/package.json)。调研中标记为 v2.1.1 的源码链接指向尚未正式发布的 main 快照，不作为 v2.0.0 release 行为或与本机 CLI 0.157.0 兼容性的证据。
 
 这里的 ACP 指 Agent Client Protocol。其客户端用于承载完整编码 Agent 的会话；Vega 现有 MCP 接入用于向 Agent 提供工具。两个模块需要各自保留会话与权限边界。[ACP 架构](https://agentclientprotocol.com/get-started/architecture)
 
@@ -152,11 +152,11 @@ fs/read_text_file、fs/write_text_file 和 terminal/* 是 Client 可选能力。
 
 退出顺序先取消当前轮次，处理待审批，再在支持时关闭 session，最后等待拥有的进程退出。超时清理只针对本次启动且身份仍匹配的进程。切换当前视图不等于结束后台任务。[ACP stdio](https://agentclientprotocol.com/protocol/v1/transports)
 
-调研阶段建议使用锁定版本的 npm 适配器及其兼容 Codex 依赖。生产分发需选择用户配置的已安装命令，或 Vega 管理的 helper 与运行时。v2.1.1 的 GitHub Release 当前没有二进制附件；仓库虽然提供 Bun 编译脚本，不能据此认定现成 macOS 包已可用。[发布资产](https://github.com/agentclientprotocol/codex-acp/releases/tag/v2.1.1)、[打包脚本](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/package.json)
+正式 release 是 v2.0.0，包含 Codex 0.158.0。集成验收固定该 release 及其 bundled Codex；本机 CLI 0.157.0 不作为兼容替代。生产分发需选择用户配置的已安装命令，或 Vega 管理的 helper 与运行时。Bun 打包脚本和发布资产仍需在分发卡中单独核实。[v2.0.0 发布资产](https://github.com/agentclientprotocol/codex-acp/releases/tag/v2.0.0)、[main snapshot 打包脚本](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/package.json)
 
 配置中的 executable 使用已验证的绝对路径与参数数组，并记录可执行文件身份。将 adapter、Codex 及运行时升级作为一个兼容组合处理。读取项目后直接自动安装或执行其提供的命令，不属于当前方案。
 
-v2.1.1 仅在 APP_SERVER_LOGS 被设置时启用文件日志，而 prompt 处理代码会把输入放入日志上下文。Vega 默认保持该日志关闭，对 stderr 和可见错误进行限量、脱敏处理；诊断导出保存结构化状态。[Logger](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/Logger.ts)、[Prompt 日志位置](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/CodexAcpServer.ts#L2858)
+尚未发布的 main snapshot v2.1.1 仅在 APP_SERVER_LOGS 被设置时启用文件日志，而 prompt 处理代码会把输入放入日志上下文。Vega 默认保持该日志关闭，对 stderr 和可见错误进行限量、脱敏处理；集成前仍须对 pinned v2.0.0 核对相同行为。[Logger](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/Logger.ts)、[Prompt 日志位置](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/CodexAcpServer.ts#L2858)
 
 SDK v2.2.0 的公开传输架构使用 unbounded channels。Vega 需要审查并限制完整读入/分派路径的积压；只限制 UI 队列不足以证明整个进程内存有界。具体限制与 SDK 接入策略应由协议核心卡先验证。[SDK 传输架构](https://github.com/agentclientprotocol/rust-sdk/blob/v2.2.0/md/transport-architecture.md)
 

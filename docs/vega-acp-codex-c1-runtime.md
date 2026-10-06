@@ -32,6 +32,7 @@ ACP v1 stdio is UTF-8 JSON-RPC 2.0 with one frame per newline-delimited line. A 
 | Adapter argument count / aggregate encoded argument bytes | 128 / 65,536 bytes | Reject configuration before process creation |
 | Outbound requests awaiting responses | 16 per connection | Reject the next request before writing it |
 | Unanswered inbound requests | 16 per connection | Fail the connection; do not silently drop a permission request |
+| Seen inbound JSON-RPC request IDs | 4,096 IDs and 1,048,576 UTF-8 identifier bytes per connection lifetime | Never evict completed IDs; fail the connection with `RequestIdHistoryFull` before admitting a new ID beyond either limit |
 | Buffered events | 128 events and 4,194,304 serialized bytes per connection | Fail the connection; do not drop text, permission, update, or terminal events |
 | Weight per queued event | 4,096 serialized bytes per permit, rounded up | Event admission fails closed if the byte budget is exhausted |
 | Retained stderr | 0 bytes | Drain with the fixed 8,192-byte scratch buffer and discard; never log its contents |
@@ -39,23 +40,23 @@ ACP v1 stdio is UTF-8 JSON-RPC 2.0 with one frame per newline-delimited line. A 
 
 The frame reader checks the limit before appending bytes. The event queue is bounded by both item count and byte permits held by each queued event. Full queues cause a typed visible connection failure and owned-child cleanup; they never drop an event and continue. Only one frame is decoded at a time per connection. JSON parsing uses `serde_json`'s default recursion limit. No unbounded channel is permitted in this crate.
 
-Unknown, duplicate, or already-completed JSON-RPC request IDs fail closed. Connection termination completes all outbound request waiters and permission responders with a sanitized typed error. Error values exposed outside the crate contain a category and safe display text only, never raw prompt, workspace contents, environment values, stderr, or credentials.
+Unknown, duplicate, or already-completed wire request IDs fail closed. The runtime retains inbound wire IDs for the connection lifetime within the count and byte budgets above; once either budget is full, the next unique inbound request terminates the connection rather than evicting an ID. Replaying an active or completed inbound wire ID fails with `DuplicateRequestId`; replying again through an already-completed local permission responder returns `PermissionRequestClosed`; replaying a response for a completed outbound request fails with `UnknownRequestId`. Connection termination completes all outbound request waiters and permission responders with a sanitized typed error. Error values exposed outside the crate contain a category and safe display text only, never raw prompt, workspace contents, environment values, stderr, or credentials.
 
 ## Acceptance matrix
 
 | ID | Requirement | In-process test evidence | Status |
 |---|---|---|---|
-| C1-01 | Invalid executable/cwd and over-limit launch arguments are rejected before process creation | launch-config validation tests with a spawn observer | NOT RUN |
-| C1-02 | `initialize` requests stable v1; an unsupported protocol version prevents session creation; returned capabilities are represented exactly | duplex transport protocol tests | NOT RUN |
-| C1-03 | Session new/load/resume and workspace-write mode preserve exact paths, session ID, and response values | request/response tests over a scripted in-memory peer | NOT RUN |
-| C1-04 | Prompt updates are delivered in order and completion reports the returned stop reason | multi-message peer script and completion-handle test | NOT RUN |
-| C1-05 | Cancel sends the protocol notification but remains stopping until the original prompt completion arrives | cancel/prompt lifecycle test | NOT RUN |
-| C1-06 | Permission labels, order, and raw option IDs survive projection; one request receives at most one response | duplicate, stale, and exact-option responder tests | NOT RUN |
-| C1-07 | Concurrent request responses may arrive out of order and resolve only their matching waiters | correlation test with distinct request IDs | NOT RUN |
-| C1-08 | Malformed UTF-8/JSON, missing LF, oversized frame, empty/over-limit/malformed batch, unknown response, EOF, and closed peer fail visibly without panic or partial dispatch | bounded frame and transport state tests | NOT RUN |
-| C1-09 | Item-count, event-byte-budget, and batch-element overflow fail closed without dropping an event or growing a queue | queue-boundary tests at and one over each limit, including preserved response-array ordering | NOT RUN |
-| C1-10 | Stderr is continuously drained without retaining/logging its contents | injected reader test asserting zero retained bytes | NOT RUN |
-| C1-11 | Shutdown affects only this connection's child and resolves pending work as interrupted/unknown | owned-child lifecycle tests using the in-process process seam | NOT RUN |
+| C1-01 | Invalid executable/cwd and over-limit launch arguments are rejected before process creation | Launch validation covers the exact argument-count and aggregate-byte limits plus a spawn observer | PASS |
+| C1-02 | `initialize` requests stable v1; an unsupported protocol version prevents session creation; returned capabilities are represented exactly | Duplex protocol tests | PASS |
+| C1-03 | Session new/load/resume and workspace-write mode preserve exact paths, session ID, and response values | Scripted in-memory peer | PASS |
+| C1-04 | Prompt updates are delivered in order and completion reports the returned stop reason | Multi-message peer script and completion handle | PASS |
+| C1-05 | Cancel sends the protocol notification but remains stopping until the original prompt completion arrives | Cancel/prompt lifecycle test | PASS |
+| C1-06 | Permission labels, order, and raw option IDs survive projection; one request receives at most one response | Exact-option, completed wire-ID replay, and stale responder tests | PASS |
+| C1-07 | Concurrent request responses may arrive out of order and resolve only their matching waiters | Correlation test and 16-pending boundary | PASS |
+| C1-08 | Malformed UTF-8/JSON, missing LF, oversized frame, empty/over-limit/malformed batch, unknown/completed IDs, EOF, closed peer, and bounded ID-history overflow fail visibly without panic or partial dispatch | Incoming/outgoing frame boundaries, duplicate IDs, 4,096-ID and 1 MiB history limits, and transport tests | PASS |
+| C1-09 | Item-count, event-byte-budget, pending-permission, and batch-element limits fail closed without dropping an event or growing a queue | 128/129 events, four/five large queued events, 16/17 permissions, 16-entry response-array ordering, and 17-entry rejection | PASS |
+| C1-10 | Stderr is continuously drained without retaining/logging its contents | Injected reader test asserting zero retained bytes | PASS |
+| C1-11 | Shutdown affects only this connection's child and resolves pending work as interrupted/unknown | Owned-child lifecycle tests using the in-process process seam | PASS |
 
 All automated tests are in-process and use a scripted ACP peer over Tokio duplex I/O or an injected process seam. Do not add a test that launches a real external executable or uses network access. This follows the repository's #149 test policy; a real `codex-acp` run is reserved for the later user-authorized integration acceptance.
 

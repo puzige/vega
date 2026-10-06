@@ -32,7 +32,7 @@ Composer 显示实际后端和模式。Codex 使用自己的配置选项，现�
 
 | 所属模块 | 职责与改动入口 |
 |---|---|
-| vega_acp（新 headless crate） | 稳定 v1 SDK、进程、握手、配置、session 和协议事件；无 GPUI 依赖 |
+| vega_acp（新 headless crate） | 稳定 v1 协议、进程、握手、配置、session 和协议事件；自有有界 stdio runtime，无 GPUI 依赖 |
 | vega_conversation | 任务后端分派、ACP 事件转换、外部审批队列、持久化投影和恢复协调 |
 | vega_store | 新增 migration、profile、session 绑定、外部活动和用量快照的存取 |
 | vega / app_agent | 保留运行 owner / cancel / 后台状态；在构造 Native Provider 和 Tools 之前分派后端 |
@@ -69,11 +69,11 @@ Client 暂不声明 `fs/read_text_file`、`fs/write_text_file` 或 `terminal/*`�
 
 ACP v1 stdio 按换行界定 frame；frame 可以是单个 JSON-RPC 消息或批次数组。Vega runtime 保留批次边界，校验完整 frame 后整体分派，并将需回复的 batch entries 合并为一条 response array。单帧、批次元素、请求数、事件容量、stderr 处理及超限收尾的具体值见 [A4-C1 runtime 合约](vega-acp-codex-c1-runtime.md)。协议读写持续推进，审批等待不阻断其他响应和取消；任何已声明的容量溢出均显式失败且不丢失权限请求、终态或历史。
 
-实现规格已确定单帧、待处理请求、活动队列、stderr retention 和超限收尾边界，详见 A4-C1。ACP v1 stdio 不声明批次数组支持，Vega 对顶层数组拒绝且不分拆派发。协议读写持续推进，审批等待不阻断其他响应和取消；队列溢出会终结连接，而非丢弃内容后继续。
+实现规格已确定单帧、待处理请求、活动队列、stderr retention 和超限收尾边界，详见 A4-C1。ACP v1 stdio 接受至多 16 个元素的批次帧，完整验证后保留批次边界，并按原顺序将 response-bearing entries 合并为一个 response array；不拆分、重排或部分派发。协议读写持续推进，审批等待不阻断其他响应和取消；队列溢出会终结连接，而非丢弃内容后继续。
 
 ## 6. 审批与默认模式
 
-首版新 Codex 编码任务建议使用 `workspace-write`，在首次 prompt 前设置并等待 Agent 确认。适配器默认的 `agent` 模式使用 auto_review；不得把尚未确认的默认值显示为用户审批模式。[Codex 模式](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/AgentMode.ts)
+首版新 Codex 编码任务建议使用 `workspace-write`，在首次 prompt 前设置并等待 Agent 确认。适配器默认的 `agent` 模式使用 auto_review；不得把尚未确认的默认值显示为用户审批模式。[Codex v2.0.0 模式源码](https://github.com/agentclientprotocol/codex-acp/blob/v2.0.0/src/AgentMode.ts)
 
 审批按 `(thread, run, connection generation, request ID)` 绑定。界面保留 Agent 提供的选项名称和原 `optionId`；提交前验证仍属于当前请求。用户选择只答复一次。取消、停止、断连和过期都终结 responder，旧响应不能投递到新连接。
 
@@ -99,11 +99,11 @@ ACP v1 stdio 按换行界定 frame；frame 可以是单个 JSON-RPC 消息或批
 
 ## 8. 认证、MCP、Skills 与分发
 
-首版认证流程优先支持 Codex 已登录状态及 Agent 返回的 ChatGPT 认证方法。Vega 不读取或复制 Codex 的 OAuth token。API key 和 gateway 方法作为后续独立凭据契约；适配器的 gateway 依赖 Client capability，URL/device-code 也各自有 capability 条件。[认证方法源码](https://github.com/agentclientprotocol/codex-acp/blob/v2.1.1/src/CodexAuthMethod.ts)
+首版认证流程优先支持 Codex 已登录状态及 Agent 返回的 ChatGPT 认证方法。Vega 不读取或复制 Codex 的 OAuth token。API key 和 gateway 方法作为后续独立凭据契约；适配器的 gateway 依赖 Client capability，URL/device-code 也各自有 capability 条件。[Codex v2.0.0 认证方法源码](https://github.com/agentclientprotocol/codex-acp/blob/v2.0.0/src/CodexAuthMethod.ts)
 
 首版不向 ACP 自动导出 Vega Provider 凭据、MCP 或 Skills。Codex 使用的本地配置需在 Agent 设置中明确标识。`mcpServers: []` 只说明 Vega 未传入服务器，不能据此保证 Codex 没有自己的 MCP 配置；实现前须核对启动实际配置及覆盖规则。共享 Vega MCP/Skills 另设授权、同名冲突和撤销规格。
 
-开发接入先支持用户配置的确定 executable 和参数数组，使用锁定的 codex-acp 及其配套 Codex/runtime 组合。本机 CLI 0.157.0 与适配器声明的 ^0.159.1 尚无运行兼容证据。发布包的 helper 分发、许可证、完整性和 macOS 签名需另有交付记录；上游 v2.1.1 Release 未提供二进制附件。
+开发接入先支持用户配置的确定 executable 和参数数组，固定官方 codex-acp v2.0.0 release 与其 bundled Codex 0.158.0。本机 CLI 0.157.0 不作为兼容替代，需在 pinned-release 集成验收中验证具体组合。发布包的 helper 分发、许可证、完整性和 macOS 签名需另有交付记录。
 
 默认不设置 `APP_SERVER_LOGS`。日志和诊断保存限量结构化状态；原始 prompt、文件、环境变量和凭据不进入默认诊断导出。实际对话与工具内容属于用户私有的会话存储，需要沿用现有脱敏及删除生命周期。
 
@@ -129,4 +129,4 @@ ACP v1 stdio 按换行界定 frame；frame 可以是单个 JSON-RPC 消息或批
 - 不同任务收到相同 toolCallId：活动、审批和持久化各自独立。
 - 修改 Agent profile、恢复目录变更、Codex 自有 MCP：不静默改变已绑定任务的权限和配置。
 
-自动门禁采用进程内协议/业务替身，真实 Codex、登录、编辑和原生 UI 单独留证。后续版本 QA 卡记录 Vega 版本、SDK、adapter、Codex/runtime 实际版本、包身份、覆盖用例及未执行项；握手通过不能代替完整编码验收。
+自动门禁采用进程内协议/业务替身，真实 Codex、登录、编辑和原生 UI 单独留证。后续版本 QA 卡记录 Vega 版本、ACP 协议版本、adapter、Codex/runtime 实际版本、包身份、覆盖用例及未执行项；握手通过不能代替完整编码验收。
