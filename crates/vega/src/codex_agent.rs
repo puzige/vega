@@ -167,32 +167,45 @@ pub(crate) fn run_codex_agent_worker(request: CodexWorkerRequest) -> bool {
             return false;
         }
     };
-    let success = runtime.block_on(run_codex_agent_with_connection(
-        &store,
-        connection.clone(),
-        &request.thread,
-        &request.snapshot,
-        &intent_id,
-        &request.prompt,
-        &request.permission_queue,
-        request.cancel,
-        &request.sender,
-    ));
+    let success = runtime.block_on(run_codex_agent_with_connection(CodexAgentRunContext {
+        store: &store,
+        connection: connection.clone(),
+        thread: &request.thread,
+        snapshot: &request.snapshot,
+        intent_id: &intent_id,
+        prompt: &request.prompt,
+        permission_queue: &request.permission_queue,
+        cancel: request.cancel,
+        sender: &request.sender,
+    }));
     runtime.block_on(connection.shutdown());
     success
 }
 
-pub(crate) async fn run_codex_agent_with_connection(
-    store: &Store,
+pub(crate) struct CodexAgentRunContext<'a> {
+    store: &'a Store,
     connection: Arc<Connection>,
-    thread: &Thread,
-    snapshot: &CodexExecutionSnapshot,
-    intent_id: &CodexSessionIntentId,
-    prompt: &str,
-    permission_queue: &PermissionQueue,
+    thread: &'a Thread,
+    snapshot: &'a CodexExecutionSnapshot,
+    intent_id: &'a CodexSessionIntentId,
+    prompt: &'a str,
+    permission_queue: &'a PermissionQueue,
     cancel: CancellationToken,
-    sender: &std_mpsc::SyncSender<AgentUpdate>,
-) -> bool {
+    sender: &'a std_mpsc::SyncSender<AgentUpdate>,
+}
+
+pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContext<'_>) -> bool {
+    let CodexAgentRunContext {
+        store,
+        connection,
+        thread,
+        snapshot,
+        intent_id,
+        prompt,
+        permission_queue,
+        cancel,
+        sender,
+    } = context;
     let fail_intent = |code| {
         let _ = vega_conversation::codex_tasks::mark_codex_session_definitively_failed(
             store, &thread.id, intent_id, code,
@@ -532,15 +545,17 @@ pub(crate) async fn run_codex_agent_with_connection(
                         .await
                         {
                             return finish_codex_prompt_result(
-                                store,
-                                &thread.id,
-                                &assistant_message_id,
-                                &assistant_text,
                                 result,
-                                &mut tool_activities,
-                                &permission_cancel,
-                                permission_queue,
-                                sender,
+                                CodexPromptFinishContext {
+                                    store,
+                                    thread_id: &thread.id,
+                                    message_id: &assistant_message_id,
+                                    assistant_text: &assistant_text,
+                                    activities: &mut tool_activities,
+                                    permission_cancel: &permission_cancel,
+                                    permission_queue,
+                                    sender,
+                                },
                             );
                         }
                         permission_cancel.cancel();
@@ -576,32 +591,48 @@ pub(crate) async fn run_codex_agent_with_connection(
                     return false;
                 };
                 return finish_codex_prompt_result(
-                    store,
-                    &thread.id,
-                    &assistant_message_id,
-                    &assistant_text,
                     result,
-                    &mut tool_activities,
-                    &permission_cancel,
-                    permission_queue,
-                    sender,
+                    CodexPromptFinishContext {
+                        store,
+                        thread_id: &thread.id,
+                        message_id: &assistant_message_id,
+                        assistant_text: &assistant_text,
+                        activities: &mut tool_activities,
+                        permission_cancel: &permission_cancel,
+                        permission_queue,
+                        sender,
+                    },
                 );
             }
         }
     }
 }
 
+struct CodexPromptFinishContext<'a> {
+    store: &'a Store,
+    thread_id: &'a str,
+    message_id: &'a str,
+    assistant_text: &'a str,
+    activities: &'a mut HashMap<String, CodexToolActivity>,
+    permission_cancel: &'a CancellationToken,
+    permission_queue: &'a PermissionQueue,
+    sender: &'a std_mpsc::SyncSender<AgentUpdate>,
+}
+
 fn finish_codex_prompt_result(
-    store: &Store,
-    thread_id: &str,
-    message_id: &str,
-    assistant_text: &str,
     result: vega_acp::PromptResult,
-    activities: &mut HashMap<String, CodexToolActivity>,
-    permission_cancel: &CancellationToken,
-    permission_queue: &PermissionQueue,
-    sender: &std_mpsc::SyncSender<AgentUpdate>,
+    context: CodexPromptFinishContext<'_>,
 ) -> bool {
+    let CodexPromptFinishContext {
+        store,
+        thread_id,
+        message_id,
+        assistant_text,
+        activities,
+        permission_cancel,
+        permission_queue,
+        sender,
+    } = context;
     permission_cancel.cancel();
     permission_queue.timeout_active();
     if result.stop_reason == "cancelled" {

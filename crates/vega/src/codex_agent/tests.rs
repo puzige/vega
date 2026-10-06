@@ -178,17 +178,17 @@ async fn issue287_set_mode_rejection_is_definitive_and_never_prompts() {
     });
     let (sender, _receiver) = std_mpsc::sync_channel(8);
     assert!(
-        !run_codex_agent_with_connection(
-            &store,
-            connection.clone(),
-            &thread,
-            &snapshot,
-            &intent_id,
-            "do not send",
-            &PermissionQueue::new(),
-            CancellationToken::new(),
-            &sender,
-        )
+        !run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &store,
+            connection: connection.clone(),
+            thread: &thread,
+            snapshot: &snapshot,
+            intent_id: &intent_id,
+            prompt: "do not send",
+            permission_queue: &PermissionQueue::new(),
+            cancel: CancellationToken::new(),
+            sender: &sender,
+        })
         .await
     );
     server.await.unwrap();
@@ -231,17 +231,17 @@ async fn issue287_set_mode_transport_loss_is_uncertain_and_never_prompts() {
     });
     let (sender, _receiver) = std_mpsc::sync_channel(8);
     assert!(
-        !run_codex_agent_with_connection(
-            &store,
-            connection.clone(),
-            &thread,
-            &snapshot,
-            &intent_id,
-            "do not send",
-            &PermissionQueue::new(),
-            CancellationToken::new(),
-            &sender,
-        )
+        !run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &store,
+            connection: connection.clone(),
+            thread: &thread,
+            snapshot: &snapshot,
+            intent_id: &intent_id,
+            prompt: "do not send",
+            permission_queue: &PermissionQueue::new(),
+            cancel: CancellationToken::new(),
+            sender: &sender,
+        })
         .await
     );
     server.await.unwrap();
@@ -394,17 +394,17 @@ async fn issue287_first_codex_prompt_waits_for_empty_set_mode_ack_and_durable_bi
         (expected_thread_id, prompt)
     });
     let (sender, receiver) = std_mpsc::sync_channel(16);
-    let success = run_codex_agent_with_connection(
-        &store,
-        connection.clone(),
-        &thread,
-        &snapshot,
-        &intent_id,
-        "edit the project",
-        &PermissionQueue::new(),
-        CancellationToken::new(),
-        &sender,
-    )
+    let success = run_codex_agent_with_connection(CodexAgentRunContext {
+        store: &store,
+        connection: connection.clone(),
+        thread: &thread,
+        snapshot: &snapshot,
+        intent_id: &intent_id,
+        prompt: "edit the project",
+        permission_queue: &PermissionQueue::new(),
+        cancel: CancellationToken::new(),
+        sender: &sender,
+    })
     .await;
     assert!(
         success,
@@ -526,17 +526,17 @@ async fn issue287_codex_tool_permission_and_lifecycle_keep_exact_option_once() {
     let queue = PermissionQueue::new();
     let mut listener = queue.subscribe();
     let (sender, receiver) = std_mpsc::sync_channel(32);
-    let run = run_codex_agent_with_connection(
-        &store,
-        connection.clone(),
-        &thread,
-        &snapshot,
-        &intent_id,
-        "edit the project",
-        &queue,
-        CancellationToken::new(),
-        &sender,
-    );
+    let run = run_codex_agent_with_connection(CodexAgentRunContext {
+        store: &store,
+        connection: connection.clone(),
+        thread: &thread,
+        snapshot: &snapshot,
+        intent_id: &intent_id,
+        prompt: "edit the project",
+        permission_queue: &queue,
+        cancel: CancellationToken::new(),
+        sender: &sender,
+    });
     let select_permission = async {
         loop {
             assert!(listener.changed().await);
@@ -669,17 +669,17 @@ async fn issue287_late_permission_after_tool_started_fails_closed() {
     let queue = PermissionQueue::new();
     let (sender, _receiver) = std_mpsc::sync_channel(16);
     assert!(
-        !run_codex_agent_with_connection(
-            &store,
-            connection.clone(),
-            &thread,
-            &snapshot,
-            &intent_id,
-            "edit the project",
-            &queue,
-            CancellationToken::new(),
-            &sender,
-        )
+        !run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &store,
+            connection: connection.clone(),
+            thread: &thread,
+            snapshot: &snapshot,
+            intent_id: &intent_id,
+            prompt: "edit the project",
+            permission_queue: &queue,
+            cancel: CancellationToken::new(),
+            sender: &sender,
+        })
         .await
     );
     assert!(queue.take_pending().is_none());
@@ -764,17 +764,17 @@ async fn issue287_stop_during_permission_cancels_session_and_closes_card() {
     let mut listener = queue.subscribe();
     let cancel = CancellationToken::new();
     let (sender, _receiver) = std_mpsc::sync_channel(32);
-    let run = run_codex_agent_with_connection(
-        &store,
-        connection.clone(),
-        &thread,
-        &snapshot,
-        &intent_id,
-        "edit the project",
-        &queue,
-        cancel.clone(),
-        &sender,
-    );
+    let run = run_codex_agent_with_connection(CodexAgentRunContext {
+        store: &store,
+        connection: connection.clone(),
+        thread: &thread,
+        snapshot: &snapshot,
+        intent_id: &intent_id,
+        prompt: "edit the project",
+        permission_queue: &queue,
+        cancel: cancel.clone(),
+        sender: &sender,
+    });
     let stop_after_card = async {
         loop {
             assert!(listener.changed().await);
@@ -841,17 +841,17 @@ async fn issue287_foreign_permission_session_cancels_only_owned_session() {
     });
     let (sender, _receiver) = std_mpsc::sync_channel(16);
     assert!(
-        !run_codex_agent_with_connection(
-            &store,
-            connection.clone(),
-            &thread,
-            &snapshot,
-            &intent_id,
-            "edit the project",
-            &PermissionQueue::new(),
-            CancellationToken::new(),
-            &sender,
-        )
+        !run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &store,
+            connection: connection.clone(),
+            thread: &thread,
+            snapshot: &snapshot,
+            intent_id: &intent_id,
+            prompt: "edit the project",
+            permission_queue: &PermissionQueue::new(),
+            cancel: CancellationToken::new(),
+            sender: &sender,
+        })
         .await
     );
     server.await.unwrap();
