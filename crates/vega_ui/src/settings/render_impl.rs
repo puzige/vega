@@ -826,8 +826,8 @@ impl Render for SettingsView {
             (3, "Pricing", "settings-nav-pricing"),
             (4, "Usage", "settings-nav-usage"),
             (5, "MCP", "settings-nav-mcp"),
-            (6, "Skills", "settings-nav-skills"),
             (7, "Agents", "settings-nav-agents"),
+            (6, "Skills", "settings-nav-skills"),
         ];
         div()
             .id("settings-page")

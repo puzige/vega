@@ -60,9 +60,20 @@ Focused local verification (all exit code 0):
 - `cargo test -p vega_conversation codex_draft_materialization_is_atomic_and_reuses_its_id --no-fail-fast` — 1 passed, 517 filtered.
 - `cargo test -p vega_conversation codex_session_intent_is_durable_and_confirmed_binding_alone_is_prompt_eligible --no-fail-fast` — 1 passed, 517 filtered.
 - `cargo test -p vega_store codex_acp_profile_round_trips_and_rejects_unsafe_launch_values --no-fail-fast` — 1 passed, 153 filtered.
+- `cargo test -p vega_conversation issue287_codex_acp_tool_projection_is_typed_and_value_free --no-fail-fast` — 1 passed, 517 filtered.
+- `cargo clippy -p vega_conversation --all-targets -- -D warnings` — clean, exit code 0.
+- `cargo test -p vega r49_utility_bar_mounts_above_the_card_only_on_the_new_task_page --no-fail-fast` — 1 passed, 239 filtered.
+- `cargo test -p vega_ui r49_utility_bar_keeps_the_frozen_inset_and_chip_ladder --no-fail-fast` — 1 passed, 560 filtered.
+- `cargo test -p vega_ui r64_project_menu_bounds_match_the_baseline --no-fail-fast` — 1 passed, 560 filtered.
+- `cargo test -p vega_ui issue86_mcp_settings_tab_and_shift_tab_move_focus_between_actions --no-fail-fast` — 1 passed, 560 filtered.
+- `cargo test -p vega_ui issue74_skills_settings_import_is_keyboard_reachable --no-fail-fast` — 1 passed, 560 filtered.
+- `cargo test -p vega issue287_ --no-fail-fast` — 10 passed, 230 filtered.
+- `cargo test -p vega_ui issue287_ --no-fail-fast` — 2 passed, 559 filtered.
+- `cargo test -p vega_conversation issue287_ --no-fail-fast` — 2 passed, 516 filtered; auxiliary integration binaries had 0 matching tests.
+- `cargo test -p vega_store codex_acp_profile_round_trips_and_rejects_unsafe_launch_values --no-fail-fast` — 1 passed, 153 filtered.
 - `git diff --check` — clean.
 
-No workspace-wide suite, Clippy run, cloud gate, real adapter acceptance, or merge was performed in this worktree. Initial focused attempts exposed and fixed a permission-fixture discriminator mismatch, UI test assertions, and a test expectation for the ACP transport's cancelled response; final listed runs pass. Record cloud gate, merge SHA, and real adapter evidence after integration.
+The parent-reported cloud run `cargo nextest run --workspace` exited 100 with 2080 passed, 5 failed, and 5 skipped. Three geometry failures came from inserting the backend chip before existing utility controls; two Settings focus failures came from placing Agents after Skills in keyboard order. The backend selector now follows the existing project/branch chips, and Agents precedes Skills in navigation so the established Skills-to-page focus path remains intact; all five named regressions pass in the focused local runs above. No workspace-wide suite was run locally, and real adapter acceptance or merge was not performed. The cloud Clippy finding about a boolean comparison was fixed by using direct negation and the focused conversation Clippy run now passes. Record the next cloud gate, merge SHA, and real adapter evidence after integration.
 
 Resolved verification retries: the first `cargo fmt --all -- --check` exited 1 on rustfmt line wrapping; `cargo fmt --all` was applied and the final format check passed. The new late-permission test command exited 101 twice before its final passing run: the first assertion expected no wire response after cancellation, and the second expected an open request to return the same closed-request error after the transport had already sent its cancelled outcome. The test now verifies that cancellation outcome and that no second permission response can be sent.
 

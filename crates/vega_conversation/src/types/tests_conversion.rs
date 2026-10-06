@@ -492,7 +492,7 @@ fn issue287_codex_acp_tool_projection_is_typed_and_value_free() {
         })
         .to_string(),
     };
-    assert!(call.input_json.contains("Codex ACP") == false);
+    assert!(!call.input_json.contains("Codex ACP"));
     assert!(!call.input_json.contains("echo secret-value"));
     assert!(matches!(
         tool_card_input_projection(&call),

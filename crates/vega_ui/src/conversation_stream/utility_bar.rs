@@ -112,11 +112,11 @@ impl ConversationStream {
                     .pl(px(Layout::COMPOSER_UTILITY_CHIP_INSET))
                     .bg(colors.bg_sidebar)
                     .rounded_t(px(Layout::COMPOSER_UTILITY_BAR_RADIUS))
-                    .child(self.render_utility_backend_chip(cx))
                     .child(self.render_utility_project_chip(window, cx))
                     .when(!self.thread.is_standalone(), |bar| {
                         bar.child(self.render_utility_branch_chip())
-                    }),
+                    })
+                    .child(self.render_utility_backend_chip(cx)),
             )
             .into_any_element()
     }
