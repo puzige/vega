@@ -509,18 +509,18 @@ fn render_line_selectable(
             .child(div().px_2().child("你"))
             .into_any_element(),
         LineKind::UserLine { .. } => {
-            let selected = document.append_styled(
+            let selected = document.append_styled_runs(
                 &text,
-                block_text(&line.spans, user_body_style(colors), colors),
+                block_text_runs(&line.spans, user_body_style(colors), colors),
                 "assistant-user-line",
             );
             item.child(div().px_2().py(px(1.0)).child(selected))
                 .into_any_element()
         }
         LineKind::Code => {
-            let selected = document.append_styled(
+            let selected = document.append_styled_runs(
                 &text,
-                block_text(&line.spans, code_run_style(colors.text_primary), colors),
+                block_text_runs(&line.spans, code_run_style(colors.text_primary), colors),
                 "assistant-code",
             );
             let code = div()
@@ -538,9 +538,9 @@ fn render_line_selectable(
             item.child(code).into_any_element()
         }
         LineKind::Quote => {
-            let selected = document.append_styled(
+            let selected = document.append_styled_runs(
                 &text,
-                block_text(
+                block_text_runs(
                     &line.spans,
                     message_run_style(colors.text_secondary),
                     colors,
@@ -569,9 +569,9 @@ fn render_line_selectable(
             .into_any_element(),
         LineKind::Heading(level) => {
             let (size, weight) = heading_style(level);
-            let selected = document.append_styled(
+            let selected = document.append_styled_runs(
                 &text,
-                block_text(&line.spans, message_run_style(colors.text_primary), colors),
+                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
                 "assistant-heading",
             );
             item.text_size(px(size))
@@ -617,18 +617,18 @@ fn render_line_selectable(
                 );
                 document.append_literal(" ");
             }
-            let content = document.append_styled(
+            let content = document.append_styled_runs(
                 &text,
-                block_text(&line.spans, message_run_style(colors.text_primary), colors),
+                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
                 "assistant-list-content",
             );
             row = row.child(div().flex_1().min_w_0().child(content));
             item.child(row).into_any_element()
         }
         LineKind::Paragraph => {
-            let selected = document.append_styled(
+            let selected = document.append_styled_runs(
                 &text,
-                block_text(&line.spans, message_run_style(colors.text_primary), colors),
+                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
                 "assistant-paragraph",
             );
             item.child(selected).into_any_element()
@@ -676,9 +676,9 @@ fn render_table_selectable(
                 _ => gpui_kit::TextAlign::Left,
             };
             let cell_text: String = spans.iter().map(|span| span.text.as_str()).collect();
-            let selected = document.append_styled(
+            let selected = document.append_styled_runs(
                 &cell_text,
-                block_text(spans, style, colors),
+                block_text_runs(spans, style, colors),
                 &format!("table-{block_id}-{ordinal}-{row_index}-{column}"),
             );
             row = row.child(
@@ -754,14 +754,21 @@ pub(crate) fn block_text(
     colors: &ThemeColors,
 ) -> StyledText {
     let text: String = spans.iter().map(|span| span.text.as_str()).collect();
-    let styled = StyledText::new(text);
+    StyledText::new(text).with_runs(block_text_runs(spans, default_style, colors))
+}
+
+fn block_text_runs(
+    spans: &[StreamSpan],
+    default_style: TextStyle,
+    colors: &ThemeColors,
+) -> Vec<TextRun> {
     let mut runs: Vec<TextRun> = Vec::with_capacity(spans.len());
     for span in spans {
         let mut style = default_style.clone();
         apply_span_style(&mut style, span.style, colors);
         runs.push(style.to_run(span.text.len()));
     }
-    styled.with_runs(runs)
+    runs
 }
 
 /// Applies one [`SpanStyle`] onto a [`TextStyle`] (run-level mapping; colors
