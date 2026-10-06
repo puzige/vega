@@ -185,6 +185,8 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
         tables,
         vec![
             "assistant_run_durations",
+            "codex_session_creations",
+            "codex_task_snapshots",
             "context_checkpoints",
             "context_compaction_status",
             "context_settings",
