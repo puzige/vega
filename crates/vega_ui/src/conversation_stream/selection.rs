@@ -7,7 +7,7 @@ use gpui_kit::base::{
 use gpui_kit::{
     App, BorderStyle, Bounds, Corners, Edges, Element, ElementId, FocusHandle, GlobalElementId,
     Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, PaintQuad, Pixels,
-    Point, SharedString, StyledText, TextLayout, Window, transparent_black,
+    Point, SharedString, StyledText, TextLayout, TextRun, Window, WrappedLine, transparent_black,
 };
 
 use super::model::MessageCopy;
@@ -59,6 +59,30 @@ impl SelectionDocumentBuilder {
         styled: StyledText,
         id_prefix: &str,
     ) -> gpui_kit::AnyElement {
+        self.append(text, styled, None, id_prefix)
+    }
+
+    pub(crate) fn append_styled_runs(
+        &mut self,
+        text: &str,
+        runs: Vec<TextRun>,
+        id_prefix: &str,
+    ) -> gpui_kit::AnyElement {
+        let styled = StyledText::new(text.to_owned()).with_runs(runs.clone());
+        let paint_runs = runs
+            .iter()
+            .any(|run| run.background_color.is_some())
+            .then_some(runs);
+        self.append(text, styled, paint_runs, id_prefix)
+    }
+
+    fn append(
+        &mut self,
+        text: &str,
+        styled: StyledText,
+        paint_runs: Option<Vec<TextRun>>,
+        id_prefix: &str,
+    ) -> gpui_kit::AnyElement {
         let start = self.content.len();
         self.content.push_str(text);
         let end = self.content.len();
@@ -76,6 +100,7 @@ impl SelectionDocumentBuilder {
             runs: self.runs.clone(),
             projected_ranges: self.projected_ranges.clone(),
             selection_color: self.selection_color,
+            paint_runs,
         }
         .into_any_element()
     }
@@ -114,6 +139,7 @@ struct SelectableStyledText {
     runs: Rc<RefCell<Vec<LaidOutRun>>>,
     projected_ranges: Rc<RefCell<Vec<Option<Range<usize>>>>>,
     selection_color: Hsla,
+    paint_runs: Option<Vec<TextRun>>,
 }
 
 impl IntoElement for SelectableStyledText {
@@ -126,7 +152,7 @@ impl IntoElement for SelectableStyledText {
 
 impl Element for SelectableStyledText {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Option<Vec<WrappedLine>>;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -172,6 +198,23 @@ impl Element for SelectableStyledText {
             }
             runs.push((self.content.to_string(), self.text.layout().clone(), bounds));
         });
+        self.paint_runs.as_ref().and_then(|runs| {
+            let line_layouts = self.text.layout().line_layouts();
+            let layout = line_layouts.first()?;
+            match window.text_system().shape_text(
+                self.content.clone(),
+                layout.font_size(),
+                runs,
+                layout.wrap_width,
+                None,
+            ) {
+                Ok(lines) => Some(lines.into_vec()),
+                Err(error) => {
+                    tracing::error!(%error, "failed to shape selectable styled text");
+                    None
+                }
+            }
+        })
     }
 
     fn paint(
@@ -180,10 +223,28 @@ impl Element for SelectableStyledText {
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        prepaint: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some(lines) = prepaint {
+            let line_height = self.text.layout().line_height();
+            let text_bounds = self.text.layout().bounds();
+            let mut origin = text_bounds.origin;
+            for line in lines.iter() {
+                if let Err(error) = line.paint_background(
+                    origin,
+                    line_height,
+                    window.text_style().text_align,
+                    Some(text_bounds),
+                    window,
+                    cx,
+                ) {
+                    tracing::error!(%error, "failed to paint selectable text background");
+                }
+                origin.y += line.size(line_height).height;
+            }
+        }
         if let Some(Some(range)) = self.projected_ranges.borrow().get(self.order as usize) {
             paint_selection(
                 self.text.layout(),
@@ -192,8 +253,27 @@ impl Element for SelectableStyledText {
                 window,
             );
         }
-        self.text
-            .paint(id, inspector_id, bounds, &mut (), &mut (), window, cx);
+        if let Some(lines) = prepaint {
+            let line_height = self.text.layout().line_height();
+            let text_bounds = self.text.layout().bounds();
+            let mut origin = text_bounds.origin;
+            for line in lines.iter() {
+                if let Err(error) = line.paint(
+                    origin,
+                    line_height,
+                    window.text_style().text_align,
+                    Some(text_bounds),
+                    window,
+                    cx,
+                ) {
+                    tracing::error!(%error, "failed to paint selectable styled text");
+                }
+                origin.y += line.size(line_height).height;
+            }
+        } else {
+            self.text
+                .paint(id, inspector_id, bounds, &mut (), &mut (), window, cx);
+        }
     }
 }
 

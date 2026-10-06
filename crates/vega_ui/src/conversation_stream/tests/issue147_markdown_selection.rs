@@ -314,3 +314,197 @@ fn issue147_assistant_markdown_drag_copies_visible_block_text(cx: &mut TestAppCo
     );
     assert!(stream.read_with(&visual, |stream, _| !stream.entries.is_empty()));
 }
+
+const INLINE_HIGHLIGHT_MARKDOWN: &str = "## 开始 Alpha\n中英文混排 Vega 测试🙂 — alpha beta.\n- 列表项一\n- `inline_code`\n| 名称 | 状态 |\n|---|---|\n| Vega | PASS |\n```text\nline-one\nline-two\n```\n末尾 end.";
+const INLINE_HIGHLIGHT_PARAGRAPH: &str = "中英文混排 Vega 测试🙂 — alpha beta.";
+
+fn assert_background_at(
+    visual: &mut VisualTestContext,
+    point: Point<Pixels>,
+    expected: gpui_kit::Hsla,
+    label: &str,
+) {
+    let mut layers = visual.update(|window, _| {
+        let point = point.scale(window.scale_factor());
+        window
+            .painted_quads()
+            .into_iter()
+            .filter(|quad| {
+                quad.bounds.contains(&point) && quad.content_mask.bounds.contains(&point)
+            })
+            .filter_map(|quad| {
+                quad.background
+                    .as_solid()
+                    .filter(|color| color.a > 0.)
+                    .map(|color| (quad.order, color, quad.bounds))
+            })
+            .collect::<Vec<_>>()
+    });
+    layers.sort_by_key(|layer| layer.0);
+    assert_eq!(
+        layers.last().map(|layer| layer.1),
+        Some(expected),
+        "{label}: selected background must survive later paint; point={point:?}, ordered_layers={layers:?}"
+    );
+}
+
+fn assert_range_background(
+    visual: &mut VisualTestContext,
+    layout: &gpui_kit::TextLayout,
+    range: std::ops::Range<usize>,
+    expected: gpui_kit::Hsla,
+    label: &str,
+) {
+    let start = layout
+        .position_for_index(range.start)
+        .expect("range start geometry");
+    let end = layout
+        .position_for_index(range.end)
+        .expect("range end geometry");
+    assert_eq!(start.y, end.y, "fixture selected range stays on one line");
+    assert!(end.x > start.x);
+    for ratio in [0.25, 0.5, 0.75] {
+        assert_background_at(
+            visual,
+            Point::new(
+                start.x + (end.x - start.x) * ratio,
+                start.y + layout.line_height() / 2.,
+            ),
+            expected,
+            label,
+        );
+    }
+}
+
+fn inline_highlight_case(
+    cx: &mut TestAppContext,
+    dark: bool,
+    text: &str,
+    range: std::ops::Range<usize>,
+) {
+    cx.update(gpui_kit::init);
+    selection::SELECTION_RUN_LAYOUTS.with_borrow_mut(Vec::clear);
+    let (_stream, mut visual) =
+        open_selection_harness(cx, assistant_entry(INLINE_HIGHLIGHT_MARKDOWN));
+    visual.update(|window, cx| {
+        let (theme, mode) = if dark {
+            (
+                vega_theme::Theme::dark(),
+                gpui_kit::component::ThemeMode::Dark,
+            )
+        } else {
+            (
+                vega_theme::Theme::light(),
+                gpui_kit::component::ThemeMode::Light,
+            )
+        };
+        gpui_kit::component::Theme::change(mode, Some(window), cx);
+        cx.set_global(theme);
+    });
+    visual.simulate_resize(size(px(1404.), px(860.)));
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        _ = window.draw(cx);
+    });
+    let (layout, text_offset) = selection::SELECTION_RUN_LAYOUTS.with_borrow(|runs| {
+        runs.iter()
+            .rev()
+            .find_map(|(run_text, layout, _)| {
+                run_text.find(text).map(|offset| (layout.clone(), offset))
+            })
+            .expect("production run contains target text")
+    });
+    let layout_range = text_offset + range.start..text_offset + range.end;
+    assert!(
+        visual
+            .update(gpui_kit::base::TextSelection::selected_text)
+            .is_empty()
+    );
+    drag(
+        &mut visual,
+        text_point(&layout, layout_range.start, false),
+        text_point(&layout, layout_range.end, true),
+    );
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        _ = window.draw(cx);
+    });
+    assert_eq!(
+        visual.update(gpui_kit::base::TextSelection::selected_text),
+        text[range.clone()]
+    );
+    visual.simulate_keystrokes("cmd-c");
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(&text[range.clone()])
+    );
+    let selection_color =
+        visual.update(|_, cx| gpui_kit::base::Theme::global(cx).tokens.colors.selection);
+    assert_range_background(
+        &mut visual,
+        &layout,
+        layout_range.clone(),
+        selection_color,
+        text,
+    );
+    if text == "inline_code" && range.start > 0 {
+        let code_background = visual.update(|_, cx| vega_theme::theme(cx).colors.code_bg.into());
+        assert_range_background(
+            &mut visual,
+            &layout,
+            text_offset..layout_range.start,
+            code_background,
+            "unselected inline prefix",
+        );
+        assert_range_background(
+            &mut visual,
+            &layout,
+            layout_range.end..text_offset + text.len(),
+            code_background,
+            "unselected inline suffix",
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn issue147_inline_highlight_light_complete_code(cx: &mut TestAppContext) {
+    inline_highlight_case(cx, false, "inline_code", 0..11);
+}
+
+#[gpui_kit::test]
+fn issue147_inline_highlight_dark_complete_code(cx: &mut TestAppContext) {
+    inline_highlight_case(cx, true, "inline_code", 0..11);
+}
+
+#[gpui_kit::test]
+fn issue147_inline_highlight_light_partial_code(cx: &mut TestAppContext) {
+    inline_highlight_case(cx, false, "inline_code", 2..8);
+}
+
+#[gpui_kit::test]
+fn issue147_inline_highlight_dark_partial_code(cx: &mut TestAppContext) {
+    inline_highlight_case(cx, true, "inline_code", 2..8);
+}
+
+#[gpui_kit::test]
+fn issue147_inline_highlight_light_paragraph_control(cx: &mut TestAppContext) {
+    inline_highlight_case(
+        cx,
+        false,
+        INLINE_HIGHLIGHT_PARAGRAPH,
+        0..INLINE_HIGHLIGHT_PARAGRAPH.len(),
+    );
+}
+
+#[gpui_kit::test]
+fn issue147_inline_highlight_dark_paragraph_control(cx: &mut TestAppContext) {
+    inline_highlight_case(
+        cx,
+        true,
+        INLINE_HIGHLIGHT_PARAGRAPH,
+        0..INLINE_HIGHLIGHT_PARAGRAPH.len(),
+    );
+}
