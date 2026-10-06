@@ -190,6 +190,8 @@ pub struct ConversationStream {
     /// the visible rows — selecting a row still means "switch to it", filtered
     /// or not (R62 R11).
     pub(crate) utility_project_query: String,
+    pub(crate) backend_selector_open: bool,
+    pub(crate) codex_mode_confirmed: bool,
     /// R62 R10: the folder chip's menu search field. An entity rather than a
     /// string because the field is a real editable input with IME support;
     /// `utility_project_query` mirrors its text for the row filter.
@@ -245,6 +247,7 @@ impl EventEmitter<ComposerStopRequested> for ConversationStream {}
 impl EventEmitter<FileIndexRetryRequested> for ConversationStream {}
 impl EventEmitter<ComposerDefaultsRequested> for ConversationStream {}
 impl EventEmitter<ThreadModelSelectionRequested> for ConversationStream {}
+impl EventEmitter<TaskBackendSelectionRequested> for ConversationStream {}
 
 pub(crate) struct InjectionState {
     /// Which assistant entry the replayer feeds.
@@ -497,6 +500,8 @@ impl ConversationStream {
             utility_projects: Vec::new(),
             utility_projects_open: false,
             utility_project_query: String::new(),
+            backend_selector_open: false,
+            codex_mode_confirmed: false,
             utility_project_search,
             permission_picker_open: false,
             model_selector_highlight: 0,
@@ -757,9 +762,61 @@ impl ConversationStream {
         }
     }
 
+    pub(crate) fn request_task_backend(&mut self, backend: TaskBackend, cx: &mut Context<Self>) {
+        if !self.draft_route
+            || !self.entries.is_empty()
+            || self.thread.backend == backend
+            || self.trusted_action_busy
+            || self.composer_submit_pending
+            || self.actions.running
+            || self.model_selection_pending.is_some()
+        {
+            return;
+        }
+        self.backend_selector_open = false;
+        cx.emit(TaskBackendSelectionRequested {
+            thread_id: self.thread.id.clone(),
+            backend,
+        });
+        cx.notify();
+    }
+
+    pub fn select_task_backend(
+        &mut self,
+        backend: TaskBackend,
+        cx: &mut Context<Self>,
+    ) -> Option<Thread> {
+        if !self.draft_route
+            || !self.entries.is_empty()
+            || self.thread.backend == backend
+            || self.trusted_action_busy
+            || self.composer_submit_pending
+            || self.actions.running
+            || self.model_selection_pending.is_some()
+        {
+            return None;
+        }
+        self.thread.backend = backend;
+        self.backend_selector_open = false;
+        self.close_composer_popovers(cx);
+        cx.notify();
+        Some(self.thread.clone())
+    }
+
+    pub fn confirm_codex_mode(&mut self, cx: &mut Context<Self>) {
+        if self.thread.backend == TaskBackend::Codex && !self.codex_mode_confirmed {
+            self.codex_mode_confirmed = true;
+            cx.notify();
+        }
+    }
+
     /// Project identity of the route currently projected by this cached view.
     pub fn route_project_id(&self) -> &str {
         &self.thread.project_id
+    }
+
+    pub fn task_backend(&self) -> TaskBackend {
+        self.thread.backend
     }
 
     /// Rebinds an unmaterialized draft in place. Its stable stream and input
@@ -934,6 +991,11 @@ impl ConversationStream {
     pub fn apply_controller_error(&mut self, cx: &mut Context<Self>) {
         self.actions.pending_mode = None;
         self.controller_error = Some("操作未保存，请重试".into());
+        cx.notify();
+    }
+
+    pub fn apply_codex_route_error(&mut self, message: &'static str, cx: &mut Context<Self>) {
+        self.controller_error = Some(message.into());
         cx.notify();
     }
 

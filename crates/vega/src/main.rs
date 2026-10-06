@@ -26,6 +26,7 @@ mod app_palette;
 mod app_usage;
 mod artifact_controller;
 mod branch_controller;
+mod codex_agent;
 mod commit_controller;
 mod diff_controller;
 mod pricing_controller;

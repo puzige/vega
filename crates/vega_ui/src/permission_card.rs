@@ -8,7 +8,7 @@ use gpui_kit::{
     Window, actions, div, px,
 };
 use vega_conversation::agent::{PERMISSION_TIMEOUT, PermissionLease};
-use vega_conversation::types::{PermissionDecision, PermissionRequest};
+use vega_conversation::types::{PermissionDecision, PermissionOptionChoice, PermissionRequest};
 use vega_theme::{Typography, theme};
 
 use crate::conversation_stream::{MONOFONT, ROW_HEIGHT, display_width};
@@ -36,6 +36,7 @@ enum PermissionFocus {
     Always,
     Reject,
     Note,
+    Acp(usize),
 }
 
 /// Safe presentation copied from a transient request after call-id matching.
@@ -47,6 +48,7 @@ struct SafePermissionPrompt {
     danger_rule_id: Option<String>,
     danger_reason: Option<String>,
     external: bool,
+    acp_options: Option<Vec<PermissionOptionChoice>>,
 }
 
 impl SafePermissionPrompt {
@@ -58,11 +60,20 @@ impl SafePermissionPrompt {
             danger_rule_id: request.danger_rule_id.clone(),
             danger_reason: request.danger_reason.clone(),
             external: request.external.is_some(),
+            acp_options: request.acp_options.clone(),
         }
     }
 
     fn is_danger(&self) -> bool {
         self.danger_rule_id.is_some()
+    }
+
+    fn display_tool(&self) -> &str {
+        if self.tool == "codex_acp" {
+            "Codex ACP"
+        } else {
+            &self.tool
+        }
     }
 }
 
@@ -86,6 +97,7 @@ pub struct PermissionCard {
     once_focus: FocusHandle,
     always_focus: FocusHandle,
     reject_focus: FocusHandle,
+    acp_option_focuses: Vec<FocusHandle>,
     logical_focus: PermissionFocus,
     initial_focus_pending: bool,
     resolved: bool,
@@ -103,6 +115,19 @@ impl PermissionCard {
         let note = cx.new(|cx| TextInput::new(cx, "拒绝原因（可选）", false));
         cx.observe(&note, |_, _, cx| cx.notify()).detach();
         let danger = request.danger_rule_id.is_some();
+        let acp_option_focuses = request
+            .acp_options
+            .as_ref()
+            .map(|options| {
+                (0..options.len())
+                    .map(|index| {
+                        cx.focus_handle()
+                            .tab_index(4 + index as isize)
+                            .tab_stop(true)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let timeout_task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PERMISSION_TIMEOUT).await;
             let _ = this.update(cx, |this, cx| {
@@ -116,7 +141,14 @@ impl PermissionCard {
             once_focus: cx.focus_handle().tab_index(1).tab_stop(true),
             always_focus: cx.focus_handle().tab_index(2).tab_stop(true),
             reject_focus: cx.focus_handle().tab_index(3).tab_stop(true),
-            logical_focus: if danger {
+            acp_option_focuses,
+            logical_focus: if request
+                .acp_options
+                .as_ref()
+                .is_some_and(|options| !options.is_empty())
+            {
+                PermissionFocus::Acp(0)
+            } else if danger {
                 PermissionFocus::Reject
             } else {
                 PermissionFocus::AllowOnce
@@ -129,7 +161,11 @@ impl PermissionCard {
 
     /// Fixed-height rows, including UTF-8-safe wrapped command rows.
     pub fn row_count(&self) -> usize {
-        1 + self.prompt.command_rows.len() + if self.prompt.is_danger() { 2 } else { 0 } + 2
+        if let Some(options) = &self.prompt.acp_options {
+            1 + self.prompt.command_rows.len() + options.len()
+        } else {
+            1 + self.prompt.command_rows.len() + if self.prompt.is_danger() { 2 } else { 0 } + 2
+        }
     }
 
     /// Exact tool/target pair used for durable-card matching.
@@ -141,14 +177,20 @@ impl PermissionCard {
     pub fn visible_text(&self) -> String {
         let mut text = format!(
             "需要权限 {} {}",
-            self.prompt.tool, self.prompt.display_target
+            self.prompt.display_tool(),
+            self.prompt.display_target
         );
         if let Some(reason) = &self.prompt.danger_reason {
             text.push(' ');
             text.push_str(reason);
             text.push_str(" 总是允许仍会在下次危险命令时再次确认");
         }
-        if self.prompt.external {
+        if let Some(options) = &self.prompt.acp_options {
+            for option in options {
+                text.push(' ');
+                text.push_str(&option.name);
+            }
+        } else if self.prompt.external {
             text.push_str(" 允许一次 拒绝");
         } else {
             text.push_str(" 允许一次 总是允许 拒绝");
@@ -181,6 +223,26 @@ impl PermissionCard {
     }
 
     fn deny(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        if let Some(option) = self.prompt.acp_options.as_ref().and_then(|options| {
+            options.iter().find(|option| {
+                option
+                    .kind
+                    .as_deref()
+                    .is_some_and(|kind| kind.starts_with("reject"))
+            })
+        }) {
+            self.resolve(
+                PermissionDecision::AcpOption {
+                    option_id: option.option_id.clone(),
+                },
+                cx,
+            );
+            return;
+        }
+        if self.prompt.acp_options.is_some() {
+            self.resolve(PermissionDecision::Timeout, cx);
+            return;
+        }
         let note = self.note.read(cx).text().trim().to_string();
         self.resolve(
             PermissionDecision::Deny {
@@ -211,10 +273,31 @@ impl PermissionCard {
             PermissionFocus::Always => self.always_focus.focus(window, cx),
             PermissionFocus::Reject => self.reject_focus.focus(window, cx),
             PermissionFocus::Note => self.note.read(cx).focus_handle(cx).focus(window, cx),
+            PermissionFocus::Acp(index) => {
+                if let Some(focus) = self.acp_option_focuses.get(index) {
+                    focus.focus(window, cx);
+                }
+            }
         }
     }
 
     fn cycle_focus(&mut self, reverse: bool, window: &mut Window, cx: &mut App) {
+        if let Some(options) = &self.prompt.acp_options {
+            if options.is_empty() {
+                return;
+            }
+            let current = match self.logical_focus {
+                PermissionFocus::Acp(index) => index,
+                _ => 0,
+            };
+            let next = if reverse {
+                current.checked_sub(1).unwrap_or(options.len() - 1)
+            } else {
+                (current + 1) % options.len()
+            };
+            self.focus(PermissionFocus::Acp(next), window, cx);
+            return;
+        }
         if self.note.read(cx).focus_handle(cx).is_focused(window) {
             self.logical_focus = PermissionFocus::Note;
         }
@@ -225,9 +308,11 @@ impl PermissionCard {
                 (PermissionFocus::Note | PermissionFocus::Always, false) => {
                     PermissionFocus::AllowOnce
                 }
+                (PermissionFocus::Acp(_), false) => PermissionFocus::AllowOnce,
                 (PermissionFocus::AllowOnce, true) => PermissionFocus::Note,
                 (PermissionFocus::Reject, true) => PermissionFocus::AllowOnce,
                 (PermissionFocus::Note | PermissionFocus::Always, true) => PermissionFocus::Reject,
+                (PermissionFocus::Acp(_), true) => PermissionFocus::Reject,
             };
             self.focus(next, window, cx);
             return;
@@ -243,6 +328,7 @@ impl PermissionCard {
             }
             (true, PermissionFocus::Always, true) => PermissionFocus::AllowOnce,
             (true, PermissionFocus::Reject, true) => PermissionFocus::Always,
+            (true, PermissionFocus::Acp(_), _) => PermissionFocus::AllowOnce,
             (false, PermissionFocus::AllowOnce, false) => PermissionFocus::Always,
             (false, PermissionFocus::Always, false) => PermissionFocus::Reject,
             (false, PermissionFocus::Reject, false) => PermissionFocus::Note,
@@ -251,11 +337,27 @@ impl PermissionCard {
             (false, PermissionFocus::Always, true) => PermissionFocus::AllowOnce,
             (false, PermissionFocus::Reject, true) => PermissionFocus::Always,
             (false, PermissionFocus::Note, true) => PermissionFocus::Reject,
+            (false, PermissionFocus::Acp(_), _) => PermissionFocus::AllowOnce,
         };
         self.focus(next, window, cx);
     }
 
     fn activate_focused(&mut self, window: &Window, cx: &mut gpui_kit::Context<Self>) -> bool {
+        if let PermissionFocus::Acp(index) = self.logical_focus
+            && let Some(option) = self
+                .prompt
+                .acp_options
+                .as_ref()
+                .and_then(|options| options.get(index))
+        {
+            self.resolve(
+                PermissionDecision::AcpOption {
+                    option_id: option.option_id.clone(),
+                },
+                cx,
+            );
+            return true;
+        }
         if self.once_focus.is_focused(window) {
             self.resolve(PermissionDecision::Once, cx);
             true
@@ -302,9 +404,11 @@ impl PermissionCard {
             .border_color(colors.warning)
             .bg(colors.bg_elevated)
             .key_context("PermissionCard")
-            .on_action(move |_: &PermissionEnter, _, cx| {
+            .on_action(move |_: &PermissionEnter, window, cx| {
                 action_card.update(cx, |card, cx| {
-                    if card.prompt.is_danger() {
+                    if card.prompt.acp_options.is_some() {
+                        card.activate_focused(window, cx);
+                    } else if card.prompt.is_danger() {
                         card.deny(cx);
                     } else {
                         card.resolve(PermissionDecision::Once, cx);
@@ -352,9 +456,9 @@ impl PermissionCard {
                     colors.warning
                 })
                 .child(if is_danger {
-                    format!("危险命令需要确认 · {}", card_ref.prompt.tool)
+                    format!("危险命令需要确认 · {}", card_ref.prompt.display_tool())
                 } else {
-                    format!("需要权限 · {}", card_ref.prompt.tool)
+                    format!("需要权限 · {}", card_ref.prompt.display_tool())
                 })
                 .into_any_element();
         }
@@ -388,6 +492,34 @@ impl PermissionCard {
                 .child("总是允许仍会在下次危险命令时再次确认")
                 .into_any_element();
         }
+        if let Some(options) = &card_ref.prompt.acp_options {
+            let option_index = row.saturating_sub(command_end);
+            if let Some(option) = options.get(option_index) {
+                let option = option.clone();
+                let focus = card.read(cx).acp_option_focuses[option_index].clone();
+                let option_card = card.clone();
+                return container
+                    .justify_end()
+                    .child(permission_button(
+                        option.name.clone(),
+                        focus,
+                        option_index == 0,
+                        colors,
+                        window,
+                        move |_: &MouseUpEvent, _, cx| {
+                            option_card.update(cx, |card, cx| {
+                                card.resolve(
+                                    PermissionDecision::AcpOption {
+                                        option_id: option.option_id.clone(),
+                                    },
+                                    cx,
+                                );
+                            });
+                        },
+                    ))
+                    .into_any_element();
+            }
+        }
         let note_row = command_end + if is_danger { 2 } else { 0 };
         if row == note_row {
             return container
@@ -412,7 +544,7 @@ impl PermissionCard {
             .justify_end()
             .gap_2()
             .child(permission_button(
-                "允许一次",
+                "允许一次".to_string(),
                 once,
                 true,
                 colors,
@@ -423,7 +555,7 @@ impl PermissionCard {
             ));
         if !card.read(cx).prompt.external {
             container = container.child(permission_button(
-                "总是允许",
+                "总是允许".to_string(),
                 always,
                 false,
                 colors,
@@ -435,7 +567,7 @@ impl PermissionCard {
         }
         container
             .child(permission_button(
-                "拒绝",
+                "拒绝".to_string(),
                 reject,
                 false,
                 colors,
@@ -494,7 +626,7 @@ impl fmt::Debug for PermissionCard {
 }
 
 fn permission_button(
-    label: &'static str,
+    label: String,
     focus: FocusHandle,
     primary: bool,
     colors: vega_theme::ThemeColors,
@@ -586,6 +718,7 @@ mod tests {
             danger_rule_id: danger.then(|| "danger.git_force_push".into()),
             danger_reason: danger.then(|| "强制推送可能覆盖远端历史".into()),
             external: None,
+            acp_options: None,
         };
         let future = queue.request(request, CancellationToken::new());
         let future: DecisionFuture =
@@ -644,6 +777,7 @@ mod tests {
             danger_rule_id: None,
             danger_reason: None,
             external: Some(identity),
+            acp_options: None,
         };
         assert!(
             request

@@ -468,3 +468,34 @@ fn issue114_finish_reasons_map_end_length_and_turn_limit() {
         ));
     }
 }
+
+#[test]
+fn issue287_codex_acp_tool_projection_is_typed_and_value_free() {
+    use super::{
+        CodexAcpActivityIdentity, ToolCall, ToolCardInputProjection, tool_card_input_projection,
+    };
+
+    let identity = CodexAcpActivityIdentity {
+        kind: "execute".into(),
+        arguments_bytes: 35,
+        arguments_sha256: "a".repeat(64),
+        argument_preview: "object with 1 fields".into(),
+    };
+    let call = ToolCall {
+        id: "local-codex-call".into(),
+        tool: "codex_acp".into(),
+        input_json: serde_json::json!({
+            "kind": identity.kind,
+            "arguments_bytes": identity.arguments_bytes,
+            "arguments_sha256": identity.arguments_sha256,
+            "argument_preview": identity.argument_preview,
+        })
+        .to_string(),
+    };
+    assert!(!call.input_json.contains("Codex ACP"));
+    assert!(!call.input_json.contains("echo secret-value"));
+    assert!(matches!(
+        tool_card_input_projection(&call),
+        ToolCardInputProjection::CodexAcp { .. }
+    ));
+}

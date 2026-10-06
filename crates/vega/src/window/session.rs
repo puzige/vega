@@ -201,6 +201,28 @@ impl VegaWindow {
         self.sidebar.update(cx, Sidebar::create_thread);
     }
 
+    pub(crate) fn select_draft_task_backend(
+        &mut self,
+        stream: Entity<ConversationStream>,
+        request: &TaskBackendSelectionRequested,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_draft_route(&request.thread_id)
+            || !self.owns_stream_request(&stream, &request.thread_id, cx)
+        {
+            return;
+        }
+        let updated = stream.update(cx, |stream, cx| {
+            stream.select_task_backend(request.backend, cx)
+        });
+        let Some(updated) = updated else {
+            return;
+        };
+        self.draft = Some(updated.clone());
+        cx.set_global(OpenedThread(Some(updated)));
+        cx.notify();
+    }
+
     /// R69 R1/R2/R4: resolves the thread the content column renders.
     ///
     /// A durable route resolves to itself. The home route (and the window's

@@ -279,6 +279,13 @@ impl Render for VegaWindow {
                                 this.apply_thread_model_selection(stream.clone(), request, cx);
                             })
                             .detach();
+                            cx.subscribe(
+                                &view,
+                                |this, stream, request: &TaskBackendSelectionRequested, cx| {
+                                    this.select_draft_task_backend(stream.clone(), request, cx);
+                                },
+                            )
+                            .detach();
                             cx.subscribe(&view, |this, stream, request, cx| {
                                 this.persist_composer_thinking(stream.clone(), request, cx);
                             })

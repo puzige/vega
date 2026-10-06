@@ -281,9 +281,16 @@ impl ConversationStream {
                             .when(self.composer_branch_entry_visible(), |row| {
                                 row.child(self.render_composer_branch_entry())
                             })
-                            .child(self.render_permission_status(cx))
+                            .when(self.thread.backend == TaskBackend::Native, |row| {
+                                row.child(self.render_permission_status(cx))
+                            })
+                            .when(self.thread.backend == TaskBackend::Codex, |row| {
+                                row.child(self.render_backend_status(cx))
+                            })
                             .child(div().flex_1())
-                            .child(self.render_model_controls(window, cx))
+                            .when(self.thread.backend == TaskBackend::Native, |row| {
+                                row.child(self.render_model_controls(window, cx))
+                            })
                             .when(
                                 self.actions.running || self.composer_submit_pending,
                                 |row| row.child(self.render_composer_stop(cx)),
@@ -437,6 +444,22 @@ impl ConversationStream {
             )
             .when(self.permission_picker_open, |chip| {
                 chip.child(self.render_permission_picker(cx))
+            })
+            .into_any_element()
+    }
+
+    fn render_backend_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        div()
+            .id("composer-backend-status")
+            .debug_selector(|| "composer-backend-status".into())
+            .flex_shrink_0()
+            .text_size(px(Typography::METADATA))
+            .text_color(colors.text_secondary)
+            .child(if self.codex_mode_confirmed {
+                "Codex ACP · workspace-write · on-request"
+            } else {
+                "Codex ACP"
             })
             .into_any_element()
     }

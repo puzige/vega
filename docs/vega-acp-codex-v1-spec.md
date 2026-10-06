@@ -1,6 +1,6 @@
 # Vega A4 首版：新建 Codex 任务
 
-日期：2026-10-06。状态：A4 用户流程与系统规格；[A4-C1 runtime 卡](https://github.com/puzige/vega/issues/281)已进入 In progress，完整功能与原生验收尚未开始。
+日期：2026-10-06。状态：A4 用户流程与系统规格；[A4-C1 runtime 卡](https://github.com/puzige/vega/issues/281)与 [A4-C2A identity 卡](https://github.com/puzige/vega/issues/284)已合并并等待 In review 原生验收；[A4-C2B route 卡](https://github.com/puzige/vega/issues/287)的实现范围和测试矩阵已明确。
 
 用户已确认的流程：**在 Vega 新建任务时选择 Codex，由 Codex 完整执行任务。** 本文将这个流程拆成可实施的契约；版本和上游证据见 [调研报告](vega-acp-codex-research.md)。产品归属为 PRD 的 A4-01～A4-05。
 
@@ -114,11 +114,34 @@ ACP v1 stdio 按换行界定 frame；frame 可以是单个 JSON-RPC 消息或批
 | 顺序 | 交付范围 | 必须闭合的证据 |
 |---|---|---|
 | [A4-C1](vega-acp-codex-c1-runtime.md) | 有界 ACP v1 传输、进程及协议 runtime | 帧与队列上限、握手/会话/权限/停止、超限失败和 owned-child 收尾 |
-| A4-C2 | Vega 任务存储、Agent profile 与 New Task 到完整 Codex 执行 | 草稿、发送、流式活动、原 options 审批、真实编辑/命令/Diff、停止、后台归属 |
+| [A4-C2A](https://github.com/puzige/vega/issues/284) | Vega 任务后端、profile snapshot 与 Codex session identity 持久化 | 旧库 Native 兼容、不可变执行快照、session create intent / confirmed binding 状态机 |
+| [A4-C2B](https://github.com/puzige/vega/issues/287) | New Task 选择 Codex 并完成一次 ACP 编码运行 | profile 配置、草稿路由、先持久绑定再 prompt、活动/审批/停止、真实 workspace diff |
 | A4-C3 | 会话恢复与用量 | resume/load、原子回放、未知结果处理、重复快照、未知费用、子进程收尾 |
 | A4-C4 | 认证、配置及产品交付 | ChatGPT 登录/取消、动态模型、helper 身份、安装与版本回归记录 |
 
-除 A4-C1 外，其余仍是拆卡建议，尚未创建。A4-C1 runtime 可与后续 storage/业务类型准备分开实现；跨 crate 共享业务类型与 app/UI 路由仍由后续单一 owner 负责。代码按仓库要求交给专用子 Agent，主 Agent 负责审查、集成与证据。
+A4-C2B 的一张卡贯通最小可用执行路径；它不包含重启恢复、多 profile 管理、登录 UI 或安装分发。跨 crate 公共类型仍位于 `vega_conversation::types`；代码由专用子 Agent 实现，主 Agent 负责审查、集成与证据。
+
+### A4-C2B：New Task 到一次 ACP 编码运行
+
+Profile 为 Settings → Agents 中的一份本地配置，首版只需一个 Codex ACP profile，字段限于显示名、绝对 executable 路径和参数数组。适配器由用户安装和选择；Vega 不下载它、不读写 Codex 凭据，也不把秘密写进 profile 或任务快照。保存时按 `CodexAdapterArgument` 规则拒绝敏感参数。
+
+New Task 默认 Native。用户只可在尚未提交的草稿中切换 Native / Codex；切换保留输入与附件。历史任务从持久化 backend 还原，不能改 backend。Codex profile 不存在、不可执行或参数无效时显示可操作错误并保留草稿，禁止 fallback 到 Native。
+
+首次 Codex 提交按以下顺序执行：
+
+1. 校验 profile、当前已选项目/worktree 的 canonical root，以及 Codex 当前支持的 prompt 内容；不能表示的附件留在草稿并在任何持久化或发送前解释清楚。
+2. 在单一 thread ID 下 materialize 草稿并保存 immutable execution snapshot 和 session creation intent。
+3. 用冻结的绝对 executable、参数、cwd 启动一个 owned ACP connection；initialize 并要求稳定 v1；创建 session；检查 Agent 声明的模式，设置 `workspace-write`，并等待 Agent 确认。
+4. 将返回的 external session ID 持久确认为该 thread 的 binding。只有 `codex_prompt_binding` 返回已提交的 binding 后才能发送 `session/prompt`。
+5. 若请求是否创建成功未知，持久记录 uncertain outcome；不自动重建 session、不重发 prompt。可确认的 profile、initialize、模式或 session 错误应给出安全错误并保留用户输入。
+
+`workspace-write` 是 Codex v2.0.0 的审批/沙箱预设：其权限策略为 `on-request`，不能将 adapter 默认 `agent` 模式的 `auto_review` 误报为用户确认模式。[Codex v2.0.0 mode definition](https://github.com/agentclientprotocol/codex-acp/blob/v2.0.0/src/AgentMode.ts)
+
+运行时把 ACP 的 assistant text 与 tool lifecycle 投影到现有 `ConversationEvent` / conversation history。外部 `toolCallId` 先和 `(thread, session, connection generation)` 组合，再生成 Vega 本地 ID；活动与权限不能跨任务串联。Approval UI 展示 Agent 原始 option 名称，响应原始 `optionId` 一次；不能把 ACP 选项折叠成 `Once/Always/Deny` 的猜测映射。用户 Stop 触发 `session/cancel` 并收尾等待中的 permission responder；cancel 通知不等于完成，只有 prompt terminal 或连接终止形成终态。后台运行仍属于原 thread。
+
+Agent 的文件变更留在用户已选 workspace。Vega 不合成工具结果或 diff；完成后现有 Review 基于真实 Git 状态展示改动。若 workspace 没有可计算的 Git diff，应明确显示无可用 diff，仍以 workspace 内容为准。
+
+本卡只支持 ACP text prompt blocks。附件不可表示时必须在发送前阻止提交并保留草稿；图片/嵌入资源映射、load/resume 和跨重启 transcript 恢复属于后续卡。
 
 ## 10. 验收清单状态
 

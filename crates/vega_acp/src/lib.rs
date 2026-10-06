@@ -23,5 +23,18 @@ pub const MAX_EVENT_COUNT: usize = 128;
 pub const MAX_EVENT_BYTES: usize = 4_194_304;
 pub const EVENT_WEIGHT_BYTES: usize = 4_096;
 
+#[cfg(feature = "test-support")]
+pub mod test_support {
+    use tokio::io::{AsyncRead, AsyncWrite};
+
+    pub fn connection_from_io<R, W>(reader: R, writer: W) -> super::Connection
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        super::Connection::from_io(reader, writer, None)
+    }
+}
+
 #[cfg(test)]
 mod tests;

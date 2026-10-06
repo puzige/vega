@@ -22,6 +22,52 @@ fn paste(
 }
 
 #[gpui_kit::test]
+async fn issue287_codex_draft_switch_preserves_native_model_text_and_attachment(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue287-draft-switch");
+    stream.update(cx, |stream, cx| {
+        stream.set_draft_route(true, cx);
+        stream
+            .input
+            .update(cx, |input, cx| input.set_text("keep this draft", cx));
+    });
+    paste(window, &stream, cx);
+    let model = stream.read_with(cx, |stream, _| stream.thread.model.clone());
+    let attachment = stream.read_with(cx, |stream, _| stream.attachments[0].clone());
+    stream.update(cx, |stream, cx| {
+        assert!(stream.select_task_backend(TaskBackend::Codex, cx).is_some());
+    });
+    cx.run_until_parked();
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("composer-backend-status").is_some());
+    assert!(visual.debug_bounds("composer-model").is_none());
+    assert!(visual.debug_bounds("composer-permission-status").is_none());
+    stream.update(cx, |stream, cx| {
+        assert!(
+            stream
+                .select_task_backend(TaskBackend::Native, cx)
+                .is_some()
+        );
+    });
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.thread.model.clone()),
+        model
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, cx| stream.input.read(cx).text().to_owned()),
+        "keep this draft"
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.attachments[0].0),
+        attachment.0
+    );
+    let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("composer-model").is_some());
+    assert!(visual.debug_bounds("composer-permission-status").is_some());
+}
+
+#[gpui_kit::test]
 async fn issue63_paste_image_only_submit_reject_and_ack_preserve_new_identical_image(
     cx: &mut TestAppContext,
 ) {

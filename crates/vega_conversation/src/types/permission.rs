@@ -94,6 +94,14 @@ pub struct PermissionRequest {
     pub danger_reason: Option<String>,
     /// Exact external-call identity. `None` for Vega-owned tools.
     pub external: Option<McpCallIdentity>,
+    pub acp_options: Option<Vec<PermissionOptionChoice>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionOptionChoice {
+    pub option_id: String,
+    pub name: String,
+    pub kind: Option<String>,
 }
 
 /// UI decision returned to the runtime permission hook.
@@ -104,9 +112,14 @@ pub enum PermissionDecision {
     /// Allow and remember the exact signature.
     Always,
     /// Reject, optionally with a note.
-    Deny { note: Option<String> },
+    Deny {
+        note: Option<String>,
+    },
     /// Permission wait expired or disappeared.
     Timeout,
+    AcpOption {
+        option_id: String,
+    },
 }
 
 /// Source of a persisted approval audit.
@@ -422,6 +435,7 @@ pub fn permission_request_from_runtime(
         danger_rule_id: prompt.danger.as_ref().map(|danger| danger.rule_id.clone()),
         danger_reason: prompt.danger.as_ref().map(|danger| danger.reason.clone()),
         external: None,
+        acp_options: None,
     }
 }
 
@@ -445,6 +459,7 @@ pub fn mcp_permission_request_from_runtime(
         danger_rule_id: None,
         danger_reason: None,
         external: Some(identity),
+        acp_options: None,
     }
 }
 
@@ -531,6 +546,7 @@ pub fn permission_decision_to_runtime(
         PermissionDecision::Always => vega_runtime::RuntimeUserDecision::Always,
         PermissionDecision::Deny { note } => vega_runtime::RuntimeUserDecision::Deny { note },
         PermissionDecision::Timeout => vega_runtime::RuntimeUserDecision::Timeout,
+        PermissionDecision::AcpOption { .. } => vega_runtime::RuntimeUserDecision::Timeout,
     }
 }
 

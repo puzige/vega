@@ -25,6 +25,7 @@ pub(crate) enum ToolActivityCategory {
     Write,
     Edit,
     Mcp,
+    CodexAcp,
     Skill,
     Other,
 }
@@ -39,6 +40,7 @@ impl ToolActivityCategory {
             Self::Write => "写入文件",
             Self::Edit => "编辑文件",
             Self::Mcp => "调用 MCP",
+            Self::CodexAcp => "Codex ACP",
             Self::Skill => "使用 Skill",
             Self::Other => "处理工具",
         }
@@ -49,7 +51,7 @@ impl ToolActivityCategory {
             Self::Shell => Icon::Terminal,
             Self::Search => Icon::Search,
             Self::Read | Self::Find | Self::Write | Self::Edit | Self::Skill => Icon::Document,
-            Self::Mcp | Self::Other => Icon::Summary,
+            Self::Mcp | Self::CodexAcp | Self::Other => Icon::Summary,
         }
     }
 }
@@ -428,6 +430,7 @@ impl ToolCard {
             (Some(ToolCardInputProjection::Write { .. }), _) => ToolActivityCategory::Write,
             (Some(ToolCardInputProjection::Edit { .. }), _) => ToolActivityCategory::Edit,
             (Some(ToolCardInputProjection::Mcp { .. }), _) => ToolActivityCategory::Mcp,
+            (Some(ToolCardInputProjection::CodexAcp { .. }), _) => ToolActivityCategory::CodexAcp,
             (Some(ToolCardInputProjection::Skill { .. }), _) => ToolActivityCategory::Skill,
             (None, Some(ToolCardResultProjection::InvalidRejected { tool, .. })) => match tool {
                 InvalidToolKind::Bash => ToolActivityCategory::Shell,
@@ -699,6 +702,11 @@ impl ToolCard {
                 identity.exact_tool_name,
                 identity.server_id
             ),
+            (Some(ToolCardInputProjection::CodexAcp { identity, .. }), _) => format!(
+                "{} Codex ACP · {}",
+                generic_verb("运行", self.activity_state(), self.status),
+                identity.kind
+            ),
             _ => CORRUPT_LABEL.to_string(),
         }
     }
@@ -823,7 +831,8 @@ impl ToolCard {
         match &self.input {
             Some(ToolCardInputProjection::Bash { .. }) => true,
             Some(ToolCardInputProjection::ReadOnly { .. })
-            | Some(ToolCardInputProjection::Mcp { .. }) => !self.output_rows.is_empty(),
+            | Some(ToolCardInputProjection::Mcp { .. })
+            | Some(ToolCardInputProjection::CodexAcp { .. }) => !self.output_rows.is_empty(),
             _ => false,
         }
     }
@@ -832,7 +841,8 @@ impl ToolCard {
         match &self.input {
             Some(ToolCardInputProjection::Bash { .. }) => 3 + self.output_rows.len(),
             Some(ToolCardInputProjection::ReadOnly { .. })
-            | Some(ToolCardInputProjection::Mcp { .. }) => self.output_rows.len(),
+            | Some(ToolCardInputProjection::Mcp { .. })
+            | Some(ToolCardInputProjection::CodexAcp { .. }) => self.output_rows.len(),
             _ => 0,
         }
     }
@@ -856,6 +866,14 @@ impl ToolCard {
             Some(ToolCardInputProjection::Mcp { .. }) if !self.output_rows.is_empty() => {
                 Some(ToolDetail {
                     title: None,
+                    command: None,
+                    output: self.output_rows.clone(),
+                    footer: None,
+                })
+            }
+            Some(ToolCardInputProjection::CodexAcp { .. }) if !self.output_rows.is_empty() => {
+                Some(ToolDetail {
+                    title: Some("Codex ACP".to_string()),
                     command: None,
                     output: self.output_rows.clone(),
                     footer: None,
@@ -975,7 +993,8 @@ fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> 
     let output = match projection {
         ToolCardResultProjection::Bash { output, .. }
         | ToolCardResultProjection::ReadOnly { output, .. }
-        | ToolCardResultProjection::Mcp { output, .. } => output,
+        | ToolCardResultProjection::Mcp { output, .. }
+        | ToolCardResultProjection::CodexAcp { output, .. } => output,
         _ => return Vec::new(),
     };
     output.lines().map(str::to_string).collect()

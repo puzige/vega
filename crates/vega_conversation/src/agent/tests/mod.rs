@@ -6,7 +6,7 @@ use tempfile::tempdir;
 use vega_runtime::{MockProvider, ProviderEvent, ScriptStep, StopReason};
 
 use super::*;
-use crate::types::{ConversationEvent, ToolCallStatus};
+use crate::types::{ConversationEvent, PermissionOptionChoice, ToolCallStatus};
 
 mod automatic_titles;
 mod credential_redaction;
@@ -48,6 +48,7 @@ fn permission_request(tool: &str, target: &str) -> PermissionRequest {
         danger_rule_id: None,
         danger_reason: None,
         external: None,
+        acp_options: None,
     }
 }
 

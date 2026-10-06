@@ -212,6 +212,7 @@ const PERMISSION_MODES: [&str; 4] = ["readonly", "confirm", "auto", "full_access
 /// the key value itself is never rendered (safety red line).
 const KEY_STORED_PLACEHOLDER: &str = "•••••••已存储";
 
+mod agents;
 /// The settings view: a plain page with the provider list, the add-provider
 /// form, and the default pickers. Holds its own form input buffers, so it
 /// must be cached by the parent across re-renders (it is rebuilt — reloading

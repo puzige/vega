@@ -175,6 +175,7 @@ fn issue73_external_proposal_and_permission_bind_to_same_safe_identity() {
         danger_rule_id: None,
         danger_reason: None,
         external: Some(identity),
+        acp_options: None,
     };
     assert!(valid_permission_request(&request));
     let mut swapped = request.clone();

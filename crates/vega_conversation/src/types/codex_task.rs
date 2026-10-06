@@ -23,6 +23,69 @@ impl TaskBackend {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexAcpActivityIdentity {
+    pub kind: String,
+    pub arguments_bytes: u64,
+    pub arguments_sha256: String,
+    pub argument_preview: String,
+}
+
+impl CodexAcpActivityIdentity {
+    pub fn is_valid(&self) -> bool {
+        matches!(
+            self.kind.as_str(),
+            "read"
+                | "edit"
+                | "delete"
+                | "move"
+                | "search"
+                | "execute"
+                | "think"
+                | "fetch"
+                | "other"
+        ) && self.arguments_bytes <= 256 * 1024
+            && self.arguments_sha256.len() == 64
+            && self
+                .arguments_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && self.argument_preview.len() <= 2048
+            && !self.argument_preview.chars().any(char::is_control)
+    }
+
+    pub fn permission_target(&self) -> String {
+        format!(
+            "Codex ACP {} · {} bytes · sha256 {} · {}",
+            self.kind, self.arguments_bytes, self.arguments_sha256, self.argument_preview
+        )
+    }
+
+    pub fn from_tool_call(call: &ToolCall) -> Option<Self> {
+        if call.tool != "codex_acp" {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_str(&call.input_json).ok()?;
+        let object = value.as_object()?;
+        let expected = [
+            "kind",
+            "arguments_bytes",
+            "arguments_sha256",
+            "argument_preview",
+        ];
+        if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
+            return None;
+        }
+        let identity = Self {
+            kind: object.get("kind")?.as_str()?.to_owned(),
+            arguments_bytes: object.get("arguments_bytes")?.as_u64()?,
+            arguments_sha256: object.get("arguments_sha256")?.as_str()?.to_owned(),
+            argument_preview: object.get("argument_preview")?.as_str()?.to_owned(),
+        };
+        identity.is_valid().then_some(identity)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexAdapterKind {
     CodexAcp,
@@ -64,6 +127,33 @@ enum CodexAdapterArgumentKind {
 }
 
 impl CodexAdapterArgument {
+    pub fn from_argv(arguments: &[String]) -> Result<Vec<Self>, ConversationError> {
+        let mut parsed = Vec::new();
+        let mut index = 0;
+        while index < arguments.len() {
+            let value = &arguments[index];
+            if value.starts_with('-') {
+                if arguments
+                    .get(index + 1)
+                    .is_some_and(|next| !next.starts_with('-'))
+                {
+                    parsed.push(Self::option(value.clone(), arguments[index + 1].clone())?);
+                    index += 2;
+                } else {
+                    parsed.push(Self::flag(value.clone())?);
+                    index += 1;
+                }
+            } else {
+                parsed.push(Self::positional(value.clone())?);
+                index += 1;
+            }
+        }
+        if parsed.len() > 32 {
+            return Err(ConversationError::InvalidTaskIdentity);
+        }
+        Ok(parsed)
+    }
+
     pub fn new(value: impl Into<String>) -> Result<Self, ConversationError> {
         let value = value.into();
         if value.starts_with('-') {

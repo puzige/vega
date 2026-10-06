@@ -23,6 +23,44 @@ async fn permission_queue_notifies_after_enqueue_without_holding_its_mutex() {
 }
 
 #[tokio::test]
+async fn issue287_permission_queue_preserves_exact_acp_option_identity() {
+    let queue = PermissionQueue::new();
+    let _listener = queue.subscribe();
+    let request = PermissionRequest {
+        call_id: "codex-call-1".into(),
+        tool: "codex_acp".into(),
+        display_target: "Run command".into(),
+        danger_rule_id: None,
+        danger_reason: None,
+        external: None,
+        acp_options: Some(vec![
+            PermissionOptionChoice {
+                option_id: "allow-once-original".into(),
+                name: "Allow once".into(),
+                kind: Some("allow_once".into()),
+            },
+            PermissionOptionChoice {
+                option_id: "reject-original".into(),
+                name: "Reject".into(),
+                kind: Some("reject_once".into()),
+            },
+        ]),
+    };
+    let waiting = queue.request(request, CancellationToken::new());
+    let pending = queue.take_pending().expect("queued ACP permission");
+    assert_eq!(
+        pending.request().unwrap().acp_options.as_ref().unwrap()[0].option_id,
+        "allow-once-original"
+    );
+    let (_, mut lease) = pending.into_parts().unwrap();
+    let decision = PermissionDecision::AcpOption {
+        option_id: "reject-original".into(),
+    };
+    assert!(lease.respond(decision.clone()));
+    assert_eq!(waiting.await.unwrap(), decision);
+}
+
+#[tokio::test]
 async fn permission_queue_fails_closed_without_a_live_notifier() {
     let queue = PermissionQueue::new();
     let decision = queue
@@ -189,6 +227,7 @@ fn issue112_file_permission_queue_accepts_canonical_targets_and_rejects_traversa
             danger_rule_id: None,
             danger_reason: None,
             external: None,
+            acp_options: None,
         };
         assert_eq!(
             crate::agent::permission_queue::valid_permission_request(&request),

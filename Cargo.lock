@@ -7926,6 +7926,8 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "ulid",
+ "vega_acp",
  "vega_conversation",
  "vega_runtime",
  "vega_store",

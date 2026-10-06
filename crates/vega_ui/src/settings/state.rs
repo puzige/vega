@@ -12,7 +12,7 @@ pub struct SettingsView {
     pub(crate) section: usize,
     pub(crate) usage: super::usage::UsageState,
     pub(crate) usage_focuses: [FocusHandle; 6],
-    pub(crate) section_focuses: [FocusHandle; 7],
+    pub(crate) section_focuses: [FocusHandle; 8],
     pub(crate) mcp: super::mcp::McpSettingsState,
     pub(crate) skills: super::skills::SkillsSettingsState,
     pub(crate) config: AppConfig,
@@ -22,6 +22,10 @@ pub struct SettingsView {
     pub(crate) base_url_input: Entity<TextInput>,
     pub(crate) models_input: Entity<TextInput>,
     pub(crate) key_input: Entity<TextInput>,
+    pub(crate) codex_name_input: Entity<TextInput>,
+    pub(crate) codex_executable_input: Entity<TextInput>,
+    pub(crate) codex_args_input: Entity<TextInput>,
+    pub(crate) codex_profile_saving: bool,
     pub(crate) provider_api_focuses: [FocusHandle; 2],
     pub(crate) provider_save_focus: FocusHandle,
     pub(crate) provider_edit_focuses: Vec<(String, FocusHandle)>,
@@ -136,6 +140,12 @@ impl SettingsView {
                 .with_tab_stop(true)
         });
         let key_input = cx.new(|cx| TextInput::new(cx, "API Key", true).with_tab_stop(true));
+        let codex_name_input =
+            cx.new(|cx| TextInput::new(cx, "显示名称", false).with_tab_stop(true));
+        let codex_executable_input =
+            cx.new(|cx| TextInput::new(cx, "绝对 executable 路径", false).with_tab_stop(true));
+        let codex_args_input = cx
+            .new(|cx| TextInput::new_multiline(cx, "参数（每行一个 argv）", 2).with_tab_stop(true));
         let pricing_model_input = cx.new(|cx| TextInput::new(cx, "模型 ID", false));
         let pricing_rate_inputs = [
             cx.new(|cx| TextInput::new(cx, "Base Input", false)),
@@ -147,6 +157,12 @@ impl SettingsView {
             cx.new(|cx| TextInput::new(cx, "Peak Cache Read", false)),
             cx.new(|cx| TextInput::new(cx, "Peak Cache Write", false)),
         ];
+        let profile = config.agent.codex_acp_profile.clone();
+        if let Some(profile) = &profile {
+            codex_name_input.update(cx, |input, cx| input.set_text(&profile.display_name, cx));
+            codex_executable_input.update(cx, |input, cx| input.set_text(&profile.executable, cx));
+            codex_args_input.update(cx, |input, cx| input.set_text(&profile.args.join("\n"), cx));
+        }
         Self {
             updater: Default::default(),
             provider_management: Default::default(),
@@ -170,6 +186,10 @@ impl SettingsView {
             base_url_input,
             models_input,
             key_input,
+            codex_name_input,
+            codex_executable_input,
+            codex_args_input,
+            codex_profile_saving: false,
             provider_api_focuses: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
             provider_save_focus: cx.focus_handle().tab_stop(true),
             provider_edit_focuses: Vec::new(),
