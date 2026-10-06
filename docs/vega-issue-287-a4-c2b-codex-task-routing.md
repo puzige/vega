@@ -25,6 +25,7 @@ From a fresh New Task, a user can choose Codex for the draft, submit a coding re
 | C2B-10 | Actual workspace diff | Create an actual change in a disposable Git workspace and open Review from the task | Review reads the repository's actual diff; it does not synthesize a diff from protocol events | Git workspace/UI test; real adapter path also checked manually | PARTIAL: Review uses the selected project's existing Git diff path; no disposable Git workspace acceptance run |
 | C2B-11 | Native regression | Run affected Native composer, provider preflight, worker, cancellation, and Review tests | Existing Native route and task behavior remain unchanged | Focused regressions | PARTIAL: focused touched-package tests pass; broad Native behavior matrix was not run |
 | C2B-12 | Real adapter acceptance | After merge/release, configure pinned official `codex-acp` v2.0.0 in an isolated local install and use a disposable Git project | A short real coding request edits a file; Vega shows response/activity/permission as applicable and the true Git diff; record installed build and adapter versions | Manual native app | NOT RUN: requires post-integration manual acceptance with the pinned adapter |
+| C2B-13 | Hydrated ACP tool activity | Complete a Codex task, then reopen the same Vega conversation so durable tool audits are projected into the timeline | Successful ACP tool rows remain successful, with no corruption label or failed-call summary; output remains within the existing redaction boundary; malformed rows still fail closed | History projection regression; manual native app after release | PARTIAL: reproduced on official v0.1.61 on 2026-10-06; five persisted activity rows showed `工具结果损坏` while the assistant response and real workspace diff remained visible. The candidate projection regression now passes; merge/release and native recheck remain pending. |
 
 ## Implementation plan
 
@@ -35,6 +36,7 @@ From a fresh New Task, a user can choose Codex for the draft, submit a coding re
 5. Project assistant and tool updates into conversation events with task-scoped Vega IDs. Add an approval response path that carries the exact ACP option IDs and ties responder lifetime to thread/run/connection generation.
 6. Route Stop through ACP cancellation and the existing app run owner. Verify the completed task's Review derives changes from real workspace state.
 7. Add/adjust the focused tests in the matrix before implementing each path; record exact commands and results below. Do not run workspace-wide tests locally; rely on required PR cloud checks for that gate.
+8. Hydrate already-persisted ACP tool audits when opening the same conversation without calling ACP again. Preserve strict rejection of malformed data and prove successful rows remain successful after projection and timeline construction.
 
 ## Compatibility and failure rules
 
@@ -42,7 +44,8 @@ From a fresh New Task, a user can choose Codex for the draft, submit a coding re
 - No ACP error or missing profile may fall through to Native.
 - A confirmed session binding is a strict prerequisite for the first prompt.
 - Unknown session creation outcomes are durable and non-retryable within this card.
-- No automatic prompt replay, session resume/load, or transcript reconstruction is in scope.
+- Rendering the same Vega conversation from already-persisted tool audits is in scope (C2B-13); this reconstructs display projections only and never invokes ACP or replays an external action.
+- ACP session resume/load, automatic prompt replay, and reconstruction from ACP session history remain out of scope.
 - Raw prompt, workspace file contents, process environment and credentials do not enter diagnostics or profile storage.
 - The profile executable is launched only after an explicit Codex submit and only with its configured absolute path, argv, and the frozen selected cwd.
 - Tests use in-process scripted ACP peers and existing seams; no real external process, network, or model call is part of the local automated test gate.
@@ -77,6 +80,14 @@ Focused local verification (all exit code 0):
 The parent-reported cloud run `cargo nextest run --workspace` exited 100 with 2080 passed, 5 failed, and 5 skipped. Three geometry failures came from inserting the backend chip before existing utility controls; two Settings focus failures came from placing Agents after Skills in keyboard order. The backend selector now follows the existing project/branch chips, and Agents precedes Skills in navigation so the established Skills-to-page focus path remains intact; all five named regressions pass in the focused local runs above. No workspace-wide test suite was run locally, and real adapter acceptance or merge was not performed. The cloud Clippy findings about a boolean comparison and two overly large function signatures were fixed; workspace Clippy now passes. Record the next cloud gate, merge SHA, and real adapter evidence after integration.
 
 Resolved verification retries: the first `cargo fmt --all -- --check` exited 1 on rustfmt line wrapping; `cargo fmt --all` was applied and the final format check passed. The new late-permission test command exited 101 twice before its final passing run: the first assertion expected no wire response after cancellation, and the second expected an open request to return the same closed-request error after the transport had already sent its cancelled outcome. The test now verifies that cancellation outcome and that no second permission response can be sent.
+
+### C2B-13 persisted ACP activity regression — 2026-10-06
+
+- Vega self-fix route: the first Codex ACP task was stopped immediately after the user's direction to avoid ACP during self-bootstrapping; it made no source changes and does not count as a failed fix attempt. Vega Native then used project `vega-287-acp-history-replay`, branch `feat/287-acp-history-replay`, and passed `pwd` verification against the isolated worktree. No ACP request was used for implementation.
+- RED from the Vega Native task: `cargo nextest run -p vega_conversation issue287_codex_acp_history` — exit 100; 0 passed, 1 failed, with the successful Codex ACP history projection assertion failing.
+- GREEN independently rerun after the fix: `cargo nextest run -p vega_conversation issue287_codex_acp_history` — exit 0; Nextest run `433ef756-9fd7-4bec-9c94-196577758465`, 1 passed, 570 skipped.
+- `cargo fmt --all -- --check` — exit 0. `git diff --check` — exit 0. No workspace-wide test was run.
+- Source fix is restricted to the history projection: successful durable `codex_acp` rows recover `truncated=false`; all other tools/statuses retain their prior metadata. The test covers valid hydration, malformed identity, oversized output remaining corrupt, and non-ACP reused behavior. Native desktop recheck still needs a merged/released build.
 
 ## Manual acceptance checklist
 

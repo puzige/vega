@@ -697,7 +697,8 @@ fn tool_entry(call: &PageToolCall) -> HistoryEntry {
             reused: true,
             exit_code: call.exit_code,
             duration_ms: call.duration_ms.and_then(|ms| u64::try_from(ms).ok()),
-            truncated: None,
+            truncated: (call.tool == "codex_acp" && status == ToolCallStatus::Success)
+                .then_some(false),
             invalid: None,
         };
         let projection = tool_card_result_projection(Some(&input), &result);
@@ -770,6 +771,124 @@ mod issue90_tests {
                 }
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod issue287_codex_acp_history_tests {
+    use super::*;
+
+    fn page(call: PageToolCall) -> MessagePage {
+        MessagePage {
+            images: Vec::new(),
+            rows: vec![vega_store::messages::MessageRow {
+                id: "assistant".into(),
+                thread_id: "thread".into(),
+                seq: 1,
+                role: "assistant".into(),
+                kind: "text".into(),
+                content: String::new(),
+                status: "done".into(),
+                created_at: 1,
+                plan_status: None,
+                plan_review_note: None,
+                plan_reviewed_at: None,
+            }],
+            execution_durations_ms: HashMap::new(),
+            older_cursor: None,
+            newer_cursor: None,
+            tool_calls: vec![call],
+        }
+    }
+
+    fn codex_call() -> PageToolCall {
+        PageToolCall {
+            id: "codex-call".into(),
+            message_id: "assistant".into(),
+            seq: 1,
+            text_offset_bytes: Some(0),
+            tool: "codex_acp".into(),
+            input_json: r#"{"kind":"execute","arguments_bytes":35,"arguments_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","argument_preview":"object with 1 fields"}"#.into(),
+            output_text: Some("saved Codex output".into()),
+            status: "success".into(),
+            approval: None,
+            exit_code: None,
+            duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn issue287_codex_acp_history_hydrates_success_and_keeps_corruption_strict() {
+        let entries = project_rows(&page(codex_call())).unwrap();
+        assert!(matches!(
+            entries.as_slice(),
+            [HistoryEntry::Tool {
+                status: ToolCallStatus::Success,
+                input: Some(ToolCardInputProjection::CodexAcp { .. }),
+                result: Some(ToolCardResultProjection::CodexAcp {
+                    status: ToolCallStatus::Success,
+                    output,
+                    reused: true,
+                }),
+                ..
+            }] if output == "saved Codex output"
+        ));
+
+        let mut malformed_identity = codex_call();
+        malformed_identity.input_json = r#"{"kind":"unknown","arguments_bytes":35,"arguments_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","argument_preview":"object with 1 fields"}"#.into();
+        assert!(matches!(
+            project_rows(&page(malformed_identity)).unwrap().as_slice(),
+            [HistoryEntry::Tool {
+                result: Some(ToolCardResultProjection::Corrupt),
+                ..
+            }]
+        ));
+
+        let mut oversized_output = codex_call();
+        oversized_output.output_text = Some("x".repeat(2049));
+        assert!(matches!(
+            project_rows(&page(oversized_output)).unwrap().as_slice(),
+            [HistoryEntry::Tool {
+                result: Some(ToolCardResultProjection::Corrupt),
+                ..
+            }]
+        ));
+
+        let reused_bash = PageToolCall {
+            id: "bash-call".into(),
+            message_id: "assistant".into(),
+            seq: 1,
+            text_offset_bytes: Some(0),
+            tool: "bash".into(),
+            input_json: r#"{"cmd":"echo ok"}"#.into(),
+            output_text: Some("ok".into()),
+            status: "success".into(),
+            approval: None,
+            exit_code: Some(0),
+            duration_ms: Some(1),
+        };
+        assert!(matches!(
+            project_rows(&page(reused_bash.clone())).unwrap().as_slice(),
+            [HistoryEntry::Tool {
+                result: Some(ToolCardResultProjection::Bash {
+                    status: ToolCallStatus::Success,
+                    truncated: None,
+                    reused: true,
+                    ..
+                }),
+                ..
+            }]
+        ));
+
+        let mut invalid_reused_bash = reused_bash;
+        invalid_reused_bash.exit_code = None;
+        assert!(matches!(
+            project_rows(&page(invalid_reused_bash)).unwrap().as_slice(),
+            [HistoryEntry::Tool {
+                result: Some(ToolCardResultProjection::Corrupt),
+                ..
+            }]
+        ));
     }
 }
 
