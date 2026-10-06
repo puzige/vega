@@ -1,6 +1,6 @@
 # Vega A4 首版：新建 Codex 任务
 
-日期：2026-10-05。状态：调研后的规格草案，尚未进入实现或验收。
+日期：2026-10-06。状态：A4 用户流程与系统规格；A4-C1 runtime 卡已进入 In progress，完整功能与原生验收尚未开始。
 
 用户已确认的流程：**在 Vega 新建任务时选择 Codex，由 Codex 完整执行任务。** 本文将这个流程拆成可实施的契约；版本和上游证据见 [调研报告](vega-acp-codex-research.md)。产品归属为 PRD 的 A4-01～A4-05。
 
@@ -61,15 +61,15 @@ Composer 显示实际后端和模式。Codex 使用自己的配置选项，现�
 
 ## 5. 协议与资源边界
 
-建议候选依赖为 `agent-client-protocol =2.2.0`，稳定 v1 API；新依赖需在实现卡允许清单中明确批准。Vega 当前 Rust 1.98.0 满足 SDK 声明的最低 1.88；本轮未执行 Cargo 解析或构建验证。
+**A4-C1 冻结决策：不引入 ACP Rust SDK。** SDK 2.2.0 虽支持稳定 v1，但其官方 transport architecture 暴露 unbounded channel；现有证据不能证明应用层限流覆盖 SDK 内部积压。runtime 使用 Vega 已批准的 Tokio、Serde 和 `serde_json`，自行实现 ACP v1 stdio 边界，并在入队前执行逐行与队列双重容量限制。逐项限制与超限处理见 [A4-C1 runtime 合约](vega-acp-codex-c1-runtime.md)。
 
 initialize 保存实际 protocolVersion 和 capabilities；不启用 draft v2。首版支持文本与 Agent 声明的图片/嵌入资源；附件超出能力或应用大小上限时，发送前给出明确错误。
 
 Client 暂不声明 `fs/read_text_file`、`fs/write_text_file` 或 `terminal/*`。Codex 自己执行文件与命令，Vega 展示它发出的活动。新增 Client 能力应各自实现授权、冲突处理与生命周期后再声明。
 
-SDK 的公开架构包含 unbounded channels。首张卡必须审查选定版本的实际读入、分派和处理路径，证明应用限制覆盖 SDK 内部积压。仅在 UI 前放一个有界队列，不能据此宣称进程内存有界。[SDK 传输架构](https://github.com/agentclientprotocol/rust-sdk/blob/v2.2.0/md/transport-architecture.md)
+ACP v1 stdio 按换行界定 frame；frame 可以是单个 JSON-RPC 消息或批次数组。Vega runtime 保留批次边界，校验完整 frame 后整体分派，并将需回复的 batch entries 合并为一条 response array。单帧、批次元素、请求数、事件容量、stderr 处理及超限收尾的具体值见 [A4-C1 runtime 合约](vega-acp-codex-c1-runtime.md)。协议读写持续推进，审批等待不阻断其他响应和取消；任何已声明的容量溢出均显式失败且不丢失权限请求、终态或历史。
 
-实现规格需确定单帧字节、批次元素、待处理请求、活动/文本容量、stderr 和并发任务的上限。超限返回可见失败并收尾；不能悄悄丢失权限请求、终态或历史。协议读写持续推进，审批等待不阻断其他响应和取消。上游 JSON-RPC batch 的边界必须保留。
+实现规格已确定单帧、待处理请求、活动队列、stderr retention 和超限收尾边界，详见 A4-C1。ACP v1 stdio 不声明批次数组支持，Vega 对顶层数组拒绝且不分拆派发。协议读写持续推进，审批等待不阻断其他响应和取消；队列溢出会终结连接，而非丢弃内容后继续。
 
 ## 6. 审批与默认模式
 
@@ -113,12 +113,12 @@ SDK 的公开架构包含 unbounded channels。首张卡必须审查选定版本
 
 | 顺序 | 交付范围 | 必须闭合的证据 |
 |---|---|---|
-| A4-C1 | 共享类型、迁移、profile、协议和进程核心 | 旧数据 Native、配置失效、v1 握手、实际积压上限、创建/落库故障 |
-| A4-C2 | 新任务到完整 Codex 执行 | 草稿、发送、流式活动、原 options 审批、真实编辑/命令/Diff、停止、后台归属 |
+| [A4-C1](vega-acp-codex-c1-runtime.md) | 有界 ACP v1 传输、进程及协议 runtime | 帧与队列上限、握手/会话/权限/停止、超限失败和 owned-child 收尾 |
+| A4-C2 | Vega 任务存储、Agent profile 与 New Task 到完整 Codex 执行 | 草稿、发送、流式活动、原 options 审批、真实编辑/命令/Diff、停止、后台归属 |
 | A4-C3 | 会话恢复与用量 | resume/load、原子回放、未知结果处理、重复快照、未知费用、子进程收尾 |
 | A4-C4 | 认证、配置及产品交付 | ChatGPT 登录/取消、动态模型、helper 身份、安装与版本回归记录 |
 
-以上是建议拆卡，并非已创建的看板任务。代码按仓库要求交给专用子 Agent，主 Agent 负责审查、集成与证据。四张卡的核心契约按顺序集成，避免多份共享类型同时演进。
+除 A4-C1 外，其余仍是拆卡建议，尚未创建。A4-C1 runtime 可与后续 storage/业务类型准备分开实现；跨 crate 共享业务类型与 app/UI 路由仍由后续单一 owner 负责。代码按仓库要求交给专用子 Agent，主 Agent 负责审查、集成与证据。
 
 ## 10. 验收清单状态
 
