@@ -37,6 +37,7 @@
 //! owns `config.toml` under the config root, `keystore` owns
 //! owner-only plaintext local credentials; `projects` / `git_detect` are T10 additions.
 
+pub mod codex_tasks;
 pub mod config;
 pub mod context_compaction;
 pub mod git_detect;
@@ -82,6 +83,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0013_skills.sql"),
     include_str!("../migrations/0014_execution_duration.sql"),
     include_str!("../migrations/0015_run_diagnostics.sql"),
+    include_str!("../migrations/0016_codex_task_identity.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -188,7 +190,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::{Store, skills, tool_calls};
+    use super::{MIGRATIONS, Store, skills, tool_calls};
     use rusqlite::ErrorCode;
     use tempfile::tempdir;
 
@@ -233,7 +235,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 15);
+        assert_eq!(user_version(&store), 16);
         let settings = skills::read_settings(store.conn()).unwrap();
         assert!(!settings.global_enabled);
         assert!(!settings.automatic_enabled);
@@ -257,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_twenty_six_tables() {
+    fn migrate_creates_exactly_the_twenty_eight_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -275,6 +277,8 @@ mod tests {
             tables,
             vec![
                 "assistant_run_durations",
+                "codex_session_creations",
+                "codex_task_snapshots",
                 "context_checkpoints",
                 "context_compaction_status",
                 "context_settings",
@@ -316,9 +320,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_15() {
+    fn migrated_store_is_wal_at_user_version_16() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 15);
+        assert_eq!(user_version(&store), 16);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -340,6 +344,83 @@ mod tests {
     }
 
     #[test]
+    fn version_fifteen_upgrade_preserves_native_thread_and_children() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path().join("v15.db")).unwrap();
+        for migration in MIGRATIONS.iter().take(15) {
+            store.conn().execute_batch(migration).unwrap();
+        }
+        store
+            .conn()
+            .pragma_update(None, "user_version", 15_u32)
+            .unwrap();
+        store.conn().execute_batch(
+            "INSERT INTO projects (id,path,name,created_at,last_opened_at) \
+               VALUES ('p','/owned/p','project',1,2); \
+             INSERT INTO threads \
+               (id,project_id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) \
+               VALUES ('t','p','legacy','plan','confirm','legacy-model','active',1,0,3,4); \
+             INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) \
+               VALUES ('m','t',1,'assistant','text','kept','done',5); \
+             INSERT INTO token_usage \
+               (thread_id,message_id,model,input_tokens,output_tokens,cost_microcents,created_at) \
+               VALUES ('t','m','legacy-model',1,2,0,6);",
+        ).unwrap();
+
+        store.migrate().unwrap();
+
+        let thread: (String, String, String, String, i64, i64, i64) = store
+            .conn()
+            .query_row(
+                "SELECT backend, project_id, title, model, pinned, created_at, updated_at \
+             FROM threads WHERE id = 't'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            thread,
+            (
+                "native".into(),
+                "p".into(),
+                "legacy".into(),
+                "legacy-model".into(),
+                1,
+                3,
+                4
+            )
+        );
+        let preserved: (String, i64, i64) = store
+            .conn()
+            .query_row(
+                "SELECT messages.content, token_usage.input_tokens, token_usage.output_tokens \
+             FROM messages JOIN token_usage ON token_usage.message_id = messages.id \
+             WHERE messages.id = 'm'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved, ("kept".into(), 1, 2));
+        let foreign_key_errors: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_key_errors, 0);
+    }
+
+    #[test]
     fn issue63_version_six_upgrade_adds_attachments_without_rebuilding_messages() {
         let dir = tempdir().unwrap();
         let store = Store::open(dir.path().join("vega.db")).unwrap();
@@ -357,7 +438,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 15);
+        assert_eq!(user_version(&store), 16);
         let after: String = store
             .conn()
             .query_row(
@@ -386,7 +467,7 @@ mod tests {
         store.conn().pragma_update(None, "user_version", 7).unwrap();
         store.conn().execute_batch("INSERT INTO threads (id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) VALUES ('named','手动','ask','confirm','m','active',0,0,1,1),('populated','','ask','confirm','m','active',0,0,1,1),('empty','','ask','confirm','m','active',0,0,1,1); INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('u','populated',1,'user','text','hi','done',1);").unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 15);
+        assert_eq!(user_version(&store), 16);
         let rows: Vec<(String, String, String)> = store
             .conn()
             .prepare("SELECT id,title,auto_title_state FROM threads ORDER BY id")
@@ -411,7 +492,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 15);
+        assert_eq!(user_version(&store), 16);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -447,7 +528,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 15);
+        assert_eq!(user_version(&store), 16);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -465,7 +546,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 26);
+        assert_eq!(tables, 28);
         for table in [
             "projects",
             "threads",
@@ -512,7 +593,7 @@ mod tests {
                VALUES ('old','t','m',1,'read','{}','success',1);"
         ).unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 15);
+        assert_eq!(user_version(&store), 16);
         let old: Option<i64> = store
             .conn()
             .query_row(
@@ -549,7 +630,7 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 26);
+        assert_eq!(tables, 28);
     }
 
     #[test]
@@ -588,7 +669,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 15);
+        assert_eq!(user_version(&store), 16);
         for table in [
             "messages",
             "tool_calls",

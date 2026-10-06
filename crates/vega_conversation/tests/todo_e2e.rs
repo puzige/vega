@@ -328,6 +328,8 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
         tables,
         [
             "assistant_run_durations",
+            "codex_session_creations",
+            "codex_task_snapshots",
             "context_checkpoints",
             "context_compaction_status",
             "context_settings",

@@ -471,6 +471,7 @@ async fn diff_controller_route_latest_poll_tool_and_cross_project_fences(
         cx.set_global(SettingsOpen(false));
         cx.set_global(OpenedThread(Some(Thread {
             id: "thread-b".into(),
+            backend: vega_conversation::types::TaskBackend::Native,
             project_id: "project-b".into(),
             title: String::new(),
             mode: ThreadMode::Execute,

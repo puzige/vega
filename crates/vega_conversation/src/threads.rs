@@ -16,8 +16,8 @@ use vega_store::threads as store;
 use vega_store::token_usage;
 
 use crate::types::{
-    ConversationError, CurrentProject, Microcents, PermissionMode, RestoredUsage, Thread,
-    ThreadMode, ThreadStatus, ThreadUpdate,
+    ConversationError, CurrentProject, Microcents, PermissionMode, RestoredUsage, TaskBackend,
+    Thread, ThreadMode, ThreadStatus, ThreadUpdate,
 };
 
 /// Generates a fresh thread id (ulid).
@@ -181,6 +181,7 @@ fn assemble_thread(
     let now = now_ms();
     Thread {
         id: new_thread_id(),
+        backend: TaskBackend::Native,
         project_id: project_id.unwrap_or_default().to_string(),
         title: String::new(),
         mode: ThreadMode::Execute,
@@ -546,6 +547,8 @@ pub(crate) fn thread_from_row(row: &store::ThreadRow) -> Result<Thread, Conversa
     })?;
     Ok(Thread {
         id: row.id.clone(),
+        backend: TaskBackend::parse(&row.backend)
+            .ok_or_else(|| ConversationError::CorruptRow("backend".to_string()))?,
         project_id: row.project_id.clone(),
         title: row.title.clone(),
         mode,
@@ -567,8 +570,17 @@ mod tests {
         now_ms, open_thread, rename_thread, set_thread_mode, set_thread_permission_mode,
         set_thread_pinned, set_thread_status, task_workspace_root, update_thread,
     };
+    use crate::codex_tasks::{
+        begin_codex_session_creation, bind_codex_task, codex_prompt_binding, codex_task_identity,
+        confirm_codex_session_creation, mark_codex_session_definitively_failed,
+        mark_codex_session_uncertain, materialize_codex_draft,
+    };
     use crate::types::{
-        ConversationError, PermissionMode, Thread, ThreadMode, ThreadStatus, ThreadUpdate,
+        CodexAdapterArgument, CodexAdapterKind, CodexApprovalPolicy, CodexExecutionSnapshot,
+        CodexProfileReference, CodexReasoningEffort, CodexRunSettings, CodexSandboxMode,
+        CodexSessionCreationState, CodexSessionFailureCode, CodexSessionUncertaintyCode,
+        CodexWorkspaceSnapshot, ConversationError, PermissionMode, TaskBackend, Thread, ThreadMode,
+        ThreadStatus, ThreadUpdate,
     };
     use vega_store::Store;
     use vega_store::config::AppConfig;
@@ -593,6 +605,53 @@ mod tests {
                 [id, path.as_str(), name],
             )
             .unwrap();
+    }
+
+    fn codex_snapshot(
+        project_id: &str,
+        working_directory: &std::path::Path,
+        additional_directory: &std::path::Path,
+    ) -> CodexExecutionSnapshot {
+        CodexExecutionSnapshot {
+            profile: CodexProfileReference {
+                id: "codex-profile-1".to_string(),
+                display_name: "Codex Stable".to_string(),
+            },
+            adapter: CodexAdapterKind::CodexAcp,
+            executable: "/opt/vega/bin/npx".to_string(),
+            arguments: vec![
+                CodexAdapterArgument::flag("-y").unwrap(),
+                CodexAdapterArgument::option("--model", "gpt-5-codex").unwrap(),
+                CodexAdapterArgument::positional("@agentclientprotocol/codex-acp@2.0.0").unwrap(),
+                CodexAdapterArgument::path_option("--prefix", "/tmp/project path with spaces")
+                    .unwrap(),
+            ],
+            adapter_version: "2.0.0".to_string(),
+            codex_version: "0.158.0".to_string(),
+            settings: CodexRunSettings {
+                model: Some("gpt-5-codex".to_string()),
+                model_provider: Some("openai".to_string()),
+                reasoning_effort: Some(CodexReasoningEffort::High),
+                sandbox_mode: CodexSandboxMode::WorkspaceWrite,
+                approval_policy: CodexApprovalPolicy::OnRequest,
+            },
+            workspace: CodexWorkspaceSnapshot {
+                project_id: Some(project_id.to_string()),
+                worktree_id: None,
+                canonical_working_directory: std::fs::canonicalize(working_directory)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+                additional_directories: vec![
+                    std::fs::canonicalize(additional_directory)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_string(),
+                ],
+            },
+        }
     }
 
     #[test]
@@ -692,6 +751,11 @@ mod tests {
 
         let thread = create_thread(&store, "p1", "deepseek-chat", "auto").unwrap();
         assert!(ulid::Ulid::from_string(&thread.id).is_ok());
+        assert_eq!(thread.backend, TaskBackend::Native);
+        assert_eq!(
+            list_threads(&store, "p1", None).unwrap()[0].backend,
+            TaskBackend::Native
+        );
         assert_eq!(thread.project_id, "p1");
         assert_eq!(thread.title, "");
         assert_eq!(thread.mode, ThreadMode::Execute);
@@ -1354,5 +1418,456 @@ mod tests {
             )
             .unwrap();
         assert!(set_thread_mode(&store, &thread.id, ThreadMode::Execute).is_err());
+    }
+
+    #[test]
+    fn codex_task_identity_uses_the_materialized_thread_and_immutable_snapshot() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let workspace = dir.path().join("workspace");
+        let additional = dir.path().join("additional");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&additional).unwrap();
+        let draft = draft_thread(Some("p1"), "native-model", "confirm");
+        let materialized = materialize_draft(&store, &draft).unwrap();
+        let snapshot = codex_snapshot("p1", &workspace, &additional);
+
+        let identity = bind_codex_task(&store, &materialized.id, &snapshot).unwrap();
+
+        assert_eq!(identity.thread_id, materialized.id);
+        assert_eq!(identity.backend, TaskBackend::Codex);
+        assert_eq!(identity.snapshot, snapshot);
+        assert_eq!(identity.session_creation, CodexSessionCreationState::Absent);
+        assert_eq!(list_threads(&store, "p1", None).unwrap().len(), 1);
+        assert_eq!(
+            list_threads(&store, "p1", None).unwrap()[0].backend,
+            TaskBackend::Codex
+        );
+        assert!(bind_codex_task(&store, &materialized.id, &snapshot).is_err());
+        assert!(CodexAdapterArgument::new("--api-key").is_err());
+        assert!(CodexAdapterArgument::new("--token=value").is_err());
+        assert!(CodexAdapterArgument::flag("--env").is_err());
+        assert!(CodexAdapterArgument::flag("-e").is_err());
+        assert!(CodexAdapterArgument::new("a prompt").is_err());
+        assert!(CodexAdapterArgument::option("--api-key", "sk-proj-example").is_err());
+        assert!(CodexAdapterArgument::option("--profile", "sk-proj-example").is_err());
+        assert!(CodexAdapterArgument::option("--profile", "api_token_value").is_err());
+        assert!(
+            CodexAdapterArgument::option("--profile", "https://user:pass@adapter.invalid").is_err()
+        );
+        assert!(CodexAdapterArgument::positional("a prompt argument").is_err());
+        assert!(CodexAdapterArgument::path_option("--prefix", "relative/path").is_err());
+        assert!(CodexAdapterArgument::path_option("--prefix", "/tmp/unsafe\npath").is_err());
+        assert!(CodexAdapterArgument::path_option("--prefix", "/tmp/api-key").is_err());
+        assert!(
+            CodexAdapterArgument::path_option(
+                "--prefix",
+                "/tmp/https://user:pass@adapter.invalid/path"
+            )
+            .is_err()
+        );
+        let too_long_path = format!("/{}", "a".repeat(4096));
+        assert!(CodexAdapterArgument::path_option("--prefix", too_long_path).is_err());
+        assert!(
+            store
+                .conn()
+                .execute(
+                    "UPDATE codex_task_snapshots SET profile_id = 'changed' WHERE thread_id = ?1",
+                    [&materialized.id],
+                )
+                .is_err()
+        );
+        assert_eq!(
+            codex_task_identity(&store, &materialized.id)
+                .unwrap()
+                .unwrap()
+                .snapshot,
+            snapshot
+        );
+        let persisted_values: (String, String, String, Option<String>) = store
+            .conn()
+            .query_row(
+                "SELECT adapter_kind, arguments_json, sandbox_mode, model_provider \
+                 FROM codex_task_snapshots WHERE thread_id = ?1",
+                [&materialized.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(persisted_values.0, "codex_acp");
+        assert_eq!(
+            persisted_values.1,
+            "[[\"flag\",\"-y\"],[\"option\",\"--model\",\"gpt-5-codex\"],[\"positional\",\"@agentclientprotocol/codex-acp@2.0.0\"],[\"path_option\",\"--prefix\",\"/tmp/project path with spaces\"]]"
+        );
+        assert_eq!(persisted_values.2, "workspace_write");
+        assert_eq!(persisted_values.3.as_deref(), Some("openai"));
+        drop(store);
+
+        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        let restored = codex_task_identity(&reopened, &materialized.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.snapshot, snapshot);
+        assert_eq!(restored.backend, TaskBackend::Codex);
+        assert!(matches!(
+            codex_task_identity(&reopened, "missing"),
+            Err(ConversationError::NotFound(thread_id)) if thread_id == "missing"
+        ));
+    }
+
+    #[test]
+    fn codex_draft_materialization_is_atomic_and_reuses_its_id() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let workspace = dir.path().join("workspace");
+        let additional = dir.path().join("additional");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&additional).unwrap();
+        let mut draft = draft_thread(Some("p1"), "codex-model", "confirm");
+        draft.backend = TaskBackend::Codex;
+        let thread_id = draft.id.clone();
+        let snapshot = codex_snapshot("p1", &workspace, &additional);
+        store
+            .conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_codex_snapshot BEFORE INSERT ON codex_task_snapshots \
+                 BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;",
+            )
+            .unwrap();
+
+        assert!(materialize_codex_draft(&store, &draft, &snapshot).is_err());
+        assert!(
+            vega_store::threads::find(store.conn(), &thread_id)
+                .unwrap()
+                .is_none()
+        );
+        let after_failure: (i64, i64, i64, i64) = store
+            .conn()
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM threads WHERE id = ?1), \
+                   (SELECT COUNT(*) FROM threads WHERE id = ?1 AND backend = 'codex'), \
+                   (SELECT COUNT(*) FROM codex_task_snapshots WHERE thread_id = ?1), \
+                   (SELECT COUNT(*) FROM codex_session_creations WHERE thread_id = ?1)",
+                [&thread_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(after_failure, (0, 0, 0, 0));
+
+        store
+            .conn()
+            .execute_batch("DROP TRIGGER reject_codex_snapshot")
+            .unwrap();
+        let materialized = materialize_codex_draft(&store, &draft, &snapshot).unwrap();
+        assert_eq!(materialized.id, thread_id);
+        assert_eq!(materialized.backend, TaskBackend::Codex);
+        assert_eq!(list_threads(&store, "p1", None).unwrap().len(), 1);
+        let identity = codex_task_identity(&store, &thread_id).unwrap().unwrap();
+        assert_eq!(identity.thread_id, thread_id);
+        assert_eq!(
+            identity.snapshot.arguments[1].as_args(),
+            ["--model", "gpt-5-codex"]
+        );
+        assert_eq!(
+            identity.snapshot.arguments[2].as_args(),
+            ["@agentclientprotocol/codex-acp@2.0.0"]
+        );
+        assert_eq!(
+            identity.snapshot.arguments[3].as_args(),
+            ["--prefix", "/tmp/project path with spaces"]
+        );
+        assert_eq!(identity.snapshot, snapshot);
+        assert_eq!(identity.session_creation, CodexSessionCreationState::Absent);
+        assert!(materialize_codex_draft(&store, &draft, &snapshot).is_err());
+        assert_eq!(list_threads(&store, "p1", None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn codex_task_identity_fails_closed_on_project_binding_mismatch() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        insert_project(&store, "p2", "beta");
+        let workspace = dir.path().join("workspace");
+        let additional = dir.path().join("additional");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&additional).unwrap();
+        let thread = create_thread(&store, "p1", "native-model", "confirm").unwrap();
+        bind_codex_task(
+            &store,
+            &thread.id,
+            &codex_snapshot("p1", &workspace, &additional),
+        )
+        .unwrap();
+        store
+            .conn()
+            .execute_batch("DROP TRIGGER codex_task_snapshot_immutable")
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE codex_task_snapshots SET selected_project_id = 'p2' WHERE thread_id = ?1",
+                [&thread.id],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            codex_task_identity(&store, &thread.id),
+            Err(ConversationError::CorruptRow(field)) if field == "Codex project binding"
+        ));
+    }
+
+    #[test]
+    fn codex_session_intent_is_durable_and_confirmed_binding_alone_is_prompt_eligible() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let workspace = dir.path().join("workspace");
+        let additional = dir.path().join("additional");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&additional).unwrap();
+        let thread = create_thread(&store, "p1", "native-model", "confirm").unwrap();
+        let snapshot = codex_snapshot("p1", &workspace, &additional);
+        bind_codex_task(&store, &thread.id, &snapshot).unwrap();
+
+        let intent = begin_codex_session_creation(&store, &thread.id).unwrap();
+        let CodexSessionCreationState::Intent { intent_id } = intent else {
+            panic!("intent state expected");
+        };
+        assert!(matches!(
+            begin_codex_session_creation(&store, &thread.id),
+            Err(ConversationError::InvalidCodexSessionTransition)
+        ));
+        assert_eq!(codex_prompt_binding(&store, &thread.id).unwrap(), None);
+        drop(store);
+
+        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        let identity = codex_task_identity(&reopened, &thread.id).unwrap().unwrap();
+        assert_eq!(
+            identity.session_creation,
+            CodexSessionCreationState::Intent {
+                intent_id: intent_id.clone()
+            }
+        );
+        assert_eq!(codex_prompt_binding(&reopened, &thread.id).unwrap(), None);
+
+        confirm_codex_session_creation(&reopened, &thread.id, &intent_id, "session-123").unwrap();
+        assert!(matches!(
+            confirm_codex_session_creation(&reopened, &thread.id, &intent_id, "session-again"),
+            Err(ConversationError::InvalidCodexSessionTransition)
+        ));
+        assert!(matches!(
+            confirm_codex_session_creation(&reopened, &thread.id, &intent_id, ""),
+            Err(ConversationError::InvalidTaskIdentity)
+        ));
+        let binding = codex_prompt_binding(&reopened, &thread.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(binding.thread_id, thread.id);
+        assert_eq!(binding.session_id, "session-123");
+        assert_eq!(binding.snapshot, snapshot);
+        drop(reopened);
+
+        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        assert_eq!(
+            codex_prompt_binding(&reopened, &thread.id)
+                .unwrap()
+                .unwrap(),
+            binding
+        );
+    }
+
+    #[test]
+    fn uncertain_and_definitively_failed_session_creations_cannot_be_retried() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let workspace = dir.path().join("workspace");
+        let additional = dir.path().join("additional");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&additional).unwrap();
+        let snapshot = codex_snapshot("p1", &workspace, &additional);
+        let uncertain_thread = create_thread(&store, "p1", "native-model", "confirm").unwrap();
+        bind_codex_task(&store, &uncertain_thread.id, &snapshot).unwrap();
+        let CodexSessionCreationState::Intent {
+            intent_id: uncertain_id,
+        } = begin_codex_session_creation(&store, &uncertain_thread.id).unwrap()
+        else {
+            panic!("intent state expected");
+        };
+        mark_codex_session_uncertain(
+            &store,
+            &uncertain_thread.id,
+            &uncertain_id,
+            CodexSessionUncertaintyCode::OutcomeUnknown,
+        )
+        .unwrap();
+        assert!(matches!(
+            begin_codex_session_creation(&store, &uncertain_thread.id),
+            Err(ConversationError::InvalidCodexSessionTransition)
+        ));
+        assert!(matches!(
+            confirm_codex_session_creation(&store, &uncertain_thread.id, &uncertain_id, "late-id"),
+            Err(ConversationError::InvalidCodexSessionTransition)
+        ));
+        assert_eq!(
+            codex_prompt_binding(&store, &uncertain_thread.id).unwrap(),
+            None
+        );
+
+        let failed_thread = create_thread(&store, "p1", "native-model", "confirm").unwrap();
+        bind_codex_task(&store, &failed_thread.id, &snapshot).unwrap();
+        let CodexSessionCreationState::Intent {
+            intent_id: failed_id,
+        } = begin_codex_session_creation(&store, &failed_thread.id).unwrap()
+        else {
+            panic!("intent state expected");
+        };
+        mark_codex_session_definitively_failed(
+            &store,
+            &failed_thread.id,
+            &failed_id,
+            CodexSessionFailureCode::AuthenticationRequired,
+        )
+        .unwrap();
+        assert!(matches!(
+            begin_codex_session_creation(&store, &failed_thread.id),
+            Err(ConversationError::InvalidCodexSessionTransition)
+        ));
+        drop(store);
+
+        let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+        reopened.migrate().unwrap();
+        let uncertain = codex_task_identity(&reopened, &uncertain_thread.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            uncertain.session_creation,
+            CodexSessionCreationState::Uncertain {
+                intent_id: uncertain_id,
+                code: CodexSessionUncertaintyCode::OutcomeUnknown,
+            }
+        );
+        let failed = codex_task_identity(&reopened, &failed_thread.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            failed.session_creation,
+            CodexSessionCreationState::DefinitivelyFailed {
+                intent_id: failed_id,
+                code: CodexSessionFailureCode::AuthenticationRequired,
+            }
+        );
+        assert_eq!(
+            codex_prompt_binding(&reopened, &uncertain_thread.id).unwrap(),
+            None
+        );
+        assert_eq!(
+            codex_prompt_binding(&reopened, &failed_thread.id).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn codex_session_id_is_unique_and_task_deletion_cascades_identity() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let workspace = dir.path().join("workspace");
+        let additional = dir.path().join("additional");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&additional).unwrap();
+        let snapshot = codex_snapshot("p1", &workspace, &additional);
+        let first = create_thread(&store, "p1", "native-model", "confirm").unwrap();
+        let second = create_thread(&store, "p1", "native-model", "confirm").unwrap();
+        bind_codex_task(&store, &first.id, &snapshot).unwrap();
+        bind_codex_task(&store, &second.id, &snapshot).unwrap();
+        let CodexSessionCreationState::Intent {
+            intent_id: first_intent,
+        } = begin_codex_session_creation(&store, &first.id).unwrap()
+        else {
+            panic!("intent state expected");
+        };
+        let CodexSessionCreationState::Intent {
+            intent_id: second_intent,
+        } = begin_codex_session_creation(&store, &second.id).unwrap()
+        else {
+            panic!("intent state expected");
+        };
+        confirm_codex_session_creation(&store, &first.id, &first_intent, "shared-session").unwrap();
+        assert!(
+            confirm_codex_session_creation(&store, &second.id, &second_intent, "shared-session")
+                .is_err()
+        );
+        assert!(matches!(
+            codex_task_identity(&store, &second.id)
+                .unwrap()
+                .unwrap()
+                .session_creation,
+            CodexSessionCreationState::Intent { .. }
+        ));
+        delete_thread(&store, &first.id).unwrap();
+        let owned_rows: (i64, i64) = store
+            .conn()
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM codex_task_snapshots WHERE thread_id = ?1), \
+                   (SELECT COUNT(*) FROM codex_session_creations WHERE thread_id = ?1)",
+                [&first.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(owned_rows, (0, 0));
+        let foreign_key_errors: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_key_errors, 0);
+        assert!(codex_prompt_binding(&store, &first.id).is_err());
+        assert_eq!(
+            codex_task_identity(&store, &second.id)
+                .unwrap()
+                .unwrap()
+                .backend,
+            TaskBackend::Codex
+        );
+    }
+
+    #[test]
+    fn codex_binding_rolls_back_backend_if_snapshot_insert_fails() {
+        let (store, dir) = open_store();
+        insert_project(&store, "p1", "alpha");
+        let workspace = dir.path().join("workspace");
+        let additional = dir.path().join("additional");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::create_dir(&additional).unwrap();
+        let thread = create_thread(&store, "p1", "native-model", "confirm").unwrap();
+        let snapshot = codex_snapshot("p1", &workspace, &additional);
+        store
+            .conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_codex_snapshot BEFORE INSERT ON codex_task_snapshots \
+                 BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;",
+            )
+            .unwrap();
+
+        assert!(bind_codex_task(&store, &thread.id, &snapshot).is_err());
+        assert_eq!(
+            list_threads(&store, "p1", None).unwrap()[0].backend,
+            TaskBackend::Native
+        );
+        assert_eq!(codex_task_identity(&store, &thread.id).unwrap(), None);
+        let counts: (i64, i64) = store
+            .conn()
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM codex_task_snapshots WHERE thread_id = ?1), \
+                   (SELECT COUNT(*) FROM codex_session_creations WHERE thread_id = ?1)",
+                [&thread.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (0, 0));
     }
 }

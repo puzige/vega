@@ -3,7 +3,7 @@ use crate::icons::Icon;
 use gpui_kit::{TestAppContext, VisualTestContext, WindowHandle};
 use vega_conversation::types::{
     ContextAccountingRecord, ContextAccountingSource, ContextAccountingStage,
-    ContextCompactionUsageState, ThreadMode, ThreadStatus,
+    ContextCompactionUsageState, TaskBackend, ThreadMode, ThreadStatus,
 };
 
 fn accounting(
@@ -129,6 +129,7 @@ fn setup(cx: &mut TestAppContext) -> WindowHandle<ConversationStream> {
                 ConversationStream::new(
                     Thread {
                         id: "context-thread".into(),
+                        backend: TaskBackend::Native,
                         project_id: "project".into(),
                         title: "Context".into(),
                         model: "mock".into(),

@@ -15,6 +15,10 @@ pub enum ConversationError {
     /// A store/IO failure, reported with the underlying error message.
     #[error("store error: {0}")]
     Store(String),
+    #[error("invalid task identity")]
+    InvalidTaskIdentity,
+    #[error("invalid Codex session creation transition")]
+    InvalidCodexSessionTransition,
     /// The referenced thread does not exist.
     #[error("thread not found: {0}")]
     NotFound(String),

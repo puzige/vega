@@ -579,14 +579,15 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
     // #76 adds context projection/status tables and the model-policy table
     // through migrations 0009–0011. #73 adds MCP metadata and a credential
     // cleanup outbox in migration 0012; #74 Skills adds migration 0013;
-    // #146 execution duration adds migration 0014.
+    // #146 execution duration adds migration 0014. Migration 0015 adds run
+    // diagnostics; #284 Codex task identity adds migration 0016 and two tables.
     // No credential values enter either MCP table.
     let user_version: i64 = reopened
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))?;
     assert_eq!(
-        user_version, 15,
-        "exactly the fifteen authorized migrations"
+        user_version, 16,
+        "all sixteen ordered migrations are applied"
     );
     let mut statement = reopened.conn().prepare(
         "SELECT name FROM sqlite_master \
@@ -599,6 +600,8 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
         tables,
         vec![
             "assistant_run_durations",
+            "codex_session_creations",
+            "codex_task_snapshots",
             "context_checkpoints",
             "context_compaction_status",
             "context_settings",
@@ -625,7 +628,7 @@ async fn two_call_tool_journey_matches_synthetic_invoice_with_zero_error()
             "token_usage",
             "tool_calls",
         ],
-        "exactly the twenty-six authorized tables"
+        "exactly the twenty-eight authorized tables"
     );
     Ok(())
 }

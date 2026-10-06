@@ -10,7 +10,7 @@
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 /// The `SELECT` column list shared by the row-loading queries.
-const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, \
+const COLUMNS: &str = "id, project_id, title, mode, permission_mode, model, backend, \
                        status, pinned, unread, created_at, updated_at";
 
 /// A raw `threads` row, field-for-field with the DDL.
@@ -34,6 +34,7 @@ pub struct ThreadRow {
     pub permission_mode: String,
     /// Model id.
     pub model: String,
+    pub backend: String,
     /// Lifecycle status DDL string (`active|archived`).
     pub status: String,
     /// Pinned flag (DDL integer 0/1).
@@ -526,11 +527,12 @@ fn thread_from_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadRow> {
         mode: row.get(3)?,
         permission_mode: row.get(4)?,
         model: row.get(5)?,
-        status: row.get(6)?,
-        pinned: row.get(7)?,
-        unread: row.get(8)?,
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
+        backend: row.get(6)?,
+        status: row.get(7)?,
+        pinned: row.get(8)?,
+        unread: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
     })
 }
 
@@ -568,6 +570,7 @@ mod tests {
             mode: "execute".to_string(),
             permission_mode: "confirm".to_string(),
             model: String::new(),
+            backend: "native".to_string(),
             status: "active".to_string(),
             pinned: false,
             unread: false,
