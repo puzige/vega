@@ -7343,6 +7343,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",
@@ -7932,6 +7933,18 @@ dependencies = [
  "vega_tools",
  "vega_ui",
  "zip",
+]
+
+[[package]]
+name = "vega_acp"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
