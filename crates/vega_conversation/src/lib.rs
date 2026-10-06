@@ -8,6 +8,7 @@ pub mod agent;
 mod artifact;
 pub mod attachments;
 mod automatic_titles;
+pub mod codex_tasks;
 mod git_workspace;
 pub mod history;
 pub mod plans;

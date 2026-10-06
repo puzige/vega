@@ -8,8 +8,9 @@ use tokio_util::sync::CancellationToken;
 use vega_conversation::agent::PermissionHook;
 use vega_conversation::types::{
     Approval, Microcents, PermissionDecision, PermissionMode, PermissionRequest, Plan, PlanStatus,
-    ReadOnlyToolKind, SummaryCost, TaskCostSummary, TaskSummaryOutcome, ThreadMode, ThreadStatus,
-    ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection, ToolResult,
+    ReadOnlyToolKind, SummaryCost, TaskBackend, TaskCostSummary, TaskSummaryOutcome, ThreadMode,
+    ThreadStatus, ToolCall, ToolCallStatus, ToolCardInputProjection, ToolCardResultProjection,
+    ToolResult,
 };
 use vega_markdown::split_deltas;
 use vega_markdown::{ListItem, TableCell};
@@ -68,6 +69,7 @@ impl Render for StreamHarness {
 fn permission_thread() -> Thread {
     Thread {
         id: "thread-safe-id".into(),
+        backend: TaskBackend::Native,
         project_id: "project-safe-id".into(),
         title: "Permission test".into(),
         mode: ThreadMode::Execute,

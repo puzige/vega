@@ -865,6 +865,7 @@ mod tests {
     fn thread_with_title(title: &str) -> Thread {
         Thread {
             id: "t1".to_string(),
+            backend: vega_conversation::types::TaskBackend::Native,
             project_id: "p1".to_string(),
             title: title.to_string(),
             mode: vega_conversation::types::ThreadMode::Execute,
