@@ -11,6 +11,7 @@ members = [
     "crates/vega_store",
     "crates/vega_token",
     "crates/vega_theme",
+    "crates/vega_acp",
     "xtask",
 ]
 
@@ -78,6 +79,7 @@ vega_theme = { path = "crates/vega_theme" }
 vega_ui = { path = "crates/vega_ui" }
 vega_markdown = { path = "crates/vega_markdown" }
 vega_token = { path = "crates/vega_token" }
+vega_acp = { path = "crates/vega_acp" }
 # 仅供 xtask 使用
 anyhow = "=1.0.104"
 # 仅供测试使用（dev-dependency）
