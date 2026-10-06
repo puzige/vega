@@ -48,6 +48,15 @@ async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, value: Value) {
     writer.write_all(b"\n").await.unwrap();
 }
 
+async fn assert_no_peer_frame(peer: &mut tokio::io::DuplexStream) {
+    let mut byte = [0u8; 1];
+    match tokio::time::timeout(std::time::Duration::from_millis(50), peer.read(&mut byte)).await {
+        Ok(Ok(0)) | Err(_) => {}
+        Ok(Ok(_)) => panic!("unexpected ACP frame"),
+        Ok(Err(error)) => panic!("peer read failed: {error}"),
+    }
+}
+
 async fn scripted_v1_session(
     peer: &mut tokio::io::DuplexStream,
     cwd: &str,
@@ -86,6 +95,325 @@ fn codex_creation_state(store: &Store, thread_id: &str) -> CodexSessionCreationS
         .unwrap()
         .unwrap()
         .session_creation
+}
+
+#[tokio::test]
+async fn issue287_initialize_rejection_is_definitive_and_never_prompts() {
+    let (store, _directory, thread, snapshot) = issue287_store();
+    let CodexSessionCreationState::Intent { intent_id } =
+        vega_conversation::codex_tasks::begin_codex_session_creation(&store, &thread.id).unwrap()
+    else {
+        panic!("expected intent");
+    };
+    let (client, mut peer) = tokio::io::duplex(65_536);
+    let (reader, writer) = tokio::io::split(client);
+    let connection = Arc::new(vega_acp::test_support::connection_from_io(reader, writer));
+    let server = tokio::spawn(async move {
+        let initialize = read_frame(&mut peer).await;
+        assert_eq!(initialize["method"], "initialize");
+        write_frame(
+            &mut peer,
+            json!({
+                "jsonrpc":"2.0",
+                "id":initialize["id"],
+                "error":{"code":-32000,"message":"initialize rejected"}
+            }),
+        )
+        .await;
+        assert_no_peer_frame(&mut peer).await;
+    });
+    let (sender, receiver) = std_mpsc::sync_channel(8);
+    assert!(
+        !run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &store,
+            connection: connection.clone(),
+            thread: &thread,
+            snapshot: &snapshot,
+            intent_id: &intent_id,
+            prompt: "do not send",
+            permission_queue: &PermissionQueue::new(),
+            cancel: CancellationToken::new(),
+            sender: &sender,
+        })
+        .await
+    );
+    server.await.unwrap();
+    assert!(matches!(
+        codex_creation_state(&store, &thread.id),
+        CodexSessionCreationState::DefinitivelyFailed {
+            code: CodexSessionFailureCode::AdapterRejected,
+            ..
+        }
+    ));
+    assert!(
+        vega_conversation::codex_tasks::codex_prompt_binding(&store, &thread.id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        vega_store::messages::recent(store.conn(), &thread.id, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(std_mpsc::TryRecvError::Empty)
+    ));
+    connection.shutdown().await;
+}
+
+#[tokio::test]
+async fn issue287_unadvertised_workspace_write_mode_is_definitive_and_never_prompts() {
+    let (store, _directory, thread, snapshot) = issue287_store();
+    let CodexSessionCreationState::Intent { intent_id } =
+        vega_conversation::codex_tasks::begin_codex_session_creation(&store, &thread.id).unwrap()
+    else {
+        panic!("expected intent");
+    };
+    let (client, mut peer) = tokio::io::duplex(65_536);
+    let (reader, writer) = tokio::io::split(client);
+    let connection = Arc::new(vega_acp::test_support::connection_from_io(reader, writer));
+    let cwd = snapshot.workspace.canonical_working_directory.clone();
+    let server = tokio::spawn(async move {
+        let initialize = read_frame(&mut peer).await;
+        assert_eq!(initialize["method"], "initialize");
+        write_frame(
+            &mut peer,
+            json!({
+                "jsonrpc":"2.0",
+                "id":initialize["id"],
+                "result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}
+            }),
+        )
+        .await;
+        let new_session = read_frame(&mut peer).await;
+        assert_eq!(new_session["method"], "session/new");
+        assert_eq!(new_session["params"]["cwd"], cwd);
+        write_frame(
+            &mut peer,
+            json!({
+                "jsonrpc":"2.0",
+                "id":new_session["id"],
+                "result":{
+                    "sessionId":"unadvertised-mode-session",
+                    "modes":{"availableModes":[{"id":"read-only"}]}
+                }
+            }),
+        )
+        .await;
+        assert_no_peer_frame(&mut peer).await;
+    });
+    let (sender, receiver) = std_mpsc::sync_channel(8);
+    assert!(
+        !run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &store,
+            connection: connection.clone(),
+            thread: &thread,
+            snapshot: &snapshot,
+            intent_id: &intent_id,
+            prompt: "do not send",
+            permission_queue: &PermissionQueue::new(),
+            cancel: CancellationToken::new(),
+            sender: &sender,
+        })
+        .await
+    );
+    server.await.unwrap();
+    assert!(matches!(
+        codex_creation_state(&store, &thread.id),
+        CodexSessionCreationState::DefinitivelyFailed {
+            code: CodexSessionFailureCode::AdapterRejected,
+            ..
+        }
+    ));
+    assert!(
+        vega_conversation::codex_tasks::codex_prompt_binding(&store, &thread.id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        vega_store::messages::recent(store.conn(), &thread.id, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(std_mpsc::TryRecvError::Empty)
+    ));
+    connection.shutdown().await;
+}
+
+#[tokio::test]
+async fn issue287_new_session_failures_are_terminal_or_uncertain_and_non_retryable() {
+    let (rejected_store, _rejected_directory, rejected_thread, rejected_snapshot) =
+        issue287_store();
+    let CodexSessionCreationState::Intent {
+        intent_id: rejected_intent_id,
+    } = vega_conversation::codex_tasks::begin_codex_session_creation(
+        &rejected_store,
+        &rejected_thread.id,
+    )
+    .unwrap()
+    else {
+        panic!("expected intent");
+    };
+    let (client, mut peer) = tokio::io::duplex(65_536);
+    let (reader, writer) = tokio::io::split(client);
+    let rejected_connection = Arc::new(vega_acp::test_support::connection_from_io(reader, writer));
+    let rejected_cwd = rejected_snapshot
+        .workspace
+        .canonical_working_directory
+        .clone();
+    let rejected_server = tokio::spawn(async move {
+        let initialize = read_frame(&mut peer).await;
+        assert_eq!(initialize["method"], "initialize");
+        write_frame(
+            &mut peer,
+            json!({
+                "jsonrpc":"2.0",
+                "id":initialize["id"],
+                "result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}
+            }),
+        )
+        .await;
+        let mut session_new_count = 0;
+        let new_session = read_frame(&mut peer).await;
+        session_new_count += 1;
+        assert_eq!(new_session["method"], "session/new");
+        assert_eq!(new_session["params"]["cwd"], rejected_cwd);
+        write_frame(
+            &mut peer,
+            json!({
+                "jsonrpc":"2.0",
+                "id":new_session["id"],
+                "error":{"code":-32000,"message":"session creation rejected"}
+            }),
+        )
+        .await;
+        assert_no_peer_frame(&mut peer).await;
+        session_new_count
+    });
+    let (rejected_sender, rejected_receiver) = std_mpsc::sync_channel(8);
+    assert!(
+        !run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &rejected_store,
+            connection: rejected_connection.clone(),
+            thread: &rejected_thread,
+            snapshot: &rejected_snapshot,
+            intent_id: &rejected_intent_id,
+            prompt: "do not send",
+            permission_queue: &PermissionQueue::new(),
+            cancel: CancellationToken::new(),
+            sender: &rejected_sender,
+        })
+        .await
+    );
+    assert_eq!(rejected_server.await.unwrap(), 1);
+    assert!(matches!(
+        codex_creation_state(&rejected_store, &rejected_thread.id),
+        CodexSessionCreationState::DefinitivelyFailed {
+            code: CodexSessionFailureCode::AdapterRejected,
+            ..
+        }
+    ));
+    assert!(
+        vega_conversation::codex_tasks::codex_prompt_binding(&rejected_store, &rejected_thread.id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        vega_store::messages::recent(rejected_store.conn(), &rejected_thread.id, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        rejected_receiver.try_recv(),
+        Err(std_mpsc::TryRecvError::Empty)
+    ));
+    rejected_connection.shutdown().await;
+
+    let (uncertain_store, _uncertain_directory, uncertain_thread, uncertain_snapshot) =
+        issue287_store();
+    let CodexSessionCreationState::Intent {
+        intent_id: uncertain_intent_id,
+    } = vega_conversation::codex_tasks::begin_codex_session_creation(
+        &uncertain_store,
+        &uncertain_thread.id,
+    )
+    .unwrap()
+    else {
+        panic!("expected intent");
+    };
+    let (client, mut peer) = tokio::io::duplex(65_536);
+    let (reader, writer) = tokio::io::split(client);
+    let uncertain_connection = Arc::new(vega_acp::test_support::connection_from_io(reader, writer));
+    let uncertain_server = tokio::spawn(async move {
+        let initialize = read_frame(&mut peer).await;
+        assert_eq!(initialize["method"], "initialize");
+        write_frame(
+            &mut peer,
+            json!({
+                "jsonrpc":"2.0",
+                "id":initialize["id"],
+                "result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}
+            }),
+        )
+        .await;
+        let mut session_new_count = 0;
+        let new_session = read_frame(&mut peer).await;
+        session_new_count += 1;
+        assert_eq!(new_session["method"], "session/new");
+        drop(peer);
+        session_new_count
+    });
+    let (uncertain_sender, uncertain_receiver) = std_mpsc::sync_channel(8);
+    assert!(
+        !run_codex_agent_with_connection(CodexAgentRunContext {
+            store: &uncertain_store,
+            connection: uncertain_connection.clone(),
+            thread: &uncertain_thread,
+            snapshot: &uncertain_snapshot,
+            intent_id: &uncertain_intent_id,
+            prompt: "do not send",
+            permission_queue: &PermissionQueue::new(),
+            cancel: CancellationToken::new(),
+            sender: &uncertain_sender,
+        })
+        .await
+    );
+    assert_eq!(uncertain_server.await.unwrap(), 1);
+    assert!(matches!(
+        codex_creation_state(&uncertain_store, &uncertain_thread.id),
+        CodexSessionCreationState::Uncertain {
+            code: CodexSessionUncertaintyCode::OutcomeUnknown,
+            ..
+        }
+    ));
+    assert!(
+        vega_conversation::codex_tasks::codex_prompt_binding(
+            &uncertain_store,
+            &uncertain_thread.id
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        vega_store::messages::recent(uncertain_store.conn(), &uncertain_thread.id, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(matches!(
+        uncertain_receiver.try_recv(),
+        Err(std_mpsc::TryRecvError::Empty)
+    ));
+    assert!(
+        vega_conversation::codex_tasks::begin_codex_session_creation(
+            &uncertain_store,
+            &uncertain_thread.id
+        )
+        .is_err()
+    );
+    uncertain_connection.shutdown().await;
 }
 
 #[test]
