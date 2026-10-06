@@ -119,6 +119,8 @@ pub(crate) struct CodexWorkerRequest {
     pub permission_queue: PermissionQueue,
     pub cancel: CancellationToken,
     pub sender: std_mpsc::SyncSender<AgentUpdate>,
+    #[cfg(test)]
+    pub connection_factory: Option<Box<dyn FnOnce() -> Connection + Send>>,
 }
 
 pub(crate) fn run_codex_agent_worker(request: CodexWorkerRequest) -> bool {
@@ -155,7 +157,17 @@ pub(crate) fn run_codex_agent_worker(request: CodexWorkerRequest) -> bool {
             return false;
         }
     };
-    let connection = match runtime.block_on(Connection::spawn(launch)) {
+    #[cfg(test)]
+    let injected_connection = request.connection_factory.map(|factory| {
+        let _runtime_guard = runtime.enter();
+        factory()
+    });
+    #[cfg(not(test))]
+    let injected_connection: Option<Connection> = None;
+    let connection = match injected_connection
+        .map(Ok)
+        .unwrap_or_else(|| runtime.block_on(Connection::spawn(launch)))
+    {
         Ok(connection) => Arc::new(connection),
         Err(_) => {
             let _ = vega_conversation::codex_tasks::mark_codex_session_definitively_failed(

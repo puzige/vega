@@ -196,6 +196,10 @@ pub(crate) struct VegaWindow {
     /// gpui tests from changing the zero/one spawn evidence.
     #[cfg(test)]
     pub(crate) agent_worker_start_probe: Arc<AgentWorkerStartProbe>,
+    /// In-process ACP connection factory for the Codex app-path regression.
+    /// Production always launches through `Connection::spawn`.
+    #[cfg(test)]
+    pub(crate) codex_connection_factory: Option<Box<dyn FnOnce() -> vega_acp::Connection + Send>>,
     #[cfg(test)]
     pub(crate) commit_test_probe: Option<Arc<CommitTestProbe>>,
     #[cfg(test)]
@@ -356,6 +360,8 @@ impl VegaWindow {
             agent_provider_override: None,
             #[cfg(test)]
             agent_worker_start_probe: Arc::new(AgentWorkerStartProbe::default()),
+            #[cfg(test)]
+            codex_connection_factory: None,
             #[cfg(test)]
             commit_test_probe: None,
             #[cfg(test)]

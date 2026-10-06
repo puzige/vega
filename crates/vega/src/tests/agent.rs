@@ -2035,6 +2035,295 @@ theme = "light"
 }
 
 #[gpui_kit::test]
+async fn issue287_codex_definitive_setup_failure_restores_codex_draft_without_native_fallback(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let data = tempfile::tempdir().expect("owned setup-failure root");
+    let project_path = data.path().join("project");
+    fs::create_dir(&project_path).expect("owned project directory");
+    let config_path = data.path().join("config.toml");
+    let executable_path = data.path().join("scripted-codex-placeholder");
+    fs::write(&executable_path, []).expect("owned inert executable placeholder");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&executable_path, fs::Permissions::from_mode(0o700))
+            .expect("mark inert placeholder executable for preflight");
+    }
+    let executable_config = serde_json::to_string(
+        executable_path
+            .to_str()
+            .expect("UTF-8 placeholder executable path"),
+    )
+    .expect("encode executable path");
+    fs::write(
+        &config_path,
+        format!(
+            r#"[[providers]]
+name = "owned"
+base_url = "https://provider.invalid/v1"
+models = ["mock-model"]
+key_ref = "owned"
+
+[defaults]
+model = "mock-model"
+permission_mode = "confirm"
+
+[ui]
+theme = "light"
+
+[agent.codex_acp_profile]
+display_name = "Scripted ACP"
+executable = {executable_config}
+"#
+        ),
+    )
+    .expect("owned provider and Codex config");
+    vega_store::keystore::set_key(data.path(), "owned", "[redacted fixture]")
+        .expect("owned provider credential");
+    let database_path = data.path().join("vega.db");
+    let store = Store::open(&database_path).expect("owned setup-failure store");
+    store.migrate().expect("owned setup-failure migrations");
+    let project = vega_store::projects::create(
+        store.conn(),
+        project_path.to_str().expect("project path"),
+        "codex-setup-failure",
+        None,
+    )
+    .expect("owned setup-failure project");
+    let thread =
+        vega_conversation::threads::create_thread(&store, &project.id, "mock-model", "confirm")
+            .expect("initial durable route");
+    cx.update(|cx| {
+        install_diff_window_globals(
+            Store::open(&database_path).expect("global setup-failure store"),
+            thread.clone(),
+            cx,
+        )
+    });
+    let provider = Arc::new(vega_runtime::MockProvider::new(vec![
+        vega_runtime::ScriptStep::text("native fallback must not run"),
+    ]));
+    let root = cx.new(VegaWindow::new);
+    root.update(cx, |root, _| {
+        root.model_selection_config_override = Some(config_path.clone());
+        root.agent_provider_override = Some(with_auxiliary_title_fixture(provider.clone()));
+    });
+    let window_root = root.clone();
+    let window = cx
+        .update(|cx| cx.open_window(Default::default(), move |_, _| window_root))
+        .expect("setup-failure production window");
+    cx.update(|cx| crate::app_palette::bind_shortcuts(window.into(), root.downgrade(), cx));
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| {
+            root.stream_view.is_some()
+                && root.configured_models.is_some()
+                && !root.model_catalog_loading
+                && matches!(
+                    root.pricing_controller.state,
+                    PricingControllerState::Ready { .. }
+                )
+        })
+    });
+    let initial_stream = root
+        .read_with(cx, |root, _| {
+            root.stream_view.as_ref().map(|(_, stream)| stream.clone())
+        })
+        .expect("initial route stream");
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let new_task = visual
+        .debug_bounds("sidebar-new-task")
+        .expect("new task control");
+    visual.simulate_click(new_task.center(), Modifiers::default());
+    visual.run_until_parked();
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, cx| {
+            root.draft.as_ref().is_some_and(|draft| {
+                cx.global::<OpenedThread>()
+                    .0
+                    .as_ref()
+                    .is_some_and(|opened| opened.id == draft.id)
+                    && root
+                        .stream_view
+                        .as_ref()
+                        .is_some_and(|(id, stream)| id == &draft.id && stream != &initial_stream)
+            })
+        })
+    });
+    let draft_stream = root
+        .read_with(cx, |root, _| {
+            root.stream_view.as_ref().map(|(_, stream)| stream.clone())
+        })
+        .expect("new task stream");
+    let draft_id = root.read_with(cx, |root, _| {
+        root.draft.as_ref().expect("installed draft").id.clone()
+    });
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let backend_chip = visual
+        .debug_bounds("composer-utility-backend-chip")
+        .expect("draft backend selector");
+    visual.simulate_click(backend_chip.center(), Modifiers::default());
+    visual.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let codex_option = visual
+        .debug_bounds("composer-utility-backend-option-codex")
+        .expect("Codex backend option");
+    visual.simulate_click(codex_option.center(), Modifiers::default());
+    visual.run_until_parked();
+    pump_test_app(cx, |cx| {
+        root.read_with(cx, |root, _| {
+            root.draft
+                .as_ref()
+                .is_some_and(|draft| draft.id == draft_id && draft.backend == TaskBackend::Codex)
+                && draft_stream
+                    .read_with(cx, |stream, _| stream.task_backend() == TaskBackend::Codex)
+        })
+    });
+
+    let (client, mut peer) = tokio::io::duplex(65_536);
+    let (reader, writer) = tokio::io::split(client);
+    root.update(cx, |root, _| {
+        root.codex_connection_factory = Some(Box::new(move || {
+            vega_acp::test_support::connection_from_io(reader, writer)
+        }));
+    });
+    let (peer_done_tx, peer_done_rx) = mpsc::sync_channel(1);
+    let peer_task = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("scripted ACP peer runtime")
+            .block_on(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+                let mut frame = Vec::new();
+                loop {
+                    let mut byte = [0u8; 1];
+                    peer.read_exact(&mut byte)
+                        .await
+                        .expect("ACP initialize frame");
+                    if byte[0] == b'\n' {
+                        break;
+                    }
+                    frame.push(byte[0]);
+                }
+                let request: serde_json::Value =
+                    serde_json::from_slice(&frame).expect("ACP initialize request");
+                assert_eq!(request["method"], "initialize");
+                let response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "error": {"code": -32000, "message": "scripted setup rejection"}
+                });
+                peer.write_all(&serde_json::to_vec(&response).expect("encode ACP response"))
+                    .await
+                    .expect("write ACP rejection");
+                peer.write_all(b"\n").await.expect("finish ACP rejection");
+                let mut unexpected = [0u8; 1];
+                assert_eq!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(100),
+                        peer.read(&mut unexpected)
+                    )
+                    .await
+                    .map(|read| read.expect("peer read"))
+                    .unwrap_or(0),
+                    0,
+                    "setup rejection must not send a session or prompt request"
+                );
+                let _ = peer_done_tx.send(());
+            });
+    });
+
+    let submitted_text = "restore this Codex setup-failure draft";
+    let input = draft_stream.read_with(cx, |stream, _| stream.composer_input());
+    input.update(cx, |input, cx| input.set_text(submitted_text, cx));
+    window
+        .update(cx, |_, window, cx| {
+            draft_stream.update(cx, |stream, cx| stream.focus_composer(window, cx))
+        })
+        .expect("focus Codex draft");
+    cx.run_until_parked();
+    cx.simulate_keystrokes(window.into(), "cmd-enter");
+    assert!(draft_stream.read_with(cx, |stream, _| stream.composer_submission_pending()));
+    pump_test_app(cx, |cx| {
+        draft_stream.read_with(cx, |stream, _| {
+            !stream.composer_submission_pending()
+                && stream.controller_error_message().is_some()
+                && root.read_with(cx, |root, _| root.draft.is_some())
+        })
+    });
+    peer_done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("scripted ACP peer observed the setup request");
+    peer_task.join().expect("scripted ACP peer task");
+
+    assert_eq!(
+        draft_stream.read_with(cx, |stream, cx| {
+            stream.composer_input().read(cx).text().to_owned()
+        }),
+        submitted_text
+    );
+    assert_eq!(
+        draft_stream.read_with(cx, |stream, _| stream.task_backend()),
+        TaskBackend::Codex
+    );
+    let (restored_draft_id, restored_stream) = root.read_with(cx, |root, _| {
+        let draft = root.draft.as_ref().expect("restored Codex draft");
+        let (stream_id, stream) = root
+            .stream_view
+            .as_ref()
+            .expect("restored Codex draft stream");
+        assert_eq!(stream_id, &draft.id);
+        (draft.id.clone(), stream.clone())
+    });
+    assert_ne!(restored_draft_id, draft_id);
+    assert_eq!(
+        restored_stream.read_with(cx, |stream, cx| {
+            stream.composer_input().read(cx).text().to_owned()
+        }),
+        submitted_text
+    );
+    assert_eq!(
+        restored_stream.read_with(cx, |stream, _| stream.task_backend()),
+        TaskBackend::Codex
+    );
+    assert!(root.read_with(cx, |root, cx| {
+        root.draft.as_ref().is_some_and(|draft| {
+            draft.id == restored_draft_id && draft.backend == TaskBackend::Codex
+        }) && root
+            .stream_view
+            .as_ref()
+            .is_some_and(|(id, stream)| id == &restored_draft_id && stream == &restored_stream)
+            && cx
+                .global::<OpenedThread>()
+                .0
+                .as_ref()
+                .is_some_and(|opened| {
+                    opened.id == restored_draft_id && opened.backend == TaskBackend::Codex
+                })
+            && root.agent_controller.active.is_empty()
+            && root.agent_worker_start_probe.load() == 0
+    }));
+    assert!(provider.requests().is_empty());
+    let codex_state = vega_conversation::codex_tasks::codex_task_identity(&store, &draft_id)
+        .expect("materialized Codex task identity")
+        .expect("Codex route remains Codex");
+    assert_eq!(codex_state.backend, TaskBackend::Codex);
+    assert!(matches!(
+        codex_state.session_creation,
+        CodexSessionCreationState::DefinitivelyFailed { .. }
+    ));
+    assert!(
+        vega_store::messages::recent(store.conn(), &draft_id, 10)
+            .expect("failed setup has no submitted message")
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
 async fn issue287_codex_preflight_failure_never_starts_native_worker_and_retains_draft(
     cx: &mut gpui_kit::TestAppContext,
 ) {
