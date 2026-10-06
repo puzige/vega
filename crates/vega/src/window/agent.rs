@@ -1398,6 +1398,8 @@ impl VegaWindow {
             permission_queue,
             cancel,
             sender: sender.clone(),
+            #[cfg(test)]
+            connection_factory: self.codex_connection_factory.take(),
         };
         let intent_id_for_failure = match &worker_request.intent {
             CodexSessionCreationState::Intent { intent_id } => Some(intent_id.clone()),

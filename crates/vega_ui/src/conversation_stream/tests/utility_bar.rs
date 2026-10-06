@@ -901,6 +901,108 @@ async fn r49_folder_chip_selects_another_project_from_the_shared_rows(cx: &mut T
 }
 
 #[gpui_kit::test]
+async fn issue287_materialized_native_task_backend_is_immutable(cx: &mut TestAppContext) {
+    let (window, stream, _) = open_controller_stream(cx, "issue287-materialized-native");
+    install_utility_globals(cx, &[], Some(PROJECT_BINDING));
+    assert!(!stream.read_with(cx, |stream, _| stream.draft_route));
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.task_backend()),
+        TaskBackend::Native
+    );
+    bounds(window, "composer-utility-backend-chip", cx);
+    click(window, "composer-utility-backend-chip", cx);
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-utility-backend-menu")
+            .is_none(),
+        "a committed Native backend chip must not open the backend selector"
+    );
+
+    let committed_requests = Arc::new(Mutex::new(Vec::<TaskBackendSelectionRequested>::new()));
+    let captured = committed_requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(
+            &stream,
+            move |_, request: &TaskBackendSelectionRequested, _| {
+                if let Ok(mut requests) = captured.lock() {
+                    requests.push(request.clone());
+                }
+            },
+        )
+        .detach();
+    });
+    stream.update(cx, |stream, cx| {
+        assert!(stream.select_task_backend(TaskBackend::Codex, cx).is_none());
+        stream.request_task_backend(TaskBackend::Codex, cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        committed_requests
+            .lock()
+            .expect("committed backend request capture")
+            .is_empty()
+    );
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.task_backend()),
+        TaskBackend::Native
+    );
+
+    let (draft_window, draft_stream, _) = open_controller_stream(cx, "issue287-fresh-draft");
+    draft_stream.update(cx, |stream, cx| stream.set_draft_route(true, cx));
+    assert!(draft_stream.read_with(cx, |stream, _| stream.draft_route));
+    assert_eq!(
+        draft_stream.read_with(cx, |stream, _| stream.task_backend()),
+        TaskBackend::Native
+    );
+    click(draft_window, "composer-utility-backend-chip", cx);
+    bounds(draft_window, "composer-utility-backend-menu", cx);
+    bounds(draft_window, "composer-utility-backend-option-codex", cx);
+
+    let draft_requests = Arc::new(Mutex::new(Vec::<TaskBackendSelectionRequested>::new()));
+    let captured = draft_requests.clone();
+    cx.update(|cx| {
+        cx.subscribe(
+            &draft_stream,
+            move |_, request: &TaskBackendSelectionRequested, _| {
+                if let Ok(mut requests) = captured.lock() {
+                    requests.push(request.clone());
+                }
+            },
+        )
+        .detach();
+    });
+    click(draft_window, "composer-utility-backend-option-codex", cx);
+    assert_eq!(
+        draft_requests
+            .lock()
+            .expect("draft backend request capture")
+            .as_slice(),
+        &[TaskBackendSelectionRequested {
+            thread_id: "issue287-fresh-draft".into(),
+            backend: TaskBackend::Codex,
+        }]
+    );
+    draft_stream.update(cx, |stream, cx| {
+        assert!(stream.select_task_backend(TaskBackend::Codex, cx).is_some());
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        draft_stream.read_with(cx, |stream, _| stream.task_backend()),
+        TaskBackend::Codex
+    );
+    assert!(
+        VisualTestContext::from_window(draft_window.into(), cx)
+            .debug_bounds("composer-backend-status")
+            .is_some()
+    );
+    assert!(
+        VisualTestContext::from_window(draft_window.into(), cx)
+            .debug_bounds("composer-utility-backend-menu")
+            .is_none()
+    );
+}
+
+#[gpui_kit::test]
 async fn r49_committed_empty_session_keeps_its_project_fence_but_a8_draft_can_choose(
     cx: &mut TestAppContext,
 ) {
