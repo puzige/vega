@@ -1,6 +1,6 @@
 # Vega A4 首版：新建 Codex 任务
 
-日期：2026-10-06。状态：A4 用户流程与系统规格；A4-C1 runtime 卡已进入 In progress，完整功能与原生验收尚未开始。
+日期：2026-10-06。状态：A4 用户流程与系统规格；[A4-C1 runtime 卡](https://github.com/puzige/vega/issues/281)已进入 In progress，完整功能与原生验收尚未开始。
 
 用户已确认的流程：**在 Vega 新建任务时选择 Codex，由 Codex 完整执行任务。** 本文将这个流程拆成可实施的契约；版本和上游证据见 [调研报告](vega-acp-codex-research.md)。产品归属为 PRD 的 A4-01～A4-05。
 

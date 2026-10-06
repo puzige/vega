@@ -1,6 +1,6 @@
 # A4-C1：bounded ACP v1 runtime
 
-Date: 2026-10-06. Status: implementation card, In progress.
+Date: 2026-10-06. Status: [Issue #281](https://github.com/puzige/vega/issues/281), In progress.
 
 This card provides Vega's headless ACP v1 transport/runtime for a user-configured `codex-acp` executable. It is a foundation for the complete A4 task flow; it does not make A4 complete by itself. The end-to-end product contract remains in [the A4 v1 specification](vega-acp-codex-v1-spec.md).
 
