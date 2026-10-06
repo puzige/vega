@@ -1,0 +1,146 @@
+[
+  {
+    "id": "issue72-owned-message-00",
+    "seq": 1,
+    "role": "user",
+    "content": " Markdown"
+  },
+  {
+    "id": "issue72-owned-message-01",
+    "seq": 2,
+    "role": "assistant",
+    "content": "What would you like me to do with Markdown—write a document, format some text, or edit a Markdown file in the project?"
+  },
+  {
+    "id": "issue72-owned-message-02",
+    "seq": 3,
+    "role": "user",
+    "content": "请严格输出以下 Markdown，保持标题、中文英文混排、项目符号、行内代码、表格和代码块，不要添加其他内容：\n## 开始 Alpha\n中英文混排 Vega 测试🙂 — alpha beta.\n- 列表项一\n- `inline_code`\n| 名称 | 状态 |\n|---|---|\n| Vega | PASS |\n```text\nline-one\nline-two\n```\n末尾 end."
+  },
+  {
+    "id": "issue72-owned-message-03",
+    "seq": 4,
+    "role": "assistant",
+    "content": "## 开始 Alpha\n中英文混排 Vega 测试🙂 — alpha beta.\n- 列表项一\n- `inline_code`\n| 名称 | 状态 |\n|---|---|\n| Vega | PASS |\n```text\nline-one\nline-two\n```\n末尾 end."
+  },
+  {
+    "id": "issue72-owned-message-04",
+    "seq": 5,
+    "role": "user",
+    "content": " Markdown “”“”“Vega”“PASS” Markdown "
+  },
+  {
+    "id": "issue72-owned-message-05",
+    "seq": 6,
+    "role": "assistant",
+    "content": "Markdown “”“”“Vega”“PASS” Markdown"
+  },
+  {
+    "id": "issue72-owned-message-06",
+    "seq": 7,
+    "role": "user",
+    "content": "Render one Markdown table with header Name and Status, and one row Vega and PASS. Return no explanation."
+  },
+  {
+    "id": "issue72-owned-message-07",
+    "seq": 8,
+    "role": "assistant",
+    "content": "| Name | Status |\n|---|---|\n| Vega | PASS |"
+  },
+  {
+    "id": "issue72-owned-message-08",
+    "seq": 9,
+    "role": "user",
+    "content": "Reply with exactly this Markdown link and nothing else: [Vega link](https://example.com)"
+  },
+  {
+    "id": "issue72-owned-message-09",
+    "seq": 10,
+    "role": "assistant",
+    "content": "[Vega link](https://example.com)"
+  },
+  {
+    "id": "issue72-owned-message-10",
+    "seq": 11,
+    "role": "user",
+    "content": "Output a Markdown numbered list with exactly 80 lines: item-001 through item-080. No preface or conclusion."
+  },
+  {
+    "id": "issue72-owned-message-11",
+    "seq": 12,
+    "role": "assistant",
+    "content": "1. item-001\n2. item-002\n3. item-003\n4. item-004\n5. item-005\n6. item-006\n7. item-007\n8. item-008\n9. item-009\n10. item-010\n11. item-011\n12. item-012\n13. item-013\n14. item-014\n15. item-015\n16. item-016\n17. item-017\n18. item-018\n19. item-019\n20. item-020\n21. item-021\n22. item-022\n23. item-023\n24. item-024\n25. item-025\n26. item-026\n27. item-027\n28. item-028\n29. item-029\n30. item-030\n31. item-031\n32. item-032\n33. item-033\n34. item-034\n35. item-035\n36. item-036\n37. item-037\n38. item-038\n39. item-039\n40. item-040\n41. item-041\n42. item-042\n43. item-043\n44. item-044\n45. item-045\n46. item-046\n47. item-047\n48. item-048\n49. item-049\n50. item-050\n51. item-051\n52. item-052\n53. item-053\n54. item-053\n55. item-054\n56. item-055\n57. item-056\n58. item-057\n59. item-058\n60. item-059\n61. item-060\n62. item-061\n63. item-062\n64. item-063\n65. item-064\n66. item-065\n67. item-066\n68. item-067\n69. item-068\n70. item-069\n71. item-070\n72. item-071\n73. item-072\n74. item-073\n75. item-074\n76. item-075\n77. item-076\n78. item-077\n79. item-078\n80. item-079"
+  },
+  {
+    "id": "issue72-owned-message-12",
+    "seq": 13,
+    "role": "user",
+    "content": "Return one Markdown answer with exactly these sections in order and no explanation: paragraph Alpha; list items First and Second; table header Name, Status with rows Vega, PASS and Loom, PASS; fenced text code lines line-one and line-two; final paragraph Omega."
+  },
+  {
+    "id": "issue72-owned-message-13",
+    "seq": 14,
+    "role": "assistant",
+    "content": "Alpha\n\n- First\n- Second\n\n| Name | Status |\n|---|---|\n| Vega | PASS |\n| Loom | PASS |\n\n```text\nline-one\nline-two\n```\n\nOmega"
+  },
+  {
+    "id": "issue72-owned-message-14",
+    "seq": 15,
+    "role": "user",
+    "content": "For a deterministic reasoning latency probe, compute (1234567890123456789^12345) mod 1000000007. Return only the integer; do not include derivation."
+  },
+  {
+    "id": "issue72-owned-message-15",
+    "seq": 16,
+    "role": "assistant",
+    "content": "433392216"
+  },
+  {
+    "id": "issue72-owned-message-16",
+    "seq": 17,
+    "role": "user",
+    "content": "Run exactly one local read-only shell command that prints 160 synthetic numbered lines and no other command. Use this exact command: python3 -c \"for i in range(1,161): print(f'SYNTHETIC_LINE_{i:03d}')\" Then final answer only SYNTHETIC_OUTPUT_OK: 160. Do not access files, secrets, network, or other tools."
+  },
+  {
+    "id": "issue72-owned-message-17",
+    "seq": 18,
+    "role": "assistant",
+    "content": "SYNTHETIC_OUTPUT_OK: 160"
+  },
+  {
+    "id": "issue72-owned-message-18",
+    "seq": 19,
+    "role": "user",
+    "content": "Without using tools or code, give a rigorous proof of the Cayley–Hamilton theorem for an arbitrary nn matrix over a commutative field. Build the proof from the adjugate identity, justify the polynomial-matrix substitution carefully, and identify exactly why coefficient matrices commute with A. Then give a separate induction proof for the special case n=3. Write 40 short numbered steps; each step should contain one concrete mathematical inference, with no skipped algebraic transitions."
+  },
+  {
+    "id": "issue72-owned-message-19",
+    "seq": 20,
+    "role": "assistant",
+    "content": "1. Let \\(F\\) be a field, \\(n\\ge 1\\), and \\(A\\in M_n(F)\\).\n2. In \\(F[t]\\), set \\(M(t)=tI_n-A\\) and \\(p(t)=\\det M(t)=\\sum_{k=0}^{n}c_kt^k\\).\n3. The coefficient \\(c_n\\) is \\(1\\), since only the diagonal product contributes a term of degree \\(n\\) to \\(\\det(tI_n-A)\\).\n4. Write \\(Q(t)=\\operatorname{adj}M(t)=\\sum_{k=0}^{n-1}B_kt^k\\), padding with zero coefficients if needed.\n5. The adjugate identities over the commutative ring \\(F[t]\\) give \\(M(t)Q(t)=p(t)I_n=Q(t)M(t)\\).\n6. Therefore \\(M(t)Q(t)=Q(t)M(t)\\).\n7. Expanding the difference gives \\(0=\\sum_{k=0}^{n-1}(B_kA-AB_k)t^k\\).\n8. Equality of polynomial coefficients gives \\(B_kA=AB_k\\) for every \\(k\\).\n9. The matrices commuting with \\(A\\) form a subring \\(C=\\{X\\in M_n(F):XA=AX\\}\\), containing \\(I_n,A,B_0,\\ldots,B_{n-1}\\).\n10. Regard \\(C[t]\\) as polynomials with matrix coefficients and a central indeterminate \\(t\\).\n11. Define \\(E_A:C[t]\\to M_n(F)\\) by \\(E_A(\\sum_i C_it^i)=\\sum_i C_iA^i\\).\n12. For \\(P=\\sum_iC_it^i\\) and \\(S=\\sum_jD_jt^j\\), expansion gives \\(E_A(PS)=\\sum_{i,j}C_iD_jA^{i+j}\\).\n13. Direct multiplication gives \\(E_A(P)E_A(S)=\\sum_{i,j}C_iA^iD_jA^j\\).\n14. Since each \\(D_j\\in C\\), \\(A^iD_j=D_jA^i\\), so this product equals \\(\\sum_{i,j}C_iD_jA^{i+j}\\).\n15. Thus \\(E_A\\) is multiplicative; it is additive by its definition.\n16. Both \\(M(t)\\) and \\(Q(t)\\) belong to \\(C[t]\\), by \\(A,B_k\\in C\\).\n17. The polynomial matrix \\(p(t)I_n\\) also belongs to \\(C[t]\\), since each \\(c_kI_n\\in C\\).\n18. Evaluation gives \\(E_A(M)=AI_n-A=0\\).\n19. Evaluation gives \\(E_A(Q)=\\sum_{k=0}^{n-1}B_kA^k\\).\n20. Applying \\(E_A\\) to \\(M(t)Q(t)=p(t)I_n\\) gives \\(E_A(MQ)=E_A(pI_n)\\).\n21. Multiplicativity and step 18 give \\(E_A(MQ)=E_A(M)E_A(Q)=0\\).\n22. The definition of \\(E_A\\) gives \\(E_A(pI_n)=\\sum_{k=0}^{n}c_kA^k=p(A)\\).\n23. Hence \\(p(A)=0\\), proving Cayley–Hamilton for every \\(n\\).\n24. For a separate induction proof at \\(n=3\\), let \\(K\\) be an algebraic closure of \\(F\\); it suffices to prove the identity over \\(K\\), since \\(F\\hookrightarrow K\\) is injective.\n25. For \\(d=1\\), a matrix \\(T=[a]\\) has characteristic polynomial \\(t-a\\), and \\((t-a)(T)=T-aI_1=0\\).\n26. Assume the identity holds for all \\((d-1)\\times(d-1)\\) matrices over \\(K\\), and take \\(T\\in M_d(K)\\), where \\(d\\ge2\\).\n27. The monic polynomial \\(\\det(tI_d-T)\\) has a root \\(\\lambda\\in K\\), so \\(\\lambda I_d-T\\) is singular and \\(Tv=\\lambda v\\) for some \\(v\\ne0\\).\n28. Extending \\(v\\) to a basis puts \\(T\\) in the form \\(\\begin{pmatrix}\\lambda&r\\\\0&B\\end{pmatrix}\\), with \\(B\\in M_{d-1}(K)\\).\n29. Set \\(q(t)=\\det(tI_{d-1}-B)\\); block-triangular determinants give \\(p_T(t)=(t-\\lambda)q(t)\\).\n30. The induction hypothesis gives \\(q(B)=0\\).\n31. Each power of \\(T\\) has diagonal blocks \\(\\lambda^k,B^k\\) and lower-left block \\(0\\), so \\(q(T)=\\begin{pmatrix}q(\\lambda)&u\\\\0&q(B)\\end{pmatrix}\\) for some row \\(u\\).\n32. Using \\(q(B)=0\\) yields \\(q(T)=\\begin{pmatrix}q(\\lambda)&u\\\\0&0\\end{pmatrix}\\).\n33. Since scalar coefficients commute with \\(T\\), evaluating \\(p_T(t)=(t-\\lambda)q(t)\\) at \\(T\\) gives \\(p_T(T)=(T-\\lambda I_d)q(T)\\).\n34. In the same basis, \\(T-\\lambda I_d=\\begin{pmatrix}0&r\\\\0&B-\\lambda I_{d-1}\\end{pmatrix}\\).\n35. Block multiplication gives \\(\\begin{pmatrix}0&r\\\\0&B-\\lambda I_{d-1}\\end{pmatrix}\\begin{pmatrix}q(\\lambda)&u\\\\0&0\\end{pmatrix}=\\begin{pmatrix}0&0\\\\0&0\\end{pmatrix}\\).\n36. Therefore \\(p_T(T)=0\\), proving the induction step from dimension \\(d-1\\) to \\(d\\).\n37. The base case and induction step establish the identity in dimensions \\(2\\) and \\(3\\) over \\(K\\).\n38. For \\(A\\in M_3(F)\\), view \\(A\\) as a matrix over \\(K\\); the dimension-three result gives \\(p_A(A)=0\\) over \\(K\\).\n39. The determinant formula uses the same sums and products in \\(F\\) and \\(K\\), so \\(p_A\\) over \\(K\\) is the scalar extension of \\(p_A\\) over \\(F\\).\n40. Every entry of \\(p_A(A)\\) lies in \\(F\\), and its image in \\(K\\) is zero; injectivity of \\(F\\hookrightarrow K\\) gives \\(p_A(A)=0\\) over \\(F\\)."
+  },
+  {
+    "id": "issue72-owned-message-20",
+    "seq": 21,
+    "role": "user",
+    "content": "No tools. Please produce a detailed, self-contained proof of the Cayley-Hamilton theorem for an arbitrary finite-dimensional linear operator over a field. Use 80 short numbered steps, with each step advancing a distinct part of the argument, and include the determinant/adjugate identity, basis independence, induction on dimension, and the final return from an algebraic closure. Do not repeat steps or skip the key algebraic justifications."
+  },
+  {
+    "id": "issue72-owned-message-21",
+    "seq": 22,
+    "role": "assistant",
+    "content": "1. Let \\(F\\) be a field, \\(V\\) a finite-dimensional \\(F\\)-vector space, and \\(T:V\\to V\\) a linear operator.\n2. Write \\(n=\\dim_F V\\).\n3. If \\(n=0\\), then \\(p_T(t)=1\\) by the empty-determinant convention, and \\(p_T(T)=I_V=0\\), so the theorem holds.\n4. Assume henceforth that \\(n>0\\), and choose an ordered basis of \\(V\\).\n5. Let \\(A\\in M_n(F)\\) be the matrix of \\(T\\) in this basis.\n6. Define \\(p_A(t)=\\det(tI_n-A)\\in F[t]\\).\n7. For \\(f(t)=\\sum_i a_it^i\\in F[t]\\), define \\(f(A)=\\sum_i a_iA^i\\).\n8. If a second basis has change-of-basis matrix \\(S\\in GL_n(F)\\), its matrix for \\(T\\) is \\(A'=S^{-1}AS\\).\n9. Then \\(tI_n-A'=S^{-1}(tI_n-A)S\\).\n10. Multiplicativity of the determinant gives \\(\\det(tI_n-A')=\\det(tI_n-A)\\).\n11. Thus \\(p_{A'}=p_A\\).\n12. For every \\(f\\in F[t]\\), powers of \\(A'=S^{-1}AS\\) give \\(f(A')=S^{-1}f(A)S\\).\n13. Therefore the characteristic polynomial and the assertion \\(p_A(A)=0\\) are independent of the chosen basis.\n14. It remains to prove the matrix identity for \\(A\\).\n15. Let \\(R\\) be a commutative ring and \\(C\\in M_m(R)\\).\n16. Define the \\((i,j)\\)-cofactor of \\(C\\) as \\((-1)^{i+j}\\det C_{\\widehat i,\\widehat j}\\), where row \\(i\\) and column \\(j\\) are deleted.\n17. Define \\(\\operatorname{adj}(C)\\) to have entry \\((i,j)\\) equal to the \\((j,i)\\)-cofactor of \\(C\\).\n18. The \\((i,j)\\)-entry of \\(C\\operatorname{adj}(C)\\) is \\(\\sum_k C_{ik}(-1)^{j+k}\\det C_{\\widehat j,\\widehat k}\\).\n19. When \\(i=j\\), this sum is the Laplace expansion of \\(\\det C\\) along row \\(i\\).\n20. When \\(i\\ne j\\), this sum is the Laplace expansion along row \\(j\\) of the matrix obtained by replacing row \\(j\\) with row \\(i\\).\n21. That replaced matrix has two equal rows, so its determinant is zero.\n22. Hence \\(C\\operatorname{adj}(C)=\\det(C)I_m\\).\n23. Applying this identity to \\(C^{\\mathsf T}\\) and transposing gives \\(\\operatorname{adj}(C)C=\\det(C)I_m\\).\n24. Now take \\(R=F[t]\\) and \\(C=tI_n-A\\).\n25. The adjugate identities give \\((tI_n-A)\\operatorname{adj}(tI_n-A)=p_A(t)I_n=\\operatorname{adj}(tI_n-A)(tI_n-A)\\).\n26. Write \\(Q(t)=\\operatorname{adj}(tI_n-A)=\\sum_{k=0}^{n-1}B_kt^k\\), inserting zero coefficients if necessary.\n27. The two adjugate identities imply \\((tI_n-A)Q(t)=Q(t)(tI_n-A)\\).\n28. Expanding both sides and cancelling the \\(B_kt^{k+1}\\) terms gives \\(\\sum_{k=0}^{n-1}(AB_k-B_kA)t^k=0\\).\n29. Equality of polynomial coefficients gives \\(AB_k=B_kA\\) for every \\(k\\).\n30. Let \\(\\mathcal C_A=\\{X\\in M_n(F):XA=AX\\}\\).\n31. The set \\(\\mathcal C_A\\) is closed under addition and multiplication and contains \\(I_n,A\\), and every \\(B_k\\).\n32. Form the ring \\(\\mathcal C_A[t]\\) of polynomials with coefficients in \\(\\mathcal C_A\\), taking \\(t\\) to commute with every coefficient.\n33. Define \\(E:\\mathcal C_A[t]\\to M_n(F)\\) by \\(E(\\sum_i C_it^i)=\\sum_i C_iA^i\\).\n34. The definition makes \\(E\\) additive.\n35. For \\(P=\\sum_i C_it^i\\) and \\(R=\\sum_jD_jt^j\\), their evaluated product is \\(E(P)E(R)=\\sum_{i,j}C_iA^iD_jA^j\\).\n36. Since each \\(D_j\\) commutes with \\(A\\), it commutes with every power \\(A^i\\).\n37. Thus \\(E(P)E(R)=\\sum_{i,j}C_iD_jA^{i+j}=E(PR)\\), so \\(E\\) is multiplicative.\n38. Each of \\(tI_n-A\\), \\(Q(t)\\), and \\(p_A(t)I_n\\) belongs to \\(\\mathcal C_A[t]\\).\n39. Evaluation gives \\(E(tI_n-A)=A-A=0\\).\n40. Applying \\(E\\) to the adjugate identity gives \\(E((tI_n-A)Q(t))=E(p_A(t)I_n)\\).\n41. Multiplicativity and step 39 make the left side zero.\n42. The definition of \\(E\\) makes the right side \\(p_A(A)\\).\n43. Therefore \\(p_A(A)=0\\).\n44. For the requested dimension-induction proof, let \\(K\\) be an algebraic closure of \\(F\\).\n45. We prove by induction on \\(d\\ge 0\\) that every \\(C\\in M_d(K)\\) satisfies \\(\\det(tI_d-C)\\big|_{t=C}=0\\).\n46. For \\(d=0\\), the characteristic polynomial is \\(1\\), and the identity operator on the zero space is the zero map.\n47. For \\(d=1\\), if \\(C=[a]\\), then \\(\\det(tI_1-C)=t-a\\), so its evaluation at \\(C\\) is zero.\n48. Let \\(d\\ge2\\), assume the claim in dimension \\(d-1\\), and take \\(C\\in M_d(K)\\).\n49. Set \\(p_C(t)=\\det(tI_d-C)\\).\n50. The polynomial \\(p_C\\) is monic of degree \\(d\\).\n51. Since \\(K\\) is algebraically closed, \\(p_C\\) has a root \\(\\lambda\\in K\\).\n52. The root equation says \\(\\det(\\lambda I_d-C)=0\\).\n53. Over a field, row reduction shows that a square matrix has determinant zero exactly when it is singular.\n54. Thus \\(\\lambda I_d-C\\) has a nonzero kernel vector \\(v\\), and \\(Cv=\\lambda v\\).\n55. Extend \\(v\\) to a basis of \\(K^d\\).\n56. In this basis, \\(C\\) has block form \\(\\begin{pmatrix}\\lambda&r\\\\0&B\\end{pmatrix}\\), where \\(B\\in M_{d-1}(K)\\).\n57. Define \\(q(t)=\\det(tI_{d-1}-B)\\).\n58. The block-triangular determinant gives \\(p_C(t)=(t-\\lambda)q(t)\\).\n59. Indeed, in the Leibniz expansion of \\(\\det(tI_d-C)\\), the zero lower-left block forces the first row to use the first column, leaving the determinant of \\(tI_{d-1}-B\\).\n60. The induction hypothesis applied to \\(B\\) gives \\(q(B)=0\\).\n61. For each \\(k\\ge0\\), write \\(C^k=\\begin{pmatrix}\\lambda^k&r_k\\\\0&B^k\\end{pmatrix}\\) for a suitable row \\(r_k\\).\n62. This form holds for \\(k=0\\), since \\(C^0=I_d\\).\n63. Multiplying the displayed form for \\(C^k\\) by \\(C\\) gives it for \\(k+1\\), with \\(r_{k+1}=\\lambda^kr+r_kB\\).\n64. Taking the linear combination of these powers prescribed by \\(q\\) gives \\(q(C)=\\begin{pmatrix}q(\\lambda)&s\\\\0&q(B)\\end{pmatrix}\\) for some row \\(s\\).\n65. Since \\(q(B)=0\\), this reduces to \\(q(C)=\\begin{pmatrix}q(\\lambda)&s\\\\0&0\\end{pmatrix}\\).\n66. For scalar-coefficient polynomials \\(f,g\\), expansion and \\(C^iC^j=C^{i+j}\\) give \\(f(C)g(C)=(fg)(C)\\).\n67. Hence \\(p_C(C)=(C-\\lambda I_d)q(C)\\).\n68. In the chosen basis, \\(C-\\lambda I_d=\\begin{pmatrix}0&r\\\\0&B-\\lambda I_{d-1}\\end{pmatrix}\\).\n69. The top block row of \\((C-\\lambda I_d)q(C)\\) is zero because it multiplies the zero bottom block row of \\(q(C)\\).\n70. The bottom block row of that product is also zero because it multiplies the zero left block column of \\(q(C)\\).\n71. Therefore \\(p_C(C)=0\\), completing the induction step.\n72. Induction proves the claim for every finite dimension over \\(K\\).\n73. Regard the original matrix \\(A\\) as a matrix over \\(K\\).\n74. The dimension-\\(n\\) induction result gives \\(p_{A,K}(A)=0\\), where \\(p_{A,K}(t)=\\det_K(tI_n-A)\\).\n75. The Leibniz formula for the determinant shows that \\(p_{A,K}\\) is the image of \\(p_{A,F}(t)=\\det_F(tI_n-A)\\) under \\(F[t]\\hookrightarrow K[t]\\).\n76. Termwise polynomial evaluation shows that \\(p_{A,K}(A)\\) is the entrywise image of \\(p_{A,F}(A)\\).\n77. The inclusion \\(F\\hookrightarrow K\\) is injective.\n78. Since every entry of \\(p_{A,F}(A)\\) maps to zero in \\(K\\), every such entry is already zero in \\(F\\).\n79. Thus \\(p_{A,F}(A)=0\\) over the original field \\(F\\).\n80. Basis independence from steps 8–13 now gives \\(p_T(T)=0\\) for the original operator \\(T\\)."
+  },
+  {
+    "id": "issue72-owned-message-22",
+    "seq": 23,
+    "role": "user",
+    "content": "Vega QA only. Do not call tools, inspect files, or change any settings. Give a rigorous proof of the Cayley–Hamilton theorem as a numbered sequence of 120 concise mathematical steps, one logical transformation per step. Define every symbol before use, preserve every inference, and keep each numbered item on its own paragraph. This is a synthetic reasoning/UI test; correctness matters more than speed."
+  },
+  {
+    "id": "issue72-owned-message-23",
+    "seq": 24,
+    "role": "assistant",
+    "content": "1. Let \\(F\\) be a field.\n2. Let \\(V\\) be a finite-dimensional vector space over \\(F\\).\n3. Let \\(T:V\\to V\\) be a linear operator.\n4. Put \\(n=\\dim_F V\\).\n5. If \\(n=0\\), the characteristic polynomial is \\(1\\), whose evaluation is \\(I_V=0\\), so the theorem holds.\n6. Assume \\(n\\ge 1\\).\n7. Choose an ordered basis \\(\\mathcal B\\) of \\(V\\).\n8. Let \\(\\phi:F^n\\to V\\) send the standard basis to \\(\\mathcal B\\).\n9. Let \\(A\\in M_n(F)\\) be the matrix of \\(T\\) in \\(\\mathcal B\\).\n10. Let \\(I_n\\) denote the \\(n\\times n\\) identity matrix.\n11. Let \\(t\\) be an indeterminate.\n12. For matrices over a commutative ring, let \\(\\det\\) denote the usual Leibniz-sum determinant.\n13. Set \\(M(t)=tI_n-A\\).\n14. Write \\(p_A(t)=\\det M(t)=\\sum_{k=0}^n c_kt^k\\), with \\(c_k\\in F\\).\n15. For \\(f(t)=\\sum_i a_it^i\\in F[t]\\), define \\(f(A)=\\sum_i a_iA^i\\), using \\(A^0=I_n\\).\n16. The polynomial \\(p_A\\) is the characteristic polynomial of the matrix \\(A\\).\n17. Let \\(\\mathcal B'\\) be another ordered basis, and let \\(S\\in GL_n(F)\\) be its change-of-coordinate matrix.\n18. Let \\(A'\\) be the matrix of \\(T\\) in \\(\\mathcal B'\\); then \\(A'=S^{-1}AS\\).\n19. It follows that \\(tI_n-A'=S^{-1}(tI_n-A)S\\).\n20. Taking determinants and using determinant multiplicativity gives \\(\\det(tI_n-A')=\\det(tI_n-A)\\).\n21. Thus the characteristic polynomial is independent of the chosen basis.\n22. For \\(k=0\\), \\((A')^k=S^{-1}A^kS\\).\n23. If \\((A')^k=S^{-1}A^kS\\), then \\((A')^{k+1}=S^{-1}A^{k+1}S\\).\n24. Induction gives \\((A')^k=S^{-1}A^kS\\) for every \\(k\\ge0\\).\n25. Hence \\(f(A')=S^{-1}f(A)S\\) for every \\(f\\in F[t]\\).\n26. In particular, the identity \\(p_A(A)=0\\) is independent of the basis.\n27. Denote the basis-independent characteristic polynomial of \\(T\\) by \\(p_T\\).\n28. It suffices to prove \\(p_A(A)=0\\).\n29. The ring \\(R=F[t]\\) is commutative.\n30. Let \\(X\\in M_n(R)\\).\n31. For indices \\(i,j\\in\\{1,\\ldots,n\\}\\), let \\(X_{\\widehat i,\\widehat j}\\) be the matrix obtained by deleting row \\(i\\) and column \\(j\\).\n32. Define the cofactor \\(\\gamma_{ij}(X)=(-1)^{i+j}\\det X_{\\widehat i,\\widehat j}\\), taking an empty determinant to be \\(1\\).\n33. Define the adjugate by \\(\\operatorname{adj}(X)_{ij}=\\gamma_{ji}(X)\\).\n34. Matrix multiplication gives \\((X\\operatorname{adj}(X))_{ij}=\\sum_{k=1}^n X_{ik}\\gamma_{jk}(X)\\).\n35. If \\(i=j\\), this sum is the cofactor expansion along row \\(i\\).\n36. Therefore \\((X\\operatorname{adj}(X))_{ii}=\\det X\\).\n37. Suppose \\(i\\ne j\\).\n38. Let \\(X^{(j\\leftarrow i)}\\) be \\(X\\) with row \\(j\\) replaced by row \\(i\\).\n39. The matrix \\(X^{(j\\leftarrow i)}\\) has equal rows \\(i\\) and \\(j\\).\n40. Deleting row \\(j\\) from \\(X^{(j\\leftarrow i)}\\) leaves the same minors as deleting row \\(j\\) from \\(X\\).\n41. Thus the sum in step 34 is the cofactor expansion of \\(\\det X^{(j\\leftarrow i)}\\) along row \\(j\\).\n42. A determinant with two equal rows is zero.\n43. Therefore \\((X\\operatorname{adj}(X))_{ij}=0\\) when \\(i\\ne j\\).\n44. The entry calculations yield \\(X\\operatorname{adj}(X)=\\det(X)I_n\\).\n45. The Leibniz formula, with its permutation sum reindexed, gives \\(\\det(X^{\\mathsf T})=\\det(X)\\).\n46. Deleting row \\(i\\) and column \\(j\\) from \\(X^{\\mathsf T}\\) gives \\((X_{\\widehat j,\\widehat i})^{\\mathsf T}\\).\n47. Taking determinants of these minors gives \\(\\gamma_{ij}(X^{\\mathsf T})=\\gamma_{ji}(X)\\).\n48. The cofactor relation implies \\(\\operatorname{adj}(X^{\\mathsf T})=\\operatorname{adj}(X)^{\\mathsf T}\\).\n49. Applying step 44 to \\(X^{\\mathsf T}\\) gives \\(X^{\\mathsf T}\\operatorname{adj}(X^{\\mathsf T})=\\det(X^{\\mathsf T})I_n\\).\n50. Transposing this equality gives \\(\\operatorname{adj}(X^{\\mathsf T})^{\\mathsf T}X=\\det(X^{\\mathsf T})I_n\\).\n51. Substituting steps 45 and 48 yields \\(\\operatorname{adj}(X)X=\\det(X)I_n\\).\n52. Hence both adjugate identities hold: \\(X\\operatorname{adj}(X)=\\operatorname{adj}(X)X=\\det(X)I_n\\).\n53. Apply these identities to \\(X=M(t)\\).\n54. The determinant of \\(M(t)\\) is \\(p_A(t)\\).\n55. Put \\(Q(t)=\\operatorname{adj}(M(t))\\).\n56. The adjugate identities give \\(M(t)Q(t)=p_A(t)I_n=Q(t)M(t)\\).\n57. Each entry of \\(M(t)\\) has degree at most \\(1\\).\n58. Each cofactor of \\(M(t)\\) is the determinant of a matrix of size \\(n-1\\).\n59. The Leibniz formula then bounds each cofactor’s degree by \\(n-1\\).\n60. Consequently, every entry of \\(Q(t)\\) has degree at most \\(n-1\\).\n61. Write \\(Q(t)=\\sum_{k=0}^{n-1}B_kt^k\\).\n62. Here each \\(B_k\\) is a matrix in \\(M_n(F)\\).\n63. If an entry has smaller degree, its missing coefficients in this expression are zero.\n64. Since both products in step 56 equal \\(p_A(t)I_n\\), we have \\(M(t)Q(t)-Q(t)M(t)=0\\).\n65. Expanding the first product gives \\(tQ(t)-AQ(t)\\).\n66. Expanding the second product gives \\(tQ(t)-Q(t)A\\).\n67. The indeterminate \\(t\\) commutes with every matrix coefficient.\n68. Subtracting the expanded products therefore leaves \\(-AQ(t)+Q(t)A=0\\).\n69. Substituting the expression for \\(Q(t)\\) gives \\(\\sum_{k=0}^{n-1}(B_kA-AB_k)t^k=0\\).\n70. A zero matrix polynomial has every coefficient equal to the zero matrix.\n71. Thus \\(B_kA-AB_k=0\\) for each \\(k\\).\n72. Every coefficient \\(B_k\\) of \\(Q(t)\\) commutes with \\(A\\).\n73. Define \\(\\mathcal C=\\{Y\\in M_n(F):YA=AY\\}\\).\n74. The identity matrix \\(I_n\\) belongs to \\(\\mathcal C\\).\n75. The matrix \\(A\\) belongs to \\(\\mathcal C\\).\n76. Each \\(B_k\\) belongs to \\(\\mathcal C\\), by step 72.\n77. Sums and scalar multiples of matrices in \\(\\mathcal C\\) remain in \\(\\mathcal C\\).\n78. Products of matrices in \\(\\mathcal C\\) remain in \\(\\mathcal C\\).\n79. The coefficients of \\(M(t)\\), \\(Q(t)\\), and \\(p_A(t)I_n\\) therefore all belong to \\(\\mathcal C\\).\n80. Let \\(\\mathcal C[t]\\) be the ring of polynomials with coefficients in \\(\\mathcal C\\).\n81. In \\(\\mathcal C[t]\\), the indeterminate \\(t\\) commutes with every coefficient.\n82. Define \\(E:\\mathcal C[t]\\to M_n(F)\\) by \\(E(\\sum_i C_it^i)=\\sum_i C_iA^i\\).\n83. Each polynomial in \\(\\mathcal C[t]\\) has a unique coefficient expansion \\(\\sum_i C_it^i\\).\n84. The definition of \\(E\\) makes it additive.\n85. Let \\(U(t)=\\sum_i C_it^i\\) be in \\(\\mathcal C[t]\\).\n86. Let \\(W(t)=\\sum_j D_jt^j\\) be in \\(\\mathcal C[t]\\).\n87. Their product is \\(U(t)W(t)=\\sum_{i,j}C_iD_jt^{i+j}\\).\n88. Therefore \\(E(UW)=\\sum_{i,j}C_iD_jA^{i+j}\\).\n89. By definition, \\(E(U)=\\sum_i C_iA^i\\).\n90. By definition, \\(E(W)=\\sum_j D_jA^j\\).\n91. Multiplying these evaluations gives \\(E(U)E(W)=\\sum_{i,j}C_iA^iD_jA^j\\).\n92. Each coefficient \\(D_j\\) belongs to \\(\\mathcal C\\).\n93. Hence \\(D_jA=AD_j\\) for every \\(j\\).\n94. Induction on \\(i\\) gives \\(D_jA^i=A^iD_j\\) for every \\(i,j\\).\n95. Reordering \\(A^i\\) and \\(D_j\\) in step 91 gives \\(\\sum_{i,j}C_iD_jA^iA^j\\).\n96. Since \\(A^iA^j=A^{i+j}\\), this is \\(E(UW)\\).\n97. Thus \\(E(UW)=E(U)E(W)\\), so \\(E\\) is multiplicative.\n98. The coefficients of \\(M(t)\\) belong to \\(\\mathcal C\\), so \\(M(t)\\in\\mathcal C[t]\\).\n99. The coefficients of \\(Q(t)\\) belong to \\(\\mathcal C\\), so \\(Q(t)\\in\\mathcal C[t]\\).\n100. Each coefficient \\(c_kI_n\\) belongs to \\(\\mathcal C\\), so \\(p_A(t)I_n\\in\\mathcal C[t]\\).\n101. By definition, \\(E(tI_n)=I_nA\\).\n102. Therefore \\(E(tI_n)=A\\).\n103. By definition, \\(E(A)=AI_n=A\\).\n104. Consequently, \\(E(M(t))=E(tI_n-A)=0\\).\n105. Also, \\(E(Q(t))=\\sum_{k=0}^{n-1}B_kA^k\\).\n106. Apply \\(E\\) to \\(M(t)Q(t)=p_A(t)I_n\\).\n107. Multiplicativity gives \\(E(MQ)=E(M)E(Q)=0\\).\n108. The right side evaluates to \\(E(p_A(t)I_n)=\\sum_{k=0}^n c_kA^k=p_A(A)\\).\n109. The evaluated identity gives \\(p_A(A)=0\\).\n110. For \\(f(t)=\\sum_i a_it^i\\), define \\(f(T)=\\sum_i a_iT^i\\), with \\(T^0=I_V\\).\n111. The definition of \\(A\\) gives \\(T\\phi=\\phi A\\).\n112. For \\(k=0\\), \\(T^k\\phi=\\phi A^k\\).\n113. If \\(T^k\\phi=\\phi A^k\\), then \\(T^{k+1}\\phi=T\\phi A^k=\\phi A^{k+1}\\).\n114. Induction gives \\(T^k\\phi=\\phi A^k\\) for every \\(k\\ge0\\).\n115. The characteristic polynomial is \\(p_T(t)=p_A(t)=\\sum_{k=0}^n c_kt^k\\).\n116. By polynomial evaluation, \\(p_T(T)\\phi=\\sum_{k=0}^n c_kT^k\\phi\\).\n117. Substituting step 114 gives \\(p_T(T)\\phi=\\sum_{k=0}^n c_k\\phi A^k\\).\n118. Linearity of \\(\\phi\\) gives \\(p_T(T)\\phi=\\phi\\sum_{k=0}^n c_kA^k\\).\n119. By step 109, \\(p_T(T)\\phi=\\phi p_A(A)=0\\).\n120. Since \\(\\phi\\) is surjective, \\(p_T(T)\\) vanishes on all of \\(V\\), proving the Cayley–Hamilton theorem."
+  }
+]

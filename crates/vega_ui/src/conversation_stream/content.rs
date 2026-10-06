@@ -523,7 +523,10 @@ impl ConversationStream {
             return false;
         };
         self.list.pause_following_tail();
-        self.list.scroll_to_reveal_item(index);
+        self.list.scroll_to(gpui_kit::ListOffset {
+            item_ix: index,
+            offset_in_item: px(0.),
+        });
         self.message_location_status = Some(MessageLocationStatus::Located);
         cx.notify();
         true
