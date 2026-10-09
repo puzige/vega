@@ -10,7 +10,7 @@
 4. ad-hoc 构建只要内置公钥即可走独立签名更新；候选必须满足ai.vega/arm64/manifest版本，并通过本地 codesign 完整性检查。不把ad-hoc误当发布者身份。如果当前应用具有已验证Developer ID，则保留候选同TeamID/公证额外约束，避免静默降低现有Apple身份。不得关闭Gatekeeper/SIP，不移除quarantine，不提权；独立签名不承诺替代macOS首次启动校验。
 5. 应用支持 `/Applications/Vega.app`、`~/Applications/Vega.app` 与兼容的 `~/Documents/Vega/Vega.app`，只替换实际运行的那个canonical bundle。拒绝symlink路径、开发checkout、DMG/AppTranslocation/只读安装。可信目录：用户owned且非group/world writable的用户安装父目录；系统 `/Applications` 可root-owned/admin-group-writable但不可world writable，实际暂存与rename权限不足时失败并提示人工安装。不得沿用“parent必须uid=currentuser”导致正常/Applications失效，也不得放宽到任意不可信目录。
 6. helper必须独立重新验证manifest签名、版本、archive摘要/长度和候选来源，不能把可写install.json里的new_hash或team当作认证依据。建议在helper内从已认证archive重新解压候选，再验证bundle；staging私有且新建，保留原先父进程身份/目标inode/旧binaryhash/退出等待/回滚/启动确认边界。新应用启动确认及身份核对成功后，若旧的 root-owned bundle 无法由当前用户清理，安装仍算成功，保留剩余备份并写清理说明；不提权，不将清理失败误报为安装失败（实现审查补充）。
-7. release保持master自动patch。最终ZIP（Apple步骤如有应先完成）生成签名manifest，再发布四项资产。签名前导出私钥对应公钥并与仓库pin比较，错误或缺secret失败，不能默默发不支持独立更新的新包。已发布的历史版本仅两项资产的幂等重跑仍只读结束；新draft必须四项完整才publish。不覆盖历史正式Release。PR构建不获取签名secret。
+7. release保持master自动patch。最终ZIP（Apple步骤如有应先完成）生成签名manifest，再发布四项资产。签名前导出私钥对应公钥并与仓库pin比较，错误或缺secret失败，不能默默发不支持独立更新的新包。已发布的历史版本仅两项资产的幂等重跑仍只读结束；新draft必须四项完整才publish。上传后重新读取的Release必须仍为draft，tag_name仍匹配为本次SHA保留的canonical tag，四项资产均已上传且非空；即使资产完整，仅tag身份改变也必须拒绝publish PATCH。不覆盖历史正式Release。PR构建不获取签名secret。
 8. 设置文案反映真实能力：ad-hoc不再一律“当前构建请手动安装”；显示签名校验、可安装/目录不可写/旧发布缺更新签名等具体原因。自动检查开关继续默认开，自动下载；安装仍必须用户确认且无活动任务。旧0.1.1/0.1.2必须先手动安装含公钥的新版本，不能远程给旧binary添加功能。
 
 ## 实现分工
@@ -34,3 +34,17 @@
 | SIG09 | 运行任务、稍后、安装失败、启动确认 | 保留既有保护和备份恢复语义 |
 
 会话更高优先级约束：用户未明确要求测试，因此不新增或运行本地测试；只进行编译、静态审查，真实集成由用户手测，云端既有检查保持不变。不能把编译/静态审查或签名产物生成称为真实安装PASS。
+
+## QA291：上传后Release身份复核（2026-10-09）
+
+本次明确授权定向进程内UNIT回归：先补充本规格与失败测试，再修复上传后checkpoint遗漏的tag身份检查。测试直接调用`scripts/release.py`的发布业务函数，仅以进程内替身替换Git、GitHub API与上传传输，不执行真实外部进程或网络。
+
+| ID | 前置状态与操作 | 预期可观察结果 | 层级 |
+|---|---|---|---|
+| SIG08-TAG | 四项资产已上传且非空，上传后重新读取的Release仍为draft，但tag_name从保留版本变成另一canonical版本；外部变更持续作用于后续读取 | 在现有上传后checkpoint拒绝，沿用`Draft asset upload incomplete or release changed externally`错误；零publish PATCH | UNIT |
+| SIG08-DRAFT | 四项资产完整、tag身份不变，但上传后Release已变为公开状态 | 沿用相同错误并拒绝再次publish；零publish PATCH | UNIT |
+| SIG08-STABLE | 上传后Release仍为draft，tag仍为保留版本，四项资产均已上传且非空，发布顺序校验通过 | 恰好一次publish PATCH；保持现有正式资产不可覆盖与同SHA幂等规则 | UNIT |
+
+实施范围仅为上传后刷新结果的tag匹配条件和上述回归，历史两资产及新四资产同SHA只读重跑由既有独立publication案例复核。不更改workflow、CI拓扑、签名密钥或安装逻辑。本次检查不提供GitHub条件更新或事务，不宣称消除刷新checkpoint之后、PATCH之前发生的所有竞态。
+
+变更记录：2026-10-09，QA291独立UNIT发现四资产完整且draft未变时，仅上传后tag_name改变仍会触发publish；补充冻结契约7和SIG08否定案例，按规格→失败回归→最小修复→定向回归顺序实施。

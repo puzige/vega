@@ -158,7 +158,7 @@ def publish():
     subprocess.run(['gh', 'release', 'upload', tag, '--repo', REPO, '--clobber',
                     *(str(Path('dist') / name) for name in ASSETS)], check=True)
     refreshed = api(f"releases/{release['id']}")
-    if not refreshed['draft'] or not complete(refreshed):
+    if not refreshed['draft'] or refreshed['tag_name'] != tag or not complete(refreshed):
         raise RuntimeError('Draft asset upload incomplete or release changed externally')
     validate_publication(tag, sha, releases())
     api(f"releases/{release['id']}", 'PATCH', {'draft': False, 'prerelease': False, 'make_latest': 'true'})
