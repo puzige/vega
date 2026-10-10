@@ -1711,6 +1711,200 @@ async fn r69_a6_draft_settings_update_memory_without_a_write(cx: &mut gpui_kit::
     );
 }
 
+#[gpui_kit::test]
+async fn issue291_draft_mode_menu_round_trip_writes_no_row(cx: &mut gpui_kit::TestAppContext) {
+    let f = DraftFixture::home(cx, true);
+    let draft = f.draft(cx);
+    let stream = f.stream(cx);
+    let input = f.input(cx);
+    input.update(cx, |input, cx| input.set_text("unsent mode draft", cx));
+    cx.update(|cx| {
+        cx.global::<VegaStore>()
+            .0
+            .as_ref()
+            .expect("owned store")
+            .conn()
+            .execute_batch("PRAGMA query_only=ON")
+            .expect("forbid draft writes");
+    });
+    f.click("composer-add", cx);
+    f.click("composer-action-permission-readonly", cx);
+    for (row, checked, mode) in [
+        (
+            "composer-action-mode-ask",
+            "composer-action-mode-ask-check",
+            ThreadMode::Ask,
+        ),
+        (
+            "composer-action-mode-plan",
+            "composer-action-mode-plan-check",
+            ThreadMode::Plan,
+        ),
+        (
+            "composer-action-mode-execute",
+            "composer-action-mode-execute-check",
+            ThreadMode::Execute,
+        ),
+    ] {
+        f.click("composer-add", cx);
+        f.click(row, cx);
+        let opened = cx
+            .update(|cx| cx.global::<OpenedThread>().0.clone())
+            .expect("draft projection");
+        assert_eq!(opened.mode, mode, "{row} must update the draft mode");
+        assert_eq!(opened.permission_mode, PermissionMode::ReadOnly);
+        assert_eq!(opened.id, draft.id);
+        assert_eq!(f.draft(cx), opened);
+        assert_eq!(f.stream(cx), stream);
+        assert_eq!(stream.read_with(cx, |stream, _| stream.thread_mode()), mode);
+        assert_eq!(
+            stream.read_with(cx, |stream, _| stream.controller_error_message()),
+            None
+        );
+        assert_eq!(f.thread_rows(), 0);
+        assert_eq!(f.message_rows(&draft.id), 0);
+        assert_eq!(
+            input.read_with(cx, |input, _| input.text().to_owned()),
+            "unsent mode draft"
+        );
+        f.click("composer-add", cx);
+        assert!(!f.absent(checked, cx));
+        assert!(!f.absent("composer-action-permission-readonly-check", cx));
+        f.click("composer-add", cx);
+    }
+    assert!(f.provider.requests().is_empty());
+    assert_eq!(
+        f.root
+            .read_with(cx, |root, _| root.agent_worker_start_probe.load()),
+        0
+    );
+}
+
+#[gpui_kit::test]
+async fn issue291_draft_mode_slash_preserves_remainder_without_a_write(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let draft = f.draft(cx);
+    let input = f.input(cx);
+    input.update(cx, |input, cx| {
+        input.set_text("/ask  keep 日本語\nnext line", cx)
+    });
+    let focus = input.read_with(cx, |input, cx| input.focus_handle(cx));
+    f.window
+        .update(cx, |_, window, cx| window.focus(&focus, cx))
+        .expect("draft focus");
+    cx.simulate_keystrokes(f.window.into(), "enter");
+    cx.run_until_parked();
+    assert_eq!(f.draft(cx).mode, ThreadMode::Ask);
+    assert_eq!(f.draft(cx).id, draft.id);
+    assert_eq!(
+        input.read_with(cx, |input, _| input.text().to_owned()),
+        "  keep 日本語\nnext line"
+    );
+    assert_eq!(f.thread_rows(), 0);
+    assert!(f.provider.requests().is_empty());
+    assert_eq!(
+        f.stream(cx)
+            .read_with(cx, |stream, _| stream.controller_error_message()),
+        None
+    );
+}
+
+#[gpui_kit::test]
+async fn issue291_draft_mode_ask_survives_failed_submit_and_retry(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let draft = f.draft(cx);
+    let stream = f.stream(cx);
+    let input = f.input(cx);
+    f.click("composer-add", cx);
+    f.click("composer-action-mode-ask", cx);
+    f.click("composer-add", cx);
+    f.click("composer-action-permission-readonly", cx);
+    assert_eq!(f.draft(cx).mode, ThreadMode::Ask);
+    cx.update(|cx| {
+        cx.set_global(VegaStore(Err("owned unavailable database".into())));
+    });
+    f.submit("keep selected mode on retry", cx);
+    assert_eq!(f.draft(cx).mode, ThreadMode::Ask);
+    assert_eq!(f.draft(cx).permission_mode, PermissionMode::ReadOnly);
+    assert_eq!(f.draft(cx).id, draft.id);
+    assert_eq!(f.stream(cx), stream);
+    assert_eq!(
+        input.read_with(cx, |input, _| input.text().to_owned()),
+        "keep selected mode on retry"
+    );
+    assert!(stream.read_with(cx, |stream, _| stream.controller_error_message().is_some()));
+    assert_eq!(f.thread_rows(), 0);
+    assert_eq!(f.message_rows(&draft.id), 0);
+    assert!(f.provider.requests().is_empty());
+    cx.update(|cx| {
+        cx.set_global(VegaStore(Ok(
+            Store::open(&f.database_path).expect("retry owned store")
+        )));
+    });
+    f.submit("keep selected mode on retry", cx);
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
+        })
+    });
+    let store = f.store();
+    let thread = vega_conversation::threads::open_thread(&store, &draft.id)
+        .expect("persisted selected mode");
+    assert_eq!(thread.mode, ThreadMode::Ask);
+    assert_eq!(thread.permission_mode, PermissionMode::ReadOnly);
+    assert_eq!(f.thread_rows(), 1);
+    assert_eq!(f.stream(cx), stream);
+    assert_eq!(f.provider.requests().len(), 1);
+}
+
+#[gpui_kit::test]
+async fn issue291_draft_mode_plan_materializes_and_keeps_durable_plan_guard(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = DraftFixture::home(cx, true);
+    let draft = f.draft(cx);
+    let stream = f.stream(cx);
+    f.click("composer-add", cx);
+    f.click("composer-action-mode-plan", cx);
+    f.click("composer-add", cx);
+    f.click("composer-action-permission-readonly", cx);
+    assert_eq!(f.draft(cx).mode, ThreadMode::Plan);
+    assert_eq!(f.thread_rows(), 0);
+    f.submit("prepare a plan", cx);
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| {
+            root.agent_worker_start_probe.load() == 1 && root.agent_controller.active.is_empty()
+        })
+    });
+    let store = f.store();
+    let thread =
+        vega_conversation::threads::open_thread(&store, &draft.id).expect("persisted plan mode");
+    assert_eq!(thread.mode, ThreadMode::Plan);
+    assert_eq!(thread.permission_mode, PermissionMode::ReadOnly);
+    assert_eq!(f.thread_rows(), 1);
+    assert!(f.root.read_with(cx, |root, _| root.draft.is_none()));
+    assert_eq!(f.stream(cx), stream);
+    let plans = vega_conversation::plans::list_plans(&store, &draft.id).expect("durable plan");
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].status, PlanStatus::Pending);
+    f.click("composer-add", cx);
+    f.click("composer-action-mode-execute", cx);
+    let unchanged =
+        vega_conversation::threads::open_thread(&store, &draft.id).expect("guarded plan mode");
+    assert_eq!(unchanged.mode, ThreadMode::Plan);
+    assert_eq!(unchanged.permission_mode, PermissionMode::ReadOnly);
+    assert_eq!(
+        stream.read_with(cx, |stream, _| stream.thread_mode()),
+        ThreadMode::Plan
+    );
+    assert!(stream.read_with(cx, |stream, _| stream.controller_error_message().is_some()));
+    assert_eq!(f.provider.requests().len(), 1);
+}
+
 /// A6 companion: the thinking preference path is in-memory on the draft too.
 #[gpui_kit::test]
 async fn r69_a6b_draft_thinking_update_writes_no_row(cx: &mut gpui_kit::TestAppContext) {

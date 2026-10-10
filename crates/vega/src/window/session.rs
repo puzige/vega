@@ -856,19 +856,11 @@ impl VegaWindow {
             return;
         }
         let thread_id = request.thread_id.clone();
-        // R69 R5: the draft route updates mode/permission in memory only. The
-        // draft is the row first submit INSERTs (R8), so the same field-by-field
-        // projection reaches the store then — with no write before the user
-        // sends anything. Mode stays `Execute` on the draft: the `+` menu's
-        // Plan/Ask entries are durable transitions that the store's pending-plan
-        // rules own, so they are refused here exactly as `set_thread_mode`
-        // would refuse them for a missing row.
         if let Some(draft) = self.draft_for_route(&thread_id) {
-            if request.mode.is_some_and(|mode| mode != draft.mode) {
-                stream.update(cx, ConversationStream::apply_controller_error);
-                return;
-            }
             let mut next = draft;
+            if let Some(mode) = request.mode {
+                next.mode = mode;
+            }
             if let Some(permission_mode) = request.permission_mode {
                 next.permission_mode = permission_mode;
             }
