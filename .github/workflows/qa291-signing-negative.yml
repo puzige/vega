@@ -1,0 +1,46 @@
+name: qa291 isolated signing rejection
+
+on:
+  push:
+    branches:
+      - feat/qa291-signing-negative-ci
+
+permissions:
+  contents: read
+
+jobs:
+  signing-negative:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout the reviewed test commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+
+      - name: Verify frozen sources and compile the production signing module
+        id: build
+        run: python3 scripts/qa291-signing-negative/runner.py build --evidence "$RUNNER_TEMP/qa291-signing-negative"
+
+      - name: Production signing entry rejects missing key
+        id: missing
+        continue-on-error: true
+        run: python3 scripts/qa291-signing-negative/runner.py case --case missing --evidence "$RUNNER_TEMP/qa291-signing-negative"
+
+      - name: Production signing entry rejects public fixture key
+        id: wrong
+        continue-on-error: true
+        run: python3 scripts/qa291-signing-negative/runner.py case --case wrong-public --evidence "$RUNNER_TEMP/qa291-signing-negative"
+
+      - name: Assert both real failures and zero output
+        if: always() && steps.build.outcome == 'success'
+        env:
+          MISSING_OUTCOME: ${{ steps.missing.outcome }}
+          WRONG_OUTCOME: ${{ steps.wrong.outcome }}
+        run: |
+          test "$MISSING_OUTCOME" = failure
+          test "$WRONG_OUTCOME" = failure
+          python3 scripts/qa291-signing-negative/runner.py verify --evidence "$RUNNER_TEMP/qa291-signing-negative"

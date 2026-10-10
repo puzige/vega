@@ -48,3 +48,18 @@
 实施范围仅为上传后刷新结果的tag匹配条件和上述回归，历史两资产及新四资产同SHA只读重跑由既有独立publication案例复核。不更改workflow、CI拓扑、签名密钥或安装逻辑。本次检查不提供GitHub条件更新或事务，不宣称消除刷新checkpoint之后、PATCH之前发生的所有竞态。
 
 变更记录：2026-10-09，QA291独立UNIT发现四资产完整且draft未变时，仅上传后tag_name改变仍会触发publish；补充冻结契约7和SIG08否定案例，按规格→失败回归→最小修复→定向回归顺序实施。
+
+## QA291：隔离签名负例与正式只读重跑（2026-10-10）
+
+本次用户要求补齐SIG07的GitHub runner负例及SIG08正式重跑证据。隔离负例仅在专属测试分支push时运行，`contents: read`，checkout不保留认证信息，不引用任何secret，不包含发布、上传、版本保留或tag操作，也不加入PR/master门禁。直接编译并调用未修改的`xtask/src/sign_update.rs::run`及其原始仓库公钥pin；不重写签名器，不修改生产发布workflow。
+
+| ID | 前置状态与操作 | 预期可观察结果 | 证据边界 |
+|---|---|---|---|
+| SIG07-CI-MISSING | 单线程driver不读取地清除签名环境变量，调用生产签名入口 | 实际driver进程失败，错误为`update signing key is missing`；workspace_root调用0次，owned输出目录无文件 | GitHub runner上的生产函数负例，非正式发布workflow故障注入 |
+| SIG07-CI-WRONG | driver仅注入公开固定零种子的PKCS8测试数据，保留真实编译公钥pin | 实际driver进程失败，错误为`update signing key does not match repository public key`；workspace_root调用0次，无签名产物；日志无测试key字节 | 公开测试数据，无生产私钥或secret读取 |
+| SIG08-LIVE-NEW | 重跑已完成的固定SHA正式工作流，原tag仍指向该SHA且正式四资产均uploaded、非空 | prepare输出complete=true，后续构建、签名、上传、publish均跳过；tag/Release/资产元数据前后不变 | 正式工作流仍持写权限；只读结果依赖运行时完整性条件 |
+| SIG08-LIVE-LEGACY | 对已发布两资产历史tag执行其已有release workflow_dispatch，tag/SHA不变且两资产完整 | 历史生产prepare输出complete=true，后续步骤均跳过，不bump、不覆盖；记录实际历史脚本来源 | 历史workflow及脚本须逐一核对，不将当前脚本测试冒充旧tag执行 |
+
+测试程序只能设置上述公开自造数据，不能访问本机签名配置或生产secret。独立Cargo依赖必须是生产Cargo.lock中相同package/source/checksum，先核验生产源码与夹具hash，再编译。负例进程的非零退出及原始stdout/stderr须保留，最终校验同时断言精确错误、零输出和零workspace_root调用；不能仅由`continue-on-error`判定成功。
+
+本节准备不算CI PASS，远端push/dispatch/rerun由主控审查后执行；不覆盖安装、回滚、真实CI缺secret时的发布权限，也不声称消除正式workflow在检查后的状态变化风险。变更记录：2026-10-10，补充隔离SIG07云端验证与SIG08正式重跑证据边界，既有发布及PR/master门禁保持原样。

@@ -1,0 +1,23 @@
+{
+  "cases": [
+    "SIG07-CI-MISSING",
+    "SIG07-CI-WRONG"
+  ],
+  "files": {
+    ".github/workflows/cicd.yml": "945fc1045f2f2acf6ae89ffe535a0e0a966b82d2f8554fdb8a12cae2d9974203",
+    ".github/workflows/qa291-signing-negative.yml": "2a931194288ace810397eb1b6a7bd0b47a32b8297d60041e1f5308e55de3878d",
+    ".github/workflows/release.yml": "7ca5181e90b37dca6a501b32f6cabffd9d80390d7b499bb7378da11bb84453cc",
+    "Cargo.lock": "dceebf8aad5430d896fda3ade9c12683d862b723f058cde7f33273af7910ba0f",
+    "assets/update-public-key.hex": "4aba76dc80b9aad42b9fb257cc81e131f3cc2fd646001c0eb68b161214fdba32",
+    "docs/vega-issue-181-independent-update-signing.md": "dcd5685e5c71f29412db20a119ab7714f205e1497764b53ebf8f18eff1e5fd14",
+    "scripts/qa291-signing-negative/Cargo.lock": "af86fd59881d1021a5a3dd6131afd3714f5507d9dec1e17db7e51f74fbe262f9",
+    "scripts/qa291-signing-negative/Cargo.toml": "1481316c3f2cbff9d88ce1fc2d6cae5c2e0cf6ccfae81c5d9a634283fe765201",
+    "scripts/qa291-signing-negative/README.md": "194291142c0051507f621f66db1ba419fe363b0f672e79aa8d2825e5bee2bd82",
+    "scripts/qa291-signing-negative/runner.py": "bb6f44315894324576c70eba41bf7c51cb4d13f535f9ad8efd15b7cb81ef1c90",
+    "scripts/qa291-signing-negative/src/main.rs": "6699565c90b33d70c50a49fe39e91bf980e928b6590a2f6bfc78c9c6464e88cf",
+    "scripts/release.py": "a4380e54e199cd95509caf7ebe8def686ad2faf4038f571fc9513603ba921905",
+    "xtask/src/sign_update.rs": "4588ebc78dc6b0d888964fa8738e8b2604033f43715c2f2c4f2c845826c6f6ed"
+  },
+  "production_head": "80bd6740a7d2222d0c956c227c82b16ab2eecf96",
+  "status": "PREPARED_NOT_RUN"
+}
