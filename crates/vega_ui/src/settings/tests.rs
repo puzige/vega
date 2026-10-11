@@ -927,7 +927,7 @@ async fn issue73_mcp_stale_editor_refreshes_instead_of_overwriting_new_revision(
 }
 
 #[gpui_kit::test]
-async fn r21_settings_shell_opens_general_and_tracks_sidebar_width(cx: &mut TestAppContext) {
+async fn r21_settings_shell_opens_general_with_independent_navigation(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.set_global(vega_theme::Theme::light());
         cx.set_global(SettingsOpen(true));
@@ -967,7 +967,11 @@ async fn r21_settings_shell_opens_general_and_tracks_sidebar_width(cx: &mut Test
         let content = visual
             .debug_bounds("settings-content-column")
             .expect("Settings content column");
-        assert_pixel_close(nav.size.width, Layout::SIDEBAR_WIDTH, "Settings rail width");
+        assert_pixel_close(
+            nav.size.width,
+            Layout::SETTINGS_NAV_WIDTH,
+            "Settings rail width",
+        );
         assert_pixel_close(
             content.size.width,
             Layout::SETTINGS_CONTENT_MAX_WIDTH,
@@ -1031,8 +1035,8 @@ async fn r21_settings_shell_opens_general_and_tracks_sidebar_width(cx: &mut Test
             .expect("resized Settings navigation")
             .size
             .width,
-        Layout::SIDEBAR_MAX_WIDTH,
-        "resized Settings rail width",
+        Layout::SETTINGS_NAV_WIDTH,
+        "independent Settings rail width",
     );
     assert_pixel_close(
         visual

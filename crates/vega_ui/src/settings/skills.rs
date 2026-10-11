@@ -21,8 +21,8 @@ use vega_conversation::{SkillSettingsError, SkillSettingsService};
 use vega_theme::{Layout, Typography, theme};
 
 use super::{
-    SettingsView, section_title, settings_action_chrome, settings_actions, settings_section,
-    settings_status,
+    SettingsView, section_title, settings_action_chrome, settings_actions, settings_field,
+    settings_group, settings_section, settings_status, settings_switch,
 };
 
 #[cfg(test)]
@@ -365,10 +365,8 @@ impl SettingsView {
             );
         }
         if let Some(projection) = self.skills.projection.clone() {
-            column = column
-                .child(section_title("来源与触发", colors.text_primary).mt(px(
-                    Layout::SETTINGS_SECTION_GAP - Layout::SETTINGS_CONTENT_GAP,
-                )))
+            let mut preferences = settings_group(colors)
+                .child(section_title("来源与触发", colors.text_primary))
                 .child(skill_toggle_row(
                     "使用全局 Skills",
                     projection.global_enabled,
@@ -377,6 +375,7 @@ impl SettingsView {
                         enabled: !projection.global_enabled,
                         automatic: projection.automatic_enabled,
                     },
+                    !self.skills.busy,
                     colors,
                     cx,
                 ))
@@ -388,11 +387,12 @@ impl SettingsView {
                         enabled: projection.global_enabled,
                         automatic: !projection.automatic_enabled,
                     },
+                    !self.skills.busy,
                     colors,
                     cx,
                 ));
             if let Some(project_id) = projection.selected_project_id.clone() {
-                column = column
+                preferences = preferences
                     .child(skill_toggle_row(
                         "使用当前项目 Skills",
                         projection.project_enabled,
@@ -402,6 +402,7 @@ impl SettingsView {
                             enabled: !projection.project_enabled,
                             automatic: projection.project_automatic,
                         },
+                        !self.skills.busy,
                         colors,
                         cx,
                     ))
@@ -414,19 +415,23 @@ impl SettingsView {
                             enabled: projection.project_enabled,
                             automatic: !projection.project_automatic,
                         },
-                        colors,
-                        cx,
-                    ))
-                    .child(skill_button(
-                        "检查当前项目 .agents/skills".into(),
-                        "skills-preview-project".into(),
-                        SkillAction::PreviewProject,
+                        !self.skills.busy,
                         colors,
                         cx,
                     ));
             }
-            column = column.child(
+            preferences = preferences.child(
                 settings_actions()
+                    .mt_3()
+                    .when(projection.selected_project_id.is_some(), |actions| {
+                        actions.child(skill_button(
+                            "检查当前项目 .agents/skills".into(),
+                            "skills-preview-project".into(),
+                            SkillAction::PreviewProject,
+                            colors,
+                            cx,
+                        ))
+                    })
                     .child(skill_button(
                         "检查 Vega 全局 Skills".into(),
                         "skills-preview-global".into(),
@@ -442,6 +447,7 @@ impl SettingsView {
                         cx,
                     )),
             );
+            column = column.child(preferences);
             if projection.sources.is_empty() {
                 column = column.child(settings_status(
                     "尚未关联任何 Skills 目录",
@@ -470,33 +476,14 @@ impl SettingsView {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let scope = scope_label(source.scope);
-        let mut card = div()
+        let mut card = settings_group(colors)
             .id(format!("skills-source-{}", source.id))
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .flex_shrink_0()
-            .gap(px(Layout::SETTINGS_CONTENT_GAP))
-            .p(px(Layout::SETTINGS_CONTENT_GAP))
-            .rounded(px(Layout::PANEL_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
             .child(section_title(scope, colors.text_primary))
             .child(
                 div()
-                    .text_color(colors.text_secondary)
-                    .child(format!("来源标签：{}", source.source_label)),
-            )
-            .child(
-                div()
-                    .text_color(colors.text_secondary)
-                    .child(format!("目录：{}", source.configured_root.display())),
-            )
-            .child(
-                div()
-                    .text_color(colors.text_secondary)
-                    .child(format!("实际目标：{}", source.canonical_root.display())),
+                    .mt_2()
+                    .font_weight(Typography::HEADING_CARD_WEIGHT)
+                    .child(source.source_label.clone()),
             )
             .child(skill_toggle_row(
                 "启用此目录",
@@ -507,6 +494,7 @@ impl SettingsView {
                     enabled: !source.enabled,
                     automatic: source.automatic,
                 },
+                !self.skills.busy,
                 colors,
                 cx,
             ))
@@ -519,10 +507,11 @@ impl SettingsView {
                     enabled: source.enabled,
                     automatic: !source.automatic,
                 },
+                !self.skills.busy,
                 colors,
                 cx,
             ))
-            .child(skill_button(
+            .child(settings_actions().mt_3().child(skill_button(
                 "移除关联（保留源文件）".into(),
                 format!("skills-unlink-{}", source.id),
                 SkillAction::Mutate(SkillSettingsMutation::UnlinkSource {
@@ -530,14 +519,31 @@ impl SettingsView {
                 }),
                 colors,
                 cx,
-            ));
+            )));
         if let Some(diagnostic) = &source.diagnostic {
+            let selector = format!("skills-source-diagnostic-{}", source.id);
             card = card.child(
                 div()
+                    .debug_selector(move || selector.clone())
+                    .mt_3()
                     .text_color(colors.warning)
                     .child(format!("来源不可用：{diagnostic}")),
             );
         }
+        card = card
+            .child(
+                div()
+                    .mt_3()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .child(format!("目录：{}", source.configured_root.display())),
+            )
+            .child(
+                div()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .child(format!("实际目标：{}", source.canonical_root.display())),
+            );
         for candidate in &source.candidates {
             let status = candidate.diagnostic.clone().unwrap_or_else(|| {
                 if candidate.model_winner {
@@ -571,6 +577,7 @@ impl SettingsView {
             if let Some(description) = &candidate.description {
                 row = row.child(
                     div()
+                        .text_size(px(Typography::METADATA))
                         .text_color(colors.text_secondary)
                         .child(description.clone()),
                 );
@@ -599,6 +606,7 @@ impl SettingsView {
                             enabled: !candidate.enabled,
                             automatic: candidate.automatic,
                         },
+                        !self.skills.busy,
                         colors,
                         cx,
                     ))
@@ -612,6 +620,7 @@ impl SettingsView {
                             enabled: candidate.enabled,
                             automatic: !candidate.automatic,
                         },
+                        !self.skills.busy,
                         colors,
                         cx,
                     ));
@@ -764,24 +773,34 @@ fn skill_toggle_row(
     value: bool,
     id: &str,
     mutation: SkillSettingsMutation,
+    enabled: bool,
     colors: vega_theme::ThemeColors,
     cx: &mut gpui_kit::Context<SettingsView>,
 ) -> Div {
-    div()
-        .min_w_0()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .justify_between()
-        .gap_2()
-        .child(div().min_w_0().flex_1().child(label))
-        .child(skill_button(
-            if value { "已开启" } else { "已关闭" }.into(),
-            id.to_owned(),
-            SkillAction::Mutate(mutation),
-            colors,
-            cx,
-        ))
+    let key_mutation = mutation.clone();
+    let switch = settings_switch(
+        id,
+        format!("{label}：{}", if value { "已开启" } else { "已关闭" }),
+        value,
+        enabled,
+        colors,
+    )
+    .when(enabled, |switch| {
+        switch
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.handle_skills_action(SkillAction::Mutate(mutation.clone()), cx)
+                }),
+            )
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    this.handle_skills_action(SkillAction::Mutate(key_mutation.clone()), cx);
+                    cx.stop_propagation();
+                }
+            }))
+    });
+    settings_field(format!("{id}-row"), label, None, switch, colors)
 }
 
 fn scope_label(scope: SkillUiScope) -> &'static str {

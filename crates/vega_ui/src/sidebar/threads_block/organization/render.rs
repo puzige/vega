@@ -302,7 +302,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let colors = theme(cx).colors;
-        let label = "Pinned";
+        let label = "已固定";
         let mut pinned: Vec<_> = self
             .eligible_threads(show_archived)
             .into_iter()
@@ -383,7 +383,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = "Recents";
+        let label = "最近任务";
         let mut standalone: Vec<_> = self
             .threads
             .iter()
@@ -519,7 +519,7 @@ impl ThreadsBlock {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = theme(cx).colors;
-        let label = "Projects";
+        let label = "项目";
         let header_actions_visible = self.hovered_section == Some(OrganizationSection::Projects)
             || self.focused_section == Some(OrganizationSection::Projects);
         let header = div()
@@ -603,7 +603,7 @@ impl ThreadsBlock {
     fn render_progressive_control(&self, expanded: bool, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
         let state_name = if expanded { "less" } else { "more" };
-        let label = if expanded { "Show Less" } else { "Show More" };
+        let label = if expanded { "收起" } else { "展开更多" };
         let id = format!("organization-projects-show-{state_name}");
         let label_id = "organization-projects-progressive-label".to_string();
         let focus = &self.projects_progressive_focus;
@@ -666,7 +666,7 @@ impl ThreadsBlock {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let state_name = if expanded { "less" } else { "more" };
-        let label = if expanded { "Show Less" } else { "Show More" };
+        let label = if expanded { "收起" } else { "展开更多" };
         let id = format!("project-{project_id}-show-{state_name}");
         let label_id = format!("project-{project_id}-progressive-label");
         let mouse_project_id = project_id.to_owned();

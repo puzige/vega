@@ -189,7 +189,11 @@ async fn run_activity_entries_contribute_geometry_without_duplicating_message_an
     );
     assert_eq!(activity_indices, [0, 2, 3]);
     assert_eq!(entry_heights.len(), 5);
-    assert!(entry_heights.iter().all(|height| *height > 0.0));
+    assert_eq!(
+        [entry_heights[0], entry_heights[2], entry_heights[3]],
+        [28., 0., 28.]
+    );
+    assert!(entry_heights[1] > 0. && entry_heights[4] > 0.);
 }
 
 #[test]

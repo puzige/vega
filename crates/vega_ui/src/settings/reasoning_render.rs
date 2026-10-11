@@ -1,5 +1,6 @@
 use super::reasoning_state::{REASONING_EFFORTS, is_legal_effort, standard_glm};
 use super::*;
+use crate::interaction::InteractionExt;
 
 impl SettingsView {
     /// Independent thinking capability and preference editor. The page lets
@@ -83,13 +84,19 @@ impl SettingsView {
             .cloned()
             .unwrap_or(authority);
         let owner = format!("{} / {}", profile.provider, profile.model);
-        let mut card = settings_section()
-            .p(px(Layout::SETTINGS_CONTENT_GAP))
-            .rounded(px(Layout::PANEL_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
-            .child(owner);
+        let mut card = settings_group(colors)
+            .child(
+                div()
+                    .text_size(px(Typography::HEADING_BLOCK))
+                    .font_weight(Typography::HEADING_BLOCK_WEIGHT)
+                    .child(owner),
+            )
+            .child(
+                div()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .child(reasoning_protocol_label(profile.protocol)),
+            );
 
         if profile.protocol == ReasoningProtocol::Unknown
             || matches!(profile.support, ReasoningSupport::Unknown)
@@ -133,166 +140,209 @@ impl SettingsView {
             return card.into_any_element();
         }
 
-        card = card.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(format!(
-                    "协议：{}",
-                    reasoning_protocol_label(profile.protocol)
-                ))
-                .child(action_button_owned(
-                    "切换协议".to_string(),
-                    colors,
-                    self.reasoning_focus(&ReasoningFocusTarget::Protocol(index)),
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        this.cycle_reasoning_protocol(index, cx);
-                    }),
-                )),
-        );
-        card = card.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(format!(
-                    "支持范围：{}",
-                    reasoning_support_label(profile.support)
-                ))
-                .child(action_button_owned(
-                    "切换支持范围".to_string(),
-                    colors,
-                    self.reasoning_focus(&ReasoningFocusTarget::Support(index)),
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        this.cycle_reasoning_support(index, cx);
-                    }),
-                )),
-        );
-
-        let efforts = if profile.efforts.is_empty() {
-            "提供方默认".to_string()
-        } else {
-            profile
-                .efforts
-                .iter()
-                .map(|effort| reasoning_effort_label(effort))
-                .collect::<Vec<_>>()
-                .join("、")
-        };
-        card = card.child(
-            div()
-                .text_color(colors.text_secondary)
-                .child(format!("已允许档位：{efforts}")),
-        );
-
-        let mut effort_row = div().flex().flex_wrap().gap_2();
+        card = card
+            .child(settings_field(
+                format!("reasoning-protocol-{index}"),
+                "协议",
+                None,
+                settings_actions()
+                    .child(reasoning_protocol_label(profile.protocol))
+                    .child(reasoning_change_button(
+                        "更改协议",
+                        colors,
+                        self.reasoning_focus(&ReasoningFocusTarget::Protocol(index)),
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                            this.cycle_reasoning_protocol(index, cx)
+                        }),
+                    )),
+                colors,
+            ))
+            .child(settings_field(
+                format!("reasoning-support-{index}"),
+                "支持范围",
+                None,
+                settings_actions()
+                    .child(reasoning_support_label(profile.support))
+                    .child(reasoning_change_button(
+                        "更改支持范围",
+                        colors,
+                        self.reasoning_focus(&ReasoningFocusTarget::Support(index)),
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                            this.cycle_reasoning_support(index, cx)
+                        }),
+                    )),
+                colors,
+            ));
         let effort_enabled = !matches!(
             profile.support,
             ReasoningSupport::Unsupported | ReasoningSupport::Unknown
         );
+        let mut effort_row = settings_actions().gap_1();
         for effort in REASONING_EFFORTS {
             if !is_legal_effort(&profile, effort) {
                 continue;
             }
             let selected = profile.efforts.iter().any(|candidate| candidate == effort);
-            let label = format!(
-                "{} {}",
-                reasoning_effort_label(effort),
-                if selected { "✓" } else { "" }
-            );
             let focus = effort_enabled
-                .then(|| self.reasoning_focus(&ReasoningFocusTarget::Effort { index, effort }));
-            effort_row = effort_row.child(action_button_owned(
-                label,
-                colors,
-                focus.flatten(),
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                    this.toggle_reasoning_effort(index, effort, cx);
-                }),
-            ));
+                .then(|| self.reasoning_focus(&ReasoningFocusTarget::Effort { index, effort }))
+                .flatten();
+            let enabled = focus.is_some();
+            effort_row = effort_row.child(
+                settings_action_chrome(colors)
+                    .id(format!("reasoning-effort-{index}-{effort}"))
+                    .interactive(colors, enabled, selected)
+                    .debug_selector(move || format!("reasoning-effort-{index}-{effort}"))
+                    .border_color(gpui_kit::transparent_black())
+                    .when_some(focus, |button, focus| button.track_focus(&focus))
+                    .focus_visible(move |style| style.border_color(colors.accent))
+                    .aria_label(format!(
+                        "{}：{}",
+                        reasoning_effort_label(effort),
+                        if selected { "已允许" } else { "未允许" }
+                    ))
+                    .when(selected, |button| button.text_color(colors.brand_primary))
+                    .when(!enabled, |button| button.text_color(colors.text_tertiary))
+                    .when(enabled, |button| {
+                        button.cursor_pointer().on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.toggle_reasoning_effort(index, effort, cx)
+                            }),
+                        )
+                    })
+                    .child(reasoning_effort_label(effort))
+                    .when(selected, |button| {
+                        button.child(crate::icons::icon(
+                            crate::icons::Icon::Check,
+                            colors.brand_primary,
+                        ))
+                    }),
+            );
         }
-        card = card.child(effort_row);
-
-        let preference = reasoning_choice_label(&profile.preference);
-        card = card.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(format!("当前偏好：{preference}"))
-                .child(action_button_owned(
-                    "切换偏好".to_string(),
+        card = card.child(settings_field(
+            format!("reasoning-efforts-{index}"),
+            "允许档位",
+            Some(if profile.efforts.is_empty() {
+                "提供方默认".into()
+            } else {
+                "可选择多个档位".into()
+            }),
+            effort_row,
+            colors,
+        ));
+        card = card.child(settings_field(
+            format!("reasoning-preference-{index}"),
+            "当前偏好",
+            None,
+            settings_actions()
+                .child(reasoning_choice_label(&profile.preference))
+                .child(reasoning_change_button(
+                    "更改偏好",
                     colors,
                     self.reasoning_focus(&ReasoningFocusTarget::Preference(index)),
                     cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        this.cycle_reasoning_preference(index, cx);
+                        this.cycle_reasoning_preference(index, cx)
                     }),
                 )),
-        );
-
+            colors,
+        ));
         if standard_glm(&profile) {
-            card = card.child(
+            card = card.child(settings_field(
+                format!("reasoning-disabled-{index}"),
+                "关闭思考",
+                None,
                 div()
                     .text_color(colors.text_secondary)
-                    .child("关闭思考：标准 GLM 模型固定开启"),
-            );
+                    .child("标准 GLM 模型固定开启"),
+                colors,
+            ));
         } else {
-            let disabled = if profile.supports_disabled {
-                "是"
-            } else {
-                "否"
-            };
-            card = card.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(format!("允许关闭思考：{disabled}"))
-                    .child(action_button_owned(
-                        "切换关闭能力".to_string(),
+            card = card.child(settings_field(
+                format!("reasoning-disabled-{index}"),
+                "允许关闭思考",
+                None,
+                settings_actions()
+                    .child(if profile.supports_disabled {
+                        "是"
+                    } else {
+                        "否"
+                    })
+                    .child(reasoning_change_button(
+                        "更改关闭能力",
                         colors,
                         self.reasoning_focus(&ReasoningFocusTarget::Disabled(index)),
                         cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            this.toggle_reasoning_disabled(index, cx);
+                            this.toggle_reasoning_disabled(index, cx)
                         }),
                     )),
-            );
+                colors,
+            ));
         }
-
-        let replay = if profile.preserve_reasoning_content {
-            "工具轮回传：开"
-        } else {
-            "工具轮回传：关"
-        };
         let replay_editable = profile.protocol != ReasoningProtocol::Unknown
             && !matches!(
                 profile.support,
                 ReasoningSupport::Unsupported | ReasoningSupport::Unknown
             );
-        card = card.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(replay)
-                .child(action_button_owned(
+        card = card.child(settings_field(
+            format!("reasoning-replay-{index}"),
+            "工具轮回传",
+            None,
+            settings_actions()
+                .child(if profile.preserve_reasoning_content {
+                    "开"
+                } else {
+                    "关"
+                })
+                .child(reasoning_change_button(
                     if replay_editable {
-                        "切换工具轮回传".to_string()
+                        "更改工具轮回传"
                     } else {
-                        "工具轮回传未声明".to_string()
+                        "工具轮回传未声明"
                     },
                     colors,
                     replay_editable
                         .then(|| self.reasoning_focus(&ReasoningFocusTarget::Replay(index)))
                         .flatten(),
                     cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        this.toggle_reasoning_replay(index, cx);
+                        this.toggle_reasoning_replay(index, cx)
                     }),
                 )),
-        );
+            colors,
+        ));
         card.into_any_element()
     }
+}
+
+fn reasoning_change_button(
+    label: &'static str,
+    colors: vega_theme::ThemeColors,
+    focus: Option<FocusHandle>,
+    listener: impl Fn(&MouseUpEvent, &mut Window, &mut gpui_kit::App) + 'static,
+) -> AnyElement {
+    let enabled = focus.is_some();
+    let id = focus
+        .as_ref()
+        .map(gpui_kit::ElementId::from)
+        .unwrap_or_else(|| label.into());
+    settings_action_chrome(colors)
+        .id(id)
+        .interactive(colors, enabled, false)
+        .border_color(gpui_kit::transparent_black())
+        .aria_label(label)
+        .when_some(focus, |button, focus| button.track_focus(&focus))
+        .focus_visible(move |style| style.border_color(colors.accent))
+        .text_color(if enabled {
+            colors.text_secondary
+        } else {
+            colors.text_tertiary
+        })
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .on_mouse_up(MouseButton::Left, listener)
+        })
+        .child("更改")
+        .into_any_element()
 }
 
 fn reasoning_choice_label(choice: &ReasoningChoice) -> String {

@@ -82,7 +82,8 @@ Vega Logo 的连续终端折角、单颗细长星与轻微笑意，是产品的�
 | `bg_base` | `#FFFFFF` | `#202020` | 主内容背景 |
 | `bg_sidebar` | `#FAF9F9` | `#191919` | 侧栏背景 |
 | `bg_elevated` | `#FFFFFF` | `#2A2A2A` | 卡片、Composer、浮起表面 |
-| `bg_hover` | `#ECECEC` | `#323232` | 中性 hover |
+| `bg_subtle` | `#F6F6F6` | `#262626` | 内嵌过程与低强调设置分组 |
+| `bg_hover` | `#F3F3F3` | `#282828` | 中性 hover |
 | `bg_active` | `#EDEDED` | `#303030` | 当前项目、任务与普通导航选中表面 |
 | `border_subtle` | `#E8E8E8` | `#383838` | 1px 分隔线与细边框 |
 | `text_primary` | `#191C1F` | `#EDEDED` | 正文与主要标签 |
@@ -117,7 +118,7 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 | 区块标题 | 14px / 600 | 一个页面内的主要分组 |
 | 会话消息 | 15px | 行高 1.65，优先阅读舒适度 |
 | 页面标题 | 16px / 600 | 页面或路由一级标题 |
-| Settings 标题 | 24px | 现有 Settings 层级 |
+| Settings 标题 | 20px / 600 | Issue #296 第二轮 Settings 层级 |
 | 空态标题 | 28px / 600 | 一个视图最多一个；不扩散到普通卡片 |
 
 标题只使用“页面 / 区块 / 卡片”三级层级；卡片标题为 13px / 500。正文不靠大字号制造层级，优先使用间距、字重与语义颜色。
@@ -149,7 +150,7 @@ Issue #103：展开的工具详情与 thinking 正文使用 240px 最大高度
 | 普通 Panel / Card | radius 12px | 默认容器圆角 |
 | Environment rail | 320px | 304px card + 16px right inset；≥1230px 时可持久显示 |
 | Environment card | 304px / inset 16px / radius 18px | 轻边框，必要时使用克制小阴影 |
-| Settings 内容列 | max 744px | 与剩余主区域水平居中 |
+| Settings 导航 / 内容列 | 224px / max 720px | 导航独立于主 Sidebar；内容与剩余主区域水平居中 |
 | Settings boolean switch | 32×20px | 只绑定真实布尔设置，不为对标截图造状态 |
 | 大型浮层 | max 350px / radius 18px | 小型菜单按内容收窄，不强制拉伸 |
 | Workspace header | 40px | 右侧或底部工作区共享 |

@@ -17,7 +17,7 @@ use vega_theme::{Layout, Typography, theme};
 
 use super::{
     NextMcpAction, PreviousMcpAction, SettingsView, TextInput, section_title,
-    settings_action_chrome, settings_section, settings_status,
+    settings_action_chrome, settings_field, settings_group, settings_section, settings_status,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1353,18 +1353,9 @@ impl SettingsView {
                 ));
             }
         }
-        let mut card = div()
+        let mut card = settings_group(colors)
             .id(format!("mcp-row-{id}"))
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .flex_shrink_0()
             .gap(px(Layout::SETTINGS_CONTENT_GAP))
-            .p(px(Layout::SETTINGS_CONTENT_GAP))
-            .rounded(px(Layout::PANEL_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
             .child(
                 div()
                     .font_weight(Typography::HEADING_BLOCK_WEIGHT)
@@ -1455,18 +1446,8 @@ impl SettingsView {
         let colors = theme(cx).colors;
         let local = self.mcp.transport == McpTransportChoice::Local;
         let saved = matches!(self.mcp.editor, Some(McpEditor::Existing { .. }));
-        let mut form = div()
+        let mut form = settings_group(colors)
             .id("mcp-editor")
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .flex_shrink_0()
-            .gap(px(Layout::SETTINGS_CONTENT_GAP))
-            .p(px(Layout::SETTINGS_CONTENT_GAP))
-            .rounded(px(Layout::PANEL_RADIUS))
-            .border_1()
-            .border_color(colors.border_subtle)
-            .bg(colors.bg_elevated)
             .child(section_title(
                 if saved {
                     "编辑 MCP 服务器"
@@ -1496,7 +1477,13 @@ impl SettingsView {
                         cx,
                     )),
             )
-            .child(self.mcp.name_input.clone());
+            .child(settings_field(
+                "mcp-field-name",
+                "名称",
+                None,
+                self.mcp.name_input.clone(),
+                colors,
+            ));
         if local {
             // A multiline TextInput's flex child does not reserve its visual
             // rows in this Settings column. Read the row count here so edits
@@ -1509,8 +1496,17 @@ impl SettingsView {
                 .child(div().text_color(colors.text_secondary).child(
                     "程序独立运行，不受 Vega 内置 bash 沙箱约束；参数按行传入，不经过 shell。",
                 ))
-                .child(self.mcp.executable_input.clone())
-                .child(
+                .child(settings_field(
+                    "mcp-field-executable",
+                    "可执行文件",
+                    None,
+                    self.mcp.executable_input.clone(),
+                    colors,
+                ))
+                .child(settings_field(
+                    "mcp-args-frame-field",
+                    "参数（每行一个）",
+                    None,
                     div()
                         .id("mcp-args-frame")
                         .debug_selector(|| "mcp-args-frame".into())
@@ -1519,15 +1515,23 @@ impl SettingsView {
                         .flex_shrink_0()
                         .overflow_hidden()
                         .child(self.mcp.args_input.clone()),
-                )
-                .child(
+                    colors,
+                ))
+                .child(settings_field(
+                    "mcp-working-directory-frame-field",
+                    "工作目录",
+                    None,
                     div()
                         .id("mcp-working-directory-frame")
                         .debug_selector(|| "mcp-working-directory-frame".into())
                         .w_full()
                         .child(self.mcp.working_directory_input.clone()),
-                )
-                .child(
+                    colors,
+                ))
+                .child(settings_field(
+                    "mcp-environment-frame-field",
+                    "环境变量声明",
+                    None,
                     div()
                         .id("mcp-environment-frame")
                         .debug_selector(|| "mcp-environment-frame".into())
@@ -1536,7 +1540,8 @@ impl SettingsView {
                         .flex_shrink_0()
                         .overflow_hidden()
                         .child(self.mcp.environment_input.clone()),
-                );
+                    colors,
+                ));
             if saved {
                 form = form
                     .child(
@@ -1544,8 +1549,20 @@ impl SettingsView {
                             "先在上方声明变量名并保存，再单独录入其密钥；不继承其他环境变量。",
                         ),
                     )
-                    .child(self.mcp.env_variable_input.clone())
-                    .child(self.mcp.env_secret_input.clone())
+                    .child(settings_field(
+                        "mcp-field-env_variable",
+                        "环境变量名",
+                        None,
+                        self.mcp.env_variable_input.clone(),
+                        colors,
+                    ))
+                    .child(settings_field(
+                        "mcp-field-env_secret",
+                        "环境密钥",
+                        None,
+                        self.mcp.env_secret_input.clone(),
+                        colors,
+                    ))
                     .child(self.mcp_button(
                         "保存此环境密钥",
                         "mcp-save-local-secret",
@@ -1556,7 +1573,13 @@ impl SettingsView {
             }
         } else {
             form = form
-                .child(self.mcp.endpoint_input.clone())
+                .child(settings_field(
+                    "mcp-field-endpoint",
+                    "服务地址",
+                    None,
+                    self.mcp.endpoint_input.clone(),
+                    colors,
+                ))
                 .child(self.mcp_button(
                     if self.mcp.allow_loopback_http {
                         "允许回环 HTTP：开"
@@ -1606,7 +1629,13 @@ impl SettingsView {
                 ));
                 if saved {
                     form = form
-                        .child(self.mcp.bearer_input.clone())
+                        .child(settings_field(
+                            "mcp-field-bearer",
+                            "Bearer 密钥",
+                            None,
+                            self.mcp.bearer_input.clone(),
+                            colors,
+                        ))
                         .child(self.mcp_button(
                             "保存 Bearer 密钥",
                             "mcp-save-bearer",
@@ -1617,7 +1646,7 @@ impl SettingsView {
                 }
             }
             if self.mcp.auth == McpAuthChoice::OAuth {
-                form = form.child(self.mcp.client_id_input.clone())
+                form = form.child(settings_field("mcp-field-client_id", "OAuth 客户端 ID", None, self.mcp.client_id_input.clone(), colors))
                     .child(div().text_color(colors.warning).child("保存配置不会授权或启用；可在服务器卡片中显式发现发行方、审查回调与权限，再打开系统浏览器。不能把 Bearer token 冒充 OAuth。"));
             }
         }

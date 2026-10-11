@@ -8,8 +8,12 @@ type ProviderConfigSaver = std::sync::Arc<dyn Fn(&AppConfig) -> Result<(), Strin
 /// the config — each time settings is opened).
 pub struct SettingsView {
     pub(crate) updater: vega_conversation::types::UpdateProjection,
+    pub(crate) updater_notes: Option<crate::conversation_stream::StreamModel>,
+    pub(crate) updater_notes_open: bool,
+    pub(crate) updater_notes_scroll: gpui_kit::ScrollHandle,
     pub(crate) provider_management: super::provider_management::ProviderManagement,
     pub(crate) section: usize,
+    pub(crate) section_scrolls: [gpui_kit::ScrollHandle; 8],
     pub(crate) usage: super::usage::UsageState,
     pub(crate) usage_focuses: [FocusHandle; 6],
     pub(crate) section_focuses: [FocusHandle; 8],
@@ -165,7 +169,11 @@ impl SettingsView {
         }
         Self {
             updater: Default::default(),
+            updater_notes: None,
+            updater_notes_open: false,
+            updater_notes_scroll: gpui_kit::ScrollHandle::new(),
             provider_management: Default::default(),
+            section_scrolls: std::array::from_fn(|_| gpui_kit::ScrollHandle::new()),
             section: if cx
                 .try_global::<PricingSettingsRequested>()
                 .is_some_and(|request| request.0)

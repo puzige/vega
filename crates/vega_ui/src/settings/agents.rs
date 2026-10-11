@@ -75,69 +75,50 @@ impl SettingsView {
         } else {
             "配置一个本地 Codex ACP executable 后，New Task 才能选择 Codex。"
         };
-        settings_section()
+        settings_group(colors)
+            .child(section_title("Codex", colors.text_primary))
             .child(
                 div()
-                    .text_size(px(Typography::BODY))
+                    .mt_2()
+                    .text_size(px(Typography::METADATA))
                     .text_color(colors.text_secondary)
                     .child(profile_status),
             )
-            .child(
+            .child(settings_field(
+                "settings-agent-name",
+                "名称",
+                None,
                 div()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .debug_selector(|| "settings-agent-name-label".into())
-                            .font_weight(Typography::HEADING_CARD_WEIGHT)
-                            .child("名称"),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "settings-agent-name-input".into())
-                            .child(self.codex_name_input.clone()),
-                    ),
-            )
-            .child(
+                    .debug_selector(|| "settings-agent-name-input".into())
+                    .child(self.codex_name_input.clone()),
+                colors,
+            ))
+            .child(settings_field(
+                "settings-agent-executable",
+                "可执行文件",
+                None,
                 div()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .debug_selector(|| "settings-agent-executable-label".into())
-                            .font_weight(Typography::HEADING_CARD_WEIGHT)
-                            .child("可执行文件"),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "settings-agent-executable-input".into())
-                            .child(self.codex_executable_input.clone()),
-                    ),
-            )
-            .child(
+                    .debug_selector(|| "settings-agent-executable-input".into())
+                    .child(self.codex_executable_input.clone()),
+                colors,
+            ))
+            .child(settings_field(
+                "settings-agent-args",
+                "参数",
+                Some("每行一个 argv".into()),
                 div()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .debug_selector(|| "settings-agent-args-label".into())
-                            .font_weight(Typography::HEADING_CARD_WEIGHT)
-                            .child("参数（每行一个 argv）"),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(|| "settings-agent-args-input".into())
-                            .child(self.codex_args_input.clone()),
-                    ),
-            )
+                    .debug_selector(|| "settings-agent-args-input".into())
+                    .bg(colors.bg_elevated)
+                    .border_1()
+                    .border_color(colors.border_subtle)
+                    .rounded_lg()
+                    .px_2()
+                    .py_1()
+                    .child(self.codex_args_input.clone()),
+                colors,
+            ))
             .child(
-                div().flex().justify_end().child(
+                div().mt_3().flex().child(
                     settings_action_chrome(colors)
                         .id("settings-codex-profile-save")
                         .interaction_surface(

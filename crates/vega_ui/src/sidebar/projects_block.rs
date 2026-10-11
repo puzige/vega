@@ -458,7 +458,7 @@ impl ProjectsBlock {
     /// Block header: collapsible title (chevron shows the state) + [+].
     fn render_header(&self, cx: &mut Context<Self>, colors: &ThemeColors) -> AnyElement {
         let collapsed = cx.global::<ProjectsCollapsed>().0;
-        let label = "Projects";
+        let label = "项目";
         div()
             .flex()
             .items_center()

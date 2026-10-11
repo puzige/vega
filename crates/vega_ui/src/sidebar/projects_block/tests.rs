@@ -61,11 +61,7 @@ async fn production_sidebar_refreshes_head_metadata_and_rejects_removed_results(
         .update(|cx| cx.open_window(Default::default(), move |_, _| visible))
         .unwrap();
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    assert!(
-        visual
-            .debug_bounds("projects-section-label-Projects")
-            .is_some()
-    );
+    assert!(visual.debug_bounds("projects-section-label-项目").is_some());
     assert!(
         visual
             .debug_bounds("projects-section-label-PROJECTS")

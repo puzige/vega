@@ -74,6 +74,62 @@ pub(crate) fn render_entry_with_selection(
     render_entry_internal(entry, window, cx, Some(focus))
 }
 
+pub(crate) fn render_stream_entry(
+    entry: &StreamEntry,
+    index: usize,
+    show_role: bool,
+    window: &mut Window,
+    cx: &mut App,
+    focus: &FocusHandle,
+) -> AnyElement {
+    let body = render_entry_with_selection(entry, window, cx, focus);
+    if !matches!(entry, StreamEntry::Assistant { .. }) {
+        return body;
+    }
+    let colors = theme(cx).colors;
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .when(show_role, |entry| {
+            entry.child(
+                div()
+                    .debug_selector(move || format!("assistant-role-{index}"))
+                    .h(px(Layout::ASSISTANT_ROLE_HEIGHT))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .child("Vega"),
+            )
+        })
+        .child(
+            div()
+                .debug_selector(move || format!("assistant-body-{index}"))
+                .w_full()
+                .min_w_0()
+                .flex_shrink_0()
+                .child(body),
+        )
+        .into_any_element()
+}
+
+pub(crate) fn process_surface(colors: &ThemeColors) -> gpui_kit::Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
+        .border_l_1()
+        .border_color(colors.border_subtle)
+        .bg(colors.bg_subtle)
+        .px(px(Layout::PROCESS_PADDING_X))
+        .flex()
+        .flex_col()
+        .gap(px(Layout::PROCESS_ITEM_GAP))
+}
+
 fn render_entry_internal(
     entry: &StreamEntry,
     window: &mut Window,
@@ -146,11 +202,8 @@ fn render_entry_internal(
         }
         StreamEntry::Tool { card } => {
             let card = card.clone();
-            div()
-                .w_full()
-                .flex_shrink_0()
-                .pt_1()
-                .pb_2()
+            process_surface(&colors)
+                .debug_selector(|| "standalone-tool-process".into())
                 .child(ToolCard::render(
                     card,
                     "tool-activity-single-row".to_string(),
@@ -161,11 +214,8 @@ fn render_entry_internal(
         }
         StreamEntry::ToolGroup { group } => {
             let group = group.clone();
-            div()
-                .w_full()
-                .flex_shrink_0()
-                .pt_1()
-                .pb_2()
+            process_surface(&colors)
+                .debug_selector(|| "standalone-tool-group-process".into())
                 .child(ToolActivityGroup::render(group, cx))
                 .into_any_element()
         }

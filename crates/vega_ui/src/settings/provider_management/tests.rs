@@ -756,7 +756,7 @@ async fn issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes(
 ) {
     let (_root, view, window) = mounted_provider_credential_states_fixture(cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    for width in [960.0, 800.0, 680.0] {
+    for width in [960.0, 800.0, 600.0] {
         visual.simulate_resize(size(px(width), px(750.0)));
         cx.run_until_parked();
         let viewport = visual
@@ -797,7 +797,7 @@ async fn issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes(
                     body_selector,
                     viewport,
                 );
-                if width == 680.0 {
+                if width == 600.0 {
                     assert!(
                         body.size.height > px(28.5),
                         "narrow tooltip copy must wrap instead of clipping: body={body:?} viewport={viewport:?}"
@@ -821,7 +821,7 @@ async fn issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes(
                     body_selector,
                     viewport,
                 );
-                if width == 680.0 {
+                if width == 600.0 {
                     assert!(
                         body.size.height > px(28.5),
                         "narrow tooltip copy must wrap instead of clipping: body={body:?} viewport={viewport:?}"
@@ -1061,4 +1061,71 @@ async fn i71_settings_api_selection_keyboard_save_reopen_and_add(cx: &mut TestAp
             vega_conversation::types::ProviderApi::ChatCompletions
         );
     });
+}
+
+#[gpui_kit::test]
+async fn issue296_v2_discovery_candidates_keep_complete_shared_prefix_ids(cx: &mut TestAppContext) {
+    for dark in [false, true] {
+        cx.update(|cx| {
+            cx.set_global(if dark {
+                vega_theme::Theme::dark()
+            } else {
+                vega_theme::Theme::light()
+            });
+            crate::init(cx);
+        });
+        let first = format!("vendor/{}-first", "model0123456789".repeat(11));
+        let second = format!("vendor/{}-second", "model0123456789".repeat(11));
+        let view = cx.new(|cx| {
+            SettingsView::from_config(
+                AppConfig {
+                    providers: vec![ProviderConfig {
+                        api: Default::default(),
+                        enabled: true,
+                        name: "Owned".into(),
+                        base_url: "https://example.invalid/v1".into(),
+                        models: vec![first.clone()],
+                        key_ref: "owned".into(),
+                    }],
+                    ..Default::default()
+                },
+                None,
+                cx,
+            )
+        });
+        view.update(cx, |view, _| {
+            view.section = 0;
+            view.provider_management.candidates = Some(vec![first, second]);
+        });
+        let root = view.clone();
+        let window = cx
+            .update(|cx| {
+                cx.open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                            None,
+                            size(px(960.), px(600.)),
+                            cx,
+                        ))),
+                        ..Default::default()
+                    },
+                    move |_, cx| cx.new(|_| Harness(root)),
+                )
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let viewport = visual.debug_bounds("provider-detail-viewport").unwrap();
+        let first = visual
+            .debug_bounds("provider-candidate-name-0")
+            .expect("first complete ID");
+        let second = visual
+            .debug_bounds("provider-candidate-name-1")
+            .expect("second complete ID");
+        for candidate in [first, second] {
+            assert!(candidate.size.height > px(Typography::BODY * Typography::BODY_LINE_HEIGHT));
+            assert!(candidate.left() >= viewport.left() && candidate.right() <= viewport.right());
+        }
+        assert!(second.top() >= first.bottom());
+    }
 }

@@ -18,6 +18,40 @@ pub(crate) struct UsageState {
     selected_day: Option<usize>,
 }
 
+fn usage_metric(
+    index: usize,
+    label: &'static str,
+    value: gpui_kit::StyledText,
+    colors: vega_theme::ThemeColors,
+) -> Div {
+    div()
+        .debug_selector(move || format!("usage-metric-{index}"))
+        .flex_1()
+        .flex_basis(px(Layout::SETTINGS_LABEL_WIDTH))
+        .min_w_0()
+        .max_w_full()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .debug_selector(move || format!("usage-metric-value-{index}"))
+                .w_full()
+                .min_w_0()
+                .text_align(gpui_kit::TextAlign::Left)
+                .text_size(px(Typography::HEADING_CARD))
+                .text_color(colors.text_primary)
+                .child(value),
+        )
+        .child(
+            div()
+                .debug_selector(move || format!("usage-metric-label-{index}"))
+                .text_size(px(Typography::METADATA))
+                .text_color(colors.text_secondary)
+                .child(label),
+        )
+}
+
 impl SettingsView {
     /// Marks an app-owned dashboard load pending, including the initial load.
     pub fn begin_usage_load(&mut self, cx: &mut Context<Self>) {
@@ -52,27 +86,8 @@ impl SettingsView {
 
     pub(crate) fn render_usage(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
-        let mut page = settings_section()
-            .debug_selector(|| "usage-dashboard".into())
-            .w_full()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(section_title("使用统计", colors.text_primary))
-                    .child(
-                        div()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .bg(colors.bg_hover)
-                            .text_size(px(Typography::METADATA))
-                            .text_color(colors.text_secondary)
-                            .child("应用用量"),
-                    ),
-            )
-            .child(settings_actions().child(self.usage_button(
+        let header = settings_actions()
+            .child(self.usage_button(
                 "usage-refresh",
                 if self.usage.loading {
                     "刷新中…"
@@ -82,7 +97,33 @@ impl SettingsView {
                 false,
                 |this, cx| this.request_usage_reload(cx),
                 cx,
-            )));
+            ))
+            .children(
+                [("usage-7days", "近7日", 7), ("usage-30days", "近30日", 30)]
+                    .into_iter()
+                    .map(|(id, label, days)| {
+                        self.usage_button(
+                            id,
+                            label,
+                            (if self.usage.range_days == 30 { 30 } else { 7 }) == days,
+                            move |this, cx| {
+                                this.usage.range_days = days;
+                                cx.notify();
+                            },
+                            cx,
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .text_size(px(Typography::METADATA))
+                    .text_color(colors.text_secondary)
+                    .child("应用用量 · 按 UTC 日期统计"),
+            );
+        let mut page = settings_section()
+            .debug_selector(|| "usage-dashboard".into())
+            .w_full()
+            .child(header);
         if self.usage.error {
             page = page.child(
                 settings_status("使用统计读取失败，请刷新重试", colors.danger, colors)
@@ -197,50 +238,27 @@ impl SettingsView {
             ("活跃天数 · 近365日", active.to_string()),
             ("最长连续天数 · 近365日", longest.to_string()),
         ];
-        let metric_band = div()
-            .flex()
+        let metric_band = settings_group(colors)
+            .flex_row()
             .flex_wrap()
-            .gap_4()
-            .px_4()
-            .py_3()
-            .rounded(px(Layout::PANEL_RADIUS))
-            .bg(colors.bg_hover)
+            .gap(px(Layout::SETTINGS_FIELD_GAP))
             .children(
                 metrics
                     .into_iter()
                     .enumerate()
                     .map(|(index, (label, value))| {
-                        div()
-                            .flex_1()
-                            .min_w(px(95.))
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap_1()
-                            .when(index > 0, |d| {
-                                d.border_l_1().border_color(colors.border_subtle)
-                            })
-                            .child(
-                                div()
-                                    .text_size(px(Typography::HEADING_CARD))
-                                    .text_color(colors.text_primary)
-                                    .child(value),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(Typography::METADATA))
-                                    .text_color(colors.text_secondary)
-                                    .child(label),
-                            )
+                        usage_metric(index, label, gpui_kit::StyledText::new(value), colors)
                     }),
             );
         let heatmap = div()
             .flex()
             .flex_col()
             .gap_3()
-            .p_3()
+            .p(px(Layout::SETTINGS_GROUP_PADDING))
             .rounded(px(Layout::PANEL_RADIUS))
-            .bg(colors.bg_hover)
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_subtle)
             .child(
                 div()
                     .flex()
@@ -335,34 +353,6 @@ impl SettingsView {
             .flat_map(|(_, values, _)| values)
             .copied()
             .sum();
-        let range_row = div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .child(
-                div()
-                    .text_size(px(Typography::METADATA))
-                    .text_color(colors.text_secondary)
-                    .child("按 UTC 日期统计"),
-            )
-            .child(
-                div().flex().gap_1().children(
-                    [("usage-7days", "近7日", 7), ("usage-30days", "近30日", 30)]
-                        .into_iter()
-                        .map(|(id, label, days)| {
-                            self.usage_button(
-                                id,
-                                label,
-                                range == days,
-                                move |this, cx| {
-                                    this.usage.range_days = days;
-                                    cx.notify();
-                                },
-                                cx,
-                            )
-                        }),
-                ),
-            );
         let selected = self.usage.selected_day.unwrap_or(range - 1).min(range - 1);
         let dates: Vec<_> = data
             .days
@@ -383,12 +373,14 @@ impl SettingsView {
         let clicked_bounds = canvas_bounds.clone();
         let trend = div()
             .debug_selector(|| "usage-trend".into())
-            .p_3()
+            .p(px(Layout::SETTINGS_GROUP_PADDING))
+            .border_1()
+            .border_color(colors.border_subtle)
             .flex()
             .flex_col()
             .gap_3()
             .rounded(px(Layout::PANEL_RADIUS))
-            .bg(colors.bg_hover)
+            .bg(colors.bg_subtle)
             .child(
                 div()
                     .flex()
@@ -454,36 +446,47 @@ impl SettingsView {
                         ))
                 })),
         );
-        let legend = div()
-            .flex_1()
-            .min_w(px(180.))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .children(models.iter().filter_map(|(name, values, color)| {
-                let total: u64 = values.iter().sum();
-                (total > 0).then(|| {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(div().size(px(8.)).rounded_full().bg(*color))
-                        .child(div().flex_1().min_w_0().truncate().child(name.clone()))
-                        .child(div().text_color(colors.text_secondary).child(format!(
-                            "{} · {:.1}%",
-                            compact(total),
-                            100. * total as f64 / selected_total.max(1) as f64
-                        )))
-                })
-            }));
+        let legend =
+            div()
+                .flex_1()
+                .min_w(px(180.))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .children(models.iter().enumerate().filter_map(
+                    |(index, (name, values, color))| {
+                        let total: u64 = values.iter().sum();
+                        (total > 0).then(|| {
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().size(px(8.)).rounded_full().bg(*color))
+                                .child(
+                                    div()
+                                        .debug_selector(move || format!("usage-model-name-{index}"))
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(name.clone()),
+                                )
+                                .child(div().text_color(colors.text_secondary).child(format!(
+                                    "{} · {:.1}%",
+                                    compact(total),
+                                    100. * total as f64 / selected_total.max(1) as f64
+                                )))
+                        })
+                    },
+                ));
         let distribution = div()
             .debug_selector(|| "usage-distribution".into())
-            .p_3()
+            .p(px(Layout::SETTINGS_GROUP_PADDING))
+            .border_1()
+            .border_color(colors.border_subtle)
             .flex()
             .flex_col()
             .gap_3()
             .rounded(px(Layout::PANEL_RADIUS))
-            .bg(colors.bg_hover)
+            .bg(colors.bg_subtle)
             .child("模型用量")
             .child(
                 div()
@@ -536,7 +539,6 @@ impl SettingsView {
             .gap_4()
             .child(metric_band)
             .child(heatmap)
-            .child(range_row)
             .child(trend)
             .child(distribution)
             .into_any_element()
@@ -759,6 +761,92 @@ mod tests {
     use super::*;
     use gpui_kit::{TestAppContext, VisualTestContext, WindowBounds, WindowOptions};
     use vega_conversation::types::{UsageDay, UsageModelSeries};
+    struct MetricHarness {
+        values: Vec<String>,
+        layouts: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::TextLayout>>>,
+        width: f32,
+    }
+
+    impl Render for MetricHarness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let colors = theme(cx).colors;
+            self.layouts.borrow_mut().clear();
+            let metrics = self
+                .values
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    let text = gpui_kit::StyledText::new(value.clone());
+                    self.layouts.borrow_mut().push(text.layout().clone());
+                    usage_metric(index, "合成指标", text, colors)
+                })
+                .collect::<Vec<_>>();
+            settings_group(colors)
+                .w(px(self.width))
+                .flex_row()
+                .flex_wrap()
+                .gap(px(Layout::SETTINGS_FIELD_GAP))
+                .text_size(px(Typography::BODY))
+                .line_height(relative(Typography::BODY_LINE_HEIGHT))
+                .children(metrics)
+        }
+    }
+
+    #[gpui_kit::test]
+    fn issue296_h3a_metric_text_stays_in_column_and_keeps_every_digit(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(vega_theme::Theme::light()));
+        for width in [687., 720.] {
+            let values = vec![
+                "999.9B".into(),
+                cost_label(&UsageTotals {
+                    priced_cost_microcents: i64::MAX,
+                    unpriced_calls: 1234,
+                    ..Default::default()
+                }),
+                "123.4M".into(),
+                "365".into(),
+                "365".into(),
+            ];
+            let layouts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let window = cx.open_window(size(px(width), px(600.)), |_, _| MetricHarness {
+                values: values.clone(),
+                layouts: layouts.clone(),
+                width,
+            });
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            for (index, layout) in layouts.borrow().iter().enumerate() {
+                let metric = visual
+                    .debug_bounds(Box::leak(format!("usage-metric-{index}").into_boxed_str()))
+                    .unwrap();
+                let label = visual
+                    .debug_bounds(Box::leak(
+                        format!("usage-metric-label-{index}").into_boxed_str(),
+                    ))
+                    .unwrap();
+                assert_eq!(layout.text(), values[index]);
+                assert!((layout.bounds().left() - label.left()).abs() <= px(0.5));
+                for byte in values[index]
+                    .char_indices()
+                    .map(|(byte, _)| byte)
+                    .chain(std::iter::once(values[index].len()))
+                {
+                    let position = layout
+                        .position_for_index(byte)
+                        .expect("each original text index");
+                    assert!(
+                        position.x >= metric.left() && position.x <= metric.right(),
+                        "metric {index}: glyph position {position:?} outside {metric:?}"
+                    );
+                    assert!(position.y < label.top());
+                }
+                assert!(metric.left() >= px(0.) && metric.right() <= px(width));
+                if index == 1 && width == 720. {
+                    assert!(layout.wrapped_text().lines().count() > 1);
+                }
+            }
+        }
+    }
     fn sample(calls: u64) -> UsageDashboard {
         let totals = UsageTotals {
             calls,
@@ -840,11 +928,22 @@ mod tests {
                 let refresh_focus = view.usage_focuses[5].clone();
                 window.focus(&refresh_focus, cx);
                 window.focus_next(cx);
+                assert!(view.usage_focuses[3].is_focused(window));
+                window.focus_next(cx);
+                assert!(view.usage_focuses[4].is_focused(window));
+            })
+            .expect("usage filter focus order");
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |view, _| view.usage.range_days), 30);
+        window
+            .update(cx, |view, window, cx| {
+                window.focus_next(cx);
                 assert!(view.usage_focuses[0].is_focused(window));
                 window.focus_next(cx);
                 assert!(view.usage_focuses[1].is_focused(window));
             })
-            .expect("usage filter focus order");
+            .expect("activity filters follow date filters");
         cx.simulate_keystrokes(window.into(), "space");
         cx.run_until_parked();
         assert_eq!(view.read_with(cx, |view, _| view.usage.heatmap_mode), 1);

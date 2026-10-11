@@ -178,6 +178,45 @@ impl ThinkingBlock {
         1 + usize::from(self.expanded) + usize::from(self.truncated)
     }
 
+    pub(crate) fn estimated_height(&self, width: f32) -> f32 {
+        let chars_per_line = ((width - 2. * Layout::DISCLOSURE_PADDING_X).max(1.)
+            / (Typography::BODY * 0.56))
+            .max(1.) as usize;
+        let content_height = if self.expanded {
+            let max_lines = (Layout::DISCLOSURE_CONTENT_MAX_HEIGHT
+                / (Typography::BODY * Typography::BODY_LINE_HEIGHT))
+                .ceil() as usize;
+            let mut completed_lines = 0;
+            let mut line_width: usize = 0;
+            for ch in self.visible_text().chars() {
+                if ch == '\n' {
+                    completed_lines += line_width.div_ceil(chars_per_line).max(1);
+                    line_width = 0;
+                } else {
+                    line_width += display_width(ch.encode_utf8(&mut [0; 4]));
+                }
+                if completed_lines + line_width.div_ceil(chars_per_line) >= max_lines {
+                    completed_lines = max_lines;
+                    line_width = 0;
+                    break;
+                }
+            }
+            let lines = (completed_lines + line_width.div_ceil(chars_per_line)).max(1);
+            Layout::PROCESS_ITEM_GAP
+                + (lines as f32 * Typography::BODY * Typography::BODY_LINE_HEIGHT)
+                    .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
+        } else {
+            0.
+        };
+        Layout::DISCLOSURE_HEADER_HEIGHT
+            + content_height
+            + if self.truncated {
+                Layout::PROCESS_ITEM_GAP + Typography::METADATA * Typography::BODY_LINE_HEIGHT
+            } else {
+                0.
+            }
+    }
+
     pub(crate) fn append(&mut self, delta: &str, summary: bool, remaining: usize) -> usize {
         let end = accepted_prefix_len(
             delta,
@@ -206,7 +245,7 @@ impl Render for ThinkingBlock {
             .min_w_0()
             .flex()
             .flex_col()
-            .py_1()
+            .gap(px(Layout::PROCESS_ITEM_GAP))
             .debug_selector(|| "thinking-block".into())
             .child(
                 div()

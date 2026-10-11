@@ -596,14 +596,16 @@ fn assert_s21_intro_is_bounded(
     let navigation = visual
         .debug_bounds("settings-navigation")
         .expect("Settings navigation");
-    assert_eq!(navigation.size.width, px(sidebar_width));
+    assert_eq!(navigation.size.width, px(Layout::SETTINGS_NAV_WIDTH));
+    assert_eq!(cx.update(|cx| crate::sidebar::width(cx)), sidebar_width);
     assert!(visual.debug_bounds("settings-page-skills").is_some());
     let content = visual
         .debug_bounds("settings-content-column")
         .expect("Settings content column");
     assert_eq!(
         content.size.width,
-        px((width - sidebar_width - 48.).min(vega_theme::Layout::SETTINGS_CONTENT_MAX_WIDTH))
+        px((width - Layout::SETTINGS_NAV_WIDTH - 48.)
+            .min(vega_theme::Layout::SETTINGS_CONTENT_MAX_WIDTH))
     );
     let viewport = visual
         .debug_bounds("settings-section-content")
@@ -1173,4 +1175,111 @@ async fn issue87_skills_settings_discards_late_result_after_new_generation(
         assert!(!view.skills.busy);
         assert!(view.skills.root_preview.is_none());
     });
+}
+
+#[gpui_kit::test]
+async fn issue296_v2_skill_switches_keep_real_mutations_and_busy_guard(cx: &mut TestAppContext) {
+    let (_owned, service) = skills_ui_fixture();
+    let (view, window) = open_skills_settings(cx, service.clone());
+    let baseline = service.projection().unwrap().consent_generation;
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let switch = visual
+        .debug_bounds("skills-global-enabled")
+        .expect("global switch");
+    assert_eq!(switch.size.width, px(32.));
+    assert_eq!(switch.size.height, px(20.));
+    let label = visual
+        .debug_bounds("skills-global-enabled-row-label")
+        .expect("nearby label");
+    assert!((f32::from(switch.left() - label.right()) - 16.).abs() < 1.);
+    window
+        .update(cx, |_, window, cx| {
+            let navigation = view.read(cx).section_focuses[6].clone();
+            window.focus(&navigation, cx);
+            window.focus_next(cx);
+            window.focus_next(cx);
+        })
+        .expect("focus shared switch after refresh");
+    cx.simulate_keystrokes(window.into(), "enter");
+    cx.run_until_parked();
+    let enabled = service.projection().unwrap();
+    assert!(enabled.global_enabled);
+    assert_eq!(enabled.consent_generation, baseline + 1);
+    cx.simulate_keystrokes(window.into(), "space");
+    cx.run_until_parked();
+    let disabled = service.projection().unwrap();
+    assert!(!disabled.global_enabled);
+    assert_eq!(disabled.consent_generation, baseline + 2);
+    VisualTestContext::from_window(window.into(), cx)
+        .simulate_click(switch.center(), Default::default());
+    cx.run_until_parked();
+    assert!(service.projection().unwrap().global_enabled);
+    assert_eq!(
+        service.projection().unwrap().consent_generation,
+        baseline + 3
+    );
+    assert_eq!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("skills-global-enabled")
+            .unwrap(),
+        switch
+    );
+    view.update(cx, |view, cx| {
+        view.skills.busy = true;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let busy_switch = VisualTestContext::from_window(window.into(), cx)
+        .debug_bounds("skills-global-enabled")
+        .unwrap();
+    assert_eq!(busy_switch.size, switch.size);
+    assert_eq!(busy_switch.left(), switch.left());
+    VisualTestContext::from_window(window.into(), cx)
+        .simulate_click(busy_switch.center(), Default::default());
+    cx.simulate_keystrokes(window.into(), "enter space");
+    cx.run_until_parked();
+    assert_eq!(
+        service.projection().unwrap().consent_generation,
+        baseline + 3
+    );
+}
+
+#[gpui_kit::test]
+async fn issue296_h3a_skill_actions_have_field_and_wrapped_spacing(cx: &mut TestAppContext) {
+    let (_owned, service) = skills_ui_fixture();
+    let (view, window) = open_skills_settings(cx, service);
+    view.update(cx, |view, cx| {
+        let mut projection = projection_with_global_winner();
+        projection.selected_project_id = Some("owned-project".into());
+        projection.sources.truncate(1);
+        projection.sources[0].diagnostic = Some("合成不可用状态".into());
+        view.skills.projection = Some(projection);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let last = visual.debug_bounds("skills-project-automatic-row").unwrap();
+    let actions = [
+        "skills-preview-project",
+        "skills-preview-global",
+        "skills-import-folder",
+    ]
+    .map(|selector| visual.debug_bounds(selector).unwrap());
+    for (index, action) in actions.iter().enumerate() {
+        assert!(action.top() - last.bottom() >= px(12.));
+        for prior in &actions[..index] {
+            assert!(
+                action.left() - prior.right() >= px(8.) || action.top() - prior.bottom() >= px(8.)
+            );
+        }
+    }
+    let field = visual
+        .debug_bounds("skills-source-auto-project-source-row")
+        .unwrap();
+    let remove = visual.debug_bounds("skills-unlink-project-source").unwrap();
+    assert!(remove.top() - field.bottom() >= px(12.));
+    let diagnostic = visual
+        .debug_bounds("skills-source-diagnostic-project-source")
+        .unwrap();
+    assert!(diagnostic.top() - remove.bottom() >= px(12.));
 }
