@@ -1,5 +1,10 @@
 # Vega R21 current Codex screenshot parity — phase 2 freeze
 
+2026-10-11: [Issue #296 R5](vega-desktop-ui-unification.md#r5-八个设置页的共同语法)
+supersedes Settings navigation labels, selected surface, radius, section spacing,
+and action/status chrome. The sidebar-width rail, 744px content maximum, existing
+settings controllers, and all unrelated shell geometry remain unchanged.
+
 **Status:** implementation contract
 **Frozen:** 2026-09-09 (Asia/Shanghai)
 **Scope:** current main-window shell, Settings shell, Composer chrome, and the

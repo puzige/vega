@@ -1,5 +1,7 @@
 # Issue #98 · 「回到底部」改为悬浮按钮（规格冻结）
 
+2026-10-11：本页的浮层位置、纯图标圆形外观和24px悬浮间距由 [Issue #296 R2](vega-desktop-ui-unification.md#r2-阅读恢复区域)取代。新版采用正文之外的40px稳定导航行及32px图标+文字pill，消除遮挡；既有resume_tail、可见性、焦点和键盘契约保持。下文保留历史依据。
+
 > 状态：**SPEC FROZEN**
 > 基线：`master @ 8cff36b`
 > 来源：用户 2026-09-21 实机截图（`puzige/vega#98`）+ 一句「参考 codex 实现」

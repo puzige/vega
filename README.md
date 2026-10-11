@@ -48,7 +48,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-171-run-diagnostics-spec.md](docs/vega-issue-171-run-diagnostics-spec.md) | #171 运行诊断、失败分类与脱敏持久化规格 |
 | [vega-issue-171-run-diagnostics-delivery.md](docs/vega-issue-171-run-diagnostics-delivery.md) | #171 实现计划、定向验收与交付证据 |
 | [vega-issue-100-composer-width.md](docs/vega-issue-100-composer-width.md) | #100 Composer 与正文列统一为 768px（参考实现共用同一宽度 token） |
-| [vega-issue-98-scroll-to-bottom.md](docs/vega-issue-98-scroll-to-bottom.md) | #98 「回到底部」改为悬浮圆形向下箭头按钮（参考 Codex 实测 32px / 居中 / 悬浮 composer 上方） |
+| [vega-issue-98-scroll-to-bottom.md](docs/vega-issue-98-scroll-to-bottom.md) | #98 历史悬浮按钮契约；布局由 #296 的固定阅读导航行取代，追尾行为保留 |
 | [vega-issue-70-tool-activity-delivery.md](docs/vega-issue-70-tool-activity-delivery.md) | #70 测试先行矩阵、门禁与原生验收记录 |
 | [vega-issue-74-skills.md](docs/vega-issue-74-skills.md) | #74 Agent Skills v1 项目/全局发现、自动触发与权限边界（评审草案） |
 | [vega-issue-74-skills-delivery.md](docs/vega-issue-74-skills-delivery.md) | #74 测试先行验收矩阵（均未运行） |
@@ -65,6 +65,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-181-auto-update.md](docs/vega-issue-181-auto-update.md) | macOS 自动更新：设置、签名门禁、显式重启安装 |
 | [vega-issue-181-delivery.md](docs/vega-issue-181-delivery.md) | 自动更新交付状态、手测步骤与恢复方式 |
 | [vega-design-guidelines.md](docs/vega-design-guidelines.md) | Vega 原生设计守则：视觉语言、语义 token、状态与 UI 变更检查表 |
+| [vega-desktop-ui-unification.md](docs/vega-desktop-ui-unification.md) | #296 全应用 UI 统一：信息流、八个设置页、图标对齐与交互动效 |
 | [vega-ui-spec.md](docs/vega-ui-spec.md) | UI 规格与可测量验收准线 |
 | [vega-r21-screenshot-parity.md](docs/vega-r21-screenshot-parity.md) | 当前 Codex 截图像素对标：可变 Sidebar、Environment、Settings、Composer 与浮层 |
 | [vega-r22-workspace-panel-polish.md](docs/vega-r22-workspace-panel-polish.md) | Workspace / Terminal Panel 工具栏分组、间距与对齐修复 |

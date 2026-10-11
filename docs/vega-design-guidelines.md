@@ -83,7 +83,7 @@ Vega Logo 的连续终端折角、单颗细长星与轻微笑意，是产品的�
 | `bg_sidebar` | `#FAF9F9` | `#191919` | 侧栏背景 |
 | `bg_elevated` | `#FFFFFF` | `#2A2A2A` | 卡片、Composer、浮起表面 |
 | `bg_hover` | `#ECECEC` | `#323232` | 中性 hover |
-| `bg_active` | `#EAF2FC` | `#203247` | 当前项目、任务与选中控件 |
+| `bg_active` | `#EDEDED` | `#303030` | 当前项目、任务与普通导航选中表面 |
 | `border_subtle` | `#E8E8E8` | `#383838` | 1px 分隔线与细边框 |
 | `text_primary` | `#191C1F` | `#EDEDED` | 正文与主要标签 |
 | `text_secondary` | `#676767` | `#ABABAB` | 辅助信息、时间与次级标签 |
@@ -99,7 +99,7 @@ Vega Logo 的连续终端折角、单颗细长星与轻微笑意，是产品的�
 
 ### 4.2 使用规则
 
-- 普通 hover 使用 `bg_hover`；选中态使用 `brand_soft`/`bg_active`，文字或图标使用 `brand_primary`。
+- 普通 hover 使用 `bg_hover`；普通导航选中态使用中性 `bg_active` 与 `text_primary`，品牌相关选中控件才使用 `brand_soft`/`brand_primary`。
 - 成功、危险和警告保留各自语义，不能为了“统一品牌”全部改成蓝色。
 - 文字层级优先用 `text_primary / secondary / tertiary`；不要靠随意透明度制造第四、第五层灰色。
 - 新增语义时先证明它不能由现有 token 表达。不要把完整原始灰阶暴露给组件。
@@ -123,6 +123,10 @@ Vega 默认使用平台系统无衬线字体；代码和终端使用平台等宽
 标题只使用“页面 / 区块 / 卡片”三级层级；卡片标题为 13px / 500。正文不靠大字号制造层级，优先使用间距、字重与语义颜色。
 
 ## 6. 几何与布局
+
+Issue #296 的[全应用 UI 统一规格](vega-desktop-ui-unification.md)统一信息流和八个设置页的视觉语法，其明确覆盖的几何优先于下列历史值，其余冻结契约不变：正文与 Composer 在共享16px安全边距外增加20px导航gutter（总36px），消息轨道不再扣正文宽度；回到底部置于正文外40px稳定导航行。过程标题统一28px、13px文字、8px水平内距与圆角；异常提示统一8px内距/间距/圆角和语义图标。用户消息上24/下16px，助手上8/下16px，保留正文和气泡语义。
+
+这些值分别由 `Layout::CONVERSATION_NAVIGATION_GUTTER`、`CONVERSATION_PADDING`、`MESSAGE_ANCHOR_TRACK_WIDTH/MARKER_SIZE/ACTIVE_SIZE`、`READING_NAVIGATION_HEIGHT/PADDING`、`DISCLOSURE_HEADER_HEIGHT`、`DISCLOSURE_PADDING_X`、`DISCLOSURE_RADIUS`、`USER_MESSAGE_PADDING_TOP`、`MESSAGE_PADDING_BOTTOM`、`ASSISTANT_MESSAGE_PADDING_TOP` 和 `STATUS_PADDING/GAP/RADIUS` 承载。锚点轨道1px、普通点4px、当前位置/选中点6px。状态来自真实controller，不增加装饰动画。
 
 ### 6.1 当前共享几何
 
@@ -248,9 +252,15 @@ Issue #103：展开的工具详情与 thinking 正文使用 240px 最大高度
 - Sidebar 的 `Pinned / Projects / Recents` 组织内容列与应用边缘保留 8px 逻辑内缩；三组标题、任务与项目行共用同一前导列，内容列右边缘固定，避免选中表面贴住窗口边缘。精确规格见 [R38 Sidebar content inset](vega-r38-sidebar-content-inset.md)。
 - Sidebar 缩进阶梯（R48）：以导航内容原点 base 为基准，`base` = 标签列 = folder 图标列，`base + SIDEBAR_ROW_INSET(24)` = 项目名称列 = 项目子任务文本列 = `Show More / Show Less` 列。`SIDEBAR_ROW_INSET` 是导出量而非独立参数，等于 folder 图标 16px 加项目行 `gap_2` 8px；项目行自身不设前导内边距，只靠图标 + 间距自然落到文本列，无图标的行直接消费该 token，因此改动图标尺寸或行间距必须同步更新 token，否则两列重新错位。section 标签通过 `SIDEBAR_LABEL_INSET`(0) 显式表达其贴 base 的列，不再隐式继承容器。真值来源为 Codex 实机 AX 控件盒与原生 2x 像素测量（标签 17.5 / folder 图标 16.5 / folder 文本 41.0 / child 文本 40.5，Vega 收敛为 base 16 与文本列 40）。精确规格见 [R48 Sidebar indent ladder](vega-r48-sidebar-indent-ladder.md)。
 - Sidebar 持久选中态只标识最具体的活动目标：打开选中项目内的任务时，仅任务行使用中性 active 背景，外层项目行保持静止并以 Folder open 图标表达展开；只有项目被选中且没有打开该项目任务时，项目行才保留 active 背景。Pinned 中的项目任务遵循同一优先级。精确规格见 [R42 Single selection highlight](vega-r42-single-selection-highlight.md)。
-- Settings 采用与当前 Sidebar 同宽的导航 rail 和 744px 最大内容列；只展示 Vega 已有的真实设置页。
+- Settings 采用与当前 Sidebar 同宽的导航 rail 和744px最大内容列；八个现有页统一为「通用、服务提供方、思考、定价、用量、MCP、Agents、Skills」，返回入口为「返回应用」。Models归服务提供方，Appearance归通用，不新建路由。
+- Settings导航采用与Sidebar一致的32px行高、13px字号、8px圆角和中性active表面。页标题24px；标题到内容16px、区块间24px、区块内部12px。共享token为 `SETTINGS_TITLE_GAP`、`SETTINGS_SECTION_GAP`、`SETTINGS_CONTENT_GAP`。字段说明4px，动作组8px，窄窗动作可换行且长提示完整可达。
+- Settings普通动作随内容收缩，不把刷新、检查、导入撑成整列。按钮最小28px、水平内距12px、圆角8px，使用 `SETTINGS_CONTROL_MIN_HEIGHT/PADDING_X/RADIUS`；正文13px，主保存操作使用brand_primary/brand_on_accent，普通操作中性，删除/移除使用danger文本。hover元素具稳定身份，focus-visible可见且不移动布局，disabled保留真实guard。状态提示用语义图标、文字和中性细边界；不删除错误码、恢复动作或安全说明。Agents三个输入均有持久标签，用量图表数据和统计语义保持。完整边界见#296 R5–R6。
 
 ## 11. 动效与可访问性
+
+Issue #296 R7增加共享hover进入/离开120ms过渡，使用 `Motion::INTERACTION_DURATION_MS`，允许中途反转并在结束后停止动画帧；只改变表面，不改变正文、图标几何或命中范围。pressed即时反馈，selected和disabled遵循真实状态。macOS Reduce Motion通过公开只读平台偏好同步，开启或读取失败时使用即时静态反馈，不改系统设置。
+
+共享SVG图标使用 `Layout::ICON_SIZE` 的16px固定居中槽；KitIcon和inline SVG保持相同几何。单行图标/标签垂直居中，多行提示图标对齐首行行盒中心，不继承整段高度。28px按钮内16px图标四边6px；13px×1.55行盒内图标上下各2.075px。光学外观待原生手测，不能把布局盒断言当作像素验收。
 
 - 动效只解释状态变化，不装饰等待。默认交互过渡以 150ms 为上限；复杂布局动画必须单独说明价值并可中断。
 - 遵循系统 Reduce Motion。开启后关闭启动扫光、shimmer、循环 pulse 和非必要位移动画，保留即时状态切换。
@@ -299,6 +309,8 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 本文件不以“搬运更多 token”为目标；只有被 Vega 产品需要、能形成语义、可由实现和测试约束的值，才进入设计系统。
 
 ## 15. 变更记录
+
+- Issue #296 (2026-10-11)：统一信息流阅读列/导航/过程/异常，以及全部八个Settings页的导航、分组、控件和状态；保持Sidebar、标题栏、Environment、Workspace的冻结结构。真实像素验收待用户在任务空闲后完成，不重启当前运行安装。
 
 - Issue #294 (2026-10-11)：移除 Composer 底部操作行的分支图标和名称，不保留入口或占位；新建任务独立 utility bar 的分支选择器与安全行为保留。此规则取代 #191 的底行分支入口要求，原生外观等待用户在合并后的版本手测。
 
