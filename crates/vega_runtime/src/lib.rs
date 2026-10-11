@@ -93,6 +93,7 @@ pub use context::{
     estimate_wire_context,
 };
 pub use error::VegaError;
+pub mod computer_use;
 pub mod images;
 pub use images::ImageAttachment;
 pub use mock::{MockProvider, ScriptStep};

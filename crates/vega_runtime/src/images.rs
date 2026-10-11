@@ -125,7 +125,27 @@ pub fn validate_images(images: &[ImageAttachment]) -> Result<(), ImageError> {
 /// Enforces budgets and role ownership at both public runtime entry points.
 pub(crate) fn validate_messages(messages: &[crate::ChatMessage]) -> Result<(), crate::VegaError> {
     let mut total = 0usize;
+    let mut tool_bytes = 0usize;
+    let mut tool_count = 0usize;
     for message in messages {
+        if message.role == crate::ChatRole::Tool && !message.images.is_empty() {
+            tool_bytes += message
+                .images
+                .iter()
+                .map(|image| image.bytes.len())
+                .sum::<usize>();
+            tool_count += message.images.len();
+            if message.tool_call_id.as_ref().is_none_or(|id| id.is_empty())
+                || tool_bytes > 8 * 1024 * 1024
+                || tool_count > 2
+            {
+                return Err(crate::VegaError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "tool observation image budget exceeded",
+                )));
+            }
+            continue;
+        }
         let invalid = validate_images(&message.images).is_err()
             || (message.role != crate::ChatRole::User && !message.images.is_empty());
         total = total.saturating_add(

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "platform": "darwin-arm64",
+  "minimum_macos": "14.0",
+  "executors": {
+    "cua": {"version": "0.34.0", "entrypoint": "Helpers/cua-driver"},
+    "node": {"version": "24.21.0", "entrypoint": "Helpers/node"},
+    "playwright_mcp": {"version": "0.0.83", "entrypoint": "Resources/computer-use/playwright/cli.js"}
+  },
+  "downloads": {
+    "cua": {
+      "url": "https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.34.0/cua-driver-rs-0.34.0-darwin-universal-binary.tar.gz",
+      "sha256": "940dc008e0f7c5d217d14c0f247d1ebab91b1bac965f4a649d19e8c789bdfd81",
+      "max_bytes": 67108864
+    },
+    "node": {
+      "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
+      "sha256": "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+      "max_bytes": 67108864
+    }
+  },
+  "licenses": [
+    {
+      "name": "cua-LICENSE.md",
+      "url": "https://raw.githubusercontent.com/trycua/cua/cua-driver-rs-v0.34.0/LICENSE.md",
+      "sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9",
+      "max_bytes": 65536
+    },
+    {
+      "name": "cua-THIRD_PARTY_NOTICES.md",
+      "url": "https://raw.githubusercontent.com/trycua/cua/cua-driver-rs-v0.34.0/libs/cua-driver/rust/THIRD_PARTY_NOTICES.md",
+      "sha256": "3268421fe758ec53bc11a2644aac1451a397027c508c199e86745636bb5499db",
+      "max_bytes": 65536
+    }
+  ]
+}

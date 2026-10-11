@@ -1298,3 +1298,62 @@ async fn issue296_v3_selected_reasoning_options_never_reset_custom_fields(cx: &m
         assert_eq!(profiles, &[expected]);
     });
 }
+
+fn wait_issue75_preferences(cx: &mut TestAppContext, view: &Entity<SettingsView>) {
+    for _ in 0..150 {
+        cx.run_until_parked();
+        if view.read_with(cx, |view, _| !view.provider_management.saving) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("preferences did not settle");
+}
+
+#[gpui_kit::test]
+async fn issue75_native_toggles_preserve_other_disk_settings_and_reject_conflict(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let config = AppConfig::default();
+    config.save_to(&path).unwrap();
+    let (view, window) = mount_settings(cx, false, 960., 600.);
+    view.update(cx, |view, cx| {
+        view.config = config.clone();
+        view.config_path = Some(path.clone());
+        view.section = 7;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let mut external = config.clone();
+    external.agent.turn_limit = 19;
+    external.save_to(&path).unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let desktop = visual.debug_bounds("settings-desktop-use-toggle").unwrap();
+    let browser = visual.debug_bounds("settings-browser-use-toggle").unwrap();
+    assert!(desktop.bottom() < px(600.));
+    assert!(browser.bottom() < px(600.));
+    visual.simulate_click(desktop.center(), Default::default());
+    cx.run_until_parked();
+    wait_issue75_preferences(cx, &view);
+    let saved = config::read_from(&path).unwrap();
+    assert!(saved.agent.desktop_use_enabled);
+    assert!(!saved.agent.browser_use_enabled);
+    assert_eq!(saved.agent.turn_limit, 19);
+    cx.simulate_keystrokes(window.into(), "space");
+    cx.run_until_parked();
+    wait_issue75_preferences(cx, &view);
+    assert!(!config::read_from(&path).unwrap().agent.desktop_use_enabled);
+    let mut external = config::read_from(&path).unwrap();
+    external.agent.browser_use_enabled = true;
+    external.save_to(&path).unwrap();
+    view.update(cx, |view, cx| {
+        let mut candidate = view.config.clone();
+        candidate.agent.browser_use_enabled = true;
+        view.save_preferences(candidate, cx);
+    });
+    wait_issue75_preferences(cx, &view);
+    assert!(view.read_with(cx, |view, _| view.error.is_some()));
+    assert!(config::read_from(&path).unwrap().agent.browser_use_enabled);
+}

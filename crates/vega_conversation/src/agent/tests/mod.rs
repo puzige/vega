@@ -150,3 +150,79 @@ fn scripted_provider(call_id: &str, input_json: &str) -> MockProvider {
         ])],
     ])
 }
+
+#[test]
+fn issue75_history_accepts_only_dedicated_safe_audit_and_session_approval() {
+    use crate::types::{
+        Approval, ApprovalAudit, ApprovalSource, ToolCall, ToolCardInputProjection,
+        tool_card_input_projection,
+    };
+    let input=serde_json::json!({"kind":"computer_use","version":1,"action":"click","argument_bytes":24,"argument_digest":"a".repeat(64)}).to_string();
+    let audit = ApprovalAudit {
+        decision: Approval::Once,
+        note: None,
+        source: ApprovalSource::ComputerUse,
+        danger: None,
+    };
+    let encoded = audit.to_json().unwrap();
+    assert!(encoded.contains("computer_use"));
+    let call = ToolCall {
+        id: "call".into(),
+        tool: "ComputerAct".into(),
+        input_json: input.clone(),
+    };
+    assert!(matches!(
+        tool_card_input_projection(&call),
+        ToolCardInputProjection::ComputerUse { .. }
+    ));
+    assert!(
+        super::pipeline::validate_recovered_projection(
+            "p",
+            "t",
+            "call",
+            "ComputerAct",
+            &input,
+            "completed; observation was not retained",
+            vega_runtime::RuntimeToolStatus::Success,
+            &audit,
+            None,
+            None
+        )
+        .is_ok()
+    );
+    let mut always = audit.clone();
+    always.decision = Approval::Always;
+    assert!(always.to_json().is_err());
+    let mut ordinary = audit;
+    ordinary.source = ApprovalSource::User;
+    assert!(
+        super::pipeline::validate_recovered_projection(
+            "p",
+            "t",
+            "call",
+            "ComputerAct",
+            &input,
+            "completed",
+            vega_runtime::RuntimeToolStatus::Success,
+            &ordinary,
+            None,
+            None
+        )
+        .is_err()
+    );
+    assert!(
+        super::pipeline::validate_recovered_projection(
+            "p",
+            "t",
+            "call",
+            "ComputerAct",
+            r#"{"text":"secret"}"#,
+            "completed",
+            vega_runtime::RuntimeToolStatus::Success,
+            &ordinary,
+            None,
+            None
+        )
+        .is_err()
+    );
+}

@@ -84,6 +84,10 @@ impl From<&str> for UserSubmission {
 pub(crate) enum AgentUpdate {
     Event(vega_conversation::types::ConversationEvent),
     CodexModeConfirmed,
+    ComputerUseReady {
+        control: ComputerUseControl,
+        owner: String,
+    },
     McpUnavailable(Vec<vega_conversation::types::McpServerDiagnostic>),
     /// The terminal carries a resolver rejection atomically with `success`.
     /// That prevents a poll between two channel messages from losing the
@@ -98,6 +102,7 @@ pub(crate) enum AgentUpdate {
 pub(crate) struct AgentBatch {
     pub(crate) events: Vec<vega_conversation::types::ConversationEvent>,
     pub(crate) codex_mode_confirmed: bool,
+    pub(crate) computer_use_ready: Option<(ComputerUseControl, String)>,
     pub(crate) mcp_unavailable: Vec<vega_conversation::types::McpServerDiagnostic>,
     pub(crate) reference_failure: Option<FileReferenceFailureCode>,
     pub(crate) credential_failure: bool,
@@ -107,6 +112,7 @@ pub(crate) struct AgentBatch {
 pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> AgentBatch {
     let mut events = Vec::new();
     let mut codex_mode_confirmed = false;
+    let mut computer_use_ready = None;
     let mut mcp_unavailable = Vec::new();
     let mut reference_failure = None;
     let mut credential_failure = false;
@@ -115,6 +121,9 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
         match receiver.try_recv() {
             Ok(AgentUpdate::Event(event)) => events.push(event),
             Ok(AgentUpdate::CodexModeConfirmed) => codex_mode_confirmed = true,
+            Ok(AgentUpdate::ComputerUseReady { control, owner }) => {
+                computer_use_ready = Some((control, owner))
+            }
             Ok(AgentUpdate::McpUnavailable(diagnostics)) => {
                 mcp_unavailable.extend(diagnostics);
             }
@@ -138,6 +147,7 @@ pub(crate) fn drain_agent_updates(receiver: &mpsc::Receiver<AgentUpdate>) -> Age
     AgentBatch {
         events,
         codex_mode_confirmed,
+        computer_use_ready,
         mcp_unavailable,
         reference_failure,
         credential_failure,
@@ -150,6 +160,9 @@ pub(crate) struct ActiveAgentRun {
     pub(crate) thread_id: String,
     pub(crate) stream: Entity<ConversationStream>,
     pub(crate) cancel: tokio_util::sync::CancellationToken,
+    pub(crate) computer_use: Option<ComputerUseControl>,
+    pub(crate) computer_use_owner: String,
+    pub(crate) computer_use_details_open: bool,
     pub(crate) pending_user_content: Option<String>,
     pub(crate) pending_approved_instruction: Option<String>,
     /// Live wall-clock measurement of this run (S7-T40). It exists only in
@@ -369,6 +382,9 @@ impl AppAgentController {
 
     pub(crate) fn request_active_cancel(&self, thread_id: &str) {
         if let Some(active) = self.active.get(thread_id) {
+            if let Some(control) = &active.computer_use {
+                control.stop();
+            }
             active.cancel.cancel();
         }
     }
@@ -417,6 +433,9 @@ impl AppAgentController {
                 thread_id,
                 stream,
                 cancel: cancel.clone(),
+                computer_use: None,
+                computer_use_owner: String::new(),
+                computer_use_details_open: false,
                 pending_user_content,
                 pending_approved_instruction,
                 started: Instant::now(),
@@ -498,7 +517,11 @@ impl AppAgentController {
         if !self.matches(generation, thread_id, stream) {
             return None;
         }
-        self.active.remove(thread_id)
+        let active = self.active.remove(thread_id)?;
+        if let Some(control) = &active.computer_use {
+            control.stop();
+        }
+        Some(active)
     }
 }
 
@@ -717,6 +740,7 @@ pub(crate) fn run_agent_worker_with_mcp(
     worker_start_probe.record();
     let mut reference_failure = None;
     let mut credential_failure = false;
+    let mut computer_use: Option<ComputerUseRun> = None;
     let success = (|| -> Result<bool, ()> {
         // Config and local credential storage are touched only after an explicit user submit
         // or committed Plan approval reaches this worker.
@@ -743,6 +767,29 @@ pub(crate) fn run_agent_worker_with_mcp(
         // Issue #114: agentic turn guardrail from `[agent] turn_limit`
         // (0 = unlimited). Absent config (legacy callers/tests) stays unlimited.
         let turn_limit = config.as_ref().map_or(0, |config| config.agent.turn_limit);
+        if let Some(config) = &config
+            && (config.agent.desktop_use_enabled || config.agent.browser_use_enabled)
+        {
+            let run = ComputerUseRun::new(
+                config.agent.desktop_use_enabled,
+                config.agent.browser_use_enabled,
+            );
+            if cancel.is_cancelled() {
+                run.control.stop();
+                return Err(());
+            }
+            sender
+                .send(AgentUpdate::ComputerUseReady {
+                    control: run.control.clone(),
+                    owner: if thread.title.is_empty() {
+                        "未命名任务".into()
+                    } else {
+                        thread.title.clone()
+                    },
+                })
+                .map_err(|_| ())?;
+            computer_use = Some(run);
+        }
         // Production must never turn an explicit config path with no unique
         // enabled owner into a synthetic `unknown` policy. Legacy tests may
         // inject a provider without a matching config, but an actual two-owner
@@ -980,6 +1027,7 @@ pub(crate) fn run_agent_worker_with_mcp(
                             vega_conversation::agent::PersistenceActorConfig::default()
                                 .with_automatic_title(automatic_title)
                                 .with_turn_limit(turn_limit)
+                                .with_computer_use(computer_use.clone())
                                 .with_owner_credential_reader(owner_credential_reader.clone()),
                             None,
                             pricing_catalog,
@@ -1047,14 +1095,21 @@ pub(crate) fn run_agent_worker_with_mcp(
                         mcp_servers,
                         vega_conversation::agent::PersistenceActorConfig::default()
                             .with_turn_limit(turn_limit)
+                                .with_computer_use(computer_use.clone())
                             .with_owner_credential_reader(owner_credential_reader.clone()),
                     ),
                 )
                 }
             };
+        if let Some(run) = &computer_use {
+            runtime.block_on(run.shutdown());
+        }
         Ok(result.is_ok_and(|run| !run.failed))
     })()
     .unwrap_or(false);
+    if let Some(run) = &computer_use {
+        run.control.stop();
+    }
     let _ = sender.send(AgentUpdate::Finished {
         success,
         reference_failure,

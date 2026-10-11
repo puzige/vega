@@ -318,15 +318,24 @@ impl ReadOnlyToolKind {
 /// Strict, content-free tool input prepared for UI cards.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCardInputProjection {
+    ComputerUse {
+        tool: String,
+        action: String,
+    },
     /// A read-only tool. Its raw JSON is intentionally not retained by UI.
     ReadOnly {
         tool: ReadOnlyToolKind,
         permission_path: Option<String>,
     },
     /// Full bash command, already strictly decoded by the tools boundary.
-    Bash { command: String },
+    Bash {
+        command: String,
+    },
     /// Safe write audit summary; the body and fingerprint are discarded.
-    Write { path: String, content_bytes: u64 },
+    Write {
+        path: String,
+        content_bytes: u64,
+    },
     /// Safe edit audit summary; both strings and fingerprint are discarded.
     Edit {
         path: String,
@@ -359,6 +368,7 @@ impl ToolCardInputProjection {
     /// Stable known tool name, absent for corrupt input.
     pub fn tool(&self) -> Option<&str> {
         match self {
+            Self::ComputerUse { tool, .. } => Some(tool),
             Self::ReadOnly { tool, .. } => Some(tool.as_str()),
             Self::Bash { .. } => Some("bash"),
             Self::Write { .. } => Some("write"),
@@ -384,7 +394,7 @@ impl ToolCardInputProjection {
             Self::ReadOnly {
                 permission_path, ..
             } => permission_path.as_deref(),
-            Self::Skill { .. } | Self::Corrupt => None,
+            Self::ComputerUse { .. } | Self::Skill { .. } | Self::Corrupt => None,
         }
     }
 }
@@ -392,6 +402,11 @@ impl ToolCardInputProjection {
 /// Strict terminal projection safe for a tool card to retain and render.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCardResultProjection {
+    ComputerUse {
+        status: ToolCallStatus,
+        output: String,
+        reused: bool,
+    },
     /// Bounded bash output plus structured execution metadata.
     Bash {
         status: ToolCallStatus,
@@ -455,6 +470,16 @@ pub enum ToolCardResultProjection {
 
 /// Strictly reduces a shared safe proposal to the fields T27 may retain.
 pub fn tool_card_input_projection(call: &ToolCall) -> ToolCardInputProjection {
+    if vega_runtime::computer_use::ComputerUseRun::tool_capability(&call.tool).is_some() {
+        if !vega_runtime::computer_use::ComputerUseAudit::valid(&call.input_json) {
+            return ToolCardInputProjection::Corrupt;
+        }
+        let value: serde_json::Value = serde_json::from_str(&call.input_json).unwrap_or_default();
+        return ToolCardInputProjection::ComputerUse {
+            tool: call.tool.clone(),
+            action: value["action"].as_str().unwrap_or("invalid").to_owned(),
+        };
+    }
     if matches!(call.tool.as_str(), "load_skill" | "read_skill_resource") {
         return skill_card_input_projection(&call.tool, &call.input_json);
     }
@@ -657,6 +682,24 @@ pub fn tool_card_result_projection(
         return ToolCardResultProjection::Corrupt;
     };
     match input {
+        ToolCardInputProjection::ComputerUse { .. } => {
+            if !is_terminal(result.status)
+                || result.exit_code.is_some()
+                || result.duration_ms.is_some()
+                || result.output.len() > 2048
+                || match result.status {
+                    ToolCallStatus::Success => result.truncated != Some(false),
+                    _ => result.truncated.is_some(),
+                }
+            {
+                return ToolCardResultProjection::Corrupt;
+            }
+            ToolCardResultProjection::ComputerUse {
+                status: result.status,
+                output: result.output.clone(),
+                reused: result.reused,
+            }
+        }
         ToolCardInputProjection::Bash { .. } => {
             let metadata_valid = match result.status {
                 ToolCallStatus::Success => {

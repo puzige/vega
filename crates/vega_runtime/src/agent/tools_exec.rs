@@ -6,6 +6,11 @@ const MCP_ARGUMENT_LIMIT: usize = 256 * 1024;
 const MCP_RESULT_LIMIT: usize = 256 * 1024;
 
 pub(crate) enum PreparedRuntimeCall {
+    ComputerUse {
+        call: RuntimeToolCall,
+        arguments: Value,
+        run: crate::computer_use::ComputerUseRun,
+    },
     Readonly(RuntimeToolCall),
     InvalidRead(RuntimeToolCall),
     PinnedRead {
@@ -71,7 +76,8 @@ impl fmt::Debug for PreparedRuntimeCall {
 impl PreparedRuntimeCall {
     pub(crate) fn call(&self) -> &RuntimeToolCall {
         match self {
-            Self::Readonly(call)
+            Self::ComputerUse { call, .. }
+            | Self::Readonly(call)
             | Self::InvalidRead(call)
             | Self::PinnedRead { call, .. }
             | Self::MixedRejected(call)
@@ -199,6 +205,41 @@ pub(crate) fn prepare_runtime_call(
     capabilities: &RunCapabilitySnapshot,
     raw_call: RuntimeToolCall,
 ) -> Result<PreparedRuntimeCall, VegaError> {
+    if let Some(capability) = crate::computer_use::ComputerUseRun::tool_capability(&raw_call.name) {
+        let arguments = serde_json::from_str::<Value>(&raw_call.input_json).unwrap_or(Value::Null);
+        let action = if raw_call.name.ends_with("Observe") {
+            "observe"
+        } else {
+            arguments["action"]
+                .as_str()
+                .filter(|action| {
+                    matches!(
+                        *action,
+                        "click" | "type_text" | "press_key" | "hotkey" | "scroll" | "navigate"
+                    )
+                })
+                .unwrap_or("invalid")
+        };
+        let input = crate::computer_use::ComputerUseAudit::project(&raw_call.input_json, action);
+        let call = RuntimeToolCall {
+            input_json: input,
+            ..raw_call
+        };
+        return Ok(match config.computer_use.clone() {
+            Some(run)
+                if run.enabled(capability)
+                    && config.run_mode == RuntimeRunMode::Execute
+                    && config.permission_mode != RuntimePermissionMode::ReadOnly =>
+            {
+                PreparedRuntimeCall::ComputerUse {
+                    call,
+                    arguments,
+                    run,
+                }
+            }
+            _ => PreparedRuntimeCall::RunModeMutation(call),
+        });
+    }
     if matches!(
         raw_call.name.as_str(),
         crate::skills::LOAD_SKILL_TOOL_NAME | crate::skills::READ_SKILL_RESOURCE_TOOL_NAME
@@ -583,6 +624,38 @@ pub(crate) async fn authorize_call(
     cancel: &CancellationToken,
 ) -> Result<Authorization, VegaError> {
     match prepared {
+        PreparedRuntimeCall::ComputerUse { call, run, .. } => {
+            if config.run_mode != RuntimeRunMode::Execute
+                || config.permission_mode == RuntimePermissionMode::ReadOnly
+                || cancel.is_cancelled()
+            {
+                return Ok(Authorization::Terminal(terminal_result(
+                    call,
+                    "Tool error: computer use denied by run mode".into(),
+                    RuntimeToolStatus::Rejected,
+                    Some(run_mode_denial()),
+                )));
+            }
+            let capability = crate::computer_use::ComputerUseRun::tool_capability(&call.name)
+                .ok_or_else(safe_permission_error)?;
+            match run.authorize(capability, cancel).await {
+                Ok(()) => Ok(Authorization::Approved {
+                    audit: RuntimeApprovalAudit {
+                        decision: RuntimeApprovalDecision::Once,
+                        note: None,
+                        source: RuntimeApprovalSource::ComputerUse,
+                        danger: None,
+                    },
+                    remember_rule: None,
+                }),
+                Err(error) => Ok(Authorization::Terminal(terminal_result(
+                    call,
+                    format!("Tool error: computer use not_dispatched: {error}"),
+                    RuntimeToolStatus::Rejected,
+                    Some(run_mode_denial()),
+                ))),
+            }
+        }
         PreparedRuntimeCall::MixedRejected(call) => Ok(Authorization::Terminal(terminal_result(
             call,
             "Tool error: mixed Skill load batch rejected other tools".to_string(),
@@ -1078,6 +1151,42 @@ pub(crate) async fn execute_prepared_waiting(
     cancel: &CancellationToken,
 ) -> (RuntimeToolResult, bool) {
     match prepared {
+        PreparedRuntimeCall::ComputerUse {
+            call,
+            arguments,
+            run,
+        } => match run.execute(&call.name, &call.id, arguments, cancel).await {
+            Ok(output) => {
+                let failed = output.starts_with("outcome_unknown:");
+                let mut result = terminal_result(
+                    &call,
+                    output,
+                    if failed {
+                        RuntimeToolStatus::Failed
+                    } else {
+                        RuntimeToolStatus::Success
+                    },
+                    None,
+                );
+                if !failed {
+                    result.truncated = Some(false);
+                }
+                (result, cancel.is_cancelled())
+            }
+            Err(error) => (
+                terminal_result(
+                    &call,
+                    if error == crate::computer_use::ComputerUseError::Cancelled {
+                        "outcome_unknown: control was cancelled; do not retry a potentially dispatched action".into()
+                    } else {
+                        format!("Tool error: computer use not_dispatched: {error}")
+                    },
+                    RuntimeToolStatus::Failed,
+                    None,
+                ),
+                cancel.is_cancelled(),
+            ),
+        },
         PreparedRuntimeCall::MixedRejected(call) => (
             terminal_result(
                 &call,
@@ -1405,13 +1514,22 @@ pub(crate) fn mutation_result(
 
 pub(crate) fn outcome(
     events: Vec<RuntimeEvent>,
-    messages: Vec<ChatMessage>,
+    mut messages: Vec<ChatMessage>,
     final_text: String,
     tool_call_count: usize,
     executed_tool_call_count: usize,
     interrupted: bool,
     failed: bool,
 ) -> AgentOutcome {
+    for message in &mut messages {
+        if message.role == ChatRole::Tool
+            && message.content.starts_with("[External tool observation;")
+        {
+            message.images.clear();
+            message.content =
+                "External tool observation was not retained; observe again before acting.".into();
+        }
+    }
     AgentOutcome {
         events,
         messages,

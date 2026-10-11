@@ -111,6 +111,7 @@ pub enum RuntimeApprovalDecision {
 /// Source of a runtime permission outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeApprovalSource {
+    ComputerUse,
     /// Explicit dangerous-command decision.
     Danger,
     /// Read-only permission policy.

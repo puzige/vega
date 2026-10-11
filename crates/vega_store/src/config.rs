@@ -193,6 +193,10 @@ impl Default for UiPrefs {
 /// call count.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
+    #[serde(default)]
+    pub desktop_use_enabled: bool,
+    #[serde(default)]
+    pub browser_use_enabled: bool,
     /// Maximum number of agentic turns before a run stops. `0` = unlimited.
     #[serde(default)]
     pub turn_limit: u32,
@@ -495,6 +499,8 @@ mod tests {
                 sessions_collapsed: false,
             },
             agent: AgentConfig {
+                desktop_use_enabled: false,
+                browser_use_enabled: false,
                 turn_limit: 0,
                 codex_acp_profile: None,
             },
@@ -510,6 +516,21 @@ mod tests {
         let loaded = load_from(&path).unwrap();
         assert_eq!(config, loaded);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn issue75_computer_use_settings_default_off_and_round_trip() {
+        let legacy: AgentConfig = toml::from_str("turn_limit = 7").unwrap();
+        assert!(!legacy.desktop_use_enabled);
+        assert!(!legacy.browser_use_enabled);
+        let dir = temp_dir("computer-use-config");
+        let path = dir.join("config.toml");
+        let mut config = sample_config();
+        config.agent.desktop_use_enabled = true;
+        config.agent.browser_use_enabled = true;
+        config.save_to(&path).unwrap();
+        assert_eq!(load_from(&path).unwrap().agent, config.agent);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

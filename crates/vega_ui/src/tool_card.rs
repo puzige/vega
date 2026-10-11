@@ -27,6 +27,7 @@ pub(crate) enum ToolActivityCategory {
     Edit,
     Mcp,
     CodexAcp,
+    ComputerUse,
     Skill,
     Other,
 }
@@ -42,6 +43,7 @@ impl ToolActivityCategory {
             Self::Edit => "编辑文件",
             Self::Mcp => "调用 MCP",
             Self::CodexAcp => "Codex ACP",
+            Self::ComputerUse => "操控电脑或浏览器",
             Self::Skill => "使用 Skill",
             Self::Other => "处理工具",
         }
@@ -52,7 +54,7 @@ impl ToolActivityCategory {
             Self::Shell => Icon::Terminal,
             Self::Search => Icon::Search,
             Self::Read | Self::Find | Self::Write | Self::Edit | Self::Skill => Icon::Document,
-            Self::Mcp | Self::CodexAcp | Self::Other => Icon::Summary,
+            Self::Mcp | Self::CodexAcp | Self::ComputerUse | Self::Other => Icon::Summary,
         }
     }
 }
@@ -444,6 +446,9 @@ impl ToolCard {
             (Some(ToolCardInputProjection::Mcp { .. }), _) => ToolActivityCategory::Mcp,
             (Some(ToolCardInputProjection::CodexAcp { .. }), _) => ToolActivityCategory::CodexAcp,
             (Some(ToolCardInputProjection::Skill { .. }), _) => ToolActivityCategory::Skill,
+            (Some(ToolCardInputProjection::ComputerUse { .. }), _) => {
+                ToolActivityCategory::ComputerUse
+            }
             (None, Some(ToolCardResultProjection::InvalidRejected { tool, .. })) => match tool {
                 InvalidToolKind::Bash => ToolActivityCategory::Shell,
                 InvalidToolKind::Write => ToolActivityCategory::Write,
@@ -455,6 +460,9 @@ impl ToolCard {
 
     pub(crate) fn activity_action_name(&self) -> String {
         let named = match &self.input {
+            Some(ToolCardInputProjection::ComputerUse { action, .. }) => {
+                Some(("操控", action.as_str()))
+            }
             Some(ToolCardInputProjection::Mcp { identity, .. }) => {
                 Some(("调用 MCP", identity.exact_tool_name.as_str()))
             }
@@ -772,6 +780,12 @@ impl ToolCard {
                 },
                 name.as_deref().unwrap_or("未知")
             ),
+            (Some(ToolCardInputProjection::ComputerUse { tool, action }), _) => format!(
+                "{} {} · {}{}",
+                generic_verb("操控", self.activity_state(), self.status),
+                if tool.starts_with("Computer") { "电脑" } else { "浏览器" }, action,
+                if self.approval == Some(Approval::Once) { " · 本次操控授权" } else { "" }
+            ),
             (Some(ToolCardInputProjection::Mcp { identity, .. }), _) => format!(
                 "{} {} · server {}",
                 generic_verb("调用", self.activity_state(), self.status),
@@ -908,6 +922,7 @@ impl ToolCard {
             Some(ToolCardInputProjection::Bash { .. }) => true,
             Some(ToolCardInputProjection::ReadOnly { .. })
             | Some(ToolCardInputProjection::Mcp { .. })
+            | Some(ToolCardInputProjection::ComputerUse { .. })
             | Some(ToolCardInputProjection::CodexAcp { .. }) => !self.output_rows.is_empty(),
             _ => false,
         }
@@ -918,6 +933,7 @@ impl ToolCard {
             Some(ToolCardInputProjection::Bash { .. }) => 3 + self.output_rows.len(),
             Some(ToolCardInputProjection::ReadOnly { .. })
             | Some(ToolCardInputProjection::Mcp { .. })
+            | Some(ToolCardInputProjection::ComputerUse { .. })
             | Some(ToolCardInputProjection::CodexAcp { .. }) => self.output_rows.len(),
             _ => 0,
         }
@@ -945,14 +961,14 @@ impl ToolCard {
                     footer: None,
                 })
             }
-            Some(ToolCardInputProjection::Mcp { .. }) if !self.output_rows.is_empty() => {
-                Some(ToolDetail {
-                    title: None,
-                    command: None,
-                    output: self.output_rows.clone(),
-                    footer: None,
-                })
-            }
+            Some(
+                ToolCardInputProjection::Mcp { .. } | ToolCardInputProjection::ComputerUse { .. },
+            ) if !self.output_rows.is_empty() => Some(ToolDetail {
+                title: None,
+                command: None,
+                output: self.output_rows.clone(),
+                footer: None,
+            }),
             Some(ToolCardInputProjection::CodexAcp { .. }) if !self.output_rows.is_empty() => {
                 Some(ToolDetail {
                     title: Some("Codex ACP".to_string()),
@@ -1076,6 +1092,7 @@ fn projection_output_rows(projection: &ToolCardResultProjection) -> Vec<String> 
         ToolCardResultProjection::Bash { output, .. }
         | ToolCardResultProjection::ReadOnly { output, .. }
         | ToolCardResultProjection::Mcp { output, .. }
+        | ToolCardResultProjection::ComputerUse { output, .. }
         | ToolCardResultProjection::CodexAcp { output, .. } => output,
         _ => return Vec::new(),
     };

@@ -1366,3 +1366,82 @@ pub(super) fn duplex_mcp_fixture(
         }),
     )
 }
+
+#[tokio::test]
+async fn issue75_computer_capability_does_not_bypass_ordinary_mcp_once() {
+    let server_id = "01K5KK7PZ5J8V2GSBMQKS8W71A";
+    for mode in [
+        RuntimePermissionMode::Confirm,
+        RuntimePermissionMode::Auto,
+        RuntimePermissionMode::FullAccess,
+    ] {
+        let project = tempdir().unwrap();
+        let tools = vega_tools::Tools::new(project.path()).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut registration = candidate(server_id, "search");
+        registration.dispatcher = Arc::new(RecordingDispatcher {
+            calls: calls.clone(),
+        });
+        let alias = RunCapabilitySnapshot::freeze(
+            RuntimeRunMode::Execute,
+            mode,
+            vec![registration.clone()],
+        )
+        .unwrap()
+        .definitions()
+        .last()
+        .unwrap()
+        .name
+        .clone();
+        let provider = fake_mcp_provider(alias.clone());
+        let mut req = request(vec![ChatMessage::new(
+            ChatRole::User,
+            "Search the owned fixture",
+        )]);
+        req.tool_config = tool_config(RuntimeRunMode::Execute, mode, project.path().to_path_buf())
+            .with_mcp_candidates(vec![registration])
+            .with_computer_use(Some(crate::computer_use::ComputerUseRun::new(true, true)));
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let hook = ExternalDecisionHook {
+            decision: RuntimeUserDecision::Once,
+            prompts: prompts.clone(),
+        };
+        let outcome = run_agent_with_permission_sink(
+            &provider,
+            &tools,
+            req,
+            CancellationToken::new(),
+            &hook,
+            |_| async { Ok(()) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(calls.lock().unwrap()[0].0, "search");
+        assert_eq!(calls.lock().unwrap()[0].1["query"], "SENTINEL_PRIVATE");
+        let prompts = prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].server_id, server_id);
+        assert_eq!(prompts[0].config_revision, 7);
+        assert_eq!(prompts[0].exact_tool_name, "search");
+        assert_eq!(prompts[0].arguments_bytes, 28);
+        let proposed = outcome
+            .events
+            .iter()
+            .find_map(|event| match event {
+                RuntimeEvent::ToolCallProposed(call) => Some(call),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(proposed.name, alias);
+        assert!(!proposed.input_json.contains("SENTINEL_PRIVATE"));
+        assert!(proposed.input_json.contains("arguments_sha256"));
+        assert_eq!(provider.requests().len(), 2);
+        assert!(provider.requests().iter().all(|request| {
+            request
+                .tools
+                .iter()
+                .any(|definition| definition.name == alias)
+        }));
+    }
+}

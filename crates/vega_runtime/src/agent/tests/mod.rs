@@ -990,3 +990,137 @@ async fn i71_summary_shares_reasoning_budget_and_opaque_replay_is_run_bounded() 
     assert_eq!(provider.requests().len(), 5);
     assert!(!format!("{:?}", provider.requests()).contains(&"x".repeat(100)));
 }
+
+#[tokio::test]
+async fn issue75_native_tool_gate_rejects_plan_readonly_and_disabled_without_dispatch() {
+    for (mode, permission) in [
+        (RuntimeRunMode::Plan, RuntimePermissionMode::Confirm),
+        (RuntimeRunMode::Ask, RuntimePermissionMode::FullAccess),
+        (RuntimeRunMode::Execute, RuntimePermissionMode::ReadOnly),
+    ] {
+        let dir = tempdir().unwrap();
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let provider = MockProvider::new_rounds(vec![
+            vec![ScriptStep::events(vec![
+                ProviderEvent::ToolUse {
+                    id: "cua-gate".into(),
+                    name: "ComputerAct".into(),
+                    input_json: r#"{"action":"type_text","text":"owned-secret"}"#.into(),
+                },
+                ProviderEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                },
+            ])],
+            vec![ScriptStep::events(vec![
+                ProviderEvent::TextDelta("blocked".into()),
+                ProviderEvent::Done {
+                    stop_reason: StopReason::End,
+                },
+            ])],
+        ]);
+        let mut req = request(vec![ChatMessage::new(ChatRole::User, "fixture")]);
+        req.tool_config = tool_config(mode, permission, dir.path().to_owned())
+            .with_computer_use(Some(crate::computer_use::ComputerUseRun::new(true, true)));
+        let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(outcome.executed_tool_call_count, 0);
+        assert!(
+            provider
+                .requests()
+                .iter()
+                .all(|request| request.tools.iter().all(|tool| !matches!(
+                    tool.name.as_str(),
+                    "ComputerObserve" | "ComputerAct" | "BrowserObserve" | "BrowserAct"
+                )))
+        );
+        assert!(outcome.events.iter().any(|event|matches!(event,RuntimeEvent::ToolCallFinished(result) if result.status==RuntimeToolStatus::Rejected)));
+        assert!(!format!("{:?}", outcome.events).contains("owned-secret"));
+    }
+}
+
+#[tokio::test]
+async fn issue75_pause_holds_final_response_until_user_resumes() {
+    let dir = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let run = crate::computer_use::ComputerUseRun::new(true, false);
+    let control = run.control.clone();
+    let provider = MockProvider::new(vec![
+        ScriptStep::events(vec![ProviderEvent::TextDelta("pending final".into())]),
+        ScriptStep::delay(Duration::from_millis(200)),
+        ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }]),
+    ]);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "fixture")]);
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Confirm,
+        dir.path().to_owned(),
+    )
+    .with_computer_use(Some(run));
+    let observed = control.clone();
+    let (paused_tx, paused_rx) = tokio::sync::oneshot::channel();
+    let mut paused_tx = Some(paused_tx);
+    let operation = run_agent_with_sink(
+        &provider,
+        &tools,
+        req,
+        CancellationToken::new(),
+        move |event| {
+            if matches!(event, RuntimeEvent::TextDelta(_))
+                && let Some(sender) = paused_tx.take()
+            {
+                observed.pause();
+                let _ = sender.send(());
+            }
+            async { Ok(()) }
+        },
+    );
+    tokio::pin!(operation);
+    tokio::select! {result=&mut operation=>panic!("finished before pause: {result:?}"),result=paused_rx=>result.unwrap()}
+    tokio::select! {result=&mut operation=>panic!("finished while paused: {result:?}"),_=tokio::time::sleep(Duration::from_millis(25))=>{}}
+    assert_eq!(
+        control.status().phase,
+        crate::computer_use::ControlPhase::Paused
+    );
+    control.resume(control.status().epoch).unwrap();
+    assert!(!operation.await.unwrap().interrupted);
+}
+
+#[tokio::test]
+async fn issue75_disabled_desktop_name_cannot_trigger_discovery_from_browser_grant_config() {
+    let dir = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let run = crate::computer_use::ComputerUseRun::new(false, true);
+    let control = run.control.clone();
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "disabled".into(),
+                name: "ComputerObserve".into(),
+                input_json: "{}".into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(Vec::new());
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::FullAccess,
+        dir.path().to_owned(),
+    )
+    .with_computer_use(Some(run));
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(outcome.executed_tool_call_count, 0);
+    assert!(control.status().windows.is_empty());
+    assert!(control.status().capability.is_none());
+    assert!(outcome.events.iter().any(|event|matches!(event,RuntimeEvent::ToolCallFinished(result) if result.status==RuntimeToolStatus::Rejected)));
+}

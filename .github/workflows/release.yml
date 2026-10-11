@@ -124,8 +124,7 @@ jobs:
           print(identities[0])
           PY
           )
-          codesign --force --options runtime --timestamp --keychain "$keychain" --sign "$identity" dist/Vega.app
-          codesign --verify --deep --strict dist/Vega.app
+          python3 scripts/sign-computer-use.py dist/Vega.app --identity "$identity" --keychain "$keychain"
           codesign -dv --verbose=4 dist/Vega.app 2> "$signing_dir/signature.txt"
           python3 - "$signing_dir/signature.txt" <<'PY'
           import os, sys

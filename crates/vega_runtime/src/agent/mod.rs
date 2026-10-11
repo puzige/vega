@@ -146,6 +146,7 @@ pub struct RuntimeToolConfig {
     pub turn_limit: usize,
     mcp_candidates: Vec<McpCandidate>,
     skills: Option<RuntimeSkillConfig>,
+    computer_use: Option<crate::computer_use::ComputerUseRun>,
     foreign_call_ids: HashSet<String>,
     permission_timeout: Duration,
     credential_reader: Option<CredentialReader>,
@@ -172,6 +173,7 @@ impl RuntimeToolConfig {
             turn_limit: 0,
             mcp_candidates: Vec::new(),
             skills: None,
+            computer_use: None,
             foreign_call_ids: HashSet::new(),
             permission_timeout: PERMISSION_TIMEOUT,
             credential_reader: None,
@@ -182,6 +184,14 @@ impl RuntimeToolConfig {
     /// Sets the maximum number of agentic turns (provider round-trips) for
     /// this run. `0` (the default) means unlimited, mirroring Claude Code's
     /// `--max-turns` default.
+    pub fn with_computer_use(mut self, run: Option<crate::computer_use::ComputerUseRun>) -> Self {
+        self.computer_use = run.filter(|_| {
+            self.run_mode == RuntimeRunMode::Execute
+                && self.permission_mode != RuntimePermissionMode::ReadOnly
+        });
+        self
+    }
+
     pub fn with_turn_limit(mut self, limit: usize) -> Self {
         self.turn_limit = limit;
         self

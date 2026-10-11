@@ -164,7 +164,7 @@ mod credential_tests {
 }
 
 enum McpConnection {
-    Stdio(StdioClient),
+    Stdio(Box<StdioClient>),
     Http(Box<HttpClient>),
 }
 
@@ -313,7 +313,7 @@ impl McpReadyServer {
             server_id,
             config_revision,
             catalog,
-            McpConnection::Stdio(client),
+            McpConnection::Stdio(Box::new(client)),
             None,
         )
         .map(|ready| ready.with_known_credentials(known_credentials))
@@ -924,6 +924,16 @@ impl RunCapabilitySnapshot {
             definitions,
             mcp_by_alias,
         })
+    }
+
+    pub(crate) fn with_computer_use(
+        mut self,
+        run: Option<&crate::computer_use::ComputerUseRun>,
+    ) -> Self {
+        if let Some(run) = run {
+            self.definitions.extend(run.definitions());
+        }
+        self
     }
 
     pub(crate) fn definitions(&self) -> &[ToolDefinition] {

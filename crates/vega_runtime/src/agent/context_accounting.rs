@@ -373,4 +373,20 @@ mod tests {
             Err(ContextEstimateError::Overflow)
         );
     }
+    #[test]
+    fn issue75_observation_fingerprint_changes_when_same_size_pixels_change() {
+        let encode = |color| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::RgbImage::from_pixel(2, 2, image::Rgb(color))
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            crate::ImageAttachment::from_bytes(bytes.into_inner()).unwrap()
+        };
+        let mut a = ChatMessage::tool_result("call", "external observation");
+        a.images.push(encode([1, 2, 3]));
+        let mut b = a.clone();
+        b.images[0] = encode([3, 2, 1]);
+        assert_eq!(a.images[0].bytes().len(), b.images[0].bytes().len());
+        assert_ne!(fingerprint(&[a], &[]), fingerprint(&[b], &[]));
+    }
 }

@@ -850,6 +850,11 @@ pub(crate) fn required_tool_state(
 pub(crate) fn validate_runtime_proposal(
     call: &vega_runtime::RuntimeToolCall,
 ) -> Result<(), VegaError> {
+    if vega_runtime::computer_use::ComputerUseRun::tool_capability(&call.name).is_some() {
+        return vega_runtime::computer_use::ComputerUseAudit::valid(&call.input_json)
+            .then_some(())
+            .ok_or_else(|| safe_audit_error(&call.name));
+    }
     if matches!(call.name.as_str(), "load_skill" | "read_skill_resource") {
         return super::pipeline::valid_skill_call_projection(&call.name, &call.input_json)
             .then_some(())
