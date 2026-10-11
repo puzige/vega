@@ -39,7 +39,9 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-68-model-picker.md](docs/vega-issue-68-model-picker.md) | #68 无思考档位模型的菜单入口规格与测试矩阵 |
 | [vega-issue-68-model-picker-delivery.md](docs/vega-issue-68-model-picker-delivery.md) | #68 测试先行、门禁与原生验收记录 |
 | [vega-issue-70-tool-activity.md](docs/vega-issue-70-tool-activity.md) | #70 紧凑工具活动分组、渐进展开与安全显示规格 |
-| [vega-issue-191-branch-entry.md](docs/vega-issue-191-branch-entry.md) | #191 已有对话中的分支切换入口与 R49 页面状态约束 |
+| [vega-issue-191-branch-entry.md](docs/vega-issue-191-branch-entry.md) | #191 历史底行分支入口契约；入口要求由 #294 取代，Git 安全语义保留 |
+| [vega-issue-294-composer-footer-no-branch.md](docs/vega-issue-294-composer-footer-no-branch.md) | #294 Composer 底行移除分支入口，保留新建任务 utility bar |
+| [vega-issue-294-composer-footer-no-branch-delivery.md](docs/vega-issue-294-composer-footer-no-branch-delivery.md) | #294 生产 GPUI 红绿回归、定向证据与用户手测状态 |
 | [vega-issue-191-branch-list-capacity.md](docs/vega-issue-191-branch-list-capacity.md) | #191 分支列表路径容量、资源上界与准确错误状态 |
 | [vega-issue-191-branch-list-capacity-delivery.md](docs/vega-issue-191-branch-list-capacity-delivery.md) | #191 分支列表容量修复的定向测试、PR 与原生验收状态 |
 | [vega-issue-148-long-session-scroll.md](docs/vega-issue-148-long-session-scroll.md) | #148 长会话虚拟滚动的基线、稳定锚点与定向验收 |

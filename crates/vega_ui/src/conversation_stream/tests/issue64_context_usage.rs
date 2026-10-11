@@ -38,7 +38,8 @@ fn assert_narrow_tooltip_fits_and_clears_controls(
     for selector in [
         "composer-model",
         "composer-send",
-        "composer-footer-branch-chip",
+        "composer-add",
+        "composer-permission-status",
     ] {
         let control = visual
             .debug_bounds(selector)

@@ -108,7 +108,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - 键位（v0.18 冻结，Issue #66 / A2-11）：`Enter` 发送、`Shift+Enter` 换行、`Cmd+Enter` 发送；IME 组合态一律交输入法确认、绝不发送；浮层（`@file` 候选/失败重试、`+` 菜单与 `/` 命令、模型选择器、停止按钮、权限卡）打开时 `Enter` 归浮层，绝不发送。详见 [Issue 66 键位契约](vega-issue-66-enter-to-send.md)。
 - 主输入区在上；下方只有一行真实操作：添加上下文、Ask/Plan/Execute、权限（只读 / 确认 / 自动）、模型、thinking 与 send/stop；空间不足时允许自适应收紧或换行
 - 模式与权限当前值持续可见；菜单、键盘路径、loading/error 和提交 guard 继续使用真实 controller 状态
-- branch 只在 project-backed task 的 Environment 中显示，并使用 live branch projection；普通 Composer 不重复放分支选择器
+- Issue #294：Composer 卡片底部不挂载 branch 图标、名称、选择入口、焦点目标或占位，覆盖 Native/Codex、已有消息及历史水合会话。新建任务上方独立 utility bar 保留项目/分支选择器与 live branch projection；已有消息的会话不渲染 utility bar，Environment 不恢复分支行。此规则取代 #191 底行入口要求，详见 [Issue #294](vega-issue-294-composer-footer-no-branch.md) 与 [设计守则 §9](vega-design-guidelines.md#9-composer)。
 - 普通 Composer 不显示常驻 token / 成本仪表；用量只在拥有真实计数或账单来源的专门界面中展示
 
 ### 4.5 Diff 视图
@@ -171,3 +171,5 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - v0.19 (2026-09-21) Issue #70 前导图标语义修正：工具活动行与分组始终使用中性的工具分类图标，不再以 Check/Warning 或 success/danger 图标色重复编码生命周期；失败真实性继续由摘要、退出码与详情 footer 表达。
 - v0.20 (2026-09-21) Issue #70 Bash 实时耗时：具体 Bash 行从真实 runtime Running 事件开始按整秒显示 UI 内存态 elapsed；聚合摘要与非 Bash 行不显示时间，终态继续使用 runtime 的精确持久化 `duration_ms`。
 - v0.21 (2026-09-21) Issue #70 Bash 耗时布局：超长命令标题单行省略，运行中与终态耗时固定保留在右侧，disclosure Chevron 继续可见；聚合与分类图标语义不变。
+
+- Issue #294 (2026-10-11)：Composer footer 移除分支入口与占位；保留新建任务独立 utility bar 的分支选择与安全语义，取代 #191 的底行入口要求。

@@ -113,9 +113,16 @@ async fn r49_session_page_with_a_message_renders_no_utility_bar(cx: &mut TestApp
     );
 }
 
-#[gpui_kit::test]
-async fn issue191_persisted_project_conversation_opens_the_footer_branch_selector(
+fn open_git_project_stream(
     cx: &mut TestAppContext,
+    thread_id: &str,
+    backend: TaskBackend,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    WindowHandle<StreamHarness>,
+    Entity<ConversationStream>,
+    String,
 ) {
     let project_root = tempfile::tempdir().expect("issue191 project root");
     let project_path = project_root
@@ -138,7 +145,8 @@ async fn issue191_persisted_project_conversation_opens_the_footer_branch_selecto
     .expect("issue191 project row");
     let project_id = project.id.clone();
     let mut thread = permission_thread();
-    thread.id = "issue191-branch-entry".into();
+    thread.id = thread_id.into();
+    thread.backend = backend;
     thread.project_id = project_id.clone();
     init_permission_test(cx);
     cx.update(|cx| {
@@ -156,22 +164,223 @@ async fn issue191_persisted_project_conversation_opens_the_footer_branch_selecto
         })
         .expect("issue191 conversation window")
     });
+    (project_root, database_root, window, stream, project_id)
+}
+
+#[gpui_kit::test]
+async fn issue294_existing_native_composer_has_no_branch_entry(cx: &mut TestAppContext) {
+    let (_project_root, _database_root, window, stream, _) =
+        open_git_project_stream(cx, "issue294-native-existing", TaskBackend::Native);
+    let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        selector.update(cx, |selector, cx| selector.poll_current_head_for_test(cx));
+        cx.run_until_parked();
+        if VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("branch-current-main")
+            .is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "owned Git HEAD must project main"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     stream.update(cx, |stream, cx| {
         stream.composer_submit_pending = true;
         stream.accept_composer_submission("first message", cx);
+        stream.input.update(cx, |input, cx| {
+            input.set_text("owned continuation draft", cx)
+        });
+    });
+    assert_branch_free_footer(window, TaskBackend::Native, false, 8.0, cx);
+    focus_composer(window, &stream, cx);
+    cx.simulate_keystrokes(window.into(), "tab");
+    cx.simulate_keystrokes(window.into(), "tab");
+    assert!(
+        window
+            .update(cx, |_, window, cx| {
+                stream.read_with(cx, |stream, _| {
+                    stream.model_focus.contains_focused(window, cx)
+                })
+            })
+            .expect("Composer model focus")
+    );
+    stream.read_with(cx, |stream, cx| {
+        assert_eq!(stream.input.read(cx).text(), "owned continuation draft");
+        assert_eq!(stream.thread.permission_mode, PermissionMode::Confirm);
+        assert_eq!(stream.thread.model, "mock");
+    });
+}
+
+fn assert_branch_free_footer(
+    window: WindowHandle<StreamHarness>,
+    backend: TaskBackend,
+    stopping_control: bool,
+    expected_gap: f32,
+    cx: &mut TestAppContext,
+) {
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    for selector in [
+        "composer-footer-branch-chip",
+        "branch-current-main",
+        "branch-selector-popup",
+        "composer-utility-bar",
+        "composer-utility-branch-chip",
+        "composer-utility-branch-icon",
+    ] {
+        assert!(
+            visual.debug_bounds(selector).is_none(),
+            "removed entry mounted: {selector}"
+        );
+    }
+    let card = visual
+        .debug_bounds("composer-shell")
+        .expect("Composer card");
+    let add = visual
+        .debug_bounds("composer-add")
+        .expect("add-context control");
+    let (status, absent_status) = match backend {
+        TaskBackend::Native => ("composer-permission-status", "composer-backend-status"),
+        TaskBackend::Codex => ("composer-backend-status", "composer-permission-status"),
+    };
+    assert!(visual.debug_bounds(absent_status).is_none());
+    let status_bounds = visual
+        .debug_bounds(status)
+        .expect("backend-owned footer status");
+    assert_close(
+        f32::from(status_bounds.left() - add.right()),
+        expected_gap,
+        "natural footer gap without a branch placeholder",
+    );
+    assert_close(
+        f32::from(status_bounds.center().y - add.center().y),
+        0.0,
+        "leading controls share their row",
+    );
+    let (send_stop, absent_action) = if stopping_control {
+        ("composer-stop", "composer-send")
+    } else {
+        ("composer-send", "composer-stop")
+    };
+    assert!(visual.debug_bounds(absent_action).is_none());
+    let mut required = vec!["composer-add", status, send_stop];
+    if backend == TaskBackend::Native {
+        required.push("composer-model");
+    } else {
+        assert!(visual.debug_bounds("composer-model").is_none());
+    }
+    for selector in required {
+        let control = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        assert!(
+            control.size.width > px(0.0) && control.size.height > px(0.0),
+            "empty control {selector}"
+        );
+        assert!(
+            control.left() >= card.left()
+                && control.right() <= card.right()
+                && control.top() >= card.top()
+                && control.bottom() <= card.bottom(),
+            "{selector} must fit within the Composer card: control={control:?}, card={card:?}"
+        );
+    }
+}
+
+#[gpui_kit::test]
+async fn issue294_hydrated_native_and_codex_footers_keep_controls_across_theme_and_layout(
+    cx: &mut TestAppContext,
+) {
+    for backend in [TaskBackend::Native, TaskBackend::Codex] {
+        let (_project_root, _database_root, window, stream, _) =
+            open_git_project_stream(cx, "issue294-hydrated", backend);
+        stream.update(cx, |stream, cx| {
+            stream.apply_history_page(
+                hydration_page(
+                    vec![
+                        hydration_user(1, "stored question"),
+                        hydration_assistant(2, "stored answer"),
+                    ],
+                    None,
+                ),
+                cx,
+            );
+            stream
+                .input
+                .update(cx, |input, cx| input.set_text("owned recovered draft", cx));
+            let restored = stream.thread.clone();
+            stream.apply_thread(restored, cx);
+        });
+        for (dark, width, height, running, submit_pending) in [
+            (false, 1403.0, 860.0, false, false),
+            (true, 1200.0, 760.0, true, false),
+            (false, 960.0, 600.0, false, true),
+            (true, 360.0, 600.0, false, false),
+            (false, 1229.0, 760.0, true, false),
+            (true, 1230.0, 760.0, false, false),
+        ] {
+            set_theme(cx, dark);
+            let visual = VisualTestContext::from_window(window.into(), cx);
+            visual.simulate_resize(gpui_kit::size(px(width), px(height)));
+            visual.run_until_parked();
+            stream.update(cx, |stream, cx| {
+                stream.actions.running = running;
+                stream.composer_submit_pending = submit_pending;
+                cx.notify();
+            });
+            assert_branch_free_footer(window, backend, running || submit_pending, 8.0, cx);
+            stream.read_with(cx, |stream, cx| {
+                assert_eq!(stream.input.read(cx).text(), "owned recovered draft");
+                assert_eq!(stream.thread.backend, backend);
+                assert_eq!(stream.thread.permission_mode, PermissionMode::Confirm);
+                assert_eq!(stream.thread.model, "mock");
+                assert_eq!(stream.entries.len(), 2);
+            });
+        }
+        if backend == TaskBackend::Native {
+            stream.update(cx, |stream, cx| {
+                stream.compact_workspace = true;
+                stream.actions.running = false;
+                stream.composer_submit_pending = false;
+                cx.notify();
+            });
+            let visual = VisualTestContext::from_window(window.into(), cx);
+            visual.simulate_resize(gpui_kit::size(px(360.0), px(600.0)));
+            visual.run_until_parked();
+            assert_branch_free_footer(window, backend, false, 4.0, cx);
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn issue294_new_task_utility_bar_preserves_branch_selection(cx: &mut TestAppContext) {
+    let (project_root, _database_root, window, stream, project_id) =
+        open_git_project_stream(cx, "issue191-branch-entry", TaskBackend::Native);
+    let git_dir = project_root.path().join(".git");
+    stream.update(cx, |stream, cx| {
+        stream.set_draft_route(true, cx);
+        stream.input.update(cx, |input, cx| {
+            input.set_text("owned branch-switch draft", cx)
+        });
     });
 
     assert!(
         VisualTestContext::from_window(window.into(), cx)
             .debug_bounds("composer-utility-bar")
-            .is_none(),
-        "a persisted conversation must keep the R49 utility bar absent"
+            .is_some(),
+        "a new-task conversation must keep the R49 utility bar present"
     );
-    let add = bounds(window, "composer-add", cx);
-    let footer_branch = bounds(window, "composer-footer-branch-chip", cx);
+    bounds(window, "composer-add", cx);
+    bounds(window, "composer-utility-branch-chip", cx);
     assert!(
-        add.right() <= footer_branch.left(),
-        "the persisted conversation branch entry must follow the add-context control"
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("composer-footer-branch-chip")
+            .is_none(),
+        "New Task must keep its branch selector above the Composer footer"
     );
     let selector = stream.read_with(cx, |stream, _| stream.branch_selector());
     let requests = Arc::new(Mutex::new(
@@ -190,7 +399,7 @@ async fn issue191_persisted_project_conversation_opens_the_footer_branch_selecto
         .detach();
     });
 
-    click(window, "composer-footer-branch-chip", cx);
+    click(window, "composer-utility-branch-chip", cx);
     assert_eq!(
         requests
             .lock()
@@ -301,7 +510,7 @@ async fn issue191_persisted_project_conversation_opens_the_footer_branch_selecto
         }
         assert!(
             std::time::Instant::now() < feature_deadline,
-            "the footer branch chip must display feature after the switch finishes"
+            "the utility branch chip must display feature after the switch finishes"
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -309,6 +518,13 @@ async fn issue191_persisted_project_conversation_opens_the_footer_branch_selecto
     assert!(visual.debug_bounds("branch-current-main").is_none());
     assert!(visual.debug_bounds("branch-current-feature").is_some());
     assert!(!selector.read_with(cx, |selector, _| selector.is_pending()));
+    stream.read_with(cx, |stream, cx| {
+        assert_eq!(stream.input.read(cx).text(), "owned branch-switch draft");
+        assert!(stream.draft_route);
+        assert_eq!(stream.thread.model, "mock");
+        assert_eq!(stream.thread.permission_mode, PermissionMode::Confirm);
+        assert!(stream.entries.is_empty());
+    });
 }
 
 #[gpui_kit::test]

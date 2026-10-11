@@ -1,9 +1,23 @@
 # Issue #191 — Branch switching in existing conversations
 
 Source: https://github.com/puzige/vega/issues/191
-Status: frozen for implementation, 2026-09-25.
+Status: historical entry contract; footer requirement superseded on 2026-10-11.
 
-## Decision
+## Supersession — Issue #294
+
+The user explicitly requested removal of the branch icon and label from the
+Composer footer. [Issue #294](vega-issue-294-composer-footer-no-branch.md) now
+requires that no footer branch trigger, focus target or placeholder be mounted
+on Native or Codex conversations, including history-hydrated routes. The
+separate New Task utility bar keeps its existing branch selector. Git authority,
+switch safety, pending/error handling and draft behavior remain unchanged.
+
+The sections below retain the 2026-09-25 decision and acceptance matrix as
+historical evidence. Their footer visibility/opening requirements (B2/B3) no
+longer govern current rendering; selector switching assertions remain applicable
+at the retained New Task utility-bar entry.
+
+## Historical decision
 
 Keep the R49 utility bar draft-only and keep the Environment card free of a
 branch row. Mount the existing `BranchSelector` in the persisted conversation's
