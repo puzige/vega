@@ -1755,14 +1755,35 @@ async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).expanded()));
     let body = bounds(window, "tool-activity-group", cx);
+    let header = bounds(window, "tool-activity-group-toggle", cx);
+    let content = bounds(window, "tool-activity-group-content", cx);
+    assert_eq!(header.size.height, px(Layout::DISCLOSURE_HEADER_HEIGHT));
+    assert_eq!(header.top(), body.top());
+    assert_eq!(
+        content.top(),
+        header.bottom() + px(Layout::PROCESS_ITEM_GAP)
+    );
+    assert_eq!(content.bottom(), body.bottom());
+    assert_eq!(content.size.height, px(320.));
+    assert_eq!(
+        body.size.height,
+        header.size.height + px(Layout::PROCESS_ITEM_GAP) + content.size.height
+    );
     assert!(
-        body.size.height <= px(320. + Layout::DISCLOSURE_HEADER_HEIGHT),
+        body.size.height <= px(320. + Layout::DISCLOSURE_HEADER_HEIGHT + Layout::PROCESS_ITEM_GAP),
         "group: {:?}",
         body.size.height
     );
     click(window, "tool-activity-child-0", cx);
     let detail = bounds(window, "tool-activity-child-0-detail", cx);
     assert!(detail.size.height <= px(240.));
+    assert_eq!(
+        bounds(window, "tool-activity-group-content", cx)
+            .size
+            .height,
+        px(320.)
+    );
+    assert_eq!(bounds(window, "tool-activity-group", cx).size, body.size);
     let (group_scroll, child_scroll, other_scroll) = stream.read_with(cx, |stream, cx| {
         (
             group(stream, cx).read(cx).scroll_handle(),
@@ -1795,7 +1816,12 @@ async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
         "group movement does not change nested reading offset"
     );
     click(window, "tool-activity-group-toggle", cx);
+    assert_eq!(
+        bounds(window, "tool-activity-group", cx).size.height,
+        header.size.height
+    );
     click(window, "tool-activity-group-toggle", cx);
+    assert_eq!(bounds(window, "tool-activity-group", cx).size, body.size);
     assert_eq!(group_scroll.offset().y, px(-80.));
     assert_eq!(child_scroll.offset().y, px(-80.));
     issue103_wheel(window, group_gutter, -10000., cx);

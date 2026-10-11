@@ -41,13 +41,48 @@ fn runtime_status(status: ContextCompactionStatus) -> ContextCompactionStatusRec
     }
 }
 
+fn click_context_control(f: &Fixture, selector: &'static str, cx: &mut gpui_kit::TestAppContext) {
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(f.window.into(), cx);
+    let viewport = visual
+        .debug_bounds("provider-detail-viewport")
+        .expect("provider detail viewport");
+    let control = visual
+        .debug_bounds(selector)
+        .expect("model context control");
+    let delta = if control.bottom() > viewport.bottom() {
+        viewport.bottom() - control.bottom() - px(8.)
+    } else if control.top() < viewport.top() {
+        viewport.top() - control.top() + px(8.)
+    } else {
+        px(0.)
+    };
+    if delta != px(0.) {
+        visual.simulate_mouse_move(viewport.center(), None, Default::default());
+        visual.simulate_event(gpui_kit::ScrollWheelEvent {
+            position: viewport.center(),
+            delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), delta)),
+            modifiers: Default::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    }
+    let control = visual
+        .debug_bounds(selector)
+        .expect("visible model context control");
+    assert!(control.top() >= viewport.top() && control.bottom() <= viewport.bottom());
+    assert!(control.left() >= viewport.left() && control.right() <= viewport.right());
+    visual.simulate_click(control.center(), Default::default());
+    visual.run_until_parked();
+}
+
 fn input_context(
     f: &Fixture,
     selector: &'static str,
     value: &str,
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    click(f, selector, cx);
+    click_context_control(f, selector, cx);
     cx.simulate_keystrokes(f.window.into(), "cmd-a");
     let keys = value
         .chars()
@@ -130,7 +165,7 @@ async fn i76_context_settings_real_inputs_persist_and_reopen(cx: &mut gpui_kit::
     open_model_context_editor(&f, cx);
     input_context(&f, "model-context-input", "20000", cx);
     input_context(&f, "model-context-output", "2000", cx);
-    click(&f, "model-save", cx);
+    click_context_control(&f, "model-save", cx);
     pump_test_app(cx, |_| {
         vega_store::context_compaction::load_model_policy(f.store.conn(), "owned", &f.thread.model)
             .is_ok_and(|policy| policy.is_some())
@@ -195,8 +230,13 @@ async fn i76_context_invalid_input_never_persists_or_calls_provider(
     open_model_context_editor(&f, cx);
     input_context(&f, "model-context-input", "100", cx);
     input_context(&f, "model-context-output", "0", cx);
-    click(&f, "model-save", cx);
+    click_context_control(&f, "model-save", cx);
     cx.run_until_parked();
+    assert!(
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("settings-status")
+            .is_some()
+    );
     assert!(
         vega_store::context_compaction::load_model_policy(
             f.store.conn(),
@@ -655,7 +695,7 @@ async fn i76_context_stale_settings_ack_retires_pending_without_applying_values(
         )
         .detach();
     });
-    click(&f, "model-save", cx);
+    click_context_control(&f, "model-save", cx);
     pump_test_app(cx, |_| {
         vega_store::context_compaction::load_model_policy(f.store.conn(), "owned", &f.thread.model)
             .is_ok_and(|policy| policy.is_some())
