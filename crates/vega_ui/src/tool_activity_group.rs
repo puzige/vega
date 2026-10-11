@@ -241,7 +241,7 @@ impl ToolActivityGroup {
                     div()
                         .debug_selector(|| "tool-activity-group-label".into())
                         .min_w_0()
-                        .flex_1()
+                        .flex_shrink(1.)
                         .truncate()
                         .text_size(px(Typography::BODY))
                         .text_color(colors.text_secondary)
@@ -264,21 +264,33 @@ impl ToolActivityGroup {
         if expanded {
             rows.push(
                 div()
-                    .id(gpui_kit::SharedString::from(scroll_id))
-                    .debug_selector(|| "tool-activity-group-content".into())
+                    .relative()
                     .w_full()
                     .min_w_0()
-                    .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
-                    .overflow_x_hidden()
-                    .overflow_y_scroll()
-                    .track_scroll(&scroll)
-                    .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
-                    .flex()
-                    .flex_col()
-                    .gap(px(Layout::PROCESS_ITEM_GAP))
-                    .children(children.into_iter().enumerate().map(|(index, card)| {
-                        ToolCard::render(card, format!("tool-activity-child-{index}"), true, cx)
-                    }))
+                    .child(
+                        div()
+                            .id(gpui_kit::SharedString::from(scroll_id))
+                            .debug_selector(|| "tool-activity-group-content".into())
+                            .w_full()
+                            .min_w_0()
+                            .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
+                            .overflow_x_hidden()
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll)
+                            .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
+                            .flex()
+                            .flex_col()
+                            .gap(px(Layout::PROCESS_ITEM_GAP))
+                            .children(children.into_iter().enumerate().map(|(index, card)| {
+                                ToolCard::render(
+                                    card,
+                                    format!("tool-activity-child-{index}"),
+                                    true,
+                                    cx,
+                                )
+                            })),
+                    )
+                    .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
                     .into_any_element(),
             );
         }

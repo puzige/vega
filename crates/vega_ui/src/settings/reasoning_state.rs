@@ -99,7 +99,7 @@ fn apply_protocol_template(
     profile
 }
 
-fn reasoning_choices(profile: &ReasoningProfileProjection) -> Vec<ReasoningChoice> {
+pub(crate) fn reasoning_choices(profile: &ReasoningProfileProjection) -> Vec<ReasoningChoice> {
     // Required means the provider enables thinking, not that the user must
     // pick a named effort. Omitting the effort lets the provider choose its
     // own legal default and is distinct from an explicit Disabled choice.
@@ -139,6 +139,96 @@ impl SettingsView {
             .position(|choice| *choice == current)
             .unwrap_or(0);
         profile.preference = choices[(current_index + 1) % choices.len()].clone();
+        self.emit_reasoning_save(index, profile, cx);
+    }
+
+    pub(crate) fn select_reasoning_preference(
+        &mut self,
+        index: usize,
+        choice: ReasoningChoice,
+        cx: &mut Context<Self>,
+    ) {
+        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
+            return;
+        };
+        let Some(mut profile) =
+            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
+        else {
+            return;
+        };
+        if profile.preference == choice || !reasoning_choices(&profile).contains(&choice) {
+            return;
+        }
+        profile.preference = choice;
+        self.emit_reasoning_save(index, profile, cx);
+    }
+
+    pub(crate) fn select_reasoning_protocol(
+        &mut self,
+        index: usize,
+        protocol: ReasoningProtocol,
+        cx: &mut Context<Self>,
+    ) {
+        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
+            return;
+        };
+        let Some(profile) =
+            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
+        else {
+            return;
+        };
+        if profile.protocol == protocol {
+            return;
+        }
+        let profile = match protocol {
+            ReasoningProtocol::Unknown => {
+                ReasoningProfileProjection::unknown(profile.provider, profile.model)
+            }
+            ReasoningProtocol::OpenAiChatCompletions => {
+                apply_protocol_template(&profile, ReasoningTemplate::OpenAi)
+            }
+            ReasoningProtocol::ZhipuChatCompletions => {
+                apply_protocol_template(&profile, ReasoningTemplate::Zhipu)
+            }
+        };
+        self.emit_reasoning_save(index, profile, cx);
+    }
+
+    pub(crate) fn select_reasoning_support(
+        &mut self,
+        index: usize,
+        support: ReasoningSupport,
+        cx: &mut Context<Self>,
+    ) {
+        let ReasoningSettingsProjection::Ready { profiles, .. } = &self.reasoning else {
+            return;
+        };
+        let Some(mut profile) =
+            reasoning_profile_for_edit(profiles, self.reasoning_draft.as_ref(), index)
+        else {
+            return;
+        };
+        if profile.support == support {
+            return;
+        }
+        profile.support = support;
+        if matches!(
+            support,
+            ReasoningSupport::Required | ReasoningSupport::Optional
+        ) && profile.efforts.is_empty()
+        {
+            profile.efforts = default_efforts(profile.protocol, &profile.model);
+        }
+        if matches!(
+            support,
+            ReasoningSupport::Unsupported | ReasoningSupport::Unknown
+        ) {
+            profile.efforts.clear();
+            profile.supports_disabled = false;
+            profile.disabled_wire = None;
+            profile.preserve_reasoning_content = false;
+            profile.preference = ReasoningChoice::ProviderDefault;
+        }
         self.emit_reasoning_save(index, profile, cx);
     }
 

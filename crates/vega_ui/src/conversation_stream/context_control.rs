@@ -91,6 +91,8 @@ impl ConversationStream {
         self.context_control.retired_through = next;
         self.context_usage_trigger_hovered = false;
         self.context_usage_tooltip_hovered = false;
+        self.context_usage_open = false;
+        self.context_usage_dismissed = false;
     }
 
     /// Whether context preparation/save currently excludes a competing submit.
@@ -164,10 +166,6 @@ impl ConversationStream {
         self.context_control.model_input_limit = usage.model_input_limit;
         if self.context_control.live_accounting.is_none() {
             self.context_control.estimate = usage.estimated_tokens;
-        }
-        if self.context_control.estimate.is_none() {
-            self.context_usage_trigger_hovered = false;
-            self.context_usage_tooltip_hovered = false;
         }
         self.context_control.compactable = compactable;
         if self.context_control.error == Some(LOAD_ERROR) {

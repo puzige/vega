@@ -278,9 +278,10 @@ pub(crate) fn str_field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&
 /// Maps the wire `finish_reason` onto the minimal [`StopReason`] set.
 pub(crate) fn map_finish_reason(reason: &str) -> StopReason {
     match reason {
+        "stop" => StopReason::End,
         "tool_calls" | "function_call" => StopReason::ToolUse,
         "length" | "max_tokens" => StopReason::Length,
-        _ => StopReason::End,
+        _ => StopReason::Unknown,
     }
 }
 

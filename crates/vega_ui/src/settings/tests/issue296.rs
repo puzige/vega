@@ -153,8 +153,21 @@ async fn issue296_h3a_routes_keep_independent_scroll_positions(cx: &mut TestAppC
         cx: &mut TestAppContext,
     ) {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let target = visual.debug_bounds(selector).unwrap();
-        visual.simulate_click(target.center(), Default::default());
+        if selector == "settings-nav-reasoning" {
+            if visual.debug_bounds("model-settings-reasoning").is_none() {
+                let providers = visual.debug_bounds("settings-nav-providers").unwrap();
+                visual.simulate_click(providers.center(), Default::default());
+                visual.run_until_parked();
+                let configure = visual.debug_bounds("model-edit-0").unwrap();
+                visual.simulate_click(configure.center(), Default::default());
+                visual.run_until_parked();
+            }
+            let target = visual.debug_bounds("model-settings-reasoning").unwrap();
+            visual.simulate_click(target.center(), Default::default());
+        } else {
+            let target = visual.debug_bounds(selector).unwrap();
+            visual.simulate_click(target.center(), Default::default());
+        }
         visual.run_until_parked();
     }
     fn scroll(window: WindowHandle<SettingsHarness>, dy: f32, cx: &mut TestAppContext) {
@@ -173,6 +186,7 @@ async fn issue296_h3a_routes_keep_independent_scroll_positions(cx: &mut TestAppC
     for _ in 0..2 {
         let (view, window) = mount_settings(cx, false, 960., 600.);
         view.update(cx, |view, cx| {
+            view.config.providers = vec![provider("owned", &["model-0", "model-1", "model-2"])];
             view.apply_reasoning_projection(
                 ReasoningSettingsProjection::Ready {
                     generation: 1,
@@ -231,7 +245,7 @@ async fn issue296_h3a_routes_keep_independent_scroll_positions(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-async fn issue296_settings_eight_pages_keep_one_readable_column(cx: &mut TestAppContext) {
+async fn issue296_settings_routes_keep_one_readable_column(cx: &mut TestAppContext) {
     for dark in [false, true] {
         for (width, height) in [(1403., 860.), (1200., 760.), (960., 600.)] {
             let (view, window) = mount_settings(cx, dark, width, height);
@@ -261,8 +275,6 @@ async fn issue296_settings_eight_pages_keep_one_readable_column(cx: &mut TestApp
                 for nav in [
                     "settings-nav-general",
                     "settings-nav-providers",
-                    "settings-nav-reasoning",
-                    "settings-nav-pricing",
                     "settings-nav-usage",
                     "settings-nav-mcp",
                     "settings-nav-agents",
@@ -515,7 +527,7 @@ async fn issue296_general_pickers_toggle_once_from_keyboard(cx: &mut TestAppCont
     let (view, window) = mount_settings(cx, false, 960., 600.);
     window
         .update(cx, |_, window, cx| {
-            let last_navigation = view.read(cx).section_focuses[6].clone();
+            let last_navigation = view.read(cx).section_focuses[4].clone();
             window.focus(&last_navigation, cx);
             for _ in 0..5 {
                 window.focus_next(cx);
@@ -686,9 +698,9 @@ async fn issue296_v2_notes_are_cached_markdown_collapsed_and_keyboard_reachable(
         );
         window
             .update(cx, |_, window, cx| {
-                let navigation = view.read(cx).section_focuses[6].clone();
+                let navigation = view.read(cx).section_focuses[4].clone();
                 window.focus(&navigation, cx);
-                for _ in 0..11 {
+                for _ in 0..12 {
                     window.focus_next(cx);
                 }
             })
@@ -757,7 +769,7 @@ async fn issue296_v2_updater_switch_keeps_geometry_focus_once_and_busy_guard(
             );
             window
                 .update(cx, |_, window, cx| {
-                    let navigation = view.read(cx).section_focuses[6].clone();
+                    let navigation = view.read(cx).section_focuses[4].clone();
                     window.focus(&navigation, cx);
                 })
                 .expect("switch navigation origin");
@@ -881,6 +893,8 @@ async fn issue296_v2_populated_pricing_reasoning_and_usage_keep_complete_fields(
         }
         view.update(cx, |view, cx| {
             view.section = 2;
+            view.pricing_editor = None;
+            view.model_settings = Some(("owned".into(), long_model.clone()));
             view.apply_reasoning_projection(
                 ReasoningSettingsProjection::Ready {
                     generation: 1,
@@ -1059,4 +1073,228 @@ async fn issue296_v2_notes_short_content_and_scroll_edges_release_parent(cx: &mu
             });
         }
     }
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_navigation_has_six_object_scoped_routes(cx: &mut TestAppContext) {
+    let (_, window) = mount_settings(cx, false, 960., 600.);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let mut previous = px(0.);
+    for selector in [
+        "settings-nav-general",
+        "settings-nav-providers",
+        "settings-nav-mcp",
+        "settings-nav-agents",
+        "settings-nav-skills",
+        "settings-nav-usage",
+    ] {
+        let bounds = visual.debug_bounds(selector).expect("visible navigation");
+        assert!(bounds.top() > previous);
+        previous = bounds.top();
+    }
+    assert!(visual.debug_bounds("settings-nav-reasoning").is_none());
+    assert!(visual.debug_bounds("settings-nav-pricing").is_none());
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_model_scope_keeps_shared_price_library_and_dirty_draft(
+    cx: &mut TestAppContext,
+) {
+    let (view, window) = mount_settings(cx, false, 960., 600.);
+    view.update(cx, |view, cx| {
+        view.config.providers = vec![provider("owned", &["model-a", "model-b"])];
+        view.apply_pricing_projection(
+            PricingSettingsProjection::Ready {
+                generation: 4,
+                entries: ["model-a", "model-b", "orphan-model"]
+                    .into_iter()
+                    .map(|model| PricingEntryProjection {
+                        model: model.into(),
+                        kind: PricingEntryKind::CustomStatic,
+                        base: PricingRateInputs {
+                            input_usd_per_million: "1".into(),
+                            output_usd_per_million: "2".into(),
+                            cache_read_usd_per_million: "3".into(),
+                            cache_write_usd_per_million: "4".into(),
+                        },
+                        peak: None,
+                    })
+                    .collect(),
+                notice: None,
+                draft_reason: None,
+                error: None,
+            },
+            cx,
+        );
+        view.open_model_settings("owned", "model-b", 3, cx);
+    });
+    cx.run_until_parked();
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("pricing-model-name-0").is_none());
+        assert!(visual.debug_bounds("pricing-model-name-1").is_some());
+        assert!(visual.debug_bounds("pricing-model-name-2").is_none());
+        assert!(visual.debug_bounds("model-settings-basic").is_some());
+    }
+    view.update(cx, |view, cx| {
+        let PricingSettingsProjection::Ready { entries, .. } = &view.pricing else {
+            panic!("ready prices")
+        };
+        view.begin_edit_pricing(entries[1].clone(), cx);
+        view.pricing_rate_inputs[0].update(cx, |input, cx| input.set_text("9", cx));
+        view.request_settings_section(1, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.section), 3);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("settings-unsaved-guard").is_some());
+    assert!(visual.debug_bounds("pricing-editor-model").is_some());
+    let stay = visual.debug_bounds("settings-stay").unwrap();
+    visual.simulate_click(stay.center(), Default::default());
+    visual.run_until_parked();
+    assert!(
+        view.read_with(cx, |view, cx| view.pricing_rate_inputs[0].read(cx).text()
+            == "9")
+    );
+    view.update(cx, |view, cx| view.request_settings_section(1, cx));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let discard = visual
+        .debug_bounds("settings-discard-before-leave")
+        .unwrap();
+    visual.simulate_click(discard.center(), Default::default());
+    visual.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.section), 1);
+    assert!(view.read_with(cx, |view, _| view.pricing_editor.is_none()
+        && view.model_settings.is_none()));
+    view.update(cx, |view, cx| view.request_settings_section(3, cx));
+    cx.run_until_parked();
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("pricing-model-name-2")
+            .is_some()
+    );
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_reasoning_legacy_entry_selects_exact_model(cx: &mut TestAppContext) {
+    let (view, window) = mount_settings(cx, false, 960., 600.);
+    view.update(cx, |view, cx| {
+        view.section = 2;
+        view.apply_reasoning_projection(
+            ReasoningSettingsProjection::Ready {
+                generation: 8,
+                profiles: vec![
+                    explicit_openai_profile("a", "one"),
+                    explicit_openai_profile("b", "two"),
+                ],
+                error: None,
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("reasoning-protocol-0").is_none());
+    let select = visual.debug_bounds("reasoning-model-select-1").unwrap();
+    visual.simulate_click(select.center(), Default::default());
+    visual.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.model_settings.clone()),
+        Some(("b".into(), "two".into()))
+    );
+    assert!(visual.debug_bounds("reasoning-protocol-0").is_none());
+    assert!(visual.debug_bounds("reasoning-protocol-1").is_some());
+    let choose = reveal_settings_control(window, "reasoning-support-1-option-0", cx);
+    VisualTestContext::from_window(window.into(), cx)
+        .simulate_click(choose.center(), Default::default());
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| matches!(&view.reasoning, ReasoningSettingsProjection::Saving { profile, .. } if profile.provider == "b" && profile.model == "two" && profile.support == ReasoningSupport::Required)));
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_update_help_pins_dismisses_and_preserves_errors(cx: &mut TestAppContext) {
+    let (view, window) = mount_settings(cx, false, 960., 600.);
+    view.update(cx, |view, cx| {
+        let mut projection = view.updater.clone();
+        projection.phase = vega_conversation::types::UpdatePhase::Error;
+        projection.message = "签名验证失败，未安装更新".into();
+        view.apply_update_projection(projection, cx);
+    });
+    cx.run_until_parked();
+    let trigger = reveal_settings_control(window, "updater-help", cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_click(trigger.center(), Default::default());
+    visual.run_until_parked();
+    visual.simulate_mouse_move(gpui_kit::point(px(0.), px(0.)), None, Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("settings-help-popup").is_some());
+    assert!(visual.debug_bounds("settings-status").is_some());
+    cx.simulate_keystrokes(window.into(), "escape");
+    cx.run_until_parked();
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("settings-help-popup")
+            .is_none()
+    );
+    assert!(
+        window
+            .update(cx, |_, window, cx| view
+                .read(cx)
+                .settings_help_focus
+                .is_focused(window))
+            .unwrap()
+    );
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_click(trigger.center(), Default::default());
+    visual.run_until_parked();
+    visual.simulate_click(gpui_kit::point(px(500.), px(10.)), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("settings-help-popup").is_none());
+    assert!(visual.debug_bounds("settings-status").is_some());
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_selected_reasoning_options_never_reset_custom_fields(cx: &mut TestAppContext) {
+    let (view, window) = mount_settings(cx, false, 1100., 900.);
+    let mut profile = explicit_openai_profile("owned", "custom");
+    profile.efforts = vec!["high".into()];
+    profile.preference = ReasoningChoice::Effort("high".into());
+    profile.preserve_reasoning_content = true;
+    let expected = profile.clone();
+    let saves = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    cx.update(|cx| {
+        let saves = saves.clone();
+        cx.subscribe(
+            &view,
+            move |_, request: &ReasoningProfileSaveRequested, _| {
+                saves.lock().unwrap().push(request.clone());
+            },
+        )
+        .detach();
+    });
+    view.update(cx, |view, cx| {
+        view.section = 2;
+        view.model_settings = Some(("owned".into(), "custom".into()));
+        view.apply_reasoning_projection(
+            ReasoningSettingsProjection::Ready {
+                generation: 1,
+                profiles: vec![profile],
+                error: None,
+            },
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let bounds = reveal_settings_control(window, "reasoning-protocol-0-option-1", cx);
+    VisualTestContext::from_window(window.into(), cx)
+        .simulate_click(bounds.center(), Default::default());
+    cx.run_until_parked();
+    assert!(saves.lock().unwrap().is_empty());
+    view.read_with(cx, |view, _| {
+        let ReasoningSettingsProjection::Ready { profiles, .. } = &view.reasoning else {
+            panic!("same selection must not save")
+        };
+        assert_eq!(profiles, &[expected]);
+    });
 }

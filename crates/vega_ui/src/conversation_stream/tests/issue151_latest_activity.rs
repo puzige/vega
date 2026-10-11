@@ -1,8 +1,3 @@
-//! #151 R151-1..R151-7: the newest live activity unit (thinking block, single
-//! tool row, or tool group) opens by default, and the previous current unit
-//! steps down as soon as newer content arrives. Every assertion here runs on
-//! the mounted production stream (`ConversationStream` + real render path).
-
 use super::*;
 
 fn start(id: &str) -> ConversationEvent {
@@ -62,8 +57,6 @@ fn group(stream: &ConversationStream, cx: &App) -> Entity<ToolActivityGroup> {
         .expect("tool activity group")
 }
 
-/// Expansion of every activity unit in timeline order. The length is the
-/// number of activity units, so "at most one `true`" is exactly R151-2.
 fn activity_expansion(stream: &ConversationStream, cx: &App) -> Vec<bool> {
     stream
         .entries
@@ -126,10 +119,8 @@ fn history_tool(seq: i64, id: &str, tool: ReadOnlyToolKind) -> HistoryEntry {
     }
 }
 
-/// R151-1 + R151-2 + R151-4: thinking → single tool → group → text, with the
-/// current unit opening each time and the superseded one stepping down.
 #[gpui_kit::test]
-async fn issue151_current_unit_opens_and_the_superseded_unit_steps_down(cx: &mut TestAppContext) {
+async fn issue151_v3_activity_units_default_collapsed(cx: &mut TestAppContext) {
     let (_window, stream, _) = open_controller_stream(cx, "issue151-current-unit");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
@@ -137,8 +128,8 @@ async fn issue151_current_unit_opens_and_the_superseded_unit_steps_down(cx: &mut
     });
     assert_eq!(
         stream.read_with(cx, activity_expansion),
-        [true],
-        "R151-1: the first activity unit (no predecessor) opens by default"
+        [false],
+        "v3 thinking details default collapsed"
     );
 
     stream.update(cx, |stream, cx| {
@@ -151,8 +142,8 @@ async fn issue151_current_unit_opens_and_the_superseded_unit_steps_down(cx: &mut
     });
     assert_eq!(
         stream.read_with(cx, activity_expansion),
-        [false, true],
-        "R151-2: the thinking block steps down, the newer tool row opens"
+        [false, false],
+        "v3 thinking and tool details default collapsed"
     );
 
     stream.update(cx, |stream, cx| {
@@ -165,8 +156,8 @@ async fn issue151_current_unit_opens_and_the_superseded_unit_steps_down(cx: &mut
     });
     assert_eq!(
         stream.read_with(cx, activity_expansion),
-        [false, true],
-        "R151-3: the single row upgrades into the current expanded group"
+        [false, false],
+        "v3 grouped tools default collapsed"
     );
 
     stream.update(cx, |stream, cx| {
@@ -175,7 +166,7 @@ async fn issue151_current_unit_opens_and_the_superseded_unit_steps_down(cx: &mut
     assert_eq!(
         stream.read_with(cx, activity_expansion),
         [false, false],
-        "R151-4: the first nonempty text delta of a new segment steps the unit down"
+        "v3 body streaming leaves detail disclosure unchanged"
     );
     assert!(
         stream.read_with(cx, |stream, cx| activity_expansion(stream, cx)
@@ -187,8 +178,6 @@ async fn issue151_current_unit_opens_and_the_superseded_unit_steps_down(cx: &mut
     );
 }
 
-/// R151-2: only the *newest* unit steps down. A manually opened older unit is
-/// not the current unit and keeps its expansion.
 #[gpui_kit::test]
 async fn issue151_manual_expansion_of_an_older_unit_survives_newer_content(
     cx: &mut TestAppContext,
@@ -204,13 +193,12 @@ async fn issue151_manual_expansion_of_an_older_unit_survives_newer_content(
             cx,
         );
     });
-    assert_eq!(stream.read_with(cx, activity_expansion), [false, true]);
+    assert_eq!(stream.read_with(cx, activity_expansion), [false, false]);
 
-    // The user reopens the older thinking block by hand.
     click(window, "thinking-toggle", cx);
     assert_eq!(
         stream.read_with(cx, activity_expansion),
-        [true, true],
+        [true, false],
         "manual expansion of an older unit is allowed alongside the current one"
     );
 
@@ -224,7 +212,7 @@ async fn issue151_manual_expansion_of_an_older_unit_survives_newer_content(
     });
     assert_eq!(
         stream.read_with(cx, activity_expansion),
-        [true, true],
+        [true, false],
         "the superseded tool row steps down while the manual older expansion stays"
     );
     assert!(
@@ -240,8 +228,6 @@ async fn issue151_manual_expansion_of_an_older_unit_survives_newer_content(
     );
 }
 
-/// R151-3: joining an existing group keeps the group expanded and never opens
-/// a child's own bounded detail.
 #[gpui_kit::test]
 async fn issue151_group_join_keeps_the_group_expanded_with_compact_children(
     cx: &mut TestAppContext,
@@ -257,10 +243,13 @@ async fn issue151_group_join_keeps_the_group_expanded_with_compact_children(
             );
         }
     });
+    stream.update(cx, |stream, cx| {
+        group(stream, cx).update(cx, |group, cx| group.set_expanded(true, cx));
+    });
     stream.read_with(cx, |stream, cx| {
         let group = group(stream, cx);
         let group = group.read(cx);
-        assert!(group.expanded(), "the current group opens by default");
+        assert!(group.expanded(), "manual expansion remains open");
         assert_eq!(group.len(), 2);
         assert_eq!(
             group.row_count(cx),
@@ -300,11 +289,8 @@ async fn issue151_group_join_keeps_the_group_expanded_with_compact_children(
     });
 }
 
-/// R151-4: only the *first* nonempty delta of a text segment pays the
-/// step-down scan, so a manual expansion made later in the same segment is not
-/// fought by every token; the next segment steps the unit down again.
 #[gpui_kit::test]
-async fn issue151_text_segment_steps_down_once_per_segment(cx: &mut TestAppContext) {
+async fn issue151_v3_manual_expansion_survives_text_segments(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue151-text-segment");
     stream.update(cx, |stream, cx| {
         stream.apply_event(start("m"), cx);
@@ -336,13 +322,11 @@ async fn issue151_text_segment_steps_down_once_per_segment(cx: &mut TestAppConte
     });
     assert_eq!(
         stream.read_with(cx, activity_expansion),
-        [false],
-        "a new segment (new message) is newer content and steps the unit down"
+        [true],
+        "a new message preserves user expansion of prior details"
     );
 }
 
-/// R151-5: the stream never re-expands a unit the user collapsed; only the
-/// creation of a *newer* unit opens anything.
 #[gpui_kit::test]
 async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue151-manual-collapse");
@@ -350,6 +334,8 @@ async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppConte
         stream.apply_event(start("m"), cx);
         stream.apply_event(thinking("m", "第一段"), cx);
     });
+    assert!(!mounted(window, "thinking-content", cx));
+    click(window, "thinking-toggle", cx);
     assert!(mounted(window, "thinking-content", cx));
 
     click(window, "thinking-toggle", cx);
@@ -368,8 +354,6 @@ async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppConte
     assert!(!mounted(window, "thinking-content", cx));
 }
 
-/// R151-6: hydration and route reopen start collapsed — there is no current
-/// activity in a restored transcript.
 #[gpui_kit::test]
 async fn issue151_hydration_and_reopen_stay_collapsed(cx: &mut TestAppContext) {
     let page = || {
@@ -383,7 +367,6 @@ async fn issue151_hydration_and_reopen_stay_collapsed(cx: &mut TestAppContext) {
         )
     };
 
-    // Live control: the same two adjacent calls form the current unit and open.
     let (_live_window, live, _) = open_controller_stream(cx, "issue151-hydration-live");
     live.update(cx, |stream, cx| {
         for id in ["live-read", "live-glob"] {
@@ -396,8 +379,8 @@ async fn issue151_hydration_and_reopen_stay_collapsed(cx: &mut TestAppContext) {
         }
     });
     live.read_with(cx, |stream, cx| {
-        assert!(group(stream, cx).read(cx).expanded());
-        assert_eq!(group(stream, cx).read(cx).row_count(cx), 3);
+        assert!(!group(stream, cx).read(cx).expanded());
+        assert_eq!(group(stream, cx).read(cx).row_count(cx), 1);
     });
 
     for thread_id in ["issue151-hydrated", "issue151-reopened"] {
@@ -413,8 +396,6 @@ async fn issue151_hydration_and_reopen_stay_collapsed(cx: &mut TestAppContext) {
     }
 }
 
-/// R151-7: expansion re-measures only the owning item. The entry above keeps
-/// its exact measured bounds while the disclosed detail mounts and unmounts.
 #[gpui_kit::test]
 async fn issue151_expansion_remeasures_only_its_own_item(cx: &mut TestAppContext) {
     let (window, stream, _) = open_controller_stream(cx, "issue151-own-item");
@@ -428,6 +409,8 @@ async fn issue151_expansion_remeasures_only_its_own_item(cx: &mut TestAppContext
             cx,
         );
     });
+    assert_eq!(stream.read_with(cx, activity_expansion), [false]);
+    click(window, "tool-activity-single-row", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [true]);
     assert!(mounted(window, "tool-activity-single-row-detail", cx));
     let before = gpui_kit::VisualTestContext::from_window(window.into(), cx)

@@ -916,7 +916,7 @@ async fn issue74_skills_settings_import_is_keyboard_reachable(cx: &mut TestAppCo
         })
         .expect("Skills Settings window");
     cx.run_until_parked();
-    let section_focus = view.read_with(cx, |view, _| view.section_focuses[6].clone());
+    let section_focus = view.read_with(cx, |view, _| view.section_focuses[4].clone());
     window
         .update(cx, |_, window, cx| window.focus(&section_focus, cx))
         .expect("focus Skills navigation row");
@@ -1194,7 +1194,7 @@ async fn issue296_v2_skill_switches_keep_real_mutations_and_busy_guard(cx: &mut 
     assert!((f32::from(switch.left() - label.right()) - 16.).abs() < 1.);
     window
         .update(cx, |_, window, cx| {
-            let navigation = view.read(cx).section_focuses[6].clone();
+            let navigation = view.read(cx).section_focuses[4].clone();
             window.focus(&navigation, cx);
             window.focus_next(cx);
             window.focus_next(cx);

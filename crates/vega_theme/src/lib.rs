@@ -278,10 +278,14 @@ impl Typography {
     pub const BODY_LINE_HEIGHT: f32 = 1.55;
     /// Conversation message body: 15px (R4 visual revision §2).
     pub const MESSAGE: f32 = 15.0;
+    pub const MARKDOWN_H1: f32 = 22.0;
+    pub const MARKDOWN_H2: f32 = 19.0;
+    pub const MARKDOWN_H3: f32 = 17.0;
     /// Message line height: 1.65× font size (ratio, R4 visual revision §2).
     pub const MESSAGE_LINE_HEIGHT: f32 = 1.65;
     /// Code font size: 12.5px, monospace (§3 "代码字体 SF Mono / JetBrains Mono，12.5px").
     pub const CODE: f32 = 12.5;
+    pub const CODE_LINE_HEIGHT: f32 = 1.6;
     /// Sidebar primary navigation and task/project title size: 13px.
     pub const SIDEBAR: f32 = 13.0;
     /// Sidebar entry row height: 32px absolute (R19 phase-1 shell freeze).
@@ -310,6 +314,7 @@ pub struct Motion;
 
 impl Motion {
     pub const INTERACTION_DURATION_MS: u64 = 120;
+    pub const THINKING_SHIMMER_MS: u64 = 1800;
 }
 
 /// Shared layout tokens for the native client.
@@ -321,12 +326,19 @@ pub struct Layout;
 
 impl Layout {
     pub const ICON_SIZE: f32 = 16.0;
-    pub const CONVERSATION_NAVIGATION_GUTTER: f32 = 20.0;
-    pub const CONVERSATION_PADDING: f32 =
-        Self::CONTENT_PADDING + Self::CONVERSATION_NAVIGATION_GUTTER;
-    pub const MESSAGE_ANCHOR_TRACK_WIDTH: f32 = 1.0;
-    pub const MESSAGE_ANCHOR_MARKER_SIZE: f32 = 4.0;
-    pub const MESSAGE_ANCHOR_ACTIVE_SIZE: f32 = 6.0;
+    pub const CONTEXT_USAGE_SIZE: f32 = 28.0;
+    pub const CONTEXT_USAGE_WIDTH: f32 = 320.0;
+    pub const CONTEXT_USAGE_PADDING: f32 = 16.0;
+    pub const CONVERSATION_NAVIGATION_GUTTER: f32 = 24.0;
+    pub const CONVERSATION_PADDING: f32 = 32.0;
+    pub const MESSAGE_ANCHOR_TRACK_WIDTH: f32 = 2.0;
+    pub const MESSAGE_ANCHOR_MARKER_SIZE: f32 = 8.0;
+    pub const MESSAGE_ANCHOR_ACTIVE_SIZE: f32 = 16.0;
+    pub const MESSAGE_ANCHOR_HIT_HEIGHT: f32 = 16.0;
+    pub const MESSAGE_ANCHOR_VISIBLE_COUNT: usize = 9;
+    pub const MESSAGE_ANCHOR_LEFT_INSET: f32 = 4.0;
+    pub const MESSAGE_ANCHOR_PREVIEW_WIDTH: f32 = 280.0;
+    pub const MESSAGE_ANCHOR_PREVIEW_HEIGHT: f32 = 72.0;
     pub const READING_NAVIGATION_HEIGHT: f32 = 40.0;
     pub const READING_NAVIGATION_PADDING: f32 = 4.0;
     pub const READING_NAVIGATION_PADDING_X: f32 = 12.0;
@@ -347,12 +359,28 @@ impl Layout {
     pub const SETTINGS_CONTROL_PADDING_X: f32 = 12.0;
     pub const SETTINGS_CONTROL_RADIUS: f32 = 8.0;
     pub const SETTINGS_NAV_WIDTH: f32 = 224.0;
+    pub const SETTINGS_PROVIDER_LIST_WIDTH: f32 = 180.0;
+    pub const SETTINGS_PROVIDER_COLUMN_GAP: f32 = 24.0;
+    pub const SETTINGS_PROVIDER_DETAIL_MIN_WIDTH: f32 = 440.0;
     pub const SETTINGS_LABEL_WIDTH: f32 = 208.0;
     pub const SETTINGS_FIELD_GAP: f32 = 16.0;
     pub const SETTINGS_GROUP_PADDING: f32 = 16.0;
     pub const SETTINGS_ROW_PADDING_Y: f32 = 12.0;
     pub const SETTINGS_NOTES_MAX_HEIGHT: f32 = 240.0;
-    pub const PROCESS_PADDING_X: f32 = 12.0;
+    pub const PROCESS_PADDING_X: f32 = 0.0;
+    pub const TOOL_DETAIL_PADDING: f32 = 12.0;
+    pub const TOOL_DETAIL_RADIUS: f32 = 12.0;
+    pub const DISCLOSURE_SCROLLBAR_GUTTER: f32 = 12.0;
+    pub const MARKDOWN_PARAGRAPH_GAP: f32 = 12.0;
+    pub const MARKDOWN_HEADING_BEFORE: f32 = 24.0;
+    pub const MARKDOWN_HEADING_AFTER: f32 = 12.0;
+    pub const MARKDOWN_LIST_ITEM_GAP: f32 = 6.0;
+    pub const MARKDOWN_LIST_INDENT: f32 = 24.0;
+    pub const MARKDOWN_LIST_PARAGRAPH_GAP: f32 = 8.0;
+    pub const MARKDOWN_CODE_PADDING: f32 = 12.0;
+    pub const MARKDOWN_TABLE_PADDING_X: f32 = 12.0;
+    pub const MARKDOWN_TABLE_PADDING_Y: f32 = 8.0;
+    pub const MARKDOWN_BLOCK_GAP: f32 = 16.0;
     pub const PROCESS_ITEM_GAP: f32 = 4.0;
     pub const ASSISTANT_ROLE_HEIGHT: f32 = 20.0;
 
@@ -581,10 +609,11 @@ impl Layout {
     pub const TAB_CONTENT_GAP: f32 = 8.0;
     /// Terminal content toolbar height below the workspace tab header.
     pub const TERMINAL_TOOLBAR_HEIGHT: f32 = 32.0;
-    /// Reserved trailing width for session timestamps and the compact action
-    /// menu trigger. Low-frequency actions live in the popover so long
-    /// session titles keep the main width of the rail.
-    pub const SIDEBAR_ACTIONS_WIDTH: f32 = 72.0;
+    pub const SIDEBAR_ACTIONS_WIDTH: f32 = 52.0;
+    pub const SIDEBAR_ACTIONS_INSET: f32 = 8.0;
+    pub const SIDEBAR_ACTION_SIZE: f32 = 24.0;
+    pub const SIDEBAR_ACTION_GAP: f32 = 4.0;
+    pub const SIDEBAR_FOOTER_TOP: f32 = 4.0;
     /// Compact width for the sidebar task action popup.
     pub const TASK_MENU_WIDTH: f32 = 240.0;
 }
@@ -730,11 +759,11 @@ mod tests {
     fn issue296_desktop_geometry_tokens_are_frozen() {
         assert_eq!(Layout::ICON_SIZE, 16.0);
         assert_eq!(Motion::INTERACTION_DURATION_MS, 120);
-        assert_eq!(Layout::CONVERSATION_NAVIGATION_GUTTER, 20.0);
-        assert_eq!(Layout::CONVERSATION_PADDING, 36.0);
-        assert_eq!(Layout::MESSAGE_ANCHOR_TRACK_WIDTH, 1.0);
-        assert_eq!(Layout::MESSAGE_ANCHOR_MARKER_SIZE, 4.0);
-        assert_eq!(Layout::MESSAGE_ANCHOR_ACTIVE_SIZE, 6.0);
+        assert_eq!(Layout::CONVERSATION_NAVIGATION_GUTTER, 24.0);
+        assert_eq!(Layout::CONVERSATION_PADDING, 32.0);
+        assert_eq!(Layout::MESSAGE_ANCHOR_TRACK_WIDTH, 2.0);
+        assert_eq!(Layout::MESSAGE_ANCHOR_MARKER_SIZE, 8.0);
+        assert_eq!(Layout::MESSAGE_ANCHOR_ACTIVE_SIZE, 16.0);
         assert_eq!(Layout::READING_NAVIGATION_HEIGHT, 40.0);
         assert_eq!(Layout::READING_NAVIGATION_PADDING, 4.0);
         assert_eq!(Layout::SCROLL_TO_BOTTOM_SIZE, 32.0);

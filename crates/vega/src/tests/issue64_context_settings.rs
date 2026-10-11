@@ -15,6 +15,10 @@ struct Fixture {
 }
 
 fn fixture(cx: &mut gpui_kit::TestAppContext) -> Fixture {
+    fixture_with_height(cx, 860.)
+}
+
+fn fixture_with_height(cx: &mut gpui_kit::TestAppContext, height: f32) -> Fixture {
     let data = tempfile::tempdir().expect("context Settings owned data");
     let config = data.path().join("config.toml");
     super::model_selection::model_selection_config(&config);
@@ -73,7 +77,7 @@ fn fixture(cx: &mut gpui_kit::TestAppContext) -> Fixture {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
-                    size(px(1403.0), px(860.0)),
+                    size(px(1403.0), px(height)),
                     cx,
                 ))),
                 ..Default::default()
@@ -217,12 +221,39 @@ fn roundtrip(cx: &mut gpui_kit::TestAppContext, popover: bool, route_seam: bool)
         visual.debug_bounds("context-usage-tooltip").is_some(),
         "legitimate keyboard focus must reopen the context tooltip after Settings"
     );
+    let context_focus = f
+        .window
+        .update(cx, |_, window, cx| window.focused(cx))
+        .expect("context Settings focus window")
+        .expect("context ring owns keyboard focus");
+    assert_ne!(context_focus, input_focus);
     cx.simulate_keystrokes(f.window.into(), "tab");
     visual.run_until_parked();
     assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+    assert!(
+        !f.window
+            .update(cx, |_, window, _| context_focus.is_focused(window))
+            .expect("Tab leaves context ring")
+    );
     cx.simulate_keystrokes(f.window.into(), "shift-tab");
     visual.run_until_parked();
     assert!(visual.debug_bounds("context-usage-tooltip").is_some());
+    cx.simulate_keystrokes(f.window.into(), "escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+    assert!(
+        f.window
+            .update(cx, |_, window, _| context_focus.is_focused(window))
+            .expect("Escape returns focus without reopening context")
+    );
+    cx.simulate_keystrokes(f.window.into(), "tab shift-tab");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-usage-tooltip").is_some());
+    assert!(
+        f.window
+            .update(cx, |_, window, _| context_focus.is_focused(window))
+            .expect("fresh keyboard entry reopens context")
+    );
     f.window
         .update(cx, |_, window, cx| window.focus(&input_focus, cx))
         .expect("return to Composer");
@@ -285,4 +316,105 @@ async fn issue64_context_settings_route_roundtrip_drops_popover_hover(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     roundtrip(cx, true, true);
+}
+
+#[gpui_kit::test]
+async fn issue296_catalog_production_settings_applies_draft_then_saves_exact_owned_policy(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use vega_conversation::types::{CatalogAction, CatalogIdentity, ModelCatalogRequested};
+    cx.executor().allow_parking();
+    let f = fixture_with_height(cx, 2100.);
+    let root = f._data.path().join("model-catalog");
+    let owner = CatalogIdentity {
+        provider: "owned".into(),
+        model: f.thread.model.clone(),
+    };
+    let target = CatalogIdentity {
+        provider: "official".into(),
+        model: "catalog-model".into(),
+    };
+    let bytes = br#"{"official":{"id":"official","name":"Official","models":{"catalog-model":{"id":"catalog-model","name":"Catalog model","limit":{"context":200000,"input":150000,"output":50000}}}}}"#;
+    let now = crate::model_catalog::now_ms();
+    let cached = crate::model_catalog::refresh_with(&root, &owner, now, || Ok(bytes.to_vec()));
+    assert!(cached.error.is_none());
+    let mapped = crate::model_catalog::load(
+        &root,
+        &ModelCatalogRequested {
+            generation: 1,
+            owner,
+            action: CatalogAction::Map(target),
+        },
+        now,
+    );
+    assert!(mapped.error.is_none());
+    cx.update(|cx| {
+        cx.set_global(SettingsOpen(true));
+        cx.refresh_windows();
+    });
+    pump_test_app(cx, |cx| {
+        f.root.read_with(cx, |root, _| root.settings_view.is_some())
+    });
+    for selector in ["settings-nav-providers", "model-edit-0"] {
+        let control = bounds(&f, selector, cx);
+        VisualTestContext::from_window(f.window.into(), cx)
+            .simulate_click(control.center(), Default::default());
+    }
+    pump_test_app(cx, |cx| {
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("model-context-ready")
+            .is_some()
+    });
+    let toggle = bounds(&f, "model-catalog-toggle", cx);
+    VisualTestContext::from_window(f.window.into(), cx)
+        .simulate_click(toggle.center(), Default::default());
+    pump_test_app(cx, |cx| {
+        VisualTestContext::from_window(f.window.into(), cx)
+            .debug_bounds("model-catalog-input")
+            .is_some()
+    });
+    let before =
+        vega_store::context_compaction::load_model_policy(f.store.conn(), "owned", &f.thread.model)
+            .unwrap()
+            .unwrap();
+    let input = bounds(&f, "model-catalog-input", cx);
+    VisualTestContext::from_window(f.window.into(), cx)
+        .simulate_click(input.center(), Default::default());
+    cx.run_until_parked();
+    assert_eq!(
+        vega_store::context_compaction::load_model_policy(f.store.conn(), "owned", &f.thread.model)
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    let save = bounds(&f, "model-save", cx);
+    VisualTestContext::from_window(f.window.into(), cx)
+        .simulate_click(save.center(), Default::default());
+    pump_test_app(cx, |_| {
+        vega_store::context_compaction::load_model_policy(f.store.conn(), "owned", &f.thread.model)
+            .unwrap()
+            .is_some_and(|policy| policy.input_limit == Some(150000))
+    });
+    let saved =
+        vega_store::context_compaction::load_model_policy(f.store.conn(), "owned", &f.thread.model)
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        (
+            saved.input_limit,
+            saved.output_reserve,
+            saved.automatic_compaction
+        ),
+        (Some(150000), Some(2000), false)
+    );
+    assert!(
+        vega_store::context_compaction::load_model_policy(
+            f.store.conn(),
+            "official",
+            "catalog-model"
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(f.provider.requests().is_empty());
 }

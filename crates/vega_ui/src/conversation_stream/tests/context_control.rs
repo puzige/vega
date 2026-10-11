@@ -466,7 +466,7 @@ async fn issue168_compaction_row_remains_visible_after_primary_provider_failure(
                 .expect("run activity group");
             assert_eq!(
                 group.read(cx).test_projection(),
-                (RunActivityStatus::Failed, Some(2_345), false, true)
+                (RunActivityStatus::Failed, Some(2_345), true, true)
             );
         })
         .expect("failed run projection");

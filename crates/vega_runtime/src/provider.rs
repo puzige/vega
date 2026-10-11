@@ -499,6 +499,7 @@ pub enum StopReason {
     ToolUse,
     /// Token budget exhausted.
     Length,
+    Unknown,
 }
 
 /// Incremental provider event (tech-spec §4.1). [`ProviderEvent::ToolUse`]

@@ -7,6 +7,7 @@ use gpui_kit::{
 use vega_conversation::types::ThreadScrollAnchor;
 
 const MESSAGE_ID: &str = "issue147-native-copy-code";
+const CODE_LINE_COUNT: usize = 48;
 
 fn code_lines(start: usize, end: usize) -> String {
     (start..=end)
@@ -48,8 +49,9 @@ fn restored_anchor(thread: &Thread) -> ThreadScrollAnchor {
             kind
         )),
         message_id: Some(MESSAGE_ID.into()),
-        offset_in_item_px: 4.0
-            + 6.0 * (Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT + 2.0),
+        offset_in_item_px: Layout::ASSISTANT_MESSAGE_PADDING_TOP
+            + Layout::MARKDOWN_CODE_PADDING
+            + 6.0 * Typography::CODE * Typography::CODE_LINE_HEIGHT,
         following_tail: false,
     }
 }
@@ -107,7 +109,9 @@ async fn open_restored_code(
         "issue147-native-copy-prompt",
         1,
         "user",
-        "Generate a 32-line code block with token. Preserve every original line.",
+        &format!(
+            "Generate a {CODE_LINE_COUNT}-line code block with token. Preserve every original line."
+        ),
     );
     insert_message(
         &store,
@@ -115,7 +119,7 @@ async fn open_restored_code(
         MESSAGE_ID,
         2,
         "assistant",
-        &format!("```plaintext\n{}\n```", code_lines(1, 32)),
+        &format!("```plaintext\n{}\n```", code_lines(1, CODE_LINE_COUNT)),
     );
     cx.update(|cx| {
         install_diff_window_globals(store, thread.clone(), cx);
@@ -196,7 +200,8 @@ async fn open_restored_code(
     let before = visual
         .debug_bounds("assistant-message")
         .expect("restored owned code");
-    let row_height = (before.size.height - px(12.0)) / 32.0;
+    let row_height = px(Typography::CODE * Typography::CODE_LINE_HEIGHT);
+    assert!(before.size.height > list.size.height + row_height * 6.0);
     let anchor = stream.read_with(&visual, |stream, _| stream.scroll_anchor_snapshot());
     assert!(!anchor.following_tail, "restored copy anchor: {anchor:?}");
     assert_eq!(anchor.message_id.as_deref(), Some(MESSAGE_ID));
@@ -217,20 +222,25 @@ async fn open_restored_code(
 }
 
 fn selection_points(visual: &mut VisualTestContext) -> (Point<Pixels>, Point<Pixels>) {
-    let message = visual
-        .debug_bounds("assistant-message")
+    let code = visual
+        .debug_bounds("markdown-code-0")
         .expect("owned code geometry");
     let viewport = visual
         .debug_bounds("conversation-message-list")
         .expect("owned code viewport");
-    let row_height = (message.size.height - px(12.0)) / 32.0;
+    let padding = px(Layout::MARKDOWN_CODE_PADDING);
+    let row_height = (code.size.height - padding * 2.0) / CODE_LINE_COUNT as f32;
+    assert_eq!(
+        row_height,
+        px(Typography::CODE * Typography::CODE_LINE_HEIGHT)
+    );
     let start = point(
-        message.left() + px(8.5),
-        message.top() + px(4.0) + row_height * 6.5,
+        code.left() + padding + px(0.5),
+        code.top() + padding + row_height * 6.5,
     );
     let end = point(
-        message.left() + px(450.0),
-        message.top() + px(4.0) + row_height * 20.5,
+        code.left() + padding + px(450.0),
+        code.top() + padding + row_height * 20.5,
     );
     assert!(viewport.contains(&start) && viewport.contains(&end));
     (start, end)

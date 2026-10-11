@@ -352,6 +352,29 @@ pub(crate) fn persist_runtime_event(
     execution_duration_ms: Option<i64>,
 ) -> Result<(), VegaError> {
     match event {
+        RuntimeEvent::AssistantResponseCompleted {
+            response_id,
+            text_start_bytes,
+            text_end_bytes,
+            kind,
+        } => {
+            messages::record_assistant_response(
+                store.conn(),
+                message_id,
+                streamed_content,
+                &messages::AssistantResponseRow {
+                    message_id: message_id.to_string(),
+                    response_id: response_id.clone(),
+                    text_start_bytes: *text_start_bytes,
+                    text_end_bytes: *text_end_bytes,
+                    kind: match kind {
+                        vega_runtime::RuntimeAssistantResponseKind::Commentary => "commentary",
+                        vega_runtime::RuntimeAssistantResponseKind::Final => "final",
+                    }
+                    .to_string(),
+                },
+            )?;
+        }
         RuntimeEvent::SkillSnapshot { binding, snapshot } => {
             persist_skill_snapshot(store, thread_id, message_id, binding, snapshot)?;
         }

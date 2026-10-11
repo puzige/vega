@@ -106,9 +106,8 @@ impl ConversationStream {
                         .key_context("ResumeTailButton")
                         .on_action(cx.listener(Self::on_resume_tail))
                         .flex_shrink_0()
-                        .h(px(Layout::SCROLL_TO_BOTTOM_SIZE))
-                        .px(px(Layout::READING_NAVIGATION_PADDING_X))
-                        .gap(px(Layout::READING_NAVIGATION_GAP))
+                        .size(px(Layout::SCROLL_TO_BOTTOM_SIZE))
+                        .tooltip(|_, cx| crate::icons::tooltip("回到底部", cx))
                         .rounded(px(Layout::SCROLL_TO_BOTTOM_SIZE / 2.0))
                         .border_1()
                         .border_color(colors.border_subtle)
@@ -130,8 +129,7 @@ impl ConversationStream {
                         .child(crate::icons::icon(
                             crate::icons::Icon::ArrowDown,
                             colors.text_secondary,
-                        ))
-                        .child("回到底部"),
+                        )),
                 )
             })
             .into_any_element()
@@ -831,10 +829,10 @@ impl ConversationStream {
         let (estimated_tokens, context_limit) = self.context_usage_source();
         let display = ContextUsageDisplay::new(estimated_tokens, context_limit);
         let colors = theme(cx).colors;
-        let focused = display
-            .as_ref()
-            .is_some_and(|_| self.context_usage_focus.contains_focused(window, cx));
+        let focused = self.context_usage_focus.contains_focused(window, cx);
         let hovered = self.context_usage_trigger_hovered || self.context_usage_tooltip_hovered;
+        let shown =
+            self.context_usage_open || (!self.context_usage_dismissed && (focused || hovered));
         div()
             .relative()
             .min_w_0()
@@ -842,13 +840,9 @@ impl ConversationStream {
             .flex()
             .items_center()
             .gap_1()
-            .children(
-                display
-                    .as_ref()
-                    .map(|display| self.render_context_usage_indicator(display, colors, cx)),
-            )
+            .child(self.render_context_usage_indicator(&display, colors, cx))
             .child(self.render_model_selector(cx))
-            .children(display.filter(|_| focused || hovered).map(|display| {
+            .children(shown.then(|| {
                 let tooltip_hover = cx.listener(|this, hovered: &bool, _, cx| {
                     this.context_usage_tooltip_hovered = *hovered;
                     cx.notify();
@@ -866,9 +860,22 @@ impl ConversationStream {
                                         .id("context-usage-tooltip-popover")
                                         .debug_selector(|| "context-usage-tooltip-popover".into())
                                         .on_hover(tooltip_hover)
-                                        .child(Self::context_usage_tooltip_element(
-                                            &display, colors,
-                                        )),
+                                        .on_mouse_down_out(cx.listener(
+                                            |this, _: &MouseDownEvent, window, cx| {
+                                                if this.context_usage_open {
+                                                    cx.stop_propagation();
+                                                }
+                                                this.dismiss_context_usage(window, cx);
+                                            },
+                                        ))
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                            cx.stop_propagation()
+                                        })
+                                        .child(
+                                            self.context_usage_tooltip_element(
+                                                &display, colors, cx,
+                                            ),
+                                        ),
                                 )
                                 .with_priority(2),
                             ),
@@ -894,6 +901,9 @@ impl ConversationStream {
             .items_center()
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.context_usage_trigger_hovered = *hovered;
+                if *hovered {
+                    this.context_usage_dismissed = false;
+                }
                 cx.notify();
             }))
             .child(
@@ -904,7 +914,41 @@ impl ConversationStream {
                     .focusable()
                     .track_focus(&self.context_usage_focus)
                     .tab_stop(true)
-                    .size(px(24.0))
+                    .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            if this.context_usage_open {
+                                this.dismiss_context_usage(window, cx);
+                            } else {
+                                this.close_composer_popovers(cx);
+                                this.context_usage_open = true;
+                                this.context_usage_dismissed = false;
+                                this.context_usage_focus.focus(window, cx);
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .on_key_down(
+                        cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                            match event.keystroke.key.as_str() {
+                                "escape" => this.dismiss_context_usage(window, cx),
+                                "enter" | "space" => {
+                                    if this.context_usage_open {
+                                        this.dismiss_context_usage(window, cx);
+                                    } else {
+                                        this.close_composer_popovers(cx);
+                                        this.context_usage_open = true;
+                                        this.context_usage_dismissed = false;
+                                        cx.notify();
+                                    }
+                                }
+                                _ => return,
+                            }
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .size(px(Layout::CONTEXT_USAGE_SIZE))
                     .rounded_full()
                     .flex()
                     .items_center()
@@ -965,20 +1009,40 @@ impl ConversationStream {
         .into_any_element()
     }
 
+    fn dismiss_context_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.context_usage_open = false;
+        self.context_usage_dismissed = true;
+        self.context_usage_trigger_hovered = false;
+        self.context_usage_tooltip_hovered = false;
+        self.context_usage_focus.focus(window, cx);
+        cx.notify();
+    }
+
     fn context_usage_tooltip_element(
+        &self,
         display: &ContextUsageDisplay,
         colors: ThemeColors,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let tooltip = div()
+        let over_limit = display
+            .estimated_tokens
+            .zip(display.model_input_limit)
+            .is_some_and(|(used, limit)| used > limit);
+        let status_color = if over_limit {
+            colors.warning
+        } else {
+            colors.text_primary
+        };
+        let help = format!("{}；{}", display.estimate_label(), display.capacity_label());
+        div()
             .id("context-usage-tooltip")
             .debug_selector(|| "context-usage-tooltip".into())
-            .w(px(288.0))
+            .w(px(Layout::CONTEXT_USAGE_WIDTH))
+            .p(px(Layout::CONTEXT_USAGE_PADDING))
             .flex()
             .flex_col()
-            .gap_1()
-            .px_3()
-            .py_2()
-            .rounded_md()
+            .gap_3()
+            .rounded(px(Layout::TOOL_DETAIL_RADIUS))
             .border_1()
             .border_color(colors.border_subtle)
             .bg(colors.bg_elevated)
@@ -987,37 +1051,111 @@ impl ConversationStream {
             .text_color(colors.text_secondary)
             .child(
                 div()
-                    .debug_selector(|| "context-usage-tooltip-title".into())
-                    .text_color(colors.text_primary)
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("上下文窗口"),
-            );
-        let tooltip = if let Some(percentage) = display.percentage_label() {
-            tooltip.child(
-                div()
-                    .debug_selector(|| "context-usage-tooltip-percentage".into())
-                    .text_color(colors.accent)
-                    .child(percentage),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .debug_selector(|| "context-usage-tooltip-title".into())
+                            .flex_1()
+                            .text_size(px(Typography::BODY))
+                            .text_color(colors.text_primary)
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("上下文用量"),
+                    )
+                    .child(
+                        div()
+                            .id("context-usage-help")
+                            .debug_selector(|| "context-usage-help".into())
+                            .size(px(Layout::ICON_SIZE))
+                            .tooltip(move |_, cx| crate::icons::tooltip(help.clone(), cx))
+                            .child(crate::icons::icon(
+                                crate::icons::Icon::Help,
+                                colors.text_secondary,
+                            )),
+                    )
+                    .child(crate::icons::icon_button(
+                        crate::icons::Icon::Close,
+                        "关闭上下文用量",
+                        colors,
+                        cx.listener(|this, _, window, cx| this.dismiss_context_usage(window, cx)),
+                    )),
             )
-        } else {
-            tooltip
-        };
-        tooltip
             .child(
                 div()
-                    .debug_selector(|| "context-usage-tooltip-compact".into())
-                    .text_color(colors.text_primary)
-                    .child(display.compact_usage_label()),
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .children(display.percentage_value().map(|percentage| {
+                        div()
+                            .debug_selector(|| "context-usage-tooltip-percentage".into())
+                            .text_size(px(Typography::EMPTY_STATE_TITLE))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(status_color)
+                            .child(percentage)
+                    }))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .debug_selector(|| "context-usage-tooltip-estimate".into())
+                                    .child("估算已用 / 配置输入上限"),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| "context-usage-tooltip-compact".into())
+                                    .text_color(colors.text_primary)
+                                    .child(display.compact_usage_label()),
+                            ),
+                    ),
             )
-            .child(
+            .children(display.percentage_value().map(|_| {
                 div()
-                    .debug_selector(|| "context-usage-tooltip-estimate".into())
-                    .child(display.estimate_label()),
+                    .debug_selector(|| "context-usage-bar".into())
+                    .h(px(6.))
+                    .w_full()
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(colors.border_subtle)
+                    .child(
+                        div()
+                            .h_full()
+                            .w(gpui_kit::relative(display.fill_fraction))
+                            .rounded_full()
+                            .bg(if over_limit {
+                                colors.warning
+                            } else {
+                                colors.accent
+                            }),
+                    )
+            }))
+            .children(
+                (display.model_input_limit.is_none() || over_limit).then(|| {
+                    div()
+                        .debug_selector(|| "context-usage-tooltip-capacity".into())
+                        .text_color(if over_limit {
+                            colors.warning
+                        } else {
+                            colors.text_secondary
+                        })
+                        .child(if over_limit {
+                            "已超过配置输入上限"
+                        } else {
+                            "配置输入上限未设置"
+                        })
+                }),
             )
-            .child(
-                div()
-                    .debug_selector(|| "context-usage-tooltip-capacity".into())
-                    .child(display.capacity_label()),
+            .on_key_down(
+                cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "escape" {
+                        this.dismiss_context_usage(window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
             )
     }
 
@@ -1336,10 +1474,16 @@ impl ConversationStream {
 
 impl Render for ConversationStream {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.context_usage_focus.contains_focused(window, cx) {
+            self.context_usage_dismissed = false;
+        }
         if self.context_usage_focus_subscriptions.is_none() {
             let focus = self.context_usage_focus.clone();
             let focus_in = cx.on_focus_in(&focus, window, |_, _, cx| cx.notify());
-            let focus_out = cx.on_focus_out(&focus, window, |_, _, _, cx| cx.notify());
+            let focus_out = cx.on_focus_out(&focus, window, |this, _, _, cx| {
+                this.context_usage_dismissed = false;
+                cx.notify();
+            });
             self.context_usage_focus_subscriptions = Some((focus_in, focus_out));
         }
         if !self.selection_view_initialized {
@@ -1350,6 +1494,7 @@ impl Render for ConversationStream {
             self.actions.restore_focus = false;
             self.focus_composer(window, cx);
         }
+        self.settle_final_presentation(window, cx);
         let render_t0 = Instant::now();
         let colors = theme(cx).colors;
         let counters = self.counters.clone();
@@ -1390,6 +1535,7 @@ impl Render for ConversationStream {
         }
 
         let mut message_anchor_preview = None;
+        let mut message_anchor_rail_overlay = None;
         let mut message_anchor_preview_in_lane = false;
         let body: AnyElement = if self.entries.is_empty() {
             div()
@@ -1418,6 +1564,7 @@ impl Render for ConversationStream {
         } else {
             let (message_anchor_rail, preview, preview_in_lane) =
                 self.render_message_anchor_rail(window, cx);
+            message_anchor_rail_overlay = Some(message_anchor_rail);
             message_anchor_preview = preview;
             message_anchor_preview_in_lane = preview_in_lane;
             div()
@@ -1433,7 +1580,6 @@ impl Render for ConversationStream {
                         .flex()
                         .flex_row()
                         .relative()
-                        .child(message_anchor_rail)
                         .when(preview_in_lane, |row| {
                             row.children(message_anchor_preview.take())
                         })
@@ -1455,19 +1601,23 @@ impl Render for ConversationStream {
                                                   cx| {
                                                 let row_t0 = Instant::now();
                                                 let entry = this.entries.get(index);
-                                                let item = match entry {
-                                                    Some(entry) => render_stream_entry(
-                                                        entry,
-                                                        index,
-                                                        this.assistant_role_rows
-                                                            .get(index)
-                                                            .copied()
-                                                            .unwrap_or(false),
-                                                        window,
-                                                        cx,
-                                                        &this.selection_focus,
-                                                    ),
-                                                    None => div().into_any_element(),
+                                                let item = if this.process_entry_hidden(index, cx) {
+                                                    div().h_0().into_any_element()
+                                                } else {
+                                                    match entry {
+                                                        Some(entry) => render_stream_entry(
+                                                            entry,
+                                                            index,
+                                                            this.assistant_role_rows
+                                                                .get(index)
+                                                                .copied()
+                                                                .unwrap_or(false),
+                                                            window,
+                                                            cx,
+                                                            &this.selection_focus,
+                                                        ),
+                                                        None => div().into_any_element(),
+                                                    }
                                                 };
                                                 this.counters.record_row_callback(
                                                     row_t0.elapsed().as_nanos(),
@@ -1538,6 +1688,7 @@ impl Render for ConversationStream {
                             .when(!self.entries.is_empty(), |body| body.h_full())
                             .child(body),
                     )
+                    .children(message_anchor_rail_overlay)
                     .children(if message_anchor_preview_in_lane {
                         None
                     } else {

@@ -29,6 +29,7 @@ mod branch_controller;
 mod codex_agent;
 mod commit_controller;
 mod diff_controller;
+mod model_catalog;
 mod pricing_controller;
 mod thread_reload;
 mod trusted_action;

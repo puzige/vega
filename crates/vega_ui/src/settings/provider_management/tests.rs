@@ -12,6 +12,18 @@ impl Render for Harness {
 }
 fn click(cx: &mut TestAppContext, window: WindowHandle<Harness>, selector: &'static str) {
     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    if selector.starts_with("model-test-") && visual.debug_bounds(selector).is_none() {
+        let more = visual.debug_bounds("model-more-0").expect("model menu");
+        visual.simulate_click(more.center(), Default::default());
+        visual.run_until_parked();
+    }
+    if matches!(selector, "provider-up" | "provider-down")
+        && visual.debug_bounds(selector).is_none()
+    {
+        let more = visual.debug_bounds("provider-more").expect("provider menu");
+        visual.simulate_click(more.center(), Default::default());
+        visual.run_until_parked();
+    }
     let bounds = visual
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing {selector}"));
@@ -646,6 +658,11 @@ async fn issue81_provider_settings_remove_pi_import_and_keep_credential_states(
     assert!(visual.debug_bounds("provider-edit").is_some());
     assert!(visual.debug_bounds("provider-enabled").is_some());
     assert!(visual.debug_bounds("provider-test-help-discover").is_some());
+    if visual.debug_bounds("provider-test-help-model-0").is_none() {
+        let more = visual.debug_bounds("model-more-0").unwrap();
+        visual.simulate_click(more.center(), Default::default());
+        visual.run_until_parked();
+    }
     assert!(visual.debug_bounds("provider-test-help-model-0").is_some());
     let saved = config::read_from(&root.path().join("config.toml")).unwrap();
     assert!(saved.providers[0].enabled);
@@ -708,6 +725,11 @@ async fn issue81_provider_settings_remove_pi_import_and_keep_credential_states(
             .debug_bounds("provider-test-help-discover-tooltip")
             .is_some()
     );
+    if visual.debug_bounds("model-test-0").is_none() {
+        let more = visual.debug_bounds("model-more-0").unwrap();
+        visual.simulate_click(more.center(), Default::default());
+        visual.run_until_parked();
+    }
     let model_focus = view.read_with(cx, |view, _| view.provider_test_help_focuses[1].clone());
     window
         .update(cx, |_, window, cx| model_focus.focus(window, cx))
@@ -725,9 +747,9 @@ async fn issue81_provider_settings_remove_pi_import_and_keep_credential_states(
     );
     let test_button = visual.debug_bounds("model-test-0").unwrap();
     let model_help = visual.debug_bounds("provider-test-help-model-0").unwrap();
-    let edit_button = visual.debug_bounds("model-edit-0").unwrap();
+    let menu = visual.debug_bounds("model-menu-0").unwrap();
     assert!(test_button.right() <= model_help.left());
-    assert!(model_help.right() <= edit_button.left());
+    assert!(model_help.right() <= menu.right());
 
     view.update(cx, |view, cx| {
         view.provider_management.selected = Some("Missing".into());
@@ -737,6 +759,11 @@ async fn issue81_provider_settings_remove_pi_import_and_keep_credential_states(
     assert!(visual.debug_bounds("provider-key-stored").is_none());
     assert!(visual.debug_bounds("provider-key-missing").is_some());
     assert!(visual.debug_bounds("provider-import-pi").is_none());
+    if visual.debug_bounds("provider-test-help-model-0").is_none() {
+        let more = visual.debug_bounds("model-more-0").unwrap();
+        visual.simulate_click(more.center(), Default::default());
+        visual.run_until_parked();
+    }
     assert!(visual.debug_bounds("provider-test-help-model-0").is_some());
 
     cx.update(|cx| {
@@ -786,6 +813,11 @@ async fn issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes(
                     "provider-test-help-model-0-tooltip-body",
                 ),
             ] {
+                if index == 1 && visual.debug_bounds(control_selector).is_none() {
+                    let more = visual.debug_bounds("model-more-0").unwrap();
+                    visual.simulate_click(more.center(), Default::default());
+                    visual.run_until_parked();
+                }
                 let control = visual
                     .debug_bounds(control_selector)
                     .unwrap_or_else(|| panic!("missing {control_selector}"));
@@ -797,7 +829,7 @@ async fn issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes(
                     body_selector,
                     viewport,
                 );
-                if width == 600.0 {
+                if f32::from(body.size.width) < 224.0 {
                     assert!(
                         body.size.height > px(28.5),
                         "narrow tooltip copy must wrap instead of clipping: body={body:?} viewport={viewport:?}"
@@ -821,7 +853,7 @@ async fn issue82_provider_tooltip_remains_visible_in_narrow_windows_and_themes(
                     body_selector,
                     viewport,
                 );
-                if width == 600.0 {
+                if f32::from(body.size.width) < 224.0 {
                     assert!(
                         body.size.height > px(28.5),
                         "narrow tooltip copy must wrap instead of clipping: body={body:?} viewport={viewport:?}"
@@ -1128,4 +1160,212 @@ async fn issue296_v2_discovery_candidates_keep_complete_shared_prefix_ids(cx: &m
         }
         assert!(second.top() >= first.bottom());
     }
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_narrow_provider_navigation_and_menu_escape_keep_identity(
+    cx: &mut TestAppContext,
+) {
+    let (_owned, view, window) = mounted_provider_credential_states_fixture(cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(size(px(800.), px(700.)));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("provider-detail-viewport").is_some());
+    click(cx, window, "provider-list-back");
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("provider-detail-viewport")
+            .is_none()
+    );
+    view.update(cx, |view, cx| {
+        view.provider_command(Command::Select("Stored".into()), cx)
+    });
+    cx.run_until_parked();
+    click(cx, window, "provider-more");
+    assert!(view.read_with(cx, |view, _| view.provider_management.menu.is_some()));
+    cx.simulate_keystrokes(window.into(), "escape");
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.provider_management.menu.is_none()));
+    assert!(
+        window
+            .update(cx, |_, window, cx| view
+                .read(cx)
+                .provider_management
+                .menu_return_focus
+                .as_ref()
+                .is_some_and(|focus| focus.is_focused(window)))
+            .unwrap()
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.provider_management.selected.clone()),
+        Some("Stored".into())
+    );
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_provider_switch_keeps_unsaved_form_until_discard(cx: &mut TestAppContext) {
+    let (_owned, view, window) = mounted_provider_credential_states_fixture(cx);
+    click(cx, window, "provider-edit");
+    view.update(cx, |view, cx| {
+        view.name_input
+            .update(cx, |input, cx| input.set_text("Unsaved provider", cx));
+        view.provider_command(Command::Select("Missing".into()), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.provider_management.selected.clone()),
+        Some("Stored".into())
+    );
+    assert!(
+        view.read_with(cx, |view, cx| view.name_input.read(cx).text()
+            == "Unsaved provider")
+    );
+    click(cx, window, "settings-stay");
+    assert!(view.read_with(cx, |view, _| view.provider_management.form));
+    view.update(cx, |view, cx| {
+        view.provider_command(Command::Select("Missing".into()), cx)
+    });
+    cx.run_until_parked();
+    click(cx, window, "settings-discard-before-leave");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.provider_management.selected.clone()),
+        Some("Missing".into())
+    );
+    assert!(!view.read_with(cx, |view, _| view.provider_management.form));
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_provider_help_pins_and_escape_returns_focus(cx: &mut TestAppContext) {
+    let (_owned, view, window) = mounted_provider_credential_states_fixture(cx);
+    click(cx, window, "provider-test-help-discover");
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_mouse_move(gpui_kit::point(px(1.), px(1.)), None, Default::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("provider-test-help-discover-tooltip")
+            .is_some()
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.provider_management.test_help_pinned),
+        Some(0)
+    );
+    cx.simulate_keystrokes(window.into(), "escape");
+    cx.run_until_parked();
+    assert!(
+        VisualTestContext::from_window(window.into(), cx)
+            .debug_bounds("provider-test-help-discover-tooltip")
+            .is_none()
+    );
+    assert!(
+        window
+            .update(cx, |_, window, cx| view.read(cx).provider_test_help_focuses
+                [0]
+            .is_focused(window))
+            .unwrap()
+    );
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_delete_confirmation_is_bound_to_provider_and_model(cx: &mut TestAppContext) {
+    let (_owned, view, window) = mounted_provider_credential_states_fixture(cx);
+    view.update(cx, |view, cx| {
+        view.config.providers[1].models = vec!["stored-model".into()];
+        cx.notify();
+    });
+    cx.run_until_parked();
+    click(cx, window, "model-more-0");
+    click(cx, window, "model-delete-0");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.provider_management.delete_model.clone()),
+        Some(("Stored".into(), "stored-model".into()))
+    );
+    view.update(cx, |view, cx| {
+        view.provider_command(Command::Select("Missing".into()), cx)
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| {
+        view.provider_management.delete_model.is_none()
+    }));
+    view.update(cx, |view, cx| {
+        view.provider_command(
+            Command::DeleteModel("Stored".into(), "stored-model".into()),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| {
+        view.config
+            .providers
+            .iter()
+            .all(|p| p.models == ["stored-model"])
+    }));
+    assert!(!view.read_with(cx, |view, _| view.provider_management.saving));
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_capacity_save_ack_keeps_editor_and_pending_navigation(
+    cx: &mut TestAppContext,
+) {
+    let (_owned, view, window) = mounted_provider_credential_states_fixture(cx);
+    let saves = Arc::new(std::sync::Mutex::new(Vec::new()));
+    cx.update(|cx| {
+        let saves = saves.clone();
+        cx.subscribe(&view, move |_, request: &ModelContextSaveRequested, _| {
+            saves.lock().unwrap().push(request.clone());
+        })
+        .detach();
+    });
+    view.update(cx, |view, cx| {
+        view.provider_command(Command::EditModel("stored-model".into()), cx);
+        let editor = view.provider_management.model_editor.as_mut().unwrap();
+        editor.source = PolicySource::Saved;
+        editor.loaded_values = Some((Some(1000), Some(200), true));
+        editor
+            .input_limit
+            .update(cx, |input, cx| input.set_text("2000", cx));
+        editor
+            .output_limit
+            .update(cx, |input, cx| input.set_text("200", cx));
+    });
+    cx.run_until_parked();
+    click(cx, window, "model-save");
+    let request = saves.lock().unwrap().last().cloned().unwrap();
+    click(cx, window, "settings-nav-general");
+    click(cx, window, "settings-discard-before-leave");
+    assert!(view.read_with(cx, |view, _| {
+        view.provider_management
+            .model_editor
+            .as_ref()
+            .is_some_and(|e| e.saving)
+    }));
+    assert_eq!(view.read_with(cx, |view, _| view.section), 0);
+    view.update(cx, |view, cx| {
+        view.apply_model_context_saved(&request, Err("owned save failure".into()), cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.section), 0);
+    assert!(view.read_with(cx, |view, _| view.error.as_deref()
+        == Some("owned save failure")));
+    click(cx, window, "settings-save-before-leave");
+    let request = saves.lock().unwrap().last().cloned().unwrap();
+    view.update(cx, |view, cx| {
+        view.apply_model_context_saved(
+            &request,
+            Ok(ModelContextPolicy {
+                provider: request.provider.clone(),
+                model: request.model.clone(),
+                input_limit: request.input_limit,
+                output_reserve: request.output_limit,
+                automatic_compaction: request.automatic_compaction,
+                updated_at: 1,
+            }),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.section), 1);
+    assert!(view.read_with(cx, |view, _| {
+        view.provider_management.model_editor.is_none()
+    }));
 }

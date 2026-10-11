@@ -1998,10 +1998,11 @@ fn summary_store_metrics(
     metrics: &SummaryDiagnosticMetrics,
 ) -> vega_store::run_diagnostics::DiagnosticMetrics {
     vega_store::run_diagnostics::DiagnosticMetrics {
-        stop_reason: metrics.stop_reason.map(|reason| match reason {
-            StopReason::End => vega_store::run_diagnostics::DiagnosticStopReason::End,
-            StopReason::ToolUse => vega_store::run_diagnostics::DiagnosticStopReason::ToolUse,
-            StopReason::Length => vega_store::run_diagnostics::DiagnosticStopReason::Length,
+        stop_reason: metrics.stop_reason.and_then(|reason| match reason {
+            StopReason::End => Some(vega_store::run_diagnostics::DiagnosticStopReason::End),
+            StopReason::ToolUse => Some(vega_store::run_diagnostics::DiagnosticStopReason::ToolUse),
+            StopReason::Length => Some(vega_store::run_diagnostics::DiagnosticStopReason::Length),
+            StopReason::Unknown => None,
         }),
         input_tokens: metrics.input_tokens,
         output_tokens: metrics.output_tokens,

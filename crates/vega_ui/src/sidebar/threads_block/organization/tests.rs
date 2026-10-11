@@ -1407,7 +1407,7 @@ async fn r157_task_right_click_reuses_full_menu_and_keyboard_actions(
     assert!(absent(&f, cx, &pin_selector));
     assert_eq!(
         bounds(&f, cx, &trigger_selector).size.width,
-        gpui_kit::px(28.)
+        gpui_kit::px(24.)
     );
     cx.simulate_keystrokes(f.window.into(), "enter");
     cx.run_until_parked();
@@ -2689,4 +2689,37 @@ async fn issue150_missing_liveness_projection_shows_no_indicator(
         cx,
         format!("project-thread-running-{}", f.first.id)
     ));
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_footer_and_running_action_lane_have_stable_geometry(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let f = fixture(cx);
+    cx.update(|cx| set_thread_running(&f.first.id, true, cx));
+    cx.run_until_parked();
+    let footer = bounds(&f, cx, "sidebar-settings-footer");
+    let button = bounds(&f, cx, "sidebar-settings-surface");
+    assert_eq!(footer.size.height, px(48.));
+    assert_eq!(button.top() - footer.top(), px(4.));
+    assert_eq!(footer.bottom() - button.bottom(), px(12.));
+    let row = bounds(&f, cx, format!("project-thread-row-{}", f.first.id));
+    let title = bounds(&f, cx, format!("project-thread-row-title-{}", f.first.id));
+    let running = bounds(&f, cx, format!("project-thread-running-{}", f.first.id));
+    assert_eq!(row.right() - running.right(), px(8.));
+    assert_eq!(running.size.width, px(24.));
+    let mut visual = gpui_kit::VisualTestContext::from_window(f.window.into(), cx);
+    visual.simulate_mouse_move(row.center(), None, gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(absent(
+        &f,
+        cx,
+        format!("project-thread-running-{}", f.first.id)
+    ));
+    let hovered_title = bounds(&f, cx, format!("project-thread-row-title-{}", f.first.id));
+    assert_eq!(title, hovered_title);
+    let pin = bounds(&f, cx, format!("project-thread-pin-{}", f.first.id));
+    let archive = bounds(&f, cx, format!("project-thread-archive-{}", f.first.id));
+    assert_eq!(archive.left() - pin.right(), px(4.));
+    assert_eq!(row.right() - archive.right(), px(8.));
 }

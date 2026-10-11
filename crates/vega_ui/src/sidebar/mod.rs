@@ -702,7 +702,9 @@ impl Sidebar {
         div()
             .w_full()
             .flex_shrink_0()
+            .debug_selector(|| "sidebar-settings-footer".into())
             .px(px(Layout::SIDEBAR_PADDING))
+            .pt(px(Layout::SIDEBAR_FOOTER_TOP))
             .pb(px(Layout::SIDEBAR_PADDING))
             .child(
                 div()
@@ -775,7 +777,6 @@ impl Render for Sidebar {
                     .flex_1()
                     .min_h_0()
                     .px(px(Layout::SIDEBAR_PADDING))
-                    .pb(px(Layout::SIDEBAR_PADDING))
                     .gap_3()
                     .child(self.render_brand(&colors, cx))
                     .child(self.render_new_task(cx, &colors))

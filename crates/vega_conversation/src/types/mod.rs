@@ -23,6 +23,7 @@ mod meter;
 mod permission;
 mod pricing;
 mod reasoning;
+mod response;
 mod skills;
 mod thread;
 mod tool_calls;
@@ -45,6 +46,7 @@ pub use meter::*;
 pub use permission::*;
 pub use pricing::*;
 pub use reasoning::*;
+pub use response::*;
 pub use skills::*;
 pub use thread::*;
 pub use tool_calls::*;
@@ -79,3 +81,6 @@ pub use scroll::*;
 
 mod updater;
 pub use updater::*;
+
+mod model_catalog;
+pub use model_catalog::*;

@@ -33,6 +33,7 @@ mod issue148_long_session_scroll;
 mod issue151_latest_activity;
 mod issue296_desktop_ui;
 mod issue296_hierarchy_v2;
+mod issue296_phases;
 mod issue64_context_usage;
 mod issue70_tool_activity;
 mod issue72_message_anchor_navigation;

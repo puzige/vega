@@ -218,6 +218,9 @@ mod agents;
 /// must be cached by the parent across re-renders (it is rebuilt — reloading
 mod helpers;
 mod mcp;
+mod model_catalog;
+mod model_configuration;
+use model_configuration::SettingsDestination;
 mod preferences;
 mod provider_management;
 mod reasoning_render;

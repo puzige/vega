@@ -247,7 +247,7 @@ impl DiagnosticsWriter {
             occurred_at: now_ms(),
             duration_ms: attempt.duration_ms,
             metrics: DiagnosticMetrics {
-                stop_reason: attempt.metrics.stop_reason.map(stop_reason),
+                stop_reason: attempt.metrics.stop_reason.and_then(stop_reason),
                 input_tokens: attempt.metrics.input_tokens,
                 output_tokens: attempt.metrics.output_tokens,
                 cache_read_tokens: attempt.metrics.cache_read_tokens,
@@ -310,11 +310,12 @@ fn terminal_failure(state: DiagnosticState) -> Option<DiagnosticFailureCode> {
     }
 }
 
-fn stop_reason(value: StopReason) -> DiagnosticStopReason {
+fn stop_reason(value: StopReason) -> Option<DiagnosticStopReason> {
     match value {
-        StopReason::End => DiagnosticStopReason::End,
-        StopReason::ToolUse => DiagnosticStopReason::ToolUse,
-        StopReason::Length => DiagnosticStopReason::Length,
+        StopReason::End => Some(DiagnosticStopReason::End),
+        StopReason::ToolUse => Some(DiagnosticStopReason::ToolUse),
+        StopReason::Length => Some(DiagnosticStopReason::Length),
+        StopReason::Unknown => None,
     }
 }
 

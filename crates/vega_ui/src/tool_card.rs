@@ -393,8 +393,6 @@ impl ToolCard {
         Some((input.tool()?, input.permission_target()?))
     }
 
-    /// #151: the newest live activity unit is expanded; older units step down.
-    /// Pure UI state, never persisted and never part of the safe projection.
     pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut gpui_kit::Context<Self>) {
         if self.expanded != expanded {
             self.expanded = expanded;
@@ -416,7 +414,9 @@ impl ToolCard {
         Layout::DISCLOSURE_HEADER_HEIGHT
             + if detail_rows > 0 {
                 Layout::PROCESS_ITEM_GAP
-                    + (detail_rows as f32 * ROW_HEIGHT).min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
+                    + (detail_rows as f32 * ROW_HEIGHT + Layout::TOOL_DETAIL_PADDING * 2.)
+                        .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
+                    + 2.
             } else {
                 0.
             }
@@ -494,7 +494,6 @@ impl ToolCard {
     }
 
     /// #151: whether this card's bounded detail is currently disclosed.
-    #[cfg(test)]
     pub(crate) fn is_expanded(&self) -> bool {
         self.expanded
     }
@@ -598,7 +597,7 @@ impl ToolCard {
                 div()
                     .debug_selector(move || title_selector.clone())
                     .min_w_0()
-                    .flex_1()
+                    .flex_shrink(1.)
                     .truncate()
                     .text_size(px(Typography::BODY))
                     .text_color(colors.text_secondary)
@@ -645,6 +644,7 @@ impl ToolCard {
                     detail_id,
                     &detail_scroll,
                     &colors,
+                    cx,
                 ))
             })
             .into_any_element()
@@ -895,7 +895,13 @@ impl ToolCard {
             Some(ToolCardInputProjection::Bash { command }) => Some(ToolDetail {
                 title: Some("Shell".to_string()),
                 command: Some(format!("$ {command}")),
-                output: self.output_rows.clone(),
+                output: if self.output_rows.is_empty()
+                    && self.activity_state() != ToolActivityState::Active
+                {
+                    vec!["无输出".to_string()]
+                } else {
+                    self.output_rows.clone()
+                },
                 footer: Some((self.terminal_footer(), self.activity_state())),
             }),
             Some(ToolCardInputProjection::ReadOnly { .. }) if !self.output_rows.is_empty() => {
@@ -1065,49 +1071,105 @@ fn render_detail(
     id: String,
     scroll: &ScrollHandle,
     colors: &ThemeColors,
+    cx: &App,
 ) -> AnyElement {
     let debug_selector = selector.clone();
     let mut rows = Vec::with_capacity(detail.logical_rows());
     if let Some(title) = detail.title {
-        rows.push(detail_row(title, colors.text_primary, false));
+        rows.push(detail_row(
+            "tool-detail-type",
+            title,
+            colors.text_secondary,
+            false,
+        ));
     }
     if let Some(command) = detail.command {
-        rows.push(detail_row(command, colors.text_primary, true));
+        rows.push(detail_row(
+            "tool-detail-command",
+            command,
+            colors.text_primary,
+            true,
+        ));
     }
-    rows.extend(
-        detail
-            .output
-            .into_iter()
-            .map(|line| detail_row(line, colors.text_secondary, true)),
-    );
+    rows.extend(detail.output.into_iter().enumerate().map(|(index, line)| {
+        detail_row(
+            gpui_kit::SharedString::from(format!("tool-output-{index}")),
+            line,
+            colors.text_primary,
+            true,
+        )
+    }));
     if let Some((footer, state)) = detail.footer {
-        rows.push(detail_row(footer, state.terminal_color(colors), false));
+        rows.push(
+            div()
+                .w_full()
+                .flex()
+                .justify_end()
+                .child(detail_row(
+                    "tool-detail-result",
+                    footer,
+                    if state == ToolActivityState::Success {
+                        colors.text_secondary
+                    } else {
+                        state.terminal_color(colors)
+                    },
+                    false,
+                ))
+                .into_any_element(),
+        );
     }
     div()
-        .id(gpui_kit::SharedString::from(id))
-        .debug_selector(move || debug_selector.clone())
-        .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
-        .track_scroll(scroll)
-        .on_scroll_wheel(contain_disclosure_scroll(scroll))
+        .relative()
         .w_full()
         .min_w_0()
         .mt(px(Layout::PROCESS_ITEM_GAP))
-        .overflow_x_hidden()
-        .overflow_y_scroll()
-        .flex()
-        .flex_col()
-        .children(rows)
+        .rounded(px(Layout::TOOL_DETAIL_RADIUS))
+        .bg(colors.code_bg)
+        .border_1()
+        .border_color(colors.border_subtle)
+        .child(
+            div()
+                .id(gpui_kit::SharedString::from(id))
+                .debug_selector(move || debug_selector.clone())
+                .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
+                .track_scroll(scroll)
+                .on_scroll_wheel(contain_disclosure_scroll(scroll))
+                .w_full()
+                .min_w_0()
+                .p(px(Layout::TOOL_DETAIL_PADDING))
+                .pr(px(
+                    Layout::TOOL_DETAIL_PADDING + Layout::DISCLOSURE_SCROLLBAR_GUTTER
+                ))
+                .overflow_x_hidden()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .children(rows),
+        )
+        .child(disclosure_scrollbar(scroll, cx))
         .into_any_element()
 }
 
-fn detail_row(text: String, color: gpui_kit::Rgba, code: bool) -> AnyElement {
+pub(crate) fn disclosure_scrollbar(scroll: &ScrollHandle, cx: &App) -> gpui_kit::base::Scrollbar {
+    gpui_kit::base::Scrollbar::vertical(scroll).mode(if cx.should_auto_hide_scrollbars() {
+        gpui_kit::base::ScrollbarMode::Hover
+    } else {
+        gpui_kit::base::ScrollbarMode::Always
+    })
+}
+
+fn detail_row(
+    id: impl Into<gpui_kit::ElementId>,
+    text: String,
+    color: gpui_kit::Rgba,
+    code: bool,
+) -> AnyElement {
     div()
         .w_full()
         .min_w_0()
         .min_h(px(ROW_HEIGHT))
         .flex_shrink_0()
-        .px_2()
-        .py_1()
+        .line_height(gpui_kit::relative(Typography::CODE_LINE_HEIGHT))
         .when(code, |row| row.font_family(MONOFONT))
         .text_size(px(if code {
             Typography::CODE
@@ -1115,7 +1177,7 @@ fn detail_row(text: String, color: gpui_kit::Rgba, code: bool) -> AnyElement {
             Typography::BODY
         }))
         .text_color(color)
-        .child(text)
+        .child(gpui_kit::base::SelectableText::new(id, text))
         .into_any_element()
 }
 

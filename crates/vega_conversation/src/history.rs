@@ -33,6 +33,11 @@ use crate::types::{
 /// segments; legacy audits retain their original text-then-tools order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryEntry {
+    AssistantResponseMetadata {
+        seq: i64,
+        message_id: String,
+        response: crate::types::AssistantResponseMetadata,
+    },
     /// Durable user text (the synthetic approval instruction is controller
     /// capability, not conversation content, and is dropped — same rule as
     /// Composer history).
@@ -530,6 +535,32 @@ fn project_rows(page: &MessagePage) -> Result<Vec<HistoryEntry>, ConversationErr
                         ))
                     })?;
                     let calls = calls_by_message.remove(row.id.as_str()).unwrap_or_default();
+                    for response in page
+                        .assistant_responses
+                        .iter()
+                        .filter(|response| response.message_id == row.id)
+                    {
+                        let kind = match response.kind.as_str() {
+                            "commentary" => crate::types::AssistantResponseKind::Commentary,
+                            "final" if status == AssistantStatus::Done => {
+                                crate::types::AssistantResponseKind::Final
+                            }
+                            _ => continue,
+                        };
+                        let response = crate::types::AssistantResponseMetadata {
+                            response_id: response.response_id.clone(),
+                            text_start_bytes: response.text_start_bytes,
+                            text_end_bytes: response.text_end_bytes,
+                            kind,
+                        };
+                        if response.is_valid_for(&row.content) {
+                            entries.push(HistoryEntry::AssistantResponseMetadata {
+                                seq: row.seq,
+                                message_id: row.id.clone(),
+                                response,
+                            });
+                        }
+                    }
                     project_assistant(
                         row,
                         status,
@@ -795,6 +826,7 @@ mod issue287_codex_acp_history_tests {
                 plan_reviewed_at: None,
             }],
             execution_durations_ms: HashMap::new(),
+            assistant_responses: Vec::new(),
             older_cursor: None,
             newer_cursor: None,
             tool_calls: vec![call],
@@ -914,6 +946,7 @@ mod issue146_tests {
                 plan_reviewed_at: None,
             }],
             execution_durations_ms: HashMap::from([("assistant".into(), 10_001)]),
+            assistant_responses: Vec::new(),
             older_cursor: None,
             newer_cursor: None,
             tool_calls: vec![PageToolCall {

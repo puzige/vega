@@ -1465,6 +1465,7 @@ where
         } else {
             None
         };
+        let response_text_start = final_text.len();
         let attempt_id = ulid::Ulid::generate().to_string();
         let attempt_started_at = std::time::Instant::now();
         let mut diagnostic_metrics = RuntimeDiagnosticMetrics::default();
@@ -1935,11 +1936,37 @@ where
         } else {
             None
         };
+        let response_kind = if !calls.is_empty() {
+            Some(RuntimeAssistantResponseKind::Commentary)
+        } else if stop_reason == Some(StopReason::End)
+            && anchor_protocol_valid
+            && !assistant_text.trim().is_empty()
+        {
+            Some(RuntimeAssistantResponseKind::Final)
+        } else {
+            None
+        };
+        if final_text.len() > response_text_start
+            && let Some(kind) = response_kind
+        {
+            emit!(
+                events,
+                sink,
+                RuntimeEvent::AssistantResponseCompleted {
+                    response_id: attempt_id.clone(),
+                    text_start_bytes: response_text_start,
+                    text_end_bytes: final_text.len(),
+                    kind,
+                }
+            );
+        }
         if calls.is_empty() {
             messages.push(ChatMessage::new(ChatRole::Assistant, assistant_text));
             let finish = match stop_reason.unwrap_or(StopReason::End) {
                 StopReason::Length => RuntimeFinishReason::Length,
-                StopReason::End | StopReason::ToolUse => RuntimeFinishReason::End,
+                StopReason::End | StopReason::ToolUse | StopReason::Unknown => {
+                    RuntimeFinishReason::End
+                }
             };
             emit!(events, sink, RuntimeEvent::Finished(finish));
             return Ok(outcome(

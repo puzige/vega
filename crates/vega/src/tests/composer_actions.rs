@@ -239,11 +239,10 @@ async fn i61_provider_reasoning_reaches_live_ui_without_persisting_as_answer(
     assert!(visual.debug_bounds("thinking-content").is_some());
 }
 
-/// #151 R151-1 in the real app: the newest live thinking block discloses its
-/// bounded reasoning with no user action. This round emits only reasoning and
-/// then ends, so nothing newer supersedes the block before the assertion.
 #[gpui_kit::test]
-async fn i61_newest_live_thinking_block_is_expanded_by_default(cx: &mut gpui_kit::TestAppContext) {
+async fn i61_v3_thinking_only_completion_keeps_summary_with_collapsed_details(
+    cx: &mut gpui_kit::TestAppContext,
+) {
     cx.executor().allow_parking();
     use vega_runtime::{ProviderEvent, ScriptStep, StopReason};
     let provider = Arc::new(vega_runtime::MockProvider::new_rounds(vec![vec![
@@ -257,9 +256,6 @@ async fn i61_newest_live_thinking_block_is_expanded_by_default(cx: &mut gpui_kit
     let f = fixture(cx, provider.clone());
     edit(&f, "show me the newest reasoning", cx);
     cx.simulate_keystrokes(f.window.into(), "cmd-enter");
-    // This round emits only reasoning and then ends: no text delta and no tool
-    // call can supersede it, so the block stays the current activity unit and
-    // must be open with no user action.
     pump_test_app(cx, |cx| {
         provider.requests().len() == 1
             && f.root
@@ -267,17 +263,14 @@ async fn i61_newest_live_thinking_block_is_expanded_by_default(cx: &mut gpui_kit
     });
     let mut visual = VisualTestContext::from_window(f.window.into(), cx);
     assert!(visual.debug_bounds("run-activity-toggle").is_some());
-    assert!(visual.debug_bounds("thinking-block").is_none());
-    let run_toggle = visual
-        .debug_bounds("run-activity-toggle")
-        .expect("terminal run header");
-    visual.simulate_click(run_toggle.center(), gpui_kit::Modifiers::default());
-    visual.run_until_parked();
     assert!(visual.debug_bounds("thinking-block").is_some());
-    assert!(
-        visual.debug_bounds("thinking-content").is_some(),
-        "#151 R151-1: the newest reasoning block stays expanded inside the reopened run"
-    );
+    assert!(visual.debug_bounds("thinking-content").is_none());
+    let toggle = visual
+        .debug_bounds("thinking-toggle")
+        .expect("thought header");
+    visual.simulate_click(toggle.center(), gpui_kit::Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("thinking-content").is_some());
 }
 
 #[gpui_kit::test]
@@ -500,8 +493,24 @@ async fn issue64_production_root_tab_reaches_context_ring_after_attachment(
     edit(&f, "", cx);
     cx.simulate_keystrokes(f.window.into(), "tab tab");
     visual.run_until_parked();
-    assert!(visual.debug_bounds("composer-context-usage").is_none());
+    assert!(visual.debug_bounds("composer-context-usage").is_some());
+    assert!(visual.debug_bounds("context-usage-tooltip-title").is_some());
+    assert!(
+        visual
+            .debug_bounds("context-usage-tooltip-compact")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("context-usage-tooltip-percentage")
+            .is_none()
+    );
+    assert!(visual.debug_bounds("context-usage-bar").is_none());
+    cx.simulate_keystrokes(f.window.into(), "shift-tab");
+    visual.run_until_parked();
     assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+    assert!(composer_add_is_visibly_focused(&f, cx));
+    assert_eq!(draft(&f, cx), "");
     assert!(provider.requests().is_empty());
 }
 

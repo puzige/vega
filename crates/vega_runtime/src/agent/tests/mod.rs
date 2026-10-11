@@ -79,6 +79,7 @@ impl ContextCompactionHook for RecordingCompactionHook {
 mod loop_tools;
 mod mcp_registry;
 mod permission_flow;
+mod response_phases;
 mod skills;
 mod skills_s16;
 mod usage_limits;

@@ -670,10 +670,20 @@ impl fmt::Debug for RuntimeToolResult {
     }
 }
 
-/// Runtime-only event stream. `vega_conversation` is responsible for
-/// converting it into the sole UI/store event type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeAssistantResponseKind {
+    Commentary,
+    Final,
+}
+
 #[derive(Clone)]
 pub enum RuntimeEvent {
+    AssistantResponseCompleted {
+        response_id: String,
+        text_start_bytes: usize,
+        text_end_bytes: usize,
+        kind: RuntimeAssistantResponseKind,
+    },
     DiagnosticAttempt(RuntimeDiagnosticAttempt),
     /// Visible assistant delta.
     TextDelta(String),
@@ -768,6 +778,18 @@ pub enum RuntimeEvent {
 impl fmt::Debug for RuntimeEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AssistantResponseCompleted {
+                response_id,
+                text_start_bytes,
+                text_end_bytes,
+                kind,
+            } => formatter
+                .debug_struct("AssistantResponseCompleted")
+                .field("response_id_bytes", &response_id.len())
+                .field("text_start_bytes", text_start_bytes)
+                .field("text_end_bytes", text_end_bytes)
+                .field("kind", kind)
+                .finish(),
             Self::DiagnosticAttempt(attempt) => formatter
                 .debug_tuple("DiagnosticAttempt")
                 .field(attempt)

@@ -48,16 +48,15 @@ async fn issue296_reading_column_and_navigation_do_not_compete(cx: &mut TestAppC
                 "rail must not consume the reading column"
             );
             assert_eq!(list.right(), composer.right());
-            assert_eq!(column.size.width, px((width - 72.).min(768.)));
-            assert_eq!(rail.size.width, px(20.));
-            assert_eq!(rail.right(), list.left());
+            assert_eq!(column.size.width, px((width - 64.).min(768.)));
+            assert_eq!(rail.size.width, px(24.));
+            assert_eq!(rail.size.height, px(144.));
+            assert_eq!(rail.left(), px(4.));
+            assert!((f32::from(rail.center().y - list.center().y)).abs() < 1.);
+            assert!(rail.right() <= list.left());
             let (quads, scale) =
                 visual.update(|window, _| (window.painted_quads(), window.scale_factor()));
-            for (side, color) in [
-                (1., colors.border_subtle),
-                (4., colors.border_subtle),
-                (6., colors.accent),
-            ] {
+            for (side, color) in [(8., colors.border_subtle), (16., colors.text_secondary)] {
                 assert!(
                     quads.iter().any(|quad| {
                         (quad.bounds.size.width.as_f32() / scale - side).abs() < 0.1
@@ -106,7 +105,7 @@ async fn issue296_resume_tail_keeps_reading_viewport_stable(cx: &mut TestAppCont
         .expect("resume control");
     assert_eq!(list, before);
     assert_eq!(button.size.height, px(32.));
-    assert!(button.size.width > button.size.height);
+    assert_eq!(button.size.width, button.size.height);
     assert!(button.top() >= list.bottom());
     assert_eq!(button.top() - navigation.top(), px(4.));
     assert_eq!(navigation.bottom() - button.bottom(), px(4.));
@@ -188,6 +187,12 @@ async fn issue296_process_headers_share_the_control_rhythm(cx: &mut TestAppConte
             );
         }
     });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("tool-activity-child-0").is_none());
+    let group = visual
+        .debug_bounds("tool-activity-group-toggle")
+        .expect("collapsed tool group");
+    visual.simulate_click(group.center(), Modifiers::default());
     visual.run_until_parked();
     for (selector, icon_selector) in [
         ("run-activity-toggle", "run-activity-icon"),
@@ -353,6 +358,13 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
         }
     });
     cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("tool-activity-child-0").is_none());
+    let group = visual
+        .debug_bounds("tool-activity-group-toggle")
+        .expect("collapsed tool group");
+    visual.simulate_click(group.center(), Modifiers::default());
+    visual.run_until_parked();
     for palette in [vega_theme::Theme::light(), vega_theme::Theme::dark()] {
         let colors = palette.colors;
         cx.update(|cx| {
@@ -539,6 +551,12 @@ async fn issue296_disclosure_focus_rings_do_not_move_icons_or_labels(cx: &mut Te
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("tool-activity-child-0").is_none());
+    let group = visual
+        .debug_bounds("tool-activity-group-toggle")
+        .expect("collapsed tool group");
+    visual.simulate_click(group.center(), Modifiers::default());
+    visual.run_until_parked();
     let selectors = [
         (
             "run-activity-toggle",

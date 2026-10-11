@@ -383,7 +383,9 @@ fn finish_reason_maps_to_minimal_stop_reasons() {
         ("function_call", StopReason::ToolUse),
         ("length", StopReason::Length),
         ("max_tokens", StopReason::Length),
-        ("content_filter", StopReason::End),
+        ("content_filter", StopReason::Unknown),
+        ("future_provider_reason", StopReason::Unknown),
+        ("", StopReason::Unknown),
     ] {
         let mut assembler = SseAssembler::default();
         assembler
@@ -790,6 +792,54 @@ fn i71_responses_summary_parts_snapshots_and_refusal() {
         ]
     );
     assert!(parser.terminal);
+}
+
+#[tokio::test]
+async fn issue296_responses_completed_snapshot_remains_a_trusted_final() {
+    let mut parser = responses::Assembler::default();
+    let events = parser
+        .absorb(
+            &serde_json::json!({
+                "type":"response.completed",
+                "response":{"status":"completed","output":[{
+                    "id":"answer", "type":"message", "role":"assistant",
+                    "content":[{"type":"output_text","text":"Complete answer."}]
+                }]}
+            })
+            .to_string(),
+        )
+        .unwrap();
+    let provider = crate::MockProvider::new(vec![crate::ScriptStep::events(events)]);
+    let directory = tempfile::tempdir().unwrap();
+    let tools = vega_tools::Tools::new(directory.path()).unwrap();
+    let result = crate::run_agent(
+        &provider,
+        &tools,
+        crate::AgentRequest {
+            model: MODEL.into(),
+            system_prompt: "Be precise.".into(),
+            history: Vec::new(),
+            max_tokens: None,
+            completed_tool_results: Default::default(),
+            tool_config: Default::default(),
+            pricing_catalog: None,
+            reasoning: None,
+            context_budget: None,
+            context_source_version: None,
+            context_source_fingerprint: None,
+            context_operation_id: None,
+            context_compaction_hook: None,
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.final_text, "Complete answer.");
+    assert!(result.events.iter().any(|event| matches!(event,
+        crate::RuntimeEvent::AssistantResponseCompleted {
+            kind: crate::RuntimeAssistantResponseKind::Final, text_start_bytes: 0, text_end_bytes, ..
+        } if *text_end_bytes == result.final_text.len()
+    )));
 }
 
 #[tokio::test]
