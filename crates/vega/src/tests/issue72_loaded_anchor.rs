@@ -218,20 +218,36 @@ fn selected_marker(visual: &mut VisualTestContext) -> Point<Pixels> {
     let rail = visual
         .debug_bounds("message-anchor-rail")
         .expect("selected rail");
-    let quads = visual.update(|window, _| (window.scale_factor(), window.painted_quads()));
+    let quads = visual.update(|window, cx| {
+        (
+            window.scale_factor(),
+            window.painted_quads(),
+            vega_theme::theme(cx).colors.accent,
+        )
+    });
     let selected = quads
         .1
         .iter()
         .filter(|quad| {
-            (quad.bounds.size.width.0 / quads.0 - 7.0).abs() < 0.1
-                && (quad.bounds.size.height.0 / quads.0 - 7.0).abs() < 0.1
+            (quad.bounds.size.width.0 / quads.0 - vega_theme::Layout::MESSAGE_ANCHOR_ACTIVE_SIZE)
+                .abs()
+                < 0.1
+                && (quad.bounds.size.height.0 / quads.0
+                    - vega_theme::Layout::MESSAGE_ANCHOR_ACTIVE_SIZE)
+                    .abs()
+                    < 0.1
+                && quad.background.as_solid() == Some(quads.2.into())
                 && rail.contains(&point(
                     px(quad.bounds.center().x.0 / quads.0),
                     px(quad.bounds.center().y.0 / quads.0),
                 ))
         })
         .collect::<Vec<_>>();
-    assert_eq!(selected.len(), 1, "one selected durable anchor marker");
+    assert_eq!(
+        selected.len(),
+        2,
+        "one selected durable anchor marker before the current position marker"
+    );
     point(
         px(selected[0].bounds.center().x.0 / quads.0),
         px(selected[0].bounds.center().y.0 / quads.0),

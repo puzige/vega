@@ -42,12 +42,13 @@ impl InteractionExt for Stateful<Div> {
     }
 
     fn interaction_surface(
-        self,
+        mut self,
         rest: Rgba,
         hover: Rgba,
         pressed: Rgba,
         enabled: bool,
     ) -> Interaction {
+        self.style().background = None;
         Interaction {
             base: self.hover(|style| style),
             rest,
@@ -175,15 +176,38 @@ impl Element for Interaction {
             }
             hover_state.update(cx, |state, _| *state = hovered);
         }
-        let target = if hovered { self.hover } else { self.rest };
+        let explicit_fill = self.base.style().background.take();
+        let explicit_background = explicit_fill.as_ref().and_then(|fill| fill.color());
+        let surface = (
+            self.rest,
+            self.hover,
+            self.pressed,
+            self.enabled,
+            explicit_background,
+        );
+        let surface_state = window.use_keyed_state("interaction-surface", cx, |_, _| surface);
+        let semantic_changed = *surface_state.read(cx) != surface;
+        if semantic_changed {
+            surface_state.update(cx, |state, _| *state = surface);
+        }
+        let explicit_solid = explicit_background.and_then(|background| background.as_solid());
+        let rest = explicit_solid.unwrap_or_else(|| self.rest.into());
+        let static_background = explicit_background.filter(|_| explicit_solid.is_none());
+        let target = if hovered { self.hover.into() } else { rest };
         let background = transition(
             "interaction-background",
-            gpui_kit::Hsla::from(target),
-            Transition::new(if self.enabled && self.rest != self.hover {
-                Duration::from_millis(Motion::INTERACTION_DURATION_MS)
-            } else {
-                Duration::ZERO
-            }),
+            target,
+            Transition::new(
+                if self.enabled
+                    && rest != self.hover.into()
+                    && !semantic_changed
+                    && static_background.is_none()
+                {
+                    Duration::from_millis(Motion::INTERACTION_DURATION_MS)
+                } else {
+                    Duration::ZERO
+                },
+            ),
             window,
             cx,
         );
@@ -228,11 +252,16 @@ impl Element for Interaction {
         };
         self.base.style().background = Some(if pressed {
             self.pressed.into()
+        } else if !hovered {
+            static_background
+                .map(Into::into)
+                .unwrap_or_else(|| background.into())
         } else {
             background.into()
         });
         self.base
             .paint(id, inspector, bounds, layout, hitbox, window, cx);
+        self.base.style().background = explicit_fill;
     }
 }
 

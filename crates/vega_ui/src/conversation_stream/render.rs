@@ -1,7 +1,7 @@
 use super::context_usage::ContextUsageDisplay;
 use super::*;
 use crate::interaction::InteractionExt;
-use gpui_kit::{PathBuilder, canvas, point};
+use gpui_kit::{Anchor, AnchoredPositionMode, PathBuilder, anchored, canvas, point};
 // Re-exported so the permission picker's copy is testable from the suite the
 // same way `PICKER_EFFORT_LABEL`/`PICKER_LIST_HEADING` are.
 use super::composer_actions::{
@@ -854,17 +854,27 @@ impl ConversationStream {
                     this.context_usage_tooltip_hovered = *hovered;
                     cx.notify();
                 });
-                gpui_kit::deferred(
-                    div()
-                        .id("context-usage-tooltip-popover")
-                        .debug_selector(|| "context-usage-tooltip-popover".into())
-                        .on_hover(tooltip_hover)
-                        .absolute()
-                        .bottom(gpui_kit::relative(1.0))
-                        .right_0()
-                        .child(Self::context_usage_tooltip_element(&display, colors)),
+                div().absolute().top_0().right_0().size(px(0.0)).child(
+                    div().relative().child(
+                        anchored()
+                            .anchor(Anchor::BottomRight)
+                            .position_mode(AnchoredPositionMode::Local)
+                            .position(point(px(0.0), px(0.0)))
+                            .snap_to_window()
+                            .child(
+                                gpui_kit::deferred(
+                                    div()
+                                        .id("context-usage-tooltip-popover")
+                                        .debug_selector(|| "context-usage-tooltip-popover".into())
+                                        .on_hover(tooltip_hover)
+                                        .child(Self::context_usage_tooltip_element(
+                                            &display, colors,
+                                        )),
+                                )
+                                .with_priority(2),
+                            ),
+                    ),
                 )
-                .with_priority(2)
             }))
             .into_any_element()
     }
@@ -880,7 +890,7 @@ impl ConversationStream {
             .id("composer-context-usage-hover-target")
             .debug_selector(|| "composer-context-usage-hover-target".into())
             .flex_shrink_0()
-            .min_h(px(29.0))
+            .min_h(px(Layout::TITLEBAR_CONTROL_SIZE))
             .flex()
             .items_center()
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {

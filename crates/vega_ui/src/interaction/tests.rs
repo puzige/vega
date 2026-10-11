@@ -11,6 +11,8 @@ use gpui_kit::{
 struct Harness {
     enabled: bool,
     selected: bool,
+    rest: Option<Rgba>,
+    background_override: Option<Rgba>,
     clicks: Rc<Cell<usize>>,
     hover_events: Rc<Cell<usize>>,
     tooltip_calls: Rc<Cell<usize>>,
@@ -35,7 +37,18 @@ impl Render for Harness {
                     .w(px(120.))
                     .h(px(28.))
                     .rounded(px(8.))
-                    .interactive(colors, self.enabled, self.selected)
+                    .map(|control| match self.rest {
+                        Some(rest) => control.bg(colors.brand_primary_strong).interaction_surface(
+                            rest,
+                            colors.bg_hover,
+                            colors.bg_active,
+                            self.enabled,
+                        ),
+                        None => control.interactive(colors, self.enabled, self.selected),
+                    })
+                    .when_some(self.background_override, |control, background| {
+                        control.bg(background)
+                    })
                     .on_hover(move |_, _, _| hover_events.set(hover_events.get() + 1))
                     .tooltip(move |_, cx| {
                         tooltip_calls.set(tooltip_calls.get() + 1);
@@ -66,6 +79,8 @@ fn open(cx: &mut TestAppContext, enabled: bool, selected: bool) -> WindowHandle<
         Harness {
             enabled,
             selected,
+            rest: None,
+            background_override: None,
             clicks: Rc::default(),
             hover_events: Rc::default(),
             tooltip_calls: Rc::default(),
@@ -489,8 +504,7 @@ pub(crate) fn assert_native_control_press<V: Render>(
                                 < 0.1
                     })
                     .filter_map(|quad| quad.background.as_solid())
-                    .filter(|bg| bg.a > 0.)
-                    .last()
+                    .rfind(|bg| bg.a > 0.)
                     .map(Rgba::from)
                     .unwrap_or_default()
             })
@@ -595,4 +609,101 @@ pub(crate) fn assert_native_control_press<V: Render>(
         VisualTestContext::from_window(window.into(), cx).debug_bounds(selector),
         Some(bounds)
     );
+}
+
+#[gpui_kit::test]
+fn issue296_interaction_semantic_changes_snap_and_cancel_hover_motion(cx: &mut TestAppContext) {
+    let window = open(cx, false, false);
+    pointer(window, cx, false);
+    window
+        .update(cx, |view, _, cx| {
+            view.enabled = true;
+            view.rest = Some(vega_theme::LIGHT.accent);
+            cx.notify();
+        })
+        .expect("enable semantic action");
+    cx.run_until_parked();
+    assert_eq!(
+        u32::from(surface(window, cx)),
+        u32::from(vega_theme::LIGHT.accent)
+    );
+    window
+        .update(cx, |view, _, cx| {
+            view.rest = None;
+            cx.notify();
+        })
+        .expect("clear rest");
+    cx.run_until_parked();
+    assert_eq!(surface(window, cx).a, 0.);
+    pointer(window, cx, true);
+    advance(window, cx, 40);
+    assert!(surface(window, cx).a > 0. && surface(window, cx).a < 1.);
+    window
+        .update(cx, |view, _, cx| {
+            view.selected = true;
+            cx.notify();
+        })
+        .expect("select during motion");
+    cx.run_until_parked();
+    assert_eq!(surface(window, cx), vega_theme::LIGHT.bg_active);
+    pointer(window, cx, false);
+    window
+        .update(cx, |view, _, cx| {
+            view.selected = false;
+            cx.notify();
+        })
+        .expect("clear selection");
+    cx.run_until_parked();
+    assert_eq!(surface(window, cx).a, 0.);
+    window
+        .update(cx, |_, window, cx| window.simulate_next_frame(cx))
+        .expect("drain cancelled frame");
+    cx.run_until_parked();
+    assert_eq!(
+        window
+            .update(cx, |_, window, cx| window.simulate_next_frame(cx))
+            .expect("no pending motion"),
+        0
+    );
+    pointer(window, cx, true);
+    advance(window, cx, 40);
+    let resumed = surface(window, cx).a;
+    assert!(resumed > 0. && resumed < 1.);
+    pointer(window, cx, false);
+    advance(window, cx, 35);
+    assert!(surface(window, cx).a > 0. && surface(window, cx).a < resumed);
+}
+
+#[gpui_kit::test]
+fn issue296_interaction_explicit_rest_is_immediate_and_survives_hover(cx: &mut TestAppContext) {
+    let window = open(cx, true, false);
+    pointer(window, cx, false);
+    window
+        .update(cx, |view, _, cx| {
+            view.background_override = Some(vega_theme::LIGHT.accent);
+            cx.notify();
+        })
+        .expect("explicit keyboard surface");
+    cx.run_until_parked();
+    assert_eq!(
+        u32::from(surface(window, cx)),
+        u32::from(vega_theme::LIGHT.accent)
+    );
+    pointer(window, cx, true);
+    advance(window, cx, 120);
+    assert_eq!(surface(window, cx), vega_theme::LIGHT.bg_hover);
+    pointer(window, cx, false);
+    advance(window, cx, 120);
+    assert_eq!(
+        u32::from(surface(window, cx)),
+        u32::from(vega_theme::LIGHT.accent)
+    );
+    window
+        .update(cx, |view, _, cx| {
+            view.background_override = None;
+            cx.notify();
+        })
+        .expect("remove keyboard surface");
+    cx.run_until_parked();
+    assert_eq!(surface(window, cx).a, 0.);
 }

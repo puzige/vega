@@ -170,10 +170,25 @@ async fn issue64_context_usage_known_capacity_shows_hover_tip_without_changing_c
             .debug_bounds("context-usage-tooltip-capacity")
             .is_some()
     );
+    assert_eq!(
+        visual.debug_bounds("composer-shell").unwrap().size.height,
+        original_height
+    );
     let tooltip = visual.debug_bounds("context-usage-tooltip").unwrap();
     visual.simulate_mouse_move(tooltip.center(), None, Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("context-usage-tooltip-title").is_some());
+    assert_eq!(
+        visual.debug_bounds("composer-shell").unwrap().size.height,
+        original_height
+    );
+    visual.simulate_mouse_move(point(px(1.0), px(1.0)), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+    assert_eq!(
+        visual.debug_bounds("composer-shell").unwrap().size.height,
+        original_height
+    );
 }
 
 #[gpui_kit::test]
