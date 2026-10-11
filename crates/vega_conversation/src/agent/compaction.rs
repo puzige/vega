@@ -364,6 +364,7 @@ pub async fn compact_thread_manually_with_credential_reader(
     let thread_id_owned = thread_id.to_string();
     let preparation_thread_id = thread_id_owned.clone();
     let preparation_expected_model = expected_model.to_string();
+    let preparation_credential_reader = credential_reader.clone();
     let (model, source, history) = tokio::task::spawn_blocking({
         let database_path = database_path.clone();
         move || {
@@ -394,6 +395,12 @@ pub async fn compact_thread_manually_with_credential_reader(
             let checkpoint =
                 latest_checkpoint_in_transaction(&transaction, &preparation_thread_id, &model)
                     .map_err(VegaError::Store)?;
+            reject_unprojected_shell_credentials(
+                &source,
+                checkpoint.as_ref(),
+                None,
+                preparation_credential_reader.as_ref(),
+            )?;
             let history =
                 crate::agent::pipeline::primary_history_from_context_source_with_checkpoint(
                     &source,
@@ -921,6 +928,49 @@ impl ContextCompactionHook for ConversationCompactionHook<'_> {
     }
 }
 
+fn reject_unprojected_shell_credentials(
+    source: &vega_store::context_compaction::ContextSource,
+    checkpoint: Option<&vega_store::context_compaction::ContextCheckpoint>,
+    source_owner_id: Option<&str>,
+    credential_reader: Option<&vega_runtime::CredentialReader>,
+) -> Result<(), VegaError> {
+    let checkpoint = checkpoint.filter(|checkpoint| {
+        checkpoint.source_version <= source.source_version
+            && checkpoint.covered_through_seq < source.source_version
+    });
+    let eligible_messages = source
+        .messages
+        .iter()
+        .filter(|message| {
+            message.role == "assistant"
+                && (message.status != "streaming" || Some(message.id.as_str()) == source_owner_id)
+                && checkpoint
+                    .is_none_or(|checkpoint| message.seq as u64 > checkpoint.covered_through_seq)
+        })
+        .map(|message| message.id.as_str())
+        .collect::<HashSet<_>>();
+    let outputs = source
+        .tool_calls
+        .iter()
+        .filter(|call| call.tool == "bash" && eligible_messages.contains(call.message_id.as_str()))
+        .filter_map(|call| call.output_text.as_ref())
+        .collect::<Vec<_>>();
+    if outputs.is_empty() {
+        return Ok(());
+    }
+    let credentials = match credential_reader {
+        Some(reader) => reader().map_err(|_| VegaError::CredentialExposureBlocked)?,
+        None => Vec::new(),
+    };
+    if outputs
+        .iter()
+        .any(|output| vega_runtime::contains_sensitive_credential(output, &credentials))
+    {
+        return Err(VegaError::CredentialExposureBlocked);
+    }
+    Ok(())
+}
+
 struct SummarySourceGuard {
     version: u64,
     fingerprint: String,
@@ -1141,6 +1191,13 @@ impl ConversationCompactionHook<'_> {
         .map_err(|_| failure(context_error(ContextRuntimeError::SourceChanged), None))?
         .map_err(|error| failure(error, None))?;
 
+        reject_unprojected_shell_credentials(
+            &source,
+            checkpoint.as_ref(),
+            request.source_owner_id.as_deref(),
+            self.credential_reader.as_ref(),
+        )
+        .map_err(|error| failure(error, None))?;
         *source_guard = Some(SummarySourceGuard {
             version: source.source_version,
             fingerprint: source.fingerprint.clone(),

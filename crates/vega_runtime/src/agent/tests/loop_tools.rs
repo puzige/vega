@@ -945,3 +945,190 @@ async fn repeated_call_id_across_rounds_cannot_loop_forever() {
         Some(RuntimeEvent::Finished(RuntimeFinishReason::TurnLimit))
     ));
 }
+
+#[tokio::test]
+async fn issue302_large_bash_output_is_bounded_for_fresh_and_reused_model_results() {
+    let project = tempdir().unwrap();
+    let data = tempdir().unwrap();
+    let output = format!("{{\"value\":\"{}\"}}\n", "x".repeat(37_989)).repeat(69);
+    assert!(output.len() > 2_600_000);
+    assert_eq!(output.lines().count(), 69);
+    let executed_output = output.clone();
+    let executions = Arc::new(AtomicUsize::new(0));
+    let recorded = executions.clone();
+    let tools = vega_tools::Tools::new(project.path())
+        .unwrap()
+        .with_bash_test_executor(Arc::new(move |_, _, _| {
+            recorded.fetch_add(1, Ordering::SeqCst);
+            let text = executed_output.clone();
+            Box::pin(async move {
+                Ok(vega_tools::BashOutput {
+                    text,
+                    exit_code: 0,
+                    duration_ms: 1,
+                    truncated: false,
+                })
+            })
+        }));
+    let call = || {
+        ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "large-bash".into(),
+                name: "bash".into(),
+                input_json: r#"{"cmd":"printf fixture"}"#.into(),
+            },
+            ProviderEvent::Usage {
+                input: 131_289,
+                output: 80,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])
+    };
+    let provider = MockProvider::new_rounds(vec![
+        vec![call()],
+        vec![call()],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(vec![ChatMessage::new(ChatRole::User, "inspect fixture")]);
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Auto,
+        data.path().join("checkpoints"),
+    );
+    req.context_budget = Some(ContextBudget::new(428_000, 128_000, true).unwrap());
+    req.context_source_version = Some(1);
+    let compactions = Arc::new(AtomicUsize::new(0));
+    req.context_compaction_hook = Some(Arc::new(TailPreservingCompactionHook {
+        calls: compactions.clone(),
+        observed: Arc::new(Mutex::new(Vec::new())),
+    }));
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .expect("large Shell display output must fit as a bounded model projection");
+    assert!(!outcome.failed);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(compactions.load(Ordering::SeqCst), 0);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    let projected = requests[1]
+        .messages
+        .iter()
+        .find(|message| message.role == ChatRole::Tool)
+        .unwrap();
+    assert!(projected.content.len() <= 65_536);
+    assert!(projected.content.contains("omitted"));
+    assert!(projected.content.starts_with(&output[..100]));
+    assert!(projected.content.ends_with(&output[output.len() - 100..]));
+    let reused = requests[2]
+        .messages
+        .iter()
+        .filter(|message| message.role == ChatRole::Tool)
+        .collect::<Vec<_>>();
+    assert_eq!(reused.len(), 2);
+    assert_eq!(reused[0], projected);
+    assert_eq!(reused[1], projected);
+    let finished = outcome
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::ToolCallFinished(result) => Some(result),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(finished.len(), 2);
+    assert!(
+        finished
+            .iter()
+            .all(|result| result.output == output && result.exit_code == Some(0))
+    );
+    assert!(!finished[0].reused);
+    assert!(finished[1].reused);
+    assert!(
+        outcome
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                RuntimeEvent::ToolCallOutput { chunk, .. } => Some(chunk),
+                _ => None,
+            })
+            .all(|chunk| chunk == &output)
+    );
+}
+
+#[tokio::test]
+async fn issue302_reused_validation_result_redacts_before_shell_projection() {
+    let project = tempdir().unwrap();
+    let tools = vega_tools::Tools::new(project.path()).unwrap();
+    let baseline = "x".repeat(100_000);
+    let boundary = ChatMessage::projected_tool_result("call", "bash", &baseline)
+        .content
+        .find("\n[Shell output shortened:")
+        .unwrap();
+    let secret = "fixture-owner-private-credential-abcdefghijklmnopqrstuvwxyz";
+    let mut output = baseline;
+    output.replace_range(boundary - 16..boundary - 16 + secret.len(), secret);
+    let redacted = crate::redact_sensitive_credential_text(&output, &[secret.to_string()]);
+    let expected = ChatMessage::projected_tool_result("prior-invalid-bash", "bash", &redacted);
+    let provider = MockProvider::new_rounds(vec![
+        vec![ScriptStep::events(vec![
+            ProviderEvent::ToolUse {
+                id: "prior-invalid-bash".into(),
+                name: "bash".into(),
+                input_json: "{}".into(),
+            },
+            ProviderEvent::Done {
+                stop_reason: StopReason::ToolUse,
+            },
+        ])],
+        vec![ScriptStep::events(vec![ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        }])],
+    ]);
+    let mut req = request(vec![]);
+    req.tool_config = tool_config(
+        RuntimeRunMode::Execute,
+        RuntimePermissionMode::Auto,
+        project.path().join("checkpoints"),
+    )
+    .with_credential_reader(Arc::new(move || Ok(vec![secret.to_string()])));
+    req.completed_tool_results.insert(
+        "prior-invalid-bash".into(),
+        CompletedToolCall {
+            tool: "bash".into(),
+            input_json: InvalidBashAudit::from_raw("{}").unwrap().to_json().unwrap(),
+            result: RuntimeToolResult {
+                call_id: "prior-invalid-bash".into(),
+                output,
+                status: RuntimeToolStatus::Rejected,
+                reused: false,
+                exit_code: None,
+                duration_ms: Some(0),
+                truncated: Some(false),
+                approval: None,
+                remember_rule: None,
+            },
+        },
+    );
+    let outcome = run_agent(&provider, &tools, req, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(outcome.executed_tool_call_count, 0);
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == ChatRole::Tool)
+            .unwrap(),
+        &expected
+    );
+    assert!(!expected.content.contains(&secret[..16]));
+    assert!(outcome.events.iter().any(|event| matches!(event, RuntimeEvent::ToolCallValidationRejected { result, .. } if result.output == redacted && result.reused && result.status == RuntimeToolStatus::Rejected)));
+}

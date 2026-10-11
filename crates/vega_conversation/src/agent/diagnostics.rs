@@ -288,6 +288,17 @@ impl DiagnosticsWriter {
     }
 }
 
+pub(crate) fn run_failure(error: &vega_runtime::VegaError) -> DiagnosticFailureCode {
+    match error {
+        vega_runtime::VegaError::Context(
+            vega_runtime::ContextRuntimeError::OverLimit { .. }
+            | vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. }
+            | vega_runtime::ContextRuntimeError::ResultOverLimit { .. },
+        ) => DiagnosticFailureCode::ContextOverLimit,
+        _ => DiagnosticFailureCode::UnknownSafeFailure,
+    }
+}
+
 fn runtime_failure(value: RuntimeDiagnosticFailure) -> DiagnosticFailureCode {
     match value {
         RuntimeDiagnosticFailure::ContextOverLimit => DiagnosticFailureCode::ContextOverLimit,

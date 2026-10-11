@@ -4400,3 +4400,449 @@ async fn claude_unrelated_provider_failures_never_trim_history() {
         );
     }
 }
+
+#[tokio::test]
+async fn issue302_reopened_shell_projection_matches_compaction_and_preserves_storage() {
+    let (store, dir, _) = setup();
+    let output = format!("HEAD{}TAIL", "界".repeat(874_000));
+    seed_issue88_large_tool_result(&store, r#"{"cmd":"printf fixture"}"#, &output);
+    store
+        .conn()
+        .execute(
+            "UPDATE tool_calls SET tool = 'bash' WHERE id = 'long-result'",
+            [],
+        )
+        .unwrap();
+    store.conn().execute("INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at) VALUES ('current-assistant', 'thread-1', 4, 'assistant', 'text', 'current', 'done', 4)", []).unwrap();
+    store.conn().execute("INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) SELECT 'current-result', thread_id, 'current-assistant', 2, tool, input_json, output_text, status, approval, 4, 4, 7 FROM tool_calls WHERE id = 'long-result'", []).unwrap();
+    drop(store);
+    let reopened = Store::open(dir.path().join("vega.db")).unwrap();
+    let source = vega_store::context_compaction::load_source(reopened.conn(), "thread-1").unwrap();
+    let history =
+        super::super::pipeline::history_from_context_source_with_checkpoint(&source, None, "none")
+            .unwrap();
+    for id in ["long-result", "current-result"] {
+        let projected = history
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(id))
+            .unwrap();
+        assert_eq!(
+            *projected,
+            vega_runtime::ChatMessage::projected_tool_result(id, "bash", &output)
+        );
+        assert!(projected.content.len() <= 65_536);
+    }
+    let history = super::super::pipeline::primary_history_from_context_source_with_checkpoint(
+        &source, None, "none",
+    )
+    .unwrap();
+    assert_eq!(
+        history
+            .iter()
+            .filter(|message| message.content.contains("Shell output shortened"))
+            .count(),
+        2
+    );
+    assert!(
+        history
+            .iter()
+            .all(|message| message.tool_calls.is_empty() && message.tool_call_id.is_none())
+    );
+    let user = history
+        .iter()
+        .find(|message| message.content == "message-3")
+        .unwrap()
+        .clone();
+    let retained = history[history.iter().position(|message| *message == user).unwrap()..].to_vec();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("bounded history summary".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    let result = compact_thread_manually(
+        &reopened,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(&result.messages[1..], retained.as_slice());
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("long-result"))
+            .unwrap(),
+        &vega_runtime::ChatMessage::projected_tool_result("long-result", "bash", &output)
+    );
+    assert_eq!(
+        vega_store::context_compaction::load_source(reopened.conn(), "thread-1").unwrap(),
+        source
+    );
+    assert!(
+        source
+            .tool_calls
+            .iter()
+            .all(|call| call.output_text.as_ref() == Some(&output))
+    );
+    let checkpoint = vega_store::context_compaction::latest_checkpoint(
+        reopened.conn(),
+        "thread-1",
+        "mock-model",
+    )
+    .unwrap();
+    assert!(checkpoint.is_some());
+    assert_eq!(
+        super::super::pipeline::primary_history_from_context_source_with_checkpoint(
+            &source,
+            checkpoint.as_ref(),
+            "none"
+        )
+        .unwrap(),
+        result.messages
+    );
+}
+
+#[tokio::test]
+async fn issue302_manual_compaction_rejects_raw_shell_credentials_across_projection_cuts() {
+    let baseline = "x".repeat(100_000);
+    let projected = vega_runtime::ChatMessage::projected_tool_result("call", "bash", &baseline);
+    let head_end = projected
+        .content
+        .find("\n[Shell output shortened:")
+        .unwrap();
+    let tail_len = projected.content.split_once("]\n").unwrap().1.len();
+    let secret = "fixture-owner-private-credential-abcdefghijklmnopqrstuvwxyz";
+    for (cut, rotates) in [
+        (head_end, false),
+        (baseline.len() - tail_len, false),
+        (head_end, true),
+        (baseline.len() - tail_len, true),
+    ] {
+        let (store, _dir, _) = setup();
+        let start = cut - 16;
+        let mut output = baseline.clone();
+        output.replace_range(start..start + secret.len(), secret);
+        let projected = vega_runtime::ChatMessage::projected_tool_result("call", "bash", &output);
+        assert!(!projected.content.contains(secret));
+        assert!(
+            projected.content.contains(&secret[..16]) || projected.content.contains(&secret[16..])
+        );
+        seed_issue88_large_tool_result(&store, r#"{"cmd":"printf fixture"}"#, &output);
+        store
+            .conn()
+            .execute(
+                "UPDATE tool_calls SET tool = 'bash' WHERE id = 'long-result'",
+                [],
+            )
+            .unwrap();
+        let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+        let provider = MockProvider::new(vec![]);
+        let reads = AtomicUsize::new(0);
+        let result = super::super::compaction::compact_thread_manually_with_credential_reader(
+            &store,
+            &provider,
+            "thread-1",
+            "mock-model",
+            "system",
+            vec![],
+            vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+            CancellationToken::new(),
+            None,
+            None,
+            Some(Arc::new(move || {
+                if rotates && reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(Vec::new())
+                } else {
+                    Ok(vec![secret.to_string()])
+                }
+            })),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            result.error.as_ref(),
+            VegaError::CredentialExposureBlocked
+        ));
+        assert!(provider.requests().is_empty());
+        assert_eq!(
+            vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
+            source
+        );
+        assert!(
+            vega_store::context_compaction::latest_checkpoint(
+                store.conn(),
+                "thread-1",
+                "mock-model"
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn issue302_genuine_context_overflow_persists_typed_root_failure_without_sending() {
+    use vega_store::run_diagnostics::{DiagnosticFailureCode, DiagnosticPhase, DiagnosticState};
+    for scenario in 0..3 {
+        let automatic_compaction = scenario != 0;
+        let (store, dir, _) = setup();
+        seed_manual_compaction_history(&store);
+        vega_store::context_compaction::save_model_policy(
+            store.conn(),
+            &vega_store::context_compaction::ModelContextPolicy {
+                provider: "mock-provider".into(),
+                model: "mock-model".into(),
+                input_limit: Some(30_000),
+                output_reserve: Some(5_000),
+                automatic_compaction,
+                updated_at: 1,
+            },
+        )
+        .unwrap();
+        let provider = MockProvider::new(vec![]);
+        let tools = vega_tools::Tools::new(dir.path()).unwrap();
+        let user_text = if scenario == 2 {
+            store
+                .conn()
+                .execute(
+                    "UPDATE messages SET content=?1 WHERE id='manual-old-assistant'",
+                    [&"genuine-history-input".repeat(10_000)],
+                )
+                .unwrap();
+            "continue".to_string()
+        } else {
+            "genuine-user-input".repeat(10_000)
+        };
+        let mut surfaced = None;
+        let error = run_thread_task_with_permission_config_and_reasoning(
+            &store,
+            &provider,
+            &tools,
+            "thread-1",
+            &user_text,
+            "system",
+            CancellationToken::new(),
+            &RejectPermissionHook,
+            |event| {
+                if let ConversationEvent::Error { error, .. } = event {
+                    surfaced = Some(error.clone());
+                }
+                Ok(())
+            },
+            PersistenceActorConfig::default(),
+            None,
+            None,
+            Some(FrozenReasoning::unknown("mock-provider", "mock-model")),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, ConversationError::Runtime(_)));
+        let surfaced = surfaced.unwrap();
+        assert!(
+            matches!(
+                (scenario, surfaced.as_ref()),
+                (
+                    0,
+                    VegaError::Context(vega_runtime::ContextRuntimeError::OverLimit { .. })
+                ) | (
+                    1,
+                    VegaError::Context(vega_runtime::ContextRuntimeError::ResultOverLimit { .. })
+                ) | (
+                    2,
+                    VegaError::Context(
+                        vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. }
+                    )
+                )
+            ),
+            "unexpected budget error: {surfaced:?}"
+        );
+        assert_eq!(
+            crate::types::RunFailureKind::from_runtime(&surfaced),
+            crate::types::RunFailureKind::ContextOverLimit
+        );
+        assert!(provider.requests().is_empty());
+        let (run_id, status): (String, String) = store.conn().query_row("SELECT id, status FROM messages WHERE role = 'assistant' ORDER BY seq DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(status, "failed");
+        let diagnostics =
+            vega_store::run_diagnostics::read_by_run(store.conn(), "thread-1", &run_id).unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|event| event.event.phase == DiagnosticPhase::Run
+                    && event.event.state == DiagnosticState::Failed
+                    && event.event.failure_code == Some(DiagnosticFailureCode::ContextOverLimit))
+        );
+        let stored_user: String = store
+            .conn()
+            .query_row(
+                "SELECT content FROM messages WHERE role = 'user' ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_user, user_text);
+    }
+}
+
+#[tokio::test]
+async fn issue302_automatic_compaction_matches_bounded_live_suffix_and_source_fence() {
+    let (store, dir, _) = setup();
+    let output = "x".repeat(2_622_078);
+    seed_issue88_large_tool_result(&store, r#"{"cmd":"printf fixture"}"#, &output);
+    store
+        .conn()
+        .execute(
+            "UPDATE tool_calls SET tool = 'bash' WHERE id = 'long-result'",
+            [],
+        )
+        .unwrap();
+    store.conn().execute("INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at) VALUES ('live-assistant', 'thread-1', 4, 'assistant', 'text', '', 'streaming', 4)", []).unwrap();
+    store.conn().execute("INSERT INTO tool_calls (id, thread_id, message_id, seq, tool, input_json, output_text, status, approval, created_at, finished_at, text_offset_bytes) SELECT 'live-result', thread_id, 'live-assistant', 2, tool, input_json, output_text, status, approval, 4, 4, 0 FROM tool_calls WHERE id = 'long-result'", []).unwrap();
+    let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    let mut history = super::super::pipeline::primary_history_from_context_source_with_checkpoint(
+        &source,
+        None,
+        "live-assistant",
+    )
+    .unwrap();
+    history.push(vega_runtime::ChatMessage::assistant_with_tools(
+        "",
+        vec![vega_runtime::ChatToolCall {
+            id: "live-result".into(),
+            name: "bash".into(),
+            input_json: r#"{"cmd":"printf fixture"}"#.into(),
+        }],
+    ));
+    history.push(vega_runtime::ChatMessage::projected_tool_result(
+        "live-result",
+        "bash",
+        &output,
+    ));
+    let suffix = history[history
+        .iter()
+        .rposition(|message| message.role == vega_runtime::ChatRole::User)
+        .unwrap()..]
+        .to_vec();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("bounded continuation".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    let hook = ConversationCompactionHook::new(
+        &provider,
+        dir.path().join("vega.db"),
+        "thread-1",
+        "mock-model",
+        None,
+        None,
+    );
+    let budget = vega_runtime::ContextBudget::new(428_000, 128_000, true).unwrap();
+    let estimate = vega_runtime::estimate_chat_context("system", &history, &[]).unwrap();
+    let result = vega_runtime::ContextCompactionHook::compact(
+        &hook,
+        vega_runtime::ContextCompactionRequest {
+            system_prompt: "system".into(),
+            messages: history,
+            tools: vec![],
+            budget,
+            estimate,
+            target_tokens: budget.target_tokens().unwrap(),
+            source_version: source.source_version,
+            source_fingerprint: Some(source.fingerprint.clone()),
+            require_source_fence: false,
+            source_owner_id: Some("live-assistant".into()),
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(&result.messages[1..], suffix.as_slice());
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(
+        vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
+        source
+    );
+    assert!(
+        vega_store::context_compaction::latest_checkpoint(store.conn(), "thread-1", "mock-model")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn issue302_compaction_accepts_redacted_shell_markers_and_skips_covered_raw_rows() {
+    let (store, _dir, _) = setup();
+    let output = format!(
+        "head{}api_key={}\ntail",
+        "x".repeat(80_000),
+        vega_runtime::PROVIDER_CREDENTIAL_REDACTION_MARKER
+    );
+    seed_issue88_large_tool_result(&store, r#"{"cmd":"printf fixture"}"#, &output);
+    store
+        .conn()
+        .execute(
+            "UPDATE tool_calls SET tool = 'bash' WHERE id = 'long-result'",
+            [],
+        )
+        .unwrap();
+    let provider = MockProvider::new(vec![ScriptStep::events(vec![
+        ProviderEvent::TextDelta("bounded continuation".into()),
+        ProviderEvent::Done {
+            stop_reason: StopReason::End,
+        },
+    ])]);
+    compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    store.conn().execute("UPDATE tool_calls SET output_text = 'api_key=historical-covered-secret' WHERE id = 'long-result'", []).unwrap();
+    store.conn().execute("INSERT INTO messages (id, thread_id, seq, role, kind, content, status, created_at) VALUES ('next-user', 'thread-1', 4, 'user', 'text', 'continue', 'done', 4)", []).unwrap();
+    let source = vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap();
+    compact_thread_manually(
+        &store,
+        &provider,
+        "thread-1",
+        "mock-model",
+        "system",
+        vec![],
+        vega_runtime::ContextBudget::new(428_000, 128_000, false).unwrap(),
+        CancellationToken::new(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(provider.requests().len(), 2);
+    assert!(provider.requests().iter().all(|request| {
+        request
+            .messages
+            .iter()
+            .all(|message| !message.content.contains("historical-covered-secret"))
+    }));
+    assert_eq!(
+        vega_store::context_compaction::load_source(store.conn(), "thread-1").unwrap(),
+        source
+    );
+}

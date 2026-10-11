@@ -30,6 +30,7 @@ pub enum RunFailureKind {
     Runtime,
     #[allow(missing_docs)]
     CredentialExposureBlocked,
+    ContextOverLimit,
     /// A durable failed row whose original reason was not persisted.
     Persisted,
 }
@@ -78,6 +79,11 @@ impl RunFailureKind {
                 ..
             } => Self::ProviderTransport,
             vega_runtime::VegaError::CredentialExposureBlocked => Self::CredentialExposureBlocked,
+            vega_runtime::VegaError::Context(
+                vega_runtime::ContextRuntimeError::OverLimit { .. }
+                | vega_runtime::ContextRuntimeError::SummaryInputOverLimit { .. }
+                | vega_runtime::ContextRuntimeError::ResultOverLimit { .. },
+            ) => Self::ContextOverLimit,
             _ => Self::Runtime,
         }
     }
@@ -99,6 +105,9 @@ impl RunFailureKind {
             Self::CredentialExposureBlocked => {
                 "为保护本地凭据，本次发送已在本地拦截。请移除对话中残留的凭据后重试，或在新对话中继续。"
                     .into()
+            }
+            Self::ContextOverLimit => {
+                "本地上下文超出预算；原始对话已保留。请调整上下文容量、缩小工具查询范围或在新对话中继续。".into()
             }
             Self::Runtime => "任务执行失败；请检查运行环境后重试".into(),
             Self::Persisted => "这条回复执行失败；请检查供应商状态、额度或运行环境后重试".into(),
@@ -808,6 +817,36 @@ mod run_failure_tests {
             message: message.into(),
             retryable: false,
         }
+    }
+
+    #[test]
+    fn issue302_local_context_failures_keep_actionable_content_free_copy() {
+        use vega_runtime::ContextRuntimeError;
+        for error in [
+            ContextRuntimeError::OverLimit {
+                estimated_tokens: 301_000,
+                input_budget: 300_000,
+            },
+            ContextRuntimeError::SummaryInputOverLimit {
+                estimated_tokens: 301_000,
+                input_budget: 300_000,
+            },
+            ContextRuntimeError::ResultOverLimit {
+                estimated_tokens: 301_000,
+                target_tokens: 180_000,
+            },
+        ] {
+            let kind = RunFailureKind::from_runtime(&VegaError::Context(error));
+            assert_eq!(kind, RunFailureKind::ContextOverLimit);
+            assert!(kind.message().contains("本地上下文超出预算"));
+            assert!(kind.message().contains("原始对话已保留"));
+            assert!(!kind.message().contains("运行环境"));
+            assert!(!kind.message().contains("供应商"));
+        }
+        assert_eq!(
+            RunFailureKind::from_runtime(&VegaError::Context(ContextRuntimeError::SourceChanged)),
+            RunFailureKind::Runtime
+        );
     }
 
     #[test]

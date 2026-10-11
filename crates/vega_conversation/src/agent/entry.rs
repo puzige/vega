@@ -840,9 +840,20 @@ where
                     None,
                 )
             } else if outcome.failed {
+                let failure_code = outcome
+                    .events
+                    .iter()
+                    .rev()
+                    .find_map(|event| match event {
+                        RuntimeEvent::Error(error) => Some(super::diagnostics::run_failure(error)),
+                        _ => None,
+                    })
+                    .unwrap_or(
+                        vega_store::run_diagnostics::DiagnosticFailureCode::UnknownSafeFailure,
+                    );
                 (
                     vega_store::run_diagnostics::DiagnosticState::Failed,
-                    Some(vega_store::run_diagnostics::DiagnosticFailureCode::UnknownSafeFailure),
+                    Some(failure_code),
                 )
             } else {
                 (
@@ -897,9 +908,7 @@ where
                 &root_attempt_id,
                 diagnostic_state,
                 (diagnostic_state == vega_store::run_diagnostics::DiagnosticState::Failed)
-                    .then_some(
-                        vega_store::run_diagnostics::DiagnosticFailureCode::UnknownSafeFailure,
-                    ),
+                    .then(|| super::diagnostics::run_failure(&error)),
                 runtime_started_at,
             );
             diagnostics.close().await;
