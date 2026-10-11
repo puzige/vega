@@ -68,6 +68,7 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-design-guidelines.md](docs/vega-design-guidelines.md) | 已批准统一设计守则 v2：平台依据、共享语言、基线与目标边界 |
 | [vega-issue-296-ui-redesign-v3.md](docs/vega-issue-296-ui-redesign-v3.md) | UI v3 详细 spec：18点映射、阶段/数据契约、冲突替代与验收 |
 | [vega-issue-296-single-activity.md](docs/vega-issue-296-single-activity.md) | UI 验收修订：每轮单一动态过程、右侧 hover 展开及语义状态图标 |
+| [vega-issue-296-single-activity-delivery.md](docs/vega-issue-296-single-activity-delivery.md) | 单一过程入口的定向测试与独立审查证据 |
 | [vega-issue-296-v3-delivery.md](docs/vega-issue-296-v3-delivery.md) | UI v3 实施、定向验证、独立审查与交付状态 |
 | [vega-desktop-ui-unification.md](docs/vega-desktop-ui-unification.md) | #296 第一轮历史规格；新目标见 UI v3 已批准规格 |
 | [vega-issue-296-delivery.md](docs/vega-issue-296-delivery.md) | #296 组合验证、三片交付证据、原生手测边界 |

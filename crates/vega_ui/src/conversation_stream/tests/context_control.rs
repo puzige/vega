@@ -466,12 +466,14 @@ async fn issue168_compaction_row_remains_visible_after_primary_provider_failure(
                 .expect("run activity group");
             assert_eq!(
                 group.read(cx).test_projection(),
-                (RunActivityStatus::Failed, Some(2_345), true, true)
+                (RunActivityStatus::Failed, Some(2_345), false, true)
             );
         })
         .expect("failed run projection");
 
     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("run-activity-status").is_some());
+    assert!(visual.debug_bounds("run-activity-content").is_none());
     assert!(visual.debug_bounds("context-compaction-row").is_some());
     assert!(visual.debug_bounds("assistant-run-failure").is_some());
 }
