@@ -356,3 +356,8 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 - v1.13 (2026-09-11)：把无图标顶层任务的零前导缩进扩展到 Recents，使 Pinned 与 Recents 标题分别和区块标题左对齐；项目子任务保留 32px 层级缩进。精确规格见 [R32 Sidebar Recents leading edge](vega-r32-sidebar-recents-leading.md)。
 - v1.14 (2026-09-11)：Sidebar 对话行移除静止时间，Pinned 同时移除项目归属；每个展开项目默认显示 5 条任务，并提供独立的 `Show More / Show Less`。精确规格见 [R33 quiet thread rows](vega-r33-sidebar-quiet-thread-rows.md)。
 - v1.15 (2026-09-11)：Sidebar 顶部“新建任务”和“搜索”共享同一行宽与尾部快捷键列，移除搜索行额外外边距。精确规格见 [R34 shortcut column](vega-r34-sidebar-shortcut-column.md)。
+
+
+## Issue #296 第二轮结构修订
+
+2026-10-11 用户认为0.1.66视觉变化不足，授权修复与原生验收循环。以 [第二轮规格](vega-issue-296-ui-hierarchy-v2.md) 为准：Settings固定224px导航/max720列/208px字段标签，20px页标题；共享bg_subtle映射现有code_bg色值（Light #F6F6F6、Dark #262626）；过程表面与角色层级、rail降噪、无常驻阴影Composer。保持全局palette与正文排版、原行为与安全语义。原#296的744px/随主Sidebar宽Settings导航被此修订替代。
