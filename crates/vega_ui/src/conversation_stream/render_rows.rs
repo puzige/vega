@@ -116,14 +116,11 @@ pub(crate) fn render_stream_entry(
         .into_any_element()
 }
 
-pub(crate) fn process_surface(colors: &ThemeColors) -> gpui_kit::Div {
+pub(crate) fn process_surface(_colors: &ThemeColors) -> gpui_kit::Div {
     div()
         .w_full()
         .min_w_0()
         .flex_shrink_0()
-        .border_l_1()
-        .border_color(colors.border_subtle)
-        .bg(colors.bg_subtle)
         .px(px(Layout::PROCESS_PADDING_X))
         .flex()
         .flex_col()
@@ -355,13 +352,9 @@ pub(crate) fn markdown_item(
         .pb(px(Layout::MESSAGE_PADDING_BOTTOM))
         .flex()
         .flex_col()
-        .children(
-            model
-                .committed_lines
-                .iter()
-                .chain(model.pending_lines.iter())
-                .map(|line| render_line(line, colors)),
-        )
+        .children(markdown_blocks(model, colors, |line| {
+            render_line(line, colors)
+        }))
         .children(failure.map(|reason| {
             div()
                 .debug_selector(|| "assistant-run-failure".to_string())
@@ -547,11 +540,7 @@ fn selectable_markdown_message(
         .flex()
         .flex_col();
     let mut previous: Option<(u64, LineKind)> = None;
-    for line in model
-        .committed_lines
-        .iter()
-        .chain(model.pending_lines.iter())
-    {
+    let blocks = markdown_blocks(model, colors, |line| {
         if !matches!(line.kind, LineKind::Rule)
             && let Some((previous_block, previous_kind)) = previous
         {
@@ -562,12 +551,13 @@ fn selectable_markdown_message(
                         && matches!(line.kind, LineKind::ListItem)));
             document.append_literal(if same_multiline_block { "\n" } else { "\n\n" });
         }
-        body = body.child(render_line_selectable(line, colors, &mut document));
+        let element = render_line_selectable(line, colors, &mut document);
         if !matches!(line.kind, LineKind::Rule) {
             previous = Some((line.block_id, line.kind));
         }
-    }
-    body = body.children(failure.map(|reason| {
+        element
+    });
+    body = body.children(blocks).children(failure.map(|reason| {
         div()
             .debug_selector(|| "assistant-run-failure".to_string())
             .child(status_notice(
@@ -577,6 +567,119 @@ fn selectable_markdown_message(
             ))
     }));
     selection_context_menu(document.wrap(body.into_any_element(), window, cx), copy)
+}
+
+fn markdown_blocks(
+    model: &StreamModel,
+    colors: &ThemeColors,
+    mut render: impl FnMut(&StreamLine) -> AnyElement,
+) -> Vec<AnyElement> {
+    let lines: Vec<_> = model
+        .committed_lines
+        .iter()
+        .chain(&model.pending_lines)
+        .collect();
+    let list_blocks: std::collections::HashSet<_> = lines
+        .iter()
+        .filter(|line| line.kind == LineKind::ListItem)
+        .map(|line| line.block_id)
+        .collect();
+    let mut blocks = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let previous = index.checked_sub(1).map(|index| lines[index]);
+        let start = index;
+        let block_id = line.block_id;
+        let in_list = list_blocks.contains(&block_id);
+        let previous_in_list = previous.is_some_and(|line| list_blocks.contains(&line.block_id));
+        let gap = markdown_block_gap(previous, line, in_list, previous_in_list);
+        let mut content = vec![render(line)];
+        index += 1;
+        if line.kind == LineKind::Code {
+            while index < lines.len()
+                && lines[index].block_id == block_id
+                && lines[index].kind == LineKind::Code
+            {
+                content.push(render(lines[index]));
+                index += 1;
+            }
+        }
+        let body = div()
+            .debug_selector(move || format!("markdown-block-{start}"))
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .mt(px(gap))
+            .when(in_list && line.kind != LineKind::ListItem, |body| {
+                body.pl(px((line.depth + 1) as f32 * Layout::MARKDOWN_LIST_INDENT))
+            });
+        let body = if line.kind == LineKind::Code {
+            body.child(
+                div()
+                    .id(gpui_kit::SharedString::from(format!(
+                        "markdown-code-{block_id}-{start}"
+                    )))
+                    .debug_selector(move || format!("markdown-code-{start}"))
+                    .w_full()
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .bg(colors.code_bg)
+                    .rounded(px(Layout::TOOL_DETAIL_RADIUS))
+                    .p(px(Layout::MARKDOWN_CODE_PADDING))
+                    .flex()
+                    .child(
+                        div()
+                            .min_w_full()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .children(content),
+                    ),
+            )
+        } else {
+            body.children(content)
+        };
+        blocks.push(body.into_any_element());
+    }
+    blocks
+}
+
+fn markdown_block_gap(
+    previous: Option<&StreamLine>,
+    current: &StreamLine,
+    in_list: bool,
+    previous_in_list: bool,
+) -> f32 {
+    let Some(previous) = previous else {
+        return 0.;
+    };
+    if in_list && previous.block_id == current.block_id {
+        if current.kind == LineKind::ListItem {
+            return Layout::MARKDOWN_LIST_ITEM_GAP;
+        }
+        return Layout::MARKDOWN_LIST_PARAGRAPH_GAP;
+    }
+    let after = if previous_in_list {
+        Layout::MARKDOWN_BLOCK_GAP
+    } else {
+        match previous.kind {
+            LineKind::Heading(_) => Layout::MARKDOWN_HEADING_AFTER,
+            LineKind::Code | LineKind::ListItem | LineKind::Table | LineKind::Quote => {
+                Layout::MARKDOWN_BLOCK_GAP
+            }
+            _ => Layout::MARKDOWN_PARAGRAPH_GAP,
+        }
+    };
+    let before = match current.kind {
+        LineKind::Heading(_) => Layout::MARKDOWN_HEADING_BEFORE,
+        LineKind::Code | LineKind::ListItem | LineKind::Table | LineKind::Quote => {
+            Layout::MARKDOWN_BLOCK_GAP
+        }
+        _ => 0.,
+    };
+    after.max(before)
 }
 
 fn selection_context_menu(body: AnyElement, copy: &MessageCopy) -> AnyElement {
@@ -607,9 +710,10 @@ fn render_line_selectable(
     }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
-        .w_full()
+        .when(line.kind != LineKind::Code, |item| item.w_full())
         .flex_shrink_0()
         .text_size(px(Typography::MESSAGE))
+        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
         .text_color(colors.text_primary);
     match line.kind {
         LineKind::Spacer => item.py(px(6.0)).into_any_element(),
@@ -636,14 +740,13 @@ fn render_line_selectable(
                 "assistant-code",
             );
             let code = div()
-                .w_full()
-                .bg(colors.code_bg)
-                .px_2()
-                .py(px(1.0))
+                .text_size(px(Typography::CODE))
+                .line_height(gpui_kit::relative(Typography::CODE_LINE_HEIGHT))
+                .whitespace_nowrap()
                 .text_color(colors.text_primary)
                 .child(selected);
             let code = if text.is_empty() {
-                code.h(px(Typography::CODE * Typography::BODY_LINE_HEIGHT))
+                code.h(px(Typography::CODE * Typography::CODE_LINE_HEIGHT))
             } else {
                 code
             };
@@ -652,28 +755,23 @@ fn render_line_selectable(
         LineKind::Quote => {
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(
-                    &line.spans,
-                    message_run_style(colors.text_secondary),
-                    colors,
-                ),
+                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
                 "assistant-quote",
             );
-            item.text_color(colors.text_secondary)
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .child(
-                            div()
-                                .w(px(2.0))
-                                .mr_2()
-                                .flex_shrink_0()
-                                .bg(colors.border_subtle),
-                        )
-                        .child(selected),
-                )
-                .into_any_element()
+            item.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(
+                        div()
+                            .w(px(2.0))
+                            .mr(px(Layout::MARKDOWN_CODE_PADDING))
+                            .flex_shrink_0()
+                            .bg(colors.border_subtle),
+                    )
+                    .child(selected),
+            )
+            .into_any_element()
         }
         LineKind::Rule => item
             .py(px(4.0))
@@ -683,21 +781,22 @@ fn render_line_selectable(
             let (size, weight) = heading_style(level);
             let selected = document.append_styled_runs(
                 &text,
-                block_text_runs(&line.spans, message_run_style(colors.text_primary), colors),
+                block_text_runs(&line.spans, heading_run_style(level, colors), colors),
                 "assistant-heading",
             );
             item.text_size(px(size))
                 .font_weight(weight)
-                .pt(px(8.0))
-                .pb(px(2.0))
                 .child(selected)
                 .into_any_element()
         }
         LineKind::Table => item.into_any_element(),
         LineKind::ListItem => {
-            let indent = "  ".repeat(line.depth);
-            let marker = format!("{indent}{} ", line.marker);
-            let mut row = div().flex().flex_row();
+            let marker = format!("{} ", line.marker);
+            document.append_literal(&"  ".repeat(line.depth));
+            let mut row = div()
+                .pl(px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT))
+                .flex()
+                .flex_row();
             let marker_text = document.append_styled(
                 &marker,
                 StyledText::new(marker.clone()),
@@ -706,6 +805,7 @@ fn render_line_selectable(
             row = row.child(
                 div()
                     .flex_shrink_0()
+                    .w(px(Layout::MARKDOWN_LIST_INDENT))
                     .text_color(colors.text_secondary)
                     .child(marker_text),
             );
@@ -757,6 +857,8 @@ fn render_table_selectable(
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
     let mut body = div()
+        .text_size(px(Typography::MESSAGE))
+        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
         .w_full()
         .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
         .flex_shrink_0()
@@ -800,8 +902,8 @@ fn render_table_selectable(
                     })
                     .flex_1()
                     .min_w_0()
-                    .px_2()
-                    .py_1()
+                    .px(px(Layout::MARKDOWN_TABLE_PADDING_X))
+                    .py(px(Layout::MARKDOWN_TABLE_PADDING_Y))
                     .text_align(alignment)
                     .child(selected),
             );
@@ -840,7 +942,7 @@ pub(crate) fn code_run_style(color: Rgba) -> TextStyle {
     TextStyle {
         font_family: MONOFONT.into(),
         font_size: AbsoluteLength::Pixels(px(Typography::CODE)),
-        line_height: DefiniteLength::Fraction(Typography::BODY_LINE_HEIGHT),
+        line_height: DefiniteLength::Fraction(Typography::CODE_LINE_HEIGHT),
         color: color.into(),
         ..TextStyle::default()
     }
@@ -919,9 +1021,19 @@ pub(crate) fn apply_span_style(style: &mut TextStyle, span: SpanStyle, colors: &
 /// 的 Typography 档位，不发明新字号.
 pub(crate) fn heading_style(level: u8) -> (f32, FontWeight) {
     match level {
-        1..=2 => (Typography::HEADING_PAGE, Typography::HEADING_PAGE_WEIGHT),
-        3..=4 => (Typography::HEADING_BLOCK, Typography::HEADING_BLOCK_WEIGHT),
+        1 => (Typography::MARKDOWN_H1, Typography::HEADING_PAGE_WEIGHT),
+        2 => (Typography::MARKDOWN_H2, Typography::HEADING_PAGE_WEIGHT),
+        3 => (Typography::MARKDOWN_H3, Typography::HEADING_BLOCK_WEIGHT),
         _ => (Typography::MESSAGE, Typography::HEADING_CARD_WEIGHT),
+    }
+}
+
+fn heading_run_style(level: u8, colors: &ThemeColors) -> TextStyle {
+    let (size, weight) = heading_style(level);
+    TextStyle {
+        font_size: AbsoluteLength::Pixels(px(size)),
+        font_weight: weight,
+        ..message_run_style(colors.text_primary)
     }
 }
 
@@ -934,9 +1046,10 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
     }
     let text: String = line.spans.iter().map(|span| span.text.as_str()).collect();
     let item = div()
-        .w_full()
+        .when(line.kind != LineKind::Code, |item| item.w_full())
         .flex_shrink_0()
         .text_size(px(Typography::MESSAGE))
+        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
         .text_color(colors.text_primary);
     match line.kind {
         LineKind::Spacer => item.py(px(6.0)).into_any_element(),
@@ -956,10 +1069,9 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
             .into_any_element(),
         LineKind::Code => {
             let code = div()
-                .w_full()
-                .bg(colors.code_bg)
-                .px_2()
-                .py(px(1.0))
+                .text_size(px(Typography::CODE))
+                .line_height(gpui_kit::relative(Typography::CODE_LINE_HEIGHT))
+                .whitespace_nowrap()
                 .text_color(colors.text_primary)
                 .child(block_text(
                     &line.spans,
@@ -968,14 +1080,13 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                 ));
             let code = if text.is_empty() {
                 // 空代码行保一行等高占位（非定高行模型）。
-                code.h(px(Typography::CODE * Typography::BODY_LINE_HEIGHT))
+                code.h(px(Typography::CODE * Typography::CODE_LINE_HEIGHT))
             } else {
                 code
             };
             item.child(code).into_any_element()
         }
         LineKind::Quote => item
-            .text_color(colors.text_secondary)
             .child(
                 div()
                     .flex()
@@ -983,13 +1094,13 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
                     .child(
                         div()
                             .w(px(2.0))
-                            .mr_2()
+                            .mr(px(Layout::MARKDOWN_CODE_PADDING))
                             .flex_shrink_0()
                             .bg(colors.border_subtle),
                     )
                     .child(block_text(
                         &line.spans,
-                        message_run_style(colors.text_secondary),
+                        message_run_style(colors.text_primary),
                         colors,
                     )),
             )
@@ -1002,24 +1113,25 @@ pub(crate) fn render_line(line: &StreamLine, colors: &ThemeColors) -> AnyElement
             let (size, weight) = heading_style(level);
             item.text_size(px(size))
                 .font_weight(weight)
-                .pt(px(8.0))
-                .pb(px(2.0))
                 .child(block_text(
                     &line.spans,
-                    message_run_style(colors.text_primary),
+                    heading_run_style(level, colors),
                     colors,
                 ))
                 .into_any_element()
         }
         LineKind::Table => item.into_any_element(),
         LineKind::ListItem => {
-            let indent = "  ".repeat(line.depth);
-            let mut row = div().flex().flex_row();
+            let mut row = div()
+                .pl(px(line.depth as f32 * Layout::MARKDOWN_LIST_INDENT))
+                .flex()
+                .flex_row();
             row = row.child(
                 div()
                     .flex_shrink_0()
+                    .w(px(Layout::MARKDOWN_LIST_INDENT))
                     .text_color(colors.text_secondary)
-                    .child(format!("{indent}{} ", line.marker)),
+                    .child(format!("{} ", line.marker)),
             );
             if let Some(checked) = line.checked {
                 row = row.child(
@@ -1058,6 +1170,8 @@ fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> Any
     let ordinal = table.ordinal;
     let columns = table.alignments.len();
     let mut body = div()
+        .text_size(px(Typography::MESSAGE))
+        .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
         .w_full()
         .min_w(px(Layout::MARKDOWN_TABLE_COLUMN_MIN_WIDTH * columns as f32))
         .flex_shrink_0()
@@ -1089,8 +1203,8 @@ fn render_table(block_id: u64, table: &StreamTable, colors: &ThemeColors) -> Any
                     })
                     .flex_1()
                     .min_w_0()
-                    .px_2()
-                    .py_1()
+                    .px(px(Layout::MARKDOWN_TABLE_PADDING_X))
+                    .py(px(Layout::MARKDOWN_TABLE_PADDING_Y))
                     .text_align(alignment)
                     .child(block_text(spans, style, colors)),
             );

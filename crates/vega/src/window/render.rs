@@ -124,6 +124,13 @@ impl Render for VegaWindow {
                     },
                 )
                 .detach();
+                cx.subscribe(
+                    &settings,
+                    |this, view, request: &vega_conversation::types::ModelCatalogRequested, cx| {
+                        this.request_model_catalog(view.clone(), request, cx);
+                    },
+                )
+                .detach();
                 cx.subscribe(&settings, |this, _, _: &SettingsSaved, cx| {
                     this.on_settings_saved(cx);
                 })

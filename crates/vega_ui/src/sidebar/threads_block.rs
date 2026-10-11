@@ -1144,6 +1144,11 @@ impl ThreadsBlock {
         let hover_thread_id = thread_id.clone();
         let mouse_move_thread_id = thread_id.clone();
         let row_thread = thread.clone();
+        let accessibility_label = if thread_is_running(&thread.id, cx) {
+            format!("{}，正在运行", thread.title)
+        } else {
+            thread.title.clone()
+        };
         let mut row = div()
             .id(ElementId::Name(
                 format!("{selector_prefix}{thread_id}").into(),
@@ -1153,6 +1158,7 @@ impl ThreadsBlock {
                 let selector_prefix = selector_prefix.to_owned();
                 move || format!("{selector_prefix}{id}")
             })
+            .aria_label(accessibility_label)
             .h(px(row_height))
             .ml(px(-surface_leading_outset))
             .flex()
@@ -1280,12 +1286,6 @@ impl ThreadsBlock {
                                 })
                                 .child(thread_title(thread)),
                         ),
-                )
-                // 未读圆点（数据恒 0 至 S3；显示逻辑本卡落地）。
-                .children(
-                    thread
-                        .unread
-                        .then(|| div().size(px(6.)).rounded_full().bg(colors.accent)),
                 );
             row = if actions_enabled {
                 row.child(self.render_row_actions(
@@ -1297,7 +1297,13 @@ impl ThreadsBlock {
                     cx,
                 ))
             } else {
-                row.child(div().w(px(Layout::SIDEBAR_ACTIONS_WIDTH)).flex_shrink_0())
+                row.child(
+                    div()
+                        .w(px(
+                            Layout::SIDEBAR_ACTIONS_WIDTH + Layout::SIDEBAR_ACTIONS_INSET
+                        ))
+                        .flex_shrink_0(),
+                )
             };
         }
         row.into_any_element()
@@ -1334,8 +1340,7 @@ impl ThreadsBlock {
                 move || format!("{action_prefix}thread-actions-{id}")
             })
             .relative()
-            .w(px(28.))
-            .h(px(28.))
+            .size(px(Layout::SIDEBAR_ACTION_SIZE))
             .rounded_md()
             .text_size(px(Typography::HEADING_BLOCK))
             .text_color(colors.text_secondary)
@@ -1443,6 +1448,7 @@ impl ThreadsBlock {
         if quick_actions_visible {
             trigger = trigger.size(px(0.));
         }
+        trigger = trigger.absolute().right_0().top_0();
 
         let mut group = div()
             .debug_selector({
@@ -1452,12 +1458,12 @@ impl ThreadsBlock {
             })
             .relative()
             .w(px(Layout::SIDEBAR_ACTIONS_WIDTH))
-            .h(px(28.))
+            .mr(px(Layout::SIDEBAR_ACTIONS_INSET))
+            .h(px(Layout::SIDEBAR_ACTION_SIZE))
             .flex()
             .items_center()
             .justify_end()
-            .flex_shrink_0()
-            .pr_1();
+            .flex_shrink_0();
         if menu_open {
             group = group.track_focus(&self.actions_scope_focus);
         }
@@ -1485,6 +1491,11 @@ impl ThreadsBlock {
                     let action_prefix = running_selector_prefix.clone();
                     move || format!("{action_prefix}thread-running-{id}")
                 })
+                .id(gpui_kit::SharedString::from(format!(
+                    "{running_selector_prefix}thread-running-{running_selector_id}"
+                )))
+                .size(px(Layout::SIDEBAR_ACTION_SIZE))
+                .aria_label("任务正在运行")
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -1496,8 +1507,23 @@ impl ThreadsBlock {
                         .color(colors.text_secondary.into()),
                 )
         };
-        if running && !quick_actions_visible {
+        if running && !actions_visible {
             group = group.child(running_indicator());
+        }
+        if thread.unread && !running && !actions_visible {
+            group = group.child(
+                div()
+                    .size(px(Layout::SIDEBAR_ACTION_SIZE))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .size(px(Layout::MESSAGE_ANCHOR_TRACK_WIDTH * 3.))
+                            .rounded_full()
+                            .bg(colors.accent),
+                    ),
+            );
         }
         group = group.child(trigger);
         if quick_actions_visible {
@@ -1595,16 +1621,14 @@ impl ThreadsBlock {
                     .text_color(colors.text_secondary)
                     .flex_shrink_0(),
                 );
-            let mut quick_actions = div()
+            let quick_actions = div()
                 .absolute()
                 .top_0()
-                .right(px(4.))
+                .right_0()
                 .h_full()
                 .flex()
+                .gap(px(Layout::SIDEBAR_ACTION_GAP))
                 .items_center();
-            if running {
-                quick_actions = quick_actions.child(running_indicator());
-            }
             group = group.child(quick_actions.child(pin_button).child(archive_button));
         }
         group.into_any_element()

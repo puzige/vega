@@ -133,6 +133,14 @@ fn now_unix_millis() -> i64 {
 /// Runtime-to-UI/store unique event stream (tech-spec §3).
 #[derive(Clone)]
 pub enum ConversationEvent {
+    RunStarted {
+        message_id: MessageId,
+        started_at: std::time::Instant,
+    },
+    AssistantResponseCompleted {
+        message_id: MessageId,
+        response: AssistantResponseMetadata,
+    },
     /// A streaming assistant row was created.
     MessageStarted {
         /// Assistant message id.
@@ -257,6 +265,18 @@ pub enum ConversationEvent {
 impl std::fmt::Debug for ConversationEvent {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RunStarted { message_id, .. } => formatter
+                .debug_struct("RunStarted")
+                .field("message_id_bytes", &message_id.len())
+                .finish(),
+            Self::AssistantResponseCompleted {
+                message_id,
+                response,
+            } => formatter
+                .debug_struct("AssistantResponseCompleted")
+                .field("message_id_bytes", &message_id.len())
+                .field("response", response)
+                .finish(),
             Self::MessageStarted { message_id, seq } => formatter
                 .debug_struct("MessageStarted")
                 .field("message_id_bytes", &message_id.len())
@@ -378,6 +398,27 @@ pub(crate) fn from_runtime_event(
 
     match event {
         RuntimeEvent::DiagnosticAttempt(_) => None,
+        RuntimeEvent::AssistantResponseCompleted {
+            response_id,
+            text_start_bytes,
+            text_end_bytes,
+            kind,
+        } => Some(ConversationEvent::AssistantResponseCompleted {
+            message_id: message_id.to_string(),
+            response: AssistantResponseMetadata {
+                response_id: response_id.clone(),
+                text_start_bytes: *text_start_bytes,
+                text_end_bytes: *text_end_bytes,
+                kind: match kind {
+                    vega_runtime::RuntimeAssistantResponseKind::Commentary => {
+                        AssistantResponseKind::Commentary
+                    }
+                    vega_runtime::RuntimeAssistantResponseKind::Final => {
+                        AssistantResponseKind::Final
+                    }
+                },
+            },
+        }),
         RuntimeEvent::TextDelta(delta) => Some(ConversationEvent::TextDelta {
             message_id: message_id.to_string(),
             delta: delta.clone(),

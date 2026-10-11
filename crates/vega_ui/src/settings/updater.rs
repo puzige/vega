@@ -32,8 +32,7 @@ impl SettingsView {
     }
 
     pub fn show_general(&mut self, cx: &mut Context<Self>) {
-        self.section = 1;
-        cx.notify();
+        self.request_settings_section(1, cx);
     }
 
     pub(crate) fn render_updater(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -95,7 +94,17 @@ impl SettingsView {
         });
         settings_group(colors)
             .debug_selector(|| "settings-general-updater".into())
-            .child(section_title("Vega 更新", colors.text_primary))
+            .child(
+                settings_actions()
+                    .justify_between()
+                    .child(section_title("Vega 更新", colors.text_primary))
+                    .child(self.settings_help(
+                        "updater-help",
+                        "更新帮助",
+                        "每天自动检查一次更新。下载后需确认重启才能安装；更新包会校验签名。",
+                        cx,
+                    )),
+            )
             .child(settings_field(
                 "updater-version",
                 "版本",
@@ -117,26 +126,30 @@ impl SettingsView {
             .child(settings_field(
                 "updater-auto",
                 "自动检查并下载",
-                Some("每天检查一次；安装需要你确认重启".into()),
+                None,
                 automatic_switch,
                 colors,
             ))
-            .when(!self.updater.message.is_empty(), |view| {
-                view.child(
-                    settings_status(
-                        self.updater.message.clone(),
-                        if self.updater.phase == UpdatePhase::Error {
-                            colors.danger
-                        } else if ready {
-                            colors.success
-                        } else {
-                            colors.text_secondary
-                        },
-                        colors,
+            .when(
+                !self.updater.message.is_empty()
+                    && self.updater.message != "更新包将通过内置公钥验证；安装前需要确认重启",
+                |view| {
+                    view.child(
+                        settings_status(
+                            self.updater.message.clone(),
+                            if self.updater.phase == UpdatePhase::Error {
+                                colors.danger
+                            } else if ready {
+                                colors.success
+                            } else {
+                                colors.text_secondary
+                            },
+                            colors,
+                        )
+                        .mt_3(),
                     )
-                    .mt_3(),
-                )
-            })
+                },
+            )
             .when_some(progress, |view, progress| {
                 view.child(
                     div()

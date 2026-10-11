@@ -7,12 +7,19 @@ type ProviderConfigSaver = std::sync::Arc<dyn Fn(&AppConfig) -> Result<(), Strin
 
 /// the config — each time settings is opened).
 pub struct SettingsView {
+    pub(crate) catalog: super::model_catalog::CatalogUi,
     pub(crate) updater: vega_conversation::types::UpdateProjection,
     pub(crate) updater_notes: Option<crate::conversation_stream::StreamModel>,
     pub(crate) updater_notes_open: bool,
     pub(crate) updater_notes_scroll: gpui_kit::ScrollHandle,
     pub(crate) provider_management: super::provider_management::ProviderManagement,
     pub(crate) section: usize,
+    pub(crate) model_settings: Option<(String, String)>,
+    pub(crate) settings_help_open: Option<String>,
+    pub(crate) settings_help_focus: FocusHandle,
+    pub(crate) pricing_advanced: bool,
+    pub(crate) pending_section: Option<SettingsDestination>,
+    pub(crate) pending_settings_close: bool,
     pub(crate) section_scrolls: [gpui_kit::ScrollHandle; 8],
     pub(crate) usage: super::usage::UsageState,
     pub(crate) usage_focuses: [FocusHandle; 6],
@@ -168,12 +175,19 @@ impl SettingsView {
             codex_args_input.update(cx, |input, cx| input.set_text(&profile.args.join("\n"), cx));
         }
         Self {
+            catalog: super::model_catalog::CatalogUi::new(cx),
             updater: Default::default(),
             updater_notes: None,
             updater_notes_open: false,
             updater_notes_scroll: gpui_kit::ScrollHandle::new(),
             provider_management: Default::default(),
             section_scrolls: std::array::from_fn(|_| gpui_kit::ScrollHandle::new()),
+            model_settings: None,
+            settings_help_open: None,
+            settings_help_focus: cx.focus_handle().tab_stop(true),
+            pricing_advanced: false,
+            pending_section: None,
+            pending_settings_close: false,
             section: if cx
                 .try_global::<PricingSettingsRequested>()
                 .is_some_and(|request| request.0)
@@ -675,6 +689,10 @@ impl SettingsView {
             return;
         }
         self.pricing_model_input.update(cx, TextInput::clear);
+        if let Some((_, model)) = &self.model_settings {
+            self.pricing_model_input
+                .update(cx, |input, cx| input.set_text(model, cx));
+        }
         for input in &self.pricing_rate_inputs {
             input.update(cx, TextInput::clear);
         }
@@ -893,36 +911,16 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let focuses: Vec<FocusHandle> = match self.section {
-            2 => self
-                .reasoning_focuses
-                .iter()
-                .map(|(_, focus)| focus.clone())
-                .collect(),
-            3 => self
-                .pricing_focuses
-                .iter()
-                .map(|(_, focus)| focus.clone())
-                .collect(),
-            _ => {
-                cx.propagate();
-                return;
-            }
-        };
-        let Some(current) = focuses.iter().position(|focus| focus.is_focused(window)) else {
+        if !matches!(self.section, 2 | 3) {
             cx.propagate();
             return;
-        };
-        let next = if reverse {
-            current.checked_sub(1)
-        } else {
-            current.checked_add(1).filter(|next| *next < focuses.len())
-        };
-        if let Some(next) = next {
-            focuses[next].focus(window, cx);
-        } else {
-            cx.propagate();
         }
+        if reverse {
+            window.focus_prev(cx);
+        } else {
+            window.focus_next(cx);
+        }
+        cx.stop_propagation();
     }
 
     pub(crate) fn next_pricing_action(
@@ -969,3 +967,5 @@ impl SettingsView {
         }
     }
 }
+
+impl EventEmitter<vega_conversation::types::ModelCatalogRequested> for SettingsView {}

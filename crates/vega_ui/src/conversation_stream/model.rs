@@ -718,6 +718,10 @@ impl MessageCopy {
         }
     }
 
+    pub(crate) fn original_text(&self) -> String {
+        self.text.borrow().clone()
+    }
+
     pub(crate) fn append(&self, delta: &str) {
         self.text.borrow_mut().push_str(delta);
         self.invalidate_selection();

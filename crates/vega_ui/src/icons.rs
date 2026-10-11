@@ -4,8 +4,6 @@
 //! assets are Lucide-style SVGs with a 24px viewBox and round line joins; the
 //! wrapper below keeps every icon on Vega's fixed 16px optical grid. Keeping
 //! the renderer SVG-backed avoids fractional `PathBuilder` geometry at small
-//! sizes. The two symbols that are not present in the bundled set use the
-//! same Lucide SVG grammar through GPUI's inline SVG renderer.
 
 use gpui_kit::{
     AnyElement, IntoElement, Rgba,
@@ -37,6 +35,11 @@ pub enum Icon {
     Maximize,
     Minimize,
     More,
+    Connection,
+    Plug,
+    Bot,
+    Blocks,
+    Chart,
     ArrowUpDown,
     GitBranch,
     Pin,
@@ -78,6 +81,10 @@ const FOLDER_PLUS_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewB
 /// surface at 16px and reuse the same 24px, round-corner grammar as the
 /// embedded icon set.
 const SUMMARY_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h.01"/><path d="M8 6h13"/><path d="M3 12h.01"/><path d="M8 12h13"/><path d="M3 18h.01"/><path d="M8 18h13"/></svg>"#;
+
+const CHART_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16M8 16v-5m5 5V7m5 9V3"/></svg>"#;
+const PLUG_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v5m6-5v5M7 8h10v4a5 5 0 0 1-10 0V8Zm5 9v4"/></svg>"#;
+const BLOCKS_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/><path d="M14 6.5h7m-3.5-3.5v7"/></svg>"#;
 
 const HELP_SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>"#;
 
@@ -131,6 +138,8 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Maximize => IconName::Maximize,
         Icon::Minimize => IconName::Minimize,
         Icon::More => IconName::Ellipsis,
+        Icon::Connection => IconName::Network,
+        Icon::Bot => IconName::Bot,
         Icon::ArrowUpDown => IconName::ChevronsUpDown,
         Icon::GitBranch => unreachable!("inline SVG icons are handled before mapping"),
         Icon::ChevronDown => IconName::ChevronDown,
@@ -144,7 +153,10 @@ fn icon_name(kind: Icon) -> IconName {
         Icon::Warning => IconName::TriangleAlert,
         Icon::Document => IconName::FileText,
         Icon::Check => IconName::Check,
-        Icon::Pin
+        Icon::Chart
+        | Icon::Plug
+        | Icon::Blocks
+        | Icon::Pin
         | Icon::Summary
         | Icon::DockMove
         | Icon::Help
@@ -176,6 +188,9 @@ fn inline_icon(data: &'static [u8], color: Rgba) -> AnyElement {
 /// Paints a 16px icon in the caller's semantic text color.
 pub fn icon(kind: Icon, color: Rgba) -> AnyElement {
     let glyph = match kind {
+        Icon::Chart => inline_icon(CHART_SVG, color),
+        Icon::Plug => inline_icon(PLUG_SVG, color),
+        Icon::Blocks => inline_icon(BLOCKS_SVG, color),
         Icon::Pin => inline_icon(PIN_SVG, color),
         Icon::FolderPlus => inline_icon(FOLDER_PLUS_SVG, color),
         Icon::Summary => inline_icon(SUMMARY_SVG, color),

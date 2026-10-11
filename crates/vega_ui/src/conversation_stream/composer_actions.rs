@@ -1,5 +1,4 @@
 //! Small local composer commands; all durable changes still use thread settings.
-use super::context_usage::ContextUsageDisplay;
 use super::*;
 use crate::interaction::InteractionExt;
 use gpui_kit::Focusable;
@@ -250,6 +249,10 @@ impl ConversationStream {
     /// back as a real popover, so it belongs in this list.
     pub(crate) fn close_composer_popovers(&mut self, cx: &mut Context<Self>) {
         self.context_control.open = false;
+        self.context_usage_open = false;
+        self.context_usage_dismissed = true;
+        self.context_usage_trigger_hovered = false;
+        self.context_usage_tooltip_hovered = false;
         self.actions.menu = false;
         self.actions.slash = None;
         self.model_picker_level = ModelPickerLevel::Closed;
@@ -396,10 +399,7 @@ impl ConversationStream {
             self.input.read(cx).focus_handle(cx),
             self.action_focus[0].clone(),
         ];
-        let (estimated_tokens, context_limit) = self.context_usage_source();
-        if ContextUsageDisplay::new(estimated_tokens, context_limit).is_some() {
-            controls.push(self.context_usage_focus.clone());
-        }
+        controls.push(self.context_usage_focus.clone());
         controls.push(self.model_focus.clone());
         if self.actions.running || self.composer_submit_pending {
             controls.push(self.action_focus[1].clone());

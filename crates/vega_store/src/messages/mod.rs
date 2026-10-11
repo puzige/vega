@@ -5,6 +5,9 @@ use std::io;
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
+mod responses;
+pub use responses::{AssistantResponseRow, record_assistant_response};
+
 const COLUMNS: &str = "id, thread_id, seq, role, kind, content, status, created_at, \
                        plan_status, plan_review_note, plan_reviewed_at";
 
@@ -333,6 +336,7 @@ pub struct MessagePage {
     /// [`recent`]; `interrupted`/`failed` rows are durable and included).
     pub rows: Vec<MessageRow>,
     pub execution_durations_ms: std::collections::HashMap<String, i64>,
+    pub assistant_responses: Vec<AssistantResponseRow>,
     /// `Some(oldest_seq)` when older rows may exist — pass
     /// [`PageCursor::Before`] to continue. `None` marks the oldest end of the
     /// thread, so another request cannot produce new rows.
@@ -403,12 +407,14 @@ pub fn page_before(
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
+    let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
     Ok(MessagePage {
         images,
         rows,
         execution_durations_ms,
+        assistant_responses,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -495,11 +501,13 @@ pub fn page_containing_message(
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
+    let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
     tx.commit()?;
     Ok(Some(MessagePage {
         images,
         rows,
         execution_durations_ms,
+        assistant_responses,
         older_cursor,
         newer_cursor,
         tool_calls,
@@ -543,12 +551,14 @@ pub fn page_after(
     let tool_calls = page_tool_calls(&tx, thread_id, &rows)?;
     let images = crate::image_attachments::for_messages(&tx, thread_id, &rows)?;
     let execution_durations_ms = page_execution_durations(&tx, thread_id, &rows)?;
+    let assistant_responses = responses::for_page(&tx, thread_id, &rows)?;
     drop(stmt);
     tx.commit()?;
     Ok(MessagePage {
         images,
         rows,
         execution_durations_ms,
+        assistant_responses,
         older_cursor,
         newer_cursor,
         tool_calls,

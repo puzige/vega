@@ -223,6 +223,7 @@ async fn text_only_preserves_events_usage_and_visible_content() {
             RuntimeEvent::ThinkingDelta(thinking),
             RuntimeEvent::TextDelta(second),
             RuntimeEvent::UsageUpdated { usage: RuntimeTokenUsage { input: 5, output: 2, cache_read: 1, cache_write: 0 }, cost_microcents: 0, pricing: None },
+            RuntimeEvent::AssistantResponseCompleted { text_start_bytes: 0, text_end_bytes: 2, kind: RuntimeAssistantResponseKind::Final, .. },
             RuntimeEvent::Finished(RuntimeFinishReason::End),
         ] if first == "a" && thinking == "reason" && second == "b"));
 }

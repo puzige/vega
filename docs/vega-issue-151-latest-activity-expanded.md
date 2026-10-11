@@ -1,9 +1,11 @@
 # Issue #151 — 默认展开当前活动（thinking / 工具调用）
 
+> 2026-10-11：实时最新活动自动展开、被后续内容自动收起的默认展示规则，已被用户批准的 [#296 v3 U11/U12](vega-issue-296-ui-redesign-v3.md#3-单次请求的信息流契约)取代。当前思考/工具详情默认折叠，中途正文保留，仅可信最终答案确认后默认收起过程一次；尊重用户展开、选择、回看与焦点。原始事件顺序、安全投影、历史恢复与局部重测量等非冲突约束继续有效。下文保留为历史规格。
+
 关联：https://github.com/puzige/vega/issues/151 。2026-09-22 用户授权。
 
-Status: frozen UI behavior contract. This **supersedes** exactly two resting
-defaults, and nothing else:
+Historical status: frozen UI behavior contract at #151 delivery. At that time it
+superseded exactly two resting defaults, and nothing else:
 
 - [Issue #61](vega-issue-61-thinking.md) §显示边界「默认折叠」——仅对**最新**的
   思考块失效；更早的思考块仍然默认折叠。

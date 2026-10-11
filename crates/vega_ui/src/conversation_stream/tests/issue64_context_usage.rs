@@ -122,7 +122,7 @@ async fn issue64_context_usage_known_capacity_shows_hover_tip_without_changing_c
 ) {
     let (window, stream, _) = open_controller_stream(cx, "issue64-known");
     let original_height = bounds(window, "composer-shell", cx).unwrap().size.height;
-    assert!(bounds(window, "composer-context-usage", cx).is_none());
+    assert!(bounds(window, "composer-context-usage", cx).is_some());
 
     stream.update(cx, |stream, cx| {
         assert!(stream.apply_context_projection(
@@ -136,7 +136,7 @@ async fn issue64_context_usage_known_capacity_shows_hover_tip_without_changing_c
     });
 
     let indicator = bounds(window, "composer-context-usage", cx).unwrap();
-    assert_eq!(indicator.size.width, px(24.0));
+    assert_eq!(indicator.size.width, px(28.0));
     assert_eq!(
         bounds(window, "composer-shell", cx).unwrap().size.height,
         original_height
@@ -165,11 +165,7 @@ async fn issue64_context_usage_known_capacity_shows_hover_tip_without_changing_c
             .debug_bounds("context-usage-tooltip-estimate")
             .is_some()
     );
-    assert!(
-        visual
-            .debug_bounds("context-usage-tooltip-capacity")
-            .is_some()
-    );
+    assert!(visual.debug_bounds("context-usage-help").is_some());
     assert_eq!(
         visual.debug_bounds("composer-shell").unwrap().size.height,
         original_height
@@ -192,7 +188,7 @@ async fn issue64_context_usage_known_capacity_shows_hover_tip_without_changing_c
 }
 
 #[gpui_kit::test]
-async fn issue64_context_usage_unknown_capacity_shows_no_percentage_and_unknown_estimate_hides(
+async fn issue64_context_usage_unknown_capacity_and_estimate_keep_an_honest_entry(
     cx: &mut TestAppContext,
 ) {
     let (window, stream, _) = open_controller_stream(cx, "issue64-unknown");
@@ -206,7 +202,7 @@ async fn issue64_context_usage_unknown_capacity_shows_no_percentage_and_unknown_
             cx,
         ));
     });
-    assert!(bounds(window, "composer-context-usage", cx).is_none());
+    assert!(bounds(window, "composer-context-usage", cx).is_some());
 
     stream.update(cx, |stream, cx| {
         assert!(stream.apply_context_projection(
@@ -284,11 +280,7 @@ async fn issue64_context_usage_focus_keeps_the_same_tip_after_pointer_leaves(
             .debug_bounds("context-usage-tooltip-percentage")
             .is_some()
     );
-    assert!(
-        visual
-            .debug_bounds("context-usage-tooltip-capacity")
-            .is_some()
-    );
+    assert!(visual.debug_bounds("context-usage-help").is_some());
     assert!(bounds(window, "composer-context-usage", cx).is_some());
     assert!(indicator.size.height >= px(16.0));
 }
@@ -330,7 +322,7 @@ async fn issue64_context_usage_tab_from_composer_input_reaches_indicator_and_too
         "context-usage-tooltip-percentage",
         "context-usage-tooltip-compact",
         "context-usage-tooltip-estimate",
-        "context-usage-tooltip-capacity",
+        "context-usage-help",
     ] {
         assert!(
             visual.debug_bounds(selector).is_some(),
@@ -339,11 +331,10 @@ async fn issue64_context_usage_tab_from_composer_input_reaches_indicator_and_too
     }
 
     let display =
-        super::super::context_usage::ContextUsageDisplay::new(Some(50_000), Some(100_000))
-            .expect("context usage display");
+        super::super::context_usage::ContextUsageDisplay::new(Some(50_000), Some(100_000));
     assert_eq!(
         display.accessibility_label(),
-        "上下文窗口；估算输入：50,000 tokens（含系统提示和实际工具定义）；估算使用量：50%；当前模型设置输入上限：100,000 tokens（非供应商验证容量）"
+        "上下文用量；估算输入：50,000 tokens（含系统提示和实际工具定义）；估算使用量：50%；当前模型设置输入上限：100,000 tokens（非供应商验证容量）"
     );
 
     cx.simulate_keystrokes(window.into(), "tab");
@@ -461,7 +452,7 @@ async fn issue64_context_usage_rejects_late_projection_after_model_change(cx: &m
     let mut changed = stream.read_with(cx, |stream, _| stream.thread.clone());
     changed.model = "other-model".to_string();
     stream.update(cx, |stream, cx| stream.apply_thread(changed, cx));
-    assert!(bounds(window, "composer-context-usage", cx).is_none());
+    assert!(bounds(window, "composer-context-usage", cx).is_some());
 
     stream.update(cx, |stream, cx| {
         assert!(!stream.apply_context_projection(
@@ -581,5 +572,84 @@ async fn issue64_context_usage_uses_light_and_dark_theme_tokens_and_stays_read_o
             .lock()
             .expect("model selection requests")
             .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_context_popover_unknown_over_limit_escape_and_outside_restore_focus(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue296-context-popover");
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let trigger = visual
+        .debug_bounds("composer-context-usage")
+        .expect("unknown entry remains");
+    assert_eq!(trigger.size, gpui_kit::size(px(28.), px(28.)));
+    let ring = visual
+        .debug_bounds("composer-context-usage-ring")
+        .expect("ring");
+    assert_eq!(ring.size, gpui_kit::size(px(16.), px(16.)));
+    visual.simulate_click(trigger.center(), Modifiers::default());
+    visual.simulate_mouse_move(point(px(4.), px(4.)), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(stream.read_with(&visual, |stream, _| stream.context_usage_open));
+    let popover = visual
+        .debug_bounds("context-usage-tooltip")
+        .expect("click holds");
+    assert_eq!(popover.size.width, px(320.));
+    let title = visual
+        .debug_bounds("context-usage-tooltip-title")
+        .expect("title");
+    assert_eq!(title.left() - popover.left(), px(17.));
+    assert!(
+        visual
+            .debug_bounds("context-usage-tooltip-percentage")
+            .is_none()
+    );
+    assert!(visual.debug_bounds("context-usage-bar").is_none());
+    stream.update(&mut visual, |stream, cx| {
+        assert!(stream.apply_context_projection(
+            "issue296-context-popover",
+            "mock",
+            None,
+            ContextUsageProjection::new(Some(100), Some(125)),
+            true,
+            cx
+        ));
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds("context-usage-tooltip-percentage")
+            .is_some()
+    );
+    assert!(visual.debug_bounds("context-usage-bar").is_some());
+    assert!(
+        visual
+            .debug_bounds("context-usage-tooltip-capacity")
+            .is_some()
+    );
+    let display = super::super::context_usage::ContextUsageDisplay::new(Some(125), Some(100));
+    assert_eq!(display.percentage_value().as_deref(), Some("125%"));
+    assert_eq!(display.fill_fraction, 1.);
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+    visual.update(|window, cx| assert!(stream.read(cx).context_usage_focus.is_focused(window)));
+    visual.simulate_click(trigger.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-usage-tooltip").is_some());
+    visual.simulate_click(point(px(4.), px(4.)), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-usage-tooltip").is_none());
+    visual.update(|window, cx| assert!(stream.read(cx).context_usage_focus.is_focused(window)));
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("context-usage-tooltip").is_some());
+    visual.simulate_click(trigger.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("context-usage-tooltip").is_none(),
+        "trigger closes instead of reopening after outside capture"
     );
 }

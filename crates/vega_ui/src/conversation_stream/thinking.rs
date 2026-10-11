@@ -118,17 +118,23 @@ impl Preview {
 
 pub(crate) struct ThinkingBlock {
     pub(crate) text: String,
+    pub(crate) shimmer_epoch: Option<Instant>,
     summary: String,
     summary_has_content: bool,
     thinking_preview: Preview,
     summary_preview: Preview,
     pub(crate) expanded: bool,
+    expanded_rendered: bool,
     pub(crate) truncated: bool,
     focus: FocusHandle,
     scroll: ScrollHandle,
 }
 
 impl ThinkingBlock {
+    pub(crate) fn summary_title(&self) -> Option<&str> {
+        (!self.summary_preview.title.is_empty()).then_some(self.summary_preview.title.as_str())
+    }
+
     pub(crate) fn title(&self) -> &str {
         if !self.summary_preview.title.is_empty() {
             &self.summary_preview.title
@@ -155,21 +161,22 @@ impl ThinkingBlock {
     fn new(cx: &mut Context<Self>) -> Self {
         Self {
             text: String::new(),
+            shimmer_epoch: None,
             summary: String::new(),
             summary_has_content: false,
             thinking_preview: Preview::default(),
             summary_preview: Preview::default(),
             expanded: false,
+            expanded_rendered: false,
             truncated: false,
             focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
         }
     }
-    /// #151 R151-1/R151-2: the newest live activity unit is expanded; older
-    /// units step down. Pure UI state, never persisted.
     pub(crate) fn set_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         if self.expanded != expanded {
             self.expanded = expanded;
+            self.expanded_rendered = false;
             cx.notify();
         }
     }
@@ -180,11 +187,11 @@ impl ThinkingBlock {
 
     pub(crate) fn estimated_height(&self, width: f32) -> f32 {
         let chars_per_line = ((width - 2. * Layout::DISCLOSURE_PADDING_X).max(1.)
-            / (Typography::BODY * 0.56))
+            / (Typography::MESSAGE * 0.56))
             .max(1.) as usize;
         let content_height = if self.expanded {
             let max_lines = (Layout::DISCLOSURE_CONTENT_MAX_HEIGHT
-                / (Typography::BODY * Typography::BODY_LINE_HEIGHT))
+                / (Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT))
                 .ceil() as usize;
             let mut completed_lines = 0;
             let mut line_width: usize = 0;
@@ -203,7 +210,7 @@ impl ThinkingBlock {
             }
             let lines = (completed_lines + line_width.div_ceil(chars_per_line)).max(1);
             Layout::PROCESS_ITEM_GAP
-                + (lines as f32 * Typography::BODY * Typography::BODY_LINE_HEIGHT)
+                + (lines as f32 * Typography::MESSAGE * Typography::MESSAGE_LINE_HEIGHT)
                     .min(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT)
         } else {
             0.
@@ -232,13 +239,21 @@ impl ThinkingBlock {
             self.text.push_str(&delta[..end]);
             self.thinking_preview.append(&delta[..end]);
         }
+        if self.expanded
+            && self.expanded_rendered
+            && self.scroll.offset().y + self.scroll.max_offset().y <= px(1.)
+        {
+            self.scroll
+                .set_offset(gpui_kit::point(px(0.), px(-f32::MAX)));
+        }
         self.truncated |= end < delta.len();
         end
     }
 }
 
 impl Render for ThinkingBlock {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.expanded_rendered = self.expanded;
         let colors = theme(cx).colors;
         div()
             .w_full()
@@ -256,7 +271,14 @@ impl Render for ThinkingBlock {
                     .border_color(gpui_kit::transparent_black())
                     .focus_visible(move |row| row.border_color(colors.accent))
                     .debug_selector(|| "thinking-toggle".into())
-                    .aria_label("展开或收起思考过程")
+                    .aria_label(format!(
+                        "{}，展开或收起思考过程",
+                        if self.shimmer_epoch.is_some() {
+                            self.summary_title().unwrap_or("Thinking")
+                        } else {
+                            self.title()
+                        }
+                    ))
                     .flex()
                     .items_center()
                     .gap_2()
@@ -273,12 +295,14 @@ impl Render for ThinkingBlock {
                         cx.listener(|this, _, window, cx| {
                             this.focus.focus(window, cx);
                             this.expanded = !this.expanded;
+                            this.expanded_rendered = false;
                             cx.notify();
                         }),
                     )
                     .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                             this.expanded = !this.expanded;
+                            this.expanded_rendered = false;
                             cx.stop_propagation();
                             cx.notify();
                         }
@@ -306,26 +330,48 @@ impl Render for ThinkingBlock {
                             .min_w_0()
                             .flex_1()
                             .truncate()
-                            .child(self.title().to_owned()),
+                            .child(if let Some(epoch) = self.shimmer_epoch {
+                                shimmer::text(
+                                    self.summary_title().unwrap_or("Thinking").to_owned(),
+                                    epoch,
+                                    window,
+                                    cx,
+                                )
+                            } else {
+                                div().child(self.title().to_owned()).into_any_element()
+                            }),
                     ),
             )
             .when(self.expanded, |block| {
                 block.child(
                     div()
-                        .id("thinking-content")
-                        .debug_selector(|| "thinking-content".into())
-                        .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
-                        .overflow_x_hidden()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll)
-                        .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&self.scroll))
+                        .relative()
                         .w_full()
                         .min_w_0()
-                        .px(px(Layout::DISCLOSURE_PADDING_X))
-                        .text_size(px(Typography::BODY))
-                        .line_height(gpui_kit::relative(Typography::BODY_LINE_HEIGHT))
-                        .text_color(colors.text_secondary)
-                        .child(self.visible_text().to_owned()),
+                        .child(
+                            div()
+                                .id("thinking-content")
+                                .debug_selector(|| "thinking-content".into())
+                                .max_h(px(Layout::DISCLOSURE_CONTENT_MAX_HEIGHT))
+                                .overflow_x_hidden()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(
+                                    &self.scroll,
+                                ))
+                                .w_full()
+                                .min_w_0()
+                                .pl(px(Layout::DISCLOSURE_PADDING_X))
+                                .pr(px(Layout::DISCLOSURE_SCROLLBAR_GUTTER))
+                                .text_size(px(Typography::MESSAGE))
+                                .line_height(gpui_kit::relative(Typography::MESSAGE_LINE_HEIGHT))
+                                .text_color(colors.text_secondary)
+                                .child(gpui_kit::base::SelectableText::new(
+                                    "thinking-text",
+                                    self.visible_text().to_owned(),
+                                )),
+                        )
+                        .child(crate::tool_card::disclosure_scrollbar(&self.scroll, cx)),
                 )
             })
             .when(self.truncated, |block| {
@@ -404,10 +450,13 @@ impl ConversationStream {
                 group.append_thinking(segment, card.clone(), cx)
             });
             self.thinking_blocks += 1;
-            card.update(cx, |card, cx| card.set_expanded(true, cx));
+            card.update(cx, |card, cx| card.set_expanded(false, cx));
             self.active_thinking = Some(card);
         }
         if let Some(card) = &self.active_thinking {
+            if let Some((_, group)) = &self.active_run_activity {
+                group.update(cx, |group, cx| group.set_thinking(card.clone(), cx));
+            }
             let remaining = THINKING_VIEW_BYTES.saturating_sub(self.thinking_bytes);
             self.thinking_bytes += card.update(cx, |card, cx| {
                 let appended = card.append(delta, summary, remaining);

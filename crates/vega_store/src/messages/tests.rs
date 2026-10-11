@@ -853,3 +853,78 @@ fn page_and_tool_batch_read_on_one_fresh_snapshot() {
         .collect();
     assert_eq!(ids, vec!["tc-after"]);
 }
+
+#[test]
+fn issue296_response_metadata_replay_and_invalid_spans_preserve_body() {
+    let (store, _dir) = setup();
+    insert(store.conn(), &streaming("response", 1)).unwrap();
+    let body = "过程。结果。";
+    update_streaming_content(store.conn(), "response", body).unwrap();
+    let mut response = AssistantResponseRow {
+        message_id: "response".into(),
+        response_id: "first".into(),
+        text_start_bytes: 0,
+        text_end_bytes: "过程。".len(),
+        kind: "commentary".into(),
+    };
+    assert!(record_assistant_response(store.conn(), "response", body, &response).unwrap());
+    assert!(record_assistant_response(store.conn(), "response", body, &response).unwrap());
+    response.text_end_bytes = body.len();
+    assert!(!record_assistant_response(store.conn(), "response", body, &response).unwrap());
+    response.response_id = "invalid".into();
+    for (start, end) in [(1, 9), (9, 10), (9, body.len() + 1), (0, body.len())] {
+        response.text_start_bytes = start;
+        response.text_end_bytes = end;
+        assert!(!record_assistant_response(store.conn(), "response", body, &response).unwrap());
+    }
+    response.response_id = "final".into();
+    response.text_start_bytes = "过程。".len();
+    response.text_end_bytes = body.len();
+    response.kind = "final".into();
+    assert!(record_assistant_response(store.conn(), "response", body, &response).unwrap());
+    finish_streaming(store.conn(), "response", body, "done", Some(1024)).unwrap();
+    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
+    assert_eq!(page.rows[0].content, body);
+    assert_eq!(page.assistant_responses.len(), 2);
+    assert_eq!(page.assistant_responses[1], response);
+    store
+        .conn()
+        .execute(
+            "UPDATE assistant_responses SET text_start_bytes = 10 WHERE response_id = 'final'",
+            [],
+        )
+        .unwrap();
+    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
+    assert!(page.assistant_responses.is_empty());
+    assert_eq!(page.rows[0].content, body);
+    assert_eq!(page.execution_durations_ms.get("response"), Some(&1024));
+}
+
+#[test]
+fn issue296_response_metadata_failed_and_legacy_runs_never_claim_final() {
+    let (store, _dir) = setup();
+    for (seq, id) in [(1, "failed"), (2, "legacy")] {
+        insert(store.conn(), &streaming(id, seq)).unwrap();
+        update_streaming_content(store.conn(), id, "result").unwrap();
+    }
+    assert!(
+        record_assistant_response(
+            store.conn(),
+            "failed",
+            "result",
+            &AssistantResponseRow {
+                message_id: "failed".into(),
+                response_id: "final".into(),
+                text_start_bytes: 0,
+                text_end_bytes: 6,
+                kind: "final".into(),
+            }
+        )
+        .unwrap()
+    );
+    finish_streaming(store.conn(), "failed", "result", "failed", Some(12)).unwrap();
+    finish_streaming(store.conn(), "legacy", "result", "done", None).unwrap();
+    let page = page_before(store.conn(), "t", PageCursor::Head, 20).unwrap();
+    assert!(page.assistant_responses.is_empty());
+    assert!(page.rows.iter().all(|row| row.content == "result"));
+}

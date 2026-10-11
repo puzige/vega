@@ -689,6 +689,7 @@ where
         }
     };
 
+    let runtime_started_at = std::time::Instant::now();
     let started = ConversationEvent::MessageStarted {
         message_id: prepared.assistant_message_id.clone(),
         seq: prepared.assistant_seq as u64,
@@ -706,7 +707,29 @@ where
         let _ = actor.close().await;
         return Err(ConversationError::Runtime(error));
     }
-    let mut events = vec![started];
+    let clock = ConversationEvent::RunStarted {
+        message_id: prepared.assistant_message_id.clone(),
+        started_at: runtime_started_at,
+    };
+    if let Err(error) = event_sink(&clock) {
+        let error = Arc::new(error);
+        let duration = i64::try_from(runtime_started_at.elapsed().as_millis()).unwrap_or(i64::MAX);
+        let _ = actor
+            .event(
+                RuntimeEvent::Error(error.clone()),
+                String::new(),
+                Some(duration),
+            )
+            .await;
+        forward_pipeline_error(
+            &mut event_sink,
+            Some(prepared.assistant_message_id.clone()),
+            error.clone(),
+        );
+        let _ = actor.close().await;
+        return Err(ConversationError::Runtime(error));
+    }
+    let mut events = vec![started, clock];
 
     let (runtime_sender, runtime_receiver) = mpsc::channel(PERSISTENCE_CHANNEL_CAPACITY);
     let task_cancel = cancel.child_token();
@@ -723,7 +746,6 @@ where
     let permission_adapter = RuntimePermissionAdapter {
         shared: permission_hook,
     };
-    let runtime_started_at = std::time::Instant::now();
     let diagnostics = Arc::new(
         super::diagnostics::DiagnosticsWriter::for_persistence_actor(actor.sender.clone()),
     );

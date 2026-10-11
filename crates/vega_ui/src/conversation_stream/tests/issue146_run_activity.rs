@@ -1,5 +1,5 @@
 use super::*;
-use crate::conversation_stream::run_activity::format_run_duration;
+use crate::conversation_stream::run_activity::format_run_clock;
 
 fn run_group(stream: &ConversationStream, message_id: &str) -> Entity<RunActivityGroup> {
     stream
@@ -30,14 +30,14 @@ fn assistant_text(stream: &ConversationStream, _cx: &App) -> String {
 }
 
 #[test]
-fn issue146_duration_display_rounds_up_and_changes_units_at_thresholds() {
-    assert_eq!(format_run_duration(0), "1 秒");
-    assert_eq!(format_run_duration(1), "1 秒");
-    assert_eq!(format_run_duration(1_000), "1 秒");
-    assert_eq!(format_run_duration(1_001), "2 秒");
-    assert_eq!(format_run_duration(59_001), "1 分 00 秒");
-    assert_eq!(format_run_duration(3_599_001), "1 小时 0 分");
-    assert_eq!(format_run_duration(3_723_000), "1 小时 2 分");
+fn issue146_duration_display_counts_elapsed_seconds_and_changes_units_at_thresholds() {
+    assert_eq!(format_run_clock(0), "0s");
+    assert_eq!(format_run_clock(1), "0s");
+    assert_eq!(format_run_clock(1_000), "1s");
+    assert_eq!(format_run_clock(1_001), "1s");
+    assert_eq!(format_run_clock(59_001), "59s");
+    assert_eq!(format_run_clock(3_599_001), "59m 59s");
+    assert_eq!(format_run_clock(3_723_000), "1h 2m");
 }
 
 #[gpui_kit::test]
@@ -109,7 +109,7 @@ async fn issue146_live_activity_folds_once_and_keeps_final_answer_visible(cx: &m
     );
     assert_eq!(
         group.read_with(cx, |group, _| group.test_label()),
-        "已完成 · 用时 11 秒"
+        "Worked for 10s"
     );
     assert_eq!(stream.read_with(cx, assistant_text), "final answer");
 
@@ -189,9 +189,9 @@ async fn issue146_text_only_run_has_no_empty_live_row_and_shows_total_duration(
         let group = run_group(stream, "text-only");
         assert_eq!(
             group.read(cx).test_projection(),
-            (RunActivityStatus::Completed, Some(6_543), false, true)
+            (RunActivityStatus::Completed, Some(6_543), true, true)
         );
-        assert_eq!(group.read(cx).test_label(), "已完成 · 用时 7 秒");
+        assert_eq!(group.read(cx).test_label(), "Worked for 6s");
         assert_eq!(assistant_text(stream, cx), "visible answer");
     });
 }
@@ -231,6 +231,13 @@ async fn issue146_long_run_activity_is_bounded_and_keeps_its_scroll_position(
         );
     });
     let group = stream.read_with(cx, |stream, _| run_group(stream, "bounded"));
+    group.update(cx, |group, cx| {
+        for child in group.children() {
+            if let RunActivityChild::Thinking(card) = child {
+                card.update(cx, |card, cx| card.set_expanded(true, cx));
+            }
+        }
+    });
     let scroll = group.read_with(cx, |group, _| group.test_scroll_handle());
     cx.run_until_parked();
     let mut visual = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -328,7 +335,7 @@ async fn issue146_empty_runtime_failure_keeps_reason_visible_without_assistant_t
             run_group(stream, "empty-runtime-failure")
                 .read(cx)
                 .test_projection(),
-            (RunActivityStatus::Failed, Some(2_345), false, true)
+            (RunActivityStatus::Failed, Some(2_345), true, true)
         );
     });
 
@@ -382,11 +389,11 @@ async fn issue146_terminal_failure_cancel_and_hydration_restore_truthful_statuse
         let group = stream.read_with(cx, |stream, _| run_group(stream, message_id));
         assert_eq!(
             group.read_with(cx, |group, _| group.test_projection()),
-            (status, Some(duration), false, true)
+            (status, Some(duration), true, true)
         );
         let expected = match status {
-            RunActivityStatus::Failed => "已失败 · 用时 2 秒",
-            RunActivityStatus::Interrupted => "已停止 · 用时 3 秒",
+            RunActivityStatus::Failed => "已失败 · 用时 1s",
+            RunActivityStatus::Interrupted => "已停止 · 用时 2s",
             _ => unreachable!(),
         };
         assert_eq!(group.read_with(cx, |group, _| group.test_label()), expected);

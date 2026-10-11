@@ -1,5 +1,7 @@
 # Issue #151 交付证据 · 默认展开最新活动（thinking / 工具调用）
 
+> 历史交付记录。2026-10-11用户批准的 [#296 v3](vega-issue-296-ui-redesign-v3.md#3-单次请求的信息流契约)已替代此记录的实时自动展开/收起默认规则；这里的旧测试与手测结果不代表当前默认行为，非冲突的安全、顺序与局部布局证据保留。
+
 关联 [Issue #151](https://github.com/puzige/vega/issues/151) 与
 [冻结规格](vega-issue-151-latest-activity-expanded.md)。
 

@@ -2104,7 +2104,7 @@ mod tests {
             })
             .expect("MCP Settings window");
         cx.run_until_parked();
-        let preceding_section = view.read_with(cx, |view, _| view.section_focuses[6].clone());
+        let preceding_section = view.read_with(cx, |view, _| view.section_focuses[4].clone());
         window
             .update(cx, |_, window, cx| preceding_section.focus(window, cx))
             .expect("focus final Settings navigation row");

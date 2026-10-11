@@ -54,6 +54,25 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
         assistant,
         ("Checking. Found the TODO.".into(), "done".into(), 2)
     );
+    let responses: Vec<(String, i64, i64)> = store
+        .conn()
+        .prepare("SELECT kind, text_start_bytes, text_end_bytes FROM assistant_responses WHERE message_id = ?1 ORDER BY text_start_bytes")
+        .unwrap()
+        .query_map([&run.assistant_message_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        responses,
+        vec![
+            ("commentary".into(), 0, "Checking. ".len() as i64),
+            (
+                "final".into(),
+                "Checking. ".len() as i64,
+                run.content.len() as i64
+            ),
+        ]
+    );
     let tool: (String, String, String, String) = store
         .conn()
         .query_row(
@@ -184,6 +203,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     assert_eq!(
         tables,
         vec![
+            "assistant_responses",
             "assistant_run_durations",
             "codex_session_creations",
             "codex_task_snapshots",
@@ -1102,4 +1122,84 @@ async fn actor_start_failure_uses_background_cleanup_and_structured_error() {
         )
         .unwrap();
     assert_eq!(assistant_status, "failed");
+}
+
+#[tokio::test]
+async fn issue296_response_metadata_and_terminal_clock_survive_history_hydration() {
+    let (store, dir, _) = setup();
+    let tools = vega_tools::Tools::new(dir.path()).unwrap();
+    let provider = scripted_provider("response-read", r#"{"pattern":"TODO","path":"lib.rs"}"#);
+    let run = run_thread_task(
+        &store,
+        &provider,
+        &tools,
+        "thread-1",
+        "Read",
+        "Inspect",
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let metadata: Vec<_> = run
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            ConversationEvent::AssistantResponseCompleted { response, .. } => {
+                Some(response.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(metadata.len(), 2);
+    assert_eq!(
+        metadata[0].kind,
+        crate::types::AssistantResponseKind::Commentary
+    );
+    assert_eq!(metadata[1].kind, crate::types::AssistantResponseKind::Final);
+    assert!(
+        metadata
+            .iter()
+            .all(|response| response.is_valid_for(&run.content))
+    );
+    let start = run
+        .events
+        .iter()
+        .find_map(|event| match event {
+            ConversationEvent::RunStarted { started_at, .. } => Some(*started_at),
+            _ => None,
+        })
+        .unwrap();
+    let duration = run
+        .events
+        .iter()
+        .find_map(|event| match event {
+            ConversationEvent::MessageFinished {
+                execution_duration_ms,
+                ..
+            } => *execution_duration_ms,
+            _ => None,
+        })
+        .unwrap();
+    assert!(duration <= start.elapsed().as_millis() as u64);
+    let history = crate::history::latest_history_page(&store, "thread-1", 20).unwrap();
+    let hydrated: Vec<_> = history
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            crate::history::HistoryEntry::AssistantResponseMetadata { response, .. } => {
+                Some(response.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hydrated, metadata);
+    let text: String = history
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            crate::history::HistoryEntry::AssistantText { content, .. } => Some(content.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, run.content);
 }

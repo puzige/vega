@@ -84,6 +84,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0014_execution_duration.sql"),
     include_str!("../migrations/0015_run_diagnostics.sql"),
     include_str!("../migrations/0016_codex_task_identity.sql"),
+    include_str!("../migrations/0017_assistant_responses.sql"),
 ];
 
 /// Single-connection SQLite store for the Vega content and sidebar metadata schema.
@@ -235,7 +236,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 16);
+        assert_eq!(user_version(&store), 17);
         let settings = skills::read_settings(store.conn()).unwrap();
         assert!(!settings.global_enabled);
         assert!(!settings.automatic_enabled);
@@ -259,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn migrate_creates_exactly_the_twenty_eight_tables() {
+    fn migrate_creates_exactly_the_twenty_nine_tables() {
         let (store, _dir) = open_temp_store();
         let mut stmt = store
             .conn()
@@ -276,6 +277,7 @@ mod tests {
         assert_eq!(
             tables,
             vec![
+                "assistant_responses",
                 "assistant_run_durations",
                 "codex_session_creations",
                 "codex_task_snapshots",
@@ -320,9 +322,9 @@ mod tests {
     }
 
     #[test]
-    fn migrated_store_is_wal_at_user_version_16() {
+    fn migrated_store_is_wal_at_user_version_17() {
         let (store, _dir) = open_temp_store();
-        assert_eq!(user_version(&store), 16);
+        assert_eq!(user_version(&store), 17);
         let journal_mode: String = store
             .conn()
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
@@ -438,7 +440,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 16);
+        assert_eq!(user_version(&store), 17);
         let after: String = store
             .conn()
             .query_row(
@@ -467,7 +469,7 @@ mod tests {
         store.conn().pragma_update(None, "user_version", 7).unwrap();
         store.conn().execute_batch("INSERT INTO threads (id,title,mode,permission_mode,model,status,pinned,unread,created_at,updated_at) VALUES ('named','手动','ask','confirm','m','active',0,0,1,1),('populated','','ask','confirm','m','active',0,0,1,1),('empty','','ask','confirm','m','active',0,0,1,1); INSERT INTO messages (id,thread_id,seq,role,kind,content,status,created_at) VALUES ('u','populated',1,'user','text','hi','done',1);").unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 16);
+        assert_eq!(user_version(&store), 17);
         let rows: Vec<(String, String, String)> = store
             .conn()
             .prepare("SELECT id,title,auto_title_state FROM threads ORDER BY id")
@@ -492,7 +494,7 @@ mod tests {
         // 第二次调用不报错
         store.migrate().unwrap();
         // 版本不前进
-        assert_eq!(user_version(&store), 16);
+        assert_eq!(user_version(&store), 17);
         // 数据未被破坏：threads 仍为空
         let thread_count: i64 = store
             .conn()
@@ -528,7 +530,7 @@ mod tests {
             )
             .unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 16);
+        assert_eq!(user_version(&store), 17);
         let kept: (String, Option<String>, Option<String>, Option<i64>) = store
             .conn()
             .query_row(
@@ -546,7 +548,14 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 28);
+        assert_eq!(tables, 29);
+        let response_count: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(response_count, 0);
         for table in [
             "projects",
             "threads",
@@ -593,7 +602,7 @@ mod tests {
                VALUES ('old','t','m',1,'read','{}','success',1);"
         ).unwrap();
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 16);
+        assert_eq!(user_version(&store), 17);
         let old: Option<i64> = store
             .conn()
             .query_row(
@@ -630,7 +639,14 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 28);
+        assert_eq!(tables, 29);
+        let response_count: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(response_count, 0);
     }
 
     #[test]
@@ -669,7 +685,7 @@ mod tests {
             .unwrap();
 
         store.migrate().unwrap();
-        assert_eq!(user_version(&store), 16);
+        assert_eq!(user_version(&store), 17);
         for table in [
             "messages",
             "tool_calls",

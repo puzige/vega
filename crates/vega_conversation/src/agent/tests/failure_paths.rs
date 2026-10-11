@@ -140,21 +140,38 @@ async fn provider_error_maps_to_error_event_and_failed_message() {
     .await
     .unwrap();
     assert!(run.failed);
+    let [
+        ConversationEvent::MessageStarted { message_id, seq },
+        ConversationEvent::RunStarted {
+            message_id: clock_id,
+            started_at,
+        },
+        ConversationEvent::TextDelta {
+            message_id: text_id,
+            delta,
+        },
+        ConversationEvent::Error {
+            message_id: Some(error_id),
+            error,
+            execution_duration_ms: Some(duration),
+        },
+    ] = run.events.as_slice()
+    else {
+        panic!("unexpected failure event sequence: {:?}", run.events);
+    };
+    assert_eq!(*seq, 2);
+    for id in [message_id, clock_id, text_id, error_id] {
+        assert_eq!(id, &run.assistant_message_id);
+    }
+    assert_eq!(delta, "partial");
+    assert!(*duration <= started_at.elapsed().as_millis() as u64);
     assert!(matches!(
-        run.events.as_slice(),
-        [
-            ConversationEvent::MessageStarted { .. },
-            ConversationEvent::TextDelta { delta, .. },
-            ConversationEvent::Error { error, .. }
-        ]
-            if matches!(
-                error.as_ref(),
-                VegaError::Provider {
-                    status: Some(503),
-                    message,
-                    retryable: false,
-                } if message == "unavailable"
-            ) && delta == "partial"
+        error.as_ref(),
+        VegaError::Provider {
+            status: Some(503),
+            message,
+            retryable: false,
+        } if message == "unavailable"
     ));
     let persisted: (String, String) = store
         .conn()
@@ -165,6 +182,22 @@ async fn provider_error_maps_to_error_event_and_failed_message() {
         )
         .unwrap();
     assert_eq!(persisted, ("partial".into(), "failed".into()));
+    let persisted_duration: i64 = store
+        .conn()
+        .query_row(
+            "SELECT execution_duration_ms FROM assistant_run_durations WHERE message_id = ?1",
+            [&run.assistant_message_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(persisted_duration, i64::try_from(*duration).unwrap());
+    let responses: i64 = store
+        .conn()
+        .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(responses, 0);
 }
 
 #[tokio::test]

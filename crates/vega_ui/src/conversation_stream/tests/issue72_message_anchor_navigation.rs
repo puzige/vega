@@ -511,16 +511,16 @@ async fn mouse_and_keyboard_anchor_navigation_emit_real_message_ids(cx: &mut Tes
             .message_id
             .clone()
     });
-    let y = stream.read_with(&visual, |stream, cx| {
-        let geometry = stream.message_anchor_geometry(cx, f32::from(rail.size.height));
-        let index = geometry
-            .anchors
-            .iter()
-            .position(|anchor| anchor.message_id == target)
-            .expect("target position");
-        rail.top() + rail.size.height * geometry.anchors[index].fraction
+    stream.update(&mut visual, |stream, cx| {
+        stream.message_anchor_rail_hovered = true;
+        stream.message_anchor_window_start = 34;
+        cx.notify();
     });
-    let rail_point = point(rail.center().x, y);
+    visual.run_until_parked();
+    let rail_point = visual
+        .debug_bounds("message-anchor-item-persisted-answer-38")
+        .expect("visible anchor")
+        .center();
     visual.simulate_mouse_move(rail_point, None, Modifiers::default());
     cx.run_until_parked();
     assert_eq!(
@@ -542,12 +542,19 @@ async fn mouse_and_keyboard_anchor_navigation_emit_real_message_ids(cx: &mut Tes
     let composer = visual
         .debug_bounds("composer-shell")
         .expect("composer shell");
-    assert!(!preview_bounds.intersects(&message_list));
+    assert_eq!(
+        message_list.size.width,
+        stream.read_with(&visual, |stream, _| stream
+            .list
+            .viewport_bounds()
+            .size
+            .width)
+    );
     assert!(!preview_bounds.intersects(&composer));
     assert!(preview_bounds.top() >= transcript.top());
     assert!(preview_bounds.bottom() <= transcript.bottom());
-    assert!(preview_bounds.size.width <= px(180.0));
-    assert!(f32::from(preview_bounds.right()) <= f32::from(rail.left()));
+    assert!(preview_bounds.size.width <= px(Layout::MESSAGE_ANCHOR_PREVIEW_WIDTH));
+    assert!(preview_bounds.left() >= rail.right());
     let hover_preview = stream.read_with(&visual, |stream, _| {
         stream
             .message_anchor_projections()
@@ -603,9 +610,9 @@ async fn mouse_and_keyboard_anchor_navigation_emit_real_message_ids(cx: &mut Tes
         let top = stream.list.logical_scroll_top();
         (top.item_ix, top.offset_in_item)
     });
-    assert_ne!(
+    assert_eq!(
         after_wheel, before_wheel,
-        "wheel input over the rail scrolls the list"
+        "v3 wheel input over the rail never moves the reading viewport"
     );
 
     let focus = stream.read_with(&visual, |stream, _| stream.message_anchor_focus.clone());
@@ -700,16 +707,16 @@ async fn hover_anchor_preview_dismisses_when_pointer_leaves_rail_and_preview(
             .message_id
             .clone()
     });
-    let y = stream.read_with(&visual, |stream, cx| {
-        let geometry = stream.message_anchor_geometry(cx, f32::from(rail.size.height));
-        let index = geometry
-            .anchors
-            .iter()
-            .position(|anchor| anchor.message_id == target)
-            .expect("target position");
-        rail.top() + rail.size.height * geometry.anchors[index].fraction
+    stream.update(&mut visual, |stream, cx| {
+        stream.message_anchor_rail_hovered = true;
+        stream.message_anchor_window_start = 34;
+        cx.notify();
     });
-    let rail_point = point(rail.center().x, y);
+    visual.run_until_parked();
+    let rail_point = visual
+        .debug_bounds("message-anchor-item-persisted-answer-38")
+        .expect("visible anchor")
+        .center();
     visual.simulate_mouse_move(rail_point, None, Modifiers::default());
     cx.run_until_parked();
 
@@ -723,10 +730,8 @@ async fn hover_anchor_preview_dismisses_when_pointer_leaves_rail_and_preview(
     let preview = visual
         .debug_bounds("message-anchor-preview")
         .expect("rail hover displays preview");
-    let lane = visual
-        .debug_bounds("message-anchor-preview-lane")
-        .expect("narrow pane reserves a preview lane");
-    assert!(lane.intersects(&preview));
+    assert!(visual.debug_bounds("message-anchor-preview-lane").is_none());
+    assert!(preview.left() >= px(Layout::CONVERSATION_PADDING));
     assert!(!rail.contains(&preview.center()));
     let blank_transcript_point = point(
         px(f32::from(transcript.right()) - 4.0),
@@ -855,11 +860,8 @@ async fn keyboard_anchor_selection_displays_a_bounded_sanitized_preview(cx: &mut
     let preview_bounds = visual
         .debug_bounds("message-anchor-preview")
         .expect("keyboard selection displays the visible preview");
-    assert_ne!(
-        preview_bounds.top(),
-        previous_preview.top(),
-        "the visible preview follows the newly selected anchor"
-    );
+    assert_eq!(preview_bounds.size.width, previous_preview.size.width);
+    assert!(preview_bounds.size.height <= px(Layout::MESSAGE_ANCHOR_PREVIEW_HEIGHT));
     let rail = visual
         .debug_bounds("message-anchor-rail")
         .expect("message anchor rail");
@@ -876,12 +878,19 @@ async fn keyboard_anchor_selection_displays_a_bounded_sanitized_preview(cx: &mut
         .debug_bounds("composer-shell")
         .expect("composer shell");
     assert!(preview_bounds.size.width > px(0.) && preview_bounds.size.height > px(0.));
-    assert!(preview_bounds.size.width <= px(180.0));
+    assert!(preview_bounds.size.width <= px(Layout::MESSAGE_ANCHOR_PREVIEW_WIDTH));
     assert!(f32::from(preview_bounds.right()) <= f32::from(viewport.width));
     assert!(preview_bounds.top() >= transcript.top());
     assert!(preview_bounds.bottom() <= transcript.bottom());
-    assert!(f32::from(preview_bounds.right()) <= f32::from(rail.left()));
-    assert!(!preview_bounds.intersects(&message_list));
+    assert!(preview_bounds.left() >= rail.right());
+    assert_eq!(
+        message_list.size.width,
+        stream.read_with(&visual, |stream, _| stream
+            .list
+            .viewport_bounds()
+            .size
+            .width)
+    );
     assert!(!preview_bounds.intersects(&composer));
 }
 
@@ -944,9 +953,7 @@ async fn keyboard_anchor_preview_uses_a_reserved_lane_in_a_narrow_pane(cx: &mut 
     let preview_bounds = visual
         .debug_bounds("message-anchor-preview")
         .expect("keyboard selection displays the visible preview");
-    let lane = visual
-        .debug_bounds("message-anchor-preview-lane")
-        .expect("narrow pane reserves a preview lane");
+    assert!(visual.debug_bounds("message-anchor-preview-lane").is_none());
     let message_list = visual
         .debug_bounds("conversation-message-list")
         .expect("message list");
@@ -959,11 +966,89 @@ async fn keyboard_anchor_preview_uses_a_reserved_lane_in_a_narrow_pane(cx: &mut 
     let viewport = window
         .update(cx, |_, window, _| window.viewport_size())
         .expect("viewport size");
-    assert!(lane.intersects(&preview_bounds));
-    assert!(!preview_bounds.intersects(&message_list));
+    assert!(preview_bounds.left() >= px(Layout::CONVERSATION_PADDING));
+    assert_eq!(
+        message_list.size.width,
+        stream.read_with(&visual, |stream, _| stream
+            .list
+            .viewport_bounds()
+            .size
+            .width)
+    );
     assert!(!preview_bounds.intersects(&composer));
-    assert!(preview_bounds.size.width <= px(180.0));
+    assert!(preview_bounds.size.width <= px(Layout::MESSAGE_ANCHOR_PREVIEW_WIDTH));
     assert!(f32::from(preview_bounds.right()) <= f32::from(viewport.width));
     assert!(preview_bounds.top() >= transcript.top());
     assert!(preview_bounds.bottom() <= transcript.bottom());
+}
+
+#[gpui_kit::test]
+async fn issue296_v3_current_anchor_uses_reading_entry_not_height_midpoint(
+    cx: &mut TestAppContext,
+) {
+    let (window, stream, _) = open_controller_stream(cx, "issue296-anchor-identity");
+    stream.update(cx, |stream, cx| {
+        stream.apply_history_page(
+            hydration_page(
+                vec![
+                    hydration_assistant(1, &"A long readable paragraph.\n\n".repeat(120)),
+                    hydration_assistant(2, "Next answer"),
+                ],
+                None,
+            ),
+            cx,
+        );
+        stream.list.set_follow_mode(gpui_kit::FollowMode::Normal);
+        stream.list.scroll_to(gpui_kit::ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.),
+        });
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let height = stream.read_with(&visual, |stream, _| {
+        stream
+            .list
+            .bounds_for_item(0)
+            .expect("first entry")
+            .size
+            .height
+    });
+    stream.update(&mut visual, |stream, cx| {
+        stream.list.scroll_to(gpui_kit::ListOffset {
+            item_ix: 0,
+            offset_in_item: height * 0.7,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        stream.read_with(&visual, |stream, _| stream
+            .list
+            .logical_scroll_top()
+            .item_ix),
+        0
+    );
+    let first = visual
+        .debug_bounds("message-anchor-item-assistant-1")
+        .expect("first anchor");
+    let second = visual
+        .debug_bounds("message-anchor-item-assistant-2")
+        .expect("second anchor");
+    visual.update(|window, cx| {
+        let scale = window.scale_factor();
+        let colors = theme(cx).colors;
+        let ticks = window.painted_quads();
+        assert!(ticks.iter().any(
+            |quad| quad.bounds.center().y == first.scale(scale).center().y
+                && quad.bounds.size.width.as_f32() == 16. * scale
+                && quad.background.as_solid() == Some(colors.text_secondary.into())
+        ));
+        assert!(!ticks.iter().any(
+            |quad| quad.bounds.center().y == second.scale(scale).center().y
+                && quad.bounds.size.width.as_f32() == 16. * scale
+                && quad.background.as_solid() == Some(colors.text_secondary.into())
+        ));
+    });
 }

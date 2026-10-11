@@ -29,9 +29,19 @@ pub(crate) struct ProviderManagement {
     statuses: BTreeMap<String, String>,
     message: Option<String>,
     test_help_hovered: Option<usize>,
+    test_help_pinned: Option<usize>,
+    test_help_dismissed: Option<usize>,
+    menu: Option<String>,
+    menu_focuses: BTreeMap<String, FocusHandle>,
+    menu_return_focus: Option<FocusHandle>,
+    delete_model: Option<(String, String)>,
+    detail_open: bool,
+    list_scroll: gpui_kit::ScrollHandle,
+    detail_scroll: gpui_kit::ScrollHandle,
     model_editor: Option<ModelEditor>,
     next_model_context_request: u64,
     pending_model_reopen: Option<(String, Option<String>)>,
+    pending_command: Option<Command>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,11 +99,15 @@ enum Command {
     Candidate(String),
     AddModel,
     EditModel(String),
-    DeleteModel(String),
+    DeleteModel(String, String),
     SaveModel,
     ToggleModelAutomatic,
     ToggleModelUnknown,
     Reload,
+    Menu(String),
+    ConfirmDelete(String),
+    BackToList,
+    PriceLibrary,
 }
 
 impl SettingsView {
@@ -109,6 +123,8 @@ impl SettingsView {
         } else {
             format!("provider-test-help-model-{}", index - 1)
         };
+        let pointer_focus = focus.clone();
+        let keyboard_focus = focus.clone();
         div()
             .id(selector.clone())
             .interactive(colors, true, false)
@@ -132,11 +148,36 @@ impl SettingsView {
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered {
                     this.provider_management.test_help_hovered = Some(index);
+                    this.provider_management.test_help_dismissed = None;
                 } else if this.provider_management.test_help_hovered == Some(index) {
                     this.provider_management.test_help_hovered = None;
                 }
                 cx.notify();
             }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    let closing = this.provider_management.test_help_pinned == Some(index);
+                    this.provider_management.test_help_pinned = (!closing).then_some(index);
+                    this.provider_management.test_help_dismissed = closing.then_some(index);
+                    window.focus(&pointer_focus, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_key_down(
+                cx.listener(move |this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space" | "escape") {
+                        let closing = event.keystroke.key == "escape"
+                            || this.provider_management.test_help_pinned == Some(index);
+                        this.provider_management.test_help_pinned = (!closing).then_some(index);
+                        this.provider_management.test_help_dismissed = closing.then_some(index);
+                        window.focus(&keyboard_focus, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }),
+            )
             .child(crate::icons::icon(
                 crate::icons::Icon::Help,
                 colors.text_secondary,
@@ -148,6 +189,7 @@ impl SettingsView {
         &self,
         index: usize,
         colors: vega_theme::ThemeColors,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         let selector = if index == 0 {
             "provider-test-help-discover-tooltip".to_string()
@@ -188,6 +230,15 @@ impl SettingsView {
             .max_w_full()
             .when(index == 0, |popup| popup.left_0())
             .when(index > 0, |popup| popup.right_0())
+            .on_mouse_down_out(
+                cx.listener(move |this, _: &gpui_kit::MouseDownEvent, _, cx| {
+                    if this.provider_management.test_help_pinned == Some(index) {
+                        this.provider_management.test_help_pinned = None;
+                        this.provider_management.test_help_dismissed = Some(index);
+                        cx.notify();
+                    }
+                }),
+            )
             .child(body);
         gpui_kit::deferred(popup)
             .with_priority(2)
@@ -197,16 +248,37 @@ impl SettingsView {
     pub(crate) fn provider_escape(
         &mut self,
         _: &CloseSettings,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(index) = self.provider_management.test_help_pinned.take() {
+            self.provider_management.test_help_dismissed = Some(index);
+            if let Some(focus) = self.provider_test_help_focuses.get(index) {
+                window.focus(focus, cx);
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
+        if self.provider_management.menu.take().is_some() {
+            if let Some(focus) = &self.provider_management.menu_return_focus {
+                window.focus(focus, cx);
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if self.section == 0
             && (self.provider_management.form
                 || self.provider_management.model_editor.is_some()
                 || self.provider_management.candidates.is_some()
                 || self.provider_management.cancel.is_some())
         {
-            self.provider_command(Command::Cancel, cx);
+            if self.provider_has_draft(cx) {
+                self.request_settings_section(0, cx);
+            } else {
+                self.provider_command(Command::Cancel, cx);
+            }
             cx.stop_propagation();
         } else {
             self.cancel_provider_operation(cx);
@@ -225,6 +297,99 @@ impl SettingsView {
         state.statuses.retain(|_, value| value != "正在测试…");
         cx.notify();
     }
+    pub(crate) fn open_model_settings(
+        &mut self,
+        provider: &str,
+        model: &str,
+        section: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.config.providers.iter().any(|candidate| {
+            candidate.name == provider
+                && candidate.models.iter().any(|candidate| candidate == model)
+        }) {
+            self.provider_command(Command::Select(provider.into()), cx);
+            self.provider_command(Command::EditModel(model.into()), cx);
+        } else {
+            self.model_settings = Some((provider.into(), model.into()));
+        }
+        self.section = section;
+        self.rebuild_pricing_focuses(cx);
+        self.rebuild_reasoning_focuses(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn provider_is_saving(&self) -> bool {
+        self.provider_management.saving
+            || self
+                .provider_management
+                .model_editor
+                .as_ref()
+                .is_some_and(|editor| editor.saving)
+    }
+
+    pub(crate) fn provider_has_draft(&self, cx: &App) -> bool {
+        self.provider_is_saving()
+            || (self.provider_management.form && self.provider_form_changed(cx))
+            || self
+                .provider_management
+                .model_editor
+                .as_ref()
+                .is_some_and(|editor| {
+                    editor.model_input.read(cx).text().trim()
+                        != editor.original.as_deref().unwrap_or_default()
+                        || self.model_context_values_changed(cx)
+                })
+    }
+
+    fn provider_form_changed(&self, cx: &App) -> bool {
+        let name = self.name_input.read(cx).text();
+        let url = self.base_url_input.read(cx).text();
+        let models = self.models_input.read(cx).text();
+        let key = self.key_input.read(cx).text();
+        if let Some(base) = &self.provider_management.form_base {
+            name.trim() != base.name
+                || url.trim() != base.base_url
+                || models.trim() != base.models.join("\n")
+                || !key.is_empty()
+                || self.provider_management.form_api != base.api
+        } else {
+            !name.is_empty() || !url.is_empty() || !models.is_empty() || !key.is_empty()
+        }
+    }
+
+    pub(crate) fn finish_provider_navigation(&mut self, cx: &mut Context<Self>) {
+        if let Some(command) = self.provider_management.pending_command.take() {
+            self.provider_management.form = false;
+            self.provider_management.model_editor = None;
+            self.provider_command(command, cx);
+        }
+    }
+
+    pub(crate) fn save_provider_draft(&mut self, cx: &mut Context<Self>) {
+        if self.provider_management.form {
+            self.submit_provider(cx);
+        } else {
+            self.provider_command(Command::SaveModel, cx);
+        }
+    }
+
+    pub(crate) fn discard_provider_draft(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, model)) = self.model_settings.clone() {
+            self.provider_command(Command::EditModel(model), cx);
+        } else {
+            self.provider_management.form = false;
+        }
+    }
+
+    pub(crate) fn close_model_configuration(&mut self, cx: &mut Context<Self>) {
+        self.provider_management.delete_model = None;
+        self.model_settings = None;
+        self.provider_management.model_editor = None;
+        self.provider_management.form = false;
+        cx.notify();
+    }
+
     fn selected_provider(&self) -> Option<ProviderConfig> {
         self.config
             .providers
@@ -233,13 +398,64 @@ impl SettingsView {
             .cloned()
     }
     fn provider_command(&mut self, command: Command, cx: &mut Context<Self>) {
-        if self.provider_management.saving {
+        if self.provider_is_saving() {
             return;
         }
+        if matches!(
+            command,
+            Command::Select(_)
+                | Command::Add
+                | Command::Edit
+                | Command::Reload
+                | Command::PriceLibrary
+                | Command::BackToList
+        ) && self.provider_has_draft(cx)
+        {
+            self.provider_management.pending_command = Some(command);
+            self.pending_section = Some(SettingsDestination::ProviderCommand);
+            cx.notify();
+            return;
+        }
+        if matches!(
+            command,
+            Command::Select(_)
+                | Command::Add
+                | Command::Edit
+                | Command::Reload
+                | Command::PriceLibrary
+                | Command::BackToList
+                | Command::AddModel
+                | Command::EditModel(_)
+        ) {
+            self.provider_management.delete_model = None;
+        }
         match command {
+            Command::Menu(id) => {
+                self.provider_management.menu =
+                    if self.provider_management.menu.as_ref() == Some(&id) {
+                        None
+                    } else {
+                        Some(id)
+                    };
+            }
+            Command::ConfirmDelete(model) => {
+                self.provider_management.menu = None;
+                self.provider_management.delete_model = self
+                    .selected_provider()
+                    .filter(|provider| provider.models.contains(&model))
+                    .map(|provider| (provider.name, model));
+            }
+            Command::BackToList => self.provider_management.detail_open = false,
+            Command::PriceLibrary => {
+                self.model_settings = None;
+                self.request_settings_section(3, cx);
+            }
             Command::Select(name) => {
+                self.provider_management.delete_model = None;
                 self.cancel_provider_operation(cx);
                 self.provider_management.selected = Some(name);
+                self.provider_management.detail_open = true;
+                self.model_settings = None;
                 self.provider_management.form = false;
                 self.provider_management.model_editor = None;
                 self.provider_management.statuses.clear();
@@ -248,6 +464,7 @@ impl SettingsView {
             Command::Add => {
                 self.cancel_provider_operation(cx);
                 self.provider_management.form = true;
+                self.provider_management.detail_open = true;
                 self.provider_management.form_base = None;
                 self.provider_management.form_api =
                     vega_conversation::types::ProviderApi::default();
@@ -295,6 +512,8 @@ impl SettingsView {
                 self.cancel_provider_operation(cx);
                 self.provider_management.model_editor = None;
                 self.provider_management.form = false;
+                self.provider_management.delete_model = None;
+                self.model_settings = None;
             }
             Command::Candidate(model) => {
                 if !self.provider_management.checked.remove(&model) {
@@ -318,6 +537,9 @@ impl SettingsView {
                 } else {
                     None
                 };
+                self.model_settings = self
+                    .selected_provider()
+                    .and_then(|provider| original.clone().map(|model| (provider.name, model)));
                 let input = cx.new(|cx| TextInput::new(cx, "模型 ID", false).with_tab_stop(true));
                 if let Some(model) = &original {
                     input.update(cx, |input, cx| input.set_text(model, cx));
@@ -354,8 +576,19 @@ impl SettingsView {
                     });
                 }
             }
-            Command::DeleteModel(model) => {
-                if let Some(p) = self.selected_provider() {
+            Command::DeleteModel(provider, model) => {
+                if self.provider_management.delete_model.as_ref()
+                    != Some(&(provider.clone(), model.clone()))
+                    || self.provider_management.selected.as_ref() != Some(&provider)
+                {
+                    return;
+                }
+                self.provider_management.delete_model = None;
+                self.provider_management.menu = None;
+                if let Some(p) = self
+                    .selected_provider()
+                    .filter(|p| p.models.contains(&model))
+                {
                     self.provider_patch(
                         ProviderPatchAction::EditModels(
                             p.models.into_iter().filter(|m| m != &model).collect(),
@@ -613,6 +846,7 @@ impl SettingsView {
                 self.error = None;
             }
             Err(error) => {
+                self.error = Some(error.clone());
                 editor.message = Some(error);
             }
         }
@@ -906,7 +1140,10 @@ impl SettingsView {
         let colors = theme(cx).colors;
         let key_command = command.clone();
         let selector = id.clone();
-        let destructive = matches!(command, Command::DeleteModel(_));
+        let destructive = matches!(
+            command,
+            Command::DeleteModel(_, _) | Command::ConfirmDelete(_)
+        );
         let primary = matches!(command, Command::SaveModel);
         settings_action_chrome(colors)
             .id(id)
@@ -970,334 +1207,181 @@ impl SettingsView {
             .child(label)
             .into_any_element()
     }
-    pub(crate) fn render_provider_management(
+    fn provider_icon_button(
         &mut self,
-        window: &mut Window,
+        id: String,
+        label: &'static str,
+        icon: crate::icons::Icon,
+        command: Command,
+        enabled: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.sync_provider_edit_focuses(cx);
-        if self.provider_management.selected.is_none() {
-            self.provider_management.selected =
-                self.config.providers.first().map(|p| p.name.clone());
-            self.provider_management.form = self.config.providers.is_empty();
-        }
         let colors = theme(cx).colors;
-        let busy = self.provider_management.saving;
-        let network_busy = self.provider_management.cancel.is_some();
-        let mut list = div()
-            .id("provider-list")
-            .h_full()
-            .w(px(Layout::PROVIDER_LIST_WIDTH))
+        let keyboard = command.clone();
+        let focus = self
+            .provider_management
+            .menu_focuses
+            .entry(id.clone())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let pointer_focus = focus.clone();
+        let keyboard_focus = focus.clone();
+        div()
+            .id(id.clone())
+            .debug_selector(move || id.clone())
+            .aria_label(label)
+            .track_focus(&focus)
+            .size(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT))
             .flex_shrink_0()
             .flex()
-            .flex_col()
-            .gap_2()
-            .overflow_y_scroll();
-        for (index, p) in self.config.providers.clone().into_iter().enumerate() {
-            let selected = self.provider_management.selected.as_ref() == Some(&p.name);
-            let name = p.name.clone();
-            let key_name = name.clone();
-            list = list.child(
-                div()
-                    .id(("provider-select", index))
-                    .interactive(colors, true, selected)
-                    .track_focus(&self.provider_edit_focuses[index].1)
+            .items_center()
+            .justify_center()
+            .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+            .interactive(colors, enabled, false)
+            .tooltip(move |_, cx| crate::icons::tooltip(label, cx))
+            .when(enabled, |button| {
+                button
+                    .focusable()
                     .tab_stop(true)
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .p_2()
-                    .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
-                    .border_1()
-                    .border_color(gpui_kit::transparent_black())
-                    .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
-                    .when(selected, |row| row.bg(colors.bg_active))
                     .cursor_pointer()
-                    .focus_visible(move |style| style.border_color(colors.accent))
-                    .on_drag(ProviderDrag(name.clone()), |drag, _, _, cx| {
-                        cx.new(|_| drag.clone())
-                    })
-                    .on_drop(cx.listener(move |this, drag: &ProviderDrag, _, cx| {
-                        if !this.provider_management.saving
-                            && let Some(from) =
-                                this.config.providers.iter().position(|p| p.name == drag.0)
-                        {
-                            this.provider_management.selected = Some(drag.0.clone());
-                            this.move_provider(from, index, cx);
-                        }
-                    }))
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.provider_command(Command::Select(name.clone()), cx)
+                        cx.listener(move |this, _, window, cx| {
+                            this.provider_management.menu_return_focus =
+                                Some(pointer_focus.clone());
+                            window.focus(&pointer_focus, cx);
+                            this.provider_command(command.clone(), cx)
                         }),
                     )
                     .on_key_down(
                         cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
                             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                this.provider_command(Command::Select(key_name.clone()), cx);
+                                this.provider_management.menu_return_focus =
+                                    Some(keyboard_focus.clone());
+                                this.provider_command(keyboard.clone(), cx);
                                 cx.stop_propagation();
                             }
                         }),
                     )
-                    .child(
-                        div()
-                            .size(px(Layout::ICON_SIZE))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_color(if p.enabled {
-                                colors.success
-                            } else {
-                                colors.text_tertiary
-                            })
-                            .child("●"),
-                    )
-                    .child(div().min_w_0().truncate().child(p.name)),
-            );
-        }
-        list = list
-            .child(self.provider_button(
-                "provider-add".into(),
-                "+ 添加供应商",
-                Command::Add,
-                !busy,
-                cx,
+            })
+            .focus_visible(move |style| style.bg(colors.bg_active))
+            .child(crate::icons::icon(
+                icon,
+                if enabled {
+                    colors.text_secondary
+                } else {
+                    colors.text_tertiary
+                },
             ))
-            .child(self.provider_button(
-                "provider-reload".into(),
-                "重新读取",
-                Command::Reload,
-                !busy,
-                cx,
-            ));
-        // Keep the flow intrinsically sized; the outer viewport owns scrolling.
-        // A height-constrained flex column can shrink truncated text rows to zero.
-        let mut detail = div()
-            .debug_selector(|| "provider-detail-flow".into())
-            .w_full()
+            .into_any_element()
+    }
+
+    fn model_capability_summary(&self, provider: &str, model: &str) -> String {
+        let profile = match &self.reasoning {
+            ReasoningSettingsProjection::Ready { profiles, .. } => profiles
+                .iter()
+                .find(|profile| profile.provider == provider && profile.model == model),
+            _ => None,
+        };
+        match profile.map(|profile| profile.support) {
+            Some(ReasoningSupport::Required) => "始终开启思考".into(),
+            Some(ReasoningSupport::Optional) => "支持思考控制".into(),
+            Some(ReasoningSupport::Unsupported) => "不支持思考控制".into(),
+            _ => "思考：提供方默认".into(),
+        }
+    }
+
+    fn provider_connection_row(
+        &self,
+        label: &'static str,
+        value: impl IntoElement,
+        colors: vega_theme::ThemeColors,
+    ) -> Div {
+        div()
             .min_w_0()
-            .flex_shrink_0()
+            .flex()
+            .gap_3()
+            .child(
+                div()
+                    .w(px(Layout::SETTINGS_CONTROL_MIN_HEIGHT * 2.))
+                    .flex_shrink_0()
+                    .text_color(colors.text_secondary)
+                    .child(label),
+            )
+            .child(div().min_w_0().flex_1().child(value))
+    }
+
+    fn provider_object_menu(&self, id: &str, cx: &mut Context<Self>) -> gpui_kit::Stateful<Div> {
+        let colors = theme(cx).colors;
+        let id = id.to_string();
+        div()
+            .id(id.clone())
+            .debug_selector(move || id.clone())
+            .absolute()
+            .top(relative(1.))
+            .right_0()
+            .min_w(px(Layout::SETTINGS_PROVIDER_LIST_WIDTH))
+            .p_1()
             .flex()
             .flex_col()
-            .gap(px(Layout::SETTINGS_CONTENT_GAP));
-        if self.provider_management.form {
-            detail = detail
-                .child(self.render_add_form(cx))
-                .child(self.provider_button(
-                    "provider-form-cancel".into(),
-                    "取消",
-                    Command::Cancel,
-                    !busy,
-                    cx,
-                ));
-        } else if let Some(p) = self.selected_provider() {
-            let help_focus_count = p.models.len() + 1;
-            self.provider_test_help_focuses.truncate(help_focus_count);
-            while self.provider_test_help_focuses.len() < help_focus_count {
-                self.provider_test_help_focuses
-                    .push(cx.focus_handle().tab_stop(true));
-            }
-            let help_focuses = self.provider_test_help_focuses.clone();
-            let discover_help_open = help_focuses[0].is_focused(window)
-                || self.provider_management.test_help_hovered == Some(0);
-            let api_label = match p.api {
-                vega_conversation::types::ProviderApi::ChatCompletions => {
-                    "API 格式 · Chat Completions"
+            .rounded(px(Layout::MENU_RADIUS))
+            .border_1()
+            .border_color(colors.border_subtle)
+            .bg(colors.bg_elevated)
+            .shadow_sm()
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _: &gpui_kit::MouseDownEvent, _, cx| {
+                this.provider_management.menu = None;
+                cx.notify();
+            }))
+            .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    this.provider_management.menu = None;
+                    cx.stop_propagation();
+                    cx.notify();
                 }
-                vega_conversation::types::ProviderApi::Responses => "API 格式 · Responses",
+            }))
+    }
+
+    pub(crate) fn catalog_capacity_editable(&self) -> bool {
+        !self.provider_is_saving()
+            && self
+                .provider_management
+                .model_editor
+                .as_ref()
+                .is_some_and(|editor| {
+                    editor.source != PolicySource::Loading && editor.original.is_some()
+                })
+    }
+
+    pub(crate) fn apply_catalog_capacity_candidate(
+        &mut self,
+        input: bool,
+        value: u64,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.catalog_capacity_editable() {
+            return;
+        }
+        if let Some(editor) = self.provider_management.model_editor.as_mut() {
+            editor.unknown = false;
+            let target = if input {
+                &editor.input_limit
+            } else {
+                &editor.output_limit
             };
-            let index = self
-                .config
-                .providers
-                .iter()
-                .position(|candidate| candidate.name == p.name)
-                .unwrap_or(0);
+            target.update(cx, |input, cx| input.set_text(&value.to_string(), cx));
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn render_model_basics(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = theme(cx).colors;
+        let busy = self.provider_management.saving;
+        let mut detail = settings_section();
+        if let Some(editor) = &self.provider_management.model_editor {
+            let can_edit = !busy && !editor.saving;
             detail = detail
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(px(Typography::HEADING_CARD))
-                                .child(p.name.clone()),
-                        )
-                        .child(self.provider_button(
-                            "provider-enabled".into(),
-                            if p.enabled { "已启用" } else { "已禁用" },
-                            Command::Enable,
-                            !busy,
-                            cx,
-                        )),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .relative()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(self.provider_button(
-                            "provider-up".into(),
-                            "上移",
-                            Command::Up,
-                            !busy && index > 0,
-                            cx,
-                        ))
-                        .child(self.provider_button(
-                            "provider-down".into(),
-                            "下移",
-                            Command::Down,
-                            !busy && index + 1 < self.config.providers.len(),
-                            cx,
-                        ))
-                        .child(self.provider_button(
-                            "provider-edit".into(),
-                            "编辑供应商",
-                            Command::Edit,
-                            !busy,
-                            cx,
-                        )),
-                )
-                .child(div().text_color(colors.text_secondary).child("Base URL"))
-                .child(
-                    div()
-                        .debug_selector(|| "provider-base-url".into())
-                        .min_w_0()
-                        .child(p.base_url.clone()),
-                )
-                .child(
-                    div()
-                        .debug_selector(move || format!("provider-api-format:{api_label}"))
-                        .text_color(colors.text_secondary)
-                        .child(api_label),
-                )
-                .child(
-                    div()
-                        .debug_selector({
-                            let stored = self.available_key_refs.contains(&p.key_ref);
-                            move || {
-                                if stored {
-                                    "provider-key-stored".into()
-                                } else {
-                                    "provider-key-missing".into()
-                                }
-                            }
-                        })
-                        .text_color(colors.text_secondary)
-                        .child(if self.available_key_refs.contains(&p.key_ref) {
-                            KEY_STORED_PLACEHOLDER
-                        } else {
-                            "需重新输入 API Key"
-                        }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .child(self.provider_button(
-                            "provider-discover".into(),
-                            "发现模型",
-                            Command::Discover,
-                            !busy && !network_busy && p.enabled,
-                            cx,
-                        ))
-                        .child(self.provider_test_help_control(0, help_focuses[0].clone(), cx))
-                        .child(self.provider_button(
-                            "provider-add-model".into(),
-                            "添加模型",
-                            Command::AddModel,
-                            !busy,
-                            cx,
-                        ))
-                        .when(network_busy, |row| {
-                            row.child(self.provider_button(
-                                "provider-cancel".into(),
-                                "停止",
-                                Command::Cancel,
-                                true,
-                                cx,
-                            ))
-                        })
-                        .when(discover_help_open, |row| {
-                            row.child(self.provider_test_help_tooltip(0, colors))
-                        }),
-                );
-            for (index, model) in p.models.iter().enumerate() {
-                let help_index = index + 1;
-                let help_open = help_focuses[help_index].is_focused(window)
-                    || self.provider_management.test_help_hovered == Some(help_index);
-                detail = detail.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .border_b_1()
-                        .border_color(colors.border_subtle)
-                        .py_2()
-                        .child(
-                            div()
-                                .w_full()
-                                .relative()
-                                .flex()
-                                .items_center()
-                                .flex_wrap()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .debug_selector(move || {
-                                            format!("provider-model-name-{index}")
-                                        })
-                                        .w_full()
-                                        .min_w_0()
-                                        .child(model.clone()),
-                                )
-                                .child(self.provider_button(
-                                    format!("model-test-{index}"),
-                                    "测试",
-                                    Command::Test(model.clone()),
-                                    !busy && !network_busy && p.enabled,
-                                    cx,
-                                ))
-                                .child(self.provider_test_help_control(
-                                    help_index,
-                                    help_focuses[help_index].clone(),
-                                    cx,
-                                ))
-                                .child(self.provider_button(
-                                    format!("model-edit-{index}"),
-                                    "编辑",
-                                    Command::EditModel(model.clone()),
-                                    !busy,
-                                    cx,
-                                ))
-                                .child(self.provider_button(
-                                    format!("model-delete-{index}"),
-                                    "删除",
-                                    Command::DeleteModel(model.clone()),
-                                    !busy,
-                                    cx,
-                                ))
-                                .when(help_open, |row| {
-                                    row.child(self.provider_test_help_tooltip(help_index, colors))
-                                }),
-                        )
-                        .children(self.provider_management.statuses.get(model).map(|status| {
-                            div()
-                                .text_color(colors.text_secondary)
-                                .child(status.clone())
-                        })),
-                );
-            }
-            if let Some(editor) = &self.provider_management.model_editor {
-                let can_edit = !busy && !editor.saving;
-                detail = detail
                     .child(settings_field("provider-model-editor-name", "模型 ID", None, editor.model_input.clone(), colors))
                     .when(editor.original.is_some(), |detail| {
                         let source = match editor.source {
@@ -1314,7 +1398,7 @@ impl SettingsView {
                                     .debug_selector(|| "model-context-source".into())
                                     .text_size(px(Typography::METADATA))
                                     .text_color(colors.text_secondary)
-                                    .child(source),
+                                    .child(div().when(editor.source != PolicySource::Loading, |row| row.debug_selector(|| "model-context-ready".into())).child(source)),
                             )
                             .when(editor.legacy_present, |detail| {
                                 detail.child(
@@ -1393,6 +1477,481 @@ impl SettingsView {
                                 cx,
                             )),
                     );
+        }
+        detail
+            .child(self.render_model_catalog(cx))
+            .into_any_element()
+    }
+
+    pub(crate) fn render_provider_management(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.sync_provider_edit_focuses(cx);
+        if self.provider_management.model_editor.is_some() {
+            return div()
+                .id("provider-model-configuration")
+                .debug_selector(|| "provider-model-configuration".into())
+                .on_action(cx.listener(Self::provider_escape))
+                .size_full()
+                .overflow_y_scroll()
+                .child(self.render_model_basics(cx))
+                .into_any_element();
+        }
+        if self.provider_management.selected.is_none() {
+            self.provider_management.selected =
+                self.config.providers.first().map(|p| p.name.clone());
+            self.provider_management.form = self.config.providers.is_empty();
+        }
+        let colors = theme(cx).colors;
+        let busy = self.provider_management.saving;
+        let content_width = (f32::from(window.viewport_size().width)
+            - Layout::SETTINGS_NAV_WIDTH
+            - Layout::SETTINGS_SECTION_GAP * 2.)
+            .min(Layout::SETTINGS_CONTENT_MAX_WIDTH);
+        let narrow = content_width
+            < Layout::SETTINGS_PROVIDER_LIST_WIDTH
+                + Layout::SETTINGS_PROVIDER_COLUMN_GAP
+                + Layout::SETTINGS_PROVIDER_DETAIL_MIN_WIDTH;
+        if !narrow {
+            self.provider_management.detail_open = true;
+        }
+        let show_detail =
+            !narrow || self.provider_management.detail_open || self.provider_management.form;
+        let network_busy = self.provider_management.cancel.is_some();
+        let mut list = div()
+            .id("provider-list")
+            .h_full()
+            .track_scroll(&self.provider_management.list_scroll)
+            .w(px(Layout::SETTINGS_PROVIDER_LIST_WIDTH))
+            .when(narrow, |list| list.w_full())
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .overflow_y_scroll()
+            .child(
+                settings_actions()
+                    .child(self.provider_button(
+                        "provider-add".into(),
+                        "添加提供方",
+                        Command::Add,
+                        !busy,
+                        cx,
+                    ))
+                    .child(self.provider_icon_button(
+                        "provider-reload".into(),
+                        "重新读取提供方",
+                        crate::icons::Icon::Refresh,
+                        Command::Reload,
+                        !busy,
+                        cx,
+                    )),
+            );
+        for (index, p) in self.config.providers.clone().into_iter().enumerate() {
+            let selected = self.provider_management.selected.as_ref() == Some(&p.name);
+            let name = p.name.clone();
+            let key_name = name.clone();
+            list = list.child(
+                div()
+                    .id(("provider-select", index))
+                    .interactive(colors, true, selected)
+                    .track_focus(&self.provider_edit_focuses[index].1)
+                    .tab_stop(true)
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .p_2()
+                    .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
+                    .border_1()
+                    .border_color(gpui_kit::transparent_black())
+                    .min_h(px(Typography::SIDEBAR_LINE_HEIGHT))
+                    .when(selected, |row| row.bg(colors.bg_active))
+                    .cursor_pointer()
+                    .focus_visible(move |style| style.border_color(colors.accent))
+                    .on_drag(ProviderDrag(name.clone()), |drag, _, _, cx| {
+                        cx.new(|_| drag.clone())
+                    })
+                    .on_drop(cx.listener(move |this, drag: &ProviderDrag, _, cx| {
+                        if !this.provider_management.saving
+                            && !this.provider_has_draft(cx)
+                            && let Some(from) =
+                                this.config.providers.iter().position(|p| p.name == drag.0)
+                        {
+                            this.provider_management.selected = Some(drag.0.clone());
+                            this.move_provider(from, index, cx);
+                        }
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.provider_command(Command::Select(name.clone()), cx)
+                        }),
+                    )
+                    .on_key_down(
+                        cx.listener(move |this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                this.provider_command(Command::Select(key_name.clone()), cx);
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
+                    .child(
+                        div()
+                            .size(px(Layout::ICON_SIZE))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(if p.enabled {
+                                colors.success
+                            } else {
+                                colors.text_tertiary
+                            })
+                            .child("●"),
+                    )
+                    .child(div().min_w_0().truncate().child(p.name)),
+            );
+        }
+        list = list.child(self.provider_button(
+            "provider-pricing-library".into(),
+            "模型价格库",
+            Command::PriceLibrary,
+            !busy,
+            cx,
+        ));
+        // Keep the flow intrinsically sized; the outer viewport owns scrolling.
+        // A height-constrained flex column can shrink truncated text rows to zero.
+        let mut detail = div()
+            .debug_selector(|| "provider-detail-flow".into())
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(Layout::SETTINGS_CONTENT_GAP));
+        if self.provider_management.form {
+            detail = detail
+                .child(self.render_add_form(cx))
+                .child(self.provider_button(
+                    "provider-form-cancel".into(),
+                    "取消",
+                    Command::Cancel,
+                    !busy,
+                    cx,
+                ));
+        } else if let Some(p) = self.selected_provider() {
+            let help_focus_count = p.models.len() + 1;
+            self.provider_test_help_focuses.truncate(help_focus_count);
+            while self.provider_test_help_focuses.len() < help_focus_count {
+                self.provider_test_help_focuses
+                    .push(cx.focus_handle().tab_stop(true));
+            }
+            let help_focuses = self.provider_test_help_focuses.clone();
+            let discover_help_open = self.provider_management.test_help_dismissed != Some(0)
+                && (help_focuses[0].is_focused(window)
+                    || self.provider_management.test_help_hovered == Some(0)
+                    || self.provider_management.test_help_pinned == Some(0));
+            let api_label = match p.api {
+                vega_conversation::types::ProviderApi::ChatCompletions => "Chat Completions",
+                vega_conversation::types::ProviderApi::Responses => "Responses",
+            };
+            let index = self
+                .config
+                .providers
+                .iter()
+                .position(|candidate| candidate.name == p.name)
+                .unwrap_or(0);
+            let mut provider_menu = self
+                .provider_object_menu("provider-menu", cx)
+                .child(self.provider_button(
+                    "provider-up".into(),
+                    "上移",
+                    Command::Up,
+                    !busy && index > 0,
+                    cx,
+                ))
+                .child(self.provider_button(
+                    "provider-down".into(),
+                    "下移",
+                    Command::Down,
+                    !busy && index + 1 < self.config.providers.len(),
+                    cx,
+                ));
+            provider_menu = provider_menu.child(self.provider_button(
+                "provider-menu-close".into(),
+                "关闭菜单",
+                Command::Menu("provider".into()),
+                true,
+                cx,
+            ));
+            detail = detail
+                .when(narrow, |detail| {
+                    detail.child(self.provider_button(
+                        "provider-list-back".into(),
+                        "返回提供方列表",
+                        Command::BackToList,
+                        !busy,
+                        cx,
+                    ))
+                })
+                .child(
+                    settings_actions()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(Typography::HEADING_CARD))
+                                .font_weight(Typography::HEADING_CARD_WEIGHT)
+                                .child(p.name.clone()),
+                        )
+                        .child(self.provider_button(
+                            "provider-enabled".into(),
+                            if p.enabled { "已启用" } else { "已禁用" },
+                            Command::Enable,
+                            !busy,
+                            cx,
+                        ))
+                        .child(self.provider_button(
+                            "provider-edit".into(),
+                            "编辑",
+                            Command::Edit,
+                            !busy,
+                            cx,
+                        ))
+                        .child(
+                            div()
+                                .relative()
+                                .child(self.provider_icon_button(
+                                    "provider-more".into(),
+                                    "提供方操作",
+                                    crate::icons::Icon::More,
+                                    Command::Menu("provider".into()),
+                                    !busy,
+                                    cx,
+                                ))
+                                .when(
+                                    self.provider_management.menu.as_deref() == Some("provider"),
+                                    |host| {
+                                        host.child(
+                                            gpui_kit::deferred(provider_menu).with_priority(2),
+                                        )
+                                    },
+                                ),
+                        ),
+                )
+                .child(
+                    settings_section()
+                        .gap_2()
+                        .child(
+                            self.provider_connection_row(
+                                "地址",
+                                div()
+                                    .debug_selector(|| "provider-base-url".into())
+                                    .min_w_0()
+                                    .child(p.base_url.clone()),
+                                colors,
+                            ),
+                        )
+                        .child(
+                            self.provider_connection_row(
+                                "协议",
+                                div()
+                                    .debug_selector(move || {
+                                        format!("provider-api-format:API 格式 · {api_label}")
+                                    })
+                                    .child(api_label),
+                                colors,
+                            ),
+                        )
+                        .child(
+                            self.provider_connection_row(
+                                "凭据",
+                                div()
+                                    .debug_selector({
+                                        let stored = self.available_key_refs.contains(&p.key_ref);
+                                        move || {
+                                            if stored {
+                                                "provider-key-stored".into()
+                                            } else {
+                                                "provider-key-missing".into()
+                                            }
+                                        }
+                                    })
+                                    .child(if self.available_key_refs.contains(&p.key_ref) {
+                                        KEY_STORED_PLACEHOLDER
+                                    } else {
+                                        "需重新输入 API Key"
+                                    }),
+                                colors,
+                            ),
+                        ),
+                )
+                .child(
+                    settings_actions()
+                        .mt_4()
+                        .relative()
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(section_title("模型", colors.text_primary)),
+                        )
+                        .child(self.provider_button(
+                            "provider-discover".into(),
+                            "发现模型",
+                            Command::Discover,
+                            !busy && !network_busy && p.enabled,
+                            cx,
+                        ))
+                        .child(self.provider_test_help_control(0, help_focuses[0].clone(), cx))
+                        .child(self.provider_button(
+                            "provider-add-model".into(),
+                            "添加模型",
+                            Command::AddModel,
+                            !busy,
+                            cx,
+                        ))
+                        .when(network_busy, |row| {
+                            row.child(self.provider_button(
+                                "provider-cancel".into(),
+                                "停止",
+                                Command::Cancel,
+                                true,
+                                cx,
+                            ))
+                        })
+                        .when(discover_help_open, |row| {
+                            row.child(self.provider_test_help_tooltip(0, colors, cx))
+                        }),
+                );
+            for (index, model) in p.models.iter().enumerate() {
+                let help_index = index + 1;
+                let help_open = self.provider_management.test_help_dismissed != Some(help_index)
+                    && (help_focuses[help_index].is_focused(window)
+                        || self.provider_management.test_help_hovered == Some(help_index)
+                        || self.provider_management.test_help_pinned == Some(help_index));
+                let menu_key = format!("model-{index}");
+                let menu = self
+                    .provider_object_menu(&format!("model-menu-{index}"), cx)
+                    .child(
+                        settings_actions()
+                            .relative()
+                            .child(self.provider_button(
+                                format!("model-test-{index}"),
+                                "测试",
+                                Command::Test(model.clone()),
+                                !busy && !network_busy && p.enabled,
+                                cx,
+                            ))
+                            .child(self.provider_test_help_control(
+                                help_index,
+                                help_focuses[help_index].clone(),
+                                cx,
+                            ))
+                            .when(help_open, |row| {
+                                row.child(self.provider_test_help_tooltip(help_index, colors, cx))
+                            }),
+                    )
+                    .child(self.provider_button(
+                        format!("model-delete-{index}"),
+                        "删除",
+                        Command::ConfirmDelete(model.clone()),
+                        !busy,
+                        cx,
+                    ));
+                detail = detail.child(
+                    settings_section()
+                        .gap_1()
+                        .border_b_1()
+                        .border_color(colors.border_subtle)
+                        .py_2()
+                        .child(
+                            settings_actions()
+                                .items_start()
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .child(
+                                            div()
+                                                .debug_selector(move || {
+                                                    format!("provider-model-name-{index}")
+                                                })
+                                                .min_w_0()
+                                                .child(model.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(Typography::METADATA))
+                                                .text_color(colors.text_secondary)
+                                                .child(
+                                                    self.model_capability_summary(&p.name, model),
+                                                ),
+                                        ),
+                                )
+                                .child(self.provider_button(
+                                    format!("model-edit-{index}"),
+                                    "配置",
+                                    Command::EditModel(model.clone()),
+                                    !busy,
+                                    cx,
+                                ))
+                                .child(
+                                    div()
+                                        .relative()
+                                        .child(self.provider_icon_button(
+                                            format!("model-more-{index}"),
+                                            "模型操作",
+                                            crate::icons::Icon::More,
+                                            Command::Menu(menu_key.clone()),
+                                            !busy,
+                                            cx,
+                                        ))
+                                        .when(
+                                            self.provider_management.menu.as_ref()
+                                                == Some(&menu_key),
+                                            |host| {
+                                                host.child(
+                                                    gpui_kit::deferred(menu).with_priority(2),
+                                                )
+                                            },
+                                        ),
+                                ),
+                        )
+                        .children(self.provider_management.statuses.get(model).map(|status| {
+                            div()
+                                .text_color(colors.text_secondary)
+                                .child(status.clone())
+                        })),
+                );
+            }
+            if let Some((provider, model)) = &self.provider_management.delete_model {
+                detail = detail.child(
+                    settings_section()
+                        .child(settings_status(
+                            format!("从 {provider} 删除模型 {model}？"),
+                            colors.warning,
+                            colors,
+                        ))
+                        .child(
+                            settings_actions()
+                                .child(self.provider_button(
+                                    "model-delete-confirm".into(),
+                                    "删除模型",
+                                    Command::DeleteModel(provider.clone(), model.clone()),
+                                    !busy,
+                                    cx,
+                                ))
+                                .child(self.provider_button(
+                                    "model-delete-cancel".into(),
+                                    "取消",
+                                    Command::Cancel,
+                                    !busy,
+                                    cx,
+                                )),
+                        ),
+                );
             }
             if let Some(models) = self.provider_management.candidates.clone() {
                 for (index, model) in models.into_iter().enumerate() {
@@ -1464,7 +2023,7 @@ impl SettingsView {
             .flex()
             .items_start()
             .min_w_0()
-            .gap_4()
+            .gap(px(Layout::SETTINGS_PROVIDER_COLUMN_GAP))
             .on_key_down(
                 cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "enter"
@@ -1485,28 +2044,31 @@ impl SettingsView {
                         return;
                     }
                     if event.keystroke.key == "escape"
-                        && (this.provider_management.form
+                        && (this.provider_management.menu.is_some()
+                            || this.provider_management.form
                             || this.provider_management.model_editor.is_some()
                             || this.provider_management.candidates.is_some()
                             || this.provider_management.cancel.is_some())
                     {
-                        this.provider_command(Command::Cancel, cx);
-                        cx.stop_propagation();
+                        this.provider_escape(&CloseSettings, window, cx);
                     }
                 }),
             )
-            .child(list)
-            .child(
-                div()
-                    .id("provider-detail")
-                    .debug_selector(|| "provider-detail-viewport".into())
-                    .h_full()
-                    .min_h_0()
-                    .min_w_0()
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .child(detail),
-            )
+            .when(!narrow || !show_detail, |root| root.child(list))
+            .when(show_detail, |root| {
+                root.child(
+                    div()
+                        .id("provider-detail")
+                        .debug_selector(|| "provider-detail-viewport".into())
+                        .track_scroll(&self.provider_management.detail_scroll)
+                        .h_full()
+                        .min_h_0()
+                        .min_w_0()
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .child(detail),
+                )
+            })
             .into_any_element()
     }
 }

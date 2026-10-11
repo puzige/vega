@@ -238,12 +238,10 @@ async fn issue70_e70_live_bash_elapsed_uses_running_clock_and_terminal_duration(
             cx,
         );
     });
+    click(window, "tool-activity-single-row", cx);
     stream.read_with(cx, |stream, cx| {
         let card = stream.tool_cards["elapsed"].read(cx);
-        assert!(
-            card.is_expanded(),
-            "#151 R151-1: the newest live activity unit opens by default"
-        );
+        assert!(card.is_expanded(), "user explicitly opened the live detail");
         assert_eq!(
             card.compact_visible_text(),
             "正在运行命令",
@@ -375,6 +373,9 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
         }
     });
     cx.run_until_parked();
+    stream.update(cx, |stream, cx| {
+        group(stream, cx).update(cx, |group, cx| group.set_expanded(true, cx))
+    });
     cx.executor().advance_clock(Duration::from_secs(3));
     cx.run_until_parked();
 
@@ -386,11 +387,9 @@ async fn issue70_e70_group_owns_no_time_and_children_have_independent_elapsed(
             !aggregate.contains('秒') && !aggregate.contains("分钟") && !aggregate.contains("毫秒"),
             "aggregate must not expose child or total elapsed time: {aggregate}"
         );
-        // #151 R151-3: the group is the newest activity unit, so it opens by
-        // default and shows its children as compact rows (three children here).
         assert!(
             group.read(cx).expanded(),
-            "#151: the newest tool group opens by default"
+            "user explicitly opened the group"
         );
         assert_eq!(group.read(cx).row_count(cx), 4);
     });
@@ -477,6 +476,7 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
             cx,
         );
     });
+    click(window, "tool-activity-group-toggle", cx);
     cx.run_until_parked();
 
     stream.read_with(cx, |stream, cx| {
@@ -487,8 +487,6 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
             "aggregate must remain duration-free: {aggregate}"
         );
     });
-    // #151 R151-3: the newest group opens by default, so its child rows are
-    // already mounted without a manual disclosure click.
     let row = bounds(window, "tool-activity-child-0", cx);
     let title = bounds(window, "tool-activity-child-0-title", cx);
     let running_duration = bounds(window, "tool-activity-child-0-duration", cx);
@@ -548,12 +546,9 @@ async fn issue70_e70_long_bash_keeps_running_and_terminal_duration_visible(
         terminal_duration.size.width >= body_text_width(window, "· 1.2 秒".into(), cx),
         "terminal duration must retain its intrinsic width"
     );
-    assert_eq!(
-        terminal_duration.right(),
-        running_duration.right(),
-        "the trailing duration edge stays fixed across running and terminal copy"
-    );
-    assert_eq!(terminal_chevron, running_chevron);
+    assert_eq!(terminal_duration.left() - terminal_title.right(), px(8.));
+    assert_eq!(running_duration.left() - title.right(), px(8.));
+    assert_eq!(terminal_chevron.left() - terminal_duration.right(), px(8.));
     stream.read_with(cx, |stream, cx| {
         assert_eq!(
             stream.tool_cards["long-running"].read(cx).visible_text(),
@@ -704,18 +699,8 @@ async fn issue70_t70_1_single_shell_is_one_surface_free_compact_row(cx: &mut Tes
                 card.leading_icon_color(&colors),
             )
         });
-    // #151 R151-1: this single call is the newest activity unit, so its own
-    // bounded detail is disclosed by default. It is still one compact resting
-    // row — the detail is a separate surface below it (asserted by the painted
-    // quad check at the end), not a permanent card fill on the row.
-    assert!(
-        expanded,
-        "#151: the newest single-call activity unit opens by default"
-    );
-    assert_eq!(
-        rows, 5,
-        "one compact row plus the four disclosed shell detail rows"
-    );
+    assert!(!expanded, "v3 single-call detail defaults collapsed");
+    assert_eq!(rows, 1, "one compact row with detail available on demand");
     assert_eq!(compact, "已运行命令 · 12 毫秒");
     assert!(
         matches!(leading_icon, Icon::Terminal),
@@ -776,13 +761,11 @@ async fn issue70_t70_2_adjacent_mixed_tools_share_one_collapsed_item(cx: &mut Te
         let group = group(stream, cx);
         let group = group.read(cx);
         assert_eq!(group.len(), 3);
-        // #151 R151-3: the group is the newest activity unit, so it opens by
-        // default — one aggregate row plus three compact child rows.
         assert!(
-            group.expanded(),
-            "#151: the newest tool group opens by default"
+            !group.expanded(),
+            "v3 grouped tool detail defaults collapsed"
         );
-        assert_eq!(group.row_count(cx), 4);
+        assert_eq!(group.row_count(cx), 1);
         let colors = theme(cx).colors;
         assert!(
             matches!(group.leading_icon(cx), Icon::Document),
@@ -936,10 +919,12 @@ async fn issue70_t70_3_permission_merge_preserves_right_group_disclosure(cx: &mu
             ["group:3", "permission", "group:2"]
         );
     });
-    // #151 R151-2 auto-collapsed the superseded left group when the newer right
-    // group appeared; the right group is the newest unit and opens by default.
-    // This keeps the #70 merge contract discriminating: the merged group must
-    // adopt the *expanded* side (right), not the collapsed one (left).
+    stream.update(cx, |stream, cx| {
+        let StreamEntry::ToolGroup { group } = &stream.entries[2] else {
+            panic!("right group")
+        };
+        group.update(cx, |group, cx| group.set_expanded(true, cx));
+    });
     let (left_expanded, right_expanded) = stream.read_with(cx, |stream, cx| {
         let left = match &stream.entries[0] {
             StreamEntry::ToolGroup { group } => group.read(cx).expanded(),
@@ -951,11 +936,8 @@ async fn issue70_t70_3_permission_merge_preserves_right_group_disclosure(cx: &mu
         };
         (left, right)
     });
-    assert!(
-        !left_expanded,
-        "#151: the superseded left group stepped down"
-    );
-    assert!(right_expanded, "#151: the newest right group opened");
+    assert!(!left_expanded, "left group remains collapsed");
+    assert!(right_expanded, "user explicitly opened the right group");
     stream.update(cx, |stream, cx| stream.remove_active_permission(cx));
     drop(future);
     stream.read_with(cx, |stream, cx| {
@@ -992,9 +974,8 @@ async fn issue70_t70_4_group_and_child_disclosure_are_scoped_and_remeasure(
             cx,
         );
     });
+    click(window, "tool-activity-group-toggle", cx);
     cx.run_until_parked();
-    // #151 R151-3: this group is the newest activity unit, so it starts
-    // expanded. Collapsing and re-expanding below still prove the toggle works.
     let expanded_rows = stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).row_count(cx));
     assert_eq!(expanded_rows, 4, "aggregate plus three compact children");
     for selector in [
@@ -1115,6 +1096,9 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
             );
         }
     });
+    stream.update(cx, |stream, cx| {
+        group(stream, cx).update(cx, |group, cx| group.set_expanded(true, cx))
+    });
     let before = stream.read_with(cx, |stream, cx| {
         let group = group(stream, cx);
         assert!(
@@ -1219,9 +1203,6 @@ async fn issue70_t70_5_lifecycle_updates_keep_entities_and_truthful_failure(
             Some(colors.danger),
             "the failed footer state resolves to the theme danger token"
         );
-        // #151: terminal updates do not supersede the newest unit, so the group
-        // stays expanded (aggregate + two children). Its resting row count is
-        // stable across lifecycle changes.
         assert!(group.read(cx).expanded());
         assert_eq!(group.read(cx).row_count(cx), 3);
     });
@@ -1529,9 +1510,7 @@ async fn issue70_t70_7_grouping_preserves_redaction_and_fail_closed_visibility(
             cx,
         );
     });
-    // #151 R151-3: the newest group already opens by default, so its children
-    // are mounted without a disclosure click. Child detail stays manual (#70
-    // §3.2), so only the child needs one click to disclose its bounded rows.
+    click(window, "tool-activity-group-toggle", cx);
     click(window, "tool-activity-child-0", cx);
     let visible = stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).visible_text(cx));
     for safe in [
@@ -1631,6 +1610,7 @@ async fn issue103_tool_detail_is_bounded(cx: &mut TestAppContext) {
             cx,
         );
     });
+    click(window, "tool-activity-single-row", cx);
     cx.run_until_parked();
     assert!(stream.read_with(cx, |stream, cx| {
         stream.tool_cards["long"].read(cx).is_expanded()
@@ -1752,6 +1732,7 @@ async fn issue103_tool_group_is_bounded(cx: &mut TestAppContext) {
             );
         }
     });
+    click(window, "tool-activity-group-toggle", cx);
     cx.run_until_parked();
     assert!(stream.read_with(cx, |stream, cx| group(stream, cx).read(cx).expanded()));
     let body = bounds(window, "tool-activity-group", cx);
@@ -1861,6 +1842,7 @@ async fn issue103_short_empty_error_body_keeps_natural_height_and_chains(cx: &mu
             cx,
         );
     });
+    click(window, "tool-activity-single-row", cx);
     cx.run_until_parked();
     assert!(stream.read_with(cx, |stream, cx| {
         stream.tool_cards["short"].read(cx).is_expanded()
@@ -1901,6 +1883,7 @@ async fn issue103_tool_status_update_preserves_reading_offset(cx: &mut TestAppCo
         );
         approve_and_run(stream, "status", cx);
     });
+    click(window, "tool-activity-single-row", cx);
     cx.run_until_parked();
     assert!(stream.read_with(cx, |stream, cx| {
         stream.tool_cards["status"].read(cx).is_expanded()

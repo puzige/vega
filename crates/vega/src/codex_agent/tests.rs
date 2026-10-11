@@ -1,9 +1,135 @@
 use super::*;
 use serde_json::json;
 use std::sync::mpsc as std_mpsc;
+use std::time::Instant;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 use vega_acp::RequestId;
+
+fn assert_issue296_terminal_clock(
+    store: &Store,
+    thread_id: &str,
+    updates: &[AgentUpdate],
+    expected_status: &str,
+    observed_at: Instant,
+    minimum_duration_ms: u64,
+) {
+    let starts = updates
+        .iter()
+        .filter_map(|update| match update {
+            AgentUpdate::Event(ConversationEvent::RunStarted {
+                message_id,
+                started_at,
+            }) => Some((message_id, *started_at)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 1);
+    let (message_id, started_at) = starts[0];
+    assert!(started_at <= observed_at);
+    let terminal = updates
+        .iter()
+        .filter_map(|update| match update {
+            AgentUpdate::Event(ConversationEvent::MessageFinished {
+                message_id,
+                execution_duration_ms,
+                ..
+            }) => Some((message_id, "done", execution_duration_ms.unwrap())),
+            AgentUpdate::Event(ConversationEvent::Interrupted {
+                message_id,
+                execution_duration_ms,
+            }) => Some((message_id, "interrupted", execution_duration_ms.unwrap())),
+            AgentUpdate::Event(ConversationEvent::Error {
+                message_id: Some(message_id),
+                execution_duration_ms,
+                ..
+            }) => Some((message_id, "failed", execution_duration_ms.unwrap())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(terminal.len(), 1);
+    let (terminal_id, status, duration_ms) = terminal[0];
+    assert_eq!(terminal_id, message_id);
+    assert_eq!(status, expected_status);
+    assert!(duration_ms >= minimum_duration_ms);
+    assert!(u128::from(duration_ms) <= started_at.elapsed().as_millis());
+    let page = vega_store::messages::page_before(
+        store.conn(),
+        thread_id,
+        vega_store::messages::PageCursor::Head,
+        20,
+    )
+    .unwrap();
+    assert_eq!(
+        page.execution_durations_ms.get(message_id),
+        Some(&(duration_ms as i64))
+    );
+    assert_eq!(
+        page.rows
+            .iter()
+            .find(|row| &row.id == message_id)
+            .unwrap()
+            .status,
+        expected_status
+    );
+    assert!(page.assistant_responses.is_empty());
+}
+
+#[tokio::test]
+async fn issue296_acp_ipc_failure_preserves_partial_and_terminal_clock() {
+    let (store, _directory, thread, snapshot) = issue287_store();
+    let CodexSessionCreationState::Intent { intent_id } =
+        vega_conversation::codex_tasks::begin_codex_session_creation(&store, &thread.id).unwrap()
+    else {
+        panic!("expected intent");
+    };
+    let (client, mut peer) = tokio::io::duplex(65_536);
+    let (reader, writer) = tokio::io::split(client);
+    let connection = Arc::new(vega_acp::test_support::connection_from_io(reader, writer));
+    let cwd = snapshot.workspace.canonical_working_directory.clone();
+    let server = tokio::spawn(async move {
+        let set_mode = scripted_v1_session(&mut peer, &cwd, "failed-session").await;
+        write_frame(
+            &mut peer,
+            json!({"jsonrpc":"2.0","id":set_mode["id"],"result":{}}),
+        )
+        .await;
+        let prompt = read_frame(&mut peer).await;
+        assert_eq!(prompt["method"], "session/prompt");
+        write_frame(&mut peer, json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"failed-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Useful partial."}}}})).await;
+        let observed_at = Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        drop(peer);
+        observed_at
+    });
+    let queue = PermissionQueue::new();
+    let (sender, receiver) = std_mpsc::sync_channel(32);
+    let run = run_codex_agent_with_connection(CodexAgentRunContext {
+        store: &store,
+        connection: connection.clone(),
+        thread: &thread,
+        snapshot: &snapshot,
+        intent_id: &intent_id,
+        prompt: "edit the project",
+        permission_queue: &queue,
+        cancel: CancellationToken::new(),
+        sender: &sender,
+    });
+    let (success, observed_at) = tokio::join!(run, server);
+    assert!(!success);
+    let updates = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+    assert_issue296_terminal_clock(
+        &store,
+        &thread.id,
+        &updates,
+        "failed",
+        observed_at.unwrap(),
+        60,
+    );
+    let messages = vega_store::messages::recent(store.conn(), &thread.id, 10).unwrap();
+    assert_eq!(messages.last().unwrap().content, "Useful partial.");
+    connection.shutdown().await;
+}
 
 #[test]
 fn issue287_permission_option_kinds_are_exact_and_fail_closed() {
@@ -380,6 +506,13 @@ async fn issue287_first_codex_prompt_waits_for_empty_set_mode_ack_and_durable_bi
         write_frame(
             &mut peer,
             json!({
+                "jsonrpc":"2.0", "method":"session/update",
+                "params":{"sessionId":"scripted-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Inspecting fixture."}}}
+            }),
+        ).await;
+        write_frame(
+            &mut peer,
+            json!({
                 "jsonrpc":"2.0",
                 "method":"session/update",
                 "params":{"sessionId":"scripted-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Updated file."}}}
@@ -431,6 +564,35 @@ async fn issue287_first_codex_prompt_waits_for_empty_set_mode_ack_and_durable_bi
         update,
         AgentUpdate::Event(ConversationEvent::TextDelta { delta, .. }) if delta == "Updated file."
     )));
+    assert!(updates.iter().any(|update| matches!(update,
+        AgentUpdate::Event(ConversationEvent::ThinkingDelta { delta, .. }) if delta == "Inspecting fixture."
+    )));
+    assert!(!updates.iter().any(|update| matches!(
+        update,
+        AgentUpdate::Event(ConversationEvent::AssistantResponseCompleted { .. })
+    )));
+    let duration = updates
+        .iter()
+        .find_map(|update| match update {
+            AgentUpdate::Event(ConversationEvent::MessageFinished {
+                execution_duration_ms,
+                ..
+            }) => *execution_duration_ms,
+            _ => None,
+        })
+        .unwrap();
+    let page = vega_store::messages::page_before(
+        store.conn(),
+        &thread_id,
+        vega_store::messages::PageCursor::Head,
+        20,
+    )
+    .unwrap();
+    assert_eq!(
+        page.execution_durations_ms.get(&messages[1].id),
+        Some(&(duration as i64))
+    );
+    assert!(page.assistant_responses.is_empty());
     connection.shutdown().await;
 }
 
@@ -544,17 +706,19 @@ async fn issue287_codex_tool_permission_and_lifecycle_keep_exact_option_once() {
                 let (request, mut lease) = pending.into_parts().unwrap();
                 let options = request.acp_options.unwrap();
                 assert_eq!(options[1].option_id, "allow_always");
+                let permission_started = Instant::now();
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
                 assert!(lease.respond(PermissionDecision::AcpOption {
                     option_id: options[1].option_id.clone(),
                 }));
                 assert!(!lease.respond(PermissionDecision::AcpOption {
                     option_id: options[1].option_id.clone(),
                 }));
-                break;
+                break permission_started;
             }
         }
     };
-    let (success, ()) = tokio::join!(run, select_permission);
+    let (success, permission_started) = tokio::join!(run, select_permission);
     assert!(
         success,
         "scripted tool run failed: {}",
@@ -609,6 +773,7 @@ async fn issue287_codex_tool_permission_and_lifecycle_keep_exact_option_once() {
         AgentUpdate::Event(ConversationEvent::ToolCallFinished { result, .. })
             if result.status == ToolCallStatus::Success
     )));
+    assert_issue296_terminal_clock(&store, &thread.id, &updates, "done", permission_started, 60);
     connection.shutdown().await;
 }
 
@@ -763,7 +928,7 @@ async fn issue287_stop_during_permission_cancels_session_and_closes_card() {
     let queue = PermissionQueue::new();
     let mut listener = queue.subscribe();
     let cancel = CancellationToken::new();
-    let (sender, _receiver) = std_mpsc::sync_channel(32);
+    let (sender, receiver) = std_mpsc::sync_channel(32);
     let run = run_codex_agent_with_connection(CodexAgentRunContext {
         store: &store,
         connection: connection.clone(),
@@ -780,18 +945,29 @@ async fn issue287_stop_during_permission_cancels_session_and_closes_card() {
             assert!(listener.changed().await);
             if let Some(pending) = queue.take_pending() {
                 let (_request, lease) = pending.into_parts().unwrap();
+                let permission_started = Instant::now();
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
                 cancel.cancel();
-                break lease;
+                break (lease, permission_started);
             }
         }
     };
-    let (success, mut lease) = tokio::join!(run, stop_after_card);
+    let (success, (mut lease, permission_started)) = tokio::join!(run, stop_after_card);
     assert!(!success);
     assert!(lease.is_resolved());
     assert!(!lease.respond(PermissionDecision::AcpOption {
         option_id: "allow".into(),
     }));
     server.await.unwrap();
+    let updates = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
+    assert_issue296_terminal_clock(
+        &store,
+        &thread.id,
+        &updates,
+        "interrupted",
+        permission_started,
+        60,
+    );
     connection.shutdown().await;
 }
 
@@ -883,4 +1059,77 @@ fn safe_run_state(store: &Store, thread_id: &str) -> String {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     format!("creation={creation:?}, message_statuses={message_statuses:?}")
+}
+
+#[test]
+fn issue296_acp_terminal_paths_share_persisted_monotonic_duration() {
+    let (store, _directory, thread, _) = issue287_store();
+    for state in ["done", "interrupted", "failed"] {
+        let (_, message_id, _) = persist_codex_messages(&store, &thread, "clock fixture").unwrap();
+        let started_at = std::time::Instant::now() - std::time::Duration::from_millis(2_500);
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        if state == "failed" {
+            let duration =
+                finish_codex_message(&store, &message_id, "useful partial", state, started_at);
+            send_codex_error(&sender, &message_id, duration);
+        } else {
+            let mut activities = HashMap::new();
+            let result = finish_codex_prompt_result(
+                vega_acp::PromptResult {
+                    stop_reason: if state == "done" {
+                        "end_turn"
+                    } else {
+                        "cancelled"
+                    }
+                    .into(),
+                    raw: json!({}),
+                },
+                CodexPromptFinishContext {
+                    store: &store,
+                    thread_id: &thread.id,
+                    message_id: &message_id,
+                    assistant_text: "useful partial",
+                    run_started_at: started_at,
+                    activities: &mut activities,
+                    permission_cancel: &CancellationToken::new(),
+                    permission_queue: &PermissionQueue::new(),
+                    sender: &sender,
+                },
+            );
+            assert_eq!(result, state == "done");
+        }
+        let event = receiver.try_recv().unwrap();
+        let duration = match event {
+            AgentUpdate::Event(ConversationEvent::MessageFinished {
+                execution_duration_ms,
+                ..
+            }) if state == "done" => execution_duration_ms,
+            AgentUpdate::Event(ConversationEvent::Interrupted {
+                execution_duration_ms,
+                ..
+            }) if state == "interrupted" => execution_duration_ms,
+            AgentUpdate::Event(ConversationEvent::Error {
+                execution_duration_ms,
+                ..
+            }) if state == "failed" => execution_duration_ms,
+            _ => panic!("incorrect terminal projection"),
+        }
+        .unwrap();
+        assert!(duration >= 2_500);
+        let page = vega_store::messages::page_before(
+            store.conn(),
+            &thread.id,
+            vega_store::messages::PageCursor::Head,
+            20,
+        )
+        .unwrap();
+        assert_eq!(
+            page.execution_durations_ms.get(&message_id),
+            Some(&(duration as i64))
+        );
+        let message = page.rows.iter().find(|row| row.id == message_id).unwrap();
+        assert_eq!(message.status, state);
+        assert_eq!(message.content, "useful partial");
+        assert!(page.assistant_responses.is_empty());
+    }
 }

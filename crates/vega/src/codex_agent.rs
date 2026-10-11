@@ -322,6 +322,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
     else {
         return false;
     };
+    let run_started_at = std::time::Instant::now();
     if sender
         .send(AgentUpdate::Event(ConversationEvent::MessageStarted {
             message_id: assistant_message_id.clone(),
@@ -331,18 +332,17 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
     {
         return false;
     }
+    let _ = sender.send(AgentUpdate::Event(ConversationEvent::RunStarted {
+        message_id: assistant_message_id.clone(),
+        started_at: run_started_at,
+    }));
     let _ = user_message_id;
     let prompt_handle = match connection.prompt(&session.session_id, prompt).await {
         Ok(handle) => handle,
         Err(_) => {
-            let _ = vega_store::messages::finish_streaming(
-                store.conn(),
-                &assistant_message_id,
-                "",
-                "failed",
-                None,
-            );
-            send_codex_error(sender, &assistant_message_id);
+            let duration_ms =
+                finish_codex_message(store, &assistant_message_id, "", "failed", run_started_at);
+            send_codex_error(sender, &assistant_message_id, duration_ms);
             return false;
         }
     };
@@ -375,10 +375,10 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                     ToolCallStatus::Cancelled,
                     sender,
                 );
-                finish_codex_message(store, &assistant_message_id, &assistant_text, "interrupted");
+                let duration_ms = finish_codex_message(store, &assistant_message_id, &assistant_text, "interrupted", run_started_at);
                 let _ = sender.send(AgentUpdate::Event(ConversationEvent::Interrupted {
                     message_id: assistant_message_id.clone(),
-                    execution_duration_ms: None,
+                    execution_duration_ms: Some(duration_ms),
                 }));
                 return false;
             }
@@ -407,6 +407,15 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                                 &assistant_text,
                             );
                             let _ = sender.send(AgentUpdate::Event(ConversationEvent::TextDelta {
+                                message_id: assistant_message_id.clone(),
+                                delta: delta.to_string(),
+                            }));
+                        }
+                        if params.pointer("/update/sessionUpdate").and_then(Value::as_str) == Some("agent_thought_chunk")
+                            && params.pointer("/update/content/type").and_then(Value::as_str) == Some("text")
+                            && let Some(delta) = params.pointer("/update/content/text").and_then(Value::as_str)
+                        {
+                            let _ = sender.send(AgentUpdate::Event(ConversationEvent::ThinkingDelta {
                                 message_id: assistant_message_id.clone(),
                                 delta: delta.to_string(),
                             }));
@@ -449,8 +458,8 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                                 ToolCallStatus::Failed,
                                 sender,
                             );
-                            finish_codex_message(store, &assistant_message_id, &assistant_text, "failed");
-                            send_codex_error(sender, &assistant_message_id);
+                            let duration_ms = finish_codex_message(store, &assistant_message_id, &assistant_text, "failed", run_started_at);
+                            send_codex_error(sender, &assistant_message_id, duration_ms);
                             return false;
                         }
                         let Some(external_id) = ensure_codex_tool_activity(
@@ -484,13 +493,14 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                                 ToolCallStatus::Failed,
                                 sender,
                             );
-                            finish_codex_message(
+                            let duration_ms = finish_codex_message(
                                 store,
                                 &assistant_message_id,
                                 &assistant_text,
                                 "failed",
+                                run_started_at,
                             );
-                            send_codex_error(sender, &assistant_message_id);
+                            send_codex_error(sender, &assistant_message_id, duration_ms);
                             return false;
                         }
                         if let Some(activity) = tool_activities.get_mut(&external_id) {
@@ -551,6 +561,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                                     thread_id: &thread.id,
                                     message_id: &assistant_message_id,
                                     assistant_text: &assistant_text,
+                                    run_started_at,
                                     activities: &mut tool_activities,
                                     permission_cancel: &permission_cancel,
                                     permission_queue,
@@ -568,8 +579,8 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                             ToolCallStatus::Failed,
                             sender,
                         );
-                        finish_codex_message(store, &assistant_message_id, &assistant_text, "failed");
-                        send_codex_error(sender, &assistant_message_id);
+                        let duration_ms = finish_codex_message(store, &assistant_message_id, &assistant_text, "failed", run_started_at);
+                        send_codex_error(sender, &assistant_message_id, duration_ms);
                         return false;
                     }
                 }
@@ -586,8 +597,8 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                         ToolCallStatus::Failed,
                         sender,
                     );
-                    finish_codex_message(store, &assistant_message_id, &assistant_text, "failed");
-                    send_codex_error(sender, &assistant_message_id);
+                    let duration_ms = finish_codex_message(store, &assistant_message_id, &assistant_text, "failed", run_started_at);
+                    send_codex_error(sender, &assistant_message_id, duration_ms);
                     return false;
                 };
                 return finish_codex_prompt_result(
@@ -597,6 +608,7 @@ pub(crate) async fn run_codex_agent_with_connection(context: CodexAgentRunContex
                         thread_id: &thread.id,
                         message_id: &assistant_message_id,
                         assistant_text: &assistant_text,
+                        run_started_at,
                         activities: &mut tool_activities,
                         permission_cancel: &permission_cancel,
                         permission_queue,
@@ -613,6 +625,7 @@ struct CodexPromptFinishContext<'a> {
     thread_id: &'a str,
     message_id: &'a str,
     assistant_text: &'a str,
+    run_started_at: std::time::Instant,
     activities: &'a mut HashMap<String, CodexToolActivity>,
     permission_cancel: &'a CancellationToken,
     permission_queue: &'a PermissionQueue,
@@ -628,6 +641,7 @@ fn finish_codex_prompt_result(
         thread_id,
         message_id,
         assistant_text,
+        run_started_at,
         activities,
         permission_cancel,
         permission_queue,
@@ -644,10 +658,16 @@ fn finish_codex_prompt_result(
             ToolCallStatus::Cancelled,
             sender,
         );
-        finish_codex_message(store, message_id, assistant_text, "interrupted");
+        let duration_ms = finish_codex_message(
+            store,
+            message_id,
+            assistant_text,
+            "interrupted",
+            run_started_at,
+        );
         let _ = sender.send(AgentUpdate::Event(ConversationEvent::Interrupted {
             message_id: message_id.to_owned(),
-            execution_duration_ms: None,
+            execution_duration_ms: Some(duration_ms),
         }));
         return false;
     }
@@ -659,11 +679,12 @@ fn finish_codex_prompt_result(
         ToolCallStatus::Failed,
         sender,
     );
-    finish_codex_message(store, message_id, assistant_text, "done");
+    let duration_ms =
+        finish_codex_message(store, message_id, assistant_text, "done", run_started_at);
     let _ = sender.send(AgentUpdate::Event(ConversationEvent::MessageFinished {
         message_id: message_id.to_owned(),
         stop_reason: ConversationStopReason::End,
-        execution_duration_ms: None,
+        execution_duration_ms: Some(duration_ms),
     }));
     true
 }
@@ -1175,17 +1196,36 @@ fn persist_codex_messages(
     Some((user_message_id, assistant_message_id, assistant_seq))
 }
 
-fn finish_codex_message(store: &Store, message_id: &str, content: &str, status: &str) {
-    let _ = vega_store::messages::finish_streaming(store.conn(), message_id, content, status, None);
+fn finish_codex_message(
+    store: &Store,
+    message_id: &str,
+    content: &str,
+    status: &str,
+    started_at: std::time::Instant,
+) -> u64 {
+    let duration_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let stored_duration = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+    let _ = vega_store::messages::finish_streaming(
+        store.conn(),
+        message_id,
+        content,
+        status,
+        Some(stored_duration),
+    );
+    duration_ms
 }
 
-fn send_codex_error(sender: &std_mpsc::SyncSender<AgentUpdate>, message_id: &str) {
+fn send_codex_error(
+    sender: &std_mpsc::SyncSender<AgentUpdate>,
+    message_id: &str,
+    duration_ms: u64,
+) {
     let _ = sender.send(AgentUpdate::Event(ConversationEvent::Error {
         message_id: Some(message_id.to_string()),
         error: Arc::new(vega_runtime::VegaError::Io(std::io::Error::other(
             "Codex ACP run failed",
         ))),
-        execution_duration_ms: None,
+        execution_duration_ms: Some(duration_ms),
     }));
 }
 

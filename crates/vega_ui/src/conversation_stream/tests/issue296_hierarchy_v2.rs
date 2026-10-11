@@ -163,14 +163,13 @@ async fn issue296_v2_standalone_tools_share_one_surface_in_both_themes(cx: &mut 
                         .painted_quads()
                         .iter()
                         .filter(|quad| {
-                            quad.bounds.top() >= bounds.top()
-                                && quad.bounds.bottom() <= bounds.bottom()
+                            quad.bounds == bounds
                                 && quad.background.as_solid() == Some(colors.bg_subtle.into())
                         })
                         .count()
                 }),
-                1,
-                "one process background, including expanded details"
+                0,
+                "v3 process rows have no persistent background"
             );
         }
     }
@@ -187,6 +186,23 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
             },
             cx,
         );
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert_eq!(
+        visual
+            .debug_bounds("run-activity-group")
+            .expect("initial thinking")
+            .size
+            .height,
+        px(28. + 4. + 28.)
+    );
+    stream.update(&mut visual, |stream, cx| {
+        stream.measured_entry_heights.clear();
+        assert_eq!(
+            stream.message_anchor_geometry(cx, 600.).entry_heights[0],
+            28. + 4. + 28.
+        );
         stream.apply_event(
             ConversationEvent::ThinkingDelta {
                 message_id: "run".into(),
@@ -201,8 +217,7 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
             cx,
         );
     });
-    cx.run_until_parked();
-    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
     let surface = visual
         .debug_bounds("run-activity-content")
         .expect("segment");
@@ -213,13 +228,20 @@ async fn issue296_v2_process_spacing_and_estimate_include_new_geometry(cx: &mut 
         .debug_bounds("tool-activity-single-row")
         .expect("tool row");
     assert_eq!(tool.top() - thinking.bottom(), px(4.));
-    assert_eq!(thinking.left() - surface.left(), px(13.));
+    assert_eq!(thinking.left(), surface.left());
     assert_eq!(tool.left(), thinking.left());
     stream.update(&mut visual, |stream, cx| {
         stream.measured_entry_heights.clear();
         let geometry = stream.message_anchor_geometry(cx, 600.);
         assert_eq!(geometry.entry_heights[0], 28.);
-        assert_eq!(geometry.entry_heights[1], 28. + 4. + 28. + 4. + 72.);
+        assert_eq!(geometry.entry_heights[1], 28. + 4. + 28.);
+    });
+    visual.simulate_click(tool.center(), Modifiers::default());
+    visual.run_until_parked();
+    stream.update(&mut visual, |stream, cx| {
+        stream.measured_entry_heights.clear();
+        let geometry = stream.message_anchor_geometry(cx, 600.);
+        assert_eq!(geometry.entry_heights[1], 28. + 4. + 28. + 4. + 98.);
         stream.apply_event(
             ConversationEvent::TextDelta {
                 message_id: "run".into(),
@@ -338,12 +360,7 @@ async fn issue296_v2_process_surface_preserves_segment_order(cx: &mut TestAppCon
     assert_eq!(header.size.height, px(28.));
     assert!(visual.update(|window, cx| {
         let colors = theme(cx).colors;
-        window.painted_quads().iter().any(|quad| {
-            quad.bounds == header.scale(window.scale_factor())
-                && quad.border_color == colors.border_subtle.into()
-                && quad.border_widths.left.as_f32() == window.scale_factor()
-                && quad.border_widths.top.as_f32() == 0.
-        }) && window.painted_quads().iter().any(|quad| {
+        !window.painted_quads().iter().any(|quad| {
             quad.bounds == header.scale(window.scale_factor())
                 && quad.background.as_solid() == Some(colors.bg_subtle.into())
         })
@@ -383,14 +400,14 @@ async fn issue296_v2_rail_rest_hover_and_focus_keep_marker_geometry(cx: &mut Tes
         visual.run_until_parked();
     }
     let rail = visual.debug_bounds("message-anchor-rail").expect("rail");
-    let markers = |visual: &mut VisualTestContext| {
+    let marks = |visual: &mut VisualTestContext| {
         visual.update(|window, _| {
             let scale = window.scale_factor();
             window
                 .painted_quads()
                 .iter()
                 .filter(|quad| {
-                    (quad.bounds.size.width.as_f32() / scale - 4.).abs() < 0.1
+                    (quad.bounds.size.height.as_f32() / scale - 2.).abs() < 0.1
                         && (quad.bounds.center().x.as_f32() / scale - f32::from(rail.center().x))
                             .abs()
                             < 0.1
@@ -399,26 +416,20 @@ async fn issue296_v2_rail_rest_hover_and_focus_keep_marker_geometry(cx: &mut Tes
                 .collect::<Vec<_>>()
         })
     };
-    let rest = markers(&mut visual);
-    assert!(!rest.is_empty());
-    assert!(
-        rest.iter()
-            .all(|(_, color)| *color == Some(vega_theme::LIGHT.border_subtle.into()))
-    );
+    let rest = marks(&mut visual);
+    assert_eq!(rest.len(), 9);
     visual.simulate_mouse_move(rail.center(), None, Modifiers::default());
     visual.run_until_parked();
-    let hovered = markers(&mut visual);
+    let hover = marks(&mut visual);
+    assert_eq!(hover.len(), 9);
     assert!(
-        hovered
+        hover
             .iter()
-            .all(|(_, color)| *color == Some(vega_theme::LIGHT.text_tertiary.into()))
+            .filter(|(_, color)| *color == Some(vega_theme::LIGHT.text_secondary.into()))
+            .count()
+            >= 1
     );
-    assert_eq!(rest.len(), hovered.len() + 1);
-    assert!(
-        hovered
-            .iter()
-            .all(|(bounds, _)| rest.iter().any(|(before, _)| before == bounds))
-    );
+    assert_eq!(visual.debug_bounds("message-anchor-rail"), Some(rail));
     visual.simulate_mouse_move(point(px(1.), px(1.)), None, Modifiers::default());
     visual.update(|window, cx| {
         stream
@@ -428,16 +439,6 @@ async fn issue296_v2_rail_rest_hover_and_focus_keep_marker_geometry(cx: &mut Tes
             .focus(window, cx)
     });
     visual.run_until_parked();
-    let focused = markers(&mut visual);
-    assert!(
-        focused
-            .iter()
-            .all(|(_, color)| *color == Some(vega_theme::LIGHT.text_tertiary.into()))
-    );
-    assert!(
-        focused
-            .iter()
-            .all(|(bounds, _)| rest.iter().any(|(before, _)| before == bounds))
-    );
-    assert_eq!(visual.debug_bounds("message-anchor-rail"), Some(rail));
+    assert_eq!(marks(&mut visual).len(), 9);
+    assert!(visual.debug_bounds("message-anchor-preview").is_some());
 }

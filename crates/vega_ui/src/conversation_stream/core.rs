@@ -59,6 +59,7 @@ pub struct ConversationStream {
     pub(crate) message_anchor_keyboard_id: Option<String>,
     pub(crate) message_anchor_focus: FocusHandle,
     pub(crate) message_anchor_rail_last_shown: bool,
+    pub(crate) message_anchor_window_start: usize,
     pub(crate) next_local_entry_id: u64,
     /// Active demo injection (`None` = idle/finished).
     pub(crate) injecting: Option<InjectionState>,
@@ -70,6 +71,7 @@ pub struct ConversationStream {
     pub(crate) user_block_seq: u64,
     /// Opaque provider call ids are retained only as non-rendered map keys.
     pub(crate) tool_cards: HashMap<String, Entity<ToolCard>>,
+    pub(crate) run_responses: HashMap<String, phase::RunResponses>,
     pub(crate) run_activity_groups: HashMap<String, Entity<RunActivityGroup>>,
     /// Exact call id to its sole inline artifact card.
     pub(crate) artifact_cards: HashMap<String, Entity<ArtifactCard>>,
@@ -208,6 +210,8 @@ pub struct ConversationStream {
         Option<(gpui_kit::Subscription, gpui_kit::Subscription)>,
     pub(crate) context_usage_trigger_hovered: bool,
     pub(crate) context_usage_tooltip_hovered: bool,
+    pub(crate) context_usage_open: bool,
+    pub(crate) context_usage_dismissed: bool,
     /// Keyboard focus stop for the model selector trigger (A2-14).
     pub(crate) model_focus: FocusHandle,
     /// In-flight in-session model selection (R1): `Some((request_id, model))`
@@ -359,6 +363,8 @@ impl ConversationStream {
             {
                 this.context_usage_trigger_hovered = false;
                 this.context_usage_tooltip_hovered = false;
+                this.context_usage_open = false;
+                this.context_usage_dismissed = true;
                 cx.notify();
                 this.timeout_permission(cx);
             }
@@ -431,6 +437,7 @@ impl ConversationStream {
             message_anchor_keyboard_id: None,
             message_anchor_focus: cx.focus_handle().tab_index(17).tab_stop(true),
             message_anchor_rail_last_shown: false,
+            message_anchor_window_start: 0,
             next_local_entry_id: 0,
             injecting: None,
             input,
@@ -438,6 +445,7 @@ impl ConversationStream {
             selection_view_initialized: false,
             user_block_seq: USER_BLOCK_BASE,
             tool_cards: HashMap::new(),
+            run_responses: HashMap::new(),
             run_activity_groups: HashMap::new(),
             artifact_cards: HashMap::new(),
             branch_selector,
@@ -513,6 +521,8 @@ impl ConversationStream {
             context_usage_focus_subscriptions: None,
             context_usage_trigger_hovered: false,
             context_usage_tooltip_hovered: false,
+            context_usage_open: false,
+            context_usage_dismissed: false,
             model_focus: cx.focus_handle().tab_index(16).tab_stop(true),
             model_selection_pending: None,
             model_selection_save_owner: None,
@@ -1585,7 +1595,9 @@ impl ConversationStream {
             | ConversationEvent::ToolCallRunning { .. }
             | ConversationEvent::ToolCallOutput { .. }
             | ConversationEvent::ToolCallFinished { .. } => true,
-            ConversationEvent::ThinkingDelta { .. }
+            ConversationEvent::RunStarted { .. }
+            | ConversationEvent::AssistantResponseCompleted { .. }
+            | ConversationEvent::ThinkingDelta { .. }
             | ConversationEvent::SummaryDelta { .. }
             | ConversationEvent::SkillActivated { .. }
             | ConversationEvent::ContextCompactionStatus { .. }

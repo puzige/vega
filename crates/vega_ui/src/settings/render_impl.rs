@@ -7,6 +7,7 @@ use crate::settings::state::{
 impl SettingsView {
     pub(crate) fn render_pricing(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let colors = theme(cx).colors;
+        let selected_model = self.model_settings.clone();
         let header = div()
             .flex()
             .flex_wrap()
@@ -41,7 +42,13 @@ impl SettingsView {
                     )),
             );
 
-        let mut column = settings_section().child(header);
+        let mut column = settings_section()
+            .child(if self.model_settings.is_some() {
+                "此模型的共享价格 · 所有提供方共用"
+            } else {
+                "模型价格库 · 所有提供方共享"
+            })
+            .child(header);
         match &self.pricing {
             PricingSettingsProjection::Loading | PricingSettingsProjection::Reloading => {
                 column = column.child(settings_status(
@@ -65,7 +72,11 @@ impl SettingsView {
                 error,
                 ..
             } => {
-                let entries = entries.clone();
+                let entries = if self.pricing_editor.is_some() {
+                    Vec::new()
+                } else {
+                    entries.clone()
+                };
                 let generation = *generation;
                 let notice = *notice;
                 let draft_reason = *draft_reason;
@@ -117,7 +128,11 @@ impl SettingsView {
                         colors,
                     ));
                 }
-                for (index, entry) in entries.into_iter().enumerate() {
+                for (index, entry) in entries.into_iter().enumerate().filter(|(_, entry)| {
+                    selected_model
+                        .as_ref()
+                        .is_none_or(|(_, model)| entry.model == *model)
+                }) {
                     column = column.child(self.render_pricing_entry(index, entry, cx));
                 }
             }
@@ -128,7 +143,11 @@ impl SettingsView {
                     colors.text_secondary,
                     colors,
                 ));
-                for (index, entry) in entries.into_iter().enumerate() {
+                for (index, entry) in entries.into_iter().enumerate().filter(|(_, entry)| {
+                    selected_model
+                        .as_ref()
+                        .is_none_or(|(_, model)| entry.model == *model)
+                }) {
                     column = column.child(self.render_pricing_entry(index, entry, cx));
                 }
             }
@@ -156,7 +175,10 @@ impl SettingsView {
         let edit_entry = entry.clone();
         let model_for_reset = entry.model.clone();
         let model_for_delete = entry.model.clone();
-        settings_group(colors)
+        settings_section()
+            .py_3()
+            .border_b_1()
+            .border_color(colors.border_subtle)
             .flex_row()
             .items_center()
             .gap(px(Layout::SETTINGS_FIELD_GAP))
@@ -234,6 +256,7 @@ impl SettingsView {
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let show_peak = editor.kind == PricingEditorKind::UpdateDeepSeek;
+        let expanded = self.pricing_advanced;
         settings_group(colors)
             .when_some(editor.model.clone(), |form, model| {
                 form.child(
@@ -258,7 +281,7 @@ impl SettingsView {
                 self.pricing_rate_inputs
                     .iter()
                     .enumerate()
-                    .take(if show_peak { 8 } else { 4 })
+                    .take(if show_peak && expanded { 8 } else { 4 })
                     .map(|(index, input)| {
                         let label = [
                             "基础输入",
@@ -279,6 +302,22 @@ impl SettingsView {
                         )
                     }),
             )
+            .when(show_peak, |form| {
+                form.child(self.settings_route_button(
+                    "pricing-advanced",
+                    if expanded {
+                        "收起高峰费率"
+                    } else {
+                        "高峰费率"
+                    },
+                    true,
+                    cx.listener(|this, _, _, cx| {
+                        this.pricing_advanced = !this.pricing_advanced;
+                        cx.notify();
+                    }),
+                    cx,
+                ))
+            })
             .child(
                 div()
                     .flex()
@@ -312,6 +351,12 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         // 与 Esc 同效：派发同一动作，由 app 级处理器统一收口。
+        if self.settings_have_draft(cx) {
+            self.pending_settings_close = true;
+            self.pending_section = Some(SettingsDestination::ModelSection(self.section));
+            cx.notify();
+            return;
+        }
         self.cancel_provider_operation(cx);
         self.cancel_mcp_oauth(cx);
         self.close_skills_session();
@@ -581,7 +626,7 @@ impl SettingsView {
                     .child(settings_field(
                         "settings-sidebar",
                         "侧栏",
-                        Some("在主窗口中显示侧栏".into()),
+                        None,
                         sidebar,
                         colors,
                     )),
@@ -855,9 +900,11 @@ impl Render for SettingsView {
             .try_global::<PricingSettingsRequested>()
             .is_some_and(|request| request.0)
         {
-            self.section = 3;
+            self.request_settings_section(3, cx);
             cx.set_global(PricingSettingsRequested(false));
         }
+        self.resume_settings_navigation(window, cx);
+        self.ensure_model_catalog(cx);
         let current_theme = theme(cx);
         self.config.ui.theme = if current_theme.follow_system {
             "system"
@@ -882,8 +929,8 @@ impl Render for SettingsView {
         let (page_title, page_selector) = match self.section {
             0 => ("服务提供方", "settings-page-providers"),
             1 => ("通用", "settings-page-general"),
-            2 => ("思考", "settings-page-reasoning"),
-            3 => ("定价", "settings-page-pricing"),
+            2 => ("服务提供方", "settings-page-reasoning"),
+            3 => ("服务提供方", "settings-page-pricing"),
             4 => ("用量", "settings-page-usage"),
             5 => ("MCP", "settings-page-mcp"),
             6 => ("Skills", "settings-page-skills"),
@@ -893,15 +940,14 @@ impl Render for SettingsView {
         let navigation = [
             (1, "通用", "settings-nav-general"),
             (0, "服务提供方", "settings-nav-providers"),
-            (2, "思考", "settings-nav-reasoning"),
-            (3, "定价", "settings-nav-pricing"),
-            (4, "用量", "settings-nav-usage"),
             (5, "MCP", "settings-nav-mcp"),
             (7, "Agents", "settings-nav-agents"),
             (6, "Skills", "settings-nav-skills"),
+            (4, "用量", "settings-nav-usage"),
         ];
         div()
             .id("settings-page")
+            .on_action(cx.listener(Self::guard_settings_close))
             .on_key_down(|event, window, cx| {
                 if event.keystroke.key == "tab" {
                     if event.keystroke.modifiers.shift {
@@ -970,10 +1016,16 @@ impl Render for SettingsView {
                             .on_key_down(cx.listener(
                                 |this, event: &gpui_kit::KeyDownEvent, window, cx| {
                                     if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                        this.cancel_provider_operation(cx);
-                                        this.cancel_mcp_oauth(cx);
-                                        this.close_skills_session();
-                                        window.dispatch_action(Box::new(CloseSettings), cx);
+                                        this.on_back(
+                                            &MouseUpEvent {
+                                                button: MouseButton::Left,
+                                                position: gpui_kit::point(px(0.), px(0.)),
+                                                modifiers: event.keystroke.modifiers,
+                                                click_count: 1,
+                                            },
+                                            window,
+                                            cx,
+                                        );
                                         cx.stop_propagation();
                                     }
                                 },
@@ -989,7 +1041,7 @@ impl Render for SettingsView {
                     .children(navigation.into_iter().map(|(index, label, selector)| {
                         div()
                             .id(("settings-section", index))
-                            .interactive(colors, true, self.section == index)
+                            .interactive(colors, true, self.navigation_section() == index)
                             .debug_selector(move || selector.into())
                             .track_focus(&self.section_focuses[index])
                             .tab_stop(true)
@@ -1005,8 +1057,7 @@ impl Render for SettingsView {
                                         {
                                             this.cancel_mcp_oauth(cx);
                                         }
-                                        this.skills_section_changed(index, cx);
-                                        this.section = index;
+                                        this.request_settings_section(index, cx);
                                         cx.stop_propagation();
                                         cx.notify();
                                     }
@@ -1019,7 +1070,9 @@ impl Render for SettingsView {
                             .rounded(px(Layout::SETTINGS_CONTROL_RADIUS))
                             .border_1()
                             .border_color(gpui_kit::transparent_black())
-                            .when(self.section == index, |row| row.bg(colors.bg_active))
+                            .when(self.navigation_section() == index, |row| {
+                                row.bg(colors.bg_active)
+                            })
                             .cursor_pointer()
                             .on_mouse_up(
                                 MouseButton::Left,
@@ -1032,22 +1085,21 @@ impl Render for SettingsView {
                                     {
                                         this.cancel_mcp_oauth(cx);
                                     }
-                                    this.skills_section_changed(index, cx);
-                                    this.section = index;
+                                    this.request_settings_section(index, cx);
                                     cx.notify();
                                 }),
                             )
                             .gap_2()
                             .child(crate::icons::icon(
                                 match index {
-                                    0 => crate::icons::Icon::Split,
+                                    0 => crate::icons::Icon::Connection,
                                     1 => crate::icons::Icon::Settings,
                                     2 => crate::icons::Icon::TextSelect,
                                     3 => crate::icons::Icon::ArrowUpDown,
-                                    4 => crate::icons::Icon::Summary,
-                                    5 => crate::icons::Icon::Terminal,
-                                    6 => crate::icons::Icon::Document,
-                                    _ => crate::icons::Icon::Terminal,
+                                    4 => crate::icons::Icon::Chart,
+                                    5 => crate::icons::Icon::Plug,
+                                    6 => crate::icons::Icon::Blocks,
+                                    _ => crate::icons::Icon::Bot,
                                 },
                                 colors.text_secondary,
                             ))
@@ -1088,6 +1140,15 @@ impl Render for SettingsView {
                                 self.error
                                     .clone()
                                     .map(|message| settings_status(message, colors.danger, colors)),
+                            )
+                            .children(
+                                self.pending_section
+                                    .map(|_| self.render_settings_navigation_guard(cx)),
+                            )
+                            .when(
+                                (self.section == 0 && self.model_settings.is_some())
+                                    || matches!(self.section, 2 | 3),
+                                |column| column.child(self.render_model_navigation(cx)),
                             )
                             .child(
                                 div()

@@ -197,8 +197,23 @@ async fn issue294_existing_native_composer_has_no_branch_entry(cx: &mut TestAppC
     });
     assert_branch_free_footer(window, TaskBackend::Native, false, 8.0, cx);
     focus_composer(window, &stream, cx);
-    cx.simulate_keystrokes(window.into(), "tab");
-    cx.simulate_keystrokes(window.into(), "tab");
+    let controls = stream.read_with(cx, |stream, _| {
+        [
+            ("attachment", stream.action_focus[0].clone()),
+            ("context usage", stream.context_usage_focus.clone()),
+            ("model", stream.model_focus.clone()),
+        ]
+    });
+    for (name, focus) in controls {
+        cx.simulate_keystrokes(window.into(), "tab");
+        assert!(
+            window
+                .update(cx, |_, window, cx| focus.contains_focused(window, cx))
+                .expect("Composer footer focus"),
+            "Tab must reach {name} without a branch focus target"
+        );
+    }
+    assert_branch_free_footer(window, TaskBackend::Native, false, 8.0, cx);
     assert!(
         window
             .update(cx, |_, window, cx| {

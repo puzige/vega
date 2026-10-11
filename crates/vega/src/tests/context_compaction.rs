@@ -45,8 +45,8 @@ fn click_context_control(f: &Fixture, selector: &'static str, cx: &mut gpui_kit:
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(f.window.into(), cx);
     let viewport = visual
-        .debug_bounds("provider-detail-viewport")
-        .expect("provider detail viewport");
+        .debug_bounds("provider-model-configuration")
+        .expect("model configuration viewport");
     let control = visual
         .debug_bounds(selector)
         .expect("model context control");
@@ -101,7 +101,7 @@ fn open_model_context_editor(f: &Fixture, cx: &mut gpui_kit::TestAppContext) {
     click(f, "model-edit-0", cx);
     pump_test_app(cx, |cx| {
         VisualTestContext::from_window(f.window.into(), cx)
-            .debug_bounds("model-context-input")
+            .debug_bounds("model-context-ready")
             .is_some()
     });
 }
@@ -210,8 +210,14 @@ async fn i76_context_settings_real_inputs_persist_and_reopen(cx: &mut gpui_kit::
     );
     assert!(
         composer_visual
-            .debug_bounds("context-usage-tooltip-capacity")
+            .debug_bounds("context-usage-tooltip-compact")
             .is_some()
+    );
+    assert!(composer_visual.debug_bounds("context-usage-help").is_some());
+    assert!(
+        composer_visual
+            .debug_bounds("context-usage-tooltip-capacity")
+            .is_none()
     );
     assert!(provider.requests().is_empty());
     open_model_context_editor(&f, cx);

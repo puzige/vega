@@ -994,10 +994,10 @@ async fn r21_settings_shell_opens_general_with_independent_navigation(cx: &mut T
         let rows = [
             "settings-nav-general",
             "settings-nav-providers",
-            "settings-nav-reasoning",
-            "settings-nav-pricing",
-            "settings-nav-usage",
+            "settings-nav-mcp",
+            "settings-nav-agents",
             "settings-nav-skills",
+            "settings-nav-usage",
         ]
         .map(|selector| {
             visual
@@ -1693,7 +1693,10 @@ async fn reasoning_unknown_template_is_tab_reachable_and_enter_activates(cx: &mu
         crate::init(cx);
     });
     let view = cx.new(SettingsView::new_for_test);
-    view.update(cx, |view, _| view.section = 2);
+    view.update(cx, |view, _| {
+        view.section = 2;
+        view.model_settings = Some(("provider-a".into(), "model-a".into()));
+    });
     view.update(cx, |view, cx| {
         view.apply_reasoning_projection(
             ReasoningSettingsProjection::Ready {

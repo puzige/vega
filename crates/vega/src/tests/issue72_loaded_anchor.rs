@@ -202,7 +202,7 @@ fn click_first(f: &Fixture, visual: &mut VisualTestContext) {
         f.requested.lock().expect("first marker requests").len(),
         count
     );
-    let start = selected_marker(visual);
+    let start = selected_marker(visual, "message-anchor-item-issue72-owned-message-00");
     visual.simulate_click(start, Modifiers::default());
     draw_frame(visual);
     let requested = f.requested.lock().expect("first request");
@@ -214,15 +214,21 @@ fn click_first(f: &Fixture, visual: &mut VisualTestContext) {
     assert!(!anchor.following_tail);
 }
 
-fn selected_marker(visual: &mut VisualTestContext) -> Point<Pixels> {
+fn selected_marker(visual: &mut VisualTestContext, selector: &'static str) -> Point<Pixels> {
     let rail = visual
         .debug_bounds("message-anchor-rail")
         .expect("selected rail");
+    let target = visual
+        .debug_bounds(selector)
+        .expect("selected stable message anchor");
+    assert_eq!(rail.size.width, px(Layout::CONVERSATION_NAVIGATION_GUTTER));
+    assert_eq!(target.size.height, px(Layout::MESSAGE_ANCHOR_HIT_HEIGHT));
+    assert!(rail.contains(&target.center()));
     let quads = visual.update(|window, cx| {
         (
             window.scale_factor(),
             window.painted_quads(),
-            vega_theme::theme(cx).colors.accent,
+            vega_theme::theme(cx).colors.text_secondary,
         )
     });
     let selected = quads
@@ -233,11 +239,11 @@ fn selected_marker(visual: &mut VisualTestContext) -> Point<Pixels> {
                 .abs()
                 < 0.1
                 && (quad.bounds.size.height.0 / quads.0
-                    - vega_theme::Layout::MESSAGE_ANCHOR_ACTIVE_SIZE)
+                    - vega_theme::Layout::MESSAGE_ANCHOR_TRACK_WIDTH)
                     .abs()
                     < 0.1
                 && quad.background.as_solid() == Some(quads.2.into())
-                && rail.contains(&point(
+                && target.contains(&point(
                     px(quad.bounds.center().x.0 / quads.0),
                     px(quad.bounds.center().y.0 / quads.0),
                 ))
@@ -245,8 +251,8 @@ fn selected_marker(visual: &mut VisualTestContext) -> Point<Pixels> {
         .collect::<Vec<_>>();
     assert_eq!(
         selected.len(),
-        2,
-        "one selected durable anchor marker before the current position marker"
+        1,
+        "the selected stable message paints one active navigation tick"
     );
     point(
         px(selected[0].bounds.center().x.0 / quads.0),
@@ -305,7 +311,7 @@ fn alpha_point_after_first(f: &Fixture, visual: &mut VisualTestContext) -> Point
     eprintln!(
         "Alpha pre-click: not visible; preview selection emitted zero requests; generation={generation}; anchor={after:?}"
     );
-    selected_marker(visual)
+    selected_marker(visual, "message-anchor-item-issue72-owned-message-13")
 }
 
 fn alpha_is_visible(f: &Fixture, visual: &mut VisualTestContext) -> bool {
@@ -418,7 +424,12 @@ fn click_alpha(f: &Fixture, visual: &mut VisualTestContext, position: Point<Pixe
     let composer = visual
         .debug_bounds("composer-shell")
         .expect("owned composer");
-    assert!(!preview.intersects(&viewport));
+    let rail = visual
+        .debug_bounds("message-anchor-rail")
+        .expect("Alpha rail");
+    assert!(preview.left() >= rail.right());
+    assert!(preview.top() >= viewport.top());
+    assert!(preview.bottom() <= viewport.bottom());
     assert!(!preview.intersects(&composer));
     let count = f.requested.lock().expect("owned pre-click request").len();
     let generation = f

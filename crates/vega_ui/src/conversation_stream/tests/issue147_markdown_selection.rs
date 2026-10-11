@@ -508,3 +508,99 @@ fn issue147_inline_highlight_dark_paragraph_control(cx: &mut TestAppContext) {
         0..INLINE_HIGHLIGHT_PARAGRAPH.len(),
     );
 }
+
+#[gpui_kit::test]
+fn issue296_v3_markdown_mixed_blocks_use_semantic_gaps_and_preserve_copy(cx: &mut TestAppContext) {
+    let source = "中文正文 Latin text\n\n# 一级 Heading\n\n- 列表 Alpha\n- 列表 Beta\n\n```text\ncode one\n  第二行\n```\n\n| 中文列 | Latin |\n|---|---|\n| 数据 | Value |";
+    selection::SELECTION_RUN_LAYOUTS.with_borrow_mut(Vec::clear);
+    let (_stream, mut visual) = open_selection_harness(cx, assistant_entry(source));
+    let paragraph = layout_for("中文正文 Latin text");
+    let heading = layout_for("一级 Heading");
+    let first_item = layout_for("列表 Alpha");
+    let second_item = layout_for("列表 Beta");
+    let code = layout_for("code one");
+    let code_last = layout_for("  第二行");
+    let table = layout_for("中文列");
+    let code_surface = visual
+        .debug_bounds("markdown-code-4")
+        .expect("code container");
+    let table_block = visual
+        .debug_bounds("markdown-block-6")
+        .expect("table block");
+    assert_eq!(heading.line_layouts()[0].font_size(), px(22.));
+    assert_eq!(paragraph.line_layouts()[0].font_size(), px(15.));
+    assert!((f32::from(paragraph.line_height()) - 24.75).abs() <= 0.5);
+    assert_eq!(
+        heading.bounds().top() - paragraph.bounds().bottom(),
+        px(24.)
+    );
+    assert_eq!(
+        first_item.bounds().top() - heading.bounds().bottom(),
+        px(16.)
+    );
+    assert_eq!(
+        second_item.bounds().top() - first_item.bounds().bottom(),
+        px(6.)
+    );
+    assert_eq!(
+        first_item.bounds().left() - paragraph.bounds().left(),
+        px(24.)
+    );
+    assert_eq!(code_surface.top() - second_item.bounds().bottom(), px(16.));
+    assert_eq!(code.bounds().top() - code_surface.top(), px(12.));
+    assert_eq!(code.bounds().left() - code_surface.left(), px(12.));
+    assert_eq!(code.line_layouts()[0].font_size(), px(12.5));
+    assert_eq!(code.line_height(), px(20.));
+    assert_eq!(code_last.bounds().top(), code.bounds().bottom());
+    assert_eq!(code_surface.bottom() - code_last.bounds().bottom(), px(12.));
+    assert_eq!(table_block.top() - code_surface.bottom(), px(16.));
+    assert_eq!(table.bounds().top() - table_block.top(), px(8.));
+    assert_eq!(table.bounds().left() - table_block.left(), px(12.));
+    assert_eq!(table.line_layouts()[0].font_size(), px(15.));
+    let last = layout_for("Value");
+    drag(
+        &mut visual,
+        text_point(&paragraph, 0, false),
+        text_point(&last, 5, true),
+    );
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-c");
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(
+            "中文正文 Latin text\n\n一级 Heading\n\n• 列表 Alpha\n• 列表 Beta\n\ncode one\n  第二行\n\n中文列\tLatin\n数据\tValue"
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn issue296_v3_list_paragraphs_and_long_code_keep_local_geometry(cx: &mut TestAppContext) {
+    let long_line = "very_long_identifier_".repeat(30);
+    let source = format!(
+        "- First 项\n\n  Second 段\n\n  Third 段\n\nOutside 正文\n\n```text\n{long_line}\n```\n\nEnd 结尾"
+    );
+    selection::SELECTION_RUN_LAYOUTS.with_borrow_mut(Vec::clear);
+    let (_stream, mut visual) = open_selection_harness(cx, assistant_entry(&source));
+    visual.simulate_resize(size(px(600.), px(1600.)));
+    visual.run_until_parked();
+    let first = layout_for("First 项");
+    let second = layout_for("Second 段");
+    let third = layout_for("Third 段");
+    let outside = layout_for("Outside 正文");
+    assert_eq!(second.bounds().top() - first.bounds().bottom(), px(8.));
+    assert_eq!(third.bounds().top() - second.bounds().bottom(), px(8.));
+    assert_eq!(outside.bounds().top() - third.bounds().bottom(), px(16.));
+    assert_eq!(first.bounds().left(), second.bounds().left());
+    assert_eq!(second.bounds().left(), third.bounds().left());
+    let code = layout_for(&long_line);
+    let surface = visual.debug_bounds("markdown-code-4").expect("code");
+    assert_eq!(code.line_layouts().len(), 1);
+    assert!(code.bounds().size.width > surface.size.width);
+    assert_eq!(surface.size.height, px(44.));
+    let end = layout_for("End 结尾");
+    assert_eq!(end.bounds().left(), outside.bounds().left());
+    assert_eq!(end.bounds().top() - surface.bottom(), px(16.));
+}
