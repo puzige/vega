@@ -278,9 +278,6 @@ impl ConversationStream {
                                 .track_focus(&self.action_focus[0])
                                 .debug_selector(|| "composer-add".into()),
                             )
-                            .when(self.composer_branch_entry_visible(), |row| {
-                                row.child(self.render_composer_branch_entry())
-                            })
                             .when(self.thread.backend == TaskBackend::Native, |row| {
                                 row.child(self.render_permission_status(cx))
                             })

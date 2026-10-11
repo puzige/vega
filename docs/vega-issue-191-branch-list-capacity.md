@@ -2,6 +2,16 @@
 
 Status: frozen for implementation, 2026-09-25.
 
+## Entry supersession — Issue #294
+
+The 2026-10-11 user decision in
+[Issue #294](vega-issue-294-composer-footer-no-branch.md) removes the Composer
+footer branch entry. The older "intentional", "unchanged" and "Do not remove"
+entry language below, and the footer-specific reading of C6/C8, are historical.
+Current selector request/switch verification uses the retained New Task
+utility-bar entry. Every capacity, byte, timeout, cancellation and Git safety
+limit in this document remains in force; #294 does not change those services.
+
 ## Problem and evidence
 
 The Composer branch selector added by [the Issue #191 entry contract](vega-issue-191-branch-entry.md) is intentional and remains in scope. In v0.1.13, opening it for a clean project with 13 branch refs showed `Too many branches` and no rows. The inspected project has 9 local heads and 4 remote-tracking refs; the existing selector lists local heads only.
@@ -51,3 +61,5 @@ Run only Issue #191 branch service and selector tests locally, plus `cargo fmt -
 
 - 2026-09-25 initial freeze: isolate the branch filter-identity path cap, keep all other resource limits bounded, and replace the inaccurate selector error.
 - 2026-09-25 clarified the inspected repository has 9 local heads and 4 remote refs. The existing selector continues to show the 9 local heads only; acceptance fixtures and documentation do not claim that remote refs are displayed.
+
+- 2026-10-11: #294 supersedes only the Composer footer entry; preserve capacity/safety contracts and historical text, and verify selector behavior at the retained New Task utility bar.

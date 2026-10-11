@@ -203,7 +203,7 @@ Issue #103：展开的工具详情与 thinking 正文使用 240px 最大高度
 - utility bar 几何：保留 R49 的 bar 高 37px、相对卡片左右各内缩 19px 并共用卡片中轴、顶部圆角 12px 而底部无圆角；bar 底边与卡片顶边**零重叠**（`bar bottom == card top`），靠父列顺序堆叠形成「标签页压在卡片上」的层叠观感，不使用负 margin。2026-09-16 用户要求收紧两个 chip：边界间距由 28px 改为 8px，首个 chip 距 bar 左缘仍为 14.5px。
 - utility bar chip 样式（取代 R49 对触发器的旧定义）：两个触发器均高 28px、水平 padding 8px、全胶囊；保留 `icon(16px, text_secondary)` + `label(Typography::SIDEBAR, text_primary)`、内部 `gap_2`。静止无边框且底色透明；hover 或对应菜单打开时显示专用主题覆盖色，文字和图标不参与透明度变化；关闭并移走指针后恢复透明。浅色覆盖色为 Vega 自主选定的 `#DBDBDB × 0.6`，叠在 `#FAF9F9` 上约为 `#E7E7E7`；深色为白色 × 0.10，叠在 `#191919` 上约为 `#303030`。分支保留 GitBranch 图标。文件夹 chip tooltip「切换项目」、分支 chip tooltip「切换分支」。这些为产品目标，不代表第三方内部实现。详见 [utility chip states](vega-utility-chip-states.md)；非 composer 的 R19 带框触发器不变。
 - 文件夹 chip 打开项目下拉（列出 sidebar 已有项目）；无项目草稿显示「选择项目」。选中、切换或解除项目时，草稿绑定及 Composer/分支上下文必须与共享 `SelectedProject` 同步，不得只换全局选择而留下旧任务绑定；复用既有项目数据源，不新建数据管道。分支 chip 复用既有 `BranchSelector`（open/close/切换/pending/错误码/focus/滚动语义不变），仅由挂载点切换 trigger chrome（`set_chip_chrome`），非 git 项目按既有 `NonGit` 语义隐藏。详见 [A8-01](vega-a8-composer-project-entry.md)。
-- 已有消息的 Git 项目会话继续不渲染 utility bar；其 BranchSelector 通过 Composer 卡片底部操作行中的分支 chip 保持可达。该入口复用同一 selector，不能恢复 Environment 分支行或改变 R49 utility bar 几何。详见 [Issue #191](vega-issue-191-branch-entry.md)。
+- Issue #294：Composer 卡片底部操作行不挂载分支图标、名称、选择入口、焦点目标或占位；Native/Codex、已有消息与历史水合会话均遵循此规则。新建任务上方独立 utility bar 的项目/分支入口、几何与 Git 安全语义保持不变；已有消息的会话仍不渲染 utility bar。此用户决定取代 [Issue #191](vega-issue-191-branch-entry.md) 的底行入口要求，详见 [Issue #294](vega-issue-294-composer-footer-no-branch.md)。
 - Context、mode、permission、model、thinking 与 send/stop 必须连接已有 controller 和 guard。状态缺失时隐藏或禁用，不造假。
 - Issue #58：权限选择扩展为只读、确认、自动、完全访问四项；自动保持沙箱，完全访问显式关闭 bash 的 OS 沙箱且仍保留危险确认。完全访问使用共享 Warning 图标及 warning token，复用既有菜单布局与键盘路径；详见 [Full access 规格](vega-issue-58-full-access.md)。
 - 不显示装饰性的 token/cost 仪表。成本信息只在有真实账单/计数来源的产品位置展示。
@@ -299,6 +299,8 @@ Reduced Motion、全量焦点环与 loading shimmer 当前仍需专项审计。�
 本文件不以“搬运更多 token”为目标；只有被 Vega 产品需要、能形成语义、可由实现和测试约束的值，才进入设计系统。
 
 ## 15. 变更记录
+
+- Issue #294 (2026-10-11)：移除 Composer 底部操作行的分支图标和名称，不保留入口或占位；新建任务独立 utility bar 的分支选择器与安全行为保留。此规则取代 #191 的底行分支入口要求，原生外观等待用户在合并后的版本手测。
 
 - Issue #78 follow-up (2026-09-23)：消息悬停复制动作**当前禁用**。用户复验认为消息下方常驻的动作行很丑、且与布局耦合，要求先禁用。开关 `conversation_stream::MESSAGE_COPY_ACTIONS_ENABLED = false` 时 `message_with_copy` 原样返回消息体，不挂载也不预留动作行，几何回到 #144 之前基线；缓冲、图标与渲染分支保留，翻转开关即可恢复。详见 [禁用记录](vega-issue-78-disable-copy-delivery.md) 与 [冻结契约](vega-issue-78-hover-copy.md)。
 
