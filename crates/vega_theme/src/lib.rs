@@ -344,6 +344,7 @@ impl Layout {
     pub const READING_NAVIGATION_PADDING_X: f32 = 12.0;
     pub const READING_NAVIGATION_GAP: f32 = 8.0;
     pub const DISCLOSURE_HEADER_HEIGHT: f32 = 28.0;
+    pub const DISCLOSURE_TRAILING_SLOT: f32 = 24.0;
     pub const DISCLOSURE_PADDING_X: f32 = 8.0;
     pub const DISCLOSURE_RADIUS: f32 = 8.0;
     pub const USER_MESSAGE_PADDING_TOP: f32 = 24.0;

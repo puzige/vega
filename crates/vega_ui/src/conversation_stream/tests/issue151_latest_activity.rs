@@ -195,6 +195,7 @@ async fn issue151_manual_expansion_of_an_older_unit_survives_newer_content(
     });
     assert_eq!(stream.read_with(cx, activity_expansion), [false, false]);
 
+    open_run_details(window, cx);
     click(window, "thinking-toggle", cx);
     assert_eq!(
         stream.read_with(cx, activity_expansion),
@@ -303,6 +304,7 @@ async fn issue151_v3_manual_expansion_survives_text_segments(cx: &mut TestAppCon
         "the text segment supersedes the thinking block"
     );
 
+    open_run_details(window, cx);
     click(window, "thinking-toggle", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [true]);
 
@@ -335,6 +337,7 @@ async fn issue151_user_collapsed_unit_is_never_re_expanded(cx: &mut TestAppConte
         stream.apply_event(thinking("m", "第一段"), cx);
     });
     assert!(!mounted(window, "thinking-content", cx));
+    open_run_details(window, cx);
     click(window, "thinking-toggle", cx);
     assert!(mounted(window, "thinking-content", cx));
 
@@ -410,12 +413,16 @@ async fn issue151_expansion_remeasures_only_its_own_item(cx: &mut TestAppContext
         );
     });
     assert_eq!(stream.read_with(cx, activity_expansion), [false]);
+    open_run_details(window, cx);
     click(window, "tool-activity-single-row", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [true]);
     assert!(mounted(window, "tool-activity-single-row-detail", cx));
+    let root_before = gpui_kit::VisualTestContext::from_window(window.into(), cx)
+        .debug_bounds("run-activity-group")
+        .expect("root");
     let before = gpui_kit::VisualTestContext::from_window(window.into(), cx)
         .debug_bounds("assistant-message")
-        .expect("assistant item above the tool");
+        .expect("assistant item below the process");
 
     click(window, "tool-activity-single-row", cx);
     assert_eq!(stream.read_with(cx, activity_expansion), [false]);
@@ -423,15 +430,21 @@ async fn issue151_expansion_remeasures_only_its_own_item(cx: &mut TestAppContext
 
     let after = gpui_kit::VisualTestContext::from_window(window.into(), cx)
         .debug_bounds("assistant-message")
-        .expect("assistant item above the tool");
+        .expect("assistant item below the process");
+    let root_after = gpui_kit::VisualTestContext::from_window(window.into(), cx)
+        .debug_bounds("run-activity-group")
+        .expect("root");
+    assert!(
+        ((before.top() - after.top()) - (root_before.size.height - root_after.size.height)).abs()
+            <= px(0.2)
+    );
     for (axis, (before, after)) in [
-        ("top", (before.origin.y, after.origin.y)),
         ("left", (before.origin.x, after.origin.x)),
         ("height", (before.size.height, after.size.height)),
     ] {
         assert!(
             (f32::from(before) - f32::from(after)).abs() <= 0.2,
-            "the item above must not be re-measured or re-laid-out ({axis})"
+            "the external body must retain its horizontal geometry and height ({axis})"
         );
     }
 }

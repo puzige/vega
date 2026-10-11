@@ -165,6 +165,7 @@ async fn issue296_process_headers_share_the_control_rhythm(cx: &mut TestAppConte
             cx,
         );
     });
+    open_run_details(window, cx);
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     for (selector, icon_selector) in [
@@ -357,6 +358,7 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
             );
         }
     });
+    open_run_details(window, cx);
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("tool-activity-child-0").is_none());
@@ -381,6 +383,13 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
             "composer-model",
             "composer-permission-status",
         ] {
+            let chevron = match selector {
+                "run-activity-toggle" => Some("run-activity-chevron"),
+                "thinking-toggle" => Some("thinking-chevron"),
+                "tool-activity-group-toggle" => Some("tool-activity-group-chevron"),
+                "tool-activity-child-0" => Some("tool-activity-child-0-chevron"),
+                _ => None,
+            };
             let row = visual.debug_bounds(selector).expect("interactive row");
             visual.simulate_mouse_move(gpui_kit::point(px(1.), px(1.)), None, Modifiers::default());
             visual.run_until_parked();
@@ -389,6 +398,12 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
                 !has_hover_surface(&mut visual, row, colors.bg_hover),
                 "{selector} before hover"
             );
+            if let Some(chevron) = chevron {
+                assert!(
+                    !issue296_single_activity::chevron_painted(&mut visual, chevron),
+                    "{selector} resting"
+                );
+            }
             visual.simulate_mouse_move(row.center(), None, Modifiers::default());
             visual.run_until_parked();
             advance_interaction(&mut visual);
@@ -396,6 +411,12 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
                 has_hover_surface(&mut visual, row, colors.bg_hover),
                 "{selector} hover feedback"
             );
+            if let Some(chevron) = chevron {
+                assert!(
+                    issue296_single_activity::chevron_painted(&mut visual, chevron),
+                    "{selector} hover"
+                );
+            }
             assert_eq!(visual.debug_bounds(selector), Some(row));
             visual.simulate_mouse_move(gpui_kit::point(px(1.), px(1.)), None, Modifiers::default());
             visual.run_until_parked();
@@ -404,6 +425,12 @@ async fn issue296_disclosures_enter_and_leave_hover_without_moving(cx: &mut Test
                 !has_hover_surface(&mut visual, row, colors.bg_hover),
                 "{selector} leaves hover"
             );
+            if let Some(chevron) = chevron {
+                assert!(
+                    !issue296_single_activity::chevron_painted(&mut visual, chevron),
+                    "{selector} left"
+                );
+            }
             assert_eq!(visual.debug_bounds(selector), Some(row));
         }
     }
@@ -549,6 +576,7 @@ async fn issue296_disclosure_focus_rings_do_not_move_icons_or_labels(cx: &mut Te
             );
         }
     });
+    open_run_details(window, cx);
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(visual.debug_bounds("tool-activity-child-0").is_none());
@@ -594,10 +622,23 @@ async fn issue296_disclosure_focus_rings_do_not_move_icons_or_labels(cx: &mut Te
             assert_eq!(visual.debug_bounds(row), Some(before[index].0));
             assert_eq!(visual.debug_bounds(icon), Some(before[index].1));
             assert_eq!(visual.debug_bounds(label), Some(before[index].2));
-            focused[index] |= quads.iter().any(|quad| {
+            let receives_focus = quads.iter().any(|quad| {
                 quad.bounds == before[index].0.scale(scale)
                     && quad.border_color == vega_theme::LIGHT.accent.into()
             });
+            if receives_focus {
+                let chevron = [
+                    "run-activity-chevron",
+                    "thinking-chevron",
+                    "tool-activity-group-chevron",
+                    "tool-activity-child-0-chevron",
+                ][index];
+                assert!(
+                    issue296_single_activity::chevron_painted(&mut visual, chevron),
+                    "{row} keyboard disclosure"
+                );
+            }
+            focused[index] |= receives_focus;
         }
     }
     assert!(

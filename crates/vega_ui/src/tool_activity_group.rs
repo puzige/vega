@@ -179,7 +179,11 @@ impl ToolActivityGroup {
             .unwrap_or(colors.text_secondary)
     }
 
-    pub(crate) fn render(group: Entity<Self>, cx: &App) -> AnyElement {
+    pub(crate) fn render(
+        group: Entity<Self>,
+        window: &mut gpui_kit::Window,
+        cx: &mut App,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         let (expanded, children, child_count, summary, icon, icon_color) = {
             let group_ref = group.read(cx);
@@ -196,11 +200,20 @@ impl ToolActivityGroup {
         let scroll_id = format!("tool-group-{}", group.entity_id());
         let toggle_group = group.clone();
         let keyboard_group = group.clone();
+        let disclosure_group: gpui_kit::SharedString =
+            format!("tool-group-disclosure-{}", group.entity_id()).into();
+        let focus = crate::disclosure::focus(disclosure_group.clone(), window, cx);
         let mut rows = Vec::with_capacity(1 + child_count);
         rows.push(
             div()
                 .id(("tool-activity-group-toggle", group.entity_id()))
-                .focusable()
+                .group(disclosure_group.clone())
+                .track_focus(&focus)
+                .aria_expanded(expanded)
+                .aria_label(format!(
+                    "{summary}，{}工具组",
+                    if expanded { "收起" } else { "展开" }
+                ))
                 .tab_stop(true)
                 .border_1()
                 .border_color(gpui_kit::transparent_black())
@@ -247,18 +260,16 @@ impl ToolActivityGroup {
                         .text_color(colors.text_secondary)
                         .child(summary),
                 )
-                .child(
-                    div()
-                        .debug_selector(|| "tool-activity-group-chevron".to_string())
-                        .child(crate::icons::icon(
-                            if expanded {
-                                crate::icons::Icon::ChevronDown
-                            } else {
-                                crate::icons::Icon::ChevronRight
-                            },
-                            colors.text_tertiary,
-                        )),
-                )
+                .child(div().flex_1().min_w_0())
+                .child(crate::disclosure::chevron(
+                    disclosure_group,
+                    "tool-activity-group-chevron".into(),
+                    &focus,
+                    expanded,
+                    true,
+                    colors,
+                    window,
+                ))
                 .into_any_element(),
         );
         if expanded {
@@ -286,6 +297,7 @@ impl ToolActivityGroup {
                                     card,
                                     format!("tool-activity-child-{index}"),
                                     true,
+                                    window,
                                     cx,
                                 )
                             })),

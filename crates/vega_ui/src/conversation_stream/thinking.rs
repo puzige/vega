@@ -265,7 +265,12 @@ impl Render for ThinkingBlock {
             .child(
                 div()
                     .id("thinking-toggle")
+                    .group(gpui_kit::SharedString::from(format!(
+                        "thinking-disclosure-{}",
+                        cx.entity_id()
+                    )))
                     .track_focus(&self.focus)
+                    .aria_expanded(self.expanded)
                     .tab_stop(true)
                     .border_1()
                     .border_color(gpui_kit::transparent_black())
@@ -316,11 +321,7 @@ impl Render for ThinkingBlock {
                             .items_center()
                             .justify_center()
                             .child(crate::icons::icon(
-                                if self.expanded {
-                                    crate::icons::Icon::ChevronDown
-                                } else {
-                                    crate::icons::Icon::ChevronRight
-                                },
+                                crate::icons::Icon::Bot,
                                 colors.text_secondary,
                             )),
                     )
@@ -340,7 +341,16 @@ impl Render for ThinkingBlock {
                             } else {
                                 div().child(self.title().to_owned()).into_any_element()
                             }),
-                    ),
+                    )
+                    .child(crate::disclosure::chevron(
+                        format!("thinking-disclosure-{}", cx.entity_id()).into(),
+                        "thinking-chevron".into(),
+                        &self.focus,
+                        self.expanded,
+                        true,
+                        colors,
+                        window,
+                    )),
             )
             .when(self.expanded, |block| {
                 block.child(

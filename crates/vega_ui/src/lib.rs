@@ -12,6 +12,7 @@ pub mod command_palette;
 pub mod commit_panel;
 pub mod conversation_stream;
 pub mod diff_view;
+mod disclosure;
 pub mod file_preview;
 pub mod file_selector;
 pub mod interaction;

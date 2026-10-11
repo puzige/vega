@@ -453,6 +453,33 @@ impl ToolCard {
         }
     }
 
+    pub(crate) fn activity_action_name(&self) -> String {
+        let named = match &self.input {
+            Some(ToolCardInputProjection::Mcp { identity, .. }) => {
+                Some(("调用 MCP", identity.exact_tool_name.as_str()))
+            }
+            Some(ToolCardInputProjection::CodexAcp { identity, .. }) => {
+                Some(("运行 Codex ACP", identity.kind.as_str()))
+            }
+            _ => None,
+        };
+        if let Some((action, name)) = named {
+            let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !name.is_empty() {
+                let mut clipped = name.chars().take(64).collect::<String>();
+                if name.chars().count() > 64 {
+                    clipped.push('…');
+                }
+                return format!("{action} · {clipped}");
+            }
+        }
+        self.activity_category().action_phrase().to_owned()
+    }
+
+    pub(crate) fn call_status(&self) -> ToolCallStatus {
+        self.status
+    }
+
     pub(crate) fn activity_state(&self) -> ToolActivityState {
         if self.bash_exit_failed() || matches!(self.result, Some(ToolCardResultProjection::Corrupt))
         {
@@ -510,7 +537,8 @@ impl ToolCard {
         card: Entity<Self>,
         selector: String,
         indented: bool,
-        cx: &App,
+        window: &mut gpui_kit::Window,
+        cx: &mut App,
     ) -> AnyElement {
         let colors = theme(cx).colors;
         let (
@@ -544,9 +572,19 @@ impl ToolCard {
         let title_selector = format!("{selector}-title");
         let duration_selector = format!("{selector}-duration");
         let chevron_selector = format!("{selector}-chevron");
+        let disclosure_group: gpui_kit::SharedString =
+            format!("tool-disclosure-{}", card.entity_id()).into();
+        let focus =
+            crate::disclosure::focus(disclosure_group.clone(), window, cx).tab_stop(expandable);
         let row = div()
             .id(("tool-activity-toggle", card.entity_id()))
-            .focusable()
+            .group(disclosure_group.clone())
+            .track_focus(&focus)
+            .aria_expanded(expanded)
+            .aria_label(format!(
+                "{title}，{}工具详情",
+                if expanded { "收起" } else { "展开" }
+            ))
             .tab_stop(expandable)
             .border_1()
             .border_color(gpui_kit::transparent_black())
@@ -614,21 +652,16 @@ impl ToolCard {
                         .child(format!("· {duration}")),
                 )
             })
-            .when(expandable, |row| {
-                row.child(
-                    div()
-                        .debug_selector(move || chevron_selector.clone())
-                        .flex_shrink_0()
-                        .child(crate::icons::icon(
-                            if expanded {
-                                Icon::ChevronDown
-                            } else {
-                                Icon::ChevronRight
-                            },
-                            colors.text_tertiary,
-                        )),
-                )
-            });
+            .child(div().flex_1().min_w_0())
+            .child(crate::disclosure::chevron(
+                disclosure_group,
+                chevron_selector,
+                &focus,
+                expanded,
+                expandable,
+                colors,
+                window,
+            ));
         div()
             .w_full()
             .min_w_0()

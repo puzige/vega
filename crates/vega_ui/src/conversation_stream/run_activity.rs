@@ -1,6 +1,7 @@
 use super::*;
 use crate::interaction::InteractionExt;
 use gpui_kit::{AnyElement, MouseButton, MouseUpEvent, ScrollHandle, div, px};
+use vega_conversation::types::ToolCallStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunActivityStatus {
@@ -20,8 +21,6 @@ pub(crate) enum RunActivityChild {
 
 struct RunActivitySegment {
     children: Vec<RunActivityChild>,
-    scroll: ScrollHandle,
-    focus: FocusHandle,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -44,6 +43,10 @@ pub(crate) struct RunActivityGroup {
     current_thinking: Option<Entity<ThinkingBlock>>,
     process_copies: HashSet<u64>,
     final_confirmed: bool,
+    body_in_details: bool,
+    scroll: ScrollHandle,
+    detail_anchor: Option<(usize, f32)>,
+    focus: FocusHandle,
     collapse_pending: bool,
     manually_expanded: bool,
     status: RunActivityStatus,
@@ -101,8 +104,7 @@ impl RunActivityGroup {
         self.waiting_for_user = waiting;
         if let Some(card) = &self.current_thinking {
             card.update(cx, |card, cx| {
-                card.shimmer_epoch =
-                    (!waiting && self.phase == RunPhase::Thinking).then_some(self.animation_epoch);
+                card.shimmer_epoch = None;
                 cx.notify();
             });
         }
@@ -112,7 +114,7 @@ impl RunActivityGroup {
     pub(crate) fn set_thinking(&mut self, card: Entity<ThinkingBlock>, cx: &mut Context<Self>) {
         self.phase = RunPhase::Thinking;
         card.update(cx, |card, cx| {
-            card.shimmer_epoch = (!self.waiting_for_user).then_some(self.animation_epoch);
+            card.shimmer_epoch = None;
             cx.notify();
         });
         self.current_thinking = Some(card);
@@ -133,6 +135,7 @@ impl RunActivityGroup {
         self.collapse_pending = pending;
         if !pending {
             self.expanded = false;
+            self.body_in_details = true;
         }
         cx.notify();
     }
@@ -144,7 +147,7 @@ impl RunActivityGroup {
         self.process_copies.contains(&id)
     }
     pub(crate) fn hides_copy(&self, id: u64) -> bool {
-        self.final_confirmed && !self.expanded && self.process_copies.contains(&id)
+        self.final_confirmed && self.body_in_details && self.process_copies.contains(&id)
     }
 
     pub(crate) fn settle_final(&mut self, reading: bool, cx: &mut Context<Self>) {
@@ -154,6 +157,7 @@ impl RunActivityGroup {
         self.collapse_pending = false;
         if !reading && !self.manually_expanded {
             self.expanded = false;
+            self.body_in_details = true;
         }
         cx.notify();
     }
@@ -161,7 +165,7 @@ impl RunActivityGroup {
     pub(crate) fn invalidate_final(&mut self, cx: &mut Context<Self>) {
         self.final_confirmed = false;
         self.collapse_pending = false;
-        self.expanded = true;
+        self.body_in_details = false;
         cx.notify();
     }
 
@@ -171,56 +175,64 @@ impl RunActivityGroup {
         cx.notify();
     }
 
+    pub(crate) fn reveal_detail(&mut self, index: usize, offset: f32, cx: &mut Context<Self>) {
+        self.reveal(cx);
+        self.detail_anchor = Some((index, offset.max(0.)));
+        self.scroll.scroll_to_top_of_item(index);
+    }
+
+    fn settle_detail_anchor(&mut self, cx: &mut Context<Self>) {
+        let Some((index, offset)) = self.detail_anchor else {
+            return;
+        };
+        let Some(bounds) = self.scroll.bounds_for_item(index) else {
+            return;
+        };
+        self.detail_anchor = None;
+        let y = self.scroll.bounds().top() - bounds.top() - px(offset);
+        self.scroll.set_offset(gpui_kit::point(
+            px(0.),
+            y.max(-self.scroll.max_offset().y).min(px(0.)),
+        ));
+        cx.notify();
+    }
+
     pub(crate) fn reading(&self, window: &Window, cx: &App) -> bool {
         self.manually_expanded
+            || self.focus.contains_focused(window, cx)
             || self.segments.iter().any(|segment| {
-                segment.focus.contains_focused(window, cx)
-                    || segment.children.iter().any(|child| match child {
-                        RunActivityChild::Thinking(card) => card.read(cx).expanded,
-                        RunActivityChild::Tool(card) => card.read(cx).is_expanded(),
-                        RunActivityChild::ToolGroup(group) => {
-                            group.read(cx).expanded()
-                                || group
-                                    .read(cx)
-                                    .children()
-                                    .iter()
-                                    .any(|card| card.read(cx).is_expanded())
-                        }
-                        RunActivityChild::Artifact(_) => false,
-                    })
+                segment.children.iter().any(|child| match child {
+                    RunActivityChild::Thinking(card) => card.read(cx).expanded,
+                    RunActivityChild::Tool(card) => card.read(cx).is_expanded(),
+                    RunActivityChild::ToolGroup(group) => {
+                        group.read(cx).expanded()
+                            || group
+                                .read(cx)
+                                .children()
+                                .iter()
+                                .any(|card| card.read(cx).is_expanded())
+                    }
+                    RunActivityChild::Artifact(_) => false,
+                })
             })
     }
 
-    fn visible_segment_children(&self, segment: usize, cx: &App) -> Vec<RunActivityChild> {
+    fn visible_segment_children(&self, segment: usize, _cx: &App) -> Vec<RunActivityChild> {
         self.segment_children(segment)
             .into_iter()
-            .filter(|child| {
-                self.expanded
-                    || match child {
-                        RunActivityChild::Tool(card) => !matches!(
-                            card.read(cx).activity_state(),
-                            crate::tool_card::ToolActivityState::Success
-                        ),
-                        RunActivityChild::ToolGroup(group) => {
-                            group.read(cx).children().iter().any(|card| {
-                                !matches!(
-                                    card.read(cx).activity_state(),
-                                    crate::tool_card::ToolActivityState::Success
-                                )
-                            })
-                        }
-                        RunActivityChild::Artifact(_) => true,
-                        RunActivityChild::Thinking(_) => false,
-                    }
-            })
+            .filter(|child| matches!(child, RunActivityChild::Artifact(_)))
             .collect()
+    }
+
+    pub(crate) fn expanded(&self) -> bool {
+        self.expanded
     }
 
     pub(crate) fn new(
         status: RunActivityStatus,
         execution_duration_ms: Option<u64>,
         expanded: bool,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
         Self {
             #[cfg(test)]
@@ -233,6 +245,10 @@ impl RunActivityGroup {
             current_thinking: None,
             process_copies: HashSet::new(),
             final_confirmed: false,
+            body_in_details: false,
+            scroll: ScrollHandle::new(),
+            detail_anchor: None,
+            focus: cx.focus_handle(),
             collapse_pending: false,
             manually_expanded: false,
             status,
@@ -259,6 +275,19 @@ impl RunActivityGroup {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_activity_label(&self, cx: &App) -> String {
+        self.activity_presentation(cx).0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_activity_presentation(
+        &self,
+        cx: &App,
+    ) -> (String, crate::icons::Icon, bool) {
+        self.activity_presentation(cx)
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_clock(&self) -> (Option<Instant>, bool, RunPhase) {
         (
             self.started_at,
@@ -278,15 +307,12 @@ impl RunActivityGroup {
 
     #[cfg(test)]
     pub(crate) fn test_focus(&self) -> Option<FocusHandle> {
-        self.segments.first().map(|segment| segment.focus.clone())
+        Some(self.focus.clone())
     }
 
     #[cfg(test)]
     pub(crate) fn test_scroll_handle(&self) -> ScrollHandle {
-        self.segments
-            .first()
-            .map(|segment| segment.scroll.clone())
-            .unwrap_or_default()
+        self.scroll.clone()
     }
 
     pub(crate) fn children(&self) -> Vec<RunActivityChild> {
@@ -312,8 +338,6 @@ impl RunActivityGroup {
     pub(crate) fn start_segment(&mut self, cx: &mut Context<Self>) -> usize {
         self.segments.push(RunActivitySegment {
             children: Vec::new(),
-            scroll: ScrollHandle::new(),
-            focus: cx.focus_handle(),
         });
         cx.notify();
         self.segments.len() - 1
@@ -514,14 +538,7 @@ impl RunActivityGroup {
             if index > 0 {
                 height += Layout::PROCESS_ITEM_GAP;
             }
-            height += match child {
-                RunActivityChild::Thinking(card) => card.read(cx).estimated_height(width),
-                RunActivityChild::Tool(card) => card.read(cx).estimated_height(),
-                RunActivityChild::ToolGroup(group) => group.read(cx).estimated_height(cx),
-                RunActivityChild::Artifact(card) => {
-                    card.read(cx).row_count() as f32 * ROW_HEIGHT + 12.
-                }
-            };
+            height += Self::estimated_child_height(child, width, cx);
             if height >= Layout::TOOL_GROUP_MAX_HEIGHT {
                 break;
             }
@@ -529,20 +546,17 @@ impl RunActivityGroup {
         height.min(Layout::TOOL_GROUP_MAX_HEIGHT)
     }
 
-    fn displays_phase_summary(&self) -> bool {
-        !self.terminal
-            && !self.waiting_for_user
-            && self.phase == RunPhase::Thinking
-            && (!self.expanded || self.current_thinking.is_none())
+    pub(crate) fn estimated_child_height(child: &RunActivityChild, width: f32, cx: &App) -> f32 {
+        match child {
+            RunActivityChild::Thinking(card) => card.read(cx).estimated_height(width),
+            RunActivityChild::Tool(card) => card.read(cx).estimated_height(),
+            RunActivityChild::ToolGroup(group) => group.read(cx).estimated_height(cx),
+            RunActivityChild::Artifact(card) => card.read(cx).row_count() as f32 * ROW_HEIGHT + 12.,
+        }
     }
 
     pub(crate) fn estimated_header_height(&self) -> f32 {
         Layout::DISCLOSURE_HEADER_HEIGHT
-            + if self.displays_phase_summary() {
-                Layout::PROCESS_ITEM_GAP + Layout::DISCLOSURE_HEADER_HEIGHT
-            } else {
-                0.
-            }
     }
 
     fn child_row_count(child: &RunActivityChild, cx: &App) -> usize {
@@ -552,12 +566,6 @@ impl RunActivityGroup {
             RunActivityChild::ToolGroup(group) => group.read(cx).row_count(cx),
             RunActivityChild::Artifact(card) => card.read(cx).row_count(),
         }
-    }
-
-    pub(crate) fn segment_scroll_handle(&self, segment: usize) -> Option<ScrollHandle> {
-        self.segments
-            .get(segment)
-            .map(|segment| segment.scroll.clone())
     }
 
     pub(crate) fn complete(
@@ -588,6 +596,9 @@ impl RunActivityGroup {
     pub(crate) fn toggle_expanded(&mut self, cx: &mut Context<Self>) {
         self.expanded = !self.expanded;
         self.manually_expanded = self.expanded;
+        if !self.expanded && self.final_confirmed {
+            self.body_in_details = true;
+        }
         cx.notify();
     }
 
@@ -614,30 +625,169 @@ impl RunActivityGroup {
             })
     }
 
+    fn activity_presentation(&self, cx: &App) -> (String, crate::icons::Icon, bool) {
+        use crate::icons::Icon;
+        use crate::tool_card::ToolActivityState;
+        if self.terminal {
+            return (
+                self.label(),
+                match self.status {
+                    RunActivityStatus::Completed => Icon::Check,
+                    RunActivityStatus::Failed => Icon::Warning,
+                    RunActivityStatus::Interrupted => Icon::Close,
+                    RunActivityStatus::Running => Icon::Bot,
+                },
+                false,
+            );
+        }
+        if self.waiting_for_user {
+            return ("等待确认".into(), Icon::Hand, false);
+        }
+        let mut categories = Vec::new();
+        let mut pending = false;
+        let mut approved = false;
+        for child in self.children() {
+            let cards = match child {
+                RunActivityChild::Tool(card) => vec![card],
+                RunActivityChild::ToolGroup(group) => group.read(cx).children(),
+                _ => Vec::new(),
+            };
+            for card in cards {
+                let card = card.read(cx);
+                pending |= card.call_status() == ToolCallStatus::PendingApproval;
+                approved |= card.call_status() == ToolCallStatus::Approved;
+                if card.call_status() == ToolCallStatus::Running
+                    && card.activity_state() == ToolActivityState::Active
+                {
+                    let action = (card.activity_category(), card.activity_action_name());
+                    if !categories.contains(&action) {
+                        categories.push(action);
+                    }
+                }
+            }
+        }
+        if !categories.is_empty() {
+            let actions = categories
+                .iter()
+                .take(2)
+                .map(|(_, action)| action.as_str())
+                .collect::<Vec<_>>()
+                .join("、");
+            let suffix = if categories.len() > 2 {
+                format!("等 {} 项", categories.len())
+            } else {
+                String::new()
+            };
+            let icon = if categories.len() == 1 {
+                categories[0].0.icon()
+            } else {
+                Icon::Summary
+            };
+            return (format!("正在{actions}{suffix}"), icon, false);
+        }
+        if pending {
+            return ("等待确认".into(), Icon::Hand, false);
+        }
+        if approved {
+            return ("准备调用工具".into(), Icon::Summary, false);
+        }
+        let summary = (self.phase == RunPhase::Thinking)
+            .then(|| {
+                self.current_thinking
+                    .as_ref()
+                    .and_then(|card| card.read(cx).summary_title())
+            })
+            .flatten();
+        (summary.unwrap_or("Thinking").to_owned(), Icon::Bot, true)
+    }
+
+    pub(crate) fn exception_label(&self, cx: &App) -> Option<&'static str> {
+        use crate::tool_card::ToolActivityState;
+        let state = self
+            .children()
+            .into_iter()
+            .flat_map(|child| match child {
+                RunActivityChild::Tool(card) => vec![card],
+                RunActivityChild::ToolGroup(group) => group.read(cx).children(),
+                _ => Vec::new(),
+            })
+            .map(|card| card.read(cx).activity_state())
+            .filter(|state| {
+                matches!(
+                    state,
+                    ToolActivityState::Failed
+                        | ToolActivityState::Rejected
+                        | ToolActivityState::Cancelled
+                )
+            })
+            .max_by_key(|state| state.priority());
+        state.map(|state| match state {
+            ToolActivityState::Failed => "含失败操作",
+            ToolActivityState::Rejected => "含已拒绝操作",
+            _ => "含已取消操作",
+        })
+    }
+
     pub(crate) fn render(group: Entity<Self>, window: &mut Window, cx: &mut App) -> AnyElement {
+        let details = if group.read(cx).expanded {
+            group
+                .read(cx)
+                .children()
+                .into_iter()
+                .filter(|child| !matches!(child, RunActivityChild::Artifact(_)))
+                .map(|child| Self::render_child(child, window, cx))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Self::render_with_details(group, details, window, cx)
+    }
+
+    pub(crate) fn render_with_details(
+        group: Entity<Self>,
+        details: Vec<AnyElement>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
         let colors = theme(cx).colors;
         let group_ref = group.read(cx);
         let expanded = group_ref.expanded;
-        let label = group_ref.label();
-        let status = group_ref.status;
-        let phase_text = group_ref.displays_phase_summary().then(|| {
-            group_ref
-                .current_thinking
-                .as_ref()
-                .and_then(|card| card.read(cx).summary_title())
-                .unwrap_or("Thinking")
+        let (label, glyph, shimmering) = group_ref.activity_presentation(cx);
+        let clock_label = (!group_ref.terminal).then(|| {
+            let label = group_ref.label();
+            label
+                .strip_prefix("等待确认 · ")
+                .unwrap_or(&label)
                 .to_owned()
         });
+        let exception = group_ref.exception_label(cx);
+        let status_color = if group_ref.status == RunActivityStatus::Failed {
+            colors.danger
+        } else {
+            colors.text_secondary
+        };
         let epoch = group_ref.animation_epoch;
         let can_expand = group_ref.has_children() || !group_ref.process_copies.is_empty();
+        let scroll = group_ref.scroll.clone();
+        let focus = group_ref.focus.clone();
         let clock = group.downgrade();
+        let detail_anchor = group.downgrade();
         let toggle = group.clone();
         let keyboard_toggle = group.clone();
-
+        let disclosure_group: gpui_kit::SharedString =
+            format!("run-disclosure-{}", group.entity_id()).into();
+        let header_focus =
+            crate::disclosure::focus(disclosure_group.clone(), window, cx).tab_stop(can_expand);
         let header = div()
             .id(("run-activity-toggle", group.entity_id()))
-            .focusable()
+            .group(disclosure_group.clone())
+            .track_focus(&header_focus)
             .tab_stop(can_expand)
+            .aria_expanded(expanded)
+            .aria_label(format!(
+                "{label}，{}本轮过程",
+                if expanded { "收起" } else { "展开" }
+            ))
             .border_1()
             .border_color(gpui_kit::transparent_black())
             .focus_visible(move |row| row.border_color(colors.accent))
@@ -676,39 +826,53 @@ impl RunActivityGroup {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(crate::icons::icon(
-                        if status == RunActivityStatus::Running {
-                            crate::icons::Icon::Refresh
-                        } else {
-                            crate::icons::Icon::Summary
-                        },
-                        if matches!(status, RunActivityStatus::Failed) {
-                            colors.danger
-                        } else {
-                            colors.text_secondary
-                        },
-                    )),
+                    .child(crate::icons::icon(glyph, status_color)),
             )
             .child(
                 div()
-                    .debug_selector(|| "run-activity-status".to_string())
+                    .debug_selector(|| "run-activity-status".into())
                     .min_w_0()
                     .flex_shrink(1.)
                     .truncate()
-                    .text_size(px(Typography::BODY))
-                    .text_color(colors.text_secondary)
-                    .child(label),
-            )
-            .when(can_expand, |row| {
-                row.child(crate::icons::icon(
-                    if expanded {
-                        crate::icons::Icon::ChevronDown
+                    .text_color(status_color)
+                    .child(if shimmering {
+                        shimmer::text(label, epoch, window, cx)
                     } else {
-                        crate::icons::Icon::ChevronRight
-                    },
-                    colors.text_tertiary,
-                ))
+                        div().child(label).into_any_element()
+                    }),
+            )
+            .when_some(clock_label, |row, label| {
+                row.child(
+                    div()
+                        .debug_selector(|| "run-activity-clock".into())
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.text_tertiary)
+                        .child(format!("· {label}")),
+                )
             })
+            .when_some(exception, |row, label| {
+                row.child(
+                    div()
+                        .debug_selector(|| "run-activity-exception".into())
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(Typography::METADATA))
+                        .text_color(colors.danger)
+                        .child(label),
+                )
+            })
+            .child(div().flex_1().min_w_0())
+            .child(crate::disclosure::chevron(
+                disclosure_group,
+                "run-activity-chevron".into(),
+                &header_focus,
+                expanded,
+                can_expand,
+                colors,
+                window,
+            ))
             .child(
                 gpui_kit::canvas(
                     |_, _, _| (),
@@ -725,17 +889,73 @@ impl RunActivityGroup {
             );
         render_rows::process_surface(&colors)
             .child(header)
-            .when_some(phase_text, |column, text| {
+            .when(expanded && !details.is_empty(), |column| {
                 column.child(
                     div()
-                        .debug_selector(|| "run-phase-summary".into())
+                        .relative()
+                        .w_full()
                         .min_w_0()
-                        .px(px(Layout::DISCLOSURE_PADDING_X))
-                        .child(shimmer::text(text, epoch, window, cx)),
+                        .track_focus(&focus)
+                        .child(
+                            div()
+                                .id(("run-activity-content", group.entity_id()))
+                                .debug_selector(|| "run-activity-content".into())
+                                .w_full()
+                                .min_w_0()
+                                .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
+                                .overflow_x_hidden()
+                                .overflow_y_scroll()
+                                .track_scroll(&scroll)
+                                .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(
+                                    &scroll,
+                                ))
+                                .flex()
+                                .flex_col()
+                                .gap(px(Layout::PROCESS_ITEM_GAP))
+                                .children(details),
+                        )
+                        .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
+                        .child(
+                            gpui_kit::canvas(
+                                |_, _, _| (),
+                                move |_, _, _, cx| {
+                                    let _ = detail_anchor
+                                        .update(cx, |group, cx| group.settle_detail_anchor(cx));
+                                },
+                            )
+                            .absolute()
+                            .inset_0(),
+                        ),
                 )
             })
-            .debug_selector(|| "run-activity-group".to_string())
+            .debug_selector(|| "run-activity-group".into())
             .into_any_element()
+    }
+
+    pub(crate) fn render_child(
+        child: RunActivityChild,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        match child {
+            RunActivityChild::Thinking(card) => {
+                div().w_full().min_w_0().child(card).into_any_element()
+            }
+            RunActivityChild::Tool(card) => {
+                ToolCard::render(card, "tool-activity-single-row".into(), false, window, cx)
+            }
+            RunActivityChild::ToolGroup(group) => ToolActivityGroup::render(group, window, cx),
+            RunActivityChild::Artifact(card) => {
+                let count = card.read(cx).row_count();
+                div()
+                    .w_full()
+                    .children(
+                        (0..count)
+                            .map(|row| ArtifactCard::render_row(card.clone(), row, window, cx)),
+                    )
+                    .into_any_element()
+            }
+        }
     }
 
     pub(crate) fn render_segment(
@@ -744,70 +964,20 @@ impl RunActivityGroup {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let group_ref = group.read(cx);
-        let children = group_ref.visible_segment_children(segment_index, cx);
+        let children = group.read(cx).visible_segment_children(segment_index, cx);
         if children.is_empty() {
             return div().h_0().into_any_element();
         }
-        let focus = group_ref
-            .segments
-            .get(segment_index)
-            .map(|segment| segment.focus.clone());
-        let colors = theme(cx).colors;
-        let scroll = group_ref
-            .segment_scroll_handle(segment_index)
-            .unwrap_or_default();
         div()
-            .when_some(focus, |row, focus| row.track_focus(&focus))
-            .relative()
             .w_full()
             .min_w_0()
-            .child(
-                render_rows::process_surface(&colors)
-                    .id(format!(
-                        "run-activity-{}-{segment_index}",
-                        group.entity_id()
-                    ))
-                    .debug_selector(|| "run-activity-content".into())
-                    .w_full()
-                    .min_w_0()
-                    .max_h(px(Layout::TOOL_GROUP_MAX_HEIGHT))
-                    .overflow_x_hidden()
-                    .overflow_y_scroll()
-                    .track_scroll(&scroll)
-                    .on_scroll_wheel(crate::tool_card::contain_disclosure_scroll(&scroll))
-                    .flex()
-                    .flex_col()
-                    .children(children.into_iter().map(|child| match child {
-                        RunActivityChild::Thinking(card) => {
-                            div().w_full().min_w_0().child(card).into_any_element()
-                        }
-                        RunActivityChild::Tool(card) => ToolCard::render(
-                            card,
-                            "tool-activity-single-row".to_string(),
-                            false,
-                            cx,
-                        ),
-                        RunActivityChild::ToolGroup(group) => ToolActivityGroup::render(group, cx),
-                        RunActivityChild::Artifact(card) => {
-                            let row_count = card.read(cx).row_count();
-                            let mut rows = Vec::with_capacity(row_count);
-                            for row in 0..row_count {
-                                rows.push(ArtifactCard::render_row(card.clone(), row, window, cx));
-                            }
-                            div()
-                                .w_full()
-                                .flex_shrink_0()
-                                .pt(px(4.0))
-                                .pb(px(8.0))
-                                .flex()
-                                .flex_col()
-                                .children(rows)
-                                .into_any_element()
-                        }
-                    })),
+            .flex()
+            .flex_col()
+            .children(
+                children
+                    .into_iter()
+                    .map(|child| Self::render_child(child, window, cx)),
             )
-            .child(crate::tool_card::disclosure_scrollbar(&scroll, cx))
             .into_any_element()
     }
 }

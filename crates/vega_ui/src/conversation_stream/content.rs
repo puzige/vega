@@ -184,12 +184,11 @@ impl ConversationStream {
         let mut hydrated: Vec<StreamEntry> = Vec::new();
         let mut hydrated_identities: Vec<StreamEntryIdentity> = Vec::new();
         let mut assistant_segments: HashMap<String, usize> = HashMap::new();
-        let phase_runs: HashSet<_> = history_entries
+        let activity_runs: HashSet<_> = history_entries
             .iter()
             .filter_map(|entry| match entry {
-                HistoryEntry::AssistantResponseMetadata { message_id, .. } => {
-                    Some(message_id.clone())
-                }
+                HistoryEntry::AssistantResponseMetadata { message_id, .. }
+                | HistoryEntry::Tool { message_id, .. } => Some(message_id.clone()),
                 _ => None,
             })
             .collect();
@@ -201,7 +200,7 @@ impl ConversationStream {
                     status,
                     execution_duration_ms: duration,
                     ..
-                } if duration.is_some() || phase_runs.contains(message_id) => {
+                } if duration.is_some() || activity_runs.contains(message_id) => {
                     Some((message_id.clone(), (*status, *duration)))
                 }
                 _ => None,
@@ -573,7 +572,7 @@ impl ConversationStream {
             return false;
         };
         if let Some(group) = self.run_activity_groups.get(message_id) {
-            group.update(cx, |group, cx| group.reveal(cx));
+            group.update(cx, |group, cx| group.reveal_detail(0, 0., cx));
         }
         self.list.pause_following_tail();
         self.list.scroll_to(gpui_kit::ListOffset {
@@ -646,7 +645,7 @@ impl ConversationStream {
         self.hydration = HistoryHydration::default();
         self.apply_history_page(page, cx);
         if let Some(anchor) = restore_anchor
-            && self.restore_scroll_anchor(anchor)
+            && (self.restore_process_anchor(anchor, cx) || self.restore_scroll_anchor(anchor))
         {
             self.message_location_status = Some(MessageLocationStatus::Located);
             cx.notify();
@@ -1110,7 +1109,7 @@ impl ConversationStream {
                 self.active_skills.clear();
                 self.active_skill_focuses.clear();
                 let group =
-                    cx.new(|cx| RunActivityGroup::new(RunActivityStatus::Running, None, true, cx));
+                    cx.new(|cx| RunActivityGroup::new(RunActivityStatus::Running, None, false, cx));
                 self.observe_run_activity_group(&group, cx);
                 self.run_activity_groups
                     .insert(message_id.clone(), group.clone());
@@ -1499,8 +1498,8 @@ impl ConversationStream {
         cx: &App,
     ) -> bool {
         match entry {
-            StreamEntry::RunActivity { .. } => false,
-            StreamEntry::RunActivitySegment { group, .. } => group.read(cx).contains_tool(card, cx),
+            StreamEntry::RunActivity { group } => group.read(cx).contains_tool(card, cx),
+            StreamEntry::RunActivitySegment { .. } => false,
             StreamEntry::Tool { card: owned } => owned == card,
             StreamEntry::ToolGroup { group } => group.read(cx).contains(card),
             _ => false,
@@ -1511,7 +1510,7 @@ impl ConversationStream {
         self.entries
             .iter()
             .position(|entry| {
-                matches!(entry, StreamEntry::RunActivitySegment { group, .. } if group.read(cx).contains_tool(card, cx))
+                matches!(entry, StreamEntry::RunActivity { group } if group.read(cx).contains_tool(card, cx))
                     || matches!(entry, StreamEntry::Tool { card: owned } if owned == card)
                     || matches!(entry, StreamEntry::ToolGroup { group } if group.read(cx).contains(card))
             })
@@ -1530,9 +1529,9 @@ impl ConversationStream {
         cx.observe(group, |this, group, cx| {
             let index = this.entry_index_where(|entry| match entry {
                 StreamEntry::ToolGroup { group: owned } => owned == &group,
-                StreamEntry::RunActivitySegment {
-                    group: activity, ..
-                } => activity.read(cx).contains_tool_group(&group),
+                StreamEntry::RunActivity { group: activity } => {
+                    activity.read(cx).contains_tool_group(&group)
+                }
                 _ => false,
             });
             this.invalidate_item(index);
