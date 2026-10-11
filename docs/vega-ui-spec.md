@@ -1,6 +1,8 @@
 # ✦ Vega — UI 规格与验收准线（UI Spec）
 
-**版本** v0.21 · 2026-09-21 · 关联：[vega-features.md](vega-features.md)
+**版本** v0.22 · 2026-10-11 文档整理 · 关联：[vega-features.md](vega-features.md)
+
+> **实现事实与新方案分开。** 当前 UI 基线为 [#296 v2 / 0.1.67](vega-issue-296-ui-hierarchy-v2.md)；本轮目标见 [18点评审总览](vega-issue-296-ui-redesign-review.md)与[v3 spec](vega-issue-296-ui-redesign-v3.md)。v3尚待评审、未实施，其§8列出的展示契约将在获准实施时替代旧条款。下列业务/安全条款继续有效；不得从历史视觉描述推导本轮已实现。
 
 > **规范分层**：跨任务的视觉语言、语义 token 与新 UI 默认规则以
 > [Vega 设计守则](vega-design-guidelines.md)为入口；本文件继续承载组件行为和
@@ -9,7 +11,7 @@
 > **设计基线决策**：UI 风格对齐 **Codex Desktop / ZCode 默认风格**——极简、留白充足、浅灰层次、无重边框、内容居中；Vega Logo 的宝石蓝/冰蓝保留给主操作、焦点和 Agent/AI 品牌语义。普通导航的 hover/selected 均使用中性灰，不用品牌色标记当前位置。
 > 本文件是验收准线：每条都可检查、可测量。S 级 Sprint 验收时逐条过。
 
-> 当前 R8 实测视觉基线见 [R8 ZCode parity](vega-r8-zcode-parity.md)。该任务覆盖下列旧 R4 的几何、浅色中性 token、空态和 composer 分组；安全、数据与性能条款保留。
+> 历史 R8 实测视觉记录见 [R8 ZCode parity](vega-r8-zcode-parity.md)。该任务覆盖下列旧 R4 的几何、浅色中性 token、空态和 composer 分组；安全、数据与性能条款保留。
 
 ---
 
@@ -34,7 +36,7 @@
 | 侧边栏宽度 | 默认 304px，可拖拽于 240–365px，可折叠至 0（Cmd+B）；宽度与折叠状态分别记忆 |
 | 主 Header | 46px；底部 1px 分隔线 |
 | 会话内容列 | max-width 768px，水平居中，左右留白 ≥16px；与 Composer **同宽**（issue #100） |
-| Composer | 底部固定，max-width 768px（与正文列同宽，issue #100）、min-height 100px、bottom inset 16px；圆角 20px，边框 1px + 单层克制阴影；发送/停止 28×28px |
+| Composer | 底部固定，max-width 768px（与正文列同宽，issue #100）、min-height 100px、bottom inset 16px；圆角 20px、边框 1px，按已交付 v2 H5 不再保留常驻阴影；发送/停止 28×28px |
 | Environment | 宽屏 rail 320px，内含 304px 卡片与 16px 右 inset，圆角 18px；默认 Sidebar 下 1229/1230px 切换 overlay/rail，断点随有效 Sidebar 宽度一对一移动 |
 | 窗口最小尺寸 | 960×600；Sidebar 用户折叠、宽度驱动自动折叠与 Environment 选择彼此独立 |
 | 触控栏/标题栏 | 原生 macOS 标题栏透明融合（traffic lights 内嵌），不自绘 |
@@ -82,19 +84,19 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 ## 4. 核心组件规格
 
 ### 4.1 侧边栏会话条目
-- 单行：会话标题（省略号截断）+ 右侧相对时间（"2h"）；选中态 `bg-active` + `text-primary`，不使用品牌色标题或重色左边条
+- 单行会话标题超长省略；静止不显示常驻相对时间。运行状态/hover尾槽新目标见 v3 §2（U02），选中态 `bg-active` + `text-primary`，不使用品牌色标题或重色左边条
 - 未读：标题 500 字重 + 右侧圆点
 - 项目分组可折叠，折叠状态记忆；项目行不显示独立 disclosure Chevron，使用 Folder / FolderOpen 图标直接表达收起与展开
-- 项目、会话和 Settings 导航行使用 8px 圆角；Settings 保持 32px 高并位于 Sidebar 的 12px 左右/底部 inset 中
+- 项目、会话和 Settings 导航行使用 8px 圆角；Settings 保持 32px 高及12px左右/底部 inset。外层48px占高是 v3 U01提案，不能误称当前已实现。
 
 ### 4.2 工具调用卡片（信息密度核心）
-- 当前冻结规格见 [Issue #70 compact tool activity groups](vega-issue-70-tool-activity.md)。默认态是无常驻边框/底色的一行活动摘要；连续工具调用折叠为一个分组，展开后按时间顺序显示子调用，子调用再按需展开安全的命令/输出面板。
+- 工具业务行为见 [Issue #70 compact tool activity groups](vega-issue-70-tool-activity.md)。过程表面的已交付基线由 v2 H5覆盖；新目标v3 U18撤掉整组灰底。连续调用分组、子调用和安全详情仍可展开，不能因表面变化删能力。
 - 前导图标只表达工具分类并统一使用 `text-secondary`：Shell=`Terminal`、Search=`Search`、Read/Find/Write/Edit/Skill=`Document`、MCP/Other=`Summary`；成功不替换为 Check，失败/拒绝/取消不替换为 Warning，也不使用 success/danger 图标色。状态继续由真实摘要文字、非零退出码与展开详情的语义 footer 表达；完整摘要文字保持中性层级。
-- Bash 在真实 `ToolCallRunning` 到达后于具体命令行显示按整秒刷新的实时耗时；终态立即改用 runtime 持久化的精确 `duration_ms`。具体 Bash 行把命令标题作为可收缩、单行省略区域，右侧耗时与 disclosure Chevron 不参与收缩并保持可见。多调用聚合摘要始终不显示子项或合计耗时，非 Bash 工具不显示耗时，重启不伪造运行起点。
+- Bash 在真实 `ToolCallRunning` 到达后于具体命令行显示按整秒刷新的实时耗时；终态立即改用 runtime 持久化的精确 `duration_ms`。具体 Bash 行保留可靠耗时和展开入口；已交付布局与v3 U16标题邻接时长目标分开，新布局不采用把时间推到最右的规则。多调用聚合摘要始终不显示子项或合计耗时，非 Bash 工具不显示耗时，重启不伪造运行起点。
 - 写操作摘要显示安全的规范相对路径、bytes/replacements；完整 Diff 仍由既有 Artifact/Diff 路径承载。
 - write/edit 卡只消费 tech-spec §2 的 strict 安全成功/失败投影：成功显示规范项目相对路径、bytes_written 与 edit replacements 摘要，不显示 checkpoint ref；失败只显示稳定、脱敏 code/message。missing/extra/wrong-type、非法 u64/replacements/ref 必须 fail closed 为损坏结果，禁止从 raw provider input、绝对 checkpoint path 或 preimage 补数据
 - invalid write/edit 显示 rejected 工具卡与 stable validation code，不生成权限卡，不显示/保留 raw path、body 或 JSON
-- 仅展开后的 detail surface 使用圆角、1px `border-subtle` 与 `code_bg`，无阴影；折叠摘要行不画常驻卡片 surface。
+- 工具输出/代码 detail surface 可使用1px `border-subtle` 与 `code_bg`，无阴影；过程外层的无底色新目标由v3 U18统一，不扩大为删除代码/错误的必要表面。
 
 ### 4.3 权限确认卡片
 - `warning` 左侧 3px 竖条；操作描述 + 命令全文（等宽）
@@ -109,7 +111,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 - 主输入区在上；下方只有一行真实操作：添加上下文、Ask/Plan/Execute、权限（只读 / 确认 / 自动）、模型、thinking 与 send/stop；空间不足时允许自适应收紧或换行
 - 模式与权限当前值持续可见；菜单、键盘路径、loading/error 和提交 guard 继续使用真实 controller 状态
 - Issue #294：Composer 卡片底部不挂载 branch 图标、名称、选择入口、焦点目标或占位，覆盖 Native/Codex、已有消息及历史水合会话。新建任务上方独立 utility bar 保留项目/分支选择器与 live branch projection；已有消息的会话不渲染 utility bar，Environment 不恢复分支行。此规则取代 #191 底行入口要求，详见 [Issue #294](vega-issue-294-composer-footer-no-branch.md) 与 [设计守则 §9](vega-design-guidelines.md#9-composer)。
-- 普通 Composer 不显示常驻 token / 成本仪表；用量只在拥有真实计数或账单来源的专门界面中展示
+- 不显示虚构 token / 成本仪表。v3 U09提出Composer真实上下文环与浮层，替代旧位置限制；当前上下文、输入预算、估算和累计计费分别处理，无数据不得显示0或伪比例。
 
 ### 4.5 Diff 视图
 - 统一视图（unified）默认，可切左右分栏
@@ -130,7 +132,7 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 | P3 | 流式追加时，已渲染区域**零重排**（无视觉跳动） | 走查 + 帧对比测试 |
 | P4 | 滚动锚定：贴底时自动跟随；用户上翻>1 屏后不再自动跳转，回到底部恢复 | 走查 |
 | P5 | 所有交互反馈 <100ms（点击、折叠、切换会话） | 走查 |
-| P6 | 动效仅用于：卡片展开/收起（150ms ease-out）、权限卡片滑入（120ms）。禁止装饰性动画 | 走查 |
+| P6 | 已交付共享hover为120ms；新运行态Thinking/摘要shimmer及Reduce Motion规则见v3 §3.3。旧“两种动效白名单”不再作为新方案约束；仍禁止伪进度与空闲装饰动画 | 状态测试与走查；v3待实施 |
 | P7 | 冷启动到首屏可交互 <50ms（KPI）——测量语义冻结于 [vega-s8-sdd.md](vega-s8-sdd.md) §2/C1：`process_start_to_first_rendered_interactive`，20 进程 nearest-rank p95 <50.000ms，next-frame 语义（≠ 物理 present） | bench（C1 协议） |
 | P8 | 空闲内存 <100MB（无任务、单窗口）——测量语义冻结于 [vega-s8-sdd.md](vega-s8-sdd.md) §3/C2：release RSS raw bytes（`proc_pidinfo pti_resident_size`），20 进程 +5/+10/+15s median 的 nearest-rank p95；阈值单位 OPEN(OWNER: human)，裁决前字面权威 100,000,000 bytes（decimal MB），裁决后测后永不换 | bench（C2 协议） |
 
@@ -147,6 +149,8 @@ R18 品牌补充 token：`brand-primary` = `#3478D8` / `#8FC7FF`，
 ---
 
 ## 变更记录
+
+- v0.22 (2026-10-11)：文档整理；明确0.1.67基线与v3待评审目标；清理常驻相对时间、Composer阴影、工具背景、时长布局、用量位置和动效白名单的相互冲突。业务安全与历史证据保持。
 
 - v0.1 (2026-08-28) 初版定稿。
 - v0.2 (2026-08-30) S5 安全裁决回写：§4.2 补 invalid write/edit 的脱敏 rejected card；§4.3 区分普通/危险权限卡默认焦点与 Enter 语义，危险卡补 Tab/Shift+Tab 焦点循环、Space 激活焦点，并固定 bare Enter 在任意焦点均拒绝；两类卡保留 Cmd+Enter/Esc 及重复提交、超时与视图销毁的 fail-closed 行为。

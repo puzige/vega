@@ -64,8 +64,11 @@ Vega 是一个对标 WorkBuddy / Codex Desktop / Antigravity / ZCode 的 AI Agen
 | [vega-issue-181-independent-update-signing.md](docs/vega-issue-181-independent-update-signing.md) | 独立 Ed25519 更新签名、Applications 原位安装与旧版迁移 |
 | [vega-issue-181-auto-update.md](docs/vega-issue-181-auto-update.md) | macOS 自动更新：设置、签名门禁、显式重启安装 |
 | [vega-issue-181-delivery.md](docs/vega-issue-181-delivery.md) | 自动更新交付状态、手测步骤与恢复方式 |
-| [vega-design-guidelines.md](docs/vega-design-guidelines.md) | Vega 原生设计守则：视觉语言、语义 token、状态与 UI 变更检查表 |
-| [vega-desktop-ui-unification.md](docs/vega-desktop-ui-unification.md) | #296 全应用 UI 统一：信息流、八个设置页、图标对齐与交互动效 |
+| [vega-issue-296-ui-redesign-review.md](docs/vega-issue-296-ui-redesign-review.md) | UI v3 已批准方案总览：18点反馈统一设计 |
+| [vega-design-guidelines.md](docs/vega-design-guidelines.md) | 已批准统一设计守则 v2：平台依据、共享语言、基线与目标边界 |
+| [vega-issue-296-ui-redesign-v3.md](docs/vega-issue-296-ui-redesign-v3.md) | UI v3 详细 spec：18点映射、阶段/数据契约、冲突替代与验收 |
+| [vega-issue-296-v3-delivery.md](docs/vega-issue-296-v3-delivery.md) | UI v3 实施、定向验证、独立审查与交付状态 |
+| [vega-desktop-ui-unification.md](docs/vega-desktop-ui-unification.md) | #296 第一轮历史规格；新目标见 UI v3 已批准规格 |
 | [vega-issue-296-delivery.md](docs/vega-issue-296-delivery.md) | #296 组合验证、三片交付证据、原生手测边界 |
 | [vega-ui-spec.md](docs/vega-ui-spec.md) | UI 规格与可测量验收准线 |
 | [vega-r21-screenshot-parity.md](docs/vega-r21-screenshot-parity.md) | 当前 Codex 截图像素对标：可变 Sidebar、Environment、Settings、Composer 与浮层 |
