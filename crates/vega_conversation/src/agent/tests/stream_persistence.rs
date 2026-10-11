@@ -54,6 +54,25 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
         assistant,
         ("Checking. Found the TODO.".into(), "done".into(), 2)
     );
+    let responses: Vec<(String, i64, i64)> = store
+        .conn()
+        .prepare("SELECT kind, text_start_bytes, text_end_bytes FROM assistant_responses WHERE message_id = ?1 ORDER BY text_start_bytes")
+        .unwrap()
+        .query_map([&run.assistant_message_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        responses,
+        vec![
+            ("commentary".into(), 0, "Checking. ".len() as i64),
+            (
+                "final".into(),
+                "Checking. ".len() as i64,
+                run.content.len() as i64
+            ),
+        ]
+    );
     let tool: (String, String, String, String) = store
         .conn()
         .query_row(
@@ -184,6 +203,7 @@ async fn persists_messages_tool_lifecycle_and_zero_cost_usage() {
     assert_eq!(
         tables,
         vec![
+            "assistant_responses",
             "assistant_run_durations",
             "codex_session_creations",
             "codex_task_snapshots",

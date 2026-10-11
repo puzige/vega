@@ -22,7 +22,12 @@ fn assert_titlebar_control_grid(visual: &mut gpui_kit::VisualTestContext) {
         assert_eq!(f32::from(new_task.left() - sidebar.left()), 12.0);
         assert_eq!(f32::from(scroll.top() - sidebar.top()), 108.0);
         assert_eq!(f32::from(sidebar.bottom() - footer.bottom()), 12.0);
-        assert_eq!(f32::from(footer.top() - scroll.bottom()), 12.0);
+        assert_eq!(
+            f32::from(footer.top() - scroll.bottom()),
+            Layout::SIDEBAR_FOOTER_TOP
+        );
+        assert_eq!(f32::from(footer.size.height), 32.0);
+        assert_eq!(f32::from(sidebar.bottom() - scroll.bottom()), 48.0);
     }
     let controls = [
         ("toggle-sidebar", "titlebar-sidebar-icon"),

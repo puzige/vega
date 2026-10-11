@@ -548,7 +548,14 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 28);
+        assert_eq!(tables, 29);
+        let response_count: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(response_count, 0);
         for table in [
             "projects",
             "threads",
@@ -632,7 +639,14 @@ mod tests {
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(tables, 28);
+        assert_eq!(tables, 29);
+        let response_count: i64 = store
+            .conn()
+            .query_row("SELECT COUNT(*) FROM assistant_responses", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(response_count, 0);
     }
 
     #[test]

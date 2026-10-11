@@ -15,7 +15,7 @@ pub(crate) fn text(text: String, epoch: Instant, window: &Window, cx: &App) -> A
     let line = window.text_system().shape_line(
         text.clone().into(),
         px(Typography::BODY),
-        &[base.clone()],
+        std::slice::from_ref(&base),
         None,
     );
     let width = line.width();

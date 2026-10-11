@@ -135,6 +135,16 @@
 - 最终主集成在`325a798`重跑上方同一组合命令，退出0：`Summary [41.603s] 437 tests run: 437 passed, 488 skipped`；日志SHA256 `036f319f67eb6fbd14d2901c16af76a9e7a5169e4c23190783cd5b1fe7708fff`。21项组合失败全部闭环，未加ignore、删除业务/安全断言或修改重试配置。
 - 本地只做本卡定向，workspace全量fmt/Clippy/nextest留云端。与批准spec偏离：无；未知Final保留正文、上下文仅总量、复杂目录字段资料展示均为已批准的保守路径。
 
+### PR #303 首轮云端检查与修复
+
+- 首轮 head `c9abdb39600725b596af0e19b303b7eabb8a0e68`，云端 [run 38149888567](https://github.com/puzige/vega/actions/runs/38149888567)：Format通过，Clippy三处等价写法诊断，Nextest退出100：`Summary [162.965s] 2192 tests run: 2183 passed, 9 failed, 5 skipped`。原始日志SHA256：Clippy `678e44dc0405a82d6dd524ca7691d90c6ddf2f92324dd193b223237e43a9d294`，Nextest `548e949ec2e56aedc1246d62f6be6d51ba5d9a39d15698d71830b4f13c4f396c`。
+- Clippy修复`07aa6a53`仅两处let-chain和`std::slice::from_ref`，无逻辑改变。`cargo nextest run -p vega_ui -E 'test(issue296_phase) or test(issue296_run_clock)'`退出0：`Summary [0.116s] 10 tests run: 10 passed, 637 skipped`，日志SHA256 `ed28c420f0bc890fe39276bf8a4188ba50bbbc572693d5870bd38cbfdcc2c8a9`。
+- UI修复`722dea51`仅三测试文件：旧footer top12改为批准的4，并增加32按钮/48总高断言；旧pill改32圆形；#294保留全部无分支断言并逐次验证attachment→context→model真实焦点。先复现4/4失败，再运行`cargo nextest run -p vega -p vega_ui -E 'test(tests::palette::) or test(issue98_scroll_button::) or test(issue294) or test(issue191_standalone_conversation_has_no_footer_branch_entry) or test(issue191_non_git_project_hides_the_footer_branch_chip)'`，退出0：`Summary [3.063s] 14 tests run: 14 passed, 884 skipped`，日志SHA256 `0a8351e96e401636ada501c31b403567ed542946afa48e278a44d2797560e9ff`。独立审查无P1/P2。
+
+- 后端修复`793fe933`仅四测试文件：完整事件序列加入RunStarted并验证所有事件归属、错误原文/状态和同一时长持久；精确表清单加入assistant_responses并验证正文区间；旧库升级为29表且不伪造旧历史Final。先复现5/5失败；新增SQL断言的usize/u64读取编译失败修为SQLite原生i64，保留原日志。
+- 后端命令`cargo nextest run -p vega_conversation -p vega_store -E 'test(provider_error_maps_to_error_event_and_failed_message) or test(persists_messages_tool_lifecycle_and_zero_cost_usage) or test(finds_every_seeded_todo_with_real_tools_and_persists_the_run) or test(r70_version_five_migration_retains_unknown_legacy_offsets) or test(version_one_database_upgrades_in_place_preserving_existing_tables) or test(issue296_response_metadata) or test(issue146_terminal_durations) or test(migrate_creates_exactly_the_twenty_nine_tables) or test(migrate_is_idempotent)'`退出0：`Summary [0.071s] 11 tests run: 11 passed, 717 skipped`，日志SHA256 `08f26c70a9bfd9d6266e7340948986574c9b8d471859a45240511331a827cf4e`。
+- 三组修改文件格式检查及diff检查通过；未加ignore、重试配置或放宽安全断言。新head的完整云端门禁另在PR跟踪。
+
 ## 回滚与兼容
 
 UI通过revert本轮合并回退；新增元数据缓存不覆盖用户配置；如需要新持久化字段，schema只增不删并保持旧记录可读。活动展示重排不改原始事件顺序或历史内容。不同提供方独立价格不在UI重排中暗改；先保留共享价格语义。

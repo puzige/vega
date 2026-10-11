@@ -154,9 +154,9 @@ async fn assert_button_surface(cx: &mut TestAppContext, dark: bool) {
 
     let target = bounds(window, BUTTON, cx);
     assert!(
-        target.size.width > target.size.height
+        (f32::from(target.size.width) - Layout::SCROLL_TO_BOTTOM_SIZE).abs() <= 0.5
             && (f32::from(target.size.height) - Layout::SCROLL_TO_BOTTOM_SIZE).abs() <= 0.5,
-        "the control must be a {}px high pill, got {}×{}",
+        "the control must be a {}px circle, got {}×{}",
         Layout::SCROLL_TO_BOTTOM_SIZE,
         f32::from(target.size.width),
         f32::from(target.size.height),
@@ -199,7 +199,7 @@ async fn assert_button_surface(cx: &mut TestAppContext, dark: bool) {
     ] {
         assert!(
             (actual.as_f32() - half).abs() <= 0.75,
-            "the control must have pill ends: {corner} radius {} ≠ half-height {half}",
+            "the control must be circular: {corner} radius {} ≠ half-height {half}",
             actual.as_f32(),
         );
     }

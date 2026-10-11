@@ -248,6 +248,12 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
     assert_eq!(messages[1].2, expected);
     assert_eq!(messages[1].3, "done");
     assert_eq!(messages[1].4, 2);
+    let responses: Vec<(String, i64, i64)> = store
+        .conn()
+        .prepare("SELECT kind, text_start_bytes, text_end_bytes FROM assistant_responses WHERE message_id = ?1 ORDER BY text_start_bytes")?
+        .query_map([&run.assistant_message_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    assert_eq!(responses, vec![("final".into(), 0, expected.len() as i64)]);
 
     let mut tool_statement = store.conn().prepare(
         "SELECT id, message_id, seq, tool, status, approval, output_text, \
@@ -327,6 +333,7 @@ async fn finds_every_seeded_todo_with_real_tools_and_persists_the_run() -> Resul
     assert_eq!(
         tables,
         [
+            "assistant_responses",
             "assistant_run_durations",
             "codex_session_creations",
             "codex_task_snapshots",

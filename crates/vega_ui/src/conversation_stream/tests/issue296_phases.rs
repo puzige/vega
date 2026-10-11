@@ -265,10 +265,10 @@ async fn issue296_phase_history_round_trip_is_conservative_and_duration_is_optio
                 execution_duration_ms: (mode != "missing-duration").then_some(23100),
             },
         ];
-        if mode == "interrupted" {
-            if let HistoryEntry::AssistantText { status, .. } = &mut history[2] {
-                *status = vega_conversation::history::AssistantStatus::Interrupted;
-            }
+        if mode == "interrupted"
+            && let HistoryEntry::AssistantText { status, .. } = &mut history[2]
+        {
+            *status = vega_conversation::history::AssistantStatus::Interrupted;
         }
         if mode != "legacy" {
             history.push(HistoryEntry::AssistantResponseMetadata {

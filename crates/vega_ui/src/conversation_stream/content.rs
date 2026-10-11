@@ -435,12 +435,10 @@ impl ConversationStream {
                 && terminal_runs.get(&message_id).is_some_and(|(status, _)| {
                     *status == vega_conversation::history::AssistantStatus::Done
                 })
-            {
-                if let Some(copies) =
+                && let Some(copies) =
                     phase::process_copies(&message_id, &responses, &hydrated, &hydrated_identities)
-                {
-                    group.update(cx, |group, cx| group.confirm_final(copies, false, cx));
-                }
+            {
+                group.update(cx, |group, cx| group.confirm_final(copies, false, cx));
             }
             self.run_responses.insert(message_id, responses);
         }
